@@ -156,10 +156,14 @@ pub const Effects = struct {
     focus_request: FocusRequest,
     quit_requested: bool,
     file_dialog: ?FileDialogRequest,
+    font_request: ?FontRequest,
     /// The element the router is delivering to, for `focusSelf`.
     current: ElementId,
 
     pub const FocusRequest = union(enum) { none, focus: ElementId, blur };
+
+    /// A font change: the family name is copied when the handler returns.
+    pub const FontRequest = struct { name: []const u8, size: f32 };
 
     pub fn init(event: ?*const input.InputEvent, current: ElementId) Effects {
         return .{
@@ -170,6 +174,7 @@ pub const Effects = struct {
             .focus_request = .none,
             .quit_requested = false,
             .file_dialog = null,
+            .font_request = null,
             .current = current,
         };
     }
@@ -211,6 +216,16 @@ pub const Effects = struct {
     pub fn openFileDialog(self: *Effects, request: FileDialogRequest) void {
         assert(self.file_dialog == null);
         self.file_dialog = request;
+    }
+
+    /// Replace the app family (`Config.font`) with `name` at `size` points
+    /// (decision 8). The tick reloads it after the drain, once no frame is in
+    /// flight, into the same face slots, so it claims no storage. A family
+    /// that fails to load is logged and the previous one stays.
+    pub fn setFont(self: *Effects, name: []const u8, size: f32) void {
+        assert(name.len > 0);
+        assert(size > 0 and size < 1000);
+        self.font_request = .{ .name = name, .size = size };
     }
 
     /// A handler for `method` on the root state, for a request's completion

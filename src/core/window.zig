@@ -79,10 +79,26 @@ pub const Node = struct {
     text: records.TextRange,
     text_color: records.Color,
     font_size: u16,
+    family: text_mod.FontFamily,
     variant: text_mod.FontVariant,
     // Paint.
     paint_fn: ?*const fn (data: *const anyopaque, painter: *anyopaque) void,
     paint_data: ?*const anyopaque,
+};
+
+/// A family name copied out of a handler's `Effects.setFont`, so the request
+/// outlives the handler's slice.
+pub const PendingFont = struct {
+    name_buffer: [name_bytes_max]u8,
+    name_len: u8,
+    size: f32,
+
+    pub const name_bytes_max = text_mod.TextSystem.family_name_bytes_max;
+
+    pub fn name(self: *const PendingFont) []const u8 {
+        assert(self.name_len > 0);
+        return self.name_buffer[0..self.name_len];
+    }
 };
 
 pub const A11yBuilt = struct {
@@ -230,6 +246,9 @@ pub const Window = struct {
     render_requested: bool,
     quit_requested: bool,
     pending_dialog: ?handler_mod.FileDialogRequest,
+    /// A font change from `Effects.setFont`, applied by the next tick that
+    /// finds no frame in flight; the latest request wins.
+    pending_font: ?PendingFont,
     dialog_handlers: [dialog_count_max]?handler_mod.Handler,
     dialogs_opened: u32,
     now_ns: u64,
@@ -341,6 +360,7 @@ pub noinline fn initInPlace(self: *Window, gpa: std.mem.Allocator, options: *con
     self.render_requested = true;
     self.quit_requested = false;
     self.pending_dialog = null;
+    self.pending_font = null;
     self.dialogs_opened = 0;
     self.dialog_handlers = @splat(null);
     self.now_ns = 0;

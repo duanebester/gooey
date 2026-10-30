@@ -561,7 +561,7 @@ fn benchShapeCold(
     // Warmup: verify shaping works, populate platform shaper internals.
     for (0..warmup_iters) |_| {
         text_sys.shape_cache.clear();
-        var run = text_sys.shapeText(bench_text, .regular, null) catch unreachable;
+        var run = text_sys.shapeText(.app, bench_text, .regular, null) catch unreachable;
         run.deinit(allocator);
     }
 
@@ -576,7 +576,7 @@ fn benchShapeCold(
         text_sys.shape_cache.clear();
 
         const start = time.Instant.now();
-        var run = text_sys.shapeText(bench_text, .regular, null) catch unreachable;
+        var run = text_sys.shapeText(.app, bench_text, .regular, null) catch unreachable;
         const end = time.Instant.now();
 
         last_width = run.width;
@@ -621,14 +621,14 @@ fn benchShapeWarm(
 
     // Prime the shape cache with this text.
     {
-        var run = text_sys.shapeText(bench_text, .regular, null) catch unreachable;
+        var run = text_sys.shapeText(.app, bench_text, .regular, null) catch unreachable;
         run.deinit(allocator);
     }
 
     // Warmup.
     for (0..warmup_iters) |_| {
         for (0..count) |_| {
-            var run = text_sys.shapeText(bench_text, .regular, null) catch unreachable;
+            var run = text_sys.shapeText(.app, bench_text, .regular, null) catch unreachable;
             run.deinit(allocator);
         }
     }
@@ -642,7 +642,7 @@ fn benchShapeWarm(
     while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iters) {
         const start = time.Instant.now();
         for (0..count) |_| {
-            var run = text_sys.shapeText(bench_text, .regular, null) catch unreachable;
+            var run = text_sys.shapeText(.app, bench_text, .regular, null) catch unreachable;
             last_width = run.width;
             run.deinit(allocator);
         }
@@ -689,7 +689,7 @@ fn benchShapeWarmArena(
 
     // Prime the shape cache so every call in the timed section is a hit.
     {
-        var run = text_sys.shapeText(bench_text, .regular, null) catch unreachable;
+        var run = text_sys.shapeText(.app, bench_text, .regular, null) catch unreachable;
         run.deinit(gpa);
     }
 
@@ -701,7 +701,7 @@ fn benchShapeWarmArena(
     for (0..warmup_iters) |_| {
         text_sys.run_allocator = arena_alloc;
         for (0..count) |_| {
-            var run = text_sys.shapeText(bench_text, .regular, null) catch unreachable;
+            var run = text_sys.shapeText(.app, bench_text, .regular, null) catch unreachable;
             run.deinit(arena_alloc);
         }
         text_sys.run_allocator = gpa;
@@ -718,7 +718,7 @@ fn benchShapeWarmArena(
         text_sys.run_allocator = arena_alloc;
         const start = time.Instant.now();
         for (0..count) |_| {
-            var run = text_sys.shapeText(bench_text, .regular, null) catch unreachable;
+            var run = text_sys.shapeText(.app, bench_text, .regular, null) catch unreachable;
             last_width = run.width;
             run.deinit(arena_alloc);
         }
@@ -765,7 +765,7 @@ fn benchShapeWarmInto(
 
     // Prime the shape cache so every call in the timed section is a hit.
     {
-        var run = text_sys.shapeText(bench_text, .regular, null) catch unreachable;
+        var run = text_sys.shapeText(.app, bench_text, .regular, null) catch unreachable;
         run.deinit(allocator);
     }
 
@@ -773,7 +773,8 @@ fn benchShapeWarmInto(
     for (0..warmup_iters) |_| {
         for (0..count) |_| {
             var buf: [ShapedRunCache.MAX_GLYPHS_PER_ENTRY]ShapedGlyph = undefined;
-            var run = text_sys.shapeTextInto(bench_text, .regular, null, &buf) catch unreachable;
+            var run = text_sys.shapeTextInto(.app, bench_text, .regular, null, &buf) catch
+                unreachable;
             if (run.owned) run.deinit(allocator);
         }
     }
@@ -788,7 +789,8 @@ fn benchShapeWarmInto(
         const start = time.Instant.now();
         for (0..count) |_| {
             var buf: [ShapedRunCache.MAX_GLYPHS_PER_ENTRY]ShapedGlyph = undefined;
-            var run = text_sys.shapeTextInto(bench_text, .regular, null, &buf) catch unreachable;
+            var run = text_sys.shapeTextInto(.app, bench_text, .regular, null, &buf) catch
+                unreachable;
             last_width = run.width;
             if (run.owned) run.deinit(allocator);
         }
@@ -836,7 +838,7 @@ fn benchMeasureText(
     // Warmup.
     for (0..warmup_iters) |_| {
         for (0..count) |_| {
-            _ = text_sys.measureText(bench_text, .regular) catch unreachable;
+            _ = text_sys.measureText(.app, bench_text, .regular) catch unreachable;
         }
     }
 
@@ -849,7 +851,7 @@ fn benchMeasureText(
     while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iters) {
         const start = time.Instant.now();
         for (0..count) |_| {
-            last_width = text_sys.measureText(bench_text, .regular) catch unreachable;
+            last_width = text_sys.measureText(.app, bench_text, .regular) catch unreachable;
         }
         const end = time.Instant.now();
 
@@ -894,7 +896,7 @@ fn benchMeasureTextWrapped(
     // Warmup.
     for (0..warmup_iters) |_| {
         for (0..count) |_| {
-            _ = text_sys.measureTextEx(bench_text, .regular, max_width) catch unreachable;
+            _ = text_sys.measureTextEx(.app, bench_text, .regular, max_width) catch unreachable;
         }
     }
 
@@ -907,7 +909,7 @@ fn benchMeasureTextWrapped(
     while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iters) {
         const start = time.Instant.now();
         for (0..count) |_| {
-            const measurement = text_sys.measureTextEx(bench_text, .regular, max_width) catch
+            const measurement = text_sys.measureTextEx(.app, bench_text, .regular, max_width) catch
                 unreachable;
             last_line_count = measurement.line_count;
         }
@@ -1287,6 +1289,7 @@ fn benchGlyphRasterWarmBatch(
     for (0..3) |_| {
         for (0..repetitions) |_| {
             text_sys.resolveGlyphBatch(
+                .app,
                 shaped_glyphs[0..glyph_count],
                 .regular,
                 font_size,
@@ -1306,6 +1309,7 @@ fn benchGlyphRasterWarmBatch(
         const start = time.Instant.now();
         for (0..repetitions) |_| {
             text_sys.resolveGlyphBatch(
+                .app,
                 shaped_glyphs[0..glyph_count],
                 .regular,
                 font_size,
@@ -1575,7 +1579,7 @@ test "validate: text shaping produces glyphs" {
     const ts = createTestTextSystem(allocator) orelse return;
     defer destroyTestTextSystem(allocator, ts);
 
-    var run = ts.shapeText("Hello", .regular, null) catch return;
+    var run = ts.shapeText(.app, "Hello", .regular, null) catch return;
     defer run.deinit(allocator);
 
     try std.testing.expect(run.glyphs.len > 0);
@@ -1588,12 +1592,12 @@ test "validate: text shaping warm path returns consistent width" {
     defer destroyTestTextSystem(allocator, ts);
 
     // First call populates the shape cache.
-    var run_first = ts.shapeText(TEXT_SHORT, .regular, null) catch return;
+    var run_first = ts.shapeText(.app, TEXT_SHORT, .regular, null) catch return;
     const first_width = run_first.width;
     run_first.deinit(allocator);
 
     // Second call should hit the cache and return the same width.
-    var run_second = ts.shapeText(TEXT_SHORT, .regular, null) catch return;
+    var run_second = ts.shapeText(.app, TEXT_SHORT, .regular, null) catch return;
     defer run_second.deinit(allocator);
 
     try std.testing.expectApproxEqAbs(first_width, run_second.width, 0.01);
@@ -1606,14 +1610,14 @@ test "validate: shapeTextInto warm path returns owned=false with correct glyphs"
     defer destroyTestTextSystem(allocator, ts);
 
     // Prime the shape cache.
-    var prime = ts.shapeText(TEXT_SHORT, .regular, null) catch return;
+    var prime = ts.shapeText(.app, TEXT_SHORT, .regular, null) catch return;
     const expected_width = prime.width;
     const expected_count = prime.glyphs.len;
     prime.deinit(allocator);
 
     // Warm hit via shapeTextInto — should copy into our buffer, owned=false.
     var buf: [ShapedRunCache.MAX_GLYPHS_PER_ENTRY]ShapedGlyph = undefined;
-    var into_run = ts.shapeTextInto(TEXT_SHORT, .regular, null, &buf) catch return;
+    var into_run = ts.shapeTextInto(.app, TEXT_SHORT, .regular, null, &buf) catch return;
     defer if (into_run.owned) into_run.deinit(allocator);
 
     try std.testing.expect(!into_run.owned);
@@ -1633,7 +1637,7 @@ test "validate: text measurement returns positive width" {
     const ts = createTestTextSystem(allocator) orelse return;
     defer destroyTestTextSystem(allocator, ts);
 
-    const width = ts.measureText(TEXT_SHORT, .regular) catch return;
+    const width = ts.measureText(.app, TEXT_SHORT, .regular) catch return;
     try std.testing.expect(width > 0);
     try std.testing.expect(width < 10000); // Sanity bound.
 }
@@ -1644,7 +1648,7 @@ test "validate: text measurement with wrapping produces multiple lines" {
     defer destroyTestTextSystem(allocator, ts);
 
     // Use a narrow max_width to force wrapping on medium text.
-    const measurement = ts.measureTextEx(TEXT_MEDIUM, .regular, 50.0) catch return;
+    const measurement = ts.measureTextEx(.app, TEXT_MEDIUM, .regular, 50.0) catch return;
     try std.testing.expect(measurement.line_count >= 1);
     try std.testing.expect(measurement.width > 0);
 }
@@ -1655,7 +1659,7 @@ test "validate: glyph rasterization produces cached glyph" {
     defer destroyTestTextSystem(allocator, ts);
 
     // Shape a short string to get a valid glyph ID.
-    var run = ts.shapeText("A", .regular, null) catch return;
+    var run = ts.shapeText(.app, "A", .regular, null) catch return;
     defer run.deinit(allocator);
 
     if (run.glyphs.len == 0) return;
@@ -1673,7 +1677,7 @@ test "validate: resolveGlyphBatch matches per-glyph lookups" {
     defer destroyTestTextSystem(allocator, ts);
 
     // Shape a short string to get valid glyph IDs.
-    var run = ts.shapeText("Hello", .regular, null) catch return;
+    var run = ts.shapeText(.app, "Hello", .regular, null) catch return;
     defer run.deinit(allocator);
 
     if (run.glyphs.len == 0) return;
@@ -1691,6 +1695,7 @@ test "validate: resolveGlyphBatch matches per-glyph lookups" {
     var subpixel_xs: [MAX_UNIQUE_GLYPHS]u8 = @splat(0);
     var batch: [MAX_UNIQUE_GLYPHS]CachedGlyph = undefined;
     ts.resolveGlyphBatch(
+        .app,
         run.glyphs,
         .regular,
         BENCH_FONT_SIZE,
@@ -2043,7 +2048,7 @@ fn runTextPipelineBenchmarks(gpa: std.mem.Allocator, reporter: *bench.Reporter) 
     // --- Glyph rasterization benchmarks ---
     // Shape printable ASCII to extract glyph IDs for the rasterization benchmarks.
     const printable_ascii = comptime generatePrintableAscii();
-    var ascii_run = try text_sys.shapeText(&printable_ascii, .regular, null);
+    var ascii_run = try text_sys.shapeText(.app, &printable_ascii, .regular, null);
 
     std.debug.assert(ascii_run.glyphs.len > 0);
     const unique_glyphs = extractUniqueGlyphIds(ascii_run.glyphs);

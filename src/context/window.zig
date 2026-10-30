@@ -1675,7 +1675,7 @@ fn measureTextCallback(
         // Measure with the face that renders this text (`font_id` is its
         // `FontVariant`): bold is wider than regular for the same string.
         const variant = text_mod.FontVariant.fromFontId(font_id);
-        const base_width = text_system.measureText(text_content, variant) catch 0;
+        const base_width = text_system.measureText(.app, text_content, variant) catch 0;
         return .{
             .width = base_width * scale,
             .height = metrics.line_height * scale,

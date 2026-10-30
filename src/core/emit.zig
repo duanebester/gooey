@@ -84,8 +84,8 @@ pub const Painter = struct {
     pub fn measureText(self: *const Painter, content: []const u8, style: TextStyle) f32 {
         if (content.len == 0) return 0;
         const text_system = self.window.resources.text_system;
-        const metrics = text_system.getMetrics().?;
-        const width = text_system.measureText(content, style.variant) catch |err| {
+        const metrics = text_system.getMetricsFor(style.family);
+        const width = text_system.measureText(style.family, content, style.variant) catch |err| {
             std.debug.panic("text measurement failed: {s}", .{@errorName(err)});
         };
         return width * @as(f32, @floatFromInt(style.size)) / metrics.point_size;
@@ -111,6 +111,7 @@ pub const Painter = struct {
 pub const TextStyle = struct {
     size: u16,
     color: Color,
+    family: text_mod.FontFamily = .app,
     variant: text_mod.FontVariant = .regular,
 };
 
@@ -218,6 +219,7 @@ fn emitText(window: *Window, node: *const Node, bounds: Rect) void {
     _ = emitTextLine(window, content, bounds.x, bounds.y, .{
         .size = node.font_size,
         .color = node.text_color,
+        .family = node.family,
         .variant = node.variant,
     });
 }
@@ -254,7 +256,7 @@ const GlyphSink = struct {
 /// One line of text with its top at `y`, baseline from the face's ascender.
 fn emitTextLine(window: *Window, content: []const u8, x: f32, y: f32, style: TextStyle) f32 {
     assert(style.size > 0);
-    const metrics = window.resources.text_system.getMetrics().?;
+    const metrics = window.resources.text_system.getMetricsFor(style.family);
     const size: f32 = @floatFromInt(style.size);
     return emitTextBaseline(
         window,
@@ -284,6 +286,7 @@ fn emitTextBaseline(
         baseline,
         window.scale_factor,
         size,
+        style.family,
         style.variant,
         &sink,
     ) catch |err| std.debug.panic("text emit failed in frame {d}: {s}", .{

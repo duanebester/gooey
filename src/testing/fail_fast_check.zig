@@ -23,6 +23,7 @@
 //! - `core-duplicate-key`: renders two boxes with one key under one parent.
 //! - `core-component-depth`: nests components one level past `component_depth_max`.
 //! - `core-dialog-target`: names a non-root state as a file dialog's completion handler.
+//! - `core-mono-unset`: draws `.family = .mono` text in an app with no `font_mono`.
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -43,6 +44,7 @@ const Mode = enum {
     @"core-duplicate-key",
     @"core-component-depth",
     @"core-dialog-target",
+    @"core-mono-unset",
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -70,6 +72,7 @@ pub fn main(init: std.process.Init) !void {
         .@"core-duplicate-key" => coreTick(init.gpa, init.io, CoreApp.duplicateKey),
         .@"core-component-depth" => coreTick(init.gpa, init.io, CoreApp.nested),
         .@"core-dialog-target" => coreDialogTarget(init.gpa, init.io),
+        .@"core-mono-unset" => coreTick(init.gpa, init.io, CoreApp.monoText),
     }
     std.debug.print("unreachable: {s} did not panic\n", .{@tagName(mode)});
 }
@@ -178,7 +181,7 @@ fn fontVariant(gpa: std.mem.Allocator, io: std.Io) void {
     text_system.loadSystemFont(.sans_serif, 16) catch |err| {
         std.debug.panic("setup: loadSystemFont failed: {s}", .{@errorName(err)});
     };
-    _ = text_system.measureText("Total", .light) catch |err| {
+    _ = text_system.measureText(.app, "Total", .light) catch |err| {
         std.debug.panic("measureText failed instead of panicking: {s}", .{@errorName(err)});
     };
 }
@@ -256,6 +259,10 @@ const core_config: core.Config(CoreState) = .{
     .theme = &core.Theme.light,
     .keymap = &.{},
     .entities = &.{},
+    .font = null,
+    .font_size = 16,
+    .font_mono = null,
+    .font_limits = null,
     .on_init = null,
 };
 
@@ -301,6 +308,10 @@ const CoreApp = struct {
     const Stranger = struct {
         fn picked(_: *Stranger) void {}
     };
+
+    fn monoText(cx: *core.Cx) void {
+        cx.render(core.ui.text("code", .{ .family = .mono }));
+    }
 };
 
 fn initCoreApp(comptime App: type, gpa: std.mem.Allocator, io: std.Io) *App {

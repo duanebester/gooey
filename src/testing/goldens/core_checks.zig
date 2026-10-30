@@ -98,6 +98,10 @@ const DialogApp = core.App(DialogState, dialogRender, .{
     .theme = &core.Theme.light,
     .keymap = &.{},
     .entities = &.{},
+    .font = null,
+    .font_size = 16,
+    .font_mono = null,
+    .font_limits = null,
     .on_init = null,
 });
 
@@ -306,4 +310,104 @@ test "clicks fire on release over the pressed control" {
     driver.deliver(.{ .mouse_up = mouse(155, 245) });
     driver.frame();
     try testing.expectEqual(@as(i32, 1), state.count);
+}
+
+const FontState = struct {
+    pub fn useSerif(_: *FontState, effects: *Effects) void {
+        effects.setFont("Synthetic Serif", 20);
+    }
+};
+
+/// Two families (decision 8): the app family and a synthetic `.monospace`
+/// second family, whose glyphs all advance by 0.6 em.
+const FontApp = core.App(FontState, fontRender, .{
+    .title = "Fonts",
+    .width = 300,
+    .height = 100,
+    .limits = .nano,
+    .theme = &core.Theme.light,
+    .keymap = &.{},
+    .entities = &.{},
+    .font = null,
+    .font_size = 16,
+    .font_mono = .{ .system = .monospace },
+    .font_limits = .{ .variants = &.{.regular}, .mono_variants = &.{.regular} },
+    .on_init = null,
+});
+
+fn fontRender(cx: *Cx) void {
+    cx.render(ui.box(.{
+        .key = .{ .name = "fonts" },
+        .on_click = cx.on(FontState.useSerif, .{}),
+        .style = .{ .width = .{ .grow = 1 }, .height = .{ .grow = 1 }, .gap = 4 },
+    }, .{
+        ui.text("mmm", .{ .size = 16 }),
+        ui.text("mmm", .{ .size = 16, .family = .mono }),
+    }));
+}
+
+/// The x of every glyph sprite in the rendered frame, in paint order.
+fn spriteXs(window: *const core.internals.window.Window, out: []f32) u32 {
+    const frame = window.rendered();
+    var count: u32 = 0;
+    for (frame.paint[0..frame.paint_count]) |record| {
+        switch (record) {
+            .sprite => |sprite| {
+                std.debug.assert(count < out.len);
+                out[count] = sprite.bounds.x;
+                count += 1;
+            },
+            else => {},
+        }
+    }
+    return count;
+}
+
+test "mono text draws with the second family's advances" {
+    // Goal: decision 8's `Text.family`. Methodology: the synthetic app face
+    // advances 'm' by 0.8 em and the synthetic `.monospace` face by 0.6 em,
+    // so at 16 px the app run's glyphs sit 12.8 px apart and the mono run's
+    // 9.6 px apart. A run measured or placed with the wrong family would
+    // show the other spacing. Glyphs snap to whole pixels, hence the
+    // tolerance on each run's two-advance span.
+    const app = try testing.allocator.create(FontApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinit();
+    app.tick(1);
+    var xs: [8]f32 = undefined;
+    try testing.expectEqual(@as(u32, 6), spriteXs(&app.window, &xs));
+    try testing.expectApproxEqAbs(@as(f32, 25.6), xs[2] - xs[0], 1);
+    try testing.expectApproxEqAbs(@as(f32, 19.2), xs[5] - xs[3], 1);
+}
+
+test "effects.setFont reloads the app family once no frame is in flight" {
+    // Goal: decision 8's `setFont`, applied after the drain. Methodology: the
+    // first click lands while a frame is in flight, so the reload waits: the
+    // app family stays at 16 pt until the render side presents, then the
+    // next tick loads it at 20 pt. The mono family keeps its own size.
+    const app = try testing.allocator.create(FontApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinit();
+    const tick = core.internals.tick;
+    const window = &app.window;
+    const text_system = app.resources.text_system;
+    app.tick(1); // A rendered frame for the click to hit.
+    window.render_requested = true;
+    try testing.expect(tick.tickMain(app, window, 2));
+    try testing.expect(window.frame_in_flight.load(.acquire));
+
+    window.queue.push(.{ .input = .{ .mouse_down = mouse(10, 10) } });
+    window.queue.push(.{ .input = .{ .mouse_up = mouse(10, 10) } });
+    try testing.expect(!tick.tickMain(app, window, 3));
+    try testing.expect(window.pending_font != null);
+    try testing.expectEqual(@as(f32, 16), text_system.getMetrics().?.point_size);
+
+    tick.presentBuilt(window);
+    try testing.expect(tick.tickMain(app, window, 4));
+    try testing.expect(window.pending_font == null);
+    try testing.expectEqual(@as(f32, 20), text_system.getMetrics().?.point_size);
+    try testing.expectEqual(@as(f32, 16), text_system.getMetricsFor(.mono).point_size);
+    tick.presentBuilt(window);
 }

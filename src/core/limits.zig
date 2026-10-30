@@ -1357,6 +1357,10 @@ pub const MAX_TEXT_LEN: u32 = 512;
 pub const FontLimits = struct {
     /// Distinct variants; must include `.regular`, which supplies line metrics.
     variants: []const FontVariant,
+    /// Variants of the optional second family (`font_mono`, contract decision
+    /// 8). Empty in every profile, so an app that loads no second family
+    /// reserves no faces; when set, it follows the rules of `variants`.
+    mono_variants: []const FontVariant = &.{},
 
     /// The weights Gooey's components and examples use (regular, medium,
     /// semibold, bold) plus italic and bold italic: six faces.
@@ -1383,27 +1387,66 @@ pub const FontLimits = struct {
         break :blk result;
     };
 
-    pub const Rule = enum { empty, above_ceiling, duplicate, missing_regular };
+    pub const Rule = enum {
+        empty,
+        above_ceiling,
+        duplicate,
+        missing_regular,
+        mono_duplicate,
+        mono_missing_regular,
 
-    /// First violated rule, or null when the set is valid.
+        /// The field the rule constrains, for error messages.
+        pub fn field(rule: Rule) []const u8 {
+            return switch (rule) {
+                .empty, .above_ceiling, .duplicate, .missing_regular => "variants",
+                .mono_duplicate, .mono_missing_regular => "mono_variants",
+            };
+        }
+    };
+
+    /// First violated rule, or null when both sets are valid. An empty
+    /// `mono_variants` is valid: it reserves no second family.
     pub fn check(self: *const FontLimits) ?Rule {
         if (self.variants.len == 0) return .empty;
         if (self.variants.len > FontVariant.count) return .above_ceiling;
-        var seen: [FontVariant.count]bool = @splat(false);
-        for (self.variants) |variant| {
-            if (seen[@backingInt(variant)]) return .duplicate;
-            seen[@backingInt(variant)] = true;
+        if (self.mono_variants.len > FontVariant.count) return .above_ceiling;
+        if (!distinctWithRegular(self.variants)) {
+            return if (hasDuplicate(self.variants)) .duplicate else .missing_regular;
         }
-        if (!seen[@backingInt(FontVariant.regular)]) return .missing_regular;
+        if (self.mono_variants.len == 0) return null;
+        if (!distinctWithRegular(self.mono_variants)) {
+            return if (hasDuplicate(self.mono_variants)) .mono_duplicate else .mono_missing_regular;
+        }
         assert(self.variants.len <= FontVariant.count);
         return null;
+    }
+
+    fn hasDuplicate(variants: []const FontVariant) bool {
+        assert(variants.len <= FontVariant.count);
+        var seen: [FontVariant.count]bool = @splat(false);
+        for (variants) |variant| {
+            if (seen[@backingInt(variant)]) return true;
+            seen[@backingInt(variant)] = true;
+        }
+        return false;
+    }
+
+    fn distinctWithRegular(variants: []const FontVariant) bool {
+        assert(variants.len <= FontVariant.count);
+        if (hasDuplicate(variants)) return false;
+        for (variants) |variant| {
+            if (variant == .regular) return true;
+        }
+        return false;
     }
 
     /// Runtime counterpart of `validate`. An invalid set is a programmer error.
     pub fn assertValid(self: *const FontLimits) void {
         if (self.check()) |rule| {
-            std.debug.panic("invalid FontLimits.variants ({d} entries): rule {s}", .{
+            std.debug.panic("invalid FontLimits.{s} ({d} and {d} entries): rule {s}", .{
+                rule.field(),
                 self.variants.len,
+                self.mono_variants.len,
                 @tagName(rule),
             });
         }
@@ -1413,7 +1456,7 @@ pub const FontLimits = struct {
     pub fn validate(comptime self: FontLimits) void {
         comptime {
             if (self.check()) |rule| {
-                @compileError("invalid FontLimits.variants: rule " ++ @tagName(rule));
+                @compileError("invalid FontLimits." ++ rule.field() ++ ": rule " ++ @tagName(rule));
             }
         }
     }
@@ -1753,4 +1796,30 @@ test "derived budget quantities" {
     try std.testing.expect(SceneLimits.small.sceneBytes() < 576 * 1024);
     try std.testing.expect(scene.sceneBytes() < 1_843 * 1024);
     try std.testing.expect(SceneLimits.large.sceneBytes() < 12 * 1024 * 1024);
+}
+
+test "FontLimits.check names the broken family" {
+    // Goal: decision 8's mono rules. Methodology: an empty mono set is valid
+    // (every profile has one); a mono set must still be distinct and carry
+    // `.regular`, and each violation names `mono_variants`, not `variants`.
+    const app_only: FontLimits = .{ .variants = &.{.regular} };
+    try std.testing.expect(app_only.check() == null);
+    const with_mono: FontLimits = .{
+        .variants = &.{.regular},
+        .mono_variants = &.{ .regular, .bold },
+    };
+    try std.testing.expect(with_mono.check() == null);
+    const mono_duplicate: FontLimits = .{
+        .variants = &.{.regular},
+        .mono_variants = &.{ .regular, .regular },
+    };
+    try std.testing.expectEqual(FontLimits.Rule.mono_duplicate, mono_duplicate.check().?);
+    const mono_no_regular: FontLimits = .{ .variants = &.{.regular}, .mono_variants = &.{.bold} };
+    try std.testing.expectEqual(FontLimits.Rule.mono_missing_regular, mono_no_regular.check().?);
+    try std.testing.expectEqualStrings("mono_variants", mono_no_regular.check().?.field());
+    const app_no_regular: FontLimits = .{ .variants = &.{.bold}, .mono_variants = &.{.regular} };
+    try std.testing.expectEqual(FontLimits.Rule.missing_regular, app_no_regular.check().?);
+    inline for (ResourceLimits.profile_names) |name| {
+        try std.testing.expectEqual(@as(usize, 0), @field(FontLimits, name).mono_variants.len);
+    }
 }
