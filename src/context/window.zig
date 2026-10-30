@@ -894,6 +894,24 @@ pub const Window = struct {
         };
     }
 
+    /// Cache the platform window's size and scale for this frame. When the
+    /// scale changed, as when the window moved to a monitor of another DPI
+    /// (`WM_DPICHANGED`, a Retina change), glyphs, icons, and images
+    /// rasterize at the new scale from this frame on. The caches are shared
+    /// by every window and hold one scale, so with windows on monitors of
+    /// different scales the window that changed last wins.
+    fn syncWindowMetrics(self: *Self, platform_window: *const PlatformWindow) void {
+        std.debug.assert(platform_window.scale_factor > 0);
+        std.debug.assert(platform_window.size.width >= 0);
+        const scale_factor_previous = self.scale_factor;
+        self.width = @floatCast(platform_window.size.width);
+        self.height = @floatCast(platform_window.size.height);
+        self.scale_factor = @floatCast(platform_window.scale_factor);
+        if (self.scale_factor != scale_factor_previous) {
+            self.resources.setScaleFactor(platform_window.scale_factor);
+        }
+    }
+
     /// Call at the start of each frame before building UI
     ///
     /// Per-tick app-scoped work (image-loader drain, entity-observation
@@ -935,15 +953,7 @@ pub const Window = struct {
         // and before any window observes entities (so the clear of last-tick
         // observations cannot race with this-tick observations).
 
-        // Update cached window dimensions
-        if (self.platform_window) |w| {
-            self.width = @floatCast(w.size.width);
-            self.height = @floatCast(w.size.height);
-            self.scale_factor = @floatCast(w.scale_factor);
-        }
-
-        // Sync scale factor to text system for correct glyph rasterization
-        // self.resources.text_system.setScaleFactor(self.scale_factor);
+        if (self.platform_window) |w| self.syncWindowMetrics(w);
 
         // The build target is `next_frame.scene`. The end-of-frame
         // `mem.swap` already cleared this slot post-swap, so the clear is
