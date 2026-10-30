@@ -110,6 +110,19 @@ pub const A11ySystem = struct {
         std.debug.assert(self.bridgeAddressValid());
     }
 
+    /// Initialize with the no-op bridge, for a window with no platform window
+    /// (`Window.initHeadlessPtr`). The tree is built as usual; nothing is
+    /// published to an OS accessibility runtime or a D-Bus session.
+    pub noinline fn initHeadlessInPlace(self: *Self) void {
+        self.tree.initInPlace();
+        self.enabled = false;
+        self.check_counter = 0;
+        self.platform_bridge = .{ .null_bridge = {} };
+        self.bridge = a11y.NullBridge.bridge();
+        std.debug.assert(self.bridgeAddressValid());
+        std.debug.assert(!self.bridge.isActive());
+    }
+
     /// Whether `bridge.ptr` points into this system's own `platform_bridge`.
     ///
     /// False after a by-value copy or move of an initialized system: the copy's

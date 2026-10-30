@@ -78,6 +78,8 @@ pub const CachedGlyph = cache.CachedGlyph;
 // High-level API
 const text_system = @import("text_system.zig");
 pub const TextSystem = text_system.TextSystem;
+/// True in builds that select the deterministic synthetic text backend.
+pub const is_synthetic = text_system.is_synthetic;
 pub const ShapedRunCache = text_system.ShapedRunCache;
 pub const SUBPIXEL_VARIANTS_X = text_system.SUBPIXEL_VARIANTS_X;
 
@@ -87,6 +89,10 @@ const is_wasm = platform.is_wasm;
 
 const is_linux = platform.is_linux;
 const is_windows = platform.is_windows;
+
+/// Deterministic headless backend. Always compiled so its tests run on every
+/// host; `text_backend = .synthetic` makes `TextSystem` use it.
+pub const synthetic_backend = @import("backends/synthetic/mod.zig");
 
 pub const backends = if (is_wasm)
     struct {

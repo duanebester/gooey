@@ -205,9 +205,9 @@ pub const file_dialog = @import("file_dialog.zig");
 /// the rest through this namespace.
 pub const app = @import("app.zig");
 
-/// Testing utilities and mock implementations. Only compiled when
-/// running tests, so it adds no bloat to production builds.
-pub const testing = if (builtin.is_test)
+/// Testing utilities and mock implementations. Compiled for tests and for the
+/// synthetic-text build the goldens tools use, so production builds carry none.
+pub const testing = if (builtin.is_test or text.is_synthetic)
     @import("testing/mod.zig")
 else
     struct {};

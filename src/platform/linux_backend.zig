@@ -10,8 +10,8 @@
 //! - `fbdev`: no display server. The CPU renderer draws to `/dev/fb0` and
 //!   input comes from evdev. For embedded Linux devices.
 //!
-//! Only Linux-target code may import this file; other targets build without
-//! the `gooey_build_options` module.
+//! Only Linux-target code may import this file: every target imports the
+//! `gooey_build_options` module, but `linux_backend` means nothing elsewhere.
 
 const build_options = @import("gooey_build_options");
 

@@ -24,7 +24,8 @@ const Button = components.Button;
 // Application State
 // =============================================================================
 
-const AppState = struct {
+/// Public so the goldens (`src/testing/goldens/`) can replay this example.
+pub const AppState = struct {
     count: i32 = 0,
     step: i32 = 1,
     message: []const u8 = "",
@@ -88,7 +89,7 @@ pub fn main(init: std.process.Init) !void {
 // Render Function - receives *Cx
 // =============================================================================
 
-fn render(cx: *Cx) void {
+pub fn render(cx: *Cx) void {
     const s = cx.state(AppState);
 
     cx.render(ui.root(.{

@@ -44,9 +44,17 @@ pub const MockFileDialog = @import("mock_file_dialog.zig").MockFileDialog;
 pub const mock_svg_rasterizer = @import("mock_svg_rasterizer.zig");
 pub const MockSvgRasterizer = mock_svg_rasterizer.MockSvgRasterizer;
 
+/// Text dumps of packed frames, hit records, and accessibility trees.
+pub const record_dump = @import("record_dump.zig");
+
+/// Headless driver for the 0.3.1 runtime, used to capture goldens.
+pub const legacy_harness = @import("legacy_harness.zig");
+pub const LegacyHarness = legacy_harness.LegacyHarness;
+
 /// Fixed-capacity headless platform backend module
 pub const test_backend = @import("test_backend.zig");
 pub const TestBackend = test_backend.TestBackend;
+pub const NullRenderer = test_backend.NullRenderer;
 
 // =============================================================================
 // Re-exports

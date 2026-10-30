@@ -12,6 +12,16 @@ pub const LinuxBackend = enum {
     fbdev,
 };
 
+/// Text service behind `TextSystem`, mirrored into `gooey_build_options`.
+/// `synthetic` derives every metric from the point size, so goldens match on
+/// every host; only the goldens and core test roots select it.
+pub const TextBackend = enum {
+    /// CoreText, FreeType and HarfBuzz, DirectWrite, or the browser.
+    platform,
+    /// `src/text/backends/synthetic`: deterministic metrics, no font files.
+    synthetic,
+};
+
 const ExampleDefinition = struct {
     name: []const u8,
     source: []const u8,
@@ -105,6 +115,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         });
         mod.addImport("objc", objc_mod);
+        mod.addImport("gooey_build_options", gooeyBuildOptionsModule(b, .{}));
         linkMacosFrameworks(mod);
 
         // Benchmarks measure the shipped configuration, so they import a
@@ -117,6 +128,7 @@ pub fn build(b: *std.Build) void {
             .optimize = .fast,
         });
         bench_gooey_mod.addImport("objc", objc_mod);
+        bench_gooey_mod.addImport("gooey_build_options", gooeyBuildOptionsModule(b, .{}));
         linkMacosFrameworks(bench_gooey_mod);
 
         // =========================================================================
@@ -305,6 +317,7 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run_components_tests.step);
         test_step.dependOn(&run_watcher_tests.step);
         test_step.dependOn(&run_exe_tests.step);
+        addGoldens(b, target, optimize, .{ .objc = objc_mod }, test_step);
         test_step.dependOn(&run_todo_example_tests.step);
         test_step.dependOn(&run_disktree_example_tests.step);
         test_step.dependOn(&run_charts_tests.step);
@@ -623,7 +636,7 @@ pub fn build(b: *std.Build) void {
             "linux-backend",
             "Linux display/renderer: wayland_vulkan (default), wayland_cpu, or fbdev",
         ) orelse .wayland_vulkan;
-        const gooey_options_mod = gooeyBuildOptionsModule(b, linux_backend);
+        const gooey_options_mod = gooeyBuildOptionsModule(b, .{ .linux_backend = linux_backend });
 
         // =========================================================================
         // Shader Compilation (GLSL -> SPIR-V)
@@ -1163,6 +1176,10 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run_components_tests.step);
         test_step.dependOn(&run_watcher_tests.step);
         test_step.dependOn(&run_genui_tests.step);
+        addGoldens(b, target, optimize, .{
+            .linux_backend = linux_backend,
+            .compile_dependency = if (skip_shader_compile) null else compile_shaders_step,
+        }, test_step);
         test_step.dependOn(&run_disktree_example_tests.step);
         test_step.dependOn(&run_compare_tests.step);
         test_step.dependOn(&run_bench_tests.step);
@@ -1232,6 +1249,7 @@ pub fn build(b: *std.Build) void {
     addWasmBuilds(b);
     addLinuxTypecheck(b);
     addWindowsTypecheck(b);
+    addMacosTypecheck(b);
 }
 
 // =============================================================================
@@ -1257,6 +1275,7 @@ fn addWindowsBuilds(
         .optimize = optimize,
     });
     mod.addObjectFile(vulkan_import_library);
+    mod.addImport("gooey_build_options", gooeyBuildOptionsModule(b, .{}));
 
     const exe = b.addExecutable(.{
         .name = "windows-demo",
@@ -1385,6 +1404,7 @@ fn addWindowsTypecheck(b: *std.Build) void {
         .target = windows_target,
         .optimize = .debug,
     });
+    gooey_mod.addImport("gooey_build_options", gooeyBuildOptionsModule(b, .{}));
     const demo = b.addExecutable(.{
         .name = "typecheck-windows-demo",
         .root_module = b.createModule(.{
@@ -1431,6 +1451,39 @@ fn addWindowsTypecheck(b: *std.Build) void {
     step.dependOn(&tests.step);
     step.dependOn(&shared_tests.step);
     step.dependOn(&app.step);
+}
+
+/// `typecheck-macos`: semantically analyze the macOS backend, its tests, and
+/// the goldens from any host. Frameworks are not linked: extern declarations
+/// need no library to type-check, and no binary is emitted.
+fn addMacosTypecheck(b: *std.Build) void {
+    const step = b.step("typecheck-macos", "Semantically analyze the macOS backend from any host");
+    const macos_target = b.resolveTargetQuery(.{ .cpu_arch = .aarch64, .os_tag = .macos });
+    std.debug.assert(macos_target.result.os.tag == .macos);
+
+    const objc_mod = b.createModule(.{
+        .root_source_file = b.path("src/platform/macos/objc/main.zig"),
+        .target = macos_target,
+        .optimize = .debug,
+    });
+    for ([_]TextBackend{ .platform, .synthetic }) |text_backend| {
+        const gooey_mod = b.createModule(.{
+            .root_source_file = b.path("src/root.zig"),
+            .target = macos_target,
+            .optimize = .debug,
+            .link_libc = true,
+        });
+        gooey_mod.addImport("objc", objc_mod);
+        gooey_mod.addImport("gooey_build_options", gooeyBuildOptionsModule(b, .{
+            .text_backend = text_backend,
+        }));
+        const tests = b.addTest(.{
+            .name = b.fmt("typecheck-macos-{t}", .{text_backend}),
+            .root_module = gooey_mod,
+        });
+        // Depend on the compile step only; see `addLinuxTypecheckRoot`.
+        step.dependOn(&tests.step);
+    }
 }
 
 // =============================================================================
@@ -1870,7 +1923,9 @@ fn addLinuxTypecheckRoot(
         .optimize = .debug,
         .link_libc = true,
     });
-    gooey_mod.addImport("gooey_build_options", gooeyBuildOptionsModule(b, root.linux_backend));
+    gooey_mod.addImport("gooey_build_options", gooeyBuildOptionsModule(b, .{
+        .linux_backend = root.linux_backend,
+    }));
 
     const compile = if (root.as_test) b.addTest(.{
         .root_module = gooey_mod,
@@ -1919,6 +1974,7 @@ fn addWasmBuilds(b: *std.Build) void {
         .optimize = .small,
     });
     addWasmShaderImports(b, gooey_module);
+    gooey_module.addImport("gooey_build_options", gooeyBuildOptionsModule(b, .{}));
     const components_module = b.createModule(.{
         .root_source_file = b.path("components/src/root.zig"),
         .target = wasm_target,
@@ -2152,11 +2208,110 @@ fn linkLinuxBackendLibraries(mod: *std.Build.Module, linux_backend: LinuxBackend
     }
 }
 
+/// Platform wiring the goldens' `gooey` module needs on the host target.
+const GoldensWiring = struct {
+    /// The Objective-C runtime module on macOS.
+    objc: ?*std.Build.Module = null,
+    /// The Linux backend whose libraries to link on Linux.
+    linux_backend: ?LinuxBackend = null,
+    /// A step the compile must wait for (Linux shader compilation).
+    compile_dependency: ?*std.Build.Step = null,
+};
+
+/// Goldens (`src/testing/goldens/`): a `gooey` module built with the synthetic
+/// text backend, so paint records match on every host. Adds the golden checks
+/// to `test_step` and a `goldens` step that rewrites the golden files.
+fn addGoldens(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.lang.Optimize,
+    wiring: GoldensWiring,
+    test_step: *std.Build.Step,
+) void {
+    const gooey_mod = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    gooey_mod.addImport("gooey_build_options", gooeyBuildOptionsModule(b, .{
+        .linux_backend = wiring.linux_backend orelse .wayland_vulkan,
+        .text_backend = .synthetic,
+    }));
+    if (wiring.objc) |objc_mod| {
+        gooey_mod.addImport("objc", objc_mod);
+        linkMacosFrameworks(gooey_mod);
+    }
+    if (wiring.linux_backend) |linux_backend| linkLinuxGooeyLibraries(gooey_mod, linux_backend);
+
+    const components_mod = b.createModule(.{
+        .root_source_file = b.path("components/src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "gooey", .module = gooey_mod }},
+    });
+    const example_imports: []const std.Build.Module.Import = &.{
+        .{ .name = "gooey", .module = gooey_mod },
+        .{ .name = "gooey-components", .module = components_mod },
+    };
+    const counter_mod = b.createModule(.{
+        .root_source_file = b.path("src/examples/counter.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = example_imports,
+    });
+    const todo_mod = b.createModule(.{
+        .root_source_file = b.path("src/examples/todo.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = example_imports,
+    });
+    const goldens_imports: []const std.Build.Module.Import = &.{
+        .{ .name = "gooey", .module = gooey_mod },
+        .{ .name = "counter_example", .module = counter_mod },
+        .{ .name = "todo_example", .module = todo_mod },
+    };
+
+    const tests = b.addTest(.{
+        .name = "goldens-test",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/testing/goldens/goldens_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = goldens_imports,
+        }),
+    });
+    const capture = b.addExecutable(.{
+        .name = "goldens-capture",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/testing/goldens/capture.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = goldens_imports,
+        }),
+    });
+    if (wiring.compile_dependency) |dependency| {
+        tests.step.dependOn(dependency);
+        capture.step.dependOn(dependency);
+    }
+    test_step.dependOn(&b.addRunArtifact(tests).step);
+
+    const run_capture = b.addRunArtifact(capture);
+    run_capture.setCwd(b.path("."));
+    b.step("goldens", "Rewrite the golden files in src/testing/goldens").dependOn(&run_capture.step);
+}
+
+/// Build-time choices mirrored into `gooey_build_options`. Defaults are the
+/// shipped configuration; `linux_backend` is read only on Linux targets.
+const GooeyBuildOptions = struct {
+    linux_backend: LinuxBackend = .wayland_vulkan,
+    text_backend: TextBackend = .platform,
+};
+
 /// The `gooey_build_options` module: build-time choices the source tree reads
-/// at comptime. Every module rooted at `src/root.zig` for a Linux target must
-/// import it.
-fn gooeyBuildOptionsModule(b: *std.Build, linux_backend: LinuxBackend) *std.Build.Module {
+/// at comptime. Every module rooted at `src/root.zig` must import it.
+fn gooeyBuildOptionsModule(b: *std.Build, choices: GooeyBuildOptions) *std.Build.Module {
     const options = b.addOptions();
-    options.addOption(LinuxBackend, "linux_backend", linux_backend);
+    options.addOption(LinuxBackend, "linux_backend", choices.linux_backend);
+    options.addOption(TextBackend, "text_backend", choices.text_backend);
     return options.createModule();
 }

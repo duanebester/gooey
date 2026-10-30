@@ -119,12 +119,18 @@ else switch (builtin.os.tag) {
 /// Where atlas pixels live for the selected renderer. The CPU renderer samples
 /// its atlases in place, so they are its textures; GPU renderers keep atlas
 /// pixels only in their textures and receive them through `AtlasUploads`.
-pub const atlas_storage: @import("../text/atlas_uploads.zig").AtlasStorage = if (is_wasm)
+/// Synthetic-text builds draw with the `NullRenderer`, which reads the glyph
+/// atlas in place like the CPU renderer, so they keep CPU pixels too.
+pub const atlas_storage: @import("../text/atlas_uploads.zig").AtlasStorage = if (text_is_synthetic)
+    .cpu_texture
+else if (is_wasm)
     .gpu_upload
 else switch (builtin.os.tag) {
     .linux => if (@import("linux_backend.zig").uses_cpu_renderer) .cpu_texture else .gpu_upload,
     else => .gpu_upload,
 };
+
+const text_is_synthetic = @import("../text/mod.zig").is_synthetic;
 
 /// Platform type for the current target (compile-time selected).
 pub const Platform = backend.Platform;
