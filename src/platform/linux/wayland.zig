@@ -593,6 +593,26 @@ pub extern "wayland-client" fn wl_display_roundtrip(display: *Display) c_int;
 pub extern "wayland-client" fn wl_display_flush(display: *Display) c_int;
 pub extern "wayland-client" fn wl_display_get_fd(display: *Display) c_int;
 
+// Multi-threaded reading (a second thread with its own event queue). Every
+// thread that waits on the display fd must prepare, then read or cancel.
+pub const EventQueue = opaque {};
+pub extern "wayland-client" fn wl_display_create_queue(display: *Display) ?*EventQueue;
+pub extern "wayland-client" fn wl_event_queue_destroy(queue: *EventQueue) void;
+pub extern "wayland-client" fn wl_display_prepare_read(display: *Display) c_int;
+pub extern "wayland-client" fn wl_display_prepare_read_queue(
+    display: *Display,
+    queue: *EventQueue,
+) c_int;
+pub extern "wayland-client" fn wl_display_read_events(display: *Display) c_int;
+pub extern "wayland-client" fn wl_display_cancel_read(display: *Display) void;
+pub extern "wayland-client" fn wl_display_dispatch_queue_pending(
+    display: *Display,
+    queue: *EventQueue,
+) c_int;
+pub extern "wayland-client" fn wl_proxy_create_wrapper(proxy: *anyopaque) ?*anyopaque;
+pub extern "wayland-client" fn wl_proxy_wrapper_destroy(wrapper: *anyopaque) void;
+pub extern "wayland-client" fn wl_proxy_set_queue(proxy: *anyopaque, queue: ?*EventQueue) void;
+
 // wl_display_get_registry is an inline function in wayland-client, we implement it here
 pub fn wl_display_get_registry(display: *Display) ?*Registry {
     // wl_display::get_registry is opcode 1

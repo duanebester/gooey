@@ -107,14 +107,15 @@ pub fn App(
         }
 
         /// The generated entry point (contract §7): `pub const main =
-        /// App.main;` in the root file. Milestone 1 runs on macOS; Linux,
-        /// Windows, and the web move onto the core in phase 4.
+        /// App.main;` in the root file. Runs on macOS and Linux (Wayland);
+        /// Windows and the web move onto the core later in phase 4.
         pub fn main(init: std.process.Init) !void {
-            if (comptime builtin.os.tag != .macos) {
-                @compileError("gooey.App.main runs on macOS in milestone 1; other " ++
-                    "platforms move onto the core in phase 4");
-            }
-            const host = @import("../platform/macos/core_host.zig");
+            const host = switch (comptime builtin.os.tag) {
+                .macos => @import("../platform/macos/core_host.zig"),
+                .linux => @import("../platform/linux/core_host.zig"),
+                else => @compileError("gooey.App.main runs on macOS and Linux; Windows " ++
+                    "and the web move onto the core later in phase 4"),
+            };
             const self = try init.gpa.create(Self);
             defer init.gpa.destroy(self);
             try host.run(Self, self, init.gpa, init.io);

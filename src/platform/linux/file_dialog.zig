@@ -138,12 +138,8 @@ fn promptForPathsInternal(
     var reply = try conn.callMethod(&msg, dbus.TIMEOUT_USE_DEFAULT);
     defer reply.deinit();
 
-    // Wait for Response signal
-    const uris = try waitForResponse(&conn, handle_path) orelse return null;
-    defer allocator.free(uris);
-
-    // Convert URIs to paths
-    return urisToPathResult(allocator, uris);
+    // Wait for the Response signal; its paths come from `allocator`.
+    return waitForResponse(allocator, &conn, handle_path);
 }
 
 // =============================================================================
@@ -245,25 +241,27 @@ fn promptForNewPathInternal(
     var reply = try conn.callMethod(&msg, dbus.TIMEOUT_USE_DEFAULT);
     defer reply.deinit();
 
-    // Wait for Response signal
-    const uris = try waitForResponse(&conn, handle_path) orelse return null;
-    defer allocator.free(uris);
-
-    // Convert first URI to path
-    if (uris.len == 0) return null;
-
-    return uriToPath(allocator, uris[0]);
+    // Wait for the Response signal and keep the first path. A save dialog
+    // returns one URI; any others and the array are freed.
+    const result = try waitForResponse(allocator, &conn, handle_path) orelse return null;
+    std.debug.assert(result.paths.len > 0);
+    defer allocator.free(result.paths);
+    for (result.paths[1..]) |path| allocator.free(path);
+    return result.paths[0];
 }
 
 // =============================================================================
 // Response Handling
 // =============================================================================
 
-/// Wait for the portal Response signal and extract URIs
+/// Wait for the portal Response signal and convert its URIs to paths. The
+/// strings belong to the signal message, so they are converted into
+/// `allocator` before the message is freed; nothing else is allocated.
 fn waitForResponse(
+    allocator: std.mem.Allocator,
     conn: *dbus.Connection,
     handle_path: [:0]const u8,
-) !?[][]const u8 {
+) !?PathPromptResult {
     var iterations: u32 = 0;
 
     while (iterations < MAX_SIGNAL_WAIT_ITERATIONS) : (iterations += 1) {
@@ -324,33 +322,7 @@ fn waitForResponse(
 
                     var variant_iter = entry_iter.recurse();
                     if (variant_iter.getArgType() != dbus.TYPE_ARRAY) return error.InvalidResponse;
-
-                    // Count URIs first
-                    var count_iter = variant_iter.recurse();
-                    var count: usize = 0;
-                    while (count_iter.getArgType() == dbus.TYPE_STRING) {
-                        count += 1;
-                        if (!count_iter.next()) break;
-                    }
-
-                    if (count == 0) return null;
-                    if (count > MAX_URIS) count = MAX_URIS;
-
-                    // Allocate and fill URI array
-                    var uris = std.heap.page_allocator.alloc([]const u8, count) catch return error.OutOfMemory;
-                    errdefer std.heap.page_allocator.free(uris);
-
-                    var array_iter = variant_iter.recurse();
-                    var i: usize = 0;
-                    while (array_iter.getArgType() == dbus.TYPE_STRING and i < count) {
-                        if (array_iter.getString()) |uri| {
-                            uris[i] = std.heap.page_allocator.dupe(u8, uri) catch return error.OutOfMemory;
-                            i += 1;
-                        }
-                        if (!array_iter.next()) break;
-                    }
-
-                    return uris[0..i];
+                    return urisToPathResult(allocator, &variant_iter);
                 }
 
                 _ = dict_iter.next();
@@ -405,29 +377,35 @@ fn uriToPath(allocator: std.mem.Allocator, uri: []const u8) ?[]const u8 {
     return result;
 }
 
-/// Convert array of URIs to PathPromptResult
-fn urisToPathResult(allocator: std.mem.Allocator, uris: [][]const u8) ?PathPromptResult {
-    if (uris.len == 0) return null;
-
-    var paths = allocator.alloc([]const u8, uris.len) catch return null;
-    var valid_count: usize = 0;
-
-    for (uris) |uri| {
-        if (uriToPath(allocator, uri)) |path| {
-            paths[valid_count] = path;
-            valid_count += 1;
-        }
+/// Convert the response's `as` URI array to paths in `allocator`, keeping
+/// at most `MAX_URIS`. Returns null when there are none or one fails to
+/// convert (out of scratch).
+fn urisToPathResult(allocator: std.mem.Allocator, array: *dbus.MessageIter) ?PathPromptResult {
+    std.debug.assert(array.getArgType() == dbus.TYPE_ARRAY);
+    var count_iter = array.recurse();
+    var count: usize = 0;
+    while (count_iter.getArgType() == dbus.TYPE_STRING and count < MAX_URIS) {
+        count += 1;
+        if (!count_iter.next()) break;
     }
+    if (count == 0) return null;
 
-    if (valid_count == 0) {
-        allocator.free(paths);
-        return null;
+    // Every URI must convert: the result owns exactly `count` paths, so
+    // `PathPromptResult.deinit` frees the array at the size it was allocated.
+    const paths = allocator.alloc([]const u8, count) catch return null;
+    var converted: usize = 0;
+    var uri_iter = array.recurse();
+    while (converted < count) : (converted += 1) {
+        const path = if (uri_iter.getString()) |uri| uriToPath(allocator, uri) else null;
+        paths[converted] = path orelse {
+            for (paths[0..converted]) |done| allocator.free(done);
+            allocator.free(paths);
+            return null;
+        };
+        _ = uri_iter.next();
     }
-
-    return .{
-        .paths = paths[0..valid_count],
-        .allocator = allocator,
-    };
+    std.debug.assert(converted == count);
+    return .{ .paths = paths, .allocator = allocator };
 }
 
 // =============================================================================
