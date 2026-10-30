@@ -354,23 +354,29 @@ fn getCharactersIgnoringModifiers(event: objc.Object) ?[]const u8 {
 // NSTextInputClient Protocol Implementation
 // =============================================================================
 
+// Ranges: the view presents the marked text as a document that starts at 0,
+// counted in UTF-16 units as the protocol requires. `markedRange`,
+// `selectedRange`, and `attributedSubstringForProposedRange:` must agree, or
+// an input method that reads back the composition (Kotoeri converting on
+// Space) sees a document that contradicts what it just set.
+
 fn hasMarkedText(self: objc.c.id, _: objc.c.SEL) callconv(.c) bool {
     const window = getWindow(self) orelse return false;
-    return window.marked_text.len > 0;
+    return window.marked_length_utf16 > 0;
 }
 
 fn markedRange(self: objc.c.id, _: objc.c.SEL) callconv(.c) NSRange {
     const window = getWindow(self) orelse return NSRange.invalid();
-    if (window.marked_text.len > 0) {
-        return .{ .location = 0, .length = window.marked_text.len };
-    }
-    return NSRange.invalid();
+    if (window.marked_length_utf16 == 0) return NSRange.invalid();
+    return .{ .location = 0, .length = window.marked_length_utf16 };
 }
 
-fn selectedRange(_: objc.c.id, _: objc.c.SEL) callconv(.c) NSRange {
-    // For now, return an empty selection at position 0
-    // A real implementation would query the focused text element
-    return .{ .location = 0, .length = 0 };
+fn selectedRange(self: objc.c.id, _: objc.c.SEL) callconv(.c) NSRange {
+    const window = getWindow(self) orelse return .{ .location = 0, .length = 0 };
+    const selection = window.marked_selection;
+    assert(selection.location <= window.marked_length_utf16);
+    assert(selection.length <= window.marked_length_utf16 - selection.location);
+    return selection;
 }
 
 fn performKeyEquivalent(self: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) bool {
@@ -405,16 +411,33 @@ fn setMarkedText(
     self: objc.c.id,
     _: objc.c.SEL,
     text_id: objc.c.id,
-    _: NSRange,
+    selected: NSRange,
     _: NSRange,
 ) callconv(.c) void {
     const window = getWindow(self) orelse return;
     const str = extractString(text_id) orelse "";
+    // NSString and NSAttributedString both answer `length` in UTF-16 units.
+    const length_utf16 = objc.Object.fromId(text_id).msgSend(c_ulong, "length", .{});
 
-    std.debug.print("setMarkedText: \"{s}\"\n", .{str});
+    std.debug.print("setMarkedText: \"{s}\" selected {d}+{d} of {d}\n", .{
+        str,
+        selected.location,
+        selected.length,
+        length_utf16,
+    });
 
     window.setMarkedText(str);
+    window.marked_length_utf16 = length_utf16;
+    window.marked_selection = clampRange(selected, length_utf16);
     _ = window.handleInput(.{ .composition = .{ .text = window.marked_text } });
+}
+
+/// `range` limited to `0..length`; an input method may pass NSNotFound.
+fn clampRange(range: NSRange, length: c_ulong) NSRange {
+    const location = @min(range.location, length);
+    const result = NSRange{ .location = location, .length = @min(range.length, length - location) };
+    assert(result.location + result.length <= length);
+    return result;
 }
 
 fn unmarkText(self: objc.c.id, _: objc.c.SEL) callconv(.c) void {
@@ -433,14 +456,37 @@ fn validAttributesForMarkedText(_: objc.c.id, _: objc.c.SEL) callconv(.c) objc.c
     return NSArray.msgSend(objc.c.id, "array", .{});
 }
 
+/// The part of the marked text in `range`, or nil outside it. The view
+/// exposes only the composition, so that is all an input method can read.
 fn attributedSubstring(
-    _: objc.c.id,
+    self: objc.c.id,
     _: objc.c.SEL,
-    _: NSRange, // range
-    _: *NSRange, // actual_range
+    range: NSRange,
+    actual_range: ?*NSRange,
 ) callconv(.c) objc.c.id {
-    // Return nil - we don't support this for now
-    return null;
+    const window = getWindow(self) orelse return null;
+    const length = window.marked_length_utf16;
+    if (length == 0) return null;
+    if (range.location >= length) return null;
+    const clamped = clampRange(range, length);
+    const NSString = objc.getClass("NSString") orelse return null;
+    const NSAttributedString = objc.getClass("NSAttributedString") orelse return null;
+    var bytes: [257]u8 = undefined;
+    @memcpy(bytes[0..window.marked_text.len], window.marked_text);
+    bytes[window.marked_text.len] = 0;
+    const string = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{
+        @as([*:0]const u8, @ptrCast(&bytes)),
+    });
+    if (string.value == null) return null;
+    // A composition longer than the window's buffer was cut; never read past
+    // what the buffer holds.
+    const stored = string.msgSend(c_ulong, "length", .{});
+    if (clamped.location + clamped.length > stored) return null;
+    const attributed = NSAttributedString.msgSend(objc.Object, "alloc", .{})
+        .msgSend(objc.Object, "initWithString:", .{string.value});
+    defer attributed.release();
+    if (actual_range) |actual| actual.* = clamped;
+    return attributed.msgSend(objc.c.id, "attributedSubstringFromRange:", .{clamped});
 }
 
 fn insertText(

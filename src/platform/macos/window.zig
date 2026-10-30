@@ -148,6 +148,10 @@ pub const Window = struct {
     // IME (Input Method Editor) state
     marked_text: []const u8 = "",
     marked_text_buffer: [256]u8 = undefined,
+    /// The marked text's length and the IME's selection within it, in UTF-16
+    /// units as NSTextInputClient counts them; `marked_text` is UTF-8.
+    marked_length_utf16: c_ulong = 0,
+    marked_selection: appkit.NSRange = .{ .location = 0, .length = 0 },
     inserted_text: []const u8 = "",
     inserted_text_buffer: [256]u8 = undefined,
     pending_key_event: ?objc.c.id = null,
@@ -619,6 +623,8 @@ pub const Window = struct {
     /// Clear the marked text (composition ended or cancelled)
     pub fn clearMarkedText(self: *Self) void {
         self.marked_text = "";
+        self.marked_length_utf16 = 0;
+        self.marked_selection = .{ .location = 0, .length = 0 };
     }
 
     /// Set the inserted text for IME (copies to window-owned buffer)
