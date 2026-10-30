@@ -113,6 +113,15 @@ pub const MIN_ATLAS_SIZE: u32 = 64;
 /// Largest SVG icon side, in device pixels, any atlas budget may rasterize.
 pub const MAX_SVG_ICON_SIZE: u32 = 256;
 
+/// Most bytes of path data (raw `d` data or shape elements) any atlas budget
+/// lets one SVG icon carry. Lucide's longest icon is 808 B.
+pub const MAX_SVG_PATH_BYTES: u32 = 64 * 1024;
+
+/// Most vertices one SVG icon may flatten to under any atlas budget. Curves
+/// flatten to half a device pixel, so the count grows with the icon's side:
+/// Lucide's heaviest, `loader_pinwheel`, is 2,140 at 64 px and 8,530 at 256.
+pub const MAX_SVG_PATH_VERTEX_COUNT: u32 = 32 * 1024;
+
 /// Largest glyph bitmap side, in device pixels (the glyph render buffer).
 pub const MAX_GLYPH_SIZE: u32 = 256;
 
@@ -646,17 +655,27 @@ pub const AtlasLimits = struct {
     image_size: u32,
     /// Largest SVG icon side in device pixels; sizes the SVG raster buffer.
     svg_icon_size_max: u32,
+    /// Most bytes of path data one SVG icon may carry. A longer path fails
+    /// fast naming this field; it also sizes the SVG raster scratch.
+    svg_path_bytes_max: u32,
+    /// Most vertices one SVG icon may flatten to at its device size, which
+    /// sizes the software rasterizer's scratch (Linux and Windows). An icon
+    /// that needs more fails fast naming this field.
+    svg_path_vertex_count_max: u32,
 
     /// Counter-class apps: counter's glyphs hold 144 of 512 text-atlas rows at
     /// 1x and 280 at 2x (measured with shelf packing), and no nano example draws
     /// icons or images. Textures: 0.25 + 0.25 + 0.25 MiB.
-    /// A full nano atlas set uploads within 3 frames.
+    /// A full nano atlas set uploads within 3 frames. SVG paths allow about
+    /// twice Lucide's heaviest icon at each profile's largest icon side.
     pub const nano: AtlasLimits = .{
         .upload_bytes_frame_max = 256 * 1024,
         .text_size = 512,
         .svg_size = 256,
         .image_size = 256,
         .svg_icon_size_max = 64,
+        .svg_path_bytes_max = 2 * 1024,
+        .svg_path_vertex_count_max = 4 * 1024,
     };
 
     /// Forms and lists: todo holds 48 of 1024 text rows at 1x and 120 at 2x.
@@ -667,6 +686,8 @@ pub const AtlasLimits = struct {
         .svg_size = 512,
         .image_size = 512,
         .svg_icon_size_max = 128,
+        .svg_path_bytes_max = 4 * 1024,
+        .svg_path_vertex_count_max = 8 * 1024,
     };
 
     /// The glyph atlas is 2048² for Retina display text: a frame of 70 distinct
@@ -680,6 +701,8 @@ pub const AtlasLimits = struct {
         .svg_size = 1_024,
         .image_size = 1_024,
         .svg_icon_size_max = 256,
+        .svg_path_bytes_max = 8 * 1024,
+        .svg_path_vertex_count_max = 16 * 1024,
     };
 
     /// lucide-demo's visible icons hold 520 of 2048 SVG rows at 2x, and the
@@ -692,6 +715,8 @@ pub const AtlasLimits = struct {
         .svg_size = 2_048,
         .image_size = 2_048,
         .svg_icon_size_max = 256,
+        .svg_path_bytes_max = 16 * 1024,
+        .svg_path_vertex_count_max = 16 * 1024,
     };
 
     /// The framework ceilings themselves. Textures: 16 + 64 + 64 MiB.
@@ -701,6 +726,8 @@ pub const AtlasLimits = struct {
         .svg_size = MAX_ATLAS_SIZE,
         .image_size = MAX_ATLAS_SIZE,
         .svg_icon_size_max = MAX_SVG_ICON_SIZE,
+        .svg_path_bytes_max = MAX_SVG_PATH_BYTES,
+        .svg_path_vertex_count_max = MAX_SVG_PATH_VERTEX_COUNT,
     };
 
     /// First violated rule, or null. Every field must be in `1..=ceiling`;

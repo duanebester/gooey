@@ -152,6 +152,10 @@ pub const AppResources = struct {
         try svg_atlas.initInPlace(allocator, scale, io, .{
             .size = atlas_limits.svg_size,
             .icon_size_max = atlas_limits.svg_icon_size_max,
+            .raster_budget = .{
+                .path_bytes_max = atlas_limits.svg_path_bytes_max,
+                .vertex_count_max = atlas_limits.svg_path_vertex_count_max,
+            },
             .uploads = atlas_uploads,
         });
         errdefer svg_atlas.deinit();

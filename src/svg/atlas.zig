@@ -85,6 +85,9 @@ pub const SvgAtlas = struct {
     /// tables, and stroke buffer. Reserved at init and reset before every
     /// rasterization, so a cache miss never reaches the heap (CLAUDE.md §2).
     raster_scratch: []u8,
+    /// `AtlasLimits.svg_path_bytes_max` and `svg_path_vertex_count_max`,
+    /// which size `raster_scratch`; an icon past either fails fast.
+    raster_budget: rasterizer.RasterBudget,
     /// Current scale factor
     scale_factor: f64,
     /// IO instance for mutex operations. Stored on the struct because lock
@@ -125,29 +128,29 @@ pub const SvgAtlas = struct {
     /// of stalling a single frame for 8–32ms of pure rasterization.
     const MAX_RASTERIZATIONS_PER_FRAME: u32 = 4;
 
-    /// Scratch for one rasterization: the stroke buffer is one RGBA icon, and
-    /// path geometry grows with the side because curves flatten to a tolerance
-    /// of half a device pixel. Measured as the `RasterScratch` peak over all
-    /// 1,669 Lucide icons with fill and stroke, the heaviest (`loader_pinwheel`)
-    /// needs 19,008 B at 24 px, 118,288 B at 96 px, and 445,868 B at 256 px:
-    /// about 700 B per pixel of side plus 10 KiB beyond the stroke buffer.
-    /// These constants allow roughly three times that geometry, 800 KiB at
-    /// the 256 px ceiling.
-    const raster_scratch_bytes_per_side: u32 = 2_048;
-    const raster_scratch_bytes_base: u32 = 32 * 1024;
-
-    /// Scratch bytes reserved for icons of at most `icon_size_max` pixels.
-    pub fn rasterScratchBytes(icon_size_max: u32) u32 {
+    /// Scratch bytes reserved for icons of at most `icon_size_max` pixels
+    /// within `budget`: exactly what the rasterizer reserves for one icon, so
+    /// an icon within the budget never exhausts it. The software rasterizer
+    /// (Linux, Windows) needs the parsed path, the flattened vertices, edge
+    /// tables, and a stroke buffer; CoreGraphics needs only the parsed path
+    /// and the stroke buffer; Canvas2D needs none.
+    pub fn rasterScratchBytes(budget: rasterizer.RasterBudget, icon_size_max: u32) u32 {
         std.debug.assert(icon_size_max > 0);
         std.debug.assert(icon_size_max <= limits.MAX_SVG_ICON_SIZE);
-        const stroke_buffer_bytes = icon_size_max * icon_size_max * 4;
-        const geometry_bytes = icon_size_max * raster_scratch_bytes_per_side;
-        return stroke_buffer_bytes + geometry_bytes + raster_scratch_bytes_base;
+        std.debug.assert(budget.path_bytes_max <= limits.MAX_SVG_PATH_BYTES);
+        std.debug.assert(budget.vertex_count_max <= limits.MAX_SVG_PATH_VERTEX_COUNT);
+        return rasterizer.scratchBytes(budget, icon_size_max);
     }
 
     comptime {
-        // The ceiling's scratch must stay small next to the atlas textures.
-        std.debug.assert(rasterScratchBytes(limits.MAX_SVG_ICON_SIZE) <= 1024 * 1024);
+        // The ceiling's scratch must stay small next to the atlas textures:
+        // 2.2 MiB against 144 MiB of ceiling textures.
+        const ceiling = limits.AtlasLimits.ceiling;
+        const budget = rasterizer.RasterBudget{
+            .path_bytes_max = ceiling.svg_path_bytes_max,
+            .vertex_count_max = ceiling.svg_path_vertex_count_max,
+        };
+        std.debug.assert(rasterScratchBytes(budget, ceiling.svg_icon_size_max) <= 4 * 1024 * 1024);
     }
 
     pub const Options = struct {
@@ -155,6 +158,8 @@ pub const SvgAtlas = struct {
         size: u32,
         /// `AtlasLimits.svg_icon_size_max`.
         icon_size_max: u32,
+        /// `AtlasLimits.svg_path_bytes_max` and `svg_path_vertex_count_max`.
+        raster_budget: rasterizer.RasterBudget,
         uploads: *AtlasUploads,
     };
 
@@ -172,7 +177,8 @@ pub const SvgAtlas = struct {
         self.render_buffer = try allocator.alloc(u8, buffer_size);
         errdefer allocator.free(self.render_buffer);
 
-        self.raster_scratch = try allocator.alloc(u8, rasterScratchBytes(options.icon_size_max));
+        const scratch_bytes = rasterScratchBytes(options.raster_budget, options.icon_size_max);
+        self.raster_scratch = try allocator.alloc(u8, scratch_bytes);
         errdefer allocator.free(self.raster_scratch);
 
         try self.atlas.init(
@@ -187,6 +193,7 @@ pub const SvgAtlas = struct {
 
         self.allocator = allocator;
         self.render_buffer_size = options.icon_size_max;
+        self.raster_budget = options.raster_budget;
         self.scale_factor = scale_factor;
         self.io = io;
         self.mutex = .init;
@@ -268,6 +275,7 @@ pub const SvgAtlas = struct {
 
         // Rasterize at most `svg_icon_size_max` device pixels.
         if (key.device_size > self.render_buffer_size) return error.IconTooLarge;
+        if (path_data.len > self.raster_budget.path_bytes_max) self.failPathBytes(path_data.len);
 
         const rasterized = try self.rasterizeIntoRenderBuffer(.{
             .path_data = path_data,
@@ -316,16 +324,18 @@ pub const SvgAtlas = struct {
     };
 
     /// Rasterize one icon into `render_buffer`, drawing every rasterizer
-    /// allocation from `raster_scratch`. Exhausting the scratch panics: it is
-    /// the only allocator the rasterizer sees, so running out is a
-    /// capacity-planning error, not a transient one.
+    /// allocation from `raster_scratch`. An icon that flattens to more than
+    /// `svg_path_vertex_count_max` vertices is a capacity-planning error and
+    /// fails fast naming the limit. Exhausting the scratch itself is a
+    /// programmer error: it holds exactly what the rasterizer reserves.
     fn rasterizeIntoRenderBuffer(
         self: *Self,
         options: RasterizeIntoRenderBufferOptions,
     ) rasterizer.RasterizeError!rasterizer.RasterizedSvg {
         std.debug.assert(options.device_size > 0);
         std.debug.assert(options.device_size <= self.render_buffer_size);
-        std.debug.assert(options.viewbox > 0);
+        std.debug.assert(options.path_data.len <= self.raster_budget.path_bytes_max);
+        if (!(options.viewbox > 0)) return error.EmptyPath;
 
         @memset(self.render_buffer, 0);
         const stroke_enabled = options.stroke_width != null and options.stroke_width.? > 0;
@@ -343,10 +353,15 @@ pub const SvgAtlas = struct {
             self.render_buffer,
             options.has_fill,
             .{ .enabled = stroke_enabled, .width = stroke_width_device },
+            self.raster_budget,
         ) catch |err| switch (err) {
+            error.PathTooComplex => {
+                self.failVertexCount(options.path_data.len, options.device_size);
+            },
             error.OutOfMemory => std.debug.panic(
                 "SvgAtlas pool 'raster_scratch' exhausted: capacity {d} B, peak {d} B, " ++
-                    "requested {d} B, path {d} B at {d} px, frame {d}.",
+                    "requested {d} B, path {d} B at {d} px, frame {d}. The scratch is sized " ++
+                    "to the rasterizer's reservations, so this is a sizing bug.",
                 .{
                     self.raster_scratch.len,
                     scratch.used_bytes_max,
@@ -362,6 +377,33 @@ pub const SvgAtlas = struct {
         std.debug.assert(rasterized.width <= options.device_size);
         std.debug.assert(rasterized.height <= options.device_size);
         return rasterized;
+    }
+
+    /// Fail fast on an icon path longer than `svg_path_bytes_max`.
+    fn failPathBytes(self: *const Self, path_bytes: usize) noreturn {
+        std.debug.assert(path_bytes > self.raster_budget.path_bytes_max);
+        std.debug.panic(
+            "SvgAtlas: an icon path of {d} B exceeds ResourceLimits.atlas.svg_path_bytes_max " ++
+                "= {d}; raise it in the app's ResourceLimits (frame {d}).",
+            .{ path_bytes, self.raster_budget.path_bytes_max, self.atlas.uploads.frameCurrent() },
+        );
+    }
+
+    /// Fail fast on an icon that flattens past `svg_path_vertex_count_max`.
+    fn failVertexCount(self: *const Self, path_bytes: usize, device_size: u16) noreturn {
+        std.debug.assert(path_bytes <= self.raster_budget.path_bytes_max);
+        std.debug.assert(device_size <= self.render_buffer_size);
+        std.debug.panic(
+            "SvgAtlas: an icon path of {d} B flattens to more than " ++
+                "ResourceLimits.atlas.svg_path_vertex_count_max = {d} vertices at {d} px; " ++
+                "raise it in the app's ResourceLimits (frame {d}).",
+            .{
+                path_bytes,
+                self.raster_budget.vertex_count_max,
+                device_size,
+                self.atlas.uploads.frameCurrent(),
+            },
+        );
     }
 
     /// Ensure `key` can be stored without growing the map: drop entries whose
@@ -434,9 +476,11 @@ const RasterScratch = struct {
         .free = free,
     };
 
+    /// `buffer` may be empty: Canvas2D rasterizes in the browser and
+    /// reserves no scratch.
     fn init(buffer: []u8) RasterScratch {
-        std.debug.assert(buffer.len > 0);
         std.debug.assert(buffer.len <= std.math.maxInt(u32));
+        if (buffer.len > 0) std.debug.assert(@intFromPtr(buffer.ptr) != 0);
         return .{ .fixed = .init(buffer), .used_bytes_max = 0, .refused_bytes = 0 };
     }
 
@@ -538,19 +582,29 @@ test "RasterScratch keeps its peak across frees and reports the refused request"
     try testing.expectEqual(@as(u32, 64), scratch.used_bytes_max);
 }
 
+/// `loader_pinwheel`, the Lucide icon that flattens to the most vertices.
+const test_loader_pinwheel = "<path d=\"M22 12a1 1 0 0 1-10 0 1 1 0 0 0-10 0\"/>" ++
+    "<path d=\"M7 20.7a1 1 0 1 1 5-8.7 1 1 0 1 0 5-8.6\"/>" ++
+    "<path d=\"M7 3.3a1 1 0 1 1 5 8.6 1 1 0 1 0 5 8.6\"/>" ++
+    "<circle cx=\"12\" cy=\"12\" r=\"10\"/>";
+
+fn testRasterBudget(atlas_limits: limits.AtlasLimits) rasterizer.RasterBudget {
+    return .{
+        .path_bytes_max = atlas_limits.svg_path_bytes_max,
+        .vertex_count_max = atlas_limits.svg_path_vertex_count_max,
+    };
+}
+
 test "SvgAtlas rasterizes the heaviest Lucide icon at the size ceiling within its scratch" {
-    // `loader_pinwheel` needs the most scratch of every Lucide icon. Filling
-    // and stroking it at `MAX_SVG_ICON_SIZE` must keep the scratch's peak
-    // within two thirds of the reservation, and must produce coverage in both
-    // channels. Only the software rasterizer draws from the scratch.
+    // Filling and stroking `loader_pinwheel` at `MAX_SVG_ICON_SIZE` within
+    // the standard profile's budget must fit the scratch that budget sizes,
+    // and must produce coverage in both channels. Only the software
+    // rasterizer flattens from the scratch.
     if (!raster_backend_software) return error.SkipZigTest;
     const testing = std.testing;
-    const loader_pinwheel = "<path d=\"M22 12a1 1 0 0 1-10 0 1 1 0 0 0-10 0\"/>" ++
-        "<path d=\"M7 20.7a1 1 0 1 1 5-8.7 1 1 0 1 0 5-8.6\"/>" ++
-        "<path d=\"M7 3.3a1 1 0 1 1 5 8.6 1 1 0 1 0 5 8.6\"/>" ++
-        "<circle cx=\"12\" cy=\"12\" r=\"10\"/>";
     const side = limits.MAX_SVG_ICON_SIZE;
-    const scratch = try testing.allocator.alloc(u8, SvgAtlas.rasterScratchBytes(side));
+    const budget = testRasterBudget(limits.AtlasLimits.standard);
+    const scratch = try testing.allocator.alloc(u8, SvgAtlas.rasterScratchBytes(budget, side));
     defer testing.allocator.free(scratch);
 
     const pixels = try testing.allocator.alloc(u8, side * side * 4);
@@ -559,16 +613,17 @@ test "SvgAtlas rasterizes the heaviest Lucide icon at the size ceiling within it
     var arena = RasterScratch.init(scratch);
     const rasterized = try rasterizer.rasterizeWithOptions(
         arena.allocator(),
-        loader_pinwheel,
+        test_loader_pinwheel,
         24,
         side,
         pixels,
         true,
         .{ .enabled = true, .width = @as(f32, @floatFromInt(side)) / 12.0 },
+        budget,
     );
     try testing.expectEqual(side, rasterized.width);
-
-    try testing.expect(@as(u64, arena.used_bytes_max) * 3 <= @as(u64, scratch.len) * 2);
+    try testing.expect(arena.used_bytes_max <= scratch.len);
+    try testing.expectEqual(@as(u64, 0), arena.refused_bytes);
 
     var fill_max: u8 = 0;
     var stroke_max: u8 = 0;
@@ -579,6 +634,36 @@ test "SvgAtlas rasterizes the heaviest Lucide icon at the size ceiling within it
     }
     try testing.expectEqual(@as(u8, 255), fill_max);
     try testing.expectEqual(@as(u8, 255), stroke_max);
+}
+
+test "an icon past its vertex budget is refused before it exhausts the scratch" {
+    // `loader_pinwheel` flattens to 8,530 vertices at 256 px. With a budget
+    // of 2,048 the software rasterizer must report PathTooComplex, the error
+    // `SvgAtlas` turns into a panic naming `svg_path_vertex_count_max`, and
+    // must not have been refused any scratch on the way.
+    if (!raster_backend_software) return error.SkipZigTest;
+    const testing = std.testing;
+    const side = limits.MAX_SVG_ICON_SIZE;
+    const budget = rasterizer.RasterBudget{ .path_bytes_max = 1024, .vertex_count_max = 2048 };
+    const scratch = try testing.allocator.alloc(u8, SvgAtlas.rasterScratchBytes(budget, side));
+    defer testing.allocator.free(scratch);
+
+    const pixels = try testing.allocator.alloc(u8, side * side * 4);
+    defer testing.allocator.free(pixels);
+
+    var arena = RasterScratch.init(scratch);
+    try testing.expectError(error.PathTooComplex, rasterizer.rasterizeWithOptions(
+        arena.allocator(),
+        test_loader_pinwheel,
+        24,
+        side,
+        pixels,
+        true,
+        .{ .enabled = true, .width = 2 },
+        budget,
+    ));
+    try testing.expectEqual(@as(u64, 0), arena.refused_bytes);
+    try testing.expect(arena.used_bytes_max <= scratch.len);
 }
 
 test "SvgAtlas re-rasterizes an icon whose atlas shelf was evicted" {
@@ -603,6 +688,7 @@ test "SvgAtlas re-rasterizes an icon whose atlas shelf was evicted" {
     try svg_atlas.initInPlace(testing.allocator, 1.0, testing.io, .{
         .size = 64,
         .icon_size_max = 32,
+        .raster_budget = testRasterBudget(limits.AtlasLimits.nano),
         .uploads = &uploads,
     });
     defer svg_atlas.deinit();

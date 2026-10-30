@@ -27,7 +27,10 @@ comptime {
 pub const RasterizedSvg = backend.RasterizedSvg;
 pub const RasterizeError = backend.RasterizeError;
 pub const StrokeOptions = backend.StrokeOptions;
+pub const RasterBudget = backend.RasterBudget;
 
 // Re-export functions
 pub const rasterize = backend.rasterize;
 pub const rasterizeWithOptions = backend.rasterizeWithOptions;
+/// Scratch bytes one rasterization within a `RasterBudget` allocates.
+pub const scratchBytes = backend.scratchBytes;

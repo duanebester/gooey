@@ -71,6 +71,7 @@ pub fn verifySvgRasterizerInterface(comptime T: type) void {
 ///   - RasterizedSvg type
 ///   - RasterizeError type
 ///   - StrokeOptions type
+///   - RasterBudget type and scratchBytes fn
 pub fn verifySvgRasterizerModule(comptime M: type) void {
     comptime {
         // Required function exports
@@ -82,6 +83,8 @@ pub fn verifySvgRasterizerModule(comptime M: type) void {
         assertHasDecl(M, "RasterizedSvg", "SvgRasterizer module");
         assertHasDecl(M, "RasterizeError", "SvgRasterizer module");
         assertHasDecl(M, "StrokeOptions", "SvgRasterizer module");
+        assertHasDecl(M, "RasterBudget", "SvgRasterizer module");
+        assertHasDecl(M, "scratchBytes", "SvgRasterizer module");
     }
 }
 
@@ -243,6 +246,15 @@ test "verifySvgRasterizerModule with mock" {
             width: f32 = 1.0,
         };
 
+        pub const RasterBudget = struct {
+            path_bytes_max: u32,
+            vertex_count_max: u32,
+        };
+
+        pub fn scratchBytes(_: RasterBudget, _: u32) u32 {
+            return 0;
+        }
+
         pub fn rasterize(
             _: std.mem.Allocator,
             _: []const u8,
@@ -261,6 +273,7 @@ test "verifySvgRasterizerModule with mock" {
             _: []u8,
             _: bool,
             _: StrokeOptions,
+            _: RasterBudget,
         ) RasterizeError!RasterizedSvg {
             return error.EmptyPath;
         }

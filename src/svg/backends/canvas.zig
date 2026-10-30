@@ -5,6 +5,7 @@
 //! This allows the shader to apply different colors to fill and stroke.
 
 const std = @import("std");
+const svg_mod = @import("../path.zig");
 
 pub const RasterizedSvg = struct {
     width: u32,
@@ -13,8 +14,19 @@ pub const RasterizedSvg = struct {
     offset_y: i16,
 };
 
+pub const RasterBudget = svg_mod.RasterBudget;
+
+/// The browser parses and rasterizes the path, so no scratch is reserved;
+/// the atlas still bounds the path's bytes.
+pub fn scratchBytes(budget: RasterBudget, device_size_max: u32) u32 {
+    _ = budget;
+    _ = device_size_max;
+    return 0;
+}
+
 pub const RasterizeError = error{
     EmptyPath,
+    PathTooComplex,
     GraphicsError,
     BufferTooSmall,
     OutOfMemory,
@@ -57,7 +69,16 @@ pub fn rasterize(
     device_size: u32,
     buffer: []u8,
 ) RasterizeError!RasterizedSvg {
-    return rasterizeWithOptions(allocator, path_data, viewbox, device_size, buffer, true, .{});
+    return rasterizeWithOptions(
+        allocator,
+        path_data,
+        viewbox,
+        device_size,
+        buffer,
+        true,
+        .{},
+        RasterBudget.ceiling,
+    );
 }
 
 /// Rasterize SVG path data with fill and stroke options.
@@ -70,10 +91,12 @@ pub fn rasterizeWithOptions(
     buffer: []u8,
     fill: bool,
     stroke: StrokeOptions,
+    budget: RasterBudget,
 ) RasterizeError!RasterizedSvg {
     _ = allocator; // Not needed for web - JS handles memory
 
     if (path_data.len == 0) return error.EmptyPath;
+    if (path_data.len > budget.path_bytes_max) return error.PathTooComplex;
 
     const pixel_count = device_size * device_size;
     const required_size = pixel_count * 4;

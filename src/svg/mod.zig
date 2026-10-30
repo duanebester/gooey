@@ -62,6 +62,7 @@ pub const rasterizeWithOptions = rasterizer.rasterizeWithOptions;
 pub const RasterizedSvg = rasterizer.RasterizedSvg;
 pub const RasterizeError = rasterizer.RasterizeError;
 pub const StrokeOptions = rasterizer.StrokeOptions;
+pub const RasterBudget = rasterizer.RasterBudget;
 
 // =============================================================================
 // Platform Backends (for advanced usage)
