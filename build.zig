@@ -206,6 +206,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "todo", .source = "src/examples/todo.zig" },
             .{ .name = "core-counter", .source = "src/examples/core_counter.zig" },
             .{ .name = "core-todo", .source = "src/examples/core_todo.zig" },
+            .{ .name = "core-file-dialog", .source = "src/examples/core_file_dialog.zig" },
             .{ .name = "layout", .source = "src/examples/layout.zig" },
             .{ .name = "nested-overlay", .source = "src/examples/nested_overlay.zig" },
             .{ .name = "dynamic-counters", .source = "src/examples/dynamic_counters.zig" },
@@ -1504,7 +1505,7 @@ fn addMacosCoreExampleTypecheck(
         .optimize = .debug,
     });
     components_mod.addImport("gooey", gooey_mod);
-    const examples = [_][]const u8{ "core_counter", "core_todo" };
+    const examples = [_][]const u8{ "core_counter", "core_todo", "core_file_dialog" };
     for (examples) |name| {
         const exe = b.addExecutable(.{
             .name = b.fmt("typecheck-macos-{s}", .{name}),
