@@ -195,7 +195,12 @@ pub const Snapshot = struct {
             const element = tree.getElement(index).?;
             self.writeEntry(index, element);
             self.link(index);
-            if (element.fingerprint.isValid()) self.map.insert(element.fingerprint, index);
+            if (element.fingerprint.isValid()) {
+                // `Tree` keeps fingerprints unique within a frame; a duplicate
+                // would alias two providers and loop sibling navigation.
+                assert(self.map.find(element.fingerprint) == null);
+                self.map.insert(element.fingerprint, index);
+            }
         }
         self.entry_count = count;
         self.entry_count_high_water = @max(self.entry_count_high_water, count);
@@ -493,6 +498,42 @@ test "rebuild links children and top-level siblings" {
     try testing.expectEqual(@as(u16, 0), snapshot.entry(2).parent);
     try testing.expectEqual(@as(u16, 2), snapshot.focused);
     try testing.expectEqualStrings("Send", snapshot.textOf(snapshot.entry(2).name));
+}
+
+test "same-role, same-name top-level siblings stay distinct and navigation ends" {
+    // Regression: two top-level "Delete" buttons shared a fingerprint, so the
+    // provider for the second resolved to the first and NextSibling from the
+    // second returned the second again, forever. Each fingerprint must find
+    // its own entry, and walking siblings from the root must end.
+    const tree = try createTree();
+    defer testing.allocator.destroy(tree);
+    const snapshot = try createSnapshot();
+    defer destroySnapshot(snapshot);
+
+    tree.beginFrame();
+    _ = tree.pushElement(.{ .role = .button, .name = "Delete" });
+    tree.popElement();
+    _ = tree.pushElement(.{ .role = .button, .name = "Delete" });
+    tree.popElement();
+    tree.endFrame();
+    snapshot.rebuild(tree);
+
+    const first = snapshot.entry(0).fingerprint;
+    const second = snapshot.entry(1).fingerprint;
+    try testing.expect(!first.eql(second));
+    try testing.expectEqual(@as(?u16, 0), snapshot.find(first));
+    try testing.expectEqual(@as(?u16, 1), snapshot.find(second));
+
+    // Navigate as a provider does: by fingerprint, then to the next sibling.
+    var visited: u16 = 0;
+    var current = snapshot.root_first_child;
+    while (current != index_none) : (visited += 1) {
+        try testing.expect(visited < snapshot.entry_count);
+        const resolved = snapshot.find(snapshot.entry(current).fingerprint).?;
+        try testing.expectEqual(current, resolved);
+        current = snapshot.entry(resolved).next_sibling;
+    }
+    try testing.expectEqual(@as(u16, 2), visited);
 }
 
 test "text is copied, so it outlives the frame's strings" {

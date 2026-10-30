@@ -234,9 +234,9 @@ fn makeResult(
 // Element Name Table
 //
 // Fingerprints fold in the element name hash, so giving every child a unique,
-// frame-stable name keeps fingerprints distinct even when sibling positions
-// saturate (`child_positions` is a saturating u8). Names are generated once and
-// reused across frames so the diff sees a stable structure.
+// frame-stable name keeps fingerprints distinct independently of sibling
+// positions. Names are generated once and reused across frames so the diff
+// sees a stable structure.
 // =============================================================================
 
 const NameTable = struct {
@@ -317,8 +317,8 @@ fn runDiffFrame(tree: *Tree, names: [][]const u8, churn_count: u32, toggle: bool
 // =============================================================================
 
 /// Compute `count` fingerprints, varying the position so the call is not folded
-/// to a constant, and sum the results so the work is observable. `position` is
-/// kept in `[0, 254]` because `fingerprint.compute` asserts `position < 255`.
+/// to a constant, and sum the results so the work is observable. `position`
+/// stays in `[0, 254]`, below `fingerprint.position_count_max`.
 fn fingerprintSum(count: u32, name: []const u8, parent: ?Fingerprint) u64 {
     std.debug.assert(count > 0);
     var sum: u64 = 0;
