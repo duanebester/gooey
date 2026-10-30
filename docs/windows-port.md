@@ -368,12 +368,15 @@ is the mask the shaders expect: R is fill alpha, G is stroke alpha, A is their m
 - **Allocation.** The parser and flattener use `std.ArrayList`, and the backend allocates
   a stroke buffer, so `SvgAtlas` used to pass them the general-purpose allocator on every
   cache miss. It now reserves `raster_scratch` at init and hands the rasterizer a
-  `FixedBufferAllocator` over it, reset per rasterization. This applies on every platform.
+  `RasterScratch` over it, reset per rasterization: a `FixedBufferAllocator` wrapper that
+  records the high-water mark (the arena's `end_index` falls again as the backend frees)
+  and the size of the last refused request. This applies on every platform.
 - **Budget.** `SvgAtlas.rasterScratchBytes(icon_size_max)` is one RGBA icon for the stroke
   buffer, 2,048 B per pixel of side for geometry, and 32 KiB: 800 KiB at the 256 px
-  ceiling. The heaviest Lucide icon (`loader_pinwheel`, fill and stroke) needs 445,532 B
-  at 256 px, and a test pins it below two thirds of the reservation. Exhaustion panics
-  naming the pool, capacity, path length, size, and frame.
+  ceiling. The heaviest Lucide icon (`loader_pinwheel`, fill and stroke) peaks at
+  445,868 B at 256 px, and a test pins that peak below two thirds of the reservation; it
+  runs only where `rasterizer.zig` selects the software backend. Exhaustion panics naming
+  the pool, capacity, peak, requested bytes, path length, size, and frame.
 - **Quality.** Fill is 4× vertical supersampling with exact horizontal coverage, even-odd;
   stroke is a distance-to-segment pass with round joins and caps. Lucide at 150% looks
   correct. Not yet compared side by side with the CoreGraphics output; nonzero winding,
@@ -405,12 +408,11 @@ rasterizer in place of resvg.
 - **Misnamed backend.** `src/svg/backends/cairo.zig` contains no Cairo; the name implies
   a libcairo dependency that section 12 would forbid. Rename it (for example to
   `software.zig`). The rename is behaviour-neutral but public: `gooey.svg.backends.cairo`
-  in `src/svg/mod.zig`, `src/svg/rasterizer.zig`, and `src/testing/README.md` change.
+  in `src/svg/mod.zig`, `src/svg/rasterizer.zig`, `src/svg/atlas.zig` (its test's backend
+  check), and `src/testing/README.md` change.
 - **Direct-access export.** `src/svg/mod.zig` exposes `backends.cairo` only when
   `builtin.os.tag == .linux`, so on Windows it is an empty struct although Windows uses
   that backend. Nothing in Gooey reads it. Add the `.windows` arm.
-- **Line width.** `SvgKey.init`'s signature in `src/svg/atlas.zig` is 121 columns
-  (section 25). It predates the port; a trailing comma lets `zig fmt` wrap it.
 
 ## Framework gaps seen from Windows
 

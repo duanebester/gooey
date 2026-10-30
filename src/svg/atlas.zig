@@ -32,7 +32,13 @@ pub const SvgKey = struct {
     /// Stroke width (quantized to 0.25 increments)
     stroke_width_q: u8,
 
-    pub fn init(path_data: []const u8, logical_size: f32, scale_factor: f64, has_fill: bool, stroke_width: ?f32) SvgKey {
+    pub fn init(
+        path_data: []const u8,
+        logical_size: f32,
+        scale_factor: f64,
+        has_fill: bool,
+        stroke_width: ?f32,
+    ) SvgKey {
         const has_stroke = stroke_width != null and stroke_width.? > 0;
         return .{
             .path_hash = std.hash.Wyhash.hash(0, path_data),
@@ -121,11 +127,12 @@ pub const SvgAtlas = struct {
 
     /// Scratch for one rasterization: the stroke buffer is one RGBA icon, and
     /// path geometry grows with the side because curves flatten to a tolerance
-    /// of half a device pixel. Measured over all 1,701 Lucide icons with fill
-    /// and stroke, the heaviest (`loader_pinwheel`) needs 18,876 B at 24 px,
-    /// 118,156 B at 96 px, and 445,532 B at 256 px: about 700 B per pixel of
-    /// side plus 10 KiB beyond the stroke buffer. These constants allow
-    /// roughly three times that geometry, 800 KiB at the 256 px ceiling.
+    /// of half a device pixel. Measured as the `RasterScratch` peak over all
+    /// 1,669 Lucide icons with fill and stroke, the heaviest (`loader_pinwheel`)
+    /// needs 19,008 B at 24 px, 118,288 B at 96 px, and 445,868 B at 256 px:
+    /// about 700 B per pixel of side plus 10 KiB beyond the stroke buffer.
+    /// These constants allow roughly three times that geometry, 800 KiB at
+    /// the 256 px ceiling.
     const raster_scratch_bytes_per_side: u32 = 2_048;
     const raster_scratch_bytes_base: u32 = 32 * 1024;
 
@@ -260,46 +267,17 @@ pub const SvgAtlas = struct {
         }
 
         // Rasterize at most `svg_icon_size_max` device pixels.
-        const device_size = key.device_size;
-        if (device_size > self.render_buffer_size) return error.IconTooLarge;
+        if (key.device_size > self.render_buffer_size) return error.IconTooLarge;
 
-        @memset(self.render_buffer, 0);
-
-        // Scale stroke width to device pixels
-        const device_stroke_width: f32 = if (stroke_width) |sw|
-            sw * @as(f32, @floatCast(self.scale_factor))
-        else
-            0;
-
-        var scratch = std.heap.FixedBufferAllocator.init(self.raster_scratch);
-        const rasterized = rasterizer.rasterizeWithOptions(
-            scratch.allocator(),
-            path_data,
-            viewbox,
-            device_size,
-            self.render_buffer,
-            has_fill,
-            .{
-                .enabled = stroke_width != null and stroke_width.? > 0,
-                .width = device_stroke_width,
-            },
-        ) catch |err| switch (err) {
-            // The arena is the only allocator the rasterizer sees, so this is
-            // a capacity-planning error, not a transient one.
-            error.OutOfMemory => std.debug.panic(
-                "SvgAtlas pool 'raster_scratch' exhausted: capacity {d} B, " ++
-                    "path {d} B at {d} px, frame {d}.",
-                .{
-                    self.raster_scratch.len,
-                    path_data.len,
-                    device_size,
-                    self.atlas.uploads.frameCurrent(),
-                },
-            ),
-            else => |e| return e,
-        };
-        std.debug.assert(scratch.end_index <= self.raster_scratch.len);
+        const rasterized = try self.rasterizeIntoRenderBuffer(.{
+            .path_data = path_data,
+            .viewbox = viewbox,
+            .device_size = key.device_size,
+            .has_fill = has_fill,
+            .stroke_width = stroke_width,
+        });
         std.debug.assert(rasterized.width <= self.render_buffer_size);
+        std.debug.assert(rasterized.height <= self.render_buffer_size);
 
         self.rasterizations_this_frame += 1;
 
@@ -325,6 +303,65 @@ pub const SvgAtlas = struct {
         self.makeRoom(key);
         self.cache.putAssumeCapacity(key, cached);
         return cached;
+    }
+
+    const RasterizeIntoRenderBufferOptions = struct {
+        path_data: []const u8,
+        viewbox: f32,
+        /// Side in device pixels, at most `render_buffer_size`.
+        device_size: u16,
+        has_fill: bool,
+        /// Logical stroke width; null or non-positive disables the stroke.
+        stroke_width: ?f32,
+    };
+
+    /// Rasterize one icon into `render_buffer`, drawing every rasterizer
+    /// allocation from `raster_scratch`. Exhausting the scratch panics: it is
+    /// the only allocator the rasterizer sees, so running out is a
+    /// capacity-planning error, not a transient one.
+    fn rasterizeIntoRenderBuffer(
+        self: *Self,
+        options: RasterizeIntoRenderBufferOptions,
+    ) rasterizer.RasterizeError!rasterizer.RasterizedSvg {
+        std.debug.assert(options.device_size > 0);
+        std.debug.assert(options.device_size <= self.render_buffer_size);
+        std.debug.assert(options.viewbox > 0);
+
+        @memset(self.render_buffer, 0);
+        const stroke_enabled = options.stroke_width != null and options.stroke_width.? > 0;
+        const stroke_width_device: f32 = if (stroke_enabled)
+            options.stroke_width.? * @as(f32, @floatCast(self.scale_factor))
+        else
+            0;
+
+        var scratch = RasterScratch.init(self.raster_scratch);
+        const rasterized = rasterizer.rasterizeWithOptions(
+            scratch.allocator(),
+            options.path_data,
+            options.viewbox,
+            options.device_size,
+            self.render_buffer,
+            options.has_fill,
+            .{ .enabled = stroke_enabled, .width = stroke_width_device },
+        ) catch |err| switch (err) {
+            error.OutOfMemory => std.debug.panic(
+                "SvgAtlas pool 'raster_scratch' exhausted: capacity {d} B, peak {d} B, " ++
+                    "requested {d} B, path {d} B at {d} px, frame {d}.",
+                .{
+                    self.raster_scratch.len,
+                    scratch.used_bytes_max,
+                    scratch.refused_bytes,
+                    options.path_data.len,
+                    options.device_size,
+                    self.atlas.uploads.frameCurrent(),
+                },
+            ),
+            else => |e| return e,
+        };
+        std.debug.assert(scratch.used_bytes_max <= self.raster_scratch.len);
+        std.debug.assert(rasterized.width <= options.device_size);
+        std.debug.assert(rasterized.height <= options.device_size);
+        return rasterized;
     }
 
     /// Ensure `key` can be stored without growing the map: drop entries whose
@@ -373,10 +410,140 @@ pub const SvgAtlas = struct {
     }
 };
 
+/// Bump allocator over `SvgAtlas.raster_scratch` for one rasterization.
+///
+/// `FixedBufferAllocator.end_index` falls again whenever the newest allocation
+/// is freed or shrunk, so after a rasterization it no longer shows how much
+/// scratch was needed. This wrapper records the high-water mark after every
+/// growth, and the size of the last request it refused so that exhaustion can
+/// report it (CLAUDE.md §2). It adds two integers and never allocates.
+const RasterScratch = struct {
+    fixed: std.heap.FixedBufferAllocator,
+    /// Highest `fixed.end_index` reached since `init`, alignment padding included.
+    used_bytes_max: u32,
+    /// Bytes asked for by the most recent refused alloc, resize, or remap; 0 if none.
+    refused_bytes: u64,
+
+    const FixedBufferAllocator = std.heap.FixedBufferAllocator;
+    const Alignment = std.mem.Alignment;
+
+    const vtable: std.mem.Allocator.VTable = .{
+        .alloc = alloc,
+        .resize = resize,
+        .remap = remap,
+        .free = free,
+    };
+
+    fn init(buffer: []u8) RasterScratch {
+        std.debug.assert(buffer.len > 0);
+        std.debug.assert(buffer.len <= std.math.maxInt(u32));
+        return .{ .fixed = .init(buffer), .used_bytes_max = 0, .refused_bytes = 0 };
+    }
+
+    /// The returned allocator points at `self`, which must not move while it is in use.
+    fn allocator(self: *RasterScratch) std.mem.Allocator {
+        std.debug.assert(self.fixed.end_index <= self.fixed.buffer.len);
+        std.debug.assert(self.fixed.end_index <= self.used_bytes_max);
+        return .{ .ptr = self, .vtable = &vtable };
+    }
+
+    fn alloc(context: *anyopaque, len: usize, alignment: Alignment, return_address: usize) ?[*]u8 {
+        const self: *RasterScratch = @ptrCast(@alignCast(context));
+        const result = FixedBufferAllocator.alloc(&self.fixed, len, alignment, return_address);
+        if (result == null) self.refuse(len) else self.record();
+        return result;
+    }
+
+    fn resize(
+        context: *anyopaque,
+        memory: []u8,
+        alignment: Alignment,
+        len_new: usize,
+        return_address: usize,
+    ) bool {
+        const self: *RasterScratch = @ptrCast(@alignCast(context));
+        const resized = FixedBufferAllocator.resize(
+            &self.fixed,
+            memory,
+            alignment,
+            len_new,
+            return_address,
+        );
+        if (resized) self.record() else self.refuse(len_new);
+        return resized;
+    }
+
+    fn remap(
+        context: *anyopaque,
+        memory: []u8,
+        alignment: Alignment,
+        len_new: usize,
+        return_address: usize,
+    ) ?[*]u8 {
+        const resized = resize(context, memory, alignment, len_new, return_address);
+        return if (resized) memory.ptr else null;
+    }
+
+    fn free(context: *anyopaque, memory: []u8, alignment: Alignment, return_address: usize) void {
+        const self: *RasterScratch = @ptrCast(@alignCast(context));
+        FixedBufferAllocator.free(&self.fixed, memory, alignment, return_address);
+        std.debug.assert(self.fixed.end_index <= self.used_bytes_max);
+    }
+
+    fn record(self: *RasterScratch) void {
+        std.debug.assert(self.fixed.end_index <= self.fixed.buffer.len);
+        const used_bytes: u32 = @intCast(self.fixed.end_index);
+        self.used_bytes_max = @max(self.used_bytes_max, used_bytes);
+        std.debug.assert(self.used_bytes_max <= self.fixed.buffer.len);
+    }
+
+    fn refuse(self: *RasterScratch, len: usize) void {
+        std.debug.assert(len > 0);
+        self.refused_bytes = len;
+        std.debug.assert(self.fixed.end_index <= self.used_bytes_max);
+    }
+};
+
+/// Whether `rasterizer.zig` selected the pure-Zig software rasterizer. The
+/// struct type is unique to its declaring file, so this is an identity check
+/// on the backend rather than a copy of its platform switch.
+const raster_backend_software =
+    rasterizer.RasterizedSvg == @import("backends/cairo.zig").RasterizedSvg;
+
+test "RasterScratch keeps its peak across frees and reports the refused request" {
+    // Fill a 64 B buffer in two steps, free the newest allocation so
+    // `end_index` falls, then fill it exactly and ask for one byte more.
+    const testing = std.testing;
+    var buffer: [64]u8 = undefined;
+    var scratch = RasterScratch.init(&buffer);
+    const gpa = scratch.allocator();
+
+    const first = try gpa.alloc(u8, 16);
+    const second = try gpa.alloc(u8, 32);
+    gpa.free(second);
+    try testing.expectEqual(@as(usize, 16), scratch.fixed.end_index);
+    try testing.expectEqual(@as(u32, 48), scratch.used_bytes_max);
+    try testing.expectEqual(@as(u64, 0), scratch.refused_bytes);
+
+    const last = try gpa.alloc(u8, 48);
+    try testing.expectEqual(@as(u32, 64), scratch.used_bytes_max);
+    try testing.expectError(error.OutOfMemory, gpa.alloc(u8, 1));
+    try testing.expectEqual(@as(u64, 1), scratch.refused_bytes);
+    try testing.expect(!gpa.resize(last, 49));
+    try testing.expectEqual(@as(u64, 49), scratch.refused_bytes);
+
+    gpa.free(last);
+    gpa.free(first);
+    try testing.expectEqual(@as(usize, 0), scratch.fixed.end_index);
+    try testing.expectEqual(@as(u32, 64), scratch.used_bytes_max);
+}
+
 test "SvgAtlas rasterizes the heaviest Lucide icon at the size ceiling within its scratch" {
     // `loader_pinwheel` needs the most scratch of every Lucide icon. Filling
-    // and stroking it at `MAX_SVG_ICON_SIZE` must fit the reserved arena with
-    // the documented margin, and must produce coverage in both channels.
+    // and stroking it at `MAX_SVG_ICON_SIZE` must keep the scratch's peak
+    // within two thirds of the reservation, and must produce coverage in both
+    // channels. Only the software rasterizer draws from the scratch.
+    if (!raster_backend_software) return error.SkipZigTest;
     const testing = std.testing;
     const loader_pinwheel = "<path d=\"M22 12a1 1 0 0 1-10 0 1 1 0 0 0-10 0\"/>" ++
         "<path d=\"M7 20.7a1 1 0 1 1 5-8.7 1 1 0 1 0 5-8.6\"/>" ++
@@ -389,8 +556,8 @@ test "SvgAtlas rasterizes the heaviest Lucide icon at the size ceiling within it
     const pixels = try testing.allocator.alloc(u8, side * side * 4);
     defer testing.allocator.free(pixels);
 
-    var arena = std.heap.FixedBufferAllocator.init(scratch);
-    const rasterized = rasterizer.rasterizeWithOptions(
+    var arena = RasterScratch.init(scratch);
+    const rasterized = try rasterizer.rasterizeWithOptions(
         arena.allocator(),
         loader_pinwheel,
         24,
@@ -398,13 +565,10 @@ test "SvgAtlas rasterizes the heaviest Lucide icon at the size ceiling within it
         pixels,
         true,
         .{ .enabled = true, .width = @as(f32, @floatFromInt(side)) / 12.0 },
-    ) catch |err| switch (err) {
-        // The null and canvas backends rasterize nothing natively.
-        error.PlatformNotSupported => return error.SkipZigTest,
-        else => |e| return e,
-    };
+    );
     try testing.expectEqual(side, rasterized.width);
-    try testing.expect(arena.end_index * 3 <= scratch.len * 2);
+
+    try testing.expect(@as(u64, arena.used_bytes_max) * 3 <= @as(u64, scratch.len) * 2);
 
     var fill_max: u8 = 0;
     var stroke_max: u8 = 0;
