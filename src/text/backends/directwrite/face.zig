@@ -187,8 +187,10 @@ pub const DirectWriteFace = struct {
     /// tightly packed 8-bit coverage rows.
     ///
     /// `buffer_size` is the capacity of `buffer` in bytes. A glyph wider or
-    /// taller than `limits.MAX_GLYPH_SIZE` fails with `GlyphTooLarge` rather
-    /// than being cropped.
+    /// taller than `limits.MAX_GLYPH_SIZE` comes back blank, with its advance,
+    /// rather than cropped, so only that glyph is missing from its run. One
+    /// within the limit that does not fit `buffer_size` fails with
+    /// `GlyphTooLarge`.
     pub fn renderGlyphSubpixel(
         self: *const Self,
         glyph_id: u16,
@@ -230,22 +232,32 @@ pub const DirectWriteFace = struct {
             return error.GlyphRasterizeFailed;
         }
 
+        const blank: RasterizedGlyph = .{
+            .width = 0,
+            .height = 0,
+            .offset_x = 0,
+            .offset_y = 0,
+            .advance_x = advance_x,
+            .is_color = false,
+        };
         // Spaces and other blank glyphs cover no pixels.
-        if (bounds.right <= bounds.left or bounds.bottom <= bounds.top) {
-            return .{
-                .width = 0,
-                .height = 0,
-                .offset_x = 0,
-                .offset_y = 0,
-                .advance_x = advance_x,
-                .is_color = false,
-            };
+        if (bounds.right <= bounds.left or bounds.bottom <= bounds.top) return blank;
+        if (!fitsGlyphLimit(&bounds)) {
+            // Drawn blank rather than failed: an error fails the glyph's
+            // whole run in `resolveGlyphBatch`, and the cache keeps a blank
+            // glyph, so this warns once per glyph size, not every frame.
+            log.warn("glyph {d} at {d:.1} px is {d}x{d} device pixels, over " ++
+                "MAX_GLYPH_SIZE {d}; drawing it blank", .{
+                glyph_id,
+                font_size * scale,
+                bounds.right - bounds.left,
+                bounds.bottom - bounds.top,
+                limits.MAX_GLYPH_SIZE,
+            });
+            return blank;
         }
 
-        try rasterize(analysis, &bounds, buffer[0..buffer_size], .{
-            .glyph_id = glyph_id,
-            .size_px = font_size * scale,
-        });
+        try rasterize(analysis, &bounds, buffer[0..buffer_size]);
         // Bounds are relative to the pen in device pixels, y down; the cache
         // wants the top edge as a height above the baseline.
         return .{
@@ -665,32 +677,31 @@ fn createGlyphRunAnalysis(
     return analysis.?;
 }
 
-const RasterizeContext = struct {
-    glyph_id: u16,
-    size_px: f32,
-};
+/// Whether non-empty glyph `bounds` fit `limits.MAX_GLYPH_SIZE` on both axes.
+fn fitsGlyphLimit(bounds: *const dw.RECT) bool {
+    assert(bounds.right > bounds.left);
+    assert(bounds.bottom > bounds.top);
+    // Subtracted in 64 bits: DirectWrite bounds span the whole `i32` range
+    // for degenerate outlines.
+    const width: i64 = @as(i64, bounds.right) - bounds.left;
+    const height: i64 = @as(i64, bounds.bottom) - bounds.top;
+    return width <= limits.MAX_GLYPH_SIZE and height <= limits.MAX_GLYPH_SIZE;
+}
 
 /// Write `bounds`' coverage into `target` as packed rows of `width` bytes.
+/// `bounds` must fit `limits.MAX_GLYPH_SIZE`; a `target` smaller than the
+/// glyph is refused rather than overrun.
 fn rasterize(
     analysis: *dw.IDWriteGlyphRunAnalysis,
     bounds: *const dw.RECT,
     target: []u8,
-    context: RasterizeContext,
 ) !void {
-    assert(bounds.right > bounds.left);
-    assert(bounds.bottom > bounds.top);
+    assert(fitsGlyphLimit(bounds));
     const width: u32 = @intCast(bounds.right - bounds.left);
     const height: u32 = @intCast(bounds.bottom - bounds.top);
-    if (width > limits.MAX_GLYPH_SIZE or height > limits.MAX_GLYPH_SIZE) {
-        log.warn(
-            "glyph {d} at {d:.1} px is {d}x{d} device pixels; MAX_GLYPH_SIZE is {d}",
-            .{ context.glyph_id, context.size_px, width, height, limits.MAX_GLYPH_SIZE },
-        );
-        return error.GlyphTooLarge;
-    }
-
     const byte_count = width * height;
-    assert(byte_count <= target.len);
+    assert(byte_count <= limits.MAX_GLYPH_SIZE * limits.MAX_GLYPH_SIZE);
+    if (byte_count > target.len) return error.GlyphTooLarge;
     const result = analysis.vtable.CreateAlphaTexture(
         analysis,
         dw.DWRITE_TEXTURE_ALIASED_1x1,

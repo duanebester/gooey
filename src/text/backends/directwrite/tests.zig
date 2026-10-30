@@ -105,7 +105,8 @@ test "rasterization covers the glyph, honors subpixel shifts, and bounds size" {
     // Goal: the coverage bitmap and its placement contract. Methodology:
     // 'H' at 16 px has ink whose top sits near the cap height above the
     // baseline; a half-pixel shift changes the bitmap; a space has an
-    // advance but no pixels; a glyph past MAX_GLYPH_SIZE fails, not crops.
+    // advance but no pixels; a glyph past MAX_GLYPH_SIZE comes back blank,
+    // not cropped; a buffer too small for the glyph is refused, not overrun.
     var face = try DirectWriteFace.initSystem(.sans_serif, 16.0, .regular);
     defer face.deinit();
     const buffer = try testing.allocator.alloc(u8, buffer_bytes);
@@ -137,10 +138,23 @@ test "rasterization covers the glyph, honors subpixel shifts, and bounds size" {
     try testing.expectEqual(@as(u32, 0), space.width);
     try testing.expect(space.advance_x > 0);
 
+    // Over MAX_GLYPH_SIZE (256 px): blank with its advance, so only this
+    // glyph is missing from its run. Just under it still rasterizes.
+    const oversized = try face.renderGlyphSubpixel(glyph_h, 400.0, 1.0, 0, 0, buffer, buffer_bytes);
+    try testing.expectEqual(@as(u32, 0), oversized.width);
+    try testing.expectEqual(@as(u32, 0), oversized.height);
+    try testing.expectApproxEqAbs(at_zero.advance_x * 25.0, oversized.advance_x, 0.01);
+    const largest = try face.renderGlyphSubpixel(glyph_h, 200.0, 1.0, 0, 0, buffer, buffer_bytes);
+    try testing.expect(largest.height > 128);
+    try testing.expect(largest.height <= limits.MAX_GLYPH_SIZE);
+
+    const glyph_bytes = at_zero.width * at_zero.height;
     try testing.expectError(
         error.GlyphTooLarge,
-        face.renderGlyphSubpixel(glyph_h, 400.0, 1.0, 0, 0, buffer, buffer_bytes),
+        face.renderGlyphSubpixel(glyph_h, 16.0, 1.0, 0, 0, buffer, glyph_bytes - 1),
     );
+    const exact = try face.renderGlyphSubpixel(glyph_h, 16.0, 1.0, 0, 0, buffer, glyph_bytes);
+    try testing.expectEqual(at_zero.width, exact.width);
 }
 
 test "shaping maps glyphs to UTF-8 clusters across scripts" {
