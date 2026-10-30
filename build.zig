@@ -1730,6 +1730,11 @@ fn addFailFastChecks(
         .{ .mode = "atlas-live-set", .stderr = "Atlas pool 'svg' exhausted: capacity 64x64 px, " ++
             "64 rows held by items in use since frame 2, requested 64x16 px " ++
             "(1 px border included), frame 2." },
+        .{ .mode = "core-allocation", .stderr = "allocation after initialization: alloc of " ++
+            "16 bytes while the lifecycle is running" },
+        .{ .mode = "core-duplicate-key", .stderr = "duplicate key \"twin\" under element" },
+        .{ .mode = "core-component-depth", .stderr = "component depth 65 exceeds " ++
+            "build.component_depth_max 64 rendering fail_fast_check.CoreApp.Nest" },
     };
     for (checks) |check| {
         const run = b.addRunArtifact(exe);
@@ -2265,10 +2270,25 @@ fn addGoldens(
         .optimize = optimize,
         .imports = example_imports,
     });
+    const core_counter_mod = b.createModule(.{
+        .root_source_file = b.path("src/examples/core_counter.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = example_imports,
+    });
+    const core_todo_mod = b.createModule(.{
+        .root_source_file = b.path("src/examples/core_todo.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = example_imports,
+    });
     const goldens_imports: []const std.Build.Module.Import = &.{
         .{ .name = "gooey", .module = gooey_mod },
+        .{ .name = "gooey-components", .module = components_mod },
         .{ .name = "counter_example", .module = counter_mod },
         .{ .name = "todo_example", .module = todo_mod },
+        .{ .name = "core_counter_example", .module = core_counter_mod },
+        .{ .name = "core_todo_example", .module = core_todo_mod },
     };
 
     const tests = b.addTest(.{

@@ -26,6 +26,9 @@ pub const ContextMenu = @import("context_menu.zig").ContextMenu;
 pub const MenuItem = @import("context_menu.zig").MenuItem;
 pub const ValidatedTextInput = @import("validated_text_input.zig").ValidatedTextInput;
 
+/// Components on the 0.4.0 core (milestone 1: Button, Checkbox, TextInput).
+pub const core = @import("core/root.zig");
+
 test {
     std.testing.refAllDecls(@This());
 }

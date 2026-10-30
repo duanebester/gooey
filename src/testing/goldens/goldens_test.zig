@@ -9,6 +9,12 @@ const std = @import("std");
 const gooey = @import("gooey");
 const trace = @import("trace.zig");
 const legacy = @import("legacy.zig");
+const core = @import("core.zig");
+const compare = @import("compare.zig");
+
+test {
+    _ = @import("core_checks.zig");
+}
 
 const TextBuffer = gooey.testing.record_dump.TextBuffer;
 
@@ -32,6 +38,45 @@ test "legacy counter matches its golden" {
 test "legacy todo matches its golden" {
     try expectGolden("legacy_todo", @embedFile("legacy_todo.txt"), legacy.captureTodo);
 }
+
+test "core counter matches its golden" {
+    try expectGolden("core_counter", @embedFile("core_counter.txt"), core.captureCounter);
+}
+
+test "core todo matches its golden" {
+    try expectGolden("core_todo", @embedFile("core_todo.txt"), core.captureTodo);
+}
+
+test "the core counter draws, hits, and announces what 0.3.1 does" {
+    // Goal: the port is checked against the 0.3.1 oracle. Methodology: the
+    // normalization in `compare.zig` removes recording differences only;
+    // every remaining difference fails the test.
+    const unexplained = try compare.compare(
+        std.testing.allocator,
+        @embedFile("legacy_counter.txt"),
+        @embedFile("core_counter.txt"),
+        &.{},
+    );
+    try std.testing.expectEqual(@as(u32, 0), unexplained);
+}
+
+test "the core todo draws, hits, and announces what 0.3.1 does" {
+    const unexplained = try compare.compare(
+        std.testing.allocator,
+        @embedFile("legacy_todo.txt"),
+        @embedFile("core_todo.txt"),
+        &todo_known_differences,
+    );
+    try std.testing.expectEqual(@as(u32, 0), unexplained);
+}
+
+const todo_known_differences = [_]compare.KnownDifference{.{
+    .step = 18,
+    .legacy_line = "fill (83.70 507.20 124.80 28.80) #839496ff 8.00,8.00,8.00,8.00",
+    .core_line = "fill (83.70 507.20 124.80 28.80) #839496d9 8.00,8.00,8.00,8.00",
+    .reason = "the pointer rests on Clear completed after clicking it; the core keeps " ++
+        "the button hovered, 0.3.1 drops its hover once the click empties the list",
+}};
 
 test "a replayed trace is byte-identical" {
     // Goal: goldens are stable. Methodology: run the same trace twice in one

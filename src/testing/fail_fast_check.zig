@@ -19,6 +19,9 @@
 //! - `font-variant`: measures text in a font variant the face set did not load.
 //! - `atlas-item`: inserts one item larger than its fixed atlas.
 //! - `atlas-live-set`: fills an atlas with items used this frame and inserts one more.
+//! - `core-allocation`: allocates through the 0.4.0 core's lifecycle guard after init.
+//! - `core-duplicate-key`: renders two boxes with one key under one parent.
+//! - `core-component-depth`: nests components one level past `component_depth_max`.
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -35,6 +38,9 @@ const Mode = enum {
     @"font-variant",
     @"atlas-item",
     @"atlas-live-set",
+    @"core-allocation",
+    @"core-duplicate-key",
+    @"core-component-depth",
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -58,6 +64,9 @@ pub fn main(init: std.process.Init) !void {
         .@"font-variant" => fontVariant(init.gpa, init.io),
         .@"atlas-item" => atlasItem(init.gpa, init.io),
         .@"atlas-live-set" => atlasLiveSet(init.gpa, init.io),
+        .@"core-allocation" => coreAllocation(init.gpa, init.io),
+        .@"core-duplicate-key" => coreTick(init.gpa, init.io, CoreApp.duplicateKey),
+        .@"core-component-depth" => coreTick(init.gpa, init.io, CoreApp.nested),
     }
     std.debug.print("unreachable: {s} did not panic\n", .{@tagName(mode)});
 }
@@ -227,3 +236,64 @@ const BuilderHarness = struct {
         self.builder = gooey.ui.Builder.init(gpa, &self.engine, &self.scene, &self.tree);
     }
 };
+
+// =============================================================================
+// 0.4.0 core
+// =============================================================================
+
+const core = gooey.core;
+
+const CoreState = struct {};
+
+const CoreApp = struct {
+    const App = core.App(CoreState, .{
+        .title = "fail-fast",
+        .width = 100,
+        .height = 100,
+        .limits = .nano,
+        .theme = &core.Theme.light,
+        .keymap = &.{},
+        .entities = &.{},
+        .on_init = null,
+    });
+
+    fn duplicateKey(cx: *core.Cx) void {
+        cx.render(.{
+            core.ui.box(.{ .key = .{ .name = "twin" } }, .{}),
+            core.ui.box(.{ .key = .{ .name = "twin" } }, .{}),
+        });
+    }
+
+    /// Each level renders the next through `cx.render`, so the depth grows
+    /// by one per level until the budget stops it.
+    const Nest = struct {
+        pub fn render(self: Nest, cx: *core.Cx) void {
+            cx.render(self);
+        }
+    };
+
+    fn nested(cx: *core.Cx) void {
+        cx.render(Nest{});
+    }
+};
+
+fn initCoreApp(gpa: std.mem.Allocator, io: std.Io) *CoreApp.App {
+    const app = gpa.create(CoreApp.App) catch |err| {
+        std.debug.panic("setup: core app allocation failed: {s}", .{@errorName(err)});
+    };
+    app.initHeadless(gpa, io, .{ .scale_factor = 1 }) catch |err| {
+        std.debug.panic("setup: core app init failed: {s}", .{@errorName(err)});
+    };
+    return app;
+}
+
+fn coreAllocation(gpa: std.mem.Allocator, io: std.Io) void {
+    const app = initCoreApp(gpa, io);
+    const bytes = app.guard.allocator().alloc(u8, 16) catch return;
+    _ = bytes;
+}
+
+fn coreTick(gpa: std.mem.Allocator, io: std.Io, comptime render: fn (*core.Cx) void) void {
+    const app = initCoreApp(gpa, io);
+    app.tickWith(render, 1);
+}

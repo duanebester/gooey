@@ -675,6 +675,12 @@ const test_limits = limits_mod.ResourceLimits{
     .window = .{ .framebuffer_width_max = 16, .framebuffer_height_max = 16 },
     .frame = limits_mod.FrameLimits.nano,
     .atlas = limits_mod.AtlasLimits.standard,
+    .build = limits_mod.BuildLimits.nano,
+    .records = limits_mod.RecordLimits.nano,
+    .retained = limits_mod.RetainedLimits.nano,
+    .events = limits_mod.EventLimits.nano,
+    .text = limits_mod.TextLimits.nano,
+    .entities = limits_mod.EntityLimits.nano,
 };
 
 const black = geometry.Color.rgba(0, 0, 0, 1);

@@ -112,7 +112,7 @@ pub fn renderText(
     // Total stack footprint verified at comptime above (see WASM stack budget check).
     var glyph_buf: [MAX_GLYPHS_PER_RUN]ShapedGlyph = undefined;
     var shaped = try text_system.shapeTextInto(text, options.variant, options.stats, &glyph_buf);
-    defer if (shaped.owned) shaped.deinit(text_system.allocator);
+    defer if (shaped.owned) shaped.deinit(text_system.run_allocator);
 
     const scaled_width = shaped.width * size_scale;
     const glyph_count = shaped.glyphs.len;
@@ -235,31 +235,8 @@ fn emitGlyphsToScene(
     std.debug.assert(scale_factor > 0);
 
     for (cached_glyphs, device_positions_x, device_positions_y) |cached, device_x, device_y| {
-        if (cached.region.width == 0 or cached.region.height == 0) continue;
-
-        // Use cached atlas size for thread-safe UV calculation.
-        // (Atlas may grow between glyph caching and UV calculation in multi-window.)
-        const uv = cached.uv();
-
-        const glyph_width = @as(f32, @floatFromInt(cached.region.width)) / scale_factor;
-        const glyph_height = @as(f32, @floatFromInt(cached.region.height)) / scale_factor;
-
-        // Snap to device pixel grid, then add raster offset, then convert back to logical.
-        // This is how GPUI does it: floor(device_pos) + raster_offset.
-        const glyph_x = (@floor(device_x) + @as(f32, @floatFromInt(cached.offset_x))) / scale_factor;
-        const glyph_y = (@floor(device_y) - @as(f32, @floatFromInt(cached.offset_y))) / scale_factor;
-
-        const instance = GlyphInstance.init(
-            glyph_x,
-            glyph_y,
-            glyph_width,
-            glyph_height,
-            uv.u0,
-            uv.v0,
-            uv.u1,
-            uv.v1,
-            color,
-        );
+        const instance =
+            placeGlyph(cached, device_x, device_y, scale_factor, color) orelse continue;
 
         if (options.isOrdered()) {
             try scene.insertGlyphWithOrder(instance, options.nextOrder(), options.clip_bounds);
@@ -269,6 +246,104 @@ fn emitGlyphsToScene(
             try scene.insertGlyph(instance);
         }
     }
+}
+
+/// The glyph instance for one resolved glyph, or null for an empty region
+/// (spaces, zero-width characters). Snaps to the device pixel grid, adds the
+/// raster offset, and converts back to logical pixels, as GPUI does:
+/// floor(device_pos) + raster_offset.
+fn placeGlyph(
+    cached: CachedGlyph,
+    device_x: f32,
+    device_y: f32,
+    scale_factor: f32,
+    color: Hsla,
+) ?GlyphInstance {
+    std.debug.assert(scale_factor > 0);
+    if (cached.region.width == 0 or cached.region.height == 0) return null;
+
+    // Use cached atlas size for thread-safe UV calculation.
+    // (Atlas may grow between glyph caching and UV calculation in multi-window.)
+    const uv = cached.uv();
+    const glyph_width = @as(f32, @floatFromInt(cached.region.width)) / scale_factor;
+    const glyph_height = @as(f32, @floatFromInt(cached.region.height)) / scale_factor;
+    const glyph_x = (@floor(device_x) + @as(f32, @floatFromInt(cached.offset_x))) / scale_factor;
+    const glyph_y = (@floor(device_y) - @as(f32, @floatFromInt(cached.offset_y))) / scale_factor;
+    const instance = GlyphInstance.init(
+        glyph_x,
+        glyph_y,
+        glyph_width,
+        glyph_height,
+        uv.u0,
+        uv.v0,
+        uv.u1,
+        uv.v1,
+        color,
+    );
+    std.debug.assert(instance.size_x > 0);
+    return instance;
+}
+
+// =============================================================================
+// Glyph placement without a scene (0.4.0 core emit)
+// =============================================================================
+
+/// Shape `text` and hand each placed glyph to `sink.glyph(instance)`, in
+/// order, returning the run's width. The same placement as `renderText`, so
+/// the 0.4.0 core's paint records match what the 0.3.1 runtime draws. The
+/// glyph cache may rasterize on a miss; the shaped run is copied into a stack
+/// buffer, so only a shape-cache miss uses the text system's allocator.
+pub fn placeText(
+    text_system: *TextSystem,
+    text: []const u8,
+    x: f32,
+    baseline_y: f32,
+    scale_factor: f32,
+    font_size: f32,
+    variant: FontVariant,
+    sink: anytype,
+) !f32 {
+    std.debug.assert(font_size > 0);
+    std.debug.assert(scale_factor > 0);
+    if (text.len == 0) return 0;
+    const metrics = text_system.getMetrics() orelse return error.NoFontLoaded;
+    const size_scale = font_size / metrics.point_size;
+
+    var glyph_buf: [MAX_GLYPHS_PER_RUN]ShapedGlyph = undefined;
+    var shaped = try text_system.shapeTextInto(text, variant, null, &glyph_buf);
+    defer if (shaped.owned) shaped.deinit(text_system.run_allocator);
+    const glyph_count = shaped.glyphs.len;
+    if (glyph_count == 0) return shaped.width * size_scale;
+    std.debug.assert(glyph_count <= MAX_GLYPHS_PER_RUN);
+
+    var device_x: [MAX_GLYPHS_PER_RUN]f32 = undefined;
+    var device_y: [MAX_GLYPHS_PER_RUN]f32 = undefined;
+    var subpixel_x: [MAX_GLYPHS_PER_RUN]u8 = undefined;
+    computeGlyphDevicePositions(
+        shaped.glyphs,
+        x,
+        baseline_y,
+        size_scale,
+        scale_factor,
+        device_x[0..glyph_count],
+        device_y[0..glyph_count],
+        subpixel_x[0..glyph_count],
+    );
+    var cached: [MAX_GLYPHS_PER_RUN]CachedGlyph = undefined;
+    try text_system.resolveGlyphBatch(
+        shaped.glyphs,
+        variant,
+        font_size,
+        subpixel_x[0..glyph_count],
+        cached[0..glyph_count],
+    );
+    const xs = device_x[0..glyph_count];
+    const ys = device_y[0..glyph_count];
+    for (cached[0..glyph_count], xs, ys) |glyph, dx, dy| {
+        const instance = placeGlyph(glyph, dx, dy, scale_factor, Hsla.black) orelse continue;
+        sink.glyph(instance);
+    }
+    return shaped.width * size_scale;
 }
 
 // =============================================================================

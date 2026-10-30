@@ -50,6 +50,12 @@ const resource_limits: gooey.ResourceLimits = .{
     .window = gooey.ResourceLimits.large.window,
     .frame = gooey.ResourceLimits.large.frame,
     .atlas = gooey.ResourceLimits.large.atlas,
+    .build = gooey.ResourceLimits.large.build,
+    .records = gooey.ResourceLimits.large.records,
+    .retained = gooey.ResourceLimits.large.retained,
+    .events = gooey.ResourceLimits.large.events,
+    .text = gooey.ResourceLimits.large.text,
+    .entities = gooey.ResourceLimits.large.entities,
 };
 
 comptime {
