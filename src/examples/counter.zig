@@ -1,189 +1,129 @@
-//! Counter Example using the Cx API
+//! Counter: state, handlers, and components on the core.
 //!
-//! Demonstrates:
-//! - Unified, non-generic Cx context
-//! - Pure state methods with cx.on(method, .{})
-//! - State with arguments via cx.on(method, .{ .arg = value })
-//! - Methods that take *Window for framework access
-//! - Components receiving *Cx
-//! - WebApp for browser support
+//! `ui.box`, `ui.text`, `cx.on`, and components that render through
+//! `cx.render`. The layout and colours match the 0.3.1 counter, so its golden
+//! is compared with the 0.3.1 golden (`src/testing/goldens/`).
 
 const std = @import("std");
-
 const gooey = @import("gooey");
 const components = @import("gooey-components");
-const platform = gooey.platform;
 
-/// WASM-compatible logging - redirect std.log to console.log via JS imports
-pub const std_options = gooey.std_options;
-const ui = gooey.ui;
-const Cx = gooey.Cx;
-const Button = components.Button;
+const core = gooey.core;
+const ui = core.ui;
+const Cx = core.Cx;
+const Effects = core.Effects;
+const Button = components.core.Button;
 
-// =============================================================================
-// Application State
-// =============================================================================
-
-/// Public so the goldens (`src/testing/goldens/`) can replay this example.
-pub const AppState = struct {
+pub const State = struct {
     count: i32 = 0,
     step: i32 = 1,
     message: []const u8 = "",
 
-    pub fn increment(self: *AppState) void {
+    pub fn increment(self: *State) void {
         self.count += self.step;
     }
 
-    pub fn decrement(self: *AppState) void {
+    pub fn decrement(self: *State) void {
         self.count -= self.step;
     }
 
-    pub fn reset(self: *AppState) void {
+    pub fn reset(self: *State) void {
         self.count = 0;
         self.message = "Counter reset!";
     }
 
-    pub fn setStep(self: *AppState, new_step: i32) void {
-        self.step = new_step;
+    pub fn setStep(self: *State, step: i32) void {
+        self.step = step;
         self.message = "";
     }
 
-    pub fn setCount(self: *AppState, value: i32) void {
-        self.count = value;
-    }
-
-    pub fn resetAndBlur(self: *AppState, g: *gooey.Window) void {
+    pub fn resetAndBlur(self: *State, effects: *Effects) void {
         self.count = 0;
         self.message = "Reset and blurred!";
-        g.blurAll();
+        effects.blur();
     }
 };
 
-// =============================================================================
-// Entry Points
-// =============================================================================
-
-var state = AppState{};
-
-// For WASM: WebApp with @export; For Native: struct with main()
-const App = gooey.App(AppState, &state, render, .{
-    .limits = .nano,
+pub const App = core.App(State, render, .{
     .title = "Counter",
     .width = 500,
     .height = 350,
+    .limits = .nano,
 });
-pub const wasm_app = App;
 
-// Force type analysis - triggers @export on WASM
-comptime {
-    _ = App;
-}
+/// The generated entry point (contract §7).
+pub const main = App.main;
 
-// Native entry point
-pub fn main(init: std.process.Init) !void {
-    if (platform.is_wasm) unreachable;
-    return App.main(init);
-}
-
-// =============================================================================
-// Render Function - receives *Cx
-// =============================================================================
+const background = ui.Color.rgb(0.95, 0.95, 0.95);
 
 pub fn render(cx: *Cx) void {
-    const s = cx.state(AppState);
-
-    cx.render(ui.root(.{
-        .padding = .{ .all = 32 },
+    const s = cx.state(State);
+    cx.render(ui.box(.{ .style = .{
+        .width = .{ .grow = 1 },
+        .height = .{ .grow = 1 },
+        .padding = .all(32),
         .gap = 20,
-        .direction = .column,
-        .background = ui.Color.rgb(0.95, 0.95, 0.95),
-    }, .{
-        // Title
-        ui.text("Counter (Cx API)", .{ .size = 24, .color = ui.Color.rgb(0.2, 0.2, 0.2) }),
-
-        // Counter display
+        .background = .{ .rgba = background },
+    } }, .{
+        ui.text("Counter (Cx API)", .{ .size = 24, .color = .{ .rgba = .rgb(0.2, 0.2, 0.2) } }),
         CounterDisplay{},
-
-        // Control buttons
         ControlButtons{},
-
-        // Step selector
         StepSelector{},
-
-        // Message display
-        ui.when(s.message.len > 0, .{
-            ui.text(s.message, .{ .size = 14, .color = ui.Color.rgb(0.3, 0.6, 0.3) }),
-        }),
+        ui.when(s.message.len > 0, message),
     }));
 }
 
-// =============================================================================
-// Components - Receive *Cx directly
-// =============================================================================
+fn message(cx: *Cx) void {
+    const s = cx.state(State);
+    cx.render(ui.text(s.message, .{ .size = 14, .color = .{ .rgba = .rgb(0.3, 0.6, 0.3) } }));
+}
+
+const row: ui.Style = .{ .direction = .row, .gap = 12, .alignment = .center_cross };
 
 const CounterDisplay = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        const s = cx.state(AppState);
-
-        cx.render(ui.box(.{
-            .padding = .{ .all = 24 },
-            .background = ui.Color.white,
-            .corner_radius = 12,
-            .alignment = .{ .main = .center, .cross = .center },
-        }, .{
-            ui.textFmt("{}", .{s.count}, .{
-                .size = 64,
-                .color = if (s.count >= 0)
-                    ui.Color.rgb(0.2, 0.5, 0.8)
-                else
-                    ui.Color.rgb(0.8, 0.3, 0.3),
-            }),
+    pub fn render(_: CounterDisplay, cx: *Cx) void {
+        const s = cx.state(State);
+        var digits: [16]u8 = undefined;
+        const count = std.fmt.bufPrint(&digits, "{d}", .{s.count}) catch unreachable;
+        const color = if (s.count >= 0) ui.Color.rgb(
+            0.2,
+            0.5,
+            0.8,
+        ) else ui.Color.rgb(0.8, 0.3, 0.3);
+        cx.render(ui.box(.{ .style = .{
+            .padding = .all(24),
+            .background = .{ .rgba = ui.Color.white },
+            .corner_radius = .all(12),
+            .alignment = .center,
+        } }, .{
+            ui.text(count, .{ .size = 64, .color = .{ .rgba = color } }),
         }));
     }
 };
 
 const ControlButtons = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        cx.render(ui.hstack(.{ .gap = 12, .alignment = .{ .cross = .center } }, .{
-            // Pure state handlers
-            Button{
-                .label = "−",
-                .size_preset = .large,
-                .on_click = cx.on(AppState.decrement, .{}),
-            },
-            Button{
-                .label = "+",
-                .size_preset = .large,
-                .on_click = cx.on(AppState.increment, .{}),
-            },
-
-            ui.spacerMin(20),
-
-            // Pure reset
-            Button{
-                .label = "Reset",
-                .variant = .secondary,
-                .on_click = cx.on(AppState.reset, .{}),
-            },
-
-            // A method that takes *Window for framework access
+    pub fn render(_: ControlButtons, cx: *Cx) void {
+        cx.render(ui.box(.{ .style = row }, .{
+            Button{ .label = "\u{2212}", .size = .large, .on_click = cx.on(State.decrement, .{}) },
+            Button{ .label = "+", .size = .large, .on_click = cx.on(State.increment, .{}) },
+            ui.box(.{ .style = .{ .width = .{ .grow = 1 }, .height = .{ .grow = 1 } } }, .{}),
+            Button{ .label = "Reset", .variant = .secondary, .on_click = cx.on(State.reset, .{}) },
             Button{
                 .label = "Reset & Blur",
                 .variant = .danger,
-                .on_click = cx.on(AppState.resetAndBlur, .{}),
+                .on_click = cx.on(State.resetAndBlur, .{}),
             },
         }));
     }
 };
 
 const StepSelector = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        const s = cx.state(AppState);
-
-        cx.render(ui.hstack(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
-            ui.text("Step:", .{ .size = 14, .color = ui.Color.rgb(0.5, 0.5, 0.5) }),
-
-            // Passing an argument with .arg
+    pub fn render(_: StepSelector, cx: *Cx) void {
+        const s = cx.state(State);
+        cx.render(ui.box(.{
+            .style = .{ .direction = .row, .gap = 8, .alignment = .center_cross },
+        }, .{
+            ui.text("Step:", .{ .size = 14, .color = .{ .rgba = .rgb(0.5, 0.5, 0.5) } }),
             StepButton{ .value = 1, .current = s.step },
             StepButton{ .value = 5, .current = s.step },
             StepButton{ .value = 10, .current = s.step },
@@ -195,58 +135,17 @@ const StepButton = struct {
     value: i32,
     current: i32,
 
-    pub fn render(self: @This(), cx: *Cx) void {
-        const is_active = self.value == self.current;
-
+    pub fn render(self: StepButton, cx: *Cx) void {
         cx.render(Button{
             .label = switch (self.value) {
                 1 => "1",
                 5 => "5",
                 10 => "10",
-                else => "?",
+                else => unreachable,
             },
-            .size_preset = .small,
-            .variant = if (is_active) .primary else .secondary,
-            .on_click = cx.on(AppState.setStep, .{ .arg = self.value }),
+            .size = .small,
+            .variant = if (self.value == self.current) .primary else .secondary,
+            .on_click = cx.on(State.setStep, .{ .arg = self.value }),
         });
     }
 };
-
-// =============================================================================
-// Tests - State methods are pure and testable!
-// =============================================================================
-
-test "AppState increment/decrement" {
-    var s = AppState{};
-
-    s.increment();
-    try std.testing.expectEqual(@as(i32, 1), s.count);
-
-    s.increment();
-    try std.testing.expectEqual(@as(i32, 2), s.count);
-
-    s.decrement();
-    try std.testing.expectEqual(@as(i32, 1), s.count);
-}
-
-test "AppState with custom step" {
-    var s = AppState{};
-    s.setStep(5);
-
-    s.increment();
-    try std.testing.expectEqual(@as(i32, 5), s.count);
-
-    s.increment();
-    try std.testing.expectEqual(@as(i32, 10), s.count);
-
-    s.decrement();
-    try std.testing.expectEqual(@as(i32, 5), s.count);
-}
-
-test "AppState reset" {
-    var s = AppState{ .count = 42 };
-    s.reset();
-
-    try std.testing.expectEqual(@as(i32, 0), s.count);
-    try std.testing.expect(s.message.len > 0);
-}

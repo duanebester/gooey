@@ -560,7 +560,7 @@ pub fn WebApp(
 /// ignored without a diagnostic. The message lists every valid name.
 ///
 /// Zig cannot test compile errors in-process. Checked by hand on
-/// `examples/counter.zig`: `.tittle = "x"` fails on both `run-counter` and
+/// the 0.3.1 counter: `.tittle = "x"` fails on both `run-counter` and
 /// `wasm-counter` and lists the valid fields; `.init = f` fails on
 /// `wasm-counter` and points to `on_init`.
 fn validateConfigFields(comptime State: type, comptime ConfigType: type) void {
@@ -597,7 +597,7 @@ fn configFieldList(comptime Valid: type) []const u8 {
 /// that lists the profiles, and so is a name that is not one of them.
 ///
 /// Zig cannot test compile errors in-process. Checked by hand on
-/// `examples/counter.zig`, natively and with `wasm-counter`: no `.limits`,
+/// the 0.3.1 counter, natively and with `wasm-counter`: no `.limits`,
 /// `.limits = .tiny`, `.font_limits = .tiny`, a literal missing `.frame`, a
 /// literal without `.font_limits`, and `in_flight_count = 4` each fail with a
 /// message naming the problem.
@@ -650,7 +650,7 @@ fn profileList() []const u8 {
 /// as a generic "no field named" error on the anonymous config literal.
 ///
 /// Zig cannot test compile errors in-process. Checked by hand on
-/// `examples/counter.zig` with `wasm-counter` (and `run-counter` for the first):
+/// the 0.3.1 counter with `wasm-counter` (and `run-counter` for the first):
 /// `.{ .scene = ... }` names `.window`, `.{ .window = ... }` names `.scene`, an
 /// extra `.windows` lists the valid budgets, a missing field inside a budget
 /// names that field, and a non-struct value is rejected. Complete literals, a
