@@ -29,7 +29,6 @@ const platform = gooey.platform;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
 const Button = components.Button;
-const TextInput = components.TextInput;
 const Easing = gooey.animation.Easing;
 const Svg = components.Svg;
 
@@ -321,7 +320,6 @@ const AppState = struct {
     active_alerts: u8 = 0,
 
     // Controls
-    destination_input: []const u8 = "",
     autopilot_engaged: bool = true,
     shields_active: bool = true,
 
@@ -385,11 +383,9 @@ const AppState = struct {
     }
 
     pub fn lockDestination(self: *AppState) void {
-        if (self.destination_input.len > 0) {
-            self.destination_locked = true;
-            self.jump_charge = 0;
-            self.jump_ready = false;
-        }
+        self.destination_locked = true;
+        self.jump_charge = 0;
+        self.jump_ready = false;
     }
 
     pub fn initiateJump(self: *AppState) void {
@@ -1055,8 +1051,6 @@ const VelocityDisplay = struct {
 
 const ShipControls = struct {
     pub fn render(_: @This(), cx: *Cx) void {
-        const s = cx.state(AppState);
-
         cx.render(ui.box(.{
             .fill_width = true,
             .padding = .{ .all = 12 },
@@ -1065,29 +1059,6 @@ const ShipControls = struct {
             .gap = 12,
             .direction = .column,
         }, .{
-            ui.hstack(.{ .gap = 6, .alignment = .{ .cross = .center } }, .{
-                Svg{
-                    .path = SpaceIcons.target,
-                    .size = 12,
-                    .color = null,
-                    .stroke_color = Colors.cyan_dim,
-                    .stroke_width = 1.5,
-                },
-                ui.text("DESTINATION", .{ .size = 10, .color = Colors.text_dim }),
-            }),
-            TextInput{
-                .id = "destination",
-                .placeholder = "Enter coordinates...",
-                .width = 170,
-                .bind = &s.destination_input,
-                .background = ui.Color.rgba(0, 0, 0, 0.3),
-                .border_color = Colors.cyan_dim,
-                .border_color_focused = Colors.cyan,
-                .text_color = Colors.text,
-                .placeholder_color = Colors.text_dim,
-                .corner_radius = 4,
-                .padding = 8,
-            },
             ToggleRow{},
         }));
     }
