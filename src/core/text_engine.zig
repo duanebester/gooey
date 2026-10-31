@@ -382,11 +382,17 @@ pub const InputEngine = struct {
     }
 };
 
-/// Edit commands use the platform's command modifier, as in 0.3.1.
+/// Edit commands use Cmd on macOS and the web, as in 0.3.1, and Ctrl on
+/// Windows and Linux, ignored with Alt held. Linux uses Ctrl, not 0.3.1's
+/// Super: GNOME's shell takes Super+A and Super+V, and an IME such as
+/// ibus-mozc turns Super+letters into preedit text (approved 2026-10-31
+/// after SER9's check).
 pub fn editCommand(mods: input.Modifiers) bool {
-    if (builtin.os.tag == .windows) return mods.ctrl and !mods.alt;
-    return mods.cmd;
+    if (uses_cmd) return mods.cmd;
+    return mods.ctrl and !mods.alt;
 }
+
+const uses_cmd = builtin.os.tag == .macos or builtin.os.tag == .freestanding;
 
 fn oneCodepoint(value: []const u8) bool {
     if (value.len == 0) return false;
@@ -550,7 +556,7 @@ const TestEngine = struct {
     }
 
     fn command() input.Modifiers {
-        return if (builtin.os.tag == .windows) .{ .ctrl = true } else .{ .cmd = true };
+        return if (uses_cmd) .{ .cmd = true } else .{ .ctrl = true };
     }
 };
 
@@ -673,6 +679,15 @@ test "copy, cut, and paste go through the clipboard; other commands bubble" {
     try std.testing.expect(t.clipboard.pending_len == null);
     try std.testing.expect(!t.key(.s, TestEngine.command()));
     try std.testing.expect(!t.key(.@"return", .{}));
+}
+
+test "edit commands use Cmd on macOS and Ctrl elsewhere, not with Alt" {
+    // Goal: the approved Linux change keeps Super out and Ctrl+Alt (AltGr
+    // on Windows layouts) from acting as a command.
+    try std.testing.expectEqual(uses_cmd, editCommand(.{ .cmd = true }));
+    try std.testing.expectEqual(!uses_cmd, editCommand(.{ .ctrl = true }));
+    try std.testing.expect(!editCommand(.{ .ctrl = true, .alt = true }));
+    try std.testing.expect(!editCommand(.{ .alt = true }));
 }
 
 test "the caret shows after a move, then blinks at 530 ms" {
