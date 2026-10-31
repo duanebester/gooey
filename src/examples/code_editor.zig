@@ -330,8 +330,6 @@ const AppState = struct {
             .files = false,
             .directories = true,
             .multiple = false,
-            .prompt = "Open",
-            .message = "Select a directory to browse",
         })) |result| {
             defer result.deinit();
             if (result.paths.len > 0) {

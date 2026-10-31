@@ -50,6 +50,7 @@ pub fn promptForPaths(
     allocator: std.mem.Allocator,
     options: PathPromptOptions,
 ) ?PathPromptResult {
+    std.debug.assert(options.files or options.directories);
     return promptForPathsInternal(allocator, options) catch |err| {
         logError("promptForPaths failed", err);
         return null;
@@ -94,24 +95,14 @@ fn promptForPathsInternal(
     // Parent window identifier (empty for Wayland)
     if (!iter.appendString("")) return error.AppendFailed;
 
-    // Title/message
-    const title = options.message orelse "Open";
-    var title_buf: [256:0]u8 = undefined;
-    const title_z = toSentinelSlice(title, &title_buf) orelse return error.TitleTooLong;
-    if (!iter.appendString(title_z)) return error.AppendFailed;
+    // The portal requires a title; decision 11 drops the app's, so it is fixed.
+    if (!iter.appendString("Open")) return error.AppendFailed;
 
     // Options dictionary a{sv}
     var dict_iter = iter.openContainer(dbus.TYPE_ARRAY, "{sv}") orelse return error.ContainerFailed;
 
     // handle_token
     try appendDictEntryString(&dict_iter, "handle_token", token);
-
-    // accept_label (button text)
-    if (options.prompt) |prompt| {
-        var prompt_buf: [128:0]u8 = undefined;
-        const prompt_z = toSentinelSlice(prompt, &prompt_buf) orelse return error.PromptTooLong;
-        try appendDictEntryString(&dict_iter, "accept_label", prompt_z);
-    }
 
     // multiple selection
     try appendDictEntryBool(&dict_iter, "multiple", options.multiple);
@@ -121,16 +112,6 @@ fn promptForPathsInternal(
 
     // modal
     try appendDictEntryBool(&dict_iter, "modal", true);
-
-    // current_folder (starting directory as byte array)
-    if (options.starting_directory) |dir| {
-        try appendDictEntryBytes(&dict_iter, "current_folder", dir);
-    }
-
-    // File filters
-    if (options.allowed_extensions) |extensions| {
-        try appendFileFilters(&dict_iter, extensions);
-    }
 
     if (!iter.closeContainer(&dict_iter)) return error.ContainerFailed;
 
@@ -153,6 +134,7 @@ pub fn promptForNewPath(
     allocator: std.mem.Allocator,
     options: SavePromptOptions,
 ) ?[]const u8 {
+    if (options.suggested_name) |name| std.debug.assert(name.len > 0);
     return promptForNewPathInternal(allocator, options) catch |err| {
         logError("promptForNewPath failed", err);
         return null;
@@ -196,24 +178,14 @@ fn promptForNewPathInternal(
     // Parent window identifier (empty for Wayland)
     if (!iter.appendString("")) return error.AppendFailed;
 
-    // Title/message
-    const title = options.message orelse "Save";
-    var title_buf: [256:0]u8 = undefined;
-    const title_z = toSentinelSlice(title, &title_buf) orelse return error.TitleTooLong;
-    if (!iter.appendString(title_z)) return error.AppendFailed;
+    // The portal requires a title; decision 11 drops the app's, so it is fixed.
+    if (!iter.appendString("Save")) return error.AppendFailed;
 
     // Options dictionary a{sv}
     var dict_iter = iter.openContainer(dbus.TYPE_ARRAY, "{sv}") orelse return error.ContainerFailed;
 
     // handle_token
     try appendDictEntryString(&dict_iter, "handle_token", token);
-
-    // accept_label (button text)
-    if (options.prompt) |prompt| {
-        var prompt_buf: [128:0]u8 = undefined;
-        const prompt_z = toSentinelSlice(prompt, &prompt_buf) orelse return error.PromptTooLong;
-        try appendDictEntryString(&dict_iter, "accept_label", prompt_z);
-    }
 
     // modal
     try appendDictEntryBool(&dict_iter, "modal", true);
@@ -228,11 +200,6 @@ fn promptForNewPathInternal(
         var name_buf: [256:0]u8 = undefined;
         const name_z = toSentinelSlice(name, &name_buf) orelse return error.NameTooLong;
         try appendDictEntryString(&dict_iter, "current_name", name_z);
-    }
-
-    // File filters
-    if (options.allowed_extensions) |extensions| {
-        try appendFileFilters(&dict_iter, extensions);
     }
 
     if (!iter.closeContainer(&dict_iter)) return error.ContainerFailed;
@@ -510,52 +477,6 @@ fn appendDictEntryBytes(dict_iter: *dbus.MessageIter, key: [:0]const u8, value: 
     if (!dict_iter.closeContainer(&entry)) return error.ContainerFailed;
 }
 
-/// Append file filters as a(sa(us))
-fn appendFileFilters(dict_iter: *dbus.MessageIter, extensions: []const []const u8) !void {
-    var entry = dict_iter.openContainer(dbus.TYPE_DICT_ENTRY, null) orelse return error.ContainerFailed;
-
-    if (!entry.appendString("filters")) return error.AppendFailed;
-
-    // variant containing array of filters
-    var variant = entry.openContainer(dbus.TYPE_VARIANT, "a(sa(us))") orelse return error.ContainerFailed;
-
-    // Array of filter tuples
-    var filters_array = variant.openContainer(dbus.TYPE_ARRAY, "(sa(us))") orelse return error.ContainerFailed;
-
-    // Single filter tuple: ("Files", [(0, "*.ext"), ...])
-    var filter_tuple = filters_array.openContainer(dbus.TYPE_STRUCT, null) orelse return error.ContainerFailed;
-
-    // Filter name
-    if (!filter_tuple.appendString("Allowed files")) return error.AppendFailed;
-
-    // Array of (type, pattern) tuples
-    var patterns_array = filter_tuple.openContainer(dbus.TYPE_ARRAY, "(us)") orelse return error.ContainerFailed;
-
-    for (extensions) |ext| {
-        var pattern_tuple = patterns_array.openContainer(dbus.TYPE_STRUCT, null) orelse return error.ContainerFailed;
-
-        // Type 0 = glob pattern
-        if (!pattern_tuple.appendUint32(0)) return error.AppendFailed;
-
-        // Pattern string: "*.ext"
-        var pattern_buf: [128:0]u8 = undefined;
-        if (ext.len + 2 >= 128) continue; // Skip if too long
-        pattern_buf[0] = '*';
-        pattern_buf[1] = '.';
-        @memcpy(pattern_buf[2 .. 2 + ext.len], ext);
-        pattern_buf[2 + ext.len] = 0;
-        if (!pattern_tuple.appendString(pattern_buf[0 .. 2 + ext.len :0])) return error.AppendFailed;
-
-        if (!patterns_array.closeContainer(&pattern_tuple)) return error.ContainerFailed;
-    }
-
-    if (!filter_tuple.closeContainer(&patterns_array)) return error.ContainerFailed;
-    if (!filters_array.closeContainer(&filter_tuple)) return error.ContainerFailed;
-    if (!variant.closeContainer(&filters_array)) return error.ContainerFailed;
-    if (!entry.closeContainer(&variant)) return error.ContainerFailed;
-    if (!dict_iter.closeContainer(&entry)) return error.ContainerFailed;
-}
-
 // =============================================================================
 // Utilities
 // =============================================================================
@@ -613,18 +534,4 @@ test "token generation produces valid identifier" {
 
     try std.testing.expect(token.len > 0);
     try std.testing.expect(std.mem.startsWith(u8, token, "gooey_"));
-}
-
-test "PathPromptOptions defaults" {
-    const opts = PathPromptOptions{};
-    try std.testing.expect(opts.files == true);
-    try std.testing.expect(opts.directories == false);
-    try std.testing.expect(opts.multiple == false);
-}
-
-test "SavePromptOptions defaults" {
-    const opts = SavePromptOptions{};
-    try std.testing.expect(opts.can_create_directories == true);
-    try std.testing.expect(opts.directory == null);
-    try std.testing.expect(opts.suggested_name == null);
 }

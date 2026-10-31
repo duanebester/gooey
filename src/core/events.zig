@@ -28,10 +28,70 @@ pub const Completion = struct {
     outcome: Outcome,
 
     pub const Outcome = union(enum) {
-        file_selected: []const u8,
+        /// One path for a save or a single selection; up to
+        /// `ResourceLimits.events.dialog_path_count_max` for `multiple`.
+        file_selected: Paths,
         cancelled,
         failed: anyerror,
     };
+};
+
+/// The paths a file dialog selected, in the platform's order, joined by NUL
+/// bytes. No supported platform allows NUL in a path, so the join is
+/// unambiguous, and one path is kept without a copy. The count and total
+/// bytes are bounded by `ResourceLimits.events` (contract decision 11).
+pub const Paths = struct {
+    bytes: []const u8,
+    count: u32,
+
+    pub const separator: u8 = 0;
+
+    /// Join `paths` into `allocator`, a host's dialog scratch. A path that
+    /// is empty or holds a NUL is the platform's error, not the app's.
+    pub fn join(allocator: std.mem.Allocator, paths: []const []const u8) !Paths {
+        assert(paths.len > 0);
+        assert(paths.len <= std.math.maxInt(u32));
+        var size: usize = paths.len - 1;
+        for (paths) |path| {
+            if (path.len == 0) return error.InvalidPath;
+            if (std.mem.indexOfScalar(u8, path, separator) != null) return error.InvalidPath;
+            size += path.len;
+        }
+        if (paths.len == 1) return .{ .bytes = paths[0], .count = 1 };
+        const bytes = try allocator.alloc(u8, size);
+        var offset: usize = 0;
+        for (paths, 0..) |path, index| {
+            if (index > 0) {
+                bytes[offset] = separator;
+                offset += 1;
+            }
+            @memcpy(bytes[offset..][0..path.len], path);
+            offset += path.len;
+        }
+        assert(offset == size);
+        return .{ .bytes = bytes, .count = @intCast(paths.len) };
+    }
+
+    /// The paths in order; yields exactly `count` slices.
+    pub fn iterator(self: Paths) std.mem.SplitIterator(u8, .scalar) {
+        assert(self.count > 0);
+        assert(self.bytes.len >= 2 * self.count - 1);
+        return std.mem.splitScalar(u8, self.bytes, separator);
+    }
+
+    /// The first path: the only one for a save or a single selection.
+    pub fn first(self: Paths) []const u8 {
+        var paths = self.iterator();
+        const path = paths.first();
+        assert(path.len > 0);
+        return path;
+    }
+
+    /// Whether `count` matches the separators, so `iterator` yields `count`.
+    fn consistent(self: Paths) bool {
+        if (self.count == 0) return false;
+        return std.mem.count(u8, self.bytes, &.{separator}) == self.count - 1;
+    }
 };
 
 pub const Event = union(enum) {
@@ -141,8 +201,9 @@ pub const EventQueue = struct {
                 else => {},
             },
             .completion => |*completion| switch (completion.outcome) {
-                .file_selected => |path| {
-                    completion.outcome = .{ .file_selected = self.copyBytes(path) };
+                .file_selected => |*paths| {
+                    assert(paths.consistent());
+                    paths.bytes = self.copyBytes(paths.bytes);
                 },
                 else => {},
             },
@@ -170,7 +231,8 @@ pub const EventQueue = struct {
 
 /// A bounded single-producer, single-consumer ring for completions produced
 /// on worker threads. `tick` drains it on the main thread. Paths are copied
-/// into each slot's fixed bytes so the worker's buffer can be reused.
+/// into each slot's fixed bytes so the worker's buffer can be reused; a
+/// selection larger than one slot's bytes is a capacity-planning error.
 pub const CompletionRing = struct {
     slots: []Slot,
     /// Written by the producer, read by the consumer.
@@ -184,6 +246,7 @@ pub const CompletionRing = struct {
         request_id: u32,
         tag: std.meta.Tag(Completion.Outcome),
         failure: anyerror,
+        path_count: u32,
         path_len: u32,
         path: [path_bytes_max]u8,
     };
@@ -217,13 +280,19 @@ pub const CompletionRing = struct {
         const slot = &self.slots[head & (@as(u32, @intCast(self.slots.len)) - 1)];
         slot.request_id = completion.request_id;
         slot.tag = completion.outcome;
+        slot.path_count = 0;
         slot.path_len = 0;
         slot.failure = error.Unexpected;
         switch (completion.outcome) {
-            .file_selected => |path| {
-                assert(path.len <= path_bytes_max);
-                @memcpy(slot.path[0..path.len], path);
-                slot.path_len = @intCast(path.len);
+            .file_selected => |paths| {
+                assert(paths.consistent());
+                if (paths.bytes.len > path_bytes_max) {
+                    std.debug.panic("completion ring slot path bytes exhausted: capacity " ++
+                        "{d} bytes, {d} requested", .{ path_bytes_max, paths.bytes.len });
+                }
+                @memcpy(slot.path[0..paths.bytes.len], paths.bytes);
+                slot.path_count = paths.count;
+                slot.path_len = @intCast(paths.bytes.len);
             },
             .cancelled => {},
             .failed => |failure| slot.failure = failure,
@@ -239,7 +308,10 @@ pub const CompletionRing = struct {
         while (tail != head) : (tail +%= 1) {
             const slot = &self.slots[tail & (@as(u32, @intCast(self.slots.len)) - 1)];
             const outcome: Completion.Outcome = switch (slot.tag) {
-                .file_selected => .{ .file_selected = slot.path[0..slot.path_len] },
+                .file_selected => .{ .file_selected = .{
+                    .bytes = slot.path[0..slot.path_len],
+                    .count = slot.path_count,
+                } },
                 .cancelled => .cancelled,
                 .failed => .{ .failed = slot.failure },
             };
@@ -293,13 +365,42 @@ test "completion ring delivers distinct outcomes in order" {
     var ring: CompletionRing = undefined;
     try ring.initInPlace(std.testing.allocator, 4);
     defer ring.deinit(std.testing.allocator);
-    ring.push(.{ .request_id = 1, .outcome = .{ .file_selected = "/tmp/a.txt" } });
+    var scratch: [64]u8 = undefined;
+    var fixed = std.heap.FixedBufferAllocator.init(&scratch);
+    const two = try Paths.join(fixed.allocator(), &.{ "/tmp/a.txt", "/tmp/b" });
+    ring.push(.{ .request_id = 1, .outcome = .{ .file_selected = two } });
     ring.push(.{ .request_id = 2, .outcome = .cancelled });
     ring.push(.{ .request_id = 3, .outcome = .{ .failed = error.AccessDenied } });
     ring.drainInto(&queue);
     const events = queue.pending();
     try std.testing.expectEqual(@as(usize, 3), events.len);
-    try std.testing.expectEqualStrings("/tmp/a.txt", events[0].completion.outcome.file_selected);
+    var paths = events[0].completion.outcome.file_selected.iterator();
+    try std.testing.expectEqualStrings("/tmp/a.txt", paths.next().?);
+    try std.testing.expectEqualStrings("/tmp/b", paths.next().?);
+    try std.testing.expect(paths.next() == null);
     try std.testing.expect(events[1].completion.outcome == .cancelled);
     try std.testing.expectEqual(error.AccessDenied, events[2].completion.outcome.failed);
+}
+
+test "paths join without copying one path and refuse platform errors" {
+    // Goal: the join is exact at its edges. Method: one path keeps its
+    // memory; two paths fill a scratch of exactly their joined size, and one
+    // byte less fails; an empty path or one with a NUL is refused.
+    var scratch: [7]u8 = undefined;
+    var fixed = std.heap.FixedBufferAllocator.init(&scratch);
+    const path = "/a/b.txt";
+    const one = try Paths.join(fixed.allocator(), &.{path});
+    try std.testing.expectEqual(@as(u32, 1), one.count);
+    try std.testing.expectEqual(path.ptr, one.bytes.ptr);
+    try std.testing.expectEqualStrings(path, one.first());
+    const two = try Paths.join(fixed.allocator(), &.{ "/abc", "/d" });
+    try std.testing.expectEqualStrings("/abc\x00/d", two.bytes);
+    try std.testing.expectEqualStrings("/abc", two.first());
+    fixed.reset();
+    try std.testing.expectError(error.OutOfMemory, Paths.join(fixed.allocator(), &.{
+        "/abcd",
+        "/d",
+    }));
+    try std.testing.expectError(error.InvalidPath, Paths.join(fixed.allocator(), &.{ "/a", "" }));
+    try std.testing.expectError(error.InvalidPath, Paths.join(fixed.allocator(), &.{"/a\x00b"}));
 }

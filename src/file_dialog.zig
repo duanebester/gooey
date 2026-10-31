@@ -19,8 +19,8 @@
 //! // Open dialog
 //! if (file_dialog.promptForPaths(allocator, .{
 //!     .files = true,
-//!     .prompt = "Attach",
-//!     .allowed_extensions = &.{ "txt", "png", "pdf" },
+//!     .directories = false,
+//!     .multiple = true,
 //! })) |result| {
 //!     defer result.deinit();
 //!     for (result.paths) |path| {
@@ -30,8 +30,8 @@
 //!
 //! // Save dialog
 //! if (file_dialog.promptForNewPath(allocator, .{
+//!     .directory = null,
 //!     .suggested_name = "untitled.txt",
-//!     .prompt = "Save",
 //! })) |path| {
 //!     defer allocator.free(path);
 //!     // ...
@@ -91,9 +91,7 @@ pub fn promptForPaths(
     allocator: std.mem.Allocator,
     options: PathPromptOptions,
 ) ?PathPromptResult {
-    // Assertions: validate options are internally consistent
-    std.debug.assert(options.files or options.directories); // Must select at least one kind
-    std.debug.assert(!(options.directories and options.allowed_extensions != null)); // Extensions don't apply to directories
+    std.debug.assert(options.files or options.directories);
 
     if (comptime has_native_backend) {
         return backend.promptForPaths(allocator, options);
@@ -116,9 +114,8 @@ pub fn promptForNewPath(
     allocator: std.mem.Allocator,
     options: SavePromptOptions,
 ) ?[]const u8 {
-    // Assertions: validate allocator is usable and options have at least defaults
-    std.debug.assert(options.can_create_directories or options.directory != null or true); // SavePromptOptions always valid with defaults
-    std.debug.assert(options.suggested_name == null or options.suggested_name.?.len > 0); // If provided, name must be non-empty
+    if (options.suggested_name) |name| std.debug.assert(name.len > 0);
+    if (options.directory) |directory| std.debug.assert(directory.len > 0);
 
     if (comptime has_native_backend) {
         return backend.promptForNewPath(allocator, options);
@@ -129,24 +126,6 @@ pub fn promptForNewPath(
 // =============================================================================
 // Tests
 // =============================================================================
-
-test "PathPromptOptions defaults are valid for promptForPaths" {
-    const opts = PathPromptOptions{};
-    // Default: files=true, directories=false — at least one kind selected
-    try std.testing.expect(opts.files or opts.directories);
-    try std.testing.expect(opts.files == true);
-    try std.testing.expect(opts.directories == false);
-    try std.testing.expect(opts.multiple == false);
-    try std.testing.expect(opts.allowed_extensions == null);
-}
-
-test "SavePromptOptions defaults are valid for promptForNewPath" {
-    const opts = SavePromptOptions{};
-    try std.testing.expect(opts.can_create_directories == true);
-    try std.testing.expect(opts.directory == null);
-    try std.testing.expect(opts.suggested_name == null);
-    try std.testing.expect(opts.prompt == null);
-}
 
 test "supported flag matches platform" {
     if (comptime is_wasm) {

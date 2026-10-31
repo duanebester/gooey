@@ -166,19 +166,25 @@ test "a TextArea takes lines, follows the caret, and places it where clicked" {
     try testing.expectApproxEqAbs(inset, query.imeCursorRect().?.y, 0.001);
 }
 
-/// An app whose button opens a file dialog, for the dialog check.
+/// An app whose button opens a file dialog, for the dialog check. Its first
+/// three clicks open a multiple selection; the fourth saves with a name it
+/// builds in its state.
 const DialogState = struct {
+    clicks: u32 = 0,
+    name: [11]u8 = "draft-0.txt".*,
     path_bytes: [256]u8 = undefined,
     path_len: u32 = 0,
+    path_count: u32 = 0,
     cancelled: u32 = 0,
     failed: u32 = 0,
 
     pub fn completed(self: *DialogState, effects: *Effects) void {
         const completion = effects.completionEvent().?;
         switch (completion.outcome) {
-            .file_selected => |path| {
-                @memcpy(self.path_bytes[0..path.len], path);
-                self.path_len = @intCast(path.len);
+            .file_selected => |paths| {
+                @memcpy(self.path_bytes[0..paths.bytes.len], paths.bytes);
+                self.path_len = @intCast(paths.bytes.len);
+                self.path_count = paths.count;
             },
             .cancelled => self.cancelled += 1,
             .failed => self.failed += 1,
@@ -199,9 +205,21 @@ fn dialogRender(cx: *Cx) void {
     }));
 }
 
-fn openDialog(_: *DialogState, effects: *Effects) void {
+fn openDialog(self: *DialogState, effects: *Effects) void {
     const on_complete = effects.handler(DialogState.completed);
-    effects.openFileDialog(.{ .kind = .open, .on_complete = on_complete });
+    self.clicks += 1;
+    if (self.clicks <= 3) {
+        effects.openFileDialog(.{
+            .kind = .{ .open = .{ .files = true, .directories = false, .multiple = true } },
+            .on_complete = on_complete,
+        });
+        return;
+    }
+    self.name[6] = '0' + @as(u8, @intCast(self.clicks));
+    effects.openFileDialog(.{
+        .kind = .{ .save = .{ .directory = "/tmp", .suggested_name = &self.name } },
+        .on_complete = on_complete,
+    });
 }
 
 /// A dialog service that records where it ran and answers from a script.
@@ -212,6 +230,8 @@ const ScriptedDialog = struct {
     opened_in_drain: u32 = 0,
     answers: []const core.internals.events.Completion.Outcome,
     next: u32 = 0,
+    saved_name: [16]u8 = undefined,
+    saved_name_len: u32 = 0,
 
     fn open(
         context: *anyopaque,
@@ -220,7 +240,18 @@ const ScriptedDialog = struct {
     ) core.internals.events.Completion.Outcome {
         const self: *ScriptedDialog = @ptrCast(@alignCast(context));
         _ = scratch;
-        std.debug.assert(request.kind == .open);
+        switch (request.kind) {
+            .open => |options| std.debug.assert(options.multiple),
+            .save => |options| {
+                const name = options.suggested_name.?;
+                @memcpy(self.saved_name[0..name.len], name);
+                self.saved_name_len = @intCast(name.len);
+                std.debug.assert(std.mem.eql(u8, options.directory.?, "/tmp"));
+                // The window's copy, not the handler's state.
+                const copy = self.window.dialog_request_bytes;
+                std.debug.assert(name.ptr == copy.ptr + "/tmp".len);
+            },
+        }
         if (std.Thread.getCurrentId() == self.main_thread) self.opened_on_main += 1;
         if (self.window.phase == .drain) self.opened_in_drain += 1;
         const answer = self.answers[self.next];
@@ -230,10 +261,12 @@ const ScriptedDialog = struct {
 };
 
 test "a file dialog opened from a handler runs on the main thread after the handler" {
-    // Goal: plan exit criterion. Methodology: click a button whose handler
-    // requests a dialog; the scripted service records the thread and phase it
-    // ran in, and answers selected, then cancelled, then failed. Each answer
-    // must reach the completion handler as a distinct outcome a tick later.
+    // Goal: plan exit criterion and decision 11's options. Methodology: click
+    // a button whose handler requests a dialog; the scripted service records
+    // the thread and phase it ran in, and answers two selected paths, then
+    // cancelled, then failed, then one saved path. Each answer must reach
+    // the completion handler as a distinct outcome a tick later. The save's
+    // folder and name must reach the service from the window's own copy.
     const app = try testing.allocator.create(DialogApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -242,9 +275,10 @@ test "a file dialog opened from a handler runs on the main thread after the hand
         .window = &app.window,
         .main_thread = std.Thread.getCurrentId(),
         .answers = &.{
-            .{ .file_selected = "/tmp/notes.txt" },
+            .{ .file_selected = .{ .bytes = "/tmp/notes.txt\x00/tmp/b", .count = 2 } },
             .cancelled,
             .{ .failed = error.AccessDenied },
+            .{ .file_selected = .{ .bytes = "/tmp/draft-4.txt", .count = 1 } },
         },
     };
     app.window.file_dialog = .{ .context = &service, .open = ScriptedDialog.open };
@@ -252,17 +286,25 @@ test "a file dialog opened from a handler runs on the main thread after the hand
     var now: u64 = 0;
     app.tick(now);
     var round: u32 = 0;
-    while (round < 3) : (round += 1) {
+    while (round < 4) : (round += 1) {
         app.window.queue.push(.{ .input = .{ .mouse_down = mouse(20, 20) } });
         app.window.queue.push(.{ .input = .{ .mouse_up = mouse(20, 20) } });
         now += 1;
         app.tick(now); // The click opens the dialog after the drain.
         now += 1;
         app.tick(now); // The next drain delivers the outcome.
+        if (round == 0) {
+            try testing.expectEqual(@as(u32, 2), app.state.path_count);
+            const selected = app.state.path_bytes[0..app.state.path_len];
+            try testing.expectEqualStrings("/tmp/notes.txt\x00/tmp/b", selected);
+        }
     }
-    try testing.expectEqual(@as(u32, 3), service.opened_on_main);
-    try testing.expectEqual(@as(u32, 3), service.opened_in_drain);
-    try testing.expectEqualStrings("/tmp/notes.txt", app.state.path_bytes[0..app.state.path_len]);
+    try testing.expectEqual(@as(u32, 4), service.opened_on_main);
+    try testing.expectEqual(@as(u32, 4), service.opened_in_drain);
+    try testing.expectEqualStrings("draft-4.txt", service.saved_name[0..service.saved_name_len]);
+    try testing.expectEqual(@as(u32, 1), app.state.path_count);
+    const saved = app.state.path_bytes[0..app.state.path_len];
+    try testing.expectEqualStrings("/tmp/draft-4.txt", saved);
     try testing.expectEqual(@as(u32, 1), app.state.cancelled);
     try testing.expectEqual(@as(u32, 1), app.state.failed);
 }

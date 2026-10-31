@@ -288,6 +288,14 @@ pub const ResourceLimits = struct {
                 element_count,
             );
         }
+        if (self.events.dialog_path_bytes_max > self.events.text_bytes_max) {
+            return relationship(
+                .events,
+                "dialog_path_bytes_max",
+                self.events.dialog_path_bytes_max,
+                self.events.text_bytes_max,
+            );
+        }
         if (self.records.paint_record_count_frame_max < element_count) {
             return .{
                 .budget = .records,
@@ -1068,31 +1076,47 @@ pub const EventLimits = struct {
     completion_count_max: u32,
     /// Bytes of event text (IME and typed text, dialog paths) in flight.
     text_bytes_max: u32,
+    /// Paths one file dialog may select (decision 11); more fails fast.
+    dialog_path_count_max: u32,
+    /// Bytes of one dialog's paths, joined (`events.Paths`), and of a save
+    /// request's folder and suggested name together. At most
+    /// `text_bytes_max`, since the queue copies the paths.
+    dialog_path_bytes_max: u32,
 
     pub const nano: EventLimits = .{
         .queue_count_max = 64,
         .completion_count_max = 16,
         .text_bytes_max = 4 * 1024,
+        .dialog_path_count_max = 16,
+        .dialog_path_bytes_max = 2 * 1024,
     };
     pub const small: EventLimits = .{
         .queue_count_max = 128,
         .completion_count_max = 32,
         .text_bytes_max = 8 * 1024,
+        .dialog_path_count_max = 32,
+        .dialog_path_bytes_max = 4 * 1024,
     };
     pub const standard: EventLimits = .{
         .queue_count_max = 256,
         .completion_count_max = 64,
         .text_bytes_max = 16 * 1024,
+        .dialog_path_count_max = 64,
+        .dialog_path_bytes_max = 8 * 1024,
     };
     pub const large: EventLimits = .{
         .queue_count_max = 512,
         .completion_count_max = 128,
         .text_bytes_max = 64 * 1024,
+        .dialog_path_count_max = 256,
+        .dialog_path_bytes_max = 32 * 1024,
     };
     pub const ceiling: EventLimits = .{
         .queue_count_max = 4_096,
         .completion_count_max = 1_024,
         .text_bytes_max = 1024 * 1024,
+        .dialog_path_count_max = 1_024,
+        .dialog_path_bytes_max = 64 * 1024,
     };
 };
 

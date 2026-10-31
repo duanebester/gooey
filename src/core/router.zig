@@ -437,7 +437,38 @@ fn requestDialog(window: *Window, request: handler_mod.FileDialogRequest) void {
             window.frame_number,
         });
     }
-    window.pending_dialog = request;
+    var copy = request;
+    switch (copy.kind) {
+        .open => {},
+        .save => |*options| copySaveOptions(window, options),
+    }
+    window.pending_dialog = copy;
+}
+
+/// Copy a save request's folder and name into the window, since the
+/// handler's strings may live in its frame. Both share one bounded buffer.
+fn copySaveOptions(window: *Window, options: *handler_mod.SavePromptOptions) void {
+    const capacity = window.dialog_request_bytes.len;
+    const directory_len = if (options.directory) |directory| directory.len else 0;
+    const name_len = if (options.suggested_name) |name| name.len else 0;
+    if (directory_len + name_len > capacity) {
+        std.debug.panic("file dialog request bytes exhausted: capacity {d} bytes, {d} " ++
+            "requested in frame {d}. Raise ResourceLimits.events.dialog_path_bytes_max.", .{
+            capacity,
+            directory_len + name_len,
+            window.frame_number,
+        });
+    }
+    const target = window.dialog_request_bytes;
+    if (options.directory) |directory| {
+        @memcpy(target[0..directory_len], directory);
+        options.directory = target[0..directory_len];
+    }
+    if (options.suggested_name) |name| {
+        @memcpy(target[directory_len..][0..name_len], name);
+        options.suggested_name = target[directory_len..][0..name_len];
+    }
+    assert(directory_len + name_len <= capacity);
 }
 
 pub fn setFocus(window: *Window, id: ElementId) void {

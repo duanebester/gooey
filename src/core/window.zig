@@ -55,6 +55,15 @@ pub const box_depth_max: u32 = layout_mod.engine.MAX_OPEN_DEPTH;
 /// the shaper's own growth, reset at the start of every tick.
 pub const text_scratch_bytes: u32 = 256 * 1024;
 
+comptime {
+    // A file dialog's platform code allocates its paths and their slices from
+    // the text scratch, and `events.Paths.join` copies them once more, so a
+    // selection within every profile's limits always fits.
+    const dialog = limits_mod.EventLimits.ceiling;
+    assert(2 * dialog.dialog_path_bytes_max + 16 * dialog.dialog_path_count_max <=
+        text_scratch_bytes);
+}
+
 /// File dialogs awaiting their completion. One opens per tick, and its
 /// completion is delivered the next tick, so a handful covers bursts.
 pub const dialog_count_max: u32 = 8;
@@ -200,7 +209,8 @@ pub const Presenter = struct {
 };
 
 /// Runs a file dialog on the main thread and returns its outcome. Bound per
-/// backend: `MockFileDialog` on TestBackend, AppKit's open panel on macOS.
+/// backend: AppKit's panels on macOS, the XDG portal on Linux, and a
+/// scripted service in tests.
 pub const FileDialogService = struct {
     context: *anyopaque,
     open: *const fn (
@@ -239,6 +249,10 @@ pub const Window = struct {
     /// The text engines' clipboard; a host binds its platform service.
     clipboard: clipboard_mod.Clipboard,
     clipboard_bytes: []u8,
+    /// A save request's folder and suggested name, copied when its handler
+    /// returns so they outlive the handler's frame
+    /// (`limits.events.dialog_path_bytes_max` bytes).
+    dialog_request_bytes: []u8,
     scene: *Scene,
     text_scratch: []u8,
     text_scratch_allocator: std.heap.FixedBufferAllocator,
@@ -573,6 +587,8 @@ fn initRuntimeStorage(self: *Window, gpa: std.mem.Allocator, limits: *const Reso
     self.clipboard_bytes = try gpa.alloc(u8, clipboardBytes(&limits.text));
     errdefer gpa.free(self.clipboard_bytes);
     self.clipboard = .init(self.clipboard_bytes);
+    self.dialog_request_bytes = try gpa.alloc(u8, limits.events.dialog_path_bytes_max);
+    errdefer gpa.free(self.dialog_request_bytes);
     self.scene = try gpa.create(Scene);
     errdefer gpa.destroy(self.scene);
     self.scene.* = try Scene.initCapacity(gpa, &limits.scene);
@@ -602,6 +618,7 @@ fn deinitRuntimeStorage(self: *Window, gpa: std.mem.Allocator) void {
     gpa.free(self.text_scratch);
     self.scene.deinit();
     gpa.destroy(self.scene);
+    gpa.free(self.dialog_request_bytes);
     gpa.free(self.clipboard_bytes);
     if (self.areas_reserved) self.areas.deinit(gpa);
     self.inputs.deinit(gpa);

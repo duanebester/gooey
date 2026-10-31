@@ -435,23 +435,19 @@ fn openDialog(
 ) Outcome {
     const host: *Host = @ptrCast(@alignCast(context));
     assert(host.core.phase == .drain);
-    switch (request.kind) {
-        .open => {
-            const result = file_dialog.promptForPaths(scratch, .{
-                .files = true,
-                .directories = false,
-                .multiple = false,
-            }) orelse return .cancelled;
+    const paths = switch (request.kind) {
+        .open => |options| paths: {
+            const result = file_dialog.promptForPaths(scratch, options) orelse return .cancelled;
             if (result.paths.len == 0) return .cancelled;
-            assert(result.paths.len == 1);
-            return .{ .file_selected = result.paths[0] };
+            if (!options.multiple) assert(result.paths.len == 1);
+            break :paths core_events.Paths.join(scratch, result.paths);
         },
-        .save => {
-            const path = file_dialog.promptForNewPath(scratch, .{}) orelse return .cancelled;
-            assert(path.len > 0);
-            return .{ .file_selected = path };
+        .save => |options| paths: {
+            const path = file_dialog.promptForNewPath(scratch, options) orelse return .cancelled;
+            break :paths core_events.Paths.join(scratch, &.{path});
         },
-    }
+    };
+    return .{ .file_selected = paths catch |err| return .{ .failed = err } };
 }
 
 /// The text engines' clipboard on the platform's 0.3.1 path, main thread.

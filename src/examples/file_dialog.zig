@@ -1,9 +1,10 @@
-//! File Dialog Example
+//! File Dialog Example on the 0.3.1 runtime, kept for Windows until Windows
+//! moves to the core; macOS and Linux run `core_file_dialog.zig`.
 //!
 //! Demonstrates:
-//! - Opening files with native file dialogs (cross-platform)
-//! - Saving files with native save dialogs (cross-platform)
-//! - Different dialog options (multiple selection, directories, file types)
+//! - Opening files with native file dialogs
+//! - Saving files with native save dialogs
+//! - Different dialog options (multiple selection, directories)
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -50,8 +51,6 @@ const AppState = struct {
             .files = true,
             .directories = false,
             .multiple = false,
-            .prompt = "Open",
-            .message = "Select a file to open",
         })) |result| {
             defer result.deinit();
             self.last_action = "Opened single file:";
@@ -68,9 +67,6 @@ const AppState = struct {
             .files = true,
             .directories = false,
             .multiple = true,
-            .prompt = "Select",
-            .message = "Select multiple files",
-            .allowed_extensions = &.{ "zig", "txt", "md", "json" },
         })) |result| {
             defer result.deinit();
             self.last_action = "Opened multiple files:";
@@ -87,8 +83,6 @@ const AppState = struct {
             .files = false,
             .directories = true,
             .multiple = false,
-            .prompt = "Choose",
-            .message = "Select a directory",
         })) |result| {
             defer result.deinit();
             self.last_action = "Selected directory:";
@@ -102,10 +96,8 @@ const AppState = struct {
         self.clearPaths();
 
         if (file_dialog.promptForNewPath(std.heap.page_allocator, .{
+            .directory = null,
             .suggested_name = "untitled.txt",
-            .prompt = "Save",
-            .message = "Choose where to save your file",
-            .allowed_extensions = &.{ "txt", "md" },
         })) |path| {
             defer std.heap.page_allocator.free(path);
             self.last_action = "Save location:";

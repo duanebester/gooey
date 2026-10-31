@@ -17,11 +17,11 @@
 //!   the Common Item Dialog cannot offer files and folders together.
 //! - **Paths.** Returned paths are WTF-8, the encoding Zig's file APIs take on
 //!   Windows, so a name with an unpaired surrogate still opens. Input paths
-//!   and labels are read as WTF-8, a superset of UTF-8.
+//!   and the suggested name are read as WTF-8, a superset of UTF-8.
 //! - **Working directory.** `FOS_NOCHANGEDIR` keeps the dialog from changing
 //!   the process's working directory, which examples use to find `assets/`.
-//! - **Unsupported.** `SavePromptOptions.can_create_directories` is ignored:
-//!   the dialog always offers "New folder".
+//! - **New folders.** The dialog always offers "New folder", as the shared
+//!   options promise (contract decision 11).
 //!
 //! ## COM
 //!
@@ -35,11 +35,11 @@
 //! The shared contract returns heap paths owned by the caller, as on every
 //! backend, which conflicts with section 2; replacing it with bounded request
 //! slots is phase 6 of `docs/platform_interface_design.md`. Everything else is
-//! fixed and on the stack, at most about 72 KiB per call:
+//! fixed and on the stack, at most about 65 KiB per call:
 //!
-//! - `DialogText`: about 8 KiB of UTF-16 for the title, button label, file
-//!   name, default extension, and filter, alive until the dialog is released.
-//! - The starting folder: `path_units_max + 1` units, 64 KiB, in one leaf.
+//! - The suggested file name: `text_units_max + 1` units, about 1 KiB, alive
+//!   until the dialog is released.
+//! - The save dialog's folder: `path_units_max + 1` units, 64 KiB, in one leaf.
 //! - Results: at most `path_count_max` paths of at most `path_units_max`
 //!   units each. A longer path or a larger selection is refused, never
 //!   truncated. The result is at most 1,024 × 98,301 B in the worst case;
@@ -60,8 +60,7 @@ pub const PathPromptOptions = interface_mod.PathPromptOptions;
 pub const PathPromptResult = interface_mod.PathPromptResult;
 pub const SavePromptOptions = interface_mod.SavePromptOptions;
 
-/// Longest title, button label, file name, or default extension, in UTF-16
-/// units excluding the terminator.
+/// Longest suggested file name, in UTF-16 units excluding the terminator.
 pub const text_units_max: u32 = 512;
 
 /// Longest path, in UTF-16 units excluding the terminator: Windows' limit
@@ -71,13 +70,6 @@ pub const path_units_max: u32 = 32_767;
 /// Most paths one open dialog may return.
 pub const path_count_max: u32 = 1_024;
 
-/// Most entries in `allowed_extensions`.
-pub const extension_count_max: u32 = 64;
-
-/// Longest wildcard list built from `allowed_extensions` ("*.zig;*.txt"), in
-/// UTF-16 units excluding the terminator.
-pub const filter_units_max: u32 = 2_048;
-
 const DialogError = error{
     Cancelled,
     ComFailed,
@@ -86,34 +78,17 @@ const DialogError = error{
     OutOfMemory,
     PathTooLong,
     SelectionEmpty,
-    TooManyExtensions,
     TooManyPaths,
 };
-
-/// UTF-16 copies of every string and filter handed to a dialog. Kept in the
-/// caller's frame until the dialog is released, so correctness does not
-/// depend on whether the dialog copies what it is given.
-const DialogText = struct {
-    title: [text_units_max + 1]u16 = undefined,
-    ok_button_label: [text_units_max + 1]u16 = undefined,
-    file_name: [text_units_max + 1]u16 = undefined,
-    default_extension: [text_units_max + 1]u16 = undefined,
-    filter: [filter_units_max + 1]u16 = undefined,
-    filter_specs: [1]shell.COMDLG_FILTERSPEC = undefined,
-};
-
-const TextTarget = enum { title, ok_button_label, file_name, default_extension };
 
 /// Whether `comEnter` initialized COM on this thread, so `comLeave` must
 /// balance it.
 const Apartment = enum { entered, foreign };
 
 comptime {
-    // A wildcard list holds at least "*.x" per extension and ";" between.
-    assert(extension_count_max * 4 <= filter_units_max);
     // WTF-8 needs at most three bytes per UTF-16 unit.
     assert(@as(u64, path_units_max) * 3 < std.math.maxInt(u32));
-    assert(@sizeOf(DialogText) < 16 * 1024);
+    assert(text_units_max < path_units_max);
 }
 
 // =============================================================================
@@ -124,7 +99,6 @@ comptime {
 /// user cancels or on error. The caller owns the result and calls `deinit`.
 pub fn promptForPaths(allocator: Allocator, options: PathPromptOptions) ?PathPromptResult {
     assert(options.files or options.directories);
-    if (options.directories) assert(options.allowed_extensions == null);
 
     const apartment = comEnter();
     defer comLeave(apartment);
@@ -136,8 +110,7 @@ pub fn promptForPaths(allocator: Allocator, options: PathPromptOptions) ?PathPro
     ) orelse return null;
     defer open.dialog().release();
 
-    var text: DialogText = .{};
-    openConfigure(open.dialog(), &options, &text) catch |err| {
+    openConfigure(open.dialog(), &options) catch |err| {
         dialogFailed("open", err);
         return null;
     };
@@ -154,30 +127,13 @@ pub fn promptForPaths(allocator: Allocator, options: PathPromptOptions) ?PathPro
     return result;
 }
 
-fn openConfigure(
-    dialog: *shell.IFileDialog,
-    options: *const PathPromptOptions,
-    text: *DialogText,
-) DialogError!void {
+fn openConfigure(dialog: *shell.IFileDialog, options: *const PathPromptOptions) DialogError!void {
     assert(options.files or options.directories);
 
     var flags_default: u32 = 0;
     try comChecked(dialog.vtable.GetOptions(dialog, &flags_default), "GetOptions");
     const flags = openFlags(flags_default, options);
     try comChecked(dialog.vtable.SetOptions(dialog, flags), "SetOptions");
-
-    if (options.message) |message| {
-        try dialogTextSet(dialog, .title, &text.title, message);
-    }
-    if (options.prompt) |prompt| {
-        try dialogTextSet(dialog, .ok_button_label, &text.ok_button_label, prompt);
-    }
-    if (options.starting_directory) |directory| {
-        try dialogFolderSet(dialog, directory);
-    }
-    if (options.allowed_extensions) |extensions| {
-        try dialogFilterSet(dialog, text, extensions);
-    }
 }
 
 /// The dialog's default options plus Gooey's: file system items only, the
@@ -269,8 +225,8 @@ pub fn promptForNewPath(allocator: Allocator, options: SavePromptOptions) ?[]con
     ) orelse return null;
     defer save.dialog().release();
 
-    var text: DialogText = .{};
-    saveConfigure(save.dialog(), &options, &text) catch |err| {
+    var file_name: [text_units_max + 1]u16 = undefined;
+    saveConfigure(save.dialog(), &options, &file_name) catch |err| {
         dialogFailed("save", err);
         return null;
     };
@@ -286,34 +242,26 @@ pub fn promptForNewPath(allocator: Allocator, options: SavePromptOptions) ?[]con
     return path;
 }
 
+/// `file_name` holds the suggested name's UTF-16 copy and stays in the
+/// caller's frame until the dialog is released, so correctness does not
+/// depend on whether the dialog copies it.
 fn saveConfigure(
     dialog: *shell.IFileDialog,
     options: *const SavePromptOptions,
-    text: *DialogText,
+    file_name: *[text_units_max + 1]u16,
 ) DialogError!void {
     var flags_default: u32 = 0;
     try comChecked(dialog.vtable.GetOptions(dialog, &flags_default), "GetOptions");
     try comChecked(dialog.vtable.SetOptions(dialog, saveFlags(flags_default)), "SetOptions");
 
-    if (options.message) |message| {
-        try dialogTextSet(dialog, .title, &text.title, message);
-    }
-    if (options.prompt) |prompt| {
-        try dialogTextSet(dialog, .ok_button_label, &text.ok_button_label, prompt);
-    }
     if (options.suggested_name) |name| {
-        try dialogTextSet(dialog, .file_name, &text.file_name, name);
+        assert(name.len > 0);
+        const wide = try wideEncode(file_name, name);
+        assert(wide.len <= text_units_max);
+        try comChecked(dialog.vtable.SetFileName(dialog, wide), "SetFileName");
     }
     if (options.directory) |directory| {
         try dialogFolderSet(dialog, directory);
-    }
-    if (options.allowed_extensions) |extensions| {
-        try dialogFilterSet(dialog, text, extensions);
-        // Typing "notes" saves "notes.txt", as the filter promises.
-        if (extensions.len > 0) {
-            const extension = extensions[0];
-            try dialogTextSet(dialog, .default_extension, &text.default_extension, extension);
-        }
     }
 }
 
@@ -397,24 +345,6 @@ fn dialogShow(dialog: *shell.IFileDialog) DialogError!void {
     try comChecked(result, "Show");
 }
 
-fn dialogTextSet(
-    dialog: *shell.IFileDialog,
-    target: TextTarget,
-    buffer: *[text_units_max + 1]u16,
-    text: []const u8,
-) DialogError!void {
-    const wide = try wideEncode(buffer, text);
-    assert(wide.len <= text_units_max);
-    const vtable = dialog.vtable;
-    const result = switch (target) {
-        .title => vtable.SetTitle(dialog, wide),
-        .ok_button_label => vtable.SetOkButtonLabel(dialog, wide),
-        .file_name => vtable.SetFileName(dialog, wide),
-        .default_extension => vtable.SetDefaultExtension(dialog, wide),
-    };
-    try comChecked(result, @tagName(target));
-}
-
 /// Open the dialog in `directory`. A folder the shell cannot resolve is not
 /// an error: the dialog opens where it would have without the option.
 fn dialogFolderSet(dialog: *shell.IFileDialog, directory: []const u8) DialogError!void {
@@ -434,22 +364,6 @@ fn dialogFolderSet(dialog: *shell.IFileDialog, directory: []const u8) DialogErro
             hresultBits(result),
         });
     }
-}
-
-/// Restrict the dialog to `extensions`. An empty list restricts nothing, the
-/// same as no list.
-fn dialogFilterSet(
-    dialog: *shell.IFileDialog,
-    text: *DialogText,
-    extensions: []const []const u8,
-) DialogError!void {
-    if (extensions.len == 0) return;
-    const spec = try filterEncode(&text.filter, extensions);
-    assert(spec.len > 0);
-    // The list doubles as the display name: "*.zig;*.txt" is what it accepts.
-    text.filter_specs[0] = .{ .pszName = spec, .pszSpec = spec };
-    const specs = &text.filter_specs;
-    try comChecked(dialog.vtable.SetFileTypes(dialog, specs.len, specs), "SetFileTypes");
 }
 
 /// A caller-owned WTF-8 copy of the item's file system path.
@@ -499,27 +413,6 @@ fn hresultBits(result: shell.HRESULT) u32 {
 fn wideEncode(target: []u16, text: []const u8) DialogError![:0]const u16 {
     assert(target.len > 0);
     const count = try wideAppend(target, 0, text);
-    return wideTerminate(target, count);
-}
-
-/// Encode `extensions` as one wildcard list, "*.zig;*.txt", with a
-/// terminating zero.
-fn filterEncode(target: []u16, extensions: []const []const u8) DialogError![:0]const u16 {
-    assert(target.len > 0);
-    assert(extensions.len > 0);
-    if (extensions.len <= extension_count_max) {
-        // Within the bound; encoded below.
-    } else {
-        return error.TooManyExtensions;
-    }
-
-    var count: usize = 0;
-    for (extensions, 0..) |extension, index| {
-        assert(extension.len > 0);
-        assert(std.mem.indexOfScalar(u8, extension, ';') == null); // The list separator.
-        count = try wideAppend(target, count, if (index == 0) "*." else ";*.");
-        count = try wideAppend(target, count, extension);
-    }
     return wideTerminate(target, count);
 }
 
@@ -596,42 +489,28 @@ test "wideEncode fills to capacity and refuses one unit more or invalid text" {
     try testing.expectError(error.OptionInvalid, wideEncode(&buffer, "a\x00b"));
 }
 
-test "filterEncode builds one wildcard list and enforces both bounds" {
-    var buffer: [filter_units_max + 1]u16 = undefined;
-    try testing.expectEqualSlices(u16, L("*.zig"), try filterEncode(&buffer, &.{"zig"}));
-    try testing.expectEqualSlices(
-        u16,
-        L("*.zig;*.txt;*.md"),
-        try filterEncode(&buffer, &.{ "zig", "txt", "md" }),
-    );
-
-    // Count bound: exactly `extension_count_max` entries succeed, one more
-    // is refused.
-    const many: [extension_count_max + 1][]const u8 = @splat("txt");
-    const spec = try filterEncode(&buffer, many[0..extension_count_max]);
-    try testing.expectEqual(@as(usize, extension_count_max * 6 - 1), spec.len);
-    try testing.expectError(error.TooManyExtensions, filterEncode(&buffer, &many));
-
-    // Length bound: a list that does not fit with its terminator is refused.
-    var small: [6]u16 = undefined;
-    try testing.expectEqualSlices(u16, L("*.txt"), try filterEncode(&small, &.{"txt"}));
-    try testing.expectError(error.OptionTooLong, filterEncode(&small, &.{"text"}));
-}
-
 test "openFlags selects the kind and count and keeps the dialog defaults" {
     const flags_default = shell.FOS_PATHMUSTEXIST | shell.FOS_FILEMUSTEXIST;
-    const files = openFlags(flags_default, &.{ .files = true, .multiple = true });
+    const files = openFlags(flags_default, &.{
+        .files = true,
+        .directories = false,
+        .multiple = true,
+    });
     try testing.expect(files & shell.FOS_ALLOWMULTISELECT != 0);
     try testing.expect(files & shell.FOS_PICKFOLDERS == 0);
     try testing.expect(files & shell.FOS_FORCEFILESYSTEM != 0);
     try testing.expect(files & shell.FOS_NOCHANGEDIR != 0);
 
-    const folders = openFlags(0, &.{ .files = false, .directories = true });
+    const folders = openFlags(0, &.{ .files = false, .directories = true, .multiple = false });
     try testing.expect(folders & shell.FOS_PICKFOLDERS != 0);
     try testing.expect(folders & shell.FOS_FILEMUSTEXIST == 0);
 
     // A default that allows several items is cleared for a single choice.
-    const single = openFlags(shell.FOS_ALLOWMULTISELECT, &.{});
+    const single = openFlags(shell.FOS_ALLOWMULTISELECT, &.{
+        .files = true,
+        .directories = false,
+        .multiple = false,
+    });
     try testing.expect(single & shell.FOS_ALLOWMULTISELECT == 0);
 
     const save = saveFlags(0);
@@ -703,9 +582,6 @@ test "system open dialog accepts every option and fails cleanly before Show" {
     const apartment = comEnter();
     defer comLeave(apartment);
 
-    const directory = try testWorkingDirectory();
-    defer testing.allocator.free(directory);
-
     const open = dialogCreate(
         shell.IFileOpenDialog,
         &shell.CLSID_FileOpenDialog,
@@ -713,15 +589,8 @@ test "system open dialog accepts every option and fails cleanly before Show" {
     ) orelse return error.TestDialogCreation;
     defer open.dialog().release();
 
-    const options: PathPromptOptions = .{
-        .multiple = true,
-        .prompt = "Attach",
-        .message = "Gooey test \u{1F389}",
-        .starting_directory = directory,
-        .allowed_extensions = &.{ "zig", "md" },
-    };
-    var text: DialogText = .{};
-    try openConfigure(open.dialog(), &options, &text);
+    const options: PathPromptOptions = .{ .files = true, .directories = false, .multiple = true };
+    try openConfigure(open.dialog(), &options);
 
     var flags: u32 = 0;
     try comChecked(open.dialog().vtable.GetOptions(open.dialog(), &flags), "GetOptions");
@@ -744,14 +613,11 @@ test "system save dialog accepts every option" {
     defer save.dialog().release();
 
     const options: SavePromptOptions = .{
-        .suggested_name = "untitled.txt",
-        .prompt = "Save",
-        .message = "Gooey test",
+        .suggested_name = "untitled \u{1F389}.txt",
         .directory = "Z:\\gooey\\no such folder", // Unresolved: logged and ignored.
-        .allowed_extensions = &.{ "txt", "md" },
     };
-    var text: DialogText = .{};
-    try saveConfigure(save.dialog(), &options, &text);
+    var file_name: [text_units_max + 1]u16 = undefined;
+    try saveConfigure(save.dialog(), &options, &file_name);
 
     var flags: u32 = 0;
     try comChecked(save.dialog().vtable.GetOptions(save.dialog(), &flags), "GetOptions");

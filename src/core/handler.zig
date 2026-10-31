@@ -15,6 +15,7 @@ const builtin = @import("builtin");
 const id_mod = @import("id.zig");
 const input = @import("../input/mod.zig");
 const events = @import("events.zig");
+const platform_interface = @import("../platform/interface.zig");
 const Theme = @import("../ui/theme.zig").Theme;
 const Live = @import("../accessibility/types.zig").Live;
 const Clipboard = @import("clipboard.zig").Clipboard;
@@ -143,12 +144,20 @@ pub const Store = struct {
 };
 
 /// File dialog requests a handler can make (contract §4, rule 5). The result
-/// arrives as a completion event with an explicit outcome.
+/// arrives as a completion event with an explicit outcome. The options are
+/// GPUI's (decision 11): an open dialog selects files, directories, or both,
+/// one or several; a save dialog may start in a folder with a name.
 pub const FileDialogRequest = struct {
-    kind: enum { open, save },
+    kind: union(enum) {
+        open: PathPromptOptions,
+        save: SavePromptOptions,
+    },
     /// Invoked with the completion (`Effects.completionEvent`).
     on_complete: Handler,
 };
+
+pub const PathPromptOptions = platform_interface.PathPromptOptions;
+pub const SavePromptOptions = platform_interface.SavePromptOptions;
 
 /// Requests a handler makes. The tick applies them after the handler returns.
 pub const Effects = struct {
@@ -227,8 +236,17 @@ pub const Effects = struct {
 
     /// Ask for a file dialog. The tick opens it on the main thread after the
     /// drain, so it never runs inside the router; at most one per handler.
+    /// A save request's folder and name are copied as the handler returns,
+    /// as `setFont`'s name is, so a later handler may change their source.
     pub fn openFileDialog(self: *Effects, request: FileDialogRequest) void {
         assert(self.file_dialog == null);
+        switch (request.kind) {
+            .open => |options| assert(options.files or options.directories),
+            .save => |options| {
+                if (options.directory) |directory| assert(directory.len > 0);
+                if (options.suggested_name) |name| assert(name.len > 0);
+            },
+        }
         self.file_dialog = request;
     }
 
