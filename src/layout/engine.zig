@@ -365,6 +365,11 @@ pub const LayoutEngine = struct {
     id_to_index: std.AutoHashMap(u32, u32),
     /// Floating elements to position after main layout (fixed capacity)
     floating_roots: FixedCapacityArray(u32, MAX_FLOATING_ROOTS) = .{},
+    /// Wrapped lines per frame, across every text. The 0.4.0 core sets it from
+    /// its glyph budget and sizes the fixed arena to match; null (the 0.3.1
+    /// runtime's growing arena) leaves only the per-text cap.
+    wrapped_line_count_frame_max: ?u32 = null,
+    wrapped_line_count: u32 = 0,
 
     const Self = @This();
 
@@ -422,6 +427,7 @@ pub const LayoutEngine = struct {
         self.root_index = null;
         self.viewport_width = width;
         self.viewport_height = height;
+        self.wrapped_line_count = 0;
     }
 
     pub fn openElement(self: *Self, decl: ElementDeclaration) !void {

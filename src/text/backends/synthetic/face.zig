@@ -10,7 +10,9 @@
 //! single advance would hide off-by-one errors in cursor placement, wrapping,
 //! and measurement, because every string of the same length would measure the
 //! same. Bold faces are 10% wider so a measurement taken with the wrong face
-//! shows up as a different width.
+//! shows up as a different width. The `.monospace` system family advances
+//! every glyph by one cell (0.6 em), so a run drawn with the wrong family
+//! (contract decision 8) also measures differently.
 
 const std = @import("std");
 const types = @import("../../types.zig");
@@ -32,6 +34,8 @@ pub const SyntheticFace = struct {
     metrics: Metrics,
     /// Multiplier on every advance: 1.1 for semibold and heavier, else 1.
     width_scale: f32,
+    /// Every glyph advances by `metrics.cell_width` (the `.monospace` family).
+    monospace: bool,
 
     const Self = @This();
 
@@ -39,16 +43,15 @@ pub const SyntheticFace = struct {
     pub fn init(name: []const u8, size: f32, variant: FontVariant) !Self {
         assert(name.len > 0);
         assert(size > 0);
-        return initSized(size, variant);
+        return initSized(size, variant, false);
     }
 
     pub fn initSystem(style: SystemFont, size: f32, variant: FontVariant) !Self {
-        _ = style;
         assert(size > 0);
-        return initSized(size, variant);
+        return initSized(size, variant, style == .monospace);
     }
 
-    fn initSized(size: f32, variant: FontVariant) Self {
+    fn initSized(size: f32, variant: FontVariant, monospace: bool) Self {
         assert(size > 0);
         assert(size < point_size_max);
         const heavy = @backingInt(variant.weight()) >= @backingInt(types.FontWeight.semibold);
@@ -64,10 +67,11 @@ pub const SyntheticFace = struct {
                 .underline_thickness = @max(1.0, size / 14.0),
                 .line_height = size * 1.2,
                 .point_size = size,
-                .is_monospace = false,
+                .is_monospace = monospace,
                 .cell_width = size * 0.6,
             },
             .width_scale = if (heavy) 1.1 else 1.0,
+            .monospace = monospace,
         };
         assert(self.metrics.line_height > self.metrics.ascender);
         assert(self.width_scale >= 1.0);
@@ -92,7 +96,8 @@ pub const SyntheticFace = struct {
     }
 
     pub fn glyphAdvance(self: *const Self, glyph_id: u16) f32 {
-        const advance = self.metrics.point_size * self.width_scale * advanceEm(glyph_id);
+        const em: f32 = if (self.monospace) 0.6 else advanceEm(glyph_id);
+        const advance = self.metrics.point_size * self.width_scale * em;
         assert(advance >= 0);
         return advance;
     }

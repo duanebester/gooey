@@ -23,6 +23,10 @@
 //! - `core-duplicate-key`: renders two boxes with one key under one parent.
 //! - `core-component-depth`: nests components one level past `component_depth_max`.
 //! - `core-dialog-target`: names a non-root state as a file dialog's completion handler.
+//! - `core-mono-unset`: draws `.family = .mono` text in an app with no `font_mono`.
+//! - `core-wrap-lines`: wraps one text into one line past `MAX_LINES_PER_TEXT`.
+//! - `core-wrap-words`: wraps one text into one word past `MAX_WORDS_PER_TEXT`.
+//! - `core-wrap-frame`: wraps two texts into one line past the frame's glyph budget.
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -43,6 +47,10 @@ const Mode = enum {
     @"core-duplicate-key",
     @"core-component-depth",
     @"core-dialog-target",
+    @"core-mono-unset",
+    @"core-wrap-lines",
+    @"core-wrap-words",
+    @"core-wrap-frame",
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -70,6 +78,10 @@ pub fn main(init: std.process.Init) !void {
         .@"core-duplicate-key" => coreTick(init.gpa, init.io, CoreApp.duplicateKey),
         .@"core-component-depth" => coreTick(init.gpa, init.io, CoreApp.nested),
         .@"core-dialog-target" => coreDialogTarget(init.gpa, init.io),
+        .@"core-mono-unset" => coreTick(init.gpa, init.io, CoreApp.monoText),
+        .@"core-wrap-lines" => coreTick(init.gpa, init.io, CoreApp.wrapLines),
+        .@"core-wrap-words" => coreTick(init.gpa, init.io, CoreApp.wrapWords),
+        .@"core-wrap-frame" => coreTick(init.gpa, init.io, CoreApp.wrapFrame),
     }
     std.debug.print("unreachable: {s} did not panic\n", .{@tagName(mode)});
 }
@@ -178,7 +190,7 @@ fn fontVariant(gpa: std.mem.Allocator, io: std.Io) void {
     text_system.loadSystemFont(.sans_serif, 16) catch |err| {
         std.debug.panic("setup: loadSystemFont failed: {s}", .{@errorName(err)});
     };
-    _ = text_system.measureText("Total", .light) catch |err| {
+    _ = text_system.measureText(.app, "Total", .light) catch |err| {
         std.debug.panic("measureText failed instead of panicking: {s}", .{@errorName(err)});
     };
 }
@@ -256,6 +268,10 @@ const core_config: core.Config(CoreState) = .{
     .theme = &core.Theme.light,
     .keymap = &.{},
     .entities = &.{},
+    .font = null,
+    .font_size = 16,
+    .font_mono = null,
+    .font_limits = null,
     .on_init = null,
 };
 
@@ -301,6 +317,43 @@ const CoreApp = struct {
     const Stranger = struct {
         fn picked(_: *Stranger) void {}
     };
+
+    fn monoText(cx: *core.Cx) void {
+        cx.render(core.ui.text("code", .{ .family = .mono }));
+    }
+
+    /// One empty line per newline, then "m": one more line than the pool
+    /// holds, in 1,025 bytes, which every shaper measures.
+    fn wrapLines(cx: *core.Cx) void {
+        const lines = comptime newlinesThenM(gooey.layout.engine.MAX_LINES_PER_TEXT);
+        cx.render(core.ui.text(&lines, .{ .wrap = .newlines }));
+    }
+
+    /// One empty word per newline, then "m": one more word than the pool
+    /// holds. Words are scanned before lines are packed, so the word pool is
+    /// the one exhausted.
+    fn wrapWords(cx: *core.Cx) void {
+        const words = comptime newlinesThenM(gooey.layout.engine.MAX_WORDS_PER_TEXT);
+        cx.render(core.ui.text(&words, .{ .wrap = .words }));
+    }
+
+    /// `nano` draws at most 1,024 glyphs, so the frame holds 1,024 wrapped
+    /// lines: the first text claims 1,000 and the second asks for 25.
+    fn wrapFrame(cx: *core.Cx) void {
+        const first = comptime newlinesThenM(999);
+        const second = comptime newlinesThenM(24);
+        cx.render(core.ui.box(.{}, .{
+            core.ui.text(&first, .{ .wrap = .newlines }),
+            core.ui.text(&second, .{ .wrap = .newlines }),
+        }));
+    }
+
+    fn newlinesThenM(comptime count: u32) [count + 1]u8 {
+        var bytes: [count + 1]u8 = undefined;
+        @memset(bytes[0..count], '\n');
+        bytes[count] = 'm';
+        return bytes;
+    }
 };
 
 fn initCoreApp(comptime App: type, gpa: std.mem.Allocator, io: std.Io) *App {

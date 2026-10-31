@@ -229,12 +229,38 @@ pub const Cx = struct {
         const color: element.ColorToken = style.color orelse .text;
         node.text_color = color.resolve(window.theme);
         node.font_size = size;
+        node.family = style.family;
         node.variant = variant;
+        const metrics = window.resources.text_system.getMetricsFor(style.family);
         window.layout.text(content, .{
-            .font_id = variant.fontId(),
+            .font_id = style.family.fontId(variant),
             .font_size = size,
-            .wrap_mode = .none,
+            .line_height = lineHeightPercent(&metrics, style.line_height orelse 100),
+            .wrap_mode = switch (style.wrap) {
+                .none => .none,
+                .words => .words,
+                .newlines => .newlines,
+            },
+            .alignment = switch (style.alignment) {
+                .left => .left,
+                .center => .center,
+                .right => .right,
+            },
         }) catch |err| layoutFailed(window, err);
+    }
+
+    /// The layout engine's line height is a percent of the font size; the
+    /// element's is a percent of the font's line height (contract decision 9).
+    /// Wrapped boxes and emit both pitch lines by this one value, so they agree.
+    fn lineHeightPercent(metrics: *const text_mod.Metrics, font_percent: u16) u16 {
+        assert(font_percent > 0);
+        assert(metrics.point_size > 0);
+        const ratio = metrics.line_height / metrics.point_size;
+        assert(ratio > 0);
+        const percent = @round(ratio * @as(f32, @floatFromInt(font_percent)));
+        assert(percent >= 1);
+        assert(percent <= std.math.maxInt(u16));
+        return @intFromFloat(percent);
     }
 
     fn buildPaint(
@@ -363,6 +389,7 @@ fn addNode(window: *Window, kind: window_mod.NodeKind, node_id: ElementId) u32 {
         .text = .empty,
         .text_color = records.Color.transparent,
         .font_size = 0,
+        .family = .app,
         .variant = .regular,
         .paint_fn = null,
         .paint_data = null,
@@ -433,11 +460,14 @@ fn measureText(
 ) layout_mod.engine.TextMeasurement {
     _ = max_width;
     const text_system: *text_mod.TextSystem = @ptrCast(@alignCast(user_data.?));
-    const metrics = text_system.getMetrics() orelse std.debug.panic("no font loaded", .{});
+    if (text_system.getMetrics() == null) std.debug.panic("no font loaded", .{});
     assert(font_size > 0);
+    // Each family measures and sizes lines by its own regular face.
+    const family = text_mod.FontFamily.fromFontId(font_id);
+    const variant = text_mod.FontFamily.variantFromFontId(font_id);
+    const metrics = text_system.getMetricsFor(family);
     const scale = @as(f32, @floatFromInt(font_size)) / metrics.point_size;
-    const variant = text_mod.FontVariant.fromFontId(font_id);
-    const width = text_system.measureText(content, variant) catch |err| {
+    const width = text_system.measureText(family, content, variant) catch |err| {
         std.debug.panic("text measurement failed: {s}", .{@errorName(err)});
     };
     return .{ .width = width * scale, .height = metrics.line_height * scale };

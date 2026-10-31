@@ -372,13 +372,13 @@ pub const Cx = struct {
             // Scale max_width into base-font units so wrapping breaks at
             // the correct character positions, then scale the result back.
             const base_max_width: ?f32 = if (opts.max_width) |mw| mw / scale else null;
-            var m = try ts.measureTextEx(text_content, variant, base_max_width);
+            var m = try ts.measureTextEx(.app, text_content, variant, base_max_width);
             m.width *= scale;
             m.height *= scale;
             return m;
         }
 
-        return ts.measureTextEx(text_content, variant, opts.max_width);
+        return ts.measureTextEx(.app, text_content, variant, opts.max_width);
     }
 
     // =========================================================================

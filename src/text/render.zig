@@ -26,6 +26,7 @@ const Hsla = scene_mod.Hsla;
 const types = @import("types.zig");
 const Metrics = types.Metrics;
 const FontVariant = types.FontVariant;
+const FontFamily = types.FontFamily;
 const TextDecoration = types.TextDecoration;
 const RenderStats = @import("../debug/render_stats.zig").RenderStats;
 
@@ -111,7 +112,13 @@ pub fn renderText(
     // Stack buffer for warm-path glyph copies — avoids GPA alloc/free (~5,000 ns).
     // Total stack footprint verified at comptime above (see WASM stack budget check).
     var glyph_buf: [MAX_GLYPHS_PER_RUN]ShapedGlyph = undefined;
-    var shaped = try text_system.shapeTextInto(text, options.variant, options.stats, &glyph_buf);
+    var shaped = try text_system.shapeTextInto(
+        .app,
+        text,
+        options.variant,
+        options.stats,
+        &glyph_buf,
+    );
     defer if (shaped.owned) shaped.deinit(text_system.run_allocator);
 
     const scaled_width = shaped.width * size_scale;
@@ -141,6 +148,7 @@ pub fn renderText(
     var cached_results: [MAX_GLYPHS_PER_RUN]CachedGlyph = undefined;
 
     try text_system.resolveGlyphBatch(
+        .app,
         shaped.glyphs,
         options.variant,
         font_size,
@@ -162,7 +170,7 @@ pub fn renderText(
     // Render decorations (underline, strikethrough) if requested.
     // The variant's own metrics, so a bold underline uses the bold face's thickness.
     if (options.decoration.hasAny()) {
-        const metrics = text_system.faceFor(options.variant).metrics;
+        const metrics = text_system.faceFor(.app, options.variant).metrics;
         try renderDecorations(scene, metrics, x, baseline_y, scaled_width, color, options);
     }
 
@@ -300,17 +308,20 @@ pub fn placeText(
     baseline_y: f32,
     scale_factor: f32,
     font_size: f32,
+    family: FontFamily,
     variant: FontVariant,
     sink: anytype,
 ) !f32 {
     std.debug.assert(font_size > 0);
     std.debug.assert(scale_factor > 0);
     if (text.len == 0) return 0;
-    const metrics = text_system.getMetrics() orelse return error.NoFontLoaded;
+    if (text_system.getMetrics() == null) return error.NoFontLoaded;
+    // Each family scales by its own regular face (`loadMonoFont`).
+    const metrics = text_system.getMetricsFor(family);
     const size_scale = font_size / metrics.point_size;
 
     var glyph_buf: [MAX_GLYPHS_PER_RUN]ShapedGlyph = undefined;
-    var shaped = try text_system.shapeTextInto(text, variant, null, &glyph_buf);
+    var shaped = try text_system.shapeTextInto(family, text, variant, null, &glyph_buf);
     defer if (shaped.owned) shaped.deinit(text_system.run_allocator);
     const glyph_count = shaped.glyphs.len;
     if (glyph_count == 0) return shaped.width * size_scale;
@@ -331,6 +342,7 @@ pub fn placeText(
     );
     var cached: [MAX_GLYPHS_PER_RUN]CachedGlyph = undefined;
     try text_system.resolveGlyphBatch(
+        family,
         shaped.glyphs,
         variant,
         font_size,

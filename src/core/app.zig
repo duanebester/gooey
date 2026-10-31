@@ -19,11 +19,14 @@ const tick_mod = @import("tick.zig");
 const lifecycle = @import("lifecycle.zig");
 const cx_mod = @import("cx.zig");
 const app_resources = @import("../context/app_resources.zig");
+const text_mod = @import("../text/mod.zig");
 
 const assert = std.debug.assert;
 
 pub const ResourceLimits = limits_mod.ResourceLimits;
 pub const FontLimits = limits_mod.FontLimits;
+/// A family for `Config.font_mono`: an installed name or a platform family.
+pub const FontSource = text_mod.TextSystem.FaceSource;
 pub const Theme = element.Theme;
 pub const Effects = handler_mod.Effects;
 pub const Window = window_mod.Window;
@@ -42,6 +45,14 @@ pub fn Config(comptime State: type) type {
         theme: *const Theme,
         keymap: []const Binding,
         entities: []const type,
+        /// Family name; null loads the platform's sans-serif.
+        font: ?[]const u8,
+        /// Points, for both families.
+        font_size: f32,
+        /// The second family (decision 8); null reserves no faces.
+        font_mono: ?FontSource,
+        /// The faces to reserve; null keeps the `limits` profile's set.
+        font_limits: ?FontLimits,
         on_init: ?*const fn (state: *State, effects: *Effects) void,
     };
 }
@@ -55,6 +66,33 @@ pub fn fontLimitsFor(comptime limits: ResourceLimits) FontLimits {
     return FontLimits.standard;
 }
 
+/// Reject font settings that cannot work, naming the field (decision 8): a
+/// second family needs mono faces to load into, and mono faces need a family.
+fn checkFonts(comptime State: type, comptime config: Config(State)) void {
+    comptime {
+        if (!(config.font_size > 0 and config.font_size < 1000)) {
+            @compileError("gooey.App: font_size must be in (0, 1000) points");
+        }
+        if (config.font) |name| {
+            if (name.len == 0) @compileError("gooey.App: font is empty; use null for sans-serif");
+            if (name.len > text_mod.TextSystem.family_name_bytes_max) {
+                @compileError("gooey.App: font names a family longer than 255 bytes");
+            }
+        }
+        const font_limits = config.font_limits orelse fontLimitsFor(config.limits);
+        font_limits.validate();
+        const mono_faces = font_limits.mono_variants.len;
+        if (config.font_mono != null and mono_faces == 0) {
+            @compileError("gooey.App: font_mono is set but font_limits.mono_variants is " ++
+                "empty; set .font_limits with the mono variants to load");
+        }
+        if (config.font_mono == null and mono_faces > 0) {
+            @compileError("gooey.App: font_limits.mono_variants reserves faces but " ++
+                "font_mono is null");
+        }
+    }
+}
+
 pub fn App(
     comptime State: type,
     comptime render_fn: fn (cx: *Cx) void,
@@ -66,6 +104,7 @@ pub fn App(
         if (config.entities.len > 0) @compileError("gooey.App: entities arrive in phase 4");
         assert(config.width > 0);
         assert(config.height > 0);
+        checkFonts(State, config);
     }
     return struct {
         guard: lifecycle.LifecycleGuard,
@@ -81,7 +120,7 @@ pub fn App(
         pub const theme = config.theme;
         pub const width = config.width;
         pub const height = config.height;
-        pub const font_limits = fontLimitsFor(config.limits);
+        pub const font_limits = config.font_limits orelse fontLimitsFor(config.limits);
 
         /// The root render function.
         pub fn render(cx: *Cx) void {
@@ -137,9 +176,10 @@ pub fn App(
             self.state = .{};
             self.store = handler_mod.Store.init(State, &self.state);
             try self.resources.initOwnedInPlace(gpa, io, scale_factor, .{
-                .font_name = null,
-                .font_size = @floatFromInt(config.theme.font_size_base),
+                .font_name = config.font,
+                .font_size = config.font_size,
                 .limits = font_limits,
+                .mono = config.font_mono,
             }, &config.limits.atlas);
             errdefer self.resources.deinit();
             try window_mod.initInPlace(&self.window, gpa, &.{

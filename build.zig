@@ -1784,8 +1784,22 @@ fn addFailFastChecks(
             "fail_fast_check.CoreApp.Stranger; the root state is fail_fast_check.CoreState" },
         .{ .mode = "core-component-depth", .stderr = "component depth 65 exceeds " ++
             "build.component_depth_max 64 rendering fail_fast_check.CoreApp.Nest" },
+        .{ .mode = "core-mono-unset", .stderr = "text uses family .mono, but no second " ++
+            "family is loaded; set Config.font_mono and FontLimits.mono_variants" },
+        .{ .mode = "core-wrap-lines", .stderr = "wrapped text lines exhausted: " ++
+            "capacity 1024 (MAX_LINES_PER_TEXT), 1 requested" },
+        .{ .mode = "core-wrap-words", .stderr = "wrapped text words exhausted: " ++
+            "capacity 2048 (MAX_WORDS_PER_TEXT), 1 requested" },
+        .{ .mode = "core-wrap-frame", .stderr = "wrapped lines exhausted: capacity 1024 " ++
+            "(scene.glyph_count_frame_max), 1000 in use, 25 requested" },
     };
     for (checks) |check| {
+        // CoreText shapes at most 1,024 glyphs and 2,047 UTF-16 units per run,
+        // so one text past either per-text pool fails its measurement (also
+        // fail-fast) before wrapping. `core-wrap-frame` covers macOS.
+        const per_text_pool = std.mem.eql(u8, check.mode, "core-wrap-lines") or
+            std.mem.eql(u8, check.mode, "core-wrap-words");
+        if (per_text_pool and target.result.os.tag == .macos) continue;
         const run = b.addRunArtifact(exe);
         run.addArg(check.mode);
         run.addCheck(.{ .expect_stderr_match = check.stderr });
