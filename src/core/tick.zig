@@ -135,7 +135,12 @@ fn flipPresented(window: *Window) void {
     window.awaiting_flip = false;
     window.built_index ^= 1;
     router.updateHover(window);
-    screen_reader.publish(window.screen_reader, window.rendered());
+    screen_reader.publish(
+        window.screen_reader,
+        &window.screen_reader_poll,
+        window.rendered(),
+        window.now_ns,
+    );
 }
 
 /// Reload the app family a handler asked for (`Effects.setFont`), after the

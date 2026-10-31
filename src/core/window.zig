@@ -31,6 +31,7 @@ const app_resources = @import("../context/app_resources.zig");
 const a11y_types = @import("../accessibility/types.zig");
 const cx_mod = @import("cx.zig");
 const A11ySystem = @import("../context/a11y_system.zig").A11ySystem;
+const screen_reader_mod = @import("screen_reader.zig");
 
 const assert = std.debug.assert;
 
@@ -262,6 +263,7 @@ pub const Window = struct {
     announcements: records.Announcements,
     /// The platform's screen-reader bridge and the tree it diffs.
     screen_reader: *A11ySystem,
+    screen_reader_poll: screen_reader_mod.Poll,
     dialog_handlers: [dialog_count_max]?handler_mod.Handler,
     dialogs_opened: u32,
     now_ns: u64,
@@ -339,6 +341,7 @@ pub const Window = struct {
         assert(self.phase == .idle);
         self.screen_reader.deinit();
         self.screen_reader.initInPlace(native_window, native_view);
+        self.screen_reader_poll = .{};
         assert(self.screen_reader.bridgeAddressValid());
     }
 
@@ -514,6 +517,7 @@ fn initRuntimeStorage(self: *Window, gpa: std.mem.Allocator, limits: *const Reso
     // Headless until a host binds its platform's bridge (`bindScreenReader`).
     self.screen_reader = try gpa.create(A11ySystem);
     self.screen_reader.initHeadlessInPlace();
+    self.screen_reader_poll = .{};
 }
 
 fn deinitRuntimeStorage(self: *Window, gpa: std.mem.Allocator) void {
