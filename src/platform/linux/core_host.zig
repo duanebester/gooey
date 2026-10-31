@@ -336,6 +336,8 @@ pub const Host = struct {
             assert(rounds < prepare_read_rounds_max);
             if (wayland.wl_display_dispatch_pending(self.display) < 0) return false;
         }
+        // A passed render deadline schedules a tick here.
+        const timeout_ms = self.deadlineTimeoutMs();
         // Dispatched events may have scheduled a tick or closed the window.
         if (self.tick_scheduled.load(.acquire) or self.quit) {
             wayland.wl_display_cancel_read(self.display);
@@ -346,7 +348,7 @@ pub const Host = struct {
             .{ .fd = self.display_fd, .events = posix.POLL.IN, .revents = 0 },
             .{ .fd = self.main_wake_fd, .events = posix.POLL.IN, .revents = 0 },
         };
-        _ = posix.poll(&fds, -1) catch {
+        _ = posix.poll(&fds, timeout_ms) catch {
             wayland.wl_display_cancel_read(self.display);
             return false;
         };
@@ -358,6 +360,22 @@ pub const Host = struct {
         if (wayland.wl_display_dispatch_pending(self.display) < 0) return false;
         if ((fds[1].revents & posix.POLL.IN) != 0) drain(self.main_wake_fd);
         return true;
+    }
+
+    /// How long the main loop may sleep before the last build's render
+    /// deadline (`cx.requestRenderAfter`, caret blink), or -1 without one.
+    /// A passed deadline schedules the tick that fires it.
+    fn deadlineTimeoutMs(self: *Host) i32 {
+        const deadline = self.core.renderDeadlineNs() orelse return -1;
+        const now_ns = self.nowNs();
+        if (now_ns >= deadline) {
+            self.scheduleTick();
+            return 0;
+        }
+        const remaining_ms = std.math.divCeil(u64, deadline - now_ns, std.time.ns_per_ms) catch
+            unreachable; // The divisor is a nonzero constant.
+        assert(remaining_ms > 0);
+        return @intCast(@min(remaining_ms, std.math.maxInt(i32)));
     }
 
     /// Send the rendered frame's IME state to text-input-v3: enabled while a

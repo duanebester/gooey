@@ -130,6 +130,9 @@ pub const Host = struct {
     render_loop: std.atomic.Value(?CFRunLoopRef),
     /// A main-queue tick is queued and has not started.
     tick_scheduled: std.atomic.Value(bool),
+    /// The core's render deadline after the last main tick, for the render
+    /// thread. A stale copy only schedules a tick that builds nothing.
+    render_deadline_ns: std.atomic.Value(u64),
     stopping: std.atomic.Value(bool),
     /// Renderer errors are logged once; later frames clear and retry.
     render_error_logged: bool,
@@ -159,6 +162,7 @@ pub const Host = struct {
         self.thread = null;
         self.render_loop = .init(null);
         self.tick_scheduled = .init(false);
+        self.render_deadline_ns = .init(core_window.deadline_none);
         self.stopping = .init(false);
         self.render_error_logged = false;
         self.bindWindow();
@@ -256,6 +260,7 @@ fn mainTick(context: ?*anyopaque) callconv(.c) void {
     // still running. The outer tick reschedules below once it returns.
     if (host.core.phase != .idle) return;
     host.tick_main(host.app, host.nowNs());
+    host.render_deadline_ns.store(host.core.render_deadline_ns, .release);
     if (host.core.quit_requested) {
         host.stop();
         host.platform.quit();
@@ -362,11 +367,18 @@ fn renderThreadMain(host: *Host) void {
 }
 
 /// The link's callback, on the render thread: present the frame in flight,
-/// then let the main thread make it `rendered` and build the next.
+/// then let the main thread make it `rendered` and build the next. With no
+/// frame in flight, a passed render deadline (`cx.requestRenderAfter`, caret
+/// blink) wakes the main thread instead, so it is late by at most a refresh.
 fn displayLinkTick(_: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) void {
     const host = active_host.load(.acquire) orelse return;
     if (host.stopping.load(.acquire)) return;
-    if (!host.core.frame_in_flight.load(.acquire)) return;
+    if (!host.core.frame_in_flight.load(.acquire)) {
+        const deadline = host.render_deadline_ns.load(.acquire);
+        if (deadline == core_window.deadline_none) return;
+        if (host.nowNs() >= deadline) host.scheduleTick();
+        return;
+    }
     const pool = objc.AutoreleasePool.init();
     defer pool.deinit();
     core_tick.presentBuilt(host.core);

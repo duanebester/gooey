@@ -390,18 +390,6 @@ pub const Cx = struct {
         self._window.requestRender();
     }
 
-    /// Request a UI re-render no later than `delay_ms` from now.
-    ///
-    /// For views that change with the clock alone, such as a countdown. Call
-    /// it from render code while the view depends on the clock: each frame
-    /// renews the request, and a frame that does not stops the wake-ups. On
-    /// Linux this keeps an idle timer at one frame per tick instead of one
-    /// per vsync.
-    pub fn notifyAfter(self: *Self, delay_ms: u32) void {
-        std.debug.assert(delay_ms <= platform_mod.interface.render_delay_ms_max);
-        self._window.requestRenderAfter(delay_ms);
-    }
-
     // =========================================================================
     // Focus — reach for `cx.focus.*` directly. `cx.focus.widget(id)`
     // focuses text fields and text areas alike.

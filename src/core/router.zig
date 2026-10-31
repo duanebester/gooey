@@ -98,7 +98,6 @@ pub fn route(window: *Window, event: *const events.Event) void {
             },
             .close_requested => window.quit_requested = true,
         },
-        .timer => window.render_requested = true,
     }
 }
 

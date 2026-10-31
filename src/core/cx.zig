@@ -72,6 +72,18 @@ pub const Cx = struct {
         return self.window.isHovered(target);
     }
 
+    /// Render again no later than `delay_ms` from now, for a view that
+    /// changes with the clock alone (0.3.1 `notifyAfter`). Call it each build
+    /// while the view depends on the clock: the window keeps the earliest
+    /// request of the last build, and a build that asks for none clears it.
+    pub fn requestRenderAfter(self: *Cx, delay_ms: u32) void {
+        const window = self.window;
+        window.assertPhase(.build);
+        assert(delay_ms <= window_mod.render_delay_ms_max);
+        const deadline = window.now_ns + @as(u64, delay_ms) * std.time.ns_per_ms;
+        window.build_deadline_ns = @min(window.build_deadline_ns, deadline);
+    }
+
     pub fn focused(self: *const Cx, target: ElementId) bool {
         return self.window.isFocused(target);
     }
@@ -297,6 +309,7 @@ pub fn beginBuild(window: *Window) void {
     window.open_depth = 0;
     window.component_depth = 0;
     window.keys.clear();
+    window.build_deadline_ns = window_mod.deadline_none;
     window.layout.beginFrame(window.width, window.height);
     window.layout.setMeasureTextFn(measureText, window.resources.text_system);
     const root_style = element.Style{
@@ -313,6 +326,7 @@ pub fn endBuild(window: *Window) void {
     assert(window.open_depth == 1);
     popOpen(window, 0);
     assert(window.component_depth == 0);
+    window.render_deadline_ns = window.build_deadline_ns;
 }
 
 /// Deepest component nesting seen, and the stack it took (milestone 1
