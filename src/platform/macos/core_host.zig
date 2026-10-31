@@ -435,6 +435,11 @@ fn openDialog(
 ) Outcome {
     const host: *Host = @ptrCast(@alignCast(context));
     assert(host.core.phase == .drain);
+    // When a panel's modal session ends, AppKit leaves no window key, so the
+    // next click would only make the window key and never reach the view.
+    defer host.window.ns_window.msgSend(void, "makeKeyAndOrderFront:", .{
+        @as(?*anyopaque, null),
+    });
     const paths = switch (request.kind) {
         .open => |options| paths: {
             const result = file_dialog.promptForPaths(scratch, options) orelse return .cancelled;
