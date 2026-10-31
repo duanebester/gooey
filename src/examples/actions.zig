@@ -1,92 +1,99 @@
-const std = @import("std");
+//! Actions: keymaps, key contexts, and action handlers on the core.
+//!
+//! Undo, Redo, and Cancel are bound globally and handled by the root box.
+//! Save is bound only inside the "Editor" key context, so cmd-s does nothing
+//! until focus is inside the editor panel. The layout matches the 0.3.1
+//! actions example, so its golden is compared with the 0.3.1 golden.
+
 const gooey = @import("gooey");
 const components = @import("gooey-components");
-const ui = gooey.ui;
-const Button = components.Button;
-const Cx = gooey.Cx;
 
-// Define action types
+const core = gooey.core;
+const ui = core.ui;
+const Cx = core.Cx;
+const Button = components.core.Button;
+const TextInput = components.core.TextInput;
+
 const Undo = struct {};
 const Redo = struct {};
 const Save = struct {};
 const Cancel = struct {};
 
-const AppState = struct {
+pub const State = struct {
     message: []const u8 = "",
-    initialized: bool = false,
+    draft: []const u8 = "",
 
-    fn undo(self: *AppState) void {
+    pub fn undo(self: *State) void {
         self.message = "Undo!";
     }
-    fn redo(self: *AppState) void {
+
+    pub fn redo(self: *State) void {
         self.message = "Redo!";
     }
-    fn cancel(self: *AppState) void {
+
+    pub fn cancel(self: *State) void {
         self.message = "Cancelled!";
     }
-    fn save(self: *AppState) void {
+
+    pub fn save(self: *State) void {
         self.message = "Saved!";
     }
 };
 
-var state = AppState{};
+pub const App = core.App(State, render, .{
+    .title = "Actions Demo",
+    .width = 800,
+    .height = 600,
+    .limits = .nano,
+    .keymap = &.{
+        .{ .keys = "cmd-z", .action = ui.action(Undo) },
+        .{ .keys = "cmd-shift-z", .action = ui.action(Redo) },
+        .{ .keys = "cmd-s", .action = ui.action(Save), .key_context = .named("Editor") },
+        .{ .keys = "escape", .action = ui.action(Cancel) },
+    },
+});
 
-pub fn main(init: std.process.Init) !void {
-    try gooey.run(AppState, &state, render, .{
-        .limits = .nano,
-        .font_limits = .nano,
-        .title = "Actions Demo",
-    }, init);
-}
+pub const main = App.main;
 
-fn setupKeymap(cx: *Cx) void {
-    const s = cx.state(AppState);
-    if (s.initialized) return;
-    s.initialized = true;
-
-    const g = cx.window();
-    g.keymap().bind(Undo, "cmd-z", null);
-    g.keymap().bind(Redo, "cmd-shift-z", null);
-    g.keymap().bind(Save, "cmd-s", "Editor");
-    g.keymap().bind(Cancel, "escape", null);
-}
-
-fn render(cx: *Cx) void {
-    setupKeymap(cx);
-
-    cx.render(ui.box(.{ .padding = .{ .all = 24 }, .gap = 16, .direction = .column }, .{
-        ui.onAction(Undo, cx.on(AppState.undo, .{})),
-        ui.onAction(Redo, cx.on(AppState.redo, .{})),
-        ui.onAction(Cancel, cx.on(AppState.cancel, .{})),
-
+pub fn render(cx: *Cx) void {
+    const s = cx.state(State);
+    cx.render(ui.box(.{
+        .actions = &.{
+            .{ .action = ui.action(Undo), .handler = cx.on(State.undo, .{}) },
+            .{ .action = ui.action(Redo), .handler = cx.on(State.redo, .{}) },
+            .{ .action = ui.action(Cancel), .handler = cx.on(State.cancel, .{}) },
+        },
+        .style = .{ .padding = .all(24), .gap = 16 },
+    }, .{
         ui.text("Actions Demo", .{ .size = 24 }),
-        ui.text(cx.state(AppState).message, .{}),
-
+        ui.text(s.message, .{ .size = 14 }),
         EditorPanel{},
         ButtonRow{},
     }));
 }
 
 const EditorPanel = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
+    pub fn render(_: EditorPanel, cx: *Cx) void {
+        const s = cx.state(State);
         cx.render(ui.box(.{
-            .background = ui.Color.rgb(0.95, 0.95, 0.95),
+            .key_context = .named("Editor"),
+            .actions = &.{.{ .action = ui.action(Save), .handler = cx.on(State.save, .{}) }},
+            .style = .{ .background = .{ .rgba = .rgb(0.95, 0.95, 0.95) } },
         }, .{
-            ui.keyContext("Editor"),
-            ui.onAction(Save, cx.on(AppState.save, .{})),
-
-            ui.input("editor", .{ .placeholder = "Type here... (cmd+s to save)" }),
+            TextInput{
+                .key = "editor",
+                .placeholder = "Type here... (cmd+s to save)",
+                .bind = &s.draft,
+            },
         }));
     }
 };
 
 const ButtonRow = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        cx.render(ui.hstack(.{
-            .gap = 8,
-        }, .{
-            Button{ .label = "Undo (cmd+z)", .on_click = cx.on(AppState.undo, .{}) },
-            Button{ .label = "Redo (cmd+shift+z)", .on_click = cx.on(AppState.redo, .{}) },
+    pub fn render(_: ButtonRow, cx: *Cx) void {
+        cx.render(ui.box(.{ .style = .{ .direction = .row, .gap = 8 } }, .{
+            Button{ .label = "Undo (cmd+z)", .on_click = cx.on(State.undo, .{}) },
+            Button{ .label = "Redo (cmd+shift+z)", .on_click = cx.on(State.redo, .{}) },
         }));
     }
 };

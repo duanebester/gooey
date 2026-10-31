@@ -27,7 +27,9 @@ const std = @import("std");
 const assert = std.debug.assert;
 
 pub const KnownDifference = struct {
-    step: u32,
+    /// The step it applies to; null applies to every step.
+    step: ?u32,
+    /// An empty line matches nothing: a difference present on one side only.
     legacy_line: []const u8,
     core_line: []const u8,
     reason: []const u8,
@@ -197,7 +199,9 @@ fn lessThan(_: void, a: []const u8, b: []const u8) bool {
 
 fn isKnown(known: []const KnownDifference, step: u32, line: []const u8, legacy_side: bool) bool {
     for (known) |difference| {
-        if (difference.step != step) continue;
+        if (difference.step) |only| {
+            if (only != step) continue;
+        }
         const expected = if (legacy_side) difference.legacy_line else difference.core_line;
         if (std.mem.eql(u8, expected, line)) return true;
     }

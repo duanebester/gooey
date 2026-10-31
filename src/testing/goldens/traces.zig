@@ -57,3 +57,38 @@ pub const todo = trace.Trace{
         .{ .label = "clear completed", .step = .{ .click = .{ .x = 146, .y = 521 } } },
     },
 };
+
+pub const actions = trace.Trace{
+    .name = "actions",
+    .width = 800,
+    .height = 600,
+    .scale_factor = 2,
+    .steps = &.{
+        .{ .label = "cmd-z, nothing focused", .step = .{ .chord = .{
+            .key = .z,
+            .modifiers = .{ .cmd = true },
+        } } },
+        .{ .label = "cmd-shift-z", .step = .{ .chord = .{
+            .key = .z,
+            .modifiers = .{ .cmd = true, .shift = true },
+        } } },
+        .{ .label = "escape", .step = .{ .key = .escape } },
+        // "Editor" is not on the focus path yet, so its binding does not match.
+        .{ .label = "cmd-s outside the editor", .step = .{ .chord = .{
+            .key = .s,
+            .modifiers = .{ .cmd = true },
+        } } },
+        .{ .label = "click the editor input", .step = .{ .click = .{ .x = 124, .y = 120 } } },
+        .{ .label = "type \"hi\"", .step = .{ .text = "hi" } },
+        .{ .label = "cmd-s in the editor", .step = .{ .chord = .{
+            .key = .s,
+            .modifiers = .{ .cmd = true },
+        } } },
+        .{ .label = "cmd-z in the editor", .step = .{ .chord = .{
+            .key = .z,
+            .modifiers = .{ .cmd = true },
+        } } },
+        .{ .label = "click Undo", .step = .{ .click = .{ .x = 94, .y = 174 } } },
+        .{ .label = "click Redo", .step = .{ .click = .{ .x = 262, .y = 174 } } },
+    },
+};

@@ -30,11 +30,15 @@ pub const Step = union(enum) {
     move: Point,
     /// A key press and release with no modifiers and no characters.
     key: input.KeyCode,
+    /// A key press and release with modifiers held, such as a shortcut.
+    chord: Chord,
     /// Committed text, as an IME or a plain key press delivers it.
     text: []const u8,
     /// IME preedit text; an empty string ends the composition.
     compose: []const u8,
 };
+
+pub const Chord = struct { key: input.KeyCode, modifiers: input.Modifiers };
 
 pub const LabeledStep = struct {
     label: []const u8,
@@ -85,8 +89,12 @@ fn deliverStep(driver: anytype, step: Step) void {
         },
         .move => |point| driver.deliver(.{ .mouse_moved = mouseEvent(point, 0) }),
         .key => |key| {
-            driver.deliver(.{ .key_down = keyEvent(key) });
-            driver.deliver(.{ .key_up = keyEvent(key) });
+            driver.deliver(.{ .key_down = keyEvent(key, .{}) });
+            driver.deliver(.{ .key_up = keyEvent(key, .{}) });
+        },
+        .chord => |chord| {
+            driver.deliver(.{ .key_down = keyEvent(chord.key, chord.modifiers) });
+            driver.deliver(.{ .key_up = keyEvent(chord.key, chord.modifiers) });
         },
         .text => |text| {
             assert(text.len > 0);
@@ -107,10 +115,10 @@ fn mouseEvent(point: Point, click_count: u32) input.MouseEvent {
     };
 }
 
-fn keyEvent(key: input.KeyCode) input.KeyEvent {
+fn keyEvent(key: input.KeyCode, modifiers: input.Modifiers) input.KeyEvent {
     return .{
         .key = key,
-        .modifiers = .{},
+        .modifiers = modifiers,
         .characters = null,
         .characters_ignoring_modifiers = null,
         .is_repeat = false,

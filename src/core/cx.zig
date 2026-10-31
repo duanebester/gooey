@@ -202,8 +202,13 @@ pub const Cx = struct {
         node.on_click = handlerIndex(frame, box.on_click);
         node.on_click_outside = handlerIndex(frame, box.on_click_outside);
         node.on_key = handlerIndex(frame, box.on_key);
+        node.key_context = if (box.key_context) |key_context| key_context.hash else 0;
+        node.actions_start = frame.handler_count;
+        for (box.actions) |binding| _ = frame.appendAction(binding.action, binding.handler);
+        node.actions_len = @intCast(box.actions.len);
         node.hit = box.key != null or box.focusable or box.on_click != null or
-            box.on_click_outside != null or box.on_key != null;
+            box.on_click_outside != null or box.on_key != null or
+            box.key_context != null or box.actions.len > 0;
         if (box.a11y) |a11y| node.a11y = .{
             .role = a11y.role,
             .label = frame.copyText(a11y.label orelse ""),
@@ -325,8 +330,6 @@ fn noteDepth(window: *Window) void {
 fn checkMilestoneOne(box: *const element.Box) void {
     const phase_four = "is not supported until phase 4 of 0.4.0";
     if (box.layer != null) std.debug.panic("Box.layer {s}", .{phase_four});
-    if (box.key_context != null) std.debug.panic("Box.key_context {s}", .{phase_four});
-    if (box.actions.len > 0) std.debug.panic("Box.actions {s}", .{phase_four});
     if (box.draggable != null) std.debug.panic("Box.draggable {s}", .{phase_four});
     if (box.drop_target != null) std.debug.panic("Box.drop_target {s}", .{phase_four});
     if (box.style.scroll != null) std.debug.panic("Style.scroll {s}", .{phase_four});
@@ -383,6 +386,9 @@ fn addNode(window: *Window, kind: window_mod.NodeKind, node_id: ElementId) u32 {
         .on_click = index_none,
         .on_click_outside = index_none,
         .on_key = index_none,
+        .key_context = 0,
+        .actions_start = 0,
+        .actions_len = 0,
         .a11y = null,
         .background = null,
         .border = .none,

@@ -798,7 +798,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "spaceship", .source = "src/examples/spaceship.zig" },
             .{ .name = "dynamic-counters", .source = "src/examples/dynamic_counters.zig" },
             .{ .name = "layout", .source = "src/examples/layout.zig" },
-            .{ .name = "actions", .source = "src/examples/actions.zig" },
+            .{ .name = "actions", .source = "src/examples/actions.zig", .core = true },
             .{ .name = "nested-overlay", .source = "src/examples/nested_overlay.zig" },
             .{ .name = "images", .source = "src/examples/images.zig" },
             .{ .name = "accessible-form", .source = "src/examples/accessible_form.zig" },
@@ -1490,7 +1490,7 @@ fn addMacosCoreExampleTypecheck(
         .optimize = .debug,
     });
     components_mod.addImport("gooey", gooey_mod);
-    const examples = [_][]const u8{ "counter", "todo", "core_file_dialog" };
+    const examples = [_][]const u8{ "counter", "todo", "actions", "core_file_dialog" };
     for (examples) |name| {
         const exe = b.addExecutable(.{
             .name = b.fmt("typecheck-macos-{s}", .{name}),
@@ -2322,7 +2322,14 @@ fn addGoldens(
         .optimize = optimize,
         .imports = example_imports,
     });
+    const actions_mod = b.createModule(.{
+        .root_source_file = b.path("src/examples/actions.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = example_imports,
+    });
     const goldens_imports: []const std.Build.Module.Import = &.{
+        .{ .name = "actions_example", .module = actions_mod },
         .{ .name = "gooey", .module = gooey_mod },
         .{ .name = "gooey-components", .module = components_mod },
         .{ .name = "counter_example", .module = counter_mod },

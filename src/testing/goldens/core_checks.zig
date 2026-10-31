@@ -8,6 +8,7 @@ const std = @import("std");
 const gooey = @import("gooey");
 const counter = @import("counter_example");
 const todo = @import("todo_example");
+const actions = @import("actions_example");
 const components = @import("gooey-components");
 const core_driver = @import("core.zig");
 const trace_mod = @import("trace.zig");
@@ -581,4 +582,39 @@ test "setTheme reaches the next build and announcements ride exactly one frame" 
     window.render_requested = true;
     app.tick(6);
     try testing.expectEqual(@as(u32, 0), window.rendered().announcements.count);
+}
+
+test "keymapClaims answers from the rendered focus path" {
+    // Goal: the synchronous query platforms ask before handing a key to the
+    // IME (`performKeyEquivalent`) agrees with what the drain dispatches.
+    // Methodology: cmd-s is bound only in the editor's context, so it is
+    // claimed only once the editor input is focused; an unbound key never
+    // is, and a global binding always is.
+    const Driver = core_driver.CoreDriver(actions.App);
+    const driver = try testing.allocator.create(Driver);
+    defer testing.allocator.destroy(driver);
+    try driver.initInPlace(testing.allocator, testing.io, &traces.actions);
+    defer driver.deinit();
+    const query = core.Query{ .window = &driver.app.window };
+    const save = chord(.s, .{ .cmd = true });
+    driver.frame();
+    try testing.expect(!query.keymapClaims(save));
+    try testing.expect(query.keymapClaims(chord(.z, .{ .cmd = true })));
+    try testing.expect(!query.keymapClaims(chord(.a, .{})));
+
+    driver.deliver(.{ .mouse_down = mouse(124, 120) });
+    driver.deliver(.{ .mouse_up = mouse(124, 120) });
+    driver.frame();
+    try testing.expect(query.keymapClaims(save));
+    try testing.expect(!query.keymapClaims(chord(.a, .{})));
+}
+
+fn chord(key: gooey.input.KeyCode, modifiers: gooey.input.Modifiers) gooey.input.KeyEvent {
+    return .{
+        .key = key,
+        .modifiers = modifiers,
+        .characters = null,
+        .characters_ignoring_modifiers = null,
+        .is_repeat = false,
+    };
 }

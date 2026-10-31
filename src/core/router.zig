@@ -19,6 +19,7 @@ const handler_mod = @import("handler.zig");
 const events = @import("events.zig");
 const window_mod = @import("window.zig");
 const input = @import("../input/mod.zig");
+const keymap = @import("keymap.zig");
 
 const assert = std.debug.assert;
 
@@ -54,11 +55,11 @@ pub const Query = struct {
         return .{ .offset = ime.selected_start, .len = ime.selected_end - ime.selected_start };
     }
 
-    /// Keymaps arrive in phase 4; until then no binding claims a key.
+    /// Whether a keymap binding names an action that an element on the
+    /// focus path handles, so the drain will consume `key` (contract §5).
     pub fn keymapClaims(self: *const Query, key: input.KeyEvent) bool {
-        _ = key;
         assert(self.window.phase != .build);
-        return false;
+        return findAction(self.window, &key) != null;
     }
 };
 
@@ -233,6 +234,14 @@ fn bubble(window: *Window, event: *const input.InputEvent, start: u32, slot: Slo
 }
 
 fn keyToFocus(window: *Window, event: *const input.InputEvent) void {
+    if (event.* == .key_down) {
+        if (findAction(window, &event.key_down)) |found| {
+            // A handled action consumes the key, whether or not it stops
+            // propagation: there is nothing further for it to reach.
+            _ = invoke(window, found.handler, event, null, found.id);
+            return;
+        }
+    }
     const frame = window.rendered();
     const target = findRecord(frame, window.focus);
     if (target != index_none) bubble(window, event, target, .key);
@@ -240,6 +249,71 @@ fn keyToFocus(window: *Window, event: *const input.InputEvent) void {
         // Tab moves focus when no handler claimed it: the key bubbled here.
         moveFocus(window, event.key_down.modifiers.shift);
     }
+}
+
+/// The focus path for keys, innermost first: the focused record and its
+/// ancestors, or with nothing focused the top-level records in tree order.
+const FocusPath = struct {
+    frame: *const records.Frame,
+    next_index: u32,
+    focused: bool,
+    steps: u32,
+
+    fn init(window: *const Window) FocusPath {
+        const frame = window.rendered();
+        const focused = findRecord(frame, window.focus);
+        if (focused != index_none) {
+            return .{ .frame = frame, .next_index = focused, .focused = true, .steps = 0 };
+        }
+        var path = FocusPath{ .frame = frame, .next_index = 0, .focused = false, .steps = 0 };
+        path.next_index = path.nextTopLevel(0);
+        return path;
+    }
+
+    fn next(self: *FocusPath) ?*const records.HitRecord {
+        if (self.next_index == index_none) return null;
+        self.steps += 1;
+        assert(self.steps <= self.frame.hit_count);
+        const record = &self.frame.hits[self.next_index];
+        if (self.focused) {
+            self.next_index = record.parent;
+        } else {
+            self.next_index = self.nextTopLevel(self.next_index + 1);
+        }
+        return record;
+    }
+
+    fn nextTopLevel(self: *const FocusPath, start: u32) u32 {
+        var index = start;
+        while (index < self.frame.hit_count) : (index += 1) {
+            if (self.frame.hits[index].parent == index_none) return index;
+        }
+        return index_none;
+    }
+
+    /// For `keymap.match`: whether a record on the path has the context.
+    pub fn contains(self: FocusPath, context: u64) bool {
+        var path = self;
+        while (path.next()) |record| {
+            if (record.key_context == context) return true;
+        }
+        return false;
+    }
+};
+
+const FoundAction = struct { id: ElementId, handler: handler_mod.Handler };
+
+/// The handler a key press resolves to through the keymap, if any.
+fn findAction(window: *const Window, key: *const input.KeyEvent) ?FoundAction {
+    if (window.keymap.len == 0) return null;
+    const start = FocusPath.init(window);
+    const action = keymap.match(window.keymap, key, start) orelse return null;
+    var path = start;
+    while (path.next()) |record| {
+        const handler = path.frame.actionHandler(record, action) orelse continue;
+        return .{ .id = record.id, .handler = handler };
+    }
+    return null;
 }
 
 /// Focus the next (or previous) focusable record in tree order, wrapping.

@@ -179,7 +179,8 @@ fn emitAppearance(window: *Window, node: *const Node, bounds: Rect) void {
 fn emitHit(window: *Window, node: *const Node, bounds: Rect, parent_hit: u32) u32 {
     if (!node.hit) return parent_hit;
     assert(node.id.isKeyed() or node.on_click != index_none or node.focusable or
-        node.on_key != index_none or node.on_click_outside != index_none);
+        node.on_key != index_none or node.on_click_outside != index_none or
+        node.key_context != 0 or node.actions_len > 0);
     return window.built().appendHit(.{
         .id = node.id,
         .bounds = bounds,
@@ -189,6 +190,9 @@ fn emitHit(window: *Window, node: *const Node, bounds: Rect, parent_hit: u32) u3
         .on_click = node.on_click,
         .on_click_outside = node.on_click_outside,
         .on_key = node.on_key,
+        .key_context = node.key_context,
+        .actions_start = node.actions_start,
+        .actions_len = node.actions_len,
     });
 }
 

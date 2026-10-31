@@ -10,6 +10,7 @@ const std = @import("std");
 const gooey = @import("gooey");
 const counter = @import("counter_example");
 const todo = @import("todo_example");
+const actions = @import("actions_example");
 const trace_mod = @import("trace.zig");
 const traces = @import("traces.zig");
 
@@ -163,4 +164,8 @@ pub fn captureCounter(allocator: std.mem.Allocator, io: std.Io, out: *TextBuffer
 
 pub fn captureTodo(allocator: std.mem.Allocator, io: std.Io, out: *TextBuffer) !void {
     try capture(allocator, io, todo.App, &traces.todo, out);
+}
+
+pub fn captureActions(allocator: std.mem.Allocator, io: std.Io, out: *TextBuffer) !void {
+    try capture(allocator, io, actions.App, &traces.actions, out);
 }

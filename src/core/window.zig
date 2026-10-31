@@ -30,6 +30,7 @@ const text_mod = @import("../text/mod.zig");
 const app_resources = @import("../context/app_resources.zig");
 const a11y_types = @import("../accessibility/types.zig");
 const cx_mod = @import("cx.zig");
+const keymap_mod = @import("keymap.zig");
 const A11ySystem = @import("../context/a11y_system.zig").A11ySystem;
 const screen_reader_mod = @import("screen_reader.zig");
 
@@ -73,6 +74,9 @@ pub const Node = struct {
     on_click: u32,
     on_click_outside: u32,
     on_key: u32,
+    key_context: u64,
+    actions_start: u32,
+    actions_len: u32,
     a11y: ?A11yBuilt,
     background: ?records.Color,
     border: records.Border,
@@ -203,6 +207,8 @@ pub const Window = struct {
     gpa: std.mem.Allocator,
     limits: ResourceLimits,
     theme: *const element.Theme,
+    /// The app's keymap, parsed at compile time (static storage).
+    keymap: []const keymap_mod.Compiled,
     store: *handler_mod.Store,
     resources: *AppResources,
     layout: *LayoutEngine,
@@ -364,6 +370,7 @@ pub const Options = struct {
     scale_factor: f32,
     limits: *const ResourceLimits,
     theme: *const element.Theme,
+    keymap: []const keymap_mod.Compiled,
     store: *handler_mod.Store,
     resources: *AppResources,
 };
@@ -376,6 +383,7 @@ pub noinline fn initInPlace(self: *Window, gpa: std.mem.Allocator, options: *con
     self.gpa = gpa;
     self.limits = limits.*;
     self.theme = options.theme;
+    self.keymap = options.keymap;
     self.store = options.store;
     self.resources = options.resources;
     try initBuildStorage(self, gpa, limits);
