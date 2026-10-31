@@ -223,11 +223,23 @@ pub const InputEngine = struct {
     }
 
     /// Insert committed text over the selection. Committing ends any
-    /// composition, so the preedit is discarded first.
+    /// composition, so the preedit is discarded first. Only a typed
+    /// codepoint joins the typing run; a longer commit (an IME phrase) is
+    /// an undo step of its own.
     pub fn insert(self: *InputEngine, value: []const u8) void {
         assert(self.cursor <= self.len);
         self.preedit_len = 0;
-        self.replace(self.selectionStart(), self.selectionEnd(), value);
+        if (oneCodepoint(value)) {
+            return self.replace(self.selectionStart(), self.selectionEnd(), value);
+        }
+        self.replaceAsStep(self.selectionStart(), self.selectionEnd(), value);
+    }
+
+    /// `replace` as its own undo step, never merged with typing around it.
+    fn replaceAsStep(self: *InputEngine, start: u32, end: u32, value: []const u8) void {
+        self.history.seal();
+        self.replace(start, end, value);
+        self.history.seal();
     }
 
     pub fn setPreedit(self: *InputEngine, value: []const u8) void {
@@ -352,7 +364,7 @@ pub const InputEngine = struct {
             },
             .v => {
                 const pasted = clipboard.read();
-                if (pasted.len > 0) self.replace(start, end, pasted);
+                if (pasted.len > 0) self.replaceAsStep(start, end, pasted);
             },
             .z => if (key.modifiers.shift) self.redo() else self.undo(),
             else => return false,
@@ -374,6 +386,12 @@ pub const InputEngine = struct {
 pub fn editCommand(mods: input.Modifiers) bool {
     if (builtin.os.tag == .windows) return mods.ctrl and !mods.alt;
     return mods.cmd;
+}
+
+fn oneCodepoint(value: []const u8) bool {
+    if (value.len == 0) return false;
+    const length = std.unicode.utf8ByteSequenceLength(value[0]) catch return false;
+    return value.len == length;
 }
 
 fn isContinuation(byte: u8) bool {
@@ -613,6 +631,26 @@ test "undo and redo restore text and caret; a new edit drops redo" {
     try std.testing.expectEqual(@as(u32, 2), engine.selectionEnd());
     engine.insert("x");
     try std.testing.expect(!engine.history.canRedo());
+}
+
+test "a paste and an IME phrase are undo steps of their own" {
+    // Goal: typing next to a paste or a commit does not join its step (the
+    // Mac runner's TextEdit comparison). Method: paste "abc", type "Q",
+    // commit "日本", type "z"; each undo removes exactly one of the four.
+    var t: TestEngine = undefined;
+    t.init();
+    const engine = &t.engine;
+    t.clipboard.write("abc");
+    try std.testing.expect(t.key(.v, TestEngine.command()));
+    engine.insert("Q");
+    engine.insert("\u{65e5}\u{672c}");
+    engine.insert("z");
+    try std.testing.expectEqualStrings("abcQ\u{65e5}\u{672c}z", engine.text());
+    const steps = [_][]const u8{ "abcQ\u{65e5}\u{672c}", "abcQ", "abc", "" };
+    for (steps) |expected| {
+        try std.testing.expect(t.key(.z, TestEngine.command()));
+        try std.testing.expectEqualStrings(expected, engine.text());
+    }
 }
 
 test "copy, cut, and paste go through the clipboard; other commands bubble" {
