@@ -19,6 +19,7 @@ const Key = core.Key;
 const Color = ui.Color;
 const InputEngine = core.InputEngine;
 const AreaEngine = core.AreaEngine;
+const EditorEngine = core.EditorEngine;
 
 // =============================================================================
 // Button
@@ -333,7 +334,7 @@ pub const TextArea = struct {
         const inset = self.padding + self.border_width;
         const line_height = cx.fontMetrics().line_height;
         const viewport_height = line_height * @as(f32, @floatFromInt(self.rows));
-        engine.resolveClick(cx, inset);
+        engine.resolveClick(cx, .{ .text_x = inset, .text_y = inset, .gutter_end = 0 });
         engine.follow(line_height, viewport_height);
         engine.blink(cx, focused);
         cx.render(ui.box(.{
@@ -375,6 +376,11 @@ pub const TextArea = struct {
     /// are skipped and drawing stops below it, so paint work is bounded by
     /// `rows` + 1 lines; finding them scans the text once.
     fn paintArea(engine: *const AreaEngine, painter: *ui.Painter) void {
+        paintText(engine, painter);
+    }
+
+    /// `paintArea` for any multi-line engine; the editor draws its text so.
+    fn paintText(engine: anytype, painter: *ui.Painter) void {
         const bounds = painter.bounds;
         const metrics = painter.fontMetrics();
         const size: u16 = @intFromFloat(metrics.point_size);
@@ -391,7 +397,7 @@ pub const TextArea = struct {
         paintScrollbar(engine, painter);
     }
 
-    fn paintLines(engine: *const AreaEngine, painter: *ui.Painter, size: u16) void {
+    fn paintLines(engine: anytype, painter: *ui.Painter, size: u16) void {
         const bounds = painter.bounds;
         const line_height = painter.fontMetrics().line_height;
         var start: u32 = 0;
@@ -411,7 +417,7 @@ pub const TextArea = struct {
     /// One line: its part of the selection, then its text, with the
     /// preedit underlined at the caret when the caret is on this line.
     fn paintLine(
-        engine: *const AreaEngine,
+        engine: anytype,
         painter: *ui.Painter,
         size: u16,
         start: u32,
@@ -458,7 +464,7 @@ pub const TextArea = struct {
     }
 
     /// The caret in its blink phase, and the IME's answer at the caret.
-    fn paintCaret(engine: *const AreaEngine, painter: *ui.Painter, size: u16) void {
+    fn paintCaret(engine: anytype, painter: *ui.Painter, size: u16) void {
         assert(engine.view.focused);
         const line_height = painter.fontMetrics().line_height;
         const style = ui.PaintText{ .size = size, .color = engine.view.caret_color };
@@ -485,7 +491,7 @@ pub const TextArea = struct {
     }
 
     /// A track and thumb at the right edge while the lines overflow.
-    fn paintScrollbar(engine: *const AreaEngine, painter: *ui.Painter) void {
+    fn paintScrollbar(engine: anytype, painter: *ui.Painter) void {
         const bounds = painter.bounds;
         const line_height = painter.fontMetrics().line_height;
         const lines: f32 = @floatFromInt(std.mem.count(u8, engine.text(), "\n") + 1);
@@ -509,11 +515,216 @@ pub const TextArea = struct {
     }
 };
 
+// =============================================================================
+// CodeEditor
+// =============================================================================
+
+/// A TextArea with line numbers, a highlighted current line, Tab indenting,
+/// and a status bar, as 0.3.1's CodeEditor. Clicking a line number selects
+/// the line. The app reserves editors with `limits.text.editor`.
+pub const CodeEditor = struct {
+    key: []const u8,
+    bind: *[]const u8,
+    placeholder: []const u8 = "",
+    width: f32 = 500,
+    rows: u16 = 10,
+    padding: f32 = 8,
+    border_width: f32 = 1,
+    show_line_numbers: bool = true,
+    gutter_width: f32 = 50,
+    show_status_bar: bool = true,
+    status_bar_height: f32 = 22,
+    language_mode: []const u8 = "Plain Text",
+    encoding: []const u8 = "UTF-8",
+    tab_size: u8 = 4,
+    use_hard_tabs: bool = false,
+
+    pub fn render(self: CodeEditor, cx: *Cx) void {
+        assert(self.key.len > 0);
+        assert(self.rows > 0);
+        const theme = cx.theme();
+        const key = Key{ .name = self.key };
+        const id = cx.id(key);
+        const handle = cx.retain(EditorEngine, id, .{ .scope = id }, initEngine);
+        const engine = cx.get(EditorEngine, handle);
+        engine.syncBound(self.bind);
+        const focused = cx.focused(id);
+        setView(&engine.view, theme, id, self.placeholder);
+        engine.indent = .{ .size = self.tab_size, .hard_tabs = self.use_hard_tabs };
+        const gutter = if (self.show_line_numbers) self.gutter_width else 0;
+        const line_height = cx.fontMetrics().line_height;
+        const viewport_height = line_height * @as(f32, @floatFromInt(self.rows));
+        // The separator after the gutter is one pixel wide.
+        const separator: f32 = if (gutter > 0) 1 else 0;
+        engine.resolveClick(cx, .{
+            .text_x = self.border_width + gutter + separator + self.padding,
+            .text_y = self.border_width + self.padding,
+            .gutter_end = self.border_width + gutter,
+        });
+        engine.follow(line_height, viewport_height);
+        engine.blink(cx, focused);
+        cx.render(ui.box(.{
+            .key = key,
+            .focusable = true,
+            .on_key = cx.on(EditorEngine.onKey, .{ .entity = handle }),
+            .on_click = cx.on(EditorEngine.onClick, .{ .entity = handle }),
+            .style = .{
+                .width = .{ .fixed = self.width },
+                .padding = .all(self.border_width),
+                .background = .surface,
+                .border = .{
+                    .width = self.border_width,
+                    .color = if (focused) .border_focus else .border,
+                },
+                .corner_radius = .all(theme.radius_md),
+                .cursor = .text,
+            },
+            .a11y = .{
+                .role = .textarea,
+                .label = if (self.placeholder.len > 0) self.placeholder else "Code editor",
+                .value = if (engine.len > 0) engine.text() else null,
+            },
+        }, .{
+            ui.box(.{ .style = .{
+                .direction = .row,
+                .width = .{ .grow = 1 },
+                .height = .{ .fixed = viewport_height + self.padding * 2 },
+            } }, .{
+                if (gutter > 0) ui.box(.{ .style = .{
+                    .width = .{ .fixed = gutter },
+                    .height = .{ .grow = 1 },
+                    .padding = .symmetric(0, self.padding),
+                } }, .{
+                    ui.paint(EditorEngine, engine, paintGutter, .{
+                        .width = .{ .grow = 1 },
+                        .height = .{ .grow = 1 },
+                    }),
+                }) else null,
+                if (gutter > 0) separatorBox(.vertical) else null,
+                ui.box(.{ .style = .{
+                    .width = .{ .grow = 1 },
+                    .height = .{ .grow = 1 },
+                    .padding = .all(self.padding),
+                } }, .{
+                    ui.paint(EditorEngine, engine, paintEditorText, .{
+                        .width = .{ .grow = 1 },
+                        .height = .{ .grow = 1 },
+                    }),
+                }),
+            }),
+            if (self.show_status_bar) separatorBox(.horizontal) else null,
+            if (self.show_status_bar) StatusBar{ .editor = &self, .engine = engine } else null,
+        }));
+    }
+
+    fn initEngine(engine: *EditorEngine) void {
+        assert(engine.len == 0);
+    }
+
+    /// The caret's line under the text while focused, then the text.
+    fn paintEditorText(engine: *const EditorEngine, painter: *ui.Painter) void {
+        if (engine.view.focused) {
+            const line_height = painter.fontMetrics().line_height;
+            const row: f32 = @floatFromInt(engine.lineOf(engine.cursor));
+            painter.pushClip(painter.bounds);
+            painter.fill(.{
+                .x = painter.bounds.x,
+                .y = painter.bounds.y + row * line_height - engine.scroll_y,
+                .width = painter.bounds.width,
+                .height = line_height,
+            }, engine.view.selection_color.withAlpha(0.08));
+            painter.popClip();
+        }
+        TextArea.paintText(engine, painter);
+    }
+
+    /// A one-pixel rule in the border colour.
+    fn separatorBox(direction: enum { vertical, horizontal }) ui.Box.Element(@TypeOf(.{})) {
+        const thickness = ui.Sizing{ .fixed = 1 };
+        const span = ui.Sizing{ .grow = 1 };
+        return ui.box(.{ .style = .{
+            .width = if (direction == .vertical) thickness else span,
+            .height = if (direction == .vertical) span else thickness,
+            .background = .border,
+        } }, .{});
+    }
+
+    /// Line numbers for the visible lines, right-aligned 8 px from the
+    /// separator, the caret's line in the text colour. The gutter is inset
+    /// like the text beside it, so a number's row is the text line's row.
+    fn paintGutter(engine: *const EditorEngine, painter: *ui.Painter) void {
+        const bounds = painter.bounds;
+        const metrics = painter.fontMetrics();
+        const line_height = metrics.line_height;
+        const size: u16 = @intFromFloat(metrics.point_size);
+        painter.pushClip(bounds);
+        defer painter.popClip();
+        const line_count: u32 = @intCast(std.mem.count(u8, engine.text(), "\n") + 1);
+        const caret_line = engine.lineOf(engine.cursor);
+        const first: u32 = @intFromFloat(engine.scroll_y / line_height);
+        const visible: u32 = @intFromFloat(@ceil(bounds.height / line_height) + 1);
+        var line = first;
+        while (line < @min(line_count, first + visible)) : (line += 1) {
+            var buffer: [10]u8 = undefined;
+            // Ten digits hold any u32 line number.
+            const label = std.fmt.bufPrint(&buffer, "{d}", .{line + 1}) catch unreachable;
+            const view = &engine.view;
+            const color = if (line == caret_line) view.text_color else view.placeholder_color;
+            const style = ui.PaintText{ .size = size, .color = color };
+            const x = bounds.x + bounds.width - 8 - painter.measureText(label, style);
+            const row: f32 = @floatFromInt(line);
+            const top = bounds.y + row * line_height - engine.scroll_y;
+            _ = painter.textOnBaseline(label, x, metrics.calcBaseline(top, line_height), style);
+        }
+    }
+
+    /// "Ln 3, Col 7" on the left; the indent, encoding, and language on the
+    /// right, as 0.3.1's status bar.
+    const StatusBar = struct {
+        editor: *const CodeEditor,
+        engine: *const EditorEngine,
+
+        pub fn render(self: StatusBar, cx: *Cx) void {
+            const engine = self.engine;
+            const line = engine.lineOf(engine.cursor) + 1;
+            const column = engine.cursor - engine.lineStart(engine.cursor) + 1;
+            var position_buffer: [32]u8 = undefined;
+            var indent_buffer: [16]u8 = undefined;
+            // 32 bytes hold "Ln " and ", Col " with two u32s; 16 hold the indent.
+            const position = std.fmt.bufPrint(&position_buffer, "Ln {d}, Col {d}", .{
+                line,
+                column,
+            }) catch unreachable;
+            const indent_name = if (self.editor.use_hard_tabs) "Tab" else "Spaces";
+            const indent = std.fmt.bufPrint(&indent_buffer, "{s}: {d}", .{
+                indent_name,
+                self.editor.tab_size,
+            }) catch unreachable;
+            const style = ui.Text{ .size = 12, .color = .muted };
+            cx.render(ui.box(.{ .style = .{
+                .direction = .row,
+                .width = .{ .grow = 1 },
+                .height = .{ .fixed = self.editor.status_bar_height },
+                .padding = .symmetric(10, 0),
+                .gap = 16,
+                .alignment = .center_cross,
+            } }, .{
+                ui.text(position, style),
+                ui.box(.{ .style = .{ .width = .{ .grow = 1 } } }, .{}),
+                ui.text(indent, style),
+                ui.text(self.editor.encoding, style),
+                ui.text(self.editor.language_mode, style),
+            }));
+        }
+    };
+};
+
 test "core components compile against the core surface" {
     comptime {
         _ = Button;
         _ = Checkbox;
         _ = TextInput;
         _ = TextArea;
+        _ = CodeEditor;
     }
 }

@@ -63,11 +63,25 @@ pub const EngineView = struct {
 
 pub const Kind = enum { input, area, editor };
 
+/// What Tab inserts in an editor: `size` spaces, or one tab character.
+pub const Indent = struct {
+    size: u8,
+    hard_tabs: bool,
+
+    /// 0.3.1's spaces are at most 16 per Tab.
+    pub const size_max: u8 = 16;
+};
+
+/// Where an area's text starts inside its box, for click positioning. A
+/// click left of `gutter_end` (an editor's line numbers) selects its line.
+pub const ClickOrigin = struct { text_x: f32, text_y: f32, gutter_end: f32 };
+
 /// The engine of one kind. An input is one line; an area adds lines split
 /// on '\n' (no soft wrap, as in 0.3.1), vertical moves, Return inserting a
 /// newline, a scroll offset that follows the caret, and click positioning.
+/// An editor is an area that also indents with Tab and selects a line when
+/// its gutter is clicked.
 pub fn Engine(comptime kind: Kind) type {
-    comptime assert(kind != .editor);
     return struct {
         const Self = @This();
 
@@ -95,6 +109,8 @@ pub fn Engine(comptime kind: Kind) type {
         /// window coordinates (area). Resolving needs the frame's bounds and
         /// text measurement, which a handler does not have.
         pending_click: ?Point,
+        /// What Tab inserts (editor), set each build by the component.
+        indent: Indent,
         /// What the input's paint function draws this tick, set each build.
         /// `placeholder` is read during this tick's emit only (contract rule 6).
         view: View,
@@ -115,6 +131,7 @@ pub fn Engine(comptime kind: Kind) type {
             self.preferred_column = null;
             self.scroll_y = 0;
             self.pending_click = null;
+            self.indent = .{ .size = 4, .hard_tabs = false };
             self.view = .{
                 .id = .root,
                 .focused = false,
@@ -337,14 +354,19 @@ pub fn Engine(comptime kind: Kind) type {
             self.moveTo(target, mods.shift);
         }
 
-        /// Return, Up, and Down, which only an area takes: an input leaves
-        /// Return to the app (submit) and has no lines to move between. The
-        /// command modifier moves to the text's first or last byte.
-        fn applyAreaKey(self: *Self, key: input.KeyEvent) bool {
-            comptime assert(kind == .area);
+        /// Return, Up, Down, and an editor's Tab, which an input leaves to the
+        /// app (submit, focus) and has no lines to move between. The command
+        /// modifier moves to the text's first or last byte.
+        fn applyLineKey(self: *Self, key: input.KeyEvent) bool {
+            comptime assert(kind != .input);
             const mods = key.modifiers;
             switch (key.key) {
                 .@"return", .keypad_enter => self.insert("\n"),
+                .tab => {
+                    if (kind != .editor) return false;
+                    if (mods.shift or mods.ctrl or mods.alt or mods.cmd) return false;
+                    self.insertIndent();
+                },
                 .up => if (editCommand(mods)) {
                     self.moveTo(0, mods.shift);
                 } else {
@@ -358,6 +380,28 @@ pub fn Engine(comptime kind: Kind) type {
                 else => return false,
             }
             return true;
+        }
+
+        /// Tab in an editor: one tab character or `indent.size` spaces, as
+        /// one undo step like any multi-byte insert.
+        fn insertIndent(self: *Self) void {
+            comptime assert(kind == .editor);
+            assert(self.indent.size > 0);
+            assert(self.indent.size <= Indent.size_max);
+            if (self.indent.hard_tabs) return self.insert("\t");
+            const spaces: [Indent.size_max]u8 = @splat(' ');
+            self.insert(spaces[0..self.indent.size]);
+        }
+
+        /// Select line `start`'s text and its newline, with the caret at
+        /// the line's start, as 0.3.1's gutter click does.
+        fn selectLine(self: *Self, start: u32) void {
+            comptime assert(kind == .editor);
+            assert(start == self.lineStart(start));
+            const end = self.lineEnd(start);
+            self.moveTo(start, false);
+            self.anchor = if (end < self.len) end + 1 else end;
+            assert(self.anchor <= self.len);
         }
 
         /// Move to the line above or below at the preferred byte column,
@@ -411,7 +455,7 @@ pub fn Engine(comptime kind: Kind) type {
         /// edit or move; otherwise keep the offset. Call before `blink`,
         /// which consumes the move.
         pub fn follow(self: *Self, line_height: f32, viewport_height: f32) void {
-            comptime assert(kind == .area);
+            comptime assert(kind != .input);
             assert(line_height > 0);
             assert(viewport_height > 0);
             const lines: f32 = @floatFromInt(std.mem.count(u8, self.text(), "\n") + 1);
@@ -429,7 +473,7 @@ pub fn Engine(comptime kind: Kind) type {
         /// Handler for a click in the area: the caret moves there at the next
         /// build (`resolveClick`). The press already focused the area.
         pub fn onClick(self: *Self, effects: *handler_mod.Effects) void {
-            comptime assert(kind == .area);
+            comptime assert(kind != .input);
             const event = effects.inputEvent() orelse return;
             const mouse = switch (event.*) {
                 .mouse_down, .mouse_up => |mouse| mouse,
@@ -446,9 +490,10 @@ pub fn Engine(comptime kind: Kind) type {
         /// bounds in the frame on screen, `inset` inside its edge. Columns
         /// are found by binary search over prefix widths, which grow with
         /// the prefix, so a line of n bytes costs O(log n) measurements.
-        pub fn resolveClick(self: *Self, cx: *Cx, inset: f32) void {
-            comptime assert(kind == .area);
-            assert(inset >= 0);
+        pub fn resolveClick(self: *Self, cx: *Cx, origin: ClickOrigin) void {
+            comptime assert(kind != .input);
+            assert(origin.text_x >= origin.gutter_end);
+            assert(origin.text_y >= 0);
             const click = self.pending_click orelse return;
             self.pending_click = null;
             const frame = cx.window.rendered();
@@ -456,7 +501,7 @@ pub fn Engine(comptime kind: Kind) type {
                 if (hit.id == self.view.id) break hit.bounds;
             } else return;
             const line_height = cx.fontMetrics().line_height;
-            const y = click.y - bounds.y - inset + self.scroll_y;
+            const y = click.y - bounds.y - origin.text_y + self.scroll_y;
             const row: u32 = if (y > 0) @intFromFloat(y / line_height) else 0;
             var start: u32 = 0;
             var line: u32 = 0;
@@ -465,7 +510,10 @@ pub fn Engine(comptime kind: Kind) type {
                 if (end == self.len) break;
                 start = end + 1;
             }
-            const x = click.x - bounds.x - inset;
+            if (kind == .editor and click.x - bounds.x < origin.gutter_end) {
+                return self.selectLine(start);
+            }
+            const x = click.x - bounds.x - origin.text_x;
             const text_system = cx.window.resources.text_system;
             const column = columnAt(text_system, self.bytes[start..self.lineEnd(start)], x);
             self.moveTo(start + column, false);
@@ -514,8 +562,8 @@ pub fn Engine(comptime kind: Kind) type {
             if (editCommand(key.modifiers)) {
                 if (self.applyCommand(key, clipboard)) return true;
             }
-            if (kind == .area) {
-                if (self.applyAreaKey(key)) return true;
+            if (kind != .input) {
+                if (self.applyLineKey(key)) return true;
             }
             const extend = key.modifiers.shift;
             switch (key.key) {
@@ -570,6 +618,7 @@ pub fn Engine(comptime kind: Kind) type {
 
 pub const InputEngine = Engine(.input);
 pub const AreaEngine = Engine(.area);
+pub const EditorEngine = Engine(.editor);
 
 /// Edit commands use Cmd on Apple platforms and Ctrl elsewhere, ignored with
 /// Alt held. Linux uses Ctrl, not 0.3.1's Super: GNOME's shell takes Super+A
@@ -760,6 +809,7 @@ pub fn Pool(comptime kind: Kind) type {
 
 pub const InputPool = Pool(.input);
 pub const AreaPool = Pool(.area);
+pub const EditorPool = Pool(.editor);
 
 /// An engine over caller storage, for the tests below.
 fn TestOf(comptime kind: Kind) type {

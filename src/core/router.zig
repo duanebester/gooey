@@ -234,20 +234,22 @@ fn bubble(window: *Window, event: *const input.InputEvent, start: u32, slot: Slo
     }
 }
 
-/// The wheel scrolls the innermost text area under the pointer, through its
-/// key handler, as 0.3.1 scrolled the text area under the pointer. Nothing
-/// else scrolls until `Style.scroll` lands; the event is otherwise dropped.
+/// The wheel scrolls the innermost text area or editor under the pointer,
+/// through its key handler, as 0.3.1 scrolled them. Nothing else scrolls
+/// until `Style.scroll` lands; the event is otherwise dropped.
 fn wheel(window: *Window, event: *const input.InputEvent, point: Point) void {
     assert(event.* == .scroll);
     const frame = window.rendered();
     const area_type = handler_mod.typeId(text_engine.AreaEngine);
+    const editor_type = handler_mod.typeId(text_engine.EditorEngine);
     var index = hitIndex(frame, point);
     var depth: u32 = 0;
     while (index != index_none) : (depth += 1) {
         assert(depth <= window_mod.box_depth_max);
         const record = &frame.hits[index];
         if (frame.handlerAt(record.on_key)) |handler| {
-            if (handler.target.type_id == area_type) {
+            const type_id = handler.target.type_id;
+            if (type_id == area_type or type_id == editor_type) {
                 _ = invoke(window, handler, event, null, record.id);
                 return;
             }
