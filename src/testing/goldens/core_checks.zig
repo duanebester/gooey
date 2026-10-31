@@ -69,6 +69,14 @@ test "the IME rect query is answered synchronously from the rendered frame" {
     // Three 0.5 em glyphs and one past ASCII at 0.7 em: 24 + 11.2 px.
     try testing.expectApproxEqAbs(@as(f32, 33 + 35.2), query.imeCursorRect().?.x, 0.001);
     try testing.expectEqual(@as(u32, 5), query.imeSelectedRange().?.offset);
+
+    // The range is the selection, not just the caret, so VoiceOver can read
+    // it: Shift+Left selects the two-byte é.
+    driver.deliver(.{ .key_down = chord(.left, .{ .shift = true }) });
+    driver.frame();
+    const selected = query.imeSelectedRange().?;
+    try testing.expectEqual(@as(u32, 3), selected.offset);
+    try testing.expectEqual(@as(u32, 2), selected.len);
 }
 
 /// An app whose button opens a file dialog, for the dialog check.

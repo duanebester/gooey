@@ -7,7 +7,7 @@
 //! Strategy:
 //! - Pre-allocated pool of NSAccessibilityElement wrappers
 //! - Fingerprint-based identity mapping for stable object references
-//! - Batched property updates with single layout notification
+//! - Value and caret change notifications for elements whose content changed
 //! - Periodic VoiceOver detection (not every frame)
 
 const std = @import("std");
@@ -18,6 +18,13 @@ const types = @import("types.zig");
 const fingerprint_mod = @import("fingerprint.zig");
 const constants = @import("constants.zig");
 const layout = @import("../layout/layout.zig");
+const appkit = @import("../platform/macos/appkit.zig");
+const TextSelection = @import("element.zig").TextSelection;
+
+/// The `GooeyMetalView` ivar holding the focused element, which the view
+/// returns from `accessibilityFocusedUIElement` so VoiceOver follows Gooey's
+/// focus into its elements (AppKit asks the first responder).
+pub const focus_ivar = "_gooeyAccessibilityFocus";
 
 // ============================================================================
 // External Declarations
@@ -26,8 +33,11 @@ const layout = @import("../layout/layout.zig");
 /// NSAccessibilityFocusedUIElementChangedNotification
 extern "c" var NSAccessibilityFocusedUIElementChangedNotification: objc.c.id;
 
-/// NSAccessibilityLayoutChangedNotification
-extern "c" var NSAccessibilityLayoutChangedNotification: objc.c.id;
+/// NSAccessibilityValueChangedNotification
+extern "c" var NSAccessibilityValueChangedNotification: objc.c.id;
+
+/// NSAccessibilitySelectedTextChangedNotification
+extern "c" var NSAccessibilitySelectedTextChangedNotification: objc.c.id;
 
 /// NSAccessibilityAnnouncementRequestedNotification
 extern "c" var NSAccessibilityAnnouncementRequestedNotification: objc.c.id;
@@ -93,6 +103,12 @@ pub const MacBridge = struct {
         /// Is this slot currently in use?
         active: bool = false,
 
+        /// `valueHash` at the last sync; null before the first.
+        value_hash: ?u64 = null,
+
+        /// Selection at the last sync; null when not the focused field.
+        selection: ?TextSelection = null,
+
         /// Update wrapper from accessibility element
         pub fn update(
             self: *Wrapper,
@@ -150,9 +166,36 @@ pub const MacBridge = struct {
                 setAccessibilityFrame(ns, screen_bounds);
             }
 
+            self.notifyChanges(ns, elem);
+
             // Update tracking
             self.fingerprint = elem.fingerprint;
             self.active = true;
+        }
+
+        /// Tell VoiceOver what changed since this element's last sync, as
+        /// NSTextView and NSButton do: the value (text or checked state) and
+        /// the focused field's selection. A wrapper's first sync posts
+        /// nothing, because the element is new to VoiceOver. At most two
+        /// notifications per dirty element, and a frame has one selection.
+        fn notifyChanges(self: *Wrapper, ns: objc.Object, elem: *const tree_mod.Element) void {
+            std.debug.assert(ns.value != null);
+            std.debug.assert(elem.fingerprint.isValid());
+            const value_hash = valueHash(elem);
+            const value_changed = if (self.value_hash) |previous| previous != value_hash else false;
+            var selection_moved = false;
+            if (self.selection) |previous| {
+                if (elem.selection) |current| selection_moved = !std.meta.eql(previous, current);
+            }
+            self.value_hash = value_hash;
+            self.selection = elem.selection;
+            if (isText(elem.role)) {
+                setAccessibilitySelectedTextRange(ns, selectedRange(elem));
+            }
+            if (value_changed) postNotification(ns, NSAccessibilityValueChangedNotification);
+            if (selection_moved) {
+                postNotification(ns, NSAccessibilitySelectedTextChangedNotification);
+            }
         }
 
         /// Mark wrapper as inactive (available for reuse)
@@ -162,6 +205,8 @@ pub const MacBridge = struct {
 
             self.active = false;
             self.fingerprint = fingerprint_mod.Fingerprint.INVALID;
+            self.value_hash = null;
+            self.selection = null;
             // NOTE: Don't release ns_element - we reuse it from the pool
         }
     };
@@ -189,6 +234,7 @@ pub const MacBridge = struct {
         self.content_view = view;
 
         self.voiceover_active = checkVoiceOverRunning();
+        registerElementClass();
 
         return self;
     }
@@ -240,9 +286,6 @@ pub const MacBridge = struct {
 
         // Update children arrays for VoiceOver discovery
         self.updateAccessibilityChildren(tree, root);
-
-        // Post layout changed notification (batched)
-        postLayoutChangedNotification(root);
     }
 
     /// Update accessibilityChildren on root and parent elements
@@ -398,12 +441,26 @@ pub const MacBridge = struct {
 
         if (!self.voiceover_active) return;
 
-        const focus_idx = idx orelse return;
-        const elem = tree.getElement(focus_idx) orelse return;
-        const slot = self.findSlotByFingerprint(elem.fingerprint) orelse return;
-        const ns = self.wrappers[slot].ns_element orelse return;
+        const ns = self.focusedElement(tree, idx);
+        self.publishFocus(ns);
+        if (ns) |element| postFocusChangedNotification(element);
+    }
 
-        postFocusChangedNotification(ns);
+    fn focusedElement(self: *Self, tree: *const tree_mod.Tree, idx: ?u16) ?objc.Object {
+        std.debug.assert(tree.count() <= constants.MAX_ELEMENTS);
+        const focus_idx = idx orelse return null;
+        const elem = tree.getElement(focus_idx) orelse return null;
+        const slot = self.findSlotByFingerprint(elem.fingerprint) orelse return null;
+        return self.wrappers[slot].ns_element;
+    }
+
+    /// Hand the focused element, or nil, to the view (`focus_ivar`). The
+    /// view does not retain it; the wrapper pool keeps it alive until
+    /// `deinit_` clears the ivar first.
+    fn publishFocus(self: *Self, ns: ?objc.Object) void {
+        const view = self.content_view orelse return;
+        std.debug.assert(view.value != null);
+        view.setInstanceVariable(focus_ivar, ns orelse .{ .value = null });
     }
 
     fn isActive(ptr: *anyopaque) bool {
@@ -416,6 +473,9 @@ pub const MacBridge = struct {
 
     fn deinit_(ptr: *anyopaque) void {
         const self = castSelf(ptr);
+
+        // The view must not hand VoiceOver an element released below.
+        self.publishFocus(null);
 
         // Release all NS objects
         for (&self.wrappers) |*w| {
@@ -482,8 +542,8 @@ pub const MacBridge = struct {
 // ============================================================================
 
 fn createNSAccessibilityElement() ?objc.Object {
-    const cls = objc.getClass("NSAccessibilityElement") orelse return null;
-    // Standard Objective-C pattern: [[NSAccessibilityElement alloc] init]
+    const cls = element_class.?;
+    // Standard Objective-C pattern: [[GooeyAccessibilityElement alloc] init]
     const alloc_id: objc.c.id = cls.msgSend(objc.c.id, "alloc", .{});
     if (alloc_id == null) return null;
     const alloc_obj = objc.Object.fromId(alloc_id);
@@ -627,26 +687,207 @@ fn setAccessibilityFrame(elem: objc.Object, bounds: layout.BoundingBox) void {
     elem.msgSend(void, "setAccessibilityFrame:", .{frame});
 }
 
-fn postLayoutChangedNotification(root: objc.Object) void {
-    std.debug.assert(root.value != null);
-
-    const NSAccessibilityCenter = objc.getClass("NSAccessibility") orelse return;
-    _ = NSAccessibilityCenter;
-
-    // NSAccessibilityPostNotification(root, NSAccessibilityLayoutChangedNotification)
-    const postNotification = @extern(*const fn (objc.c.id, objc.c.id) callconv(std.builtin.CallingConvention.c) void, .{
-        .name = "NSAccessibilityPostNotification",
-    });
-    postNotification(root.value, NSAccessibilityLayoutChangedNotification);
-}
-
 fn postFocusChangedNotification(elem: objc.Object) void {
     std.debug.assert(elem.value != null);
+    postNotification(elem, NSAccessibilityFocusedUIElementChangedNotification);
+}
 
-    const postNotification = @extern(*const fn (objc.c.id, objc.c.id) callconv(std.builtin.CallingConvention.c) void, .{
+fn postNotification(elem: objc.Object, notification: objc.c.id) void {
+    std.debug.assert(elem.value != null);
+    std.debug.assert(notification != null);
+    const post = @extern(*const fn (objc.c.id, objc.c.id) callconv(.c) void, .{
         .name = "NSAccessibilityPostNotification",
     });
-    postNotification(elem.value, NSAccessibilityFocusedUIElementChangedNotification);
+    post(elem.value, notification);
+}
+
+/// The value VoiceOver reads: the text, or a toggle's checked state.
+fn valueHash(elem: *const tree_mod.Element) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    if (elem.value) |value| {
+        hasher.update("text:");
+        hasher.update(value);
+    } else if (isToggle(elem.role)) {
+        hasher.update(if (elem.state.checked) "checked" else "unchecked");
+    }
+    return hasher.final();
+}
+
+fn isText(role: types.Role) bool {
+    return role == .textbox or role == .textarea or role == .searchbox;
+}
+
+/// The focused field's selection in UTF-16 units, as AppKit counts; an
+/// unfocused field reports an empty range at the start.
+fn selectedRange(elem: *const tree_mod.Element) appkit.NSRange {
+    const selection = elem.selection orelse return .{ .location = 0, .length = 0 };
+    const text = elem.value orelse "";
+    std.debug.assert(selection.start <= selection.end);
+    std.debug.assert(selection.end <= text.len);
+    return .{
+        .location = utf16Length(text[0..selection.start]),
+        .length = utf16Length(text[selection.start..selection.end]),
+    };
+}
+
+fn setAccessibilitySelectedTextRange(elem: objc.Object, range: appkit.NSRange) void {
+    std.debug.assert(elem.value != null);
+    elem.msgSend(void, "setAccessibilitySelectedTextRange:", .{range});
+}
+
+/// UTF-16 code units in UTF-8 `text`: one per scalar, two above U+FFFF.
+/// Counts lead bytes, so it is bounded by `text.len` and needs no decode.
+fn utf16Length(text: []const u8) u32 {
+    std.debug.assert(text.len <= std.math.maxInt(u32));
+    var count: u32 = 0;
+    for (text) |byte| {
+        if (byte & 0xC0 != 0x80) count += 1;
+        if (byte >= 0xF0) count += 1;
+    }
+    std.debug.assert(count <= text.len);
+    return count;
+}
+
+test "utf16Length counts surrogate pairs" {
+    try std.testing.expectEqual(@as(u32, 0), utf16Length(""));
+    try std.testing.expectEqual(@as(u32, 3), utf16Length("abc"));
+    // é is 2 bytes and 1 unit, 日 is 3 bytes and 1 unit, 😀 is 4 bytes and 2 units.
+    try std.testing.expectEqual(@as(u32, 5), utf16Length("é日😀a"));
+}
+
+// ============================================================================
+// GooeyAccessibilityElement: NSAccessibilityElement with text queries
+// ============================================================================
+
+/// Registered once, at the first bridge's initialization.
+var element_class: ?objc.Class = null;
+
+/// VoiceOver reads and echoes a text field through the NSAccessibility text
+/// methods, which NSAccessibilityElement leaves unimplemented: without them
+/// it reports zero characters, refuses `AXStringForRange`, and keeps reading
+/// a cached value. Each answer derives from the element's value and selected
+/// range, which `Wrapper.update` sets, so there is no second copy to go
+/// stale. The field is one line, so line queries answer line 0.
+fn registerElementClass() void {
+    if (element_class != null) return;
+    const NSAccessibilityElement = objc.getClass("NSAccessibilityElement") orelse
+        @panic("NSAccessibilityElement class not found");
+    const cls = objc.allocateClassPair(NSAccessibilityElement, "GooeyAccessibilityElement") orelse
+        @panic("GooeyAccessibilityElement class allocation failed");
+    const methods = .{
+        .{ "accessibilityNumberOfCharacters", textNumberOfCharacters },
+        .{ "accessibilitySelectedText", textSelected },
+        .{ "accessibilityVisibleCharacterRange", textVisibleRange },
+        .{ "accessibilityInsertionPointLineNumber", textInsertionLine },
+        .{ "accessibilityStringForRange:", textStringForRange },
+        .{ "accessibilityAttributedStringForRange:", textAttributedStringForRange },
+        .{ "accessibilityFrameForRange:", textFrameForRange },
+        .{ "accessibilityLineForIndex:", textLineForIndex },
+        .{ "accessibilityRangeForLine:", textRangeForLine },
+        .{ "accessibilityRangeForIndex:", textRangeForIndex },
+    };
+    inline for (methods) |method| {
+        if (!cls.addMethod(method[0], method[1])) {
+            std.debug.panic("GooeyAccessibilityElement: adding {s} failed", .{method[0]});
+        }
+    }
+    objc.registerClassPair(cls);
+    element_class = cls;
+}
+
+/// The element's value when it is text (a toggle's is an NSNumber).
+fn textValue(self: objc.c.id) ?objc.Object {
+    std.debug.assert(self != null);
+    const element = objc.Object.fromId(self);
+    const value: objc.c.id = element.msgSend(objc.c.id, "accessibilityValue", .{});
+    if (value == null) return null;
+    const NSString = objc.getClass("NSString").?;
+    const string = objc.Object.fromId(value);
+    if (!string.msgSend(bool, "isKindOfClass:", .{NSString.value})) return null;
+    return string;
+}
+
+fn textLength(self: objc.c.id) c_ulong {
+    const text = textValue(self) orelse return 0;
+    return text.msgSend(c_ulong, "length", .{});
+}
+
+/// `range` clamped to the text, so a stale query never raises.
+fn textClamp(range: appkit.NSRange, length: c_ulong) appkit.NSRange {
+    const location = @min(range.location, length);
+    const clamped: appkit.NSRange = .{
+        .location = location,
+        .length = @min(range.length, length - location),
+    };
+    std.debug.assert(clamped.location + clamped.length <= length);
+    return clamped;
+}
+
+fn textNumberOfCharacters(self: objc.c.id, _: objc.c.SEL) callconv(.c) c_long {
+    return @intCast(textLength(self));
+}
+
+fn textSelected(self: objc.c.id, _: objc.c.SEL) callconv(.c) objc.c.id {
+    const element = objc.Object.fromId(self);
+    const range = element.msgSend(appkit.NSRange, "accessibilitySelectedTextRange", .{});
+    return textStringForRange(self, undefined, range);
+}
+
+fn textVisibleRange(self: objc.c.id, _: objc.c.SEL) callconv(.c) appkit.NSRange {
+    return .{ .location = 0, .length = textLength(self) };
+}
+
+fn textInsertionLine(self: objc.c.id, _: objc.c.SEL) callconv(.c) c_long {
+    std.debug.assert(self != null);
+    return 0;
+}
+
+fn textStringForRange(
+    self: objc.c.id,
+    _: objc.c.SEL,
+    range: appkit.NSRange,
+) callconv(.c) objc.c.id {
+    const text = textValue(self) orelse return null;
+    const clamped = textClamp(range, text.msgSend(c_ulong, "length", .{}));
+    return text.msgSend(objc.c.id, "substringWithRange:", .{clamped});
+}
+
+fn textAttributedStringForRange(
+    self: objc.c.id,
+    _: objc.c.SEL,
+    range: appkit.NSRange,
+) callconv(.c) objc.c.id {
+    const string = textStringForRange(self, undefined, range);
+    if (string == null) return null;
+    const NSAttributedString = objc.getClass("NSAttributedString").?;
+    const allocated = NSAttributedString.msgSend(objc.Object, "alloc", .{});
+    const attributed = allocated.msgSend(objc.Object, "initWithString:", .{string});
+    return attributed.msgSend(objc.c.id, "autorelease", .{});
+}
+
+/// The whole field for any range: Gooey does not expose glyph positions to
+/// the bridge. VoiceOver's arguments are external input, so the text queries
+/// clamp them rather than assert.
+fn textFrameForRange(self: objc.c.id, _: objc.c.SEL, _: appkit.NSRange) callconv(.c) appkit.NSRect {
+    std.debug.assert(self != null);
+    const element = objc.Object.fromId(self);
+    return element.msgSend(appkit.NSRect, "accessibilityFrame", .{});
+}
+
+fn textLineForIndex(self: objc.c.id, _: objc.c.SEL, _: c_long) callconv(.c) c_long {
+    std.debug.assert(self != null);
+    return 0;
+}
+
+fn textRangeForLine(self: objc.c.id, _: objc.c.SEL, line: c_long) callconv(.c) appkit.NSRange {
+    if (line != 0) return .{ .location = 0, .length = 0 };
+    return .{ .location = 0, .length = textLength(self) };
+}
+
+/// One UTF-16 unit at `index`; VoiceOver widens to a composed character.
+fn textRangeForIndex(self: objc.c.id, _: objc.c.SEL, index: c_long) callconv(.c) appkit.NSRange {
+    const location: c_ulong = @intCast(@max(index, 0));
+    return textClamp(.{ .location = location, .length = 1 }, textLength(self));
 }
 
 fn postAnnouncement(root: objc.Object, message: []const u8, live: types.Live) void {
