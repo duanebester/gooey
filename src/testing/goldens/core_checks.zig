@@ -79,6 +79,75 @@ test "the IME rect query is answered synchronously from the rendered frame" {
     try testing.expectEqual(@as(u32, 2), selected.len);
 }
 
+/// A two-row TextArea, for the area check.
+const AreaState = struct { notes: []const u8 = "" };
+
+const AreaApp = core.App(AreaState, areaRender, .{
+    .title = "Area",
+    .width = 300,
+    .height = 200,
+    .limits = .small,
+});
+
+fn areaRender(cx: *Cx) void {
+    const state = cx.state(AreaState);
+    cx.render(ui.box(.{ .style = .{ .width = .{ .grow = 1 }, .height = .{ .grow = 1 } } }, .{
+        components.core.TextArea{ .key = "notes", .bind = &state.notes, .rows = 2 },
+    }));
+}
+
+test "a TextArea takes lines, follows the caret, and places it where clicked" {
+    // Goal: the area's engine through the real router, layout, and paint.
+    // Methodology: type three lines into two rows, so the area scrolls one
+    // line; read the caret from the IME query (its rect is the caret's), then
+    // click on the first visible line and move up. The synthetic face draws
+    // ASCII at 8 px per glyph, so a click just left of 2.5 glyphs lands at
+    // column 2, and one past it would land at 3.
+    const app = try testing.allocator.create(AreaApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    const query = core.Query{ .window = &app.window };
+    var now: u64 = 0;
+    app.tick(now);
+    const inset: f32 = 9; // The default padding and border.
+    app.window.queue.push(.{ .input = .{ .mouse_down = mouse(inset + 1, inset + 1) } });
+    app.window.queue.push(.{ .input = .{ .mouse_up = mouse(inset + 1, inset + 1) } });
+    for ([_][]const u8{ "one", "two", "three" }, 0..) |line, index| {
+        if (index > 0) {
+            app.window.queue.push(.{ .input = .{ .key_down = chord(.@"return", .{}) } });
+        }
+        app.window.queue.push(.{ .input = .{ .text_input = .{ .text = line } } });
+    }
+    now += 1;
+    app.tick(now);
+    now += 1;
+    app.tick(now);
+    try testing.expectEqualStrings("one\ntwo\nthree", app.state.notes);
+    const caret = query.imeCursorRect().?;
+    const line_height = caret.height;
+    // Line 2 of 3 in two rows: scrolled by one line, so it is the second row.
+    try testing.expectApproxEqAbs(inset + line_height, caret.y, 0.001);
+    try testing.expectApproxEqAbs(inset + 5 * 8, caret.x, 0.001);
+
+    // The first visible row is "two"; 2.5 glyphs in is nearest "tw|o".
+    const click = mouse(inset + 2.5 * 8 - 0.5, inset + line_height / 2);
+    app.window.queue.push(.{ .input = .{ .mouse_down = click } });
+    app.window.queue.push(.{ .input = .{ .mouse_up = click } });
+    now += 1;
+    app.tick(now);
+    now += 1;
+    app.tick(now);
+    try testing.expectEqual(@as(u32, 6), query.imeSelectedRange().?.offset);
+
+    // Up keeps column 2 and scrolls the first line back into view.
+    app.window.queue.push(.{ .input = .{ .key_down = chord(.up, .{}) } });
+    now += 1;
+    app.tick(now);
+    try testing.expectEqual(@as(u32, 2), query.imeSelectedRange().?.offset);
+    try testing.expectApproxEqAbs(inset, query.imeCursorRect().?.y, 0.001);
+}
+
 /// An app whose button opens a file dialog, for the dialog check.
 const DialogState = struct {
     path_bytes: [256]u8 = undefined,
