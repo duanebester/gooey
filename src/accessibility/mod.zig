@@ -11,7 +11,7 @@
 //! ## Platform Support
 //!
 //! - **macOS**: NSAccessibility protocol via mac_bridge
-//! - **Linux**: AT-SPI2 D-Bus protocol via linux_bridge
+//! - **Linux**: none; AT-SPI is shelved past 0.4.0 (contract decision 12)
 //! - **Web**: ARIA attributes via web_bridge
 //! - **Windows**: UI Automation via windows_bridge
 //!
@@ -72,12 +72,6 @@ const is_wasm = builtin.cpu.arch == .wasm32 or builtin.cpu.arch == .wasm64;
 /// macOS accessibility bridge (NSAccessibility)
 pub const mac_bridge = if (!is_wasm and builtin.os.tag == .macos)
     @import("mac_bridge.zig")
-else
-    struct {};
-
-/// Linux accessibility bridge (AT-SPI2 via D-Bus)
-pub const linux_bridge = if (!is_wasm and builtin.os.tag == .linux)
-    @import("linux_bridge.zig")
 else
     struct {};
 

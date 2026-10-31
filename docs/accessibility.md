@@ -1,6 +1,6 @@
 # Gooey Accessibility (A11Y) Documentation
 
-Gooey provides built-in accessibility support for assistive technologies including screen readers (VoiceOver, Orca, NVDA) and other assistive tools. This document covers the architecture, API, and best practices for building accessible applications.
+Gooey provides built-in accessibility support for assistive technologies including screen readers (VoiceOver, NVDA) and other assistive tools. This document covers the architecture, API, and best practices for building accessible applications.
 
 ## Table of Contents
 
@@ -27,7 +27,7 @@ Gooey's accessibility system provides:
 - **States** - Track element state (focused, checked, disabled, expanded, etc.)
 - **Names & descriptions** - Human-readable labels for screen readers
 - **Live regions** - Announce dynamic content changes
-- **Platform integration** - Native bridges for macOS (VoiceOver), Linux (AT-SPI2/Orca), and Web (ARIA)
+- **Platform integration** - Native bridges for macOS (VoiceOver), Windows (UI Automation), and Web (ARIA). Linux has no screen-reader bridge in 0.4.0 (contract decision 12).
 
 ### Design Principles
 
@@ -128,7 +128,6 @@ cx.announce("Error: Connection lost!", .assertive);
 │                     Platform Bridge                          │
 │                                                             │
 │   macOS: NSAccessibility → VoiceOver                        │
-│   Linux: AT-SPI2 D-Bus → Orca/NVDA                          │
 │   Web:   ARIA attributes → Screen readers                   │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -142,7 +141,6 @@ cx.announce("Error: Connection lost!", .assertive);
 | `Fingerprint` | `src/accessibility/fingerprint.zig`  | Stable identity for cross-frame correlation |
 | `Bridge`      | `src/accessibility/bridge.zig`       | Platform-agnostic bridge interface          |
 | `MacBridge`   | `src/accessibility/mac_bridge.zig`   | macOS VoiceOver integration                 |
-| `LinuxBridge` | `src/accessibility/linux_bridge.zig` | Linux AT-SPI2 integration                   |
 | `WebBridge`   | `src/accessibility/web_bridge.zig`   | Web ARIA integration                        |
 
 ---
@@ -463,20 +461,10 @@ The macOS bridge creates `NSAccessibilityElement` objects and posts notification
 2. Navigate: `Tab` for focus, `VO+arrows` for reading
 3. Actions: `VO+Space` to activate
 
-### Linux (AT-SPI2/Orca)
+### Linux
 
-The Linux bridge exposes elements via D-Bus AT-SPI2 protocol:
-
-- **Bus**: Registers on session bus as AT-SPI2 provider
-- **Objects**: Each element gets a D-Bus object path
-- **Signals**: Property changes, state changes, focus events
-- **Detection**: Queries AT-SPI2 registry daemon
-
-**Testing with Orca:**
-
-1. Install: `sudo apt install orca`
-2. Enable: `Super+Alt+S` or run `orca`
-3. Navigate: `Tab`, `Arrow keys`, `Orca+H` for help
+No screen-reader bridge: Linux AT-SPI is shelved past 0.4.0 (contract decision 12), so
+Linux builds no accessibility tree.
 
 ### Web (ARIA)
 
@@ -490,7 +478,7 @@ The Web bridge creates a hidden ARIA tree that screen readers can access:
 **Testing:**
 
 1. Use browser DevTools → Accessibility tab
-2. Test with NVDA (Windows), VoiceOver (macOS), Orca (Linux)
+2. Test with NVDA (Windows) and VoiceOver (macOS)
 3. Verify with axe-core or Lighthouse
 
 ---
@@ -630,18 +618,6 @@ VO+Space   # Activate
 VO+U       # Rotor (element lists)
 ```
 
-**Linux Orca:**
-
-```bash
-# Enable/disable
-Super+Alt+S
-
-# Commands
-Orca+H     # Help
-Tab        # Navigate
-Enter      # Activate
-```
-
 ### Debugging Tools
 
 Use the accessibility tree dump for debugging:
@@ -671,7 +647,6 @@ if (builtin.mode == .Debug) {
 | Dirty detection (100 elements)   | < 10μs  |
 | Fingerprint computation          | < 100ns |
 | macOS sync (10 dirty)            | < 500μs |
-| Linux D-Bus sync (10 dirty)      | < 2ms   |
 | Web DOM sync (10 dirty)          | < 1ms   |
 | Memory overhead                  | < 500KB |
 
@@ -773,5 +748,4 @@ pub const Live = enum(u2) {
 - [WAI-ARIA 1.2 Specification](https://www.w3.org/TR/wai-aria-1.2/)
 - [ARIA Authoring Practices Guide](https://www.w3.org/WAI/ARIA/apg/)
 - [Apple Accessibility Programming Guide](https://developer.apple.com/documentation/accessibility)
-- [AT-SPI2 Documentation](https://docs.gtk.org/atspi2/)
 - [Web Content Accessibility Guidelines (WCAG)](https://www.w3.org/WAI/standards-guidelines/wcag/)

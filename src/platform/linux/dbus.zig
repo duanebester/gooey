@@ -136,7 +136,6 @@ pub extern fn dbus_error_is_set(err: *const DBusError) c_uint;
 pub extern fn dbus_error_has_name(err: *const DBusError, name: [*:0]const u8) c_uint;
 
 // Connection management
-pub extern fn dbus_bus_get(bus_type: c_int, err: *DBusError) ?*DBusConnection;
 pub extern fn dbus_bus_get_private(bus_type: c_int, err: *DBusError) ?*DBusConnection;
 pub extern fn dbus_connection_close(connection: *DBusConnection) void;
 pub extern fn dbus_connection_unref(connection: *DBusConnection) void;
@@ -146,7 +145,6 @@ pub extern fn dbus_connection_read_write(connection: *DBusConnection, timeout_mi
 pub extern fn dbus_connection_read_write_dispatch(connection: *DBusConnection, timeout_milliseconds: c_int) c_uint;
 pub extern fn dbus_connection_dispatch(connection: *DBusConnection) c_int;
 pub extern fn dbus_connection_get_dispatch_status(connection: *DBusConnection) c_int;
-pub extern fn dbus_connection_send(connection: *DBusConnection, message: *DBusMessage, serial: ?*u32) c_uint;
 pub extern fn dbus_connection_send_with_reply(connection: *DBusConnection, message: *DBusMessage, pending_return: *?*DBusPendingCall, timeout_milliseconds: c_int) c_uint;
 pub extern fn dbus_connection_send_with_reply_and_block(connection: *DBusConnection, message: *DBusMessage, timeout_milliseconds: c_int, err: *DBusError) ?*DBusMessage;
 pub extern fn dbus_connection_pop_message(connection: *DBusConnection) ?*DBusMessage;
@@ -157,7 +155,6 @@ pub extern fn dbus_bus_get_unique_name(connection: *DBusConnection) ?[*:0]const 
 // Message creation
 pub extern fn dbus_message_new(message_type: c_int) ?*DBusMessage;
 pub extern fn dbus_message_new_method_call(bus_name: ?[*:0]const u8, path: [*:0]const u8, iface: ?[*:0]const u8, method: [*:0]const u8) ?*DBusMessage;
-pub extern fn dbus_message_new_signal(path: [*:0]const u8, iface: [*:0]const u8, name: [*:0]const u8) ?*DBusMessage;
 pub extern fn dbus_message_ref(message: *DBusMessage) *DBusMessage;
 pub extern fn dbus_message_unref(message: *DBusMessage) void;
 
@@ -255,21 +252,6 @@ pub const Connection = struct {
 
     const Self = @This();
 
-    /// Connect to the session bus (shared connection)
-    pub fn connectSession() Error!Self {
-        var err = ErrorState.init();
-        defer err.deinit();
-
-        const conn = dbus_bus_get(BUS_SESSION, &err.inner) orelse {
-            return Error.ConnectionFailed;
-        };
-
-        return Self{
-            .conn = conn,
-            .is_private = false,
-        };
-    }
-
     /// Connect to the session bus (private connection - must be explicitly closed)
     pub fn connectSessionPrivate() Error!Self {
         var err = ErrorState.init();
@@ -344,13 +326,6 @@ pub const Connection = struct {
         return Message{ .msg = reply };
     }
 
-    /// Send a message without waiting for reply
-    pub fn send(self: *Self, message: *Message) Error!void {
-        if (dbus_connection_send(self.conn, message.msg, null) == 0) {
-            return Error.MessageSendFailed;
-        }
-    }
-
     /// Read and dispatch messages (blocking)
     pub fn readWriteDispatch(self: *Self, timeout_ms: c_int) bool {
         return dbus_connection_read_write_dispatch(self.conn, timeout_ms) != 0;
@@ -398,21 +373,6 @@ pub const Message = struct {
             path.ptr,
             if (iface) |i| i.ptr else null,
             method.ptr,
-        ) orelse return Error.MessageCreationFailed;
-
-        return Self{ .msg = msg };
-    }
-
-    /// Create a signal message
-    pub fn newSignal(
-        path: [:0]const u8,
-        iface: [:0]const u8,
-        signal_name: [:0]const u8,
-    ) Error!Self {
-        const msg = dbus_message_new_signal(
-            path.ptr,
-            iface.ptr,
-            signal_name.ptr,
         ) orelse return Error.MessageCreationFailed;
 
         return Self{ .msg = msg };
@@ -544,35 +504,10 @@ pub const MessageIter = struct {
         return dbus_message_iter_append_basic(&self.inner, TYPE_UINT32, &value) != 0;
     }
 
-    /// Append an i32 argument
-    pub fn appendInt32(self: *Self, value: i32) bool {
-        return dbus_message_iter_append_basic(&self.inner, TYPE_INT32, &value) != 0;
-    }
-
     /// Append a boolean argument
     pub fn appendBool(self: *Self, value: bool) bool {
         const dbus_bool: u32 = if (value) 1 else 0;
         return dbus_message_iter_append_basic(&self.inner, TYPE_BOOLEAN, &dbus_bool) != 0;
-    }
-
-    /// Append a variant containing a string
-    pub fn appendVariantString(self: *Self, str: [:0]const u8) bool {
-        var sub = self.openContainer(TYPE_VARIANT, "s") orelse return false;
-        if (!sub.appendString(str)) {
-            self.abandonContainer(&sub);
-            return false;
-        }
-        return self.closeContainer(&sub);
-    }
-
-    /// Append a variant containing a double
-    pub fn appendVariantDouble(self: *Self, value: f64) bool {
-        var sub = self.openContainer(TYPE_VARIANT, "d") orelse return false;
-        if (dbus_message_iter_append_basic(&sub.inner, TYPE_DOUBLE, &value) == 0) {
-            self.abandonContainer(&sub);
-            return false;
-        }
-        return self.closeContainer(&sub);
     }
 
     /// Append raw bytes (for "ay" type - byte array)
