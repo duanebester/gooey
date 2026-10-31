@@ -355,6 +355,7 @@ fn invoke(
 ) bool {
     var effects = handler_mod.Effects.init(event, current);
     effects.completion = completion;
+    effects.clipboard = &window.clipboard;
     handler.call(window.store, &effects);
     if (effects.render_requested) window.render_requested = true;
     if (effects.quit_requested) window.quit_requested = true;

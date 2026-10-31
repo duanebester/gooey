@@ -17,6 +17,7 @@ const input = @import("../input/mod.zig");
 const events = @import("events.zig");
 const Theme = @import("../ui/theme.zig").Theme;
 const Live = @import("../accessibility/types.zig").Live;
+const Clipboard = @import("clipboard.zig").Clipboard;
 
 const assert = std.debug.assert;
 
@@ -161,6 +162,9 @@ pub const Effects = struct {
     font_request: ?FontRequest,
     theme_request: ?*const Theme,
     announcement: ?Announcement,
+    /// The text engines' clipboard, set by the router. Not an app API
+    /// (decision 10): only `text_engine.zig` reads it.
+    clipboard: ?*Clipboard,
     /// The element the router is delivering to, for `focusSelf`.
     current: ElementId,
 
@@ -184,6 +188,7 @@ pub const Effects = struct {
             .font_request = null,
             .theme_request = null,
             .announcement = null,
+            .clipboard = null,
             .current = current,
         };
     }

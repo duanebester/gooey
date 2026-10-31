@@ -29,6 +29,7 @@ const objc = @import("objc");
 const platform_mod = @import("platform.zig");
 const window_mod = @import("window.zig");
 const file_dialog = @import("file_dialog.zig");
+const clipboard = @import("clipboard.zig");
 const appkit = @import("appkit.zig");
 const geometry = @import("../../geometry/geometry.zig");
 const scene_mod = @import("../../scene/mod.zig");
@@ -195,6 +196,11 @@ pub const Host = struct {
         self.platform.setLoopTurnCallback(onLoopTurn);
         self.core.presenter = .{ .context = self, .draw = draw };
         self.core.file_dialog = .{ .context = self, .open = openDialog };
+        self.core.clipboard.service = .{
+            .context = self,
+            .read = clipboardRead,
+            .write = clipboardWrite,
+        };
         self.core.bindScreenReader(self.window.ns_window, self.window.ns_view);
         assert(self.window.core != null);
     }
@@ -215,6 +221,7 @@ pub const Host = struct {
         self.core.resources.unregisterAtlasConsumer(self.core.atlas_consumer_key);
         self.core.presenter = null;
         self.core.file_dialog = null;
+        self.core.clipboard.service = null;
         self.core.unbindScreenReader();
     }
 
@@ -445,4 +452,13 @@ fn openDialog(
             return .{ .file_selected = path };
         },
     }
+}
+
+/// The text engines' clipboard on the platform's 0.3.1 path, main thread.
+fn clipboardRead(_: *anyopaque, out: []u8) u32 {
+    return clipboard.readText(out);
+}
+
+fn clipboardWrite(_: *anyopaque, text: []const u8) void {
+    if (!clipboard.setText(text)) std.log.warn("core host: clipboard write failed", .{});
 }

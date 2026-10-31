@@ -5,6 +5,7 @@
 
 const std = @import("std");
 const objc = @import("objc");
+const core_clipboard = @import("../../core/clipboard.zig");
 
 // AppKit constant for string pasteboard type
 extern "c" var NSPasteboardTypeString: objc.c.id;
@@ -31,6 +32,27 @@ pub fn getText(allocator: std.mem.Allocator) ?[]const u8 {
 
     // Copy to owned slice (NSString's UTF8String is autoreleased)
     return allocator.dupe(u8, std.mem.span(cstr.?)) catch null;
+}
+
+/// Read the clipboard text into `out`, cut at a codepoint boundary, and
+/// return its length (0 for none). Claims no storage (core hosts).
+pub fn readText(out: []u8) u32 {
+    std.debug.assert(out.len > 0);
+    const NSPasteboard = objc.getClass("NSPasteboard") orelse return 0;
+    const pasteboard = NSPasteboard.msgSend(objc.Object, "generalPasteboard", .{});
+    const ns_string_id: objc.c.id = pasteboard.msgSend(
+        objc.c.id,
+        "stringForType:",
+        .{NSPasteboardTypeString},
+    );
+    if (ns_string_id == null) return 0;
+    const ns_string = objc.Object.fromId(ns_string_id);
+    const cstr = ns_string.msgSend(?[*:0]const u8, "UTF8String", .{}) orelse return 0;
+    const value = std.mem.span(cstr);
+    const kept = core_clipboard.prefixFitting(value, out.len);
+    @memcpy(out[0..kept], value[0..kept]);
+    std.debug.assert(kept <= out.len);
+    return @intCast(kept);
 }
 
 /// Write text to the system clipboard.

@@ -179,6 +179,8 @@ fn drain(window: *Window) void {
     const pending = window.queue.pending();
     for (pending) |*event| router.route(window, event);
     window.queue.clear();
+    // Copy and cut reach the platform after the drain, outside any handler.
+    window.clipboard.flush();
     if (window.pending_dialog) |request| {
         window.pending_dialog = null;
         openDialog(window, request);
