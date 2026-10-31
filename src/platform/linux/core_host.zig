@@ -40,6 +40,7 @@ const wayland = @import("wayland.zig");
 const platform_mod = @import("platform.zig");
 const window_mod = @import("window.zig");
 const file_dialog = @import("file_dialog.zig");
+const clipboard = @import("clipboard.zig");
 const linux_backend = @import("../linux_backend.zig");
 const scene_mod = @import("../../scene/mod.zig");
 const core_window = @import("../../core/window.zig");
@@ -236,6 +237,11 @@ pub const Host = struct {
         self.window.setCloseCallback(onClose);
         self.core.presenter = .{ .context = self, .draw = draw };
         self.core.file_dialog = .{ .context = self, .open = openDialog };
+        self.core.clipboard.service = .{
+            .context = self,
+            .read = clipboardRead,
+            .write = clipboardWrite,
+        };
         // `syncIme` alone enables text-input-v3, while a field is focused.
         // A keyboard enter during window creation may have enabled it.
         self.window.platform.text_input_follows_keyboard = false;
@@ -268,6 +274,7 @@ pub const Host = struct {
         self.core.resources.unregisterAtlasConsumer(self.core.atlas_consumer_key);
         self.core.presenter = null;
         self.core.file_dialog = null;
+        self.core.clipboard.service = null;
         self.core.unbindScreenReader();
     }
 
@@ -625,4 +632,13 @@ fn drain(fd: posix.fd_t) void {
         else => std.debug.panic("core host: eventfd read failed: {t}", .{err}),
     };
     assert(read_bytes == @sizeOf(u64));
+}
+
+/// The text engines' clipboard on the platform's 0.3.1 path, main thread.
+fn clipboardRead(_: *anyopaque, out: []u8) u32 {
+    return clipboard.readText(out);
+}
+
+fn clipboardWrite(_: *anyopaque, text: []const u8) void {
+    if (!clipboard.setText(text)) std.log.warn("core host: clipboard write failed", .{});
 }

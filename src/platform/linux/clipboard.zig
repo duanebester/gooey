@@ -13,6 +13,8 @@ const std = @import("std");
 const builtin = @import("builtin");
 const wayland = @import("wayland.zig");
 const interface_verify = @import("../../core/interface_verify.zig");
+const core_clipboard = @import("../../core/clipboard.zig");
+const assert = std.debug.assert;
 
 // =============================================================================
 // Wayland Data Device Protocol Types
@@ -416,62 +418,49 @@ pub const ClipboardState = struct {
 
     /// Read text from clipboard
     pub fn getText(self: *Self, allocator: std.mem.Allocator) ?[]const u8 {
-        // If we have our own active source, return our own data
-        // (Wayland doesn't give us a data_offer for our own selection)
-        if (self.active_source != null and self.copy_len > 0) {
-            return allocator.dupe(u8, self.copy_buffer[0..self.copy_len]) catch null;
-        }
-
-        const offer = self.current_offer orelse return null;
-        if (!self.offer_has_text) return null;
-
-        // Create pipe for receiving data
-        var pipe_fds: [2]i32 = undefined;
-        if (std.c.pipe(&pipe_fds) != 0) return null;
-
-        const read_fd = pipe_fds[0];
-        const write_fd = pipe_fds[1];
-
-        // Request data - compositor will write to write_fd
-        dataOfferReceive(offer, MIME_TYPE_TEXT_PLAIN, write_fd);
-
-        // Flush to ensure request is sent
-        if (self.display) |display| {
-            _ = wayland.wl_display_flush(display);
-        }
-
-        // Close write end - we only read.
-        // std.posix.close was removed in Zig 0.16 (see "posix and os.windows
-        // removals" in the 0.16.0 release notes). We link libc in this module,
-        // so call the libc symbol directly via std.c.
-        _ = std.c.close(@intCast(write_fd));
-
-        // Read data from pipe
-        var buffer = allocator.alloc(u8, MAX_CLIPBOARD_SIZE) catch {
-            _ = std.c.close(@intCast(read_fd));
-            return null;
-        };
-
-        var total_read: usize = 0;
-        while (total_read < MAX_CLIPBOARD_SIZE) {
-            const n = std.posix.read(@intCast(read_fd), buffer[total_read..]) catch break;
-            if (n == 0) break;
-            total_read += n;
-        }
-
-        _ = std.c.close(@intCast(read_fd));
-
-        if (total_read == 0) {
+        const buffer = allocator.alloc(u8, MAX_CLIPBOARD_SIZE) catch return null;
+        const len = self.readText(buffer);
+        if (len == 0) {
             allocator.free(buffer);
             return null;
         }
+        return allocator.realloc(buffer, len) catch buffer[0..len];
+    }
 
-        // Shrink buffer to actual size
-        const result = allocator.realloc(buffer, total_read) catch {
-            // realloc failed, return the original buffer truncated
-            return buffer[0..total_read];
-        };
-        return result;
+    /// Read the clipboard text into `out`, cut at a codepoint boundary, and
+    /// return its length (0 for none). Blocks on the offer's pipe, on the
+    /// main thread, as 0.3.1 does; claims no storage.
+    pub fn readText(self: *Self, out: []u8) u32 {
+        assert(out.len > 0);
+        // Wayland gives no data_offer for our own selection.
+        if (self.active_source != null and self.copy_len > 0) {
+            const kept = core_clipboard.prefixFitting(self.copy_buffer[0..self.copy_len], out.len);
+            @memcpy(out[0..kept], self.copy_buffer[0..kept]);
+            return @intCast(kept);
+        }
+        const offer = self.current_offer orelse return 0;
+        if (!self.offer_has_text) return 0;
+        var pipe_fds: [2]i32 = undefined;
+        if (std.c.pipe(&pipe_fds) != 0) return 0;
+        const read_fd = pipe_fds[0];
+        // The compositor writes to the other end.
+        dataOfferReceive(offer, MIME_TYPE_TEXT_PLAIN, pipe_fds[1]);
+        if (self.display) |display| _ = wayland.wl_display_flush(display);
+        // std.posix.close was removed in Zig 0.16; this module links libc.
+        _ = std.c.close(@intCast(pipe_fds[1]));
+        defer _ = std.c.close(@intCast(read_fd));
+        var total: usize = 0;
+        var reads: u32 = 0;
+        // Each read returns at least one byte or ends the loop.
+        while (total < out.len) : (reads += 1) {
+            assert(reads <= out.len);
+            const n = std.posix.read(@intCast(read_fd), out[total..]) catch break;
+            if (n == 0) break;
+            total += n;
+        }
+        // The source may have had more; keep whole codepoints only.
+        if (total == out.len) total = core_clipboard.wholeCodepoints(out);
+        return @intCast(total);
     }
 
     /// Write text to clipboard
@@ -744,4 +733,9 @@ pub fn getText(allocator: std.mem.Allocator) ?[]const u8 {
 /// Returns true on success.
 pub fn setText(text: []const u8) bool {
     return global_state.setText(text);
+}
+
+/// Read the clipboard text into `out` without allocating (core hosts).
+pub fn readText(out: []u8) u32 {
+    return global_state.readText(out);
 }

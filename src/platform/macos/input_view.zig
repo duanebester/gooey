@@ -397,6 +397,13 @@ fn performKeyEquivalent(self: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) cal
             .is_repeat = false,
         };
 
+        // A core window queues a key here only when the keymap claims it.
+        // Any other key equivalent comes back as `keyDown:` once this
+        // returns NO, which queues it then; queueing it here too would
+        // deliver it twice (paste or undo twice in a text engine).
+        if (window.core) |binding| {
+            if (!binding.query.keymapClaims(key_event)) return false;
+        }
         // Send to our input handler - if it returns true, we handled it
         if (window.handleInput(.{ .key_down = key_event })) {
             return true;

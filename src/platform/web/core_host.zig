@@ -20,6 +20,7 @@
 
 const std = @import("std");
 const imports = @import("imports.zig");
+const clipboard = @import("clipboard.zig");
 const io_mod = @import("io.zig");
 const platform_mod = @import("platform.zig");
 const window_mod = @import("window.zig");
@@ -175,6 +176,13 @@ pub const Host = struct {
         core.height = @floatCast(self.height);
         core.presenter = .{ .context = self, .draw = draw };
         core.bindScreenReader(null, null);
+        // Paste arrives as text input from the browser's paste event, as in
+        // 0.3.1, so the service only writes.
+        core.clipboard.service = .{
+            .context = self,
+            .read = clipboardRead,
+            .write = clipboardWrite,
+        };
         assert(core.file_dialog == null); // Web dialogs complete asynchronously.
     }
 
@@ -291,4 +299,14 @@ fn draw(
         clear.b,
         clear.a,
     );
+}
+
+fn clipboardRead(_: *anyopaque, out: []u8) u32 {
+    assert(out.len > 0);
+    return 0;
+}
+
+fn clipboardWrite(_: *anyopaque, text: []const u8) void {
+    assert(text.len > 0);
+    _ = clipboard.setText(text);
 }

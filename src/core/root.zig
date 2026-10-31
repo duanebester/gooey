@@ -81,4 +81,6 @@ test {
     _ = layers;
     _ = @import("screen_reader.zig");
     _ = @import("keymap.zig");
+    _ = @import("clipboard.zig");
+    _ = @import("text_history.zig");
 }

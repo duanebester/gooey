@@ -168,15 +168,14 @@ pub const TextInput = struct {
         const engine = cx.get(InputEngine, handle);
         engine.syncBound(self.bind);
         const focused = cx.focused(id);
-        engine.view = .{
-            .id = id,
-            .focused = focused,
-            .placeholder = self.placeholder,
-            .text_color = theme.text,
-            .placeholder_color = theme.muted,
-            .caret_color = theme.text,
-            .preedit_underline_color = Color.rgb(0.3, 0.3, 0.3),
-        };
+        engine.view.id = id;
+        engine.view.placeholder = self.placeholder;
+        engine.view.text_color = theme.text;
+        engine.view.placeholder_color = theme.muted;
+        engine.view.selection_color = theme.primary.withAlpha(0.3);
+        engine.view.caret_color = theme.text;
+        engine.view.preedit_underline_color = Color.rgb(0.3, 0.3, 0.3);
+        engine.blink(cx, focused);
         const inset = self.padding + self.border_width;
         const metrics = cx.fontMetrics();
         cx.render(ui.box(.{
@@ -212,7 +211,27 @@ pub const TextInput = struct {
         assert(engine.len == 0);
     }
 
-    /// Placeholder, or text with the preedit at the caret; then the caret.
+    /// The selection, under the text, while focused.
+    fn paintSelection(engine: *const InputEngine, painter: *ui.Painter, size: u16) void {
+        assert(engine.view.focused);
+        if (!engine.hasSelection()) return;
+        const bounds = painter.bounds;
+        const line_height = painter.fontMetrics().line_height;
+        const style = ui.PaintText{ .size = size, .color = engine.view.text_color };
+        const text = engine.text();
+        const start = painter.measureText(text[0..engine.selectionStart()], style);
+        const end = painter.measureText(text[0..engine.selectionEnd()], style);
+        assert(end >= start);
+        painter.fill(.{
+            .x = bounds.x + start,
+            .y = bounds.y + (bounds.height - line_height) / 2,
+            .width = end - start,
+            .height = line_height,
+        }, engine.view.selection_color);
+    }
+
+    /// Placeholder, or the selection and text with the preedit at the caret;
+    /// then the caret in its blink phase.
     fn paintInput(engine: *const InputEngine, painter: *ui.Painter) void {
         const view = &engine.view;
         const bounds = painter.bounds;
@@ -221,6 +240,7 @@ pub const TextInput = struct {
         const baseline = metrics.calcBaseline(bounds.y, bounds.height);
         painter.pushClip(bounds);
         defer painter.popClip();
+        if (view.focused) paintSelection(engine, painter, size);
         const text = engine.text();
         const preedit = engine.preeditText();
         if (text.len == 0 and preedit.len == 0) {
@@ -253,7 +273,7 @@ pub const TextInput = struct {
             .width = 1.5,
             .height = metrics.line_height,
         };
-        if (preedit.len == 0) painter.fill(caret, view.caret_color);
+        if (preedit.len == 0 and view.caret_visible) painter.fill(caret, view.caret_color);
         var ime_rect = caret;
         ime_rect.x += preedit_width;
         painter.imeCursor(.{

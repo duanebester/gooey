@@ -21,6 +21,7 @@ const handler_mod = @import("handler.zig");
 const events = @import("events.zig");
 const retained_mod = @import("retained.zig");
 const text_engine = @import("text_engine.zig");
+const clipboard_mod = @import("clipboard.zig");
 const element = @import("element.zig");
 const limits_mod = @import("limits.zig");
 const layout_mod = @import("../layout/layout.zig");
@@ -231,6 +232,9 @@ pub const Window = struct {
     completions: events.CompletionRing,
     retained: retained_mod.Retained,
     inputs: text_engine.InputPool,
+    /// The text engines' clipboard; a host binds its platform service.
+    clipboard: clipboard_mod.Clipboard,
+    clipboard_bytes: []u8,
     scene: *Scene,
     text_scratch: []u8,
     text_scratch_allocator: std.heap.FixedBufferAllocator,
@@ -534,8 +538,17 @@ fn initRuntimeStorage(self: *Window, gpa: std.mem.Allocator, limits: *const Reso
     // A text kind with a count of 0 reserves nothing; an app without inputs
     // still gets a one-slot pool so the store's entity table is uniform.
     const input = limits.text.input;
-    try self.inputs.initInPlace(gpa, @max(input.count_max, 1), input.bytes_max);
+    try self.inputs.initInPlace(gpa, .{
+        .count = @max(input.count_max, 1),
+        .bytes_max = input.bytes_max,
+        .undo_depth_max = input.undo_depth_max,
+    });
     errdefer self.inputs.deinit(gpa);
+    // One clipboard buffer for copy and paste, as large as the largest kind
+    // that has engines (decision 10).
+    self.clipboard_bytes = try gpa.alloc(u8, clipboardBytes(&limits.text));
+    errdefer gpa.free(self.clipboard_bytes);
+    self.clipboard = .init(self.clipboard_bytes);
     self.scene = try gpa.create(Scene);
     errdefer gpa.destroy(self.scene);
     self.scene.* = try Scene.initCapacity(gpa, &limits.scene);
@@ -549,12 +562,23 @@ fn initRuntimeStorage(self: *Window, gpa: std.mem.Allocator, limits: *const Reso
     self.screen_reader_poll = .{};
 }
 
+/// The largest `bytes_max` among text kinds with engines; at least the
+/// input kind's, which always has a pool.
+fn clipboardBytes(text: *const limits_mod.TextLimits) u32 {
+    var bytes = text.input.bytes_max;
+    if (text.area.count_max > 0) bytes = @max(bytes, text.area.bytes_max);
+    if (text.editor.count_max > 0) bytes = @max(bytes, text.editor.bytes_max);
+    assert(bytes > 0);
+    return bytes;
+}
+
 fn deinitRuntimeStorage(self: *Window, gpa: std.mem.Allocator) void {
     self.screen_reader.deinit();
     gpa.destroy(self.screen_reader);
     gpa.free(self.text_scratch);
     self.scene.deinit();
     gpa.destroy(self.scene);
+    gpa.free(self.clipboard_bytes);
     self.inputs.deinit(gpa);
     self.retained.deinit(gpa);
     self.completions.deinit(gpa);
