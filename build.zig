@@ -206,8 +206,6 @@ pub fn build(b: *std.Build) void {
             .{ .name = "glass", .source = "src/examples/glass.zig" },
             .{ .name = "counter", .source = "src/examples/counter.zig" },
             .{ .name = "todo", .source = "src/examples/todo.zig" },
-            .{ .name = "core-counter", .source = "src/examples/core_counter.zig" },
-            .{ .name = "core-todo", .source = "src/examples/core_todo.zig" },
             .{ .name = "core-file-dialog", .source = "src/examples/core_file_dialog.zig" },
             .{ .name = "layout", .source = "src/examples/layout.zig" },
             .{ .name = "nested-overlay", .source = "src/examples/nested_overlay.zig" },
@@ -276,24 +274,6 @@ pub fn build(b: *std.Build) void {
         });
         const run_exe_tests = b.addRunArtifact(exe_tests);
 
-        // Example tests — keep the README's headline example honest by running
-        // its pure-state unit tests in CI. The example also builds as an
-        // executable via `addNativeExample`/`installArtifact` above, so both
-        // its render paths and its state model are exercised.
-        const todo_example_tests = b.addTest(.{
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("src/examples/todo.zig"),
-                .target = target,
-                .optimize = optimize,
-                .imports = &.{
-                    .{ .name = "gooey", .module = mod },
-                    .{ .name = "gooey-components", .module = components_mod },
-                    .{ .name = "objc", .module = objc_mod },
-                },
-            }),
-        });
-        const run_todo_example_tests = b.addRunArtifact(todo_example_tests);
-
         const disktree_example_tests = b.addTest(.{
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/examples/disktree.zig"),
@@ -323,7 +303,6 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run_watcher_tests.step);
         test_step.dependOn(&run_exe_tests.step);
         addGoldens(b, target, optimize, .{ .objc = objc_mod }, test_step);
-        test_step.dependOn(&run_todo_example_tests.step);
         test_step.dependOn(&run_disktree_example_tests.step);
         test_step.dependOn(&run_charts_tests.step);
         test_step.dependOn(&run_genui_tests.step);
@@ -808,10 +787,8 @@ pub fn build(b: *std.Build) void {
             .{ .name = "drag-drop", .source = "src/examples/drag_drop.zig" },
             .{ .name = "lucide-demo", .source = "src/examples/lucide_demo.zig" },
             .{ .name = "animation", .source = "src/examples/animation.zig" },
-            .{ .name = "counter", .source = "src/examples/counter.zig" },
-            .{ .name = "todo", .source = "src/examples/todo.zig" },
-            .{ .name = "core-counter", .source = "src/examples/core_counter.zig", .core = true },
-            .{ .name = "core-todo", .source = "src/examples/core_todo.zig", .core = true },
+            .{ .name = "counter", .source = "src/examples/counter.zig", .core = true },
+            .{ .name = "todo", .source = "src/examples/todo.zig", .core = true },
             .{
                 .name = "core-file-dialog",
                 .source = "src/examples/core_file_dialog.zig",
@@ -1314,9 +1291,7 @@ fn addWindowsBuilds(
     components_mod.addImport("gooey", mod);
 
     const examples = [_]struct { name: []const u8, source: []const u8 }{
-        .{ .name = "counter", .source = "src/examples/counter.zig" },
         .{ .name = "showcase", .source = "src/examples/showcase.zig" },
-        .{ .name = "todo", .source = "src/examples/todo.zig" },
         .{ .name = "code-editor", .source = "src/examples/code_editor.zig" },
         .{ .name = "layout", .source = "src/examples/layout.zig" },
         .{ .name = "animation", .source = "src/examples/animation.zig" },
@@ -1515,7 +1490,7 @@ fn addMacosCoreExampleTypecheck(
         .optimize = .debug,
     });
     components_mod.addImport("gooey", gooey_mod);
-    const examples = [_][]const u8{ "core_counter", "core_todo", "core_file_dialog" };
+    const examples = [_][]const u8{ "counter", "todo", "core_file_dialog" };
     for (examples) |name| {
         const exe = b.addExecutable(.{
             .name = b.fmt("typecheck-macos-{s}", .{name}),
@@ -1948,7 +1923,7 @@ fn addLinuxTypecheck(b: *std.Build) void {
         .{ .source = "src/examples/linux_demo.zig", .as_test = false },
         .{ .source = "src/examples/glass.zig", .as_test = false },
         // The 0.4.0 core host: window binding, render thread, and dialogs.
-        .{ .source = "src/examples/core_todo.zig", .as_test = false },
+        .{ .source = "src/examples/todo.zig", .as_test = false },
         .{
             .source = "src/examples/linux_demo.zig",
             .as_test = false,
@@ -2066,23 +2041,16 @@ fn addWasmBuilds(b: *std.Build) void {
     });
     addWasmExample(b, gooey_module, components_module, wasm_target, .{
         .step_name = "wasm-counter",
-        .description = "Build counter example for web",
+        .description = "Build the counter example for web",
         .source = "src/examples/counter.zig",
         .output_dir = "web/counter",
         .copy_showcase_assets = false,
     });
     addWasmExample(b, gooey_module, components_module, wasm_target, .{
-        .step_name = "wasm-core-counter",
-        .description = "Build the 0.4.0 core counter for web",
-        .source = "src/examples/core_counter.zig",
-        .output_dir = "web/core-counter",
-        .copy_showcase_assets = false,
-    });
-    addWasmExample(b, gooey_module, components_module, wasm_target, .{
-        .step_name = "wasm-core-todo",
-        .description = "Build the 0.4.0 core todo for web",
-        .source = "src/examples/core_todo.zig",
-        .output_dir = "web/core-todo",
+        .step_name = "wasm-todo",
+        .description = "Build the todo example for web",
+        .source = "src/examples/todo.zig",
+        .output_dir = "web/todo",
         .copy_showcase_assets = false,
     });
 }
@@ -2354,25 +2322,11 @@ fn addGoldens(
         .optimize = optimize,
         .imports = example_imports,
     });
-    const core_counter_mod = b.createModule(.{
-        .root_source_file = b.path("src/examples/core_counter.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = example_imports,
-    });
-    const core_todo_mod = b.createModule(.{
-        .root_source_file = b.path("src/examples/core_todo.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = example_imports,
-    });
     const goldens_imports: []const std.Build.Module.Import = &.{
         .{ .name = "gooey", .module = gooey_mod },
         .{ .name = "gooey-components", .module = components_mod },
         .{ .name = "counter_example", .module = counter_mod },
         .{ .name = "todo_example", .module = todo_mod },
-        .{ .name = "core_counter_example", .module = core_counter_mod },
-        .{ .name = "core_todo_example", .module = core_todo_mod },
     };
 
     const tests = b.addTest(.{
