@@ -9,6 +9,10 @@ const fingerprint_mod = @import("fingerprint.zig");
 const constants = @import("constants.zig");
 const layout = @import("../layout/layout.zig");
 
+/// A text field's selection, as byte offsets into its value; `start == end`
+/// is the caret.
+pub const TextSelection = struct { start: u32, end: u32 };
+
 pub const Element = struct {
     // =========================================================================
     // Identity
@@ -37,8 +41,8 @@ pub const Element = struct {
     /// Current value (e.g., slider "50%", textbox content)
     value: ?[]const u8 = null,
 
-    /// Caret offset in `value`, in bytes, while this is the focused text field.
-    caret: ?u32 = null,
+    /// The selection in `value`, while this is the focused text field.
+    selection: ?TextSelection = null,
 
     /// Current state flags
     state: types.State = .{},
@@ -146,8 +150,9 @@ pub const Element = struct {
         if (self.value) |v| h.update(v);
         if (self.description) |d| h.update(d);
 
-        // A caret move re-syncs the field so the bridge can report it.
-        if (self.caret) |c| h.update(std.mem.asBytes(&c));
+        // A caret or selection move re-syncs the field so the bridge can
+        // report it.
+        if (self.selection) |s| h.update(std.mem.asBytes(&s));
 
         // Hash numeric values
         if (self.value_now) |vn| h.update(std.mem.asBytes(&vn));
@@ -299,16 +304,16 @@ test "element content hash stability" {
     elem3.state.focused = false;
     try std.testing.expect(elem1.contentHash() != elem3.contentHash());
 
-    // A caret move with the same text re-syncs the field, so VoiceOver hears
-    // about it; gaining the caret at offset 0 counts as a change too.
+    // A caret or selection move with the same text re-syncs the field, so
+    // VoiceOver hears about it; gaining the caret at offset 0 counts too.
     var field = Element.init(layout.LayoutId.none, fp, .textbox);
     field.value = "milk";
-    var moved = field;
-    moved.caret = 0;
-    try std.testing.expect(field.contentHash() != moved.contentHash());
-    var end = moved;
-    end.caret = 4;
-    try std.testing.expect(moved.contentHash() != end.contentHash());
+    var caret = field;
+    caret.selection = .{ .start = 0, .end = 0 };
+    try std.testing.expect(field.contentHash() != caret.contentHash());
+    var selected = caret;
+    selected.selection = .{ .start = 0, .end = 2 };
+    try std.testing.expect(caret.contentHash() != selected.contentHash());
 }
 
 test "element content hash ignores bounds" {

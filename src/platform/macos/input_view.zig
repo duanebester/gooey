@@ -9,6 +9,7 @@ const geometry = @import("../../geometry/geometry.zig");
 const appkit = @import("appkit.zig");
 const Window = @import("window.zig").Window;
 const CoreBinding = @import("window.zig").CoreBinding;
+const mac_bridge = @import("../../accessibility/mac_bridge.zig");
 
 const NSRect = appkit.NSRect;
 const NSPoint = appkit.NSPoint;
@@ -29,6 +30,12 @@ pub fn registerClass() !void {
 
     // Add instance variable to store pointer to Zig Window
     if (!cls.addIvar("_gooeyWindow")) {
+        return error.IvarAddFailed;
+    }
+
+    // VoiceOver's focused element: the bridge stores it, the view answers
+    // `accessibilityFocusedUIElement` with it.
+    if (!cls.addIvar(mac_bridge.focus_ivar)) {
         return error.IvarAddFailed;
     }
 
@@ -72,6 +79,9 @@ pub fn registerClass() !void {
     if (!cls.addMethod("firstRectForCharacterRange:actualRange:", firstRectForCharacterRange)) return error.MethodAddFailed;
     if (!cls.addMethod("doCommandBySelector:", doCommandBySelector)) return error.MethodAddFailed;
     if (!cls.addMethod("performKeyEquivalent:", performKeyEquivalent)) return error.MethodAddFailed;
+    if (!cls.addMethod("accessibilityFocusedUIElement", accessibilityFocusedUIElement)) {
+        return error.MethodAddFailed;
+    }
 
     objc.registerClassPair(cls);
     view_class = cls;
@@ -359,6 +369,18 @@ fn getCharactersIgnoringModifiers(event: objc.Object) ?[]const u8 {
 // `selectedRange`, and `attributedSubstringForProposedRange:` must agree, or
 // an input method that reads back the composition (Kotoeri converting on
 // Space) sees a document that contradicts what it just set.
+
+/// AppKit asks the first responder which element has focus. The view itself
+/// is not an accessibility element, so without Gooey's focused element
+/// VoiceOver falls back to the nearest ancestor that is, AppKit's default.
+fn accessibilityFocusedUIElement(self: objc.c.id, _: objc.c.SEL) callconv(.c) objc.c.id {
+    std.debug.assert(self != null);
+    const focus = objc.Object.fromId(self).getInstanceVariable(mac_bridge.focus_ivar);
+    if (focus.value != null) return focus.value;
+    return NSAccessibilityUnignoredAncestor(self);
+}
+
+extern "c" fn NSAccessibilityUnignoredAncestor(element: objc.c.id) objc.c.id;
 
 fn hasMarkedText(self: objc.c.id, _: objc.c.SEL) callconv(.c) bool {
     const window = getWindow(self) orelse return false;
