@@ -20,6 +20,7 @@ const lifecycle = @import("lifecycle.zig");
 const cx_mod = @import("cx.zig");
 const app_resources = @import("../context/app_resources.zig");
 const text_mod = @import("../text/mod.zig");
+const web_host = @import("../platform/web/core_host.zig");
 
 const assert = std.debug.assert;
 
@@ -115,6 +116,12 @@ pub fn App(
 
         const Self = @This();
 
+        // The browser exports (`init`, `frame`, `resize`): the other half of
+        // the generated entry point (contract §7, decision 9).
+        comptime {
+            if (builtin.cpu.arch.isWasm()) _ = web_host.Exports(Self);
+        }
+
         pub const limits = config.limits;
         pub const title = config.title;
         pub const theme = config.theme;
@@ -146,14 +153,17 @@ pub fn App(
         }
 
         /// The generated entry point (contract §7): `pub const main =
-        /// App.main;` in the root file. Runs on macOS and Linux (Wayland);
-        /// Windows and the web move onto the core later in phase 4.
+        /// App.main;` in the root file. Runs on macOS and Linux (Wayland). On
+        /// WASM, JavaScript drives the app through the exports below instead,
+        /// so `main` does nothing there. Windows moves onto the core later in
+        /// phase 4.
         pub fn main(init: std.process.Init) !void {
+            if (comptime builtin.cpu.arch.isWasm()) return;
             const host = switch (comptime builtin.os.tag) {
                 .macos => @import("../platform/macos/core_host.zig"),
                 .linux => @import("../platform/linux/core_host.zig"),
-                else => @compileError("gooey.App.main runs on macOS and Linux; Windows " ++
-                    "and the web move onto the core later in phase 4"),
+                else => @compileError("gooey.App.main runs on macOS, Linux, and the web; " ++
+                    "Windows moves onto the core later in phase 4"),
             };
             const self = try init.gpa.create(Self);
             defer init.gpa.destroy(self);

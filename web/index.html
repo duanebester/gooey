@@ -68,12 +68,17 @@
     <script type="module">
       const canvas = document.getElementById("canvas");
 
-      // Handle high-DPI displays
-      const dpr = window.devicePixelRatio || 1;
+      // Handle high-DPI displays. `dpr` follows the display and page zoom:
+      // `updateCanvasSize` re-reads it on every call (the core host calls it
+      // every frame through `syncCanvasSize`), because Safari fires neither
+      // the resolution query below nor a canvas resize when only the ratio
+      // changes on zoom.
+      let dpr = window.devicePixelRatio || 1;
       // Maximum texture size (WebGPU default limit)
       const MAX_SIZE = 8192;
 
       function updateCanvasSize() {
+        dpr = window.devicePixelRatio || 1;
         // Use CSS size, not canvas.width (which we're about to set)
         const cssWidth = canvas.clientWidth;
         const cssHeight = canvas.clientHeight;
@@ -93,6 +98,32 @@
 
       // Set initial size
       updateCanvasSize();
+
+      // Resize the drawing buffer to the canvas's CSS size at the current
+      // ratio, and reconfigure the context when it changed. A resize clears
+      // the canvas, so the caller must draw a frame afterwards: the 0.4.0
+      // core host calls this at the start of each frame, before it builds.
+      function syncCanvasSize() {
+        if (!updateCanvasSize()) return false;
+        if (context) context.configure({ device, format, alphaMode: "premultiplied" });
+        return true;
+      }
+
+      // Resize the canvas when the ratio alone changes (a display move in
+      // Chrome), for the 0.3.1 path, which does not poll. A media query
+      // matches one ratio, so re-arm it at the new ratio after every change.
+      function watchDevicePixelRatio() {
+        const query = window.matchMedia(`(resolution: ${dpr}dppx)`);
+        query.addEventListener(
+          "change",
+          () => {
+            syncCanvasSize();
+            watchDevicePixelRatio();
+          },
+          { once: true },
+        );
+      }
+      watchDevicePixelRatio();
 
       // WebGPU state
       let device, queue, context, format;
@@ -1044,6 +1075,7 @@
         getCanvasPixelWidth: () => canvas.width,
         getCanvasPixelHeight: () => canvas.height,
         getDevicePixelRatio: () => dpr,
+        syncCanvasSize: () => syncCanvasSize(),
         setCanvasSize: (w, h) => {
           canvas.width = w;
           canvas.height = h;
@@ -2472,9 +2504,7 @@
           if (resizeTimeout) return; // Already scheduled
           resizeTimeout = setTimeout(() => {
             resizeTimeout = null;
-            if (updateCanvasSize() && context) {
-              context.configure({ device, format, alphaMode: "premultiplied" });
-            }
+            syncCanvasSize();
           }, 16); // ~1 frame debounce
         });
         resizeObserver.observe(canvas);

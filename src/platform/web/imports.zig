@@ -44,6 +44,9 @@ pub extern "env" fn getCanvasHeight() u32;
 /// cost precision on fractional browser-zoom ratios.
 pub extern "env" fn getDevicePixelRatio() f64;
 /// Get canvas actual pixel width (canvas.width, not clientWidth)
+/// Resize the canvas drawing buffer to its CSS size at the current device
+/// pixel ratio. Returns true when the size changed, which clears the canvas.
+pub extern "env" fn syncCanvasSize() bool;
 pub extern "env" fn getCanvasPixelWidth() u32;
 pub extern "env" fn getCanvasPixelHeight() u32;
 pub extern "env" fn setCanvasSize(width: u32, height: u32) void;
