@@ -1782,6 +1782,10 @@ fn addFailFastChecks(
             "capacity 2048 (MAX_WORDS_PER_TEXT), 1 requested" },
     };
     for (checks) |check| {
+        // CoreText shapes at most 2,047 UTF-16 units per run, so a text with
+        // 2,049 words fails its measurement (also fail-fast) before wrapping.
+        const word_pool = std.mem.eql(u8, check.mode, "core-wrap-words");
+        if (word_pool and target.result.os.tag == .macos) continue;
         const run = b.addRunArtifact(exe);
         run.addArg(check.mode);
         run.addCheck(.{ .expect_stderr_match = check.stderr });

@@ -25,7 +25,7 @@
 //! - `core-dialog-target`: names a non-root state as a file dialog's completion handler.
 //! - `core-mono-unset`: draws `.family = .mono` text in an app with no `font_mono`.
 //! - `core-wrap-lines`: wraps one text into one line past `MAX_LINES_PER_TEXT`.
-//! - `core-wrap-words`: wraps one text of one word past `MAX_WORDS_PER_TEXT`.
+//! - `core-wrap-words`: wraps one text into one word past `MAX_WORDS_PER_TEXT`.
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -319,27 +319,25 @@ const CoreApp = struct {
         cx.render(core.ui.text("code", .{ .family = .mono }));
     }
 
-    /// One line per newline: exactly one more line than the pool holds.
+    /// One empty line per newline, then "m": one more line than the pool
+    /// holds, in 1,025 bytes, which every shaper measures.
     fn wrapLines(cx: *core.Cx) void {
-        const lines = comptime repeated("m\n", gooey.layout.engine.MAX_LINES_PER_TEXT);
+        const lines = comptime newlinesThenM(gooey.layout.engine.MAX_LINES_PER_TEXT);
         cx.render(core.ui.text(&lines, .{ .wrap = .newlines }));
     }
 
-    /// One word per space: exactly one more word than the pool holds.
+    /// One empty word per newline, then "m": one more word than the pool
+    /// holds. Words are scanned before lines are packed, so the word pool is
+    /// the one exhausted.
     fn wrapWords(cx: *core.Cx) void {
-        const words = comptime repeated("m ", gooey.layout.engine.MAX_WORDS_PER_TEXT);
+        const words = comptime newlinesThenM(gooey.layout.engine.MAX_WORDS_PER_TEXT);
         cx.render(core.ui.text(&words, .{ .wrap = .words }));
     }
 
-    /// `count` copies of a two-byte unit, then one more "m".
-    fn repeated(comptime unit: *const [2]u8, comptime count: u32) [count * 2 + 1]u8 {
-        @setEvalBranchQuota(count * 4);
-        var bytes: [count * 2 + 1]u8 = undefined;
-        for (0..count) |index| {
-            bytes[index * 2] = unit[0];
-            bytes[index * 2 + 1] = unit[1];
-        }
-        bytes[count * 2] = 'm';
+    fn newlinesThenM(comptime count: u32) [count + 1]u8 {
+        var bytes: [count + 1]u8 = undefined;
+        @memset(bytes[0..count], '\n');
+        bytes[count] = 'm';
         return bytes;
     }
 };
