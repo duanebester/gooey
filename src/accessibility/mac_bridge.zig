@@ -7,7 +7,7 @@
 //! Strategy:
 //! - Pre-allocated pool of NSAccessibilityElement wrappers
 //! - Fingerprint-based identity mapping for stable object references
-//! - Batched property updates with single layout notification
+//! - Value and caret change notifications for elements whose content changed
 //! - Periodic VoiceOver detection (not every frame)
 
 const std = @import("std");
@@ -26,8 +26,11 @@ const layout = @import("../layout/layout.zig");
 /// NSAccessibilityFocusedUIElementChangedNotification
 extern "c" var NSAccessibilityFocusedUIElementChangedNotification: objc.c.id;
 
-/// NSAccessibilityLayoutChangedNotification
-extern "c" var NSAccessibilityLayoutChangedNotification: objc.c.id;
+/// NSAccessibilityValueChangedNotification
+extern "c" var NSAccessibilityValueChangedNotification: objc.c.id;
+
+/// NSAccessibilitySelectedTextChangedNotification
+extern "c" var NSAccessibilitySelectedTextChangedNotification: objc.c.id;
 
 /// NSAccessibilityAnnouncementRequestedNotification
 extern "c" var NSAccessibilityAnnouncementRequestedNotification: objc.c.id;
@@ -93,6 +96,12 @@ pub const MacBridge = struct {
         /// Is this slot currently in use?
         active: bool = false,
 
+        /// `valueHash` at the last sync; null before the first.
+        value_hash: ?u64 = null,
+
+        /// Caret byte offset at the last sync; null when not the focused field.
+        caret: ?u32 = null,
+
         /// Update wrapper from accessibility element
         pub fn update(
             self: *Wrapper,
@@ -150,9 +159,39 @@ pub const MacBridge = struct {
                 setAccessibilityFrame(ns, screen_bounds);
             }
 
+            self.notifyChanges(ns, elem);
+
             // Update tracking
             self.fingerprint = elem.fingerprint;
             self.active = true;
+        }
+
+        /// Tell VoiceOver what changed since this element's last sync, as
+        /// NSTextView and NSButton do: the value (text or checked state) and
+        /// the focused field's caret. A wrapper's first sync posts nothing,
+        /// because the element is new to VoiceOver. At most two
+        /// notifications per dirty element, and a frame has one caret.
+        fn notifyChanges(self: *Wrapper, ns: objc.Object, elem: *const tree_mod.Element) void {
+            std.debug.assert(ns.value != null);
+            std.debug.assert(elem.fingerprint.isValid());
+            const value_hash = valueHash(elem);
+            if (self.value_hash) |previous| {
+                if (previous != value_hash) {
+                    postNotification(ns, NSAccessibilityValueChangedNotification);
+                }
+            }
+            self.value_hash = value_hash;
+            if (elem.caret) |caret| {
+                const text = elem.value orelse "";
+                std.debug.assert(caret <= text.len);
+                setAccessibilitySelectedTextRange(ns, utf16Length(text[0..caret]));
+                if (self.caret) |previous| {
+                    if (previous != caret) {
+                        postNotification(ns, NSAccessibilitySelectedTextChangedNotification);
+                    }
+                }
+            }
+            self.caret = elem.caret;
         }
 
         /// Mark wrapper as inactive (available for reuse)
@@ -162,6 +201,8 @@ pub const MacBridge = struct {
 
             self.active = false;
             self.fingerprint = fingerprint_mod.Fingerprint.INVALID;
+            self.value_hash = null;
+            self.caret = null;
             // NOTE: Don't release ns_element - we reuse it from the pool
         }
     };
@@ -240,9 +281,6 @@ pub const MacBridge = struct {
 
         // Update children arrays for VoiceOver discovery
         self.updateAccessibilityChildren(tree, root);
-
-        // Post layout changed notification (batched)
-        postLayoutChangedNotification(root);
     }
 
     /// Update accessibilityChildren on root and parent elements
@@ -627,26 +665,59 @@ fn setAccessibilityFrame(elem: objc.Object, bounds: layout.BoundingBox) void {
     elem.msgSend(void, "setAccessibilityFrame:", .{frame});
 }
 
-fn postLayoutChangedNotification(root: objc.Object) void {
-    std.debug.assert(root.value != null);
-
-    const NSAccessibilityCenter = objc.getClass("NSAccessibility") orelse return;
-    _ = NSAccessibilityCenter;
-
-    // NSAccessibilityPostNotification(root, NSAccessibilityLayoutChangedNotification)
-    const postNotification = @extern(*const fn (objc.c.id, objc.c.id) callconv(std.builtin.CallingConvention.c) void, .{
-        .name = "NSAccessibilityPostNotification",
-    });
-    postNotification(root.value, NSAccessibilityLayoutChangedNotification);
-}
-
 fn postFocusChangedNotification(elem: objc.Object) void {
     std.debug.assert(elem.value != null);
+    postNotification(elem, NSAccessibilityFocusedUIElementChangedNotification);
+}
 
-    const postNotification = @extern(*const fn (objc.c.id, objc.c.id) callconv(std.builtin.CallingConvention.c) void, .{
+fn postNotification(elem: objc.Object, notification: objc.c.id) void {
+    std.debug.assert(elem.value != null);
+    std.debug.assert(notification != null);
+    const post = @extern(*const fn (objc.c.id, objc.c.id) callconv(.c) void, .{
         .name = "NSAccessibilityPostNotification",
     });
-    postNotification(elem.value, NSAccessibilityFocusedUIElementChangedNotification);
+    post(elem.value, notification);
+}
+
+/// The value VoiceOver reads: the text, or a toggle's checked state.
+fn valueHash(elem: *const tree_mod.Element) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    if (elem.value) |value| {
+        hasher.update("text:");
+        hasher.update(value);
+    } else if (isToggle(elem.role)) {
+        hasher.update(if (elem.state.checked) "checked" else "unchecked");
+    }
+    return hasher.final();
+}
+
+const NSRange = extern struct { location: c_ulong, length: c_ulong };
+
+/// An empty selection at the caret, which AppKit counts in UTF-16 units.
+fn setAccessibilitySelectedTextRange(elem: objc.Object, caret_utf16: u32) void {
+    std.debug.assert(elem.value != null);
+    const range = NSRange{ .location = caret_utf16, .length = 0 };
+    elem.msgSend(void, "setAccessibilitySelectedTextRange:", .{range});
+}
+
+/// UTF-16 code units in UTF-8 `text`: one per scalar, two above U+FFFF.
+/// Counts lead bytes, so it is bounded by `text.len` and needs no decode.
+fn utf16Length(text: []const u8) u32 {
+    std.debug.assert(text.len <= std.math.maxInt(u32));
+    var count: u32 = 0;
+    for (text) |byte| {
+        if (byte & 0xC0 != 0x80) count += 1;
+        if (byte >= 0xF0) count += 1;
+    }
+    std.debug.assert(count <= text.len);
+    return count;
+}
+
+test "utf16Length counts surrogate pairs" {
+    try std.testing.expectEqual(@as(u32, 0), utf16Length(""));
+    try std.testing.expectEqual(@as(u32, 3), utf16Length("abc"));
+    // é is 2 bytes and 1 unit, 日 is 3 bytes and 1 unit, 😀 is 4 bytes and 2 units.
+    try std.testing.expectEqual(@as(u32, 5), utf16Length("é日😀a"));
 }
 
 fn postAnnouncement(root: objc.Object, message: []const u8, live: types.Live) void {

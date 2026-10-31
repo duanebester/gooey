@@ -79,6 +79,14 @@ fn push(tree: *a11y.Tree, frame: *const records.Frame, node: *const records.A11y
         .width = node.bounds.width,
         .height = node.bounds.height,
     };
+    // The focused text field's caret is the frame's IME answer, so the bridge
+    // can report caret moves without a second accessibility field.
+    if (frame.ime) |ime| {
+        if (ime.owner == node.id) {
+            assert(ime.selected_end <= node.value.len);
+            element.caret = ime.selected_end;
+        }
+    }
     assert(element.role == node.role);
 }
 
