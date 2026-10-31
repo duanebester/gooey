@@ -183,7 +183,7 @@ pub const Text = struct {
     color: ?ColorToken = null,
     weight: FontWeight = .regular,
     italic: bool = false,
-    /// `.mono` draws with `Config.font_mono` (contract decision 8); using it
+    /// `.mono` draws with `Config.fonts.mono` (contract decision 8); using it
     /// with no second family loaded panics on the first frame.
     family: FontFamily = .app,
     /// Wrapping against the parent's content width (contract decision 9):

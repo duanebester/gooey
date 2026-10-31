@@ -128,7 +128,7 @@ pub const FontVariant = enum(u8) {
 
 /// Which loaded family a run draws with (contract decision 8). `app` is the
 /// app's font (`Config.font`); `mono` is the optional second family
-/// (`Config.font_mono`), with its own faces from `FontLimits.mono_variants`.
+/// (`Config.fonts.mono`), with its own faces from `FontLimits.mono_variants`.
 pub const FontFamily = enum(u1) {
     app,
     mono,

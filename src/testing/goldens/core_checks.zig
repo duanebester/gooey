@@ -95,14 +95,6 @@ const DialogApp = core.App(DialogState, dialogRender, .{
     .width = 200,
     .height = 100,
     .limits = .nano,
-    .theme = &core.Theme.light,
-    .keymap = &.{},
-    .entities = &.{},
-    .font = null,
-    .font_size = 16,
-    .font_mono = null,
-    .font_limits = null,
-    .on_init = null,
 });
 
 fn dialogRender(cx: *Cx) void {
@@ -325,14 +317,10 @@ const FontApp = core.App(FontState, fontRender, .{
     .width = 300,
     .height = 100,
     .limits = .nano,
-    .theme = &core.Theme.light,
-    .keymap = &.{},
-    .entities = &.{},
-    .font = null,
-    .font_size = 16,
-    .font_mono = .{ .system = .monospace },
-    .font_limits = .{ .variants = &.{.regular}, .mono_variants = &.{.regular} },
-    .on_init = null,
+    .fonts = .{
+        .mono = .{ .system = .monospace },
+        .limits = .{ .variants = &.{.regular}, .mono_variants = &.{.regular} },
+    },
 });
 
 fn fontRender(cx: *Cx) void {
@@ -419,14 +407,6 @@ const WrapApp = core.App(WrapState, wrapRender, .{
     .width = 300,
     .height = 200,
     .limits = .nano,
-    .theme = &core.Theme.light,
-    .keymap = &.{},
-    .entities = &.{},
-    .font = null,
-    .font_size = 16,
-    .font_mono = null,
-    .font_limits = null,
-    .on_init = null,
 });
 
 /// A 110 px column with 10 px of left padding, so text wraps against 100 px.

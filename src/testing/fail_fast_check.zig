@@ -23,7 +23,7 @@
 //! - `core-duplicate-key`: renders two boxes with one key under one parent.
 //! - `core-component-depth`: nests components one level past `component_depth_max`.
 //! - `core-dialog-target`: names a non-root state as a file dialog's completion handler.
-//! - `core-mono-unset`: draws `.family = .mono` text in an app with no `font_mono`.
+//! - `core-mono-unset`: draws `.family = .mono` text in an app with no `fonts.mono`.
 //! - `core-wrap-lines`: wraps one text into one line past `MAX_LINES_PER_TEXT`.
 //! - `core-wrap-words`: wraps one text into one word past `MAX_WORDS_PER_TEXT`.
 //! - `core-wrap-frame`: wraps two texts into one line past the frame's glyph budget.
@@ -268,14 +268,6 @@ const core_config: core.Config(CoreState) = .{
     .width = 100,
     .height = 100,
     .limits = .nano,
-    .theme = &core.Theme.light,
-    .keymap = &.{},
-    .entities = &.{},
-    .font = null,
-    .font_size = 16,
-    .font_mono = null,
-    .font_limits = null,
-    .on_init = null,
 };
 
 const CoreApp = struct {

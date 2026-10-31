@@ -26,7 +26,7 @@ const assert = std.debug.assert;
 
 pub const ResourceLimits = limits_mod.ResourceLimits;
 pub const FontLimits = limits_mod.FontLimits;
-/// A family for `Config.font_mono`: an installed name or a platform family.
+/// A family for `Fonts.mono`: an installed name or a platform family.
 pub const FontSource = text_mod.TextSystem.FaceSource;
 pub const Theme = element.Theme;
 pub const Effects = handler_mod.Effects;
@@ -37,26 +37,36 @@ pub const Cx = cx_mod.Cx;
 /// phase 4; milestone 1 requires `config.keymap` to be empty.
 pub const Binding = struct { key_context: element.KeyContext, action: u64 };
 
+/// The app's comptime configuration (contract §7, decision 10). Only `title`,
+/// `width`, `height`, and `limits` are required; every default below is the
+/// reviewed policy (CLAUDE.md §19).
 pub fn Config(comptime State: type) type {
     return struct {
         title: []const u8,
         width: u32,
         height: u32,
         limits: ResourceLimits,
-        theme: *const Theme,
-        keymap: []const Binding,
-        entities: []const type,
-        /// Family name; null loads the platform's sans-serif.
-        font: ?[]const u8,
-        /// Points, for both families.
-        font_size: f32,
-        /// The second family (decision 8); null reserves no faces.
-        font_mono: ?FontSource,
-        /// The faces to reserve; null keeps the `limits` profile's set.
-        font_limits: ?FontLimits,
-        on_init: ?*const fn (state: *State, effects: *Effects) void,
+        theme: *const Theme = &Theme.light,
+        keymap: []const Binding = &.{},
+        entities: []const type = &.{},
+        fonts: Fonts = .{},
+        on_init: ?*const fn (state: *State, effects: *Effects) void = null,
     };
 }
+
+/// The app's font families and faces (decisions 8 and 10). The defaults load
+/// the platform's sans-serif at the theme's `font_size_base`, no second
+/// family, and the `limits` profile's faces.
+pub const Fonts = struct {
+    /// Family name; null loads the platform's sans-serif.
+    name: ?[]const u8 = null,
+    /// Points, for both families; null takes the theme's `font_size_base`.
+    size: ?f32 = null,
+    /// The second family (decision 8); null reserves no faces.
+    mono: ?FontSource = null,
+    /// The faces to reserve; null keeps the `limits` profile's set.
+    limits: ?FontLimits = null,
+};
 
 /// The font faces for `limits`: the `FontLimits` profile with the same name
 /// as the `ResourceLimits` profile `limits` equals, else `standard`.
@@ -67,29 +77,42 @@ pub fn fontLimitsFor(comptime limits: ResourceLimits) FontLimits {
     return FontLimits.standard;
 }
 
+/// The point size the app loads its families at.
+fn fontSize(comptime State: type, comptime config: Config(State)) f32 {
+    return config.fonts.size orelse @floatFromInt(config.theme.font_size_base);
+}
+
+/// The faces the app reserves.
+fn fontFaces(comptime State: type, comptime config: Config(State)) FontLimits {
+    return config.fonts.limits orelse fontLimitsFor(config.limits);
+}
+
 /// Reject font settings that cannot work, naming the field (decision 8): a
 /// second family needs mono faces to load into, and mono faces need a family.
 fn checkFonts(comptime State: type, comptime config: Config(State)) void {
     comptime {
-        if (!(config.font_size > 0 and config.font_size < 1000)) {
-            @compileError("gooey.App: font_size must be in (0, 1000) points");
+        const size = fontSize(State, config);
+        if (!(size > 0 and size < 1000)) {
+            @compileError("gooey.App: fonts.size must be in (0, 1000) points");
         }
-        if (config.font) |name| {
-            if (name.len == 0) @compileError("gooey.App: font is empty; use null for sans-serif");
+        if (config.fonts.name) |name| {
+            if (name.len == 0) {
+                @compileError("gooey.App: fonts.name is empty; use null for sans-serif");
+            }
             if (name.len > text_mod.TextSystem.family_name_bytes_max) {
-                @compileError("gooey.App: font names a family longer than 255 bytes");
+                @compileError("gooey.App: fonts.name names a family longer than 255 bytes");
             }
         }
-        const font_limits = config.font_limits orelse fontLimitsFor(config.limits);
-        font_limits.validate();
-        const mono_faces = font_limits.mono_variants.len;
-        if (config.font_mono != null and mono_faces == 0) {
-            @compileError("gooey.App: font_mono is set but font_limits.mono_variants is " ++
-                "empty; set .font_limits with the mono variants to load");
+        const faces = fontFaces(State, config);
+        faces.validate();
+        const mono_faces = faces.mono_variants.len;
+        if (config.fonts.mono != null and mono_faces == 0) {
+            @compileError("gooey.App: fonts.mono is set but fonts.limits.mono_variants is " ++
+                "empty; set .fonts.limits with the mono variants to load");
         }
-        if (config.font_mono == null and mono_faces > 0) {
-            @compileError("gooey.App: font_limits.mono_variants reserves faces but " ++
-                "font_mono is null");
+        if (config.fonts.mono == null and mono_faces > 0) {
+            @compileError("gooey.App: fonts.limits.mono_variants reserves faces but " ++
+                "fonts.mono is null");
         }
     }
 }
@@ -127,7 +150,7 @@ pub fn App(
         pub const theme = config.theme;
         pub const width = config.width;
         pub const height = config.height;
-        pub const font_limits = config.font_limits orelse fontLimitsFor(config.limits);
+        pub const font_limits = fontFaces(State, config);
 
         /// The root render function.
         pub fn render(cx: *Cx) void {
@@ -186,10 +209,10 @@ pub fn App(
             self.state = .{};
             self.store = handler_mod.Store.init(State, &self.state);
             try self.resources.initOwnedInPlace(gpa, io, scale_factor, .{
-                .font_name = config.font,
-                .font_size = config.font_size,
+                .font_name = config.fonts.name,
+                .font_size = fontSize(State, config),
                 .limits = font_limits,
-                .mono = config.font_mono,
+                .mono = config.fonts.mono,
             }, &config.limits.atlas);
             errdefer self.resources.deinit();
             try window_mod.initInPlace(&self.window, gpa, &.{
