@@ -1062,42 +1062,36 @@ pub const RetainedLimits = struct {
     };
 };
 
-/// Event queue, completion ring, and timer table (contract §5).
+/// Event queue and completion ring (contract §5).
 pub const EventLimits = struct {
     queue_count_max: u32,
     completion_count_max: u32,
-    timer_count_max: u32,
     /// Bytes of event text (IME and typed text, dialog paths) in flight.
     text_bytes_max: u32,
 
     pub const nano: EventLimits = .{
         .queue_count_max = 64,
         .completion_count_max = 16,
-        .timer_count_max = 8,
         .text_bytes_max = 4 * 1024,
     };
     pub const small: EventLimits = .{
         .queue_count_max = 128,
         .completion_count_max = 32,
-        .timer_count_max = 16,
         .text_bytes_max = 8 * 1024,
     };
     pub const standard: EventLimits = .{
         .queue_count_max = 256,
         .completion_count_max = 64,
-        .timer_count_max = 32,
         .text_bytes_max = 16 * 1024,
     };
     pub const large: EventLimits = .{
         .queue_count_max = 512,
         .completion_count_max = 128,
-        .timer_count_max = 64,
         .text_bytes_max = 64 * 1024,
     };
     pub const ceiling: EventLimits = .{
         .queue_count_max = 4_096,
         .completion_count_max = 1_024,
-        .timer_count_max = 256,
         .text_bytes_max = 1024 * 1024,
     };
 };

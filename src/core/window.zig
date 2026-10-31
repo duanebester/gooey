@@ -58,6 +58,12 @@ pub const text_scratch_bytes: u32 = 256 * 1024;
 /// completion is delivered the next tick, so a handful covers bursts.
 pub const dialog_count_max: u32 = 8;
 
+/// `render_deadline_ns` when the last build asked for no timed render.
+pub const deadline_none: u64 = std.math.maxInt(u64);
+
+/// The longest `cx.requestRenderAfter` delay, shared with the platforms.
+pub const render_delay_ms_max: u32 = @import("../platform/interface.zig").render_delay_ms_max;
+
 pub const NodeKind = enum { box, text, paint };
 
 /// One built element. Index `i` is layout element `i` (both pre-order).
@@ -260,6 +266,12 @@ pub const Window = struct {
     atlas_frame: u64,
     frame_number: u64,
     render_requested: bool,
+    /// The earliest `cx.requestRenderAfter` of the last build, on the window
+    /// clock, or `deadline_none`. Main thread only: wasm32 has no 64-bit
+    /// atomics, so a host whose render thread needs it keeps its own copy.
+    render_deadline_ns: u64,
+    /// The earliest request of the build in progress (main thread only).
+    build_deadline_ns: u64,
     quit_requested: bool,
     pending_dialog: ?handler_mod.FileDialogRequest,
     /// A font change from `Effects.setFont`, applied by the next tick that
@@ -290,6 +302,13 @@ pub const Window = struct {
 
     pub fn built(self: *Window) *Frame {
         return &self.frames[self.built_index];
+    }
+
+    /// When the last build asked to render again, if it did (contract §5).
+    pub fn renderDeadlineNs(self: *const Window) ?u64 {
+        assert(self.phase == .idle);
+        const deadline = self.render_deadline_ns;
+        return if (deadline == deadline_none) null else deadline;
     }
 
     pub fn rendered(self: *const Window) *const Frame {
@@ -408,6 +427,8 @@ pub noinline fn initInPlace(self: *Window, gpa: std.mem.Allocator, options: *con
     self.atlas_frame = 0;
     self.frame_number = 0;
     self.render_requested = true;
+    self.render_deadline_ns = deadline_none;
+    self.build_deadline_ns = deadline_none;
     self.quit_requested = false;
     self.pending_dialog = null;
     self.pending_font = null;

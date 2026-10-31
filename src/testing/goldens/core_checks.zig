@@ -618,3 +618,51 @@ fn chord(key: gooey.input.KeyCode, modifiers: gooey.input.Modifiers) gooey.input
         .is_repeat = false,
     };
 }
+
+const ClockState = struct {
+    /// The delay each build asks for; 0 asks for nothing.
+    delay_ms: u32 = 100,
+    builds: u32 = 0,
+};
+
+const ClockApp = core.App(ClockState, clockRender, .{
+    .title = "Clock",
+    .width = 100,
+    .height = 100,
+    .limits = .nano,
+});
+
+fn clockRender(cx: *Cx) void {
+    const state = cx.state(ClockState);
+    state.builds += 1;
+    if (state.delay_ms > 0) cx.requestRenderAfter(state.delay_ms);
+    cx.render(ui.box(.{ .style = .{ .width = .{ .grow = 1 } } }, .{}));
+}
+
+test "cx.requestRenderAfter renders once at the earliest deadline of the last build" {
+    // Goal: the per-window deadline (contract §5). Methodology: a build at
+    // t = 1 ms asks for 100 ms. Ticks before 101 ms build nothing; the tick
+    // at 101 ms builds and renews it. A build that asks for nothing clears
+    // the deadline, so no later tick builds.
+    const ms = std.time.ns_per_ms;
+    const app = try testing.allocator.create(ClockApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    const state = &app.state;
+    app.tick(1 * ms);
+    try testing.expectEqual(@as(u32, 1), state.builds);
+    try testing.expectEqual(@as(?u64, 101 * ms), app.window.renderDeadlineNs());
+    app.tick(50 * ms);
+    app.tick(101 * ms - 1);
+    try testing.expectEqual(@as(u32, 1), state.builds);
+    app.tick(101 * ms);
+    try testing.expectEqual(@as(u32, 2), state.builds);
+    try testing.expectEqual(@as(?u64, 201 * ms), app.window.renderDeadlineNs());
+    state.delay_ms = 0;
+    app.tick(201 * ms);
+    try testing.expectEqual(@as(u32, 3), state.builds);
+    try testing.expectEqual(@as(?u64, null), app.window.renderDeadlineNs());
+    app.tick(10_000 * ms);
+    try testing.expectEqual(@as(u32, 3), state.builds);
+}

@@ -46,6 +46,7 @@ pub fn tickMain(app: anytype, window: *Window, now_ns: u64) bool {
     // Shaped runs of the frame in flight may still sit in the scratch.
     if (!in_flight) window.text_scratch_allocator.reset();
     drain(window);
+    fireDeadline(window, now_ns);
     // A reload clears the glyph cache and atlas the render side reads while
     // it draws, so it waits for a tick with no frame in flight.
     if (!in_flight) applyFont(window);
@@ -141,6 +142,17 @@ fn flipPresented(window: *Window) void {
         window.rendered(),
         window.now_ns,
     );
+}
+
+/// Request the render the last build asked for once its deadline passes
+/// (`cx.requestRenderAfter`). The deadline is spent here: the build it
+/// requests renews it if the view still depends on the clock.
+fn fireDeadline(window: *Window, now_ns: u64) void {
+    assert(window.phase == .idle);
+    const deadline = window.renderDeadlineNs() orelse return;
+    if (now_ns < deadline) return;
+    window.render_requested = true;
+    window.render_deadline_ns = window_mod.deadline_none;
 }
 
 /// Reload the app family a handler asked for (`Effects.setFont`), after the

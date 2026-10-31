@@ -15,7 +15,6 @@ const input = @import("../input/mod.zig");
 const assert = std.debug.assert;
 
 pub const InputEvent = input.InputEvent;
-pub const TimerId = enum(u32) { _ };
 
 pub const WindowEvent = union(enum) {
     resized: struct { width: f32, height: f32, scale_factor: f32 },
@@ -37,7 +36,6 @@ pub const Completion = struct {
 
 pub const Event = union(enum) {
     input: InputEvent,
-    timer: TimerId,
     completion: Completion,
     window: WindowEvent,
 };
