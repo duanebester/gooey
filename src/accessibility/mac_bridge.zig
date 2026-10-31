@@ -336,8 +336,11 @@ pub const MacBridge = struct {
         // Find or allocate wrapper slot
         const slot = self.findOrAllocSlot(elem.fingerprint) orelse return;
 
-        // Resolve parent's NS element
-        const parent_ns = self.resolveParentNS(tree, elem, root);
+        // Resolve parent's NS element. A top-level element's parent is the
+        // window, as in 0.3.1, even though it hangs in the content view's
+        // children: AppKit ignores the content view, so an AXParent naming it
+        // points outside the chain VoiceOver walks (#121 regression).
+        const parent_ns = self.resolveParentNS(tree, elem, self.root_element orelse root);
 
         // Update the wrapper with coordinate conversion context
         self.wrappers[slot].update(elem, parent_ns, self.root_element, self.content_view);
