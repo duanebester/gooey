@@ -20,6 +20,7 @@ const events = @import("events.zig");
 const window_mod = @import("window.zig");
 const input = @import("../input/mod.zig");
 const keymap = @import("keymap.zig");
+const text_engine = @import("text_engine.zig");
 
 const assert = std.debug.assert;
 
@@ -123,6 +124,7 @@ fn routeInput(window: *Window, event: *const input.InputEvent) void {
             updateHover(window);
         },
         .key_down, .key_up, .text_input, .composition => keyToFocus(window, event),
+        .scroll => |scroll| wheel(window, event, pointOf(scroll.position)),
         else => {},
     }
 }
@@ -227,6 +229,28 @@ fn bubble(window: *Window, event: *const input.InputEvent, start: u32, slot: Slo
         };
         if (frame.handlerAt(handler_index)) |handler| {
             if (invoke(window, handler, event, null, record.id)) return;
+        }
+        index = record.parent;
+    }
+}
+
+/// The wheel scrolls the innermost text area under the pointer, through its
+/// key handler, as 0.3.1 scrolled the text area under the pointer. Nothing
+/// else scrolls until `Style.scroll` lands; the event is otherwise dropped.
+fn wheel(window: *Window, event: *const input.InputEvent, point: Point) void {
+    assert(event.* == .scroll);
+    const frame = window.rendered();
+    const area_type = handler_mod.typeId(text_engine.AreaEngine);
+    var index = hitIndex(frame, point);
+    var depth: u32 = 0;
+    while (index != index_none) : (depth += 1) {
+        assert(depth <= window_mod.box_depth_max);
+        const record = &frame.hits[index];
+        if (frame.handlerAt(record.on_key)) |handler| {
+            if (handler.target.type_id == area_type) {
+                _ = invoke(window, handler, event, null, record.id);
+                return;
+            }
         }
         index = record.parent;
     }
