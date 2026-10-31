@@ -353,6 +353,10 @@ pub extern "env" fn getMSAASampleCount() u32;
 /// Write text to clipboard. Fire-and-forget from WASM side (async in JS).
 pub extern "env" fn clipboardWriteText(ptr: [*]const u8, len: u32) void;
 
+/// Whether the browser runs on macOS or iOS, whose text fields take edit
+/// commands with Cmd rather than Ctrl.
+pub extern "env" fn isApplePlatform() bool;
+
 // =============================================================================
 // File Dialog (Async)
 // =============================================================================
