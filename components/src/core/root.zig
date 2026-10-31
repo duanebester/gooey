@@ -279,8 +279,8 @@ pub const TextInput = struct {
         painter.imeCursor(.{
             .owner = view.id,
             .cursor_rect = ime_rect,
-            .selected_start = engine.cursor,
-            .selected_end = engine.cursor,
+            .selected_start = engine.selectionStart(),
+            .selected_end = engine.selectionEnd(),
         });
     }
 };
