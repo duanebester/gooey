@@ -18,6 +18,7 @@ const Handler = core.Handler;
 const Key = core.Key;
 const Color = ui.Color;
 const InputEngine = core.InputEngine;
+const AreaEngine = core.AreaEngine;
 
 // =============================================================================
 // Button
@@ -168,13 +169,7 @@ pub const TextInput = struct {
         const engine = cx.get(InputEngine, handle);
         engine.syncBound(self.bind);
         const focused = cx.focused(id);
-        engine.view.id = id;
-        engine.view.placeholder = self.placeholder;
-        engine.view.text_color = theme.text;
-        engine.view.placeholder_color = theme.muted;
-        engine.view.selection_color = theme.primary.withAlpha(0.3);
-        engine.view.caret_color = theme.text;
-        engine.view.preedit_underline_color = Color.rgb(0.3, 0.3, 0.3);
+        setView(&engine.view, theme, id, self.placeholder);
         engine.blink(cx, focused);
         const inset = self.padding + self.border_width;
         const metrics = cx.fontMetrics();
@@ -285,10 +280,240 @@ pub const TextInput = struct {
     }
 };
 
+/// What both text components draw with, from the theme.
+fn setView(
+    view: *InputEngine.View,
+    theme: *const core.Theme,
+    id: core.ElementId,
+    placeholder: []const u8,
+) void {
+    assert(id.isKeyed());
+    view.id = id;
+    view.placeholder = placeholder;
+    view.text_color = theme.text;
+    view.placeholder_color = theme.muted;
+    view.selection_color = theme.primary.withAlpha(0.3);
+    view.caret_color = theme.text;
+    view.preedit_underline_color = Color.rgb(0.3, 0.3, 0.3);
+    view.scrollbar_track_color = theme.muted.withAlpha(0.1);
+    view.scrollbar_thumb_color = theme.muted.withAlpha(0.4);
+    assert(view.placeholder.len == placeholder.len);
+}
+
+// =============================================================================
+// TextArea
+// =============================================================================
+
+/// A multi-line input bound to an app field, `rows` lines tall. Lines split
+/// on '\n' without soft wrap, and the lines scroll to keep the caret in view,
+/// as in 0.3.1. The app reserves areas with `limits.text.area`.
+pub const TextArea = struct {
+    key: []const u8,
+    bind: *[]const u8,
+    placeholder: []const u8 = "",
+    width: f32 = 300,
+    rows: u16 = 4,
+    padding: f32 = 8,
+    border_width: f32 = 1,
+
+    /// The scrollbar's width at the right edge, as in 0.3.1.
+    const scrollbar_width: f32 = 8;
+
+    pub fn render(self: TextArea, cx: *Cx) void {
+        assert(self.key.len > 0);
+        assert(self.rows > 0);
+        const theme = cx.theme();
+        const key = Key{ .name = self.key };
+        const id = cx.id(key);
+        const handle = cx.retain(AreaEngine, id, .{ .scope = id }, initEngine);
+        const engine = cx.get(AreaEngine, handle);
+        engine.syncBound(self.bind);
+        const focused = cx.focused(id);
+        setView(&engine.view, theme, id, self.placeholder);
+        const inset = self.padding + self.border_width;
+        const line_height = cx.fontMetrics().line_height;
+        const viewport_height = line_height * @as(f32, @floatFromInt(self.rows));
+        engine.resolveClick(cx, inset);
+        engine.follow(line_height, viewport_height);
+        engine.blink(cx, focused);
+        cx.render(ui.box(.{
+            .key = key,
+            .focusable = true,
+            .on_key = cx.on(AreaEngine.onKey, .{ .entity = handle }),
+            .on_click = cx.on(AreaEngine.onClick, .{ .entity = handle }),
+            .style = .{
+                .width = .{ .fixed = self.width },
+                .height = .{ .fixed = viewport_height + inset * 2 },
+                .padding = .all(inset),
+                .background = .surface,
+                .border = .{
+                    .width = self.border_width,
+                    .color = if (focused) .border_focus else .border,
+                },
+                .corner_radius = .all(theme.radius_md),
+                .cursor = .text,
+            },
+            .a11y = .{
+                .role = .textarea,
+                .label = self.placeholder,
+                .value = if (engine.len > 0) engine.text() else null,
+            },
+        }, .{
+            ui.paint(AreaEngine, engine, paintArea, .{
+                .width = .{ .grow = 1 },
+                .height = .{ .grow = 1 },
+            }),
+        }));
+    }
+
+    fn initEngine(engine: *AreaEngine) void {
+        assert(engine.len == 0);
+    }
+
+    /// The visible lines with the selection under them and the preedit at
+    /// the caret, then the caret and the scrollbar. Lines above the viewport
+    /// are skipped and drawing stops below it, so paint work is bounded by
+    /// `rows` + 1 lines; finding them scans the text once.
+    fn paintArea(engine: *const AreaEngine, painter: *ui.Painter) void {
+        const bounds = painter.bounds;
+        const metrics = painter.fontMetrics();
+        const size: u16 = @intFromFloat(metrics.point_size);
+        painter.pushClip(bounds);
+        defer painter.popClip();
+        if (engine.len == 0 and engine.preedit_len == 0) {
+            const style = ui.PaintText{ .size = size, .color = engine.view.placeholder_color };
+            const baseline = metrics.calcBaseline(bounds.y, metrics.line_height);
+            _ = painter.textOnBaseline(engine.view.placeholder, bounds.x, baseline, style);
+        } else {
+            paintLines(engine, painter, size);
+        }
+        if (engine.view.focused) paintCaret(engine, painter, size);
+        paintScrollbar(engine, painter);
+    }
+
+    fn paintLines(engine: *const AreaEngine, painter: *ui.Painter, size: u16) void {
+        const bounds = painter.bounds;
+        const line_height = painter.fontMetrics().line_height;
+        var start: u32 = 0;
+        var top = bounds.y - engine.scroll_y;
+        var line_count: u32 = 0;
+        while (line_count <= engine.len) : (line_count += 1) {
+            const end = engine.lineEnd(start);
+            if (top > bounds.y + bounds.height) break;
+            if (top + line_height >= bounds.y) paintLine(engine, painter, size, start, end, top);
+            if (end == engine.len) break;
+            start = end + 1;
+            top += line_height;
+        }
+        assert(line_count <= engine.len);
+    }
+
+    /// One line: its part of the selection, then its text, with the
+    /// preedit underlined at the caret when the caret is on this line.
+    fn paintLine(
+        engine: *const AreaEngine,
+        painter: *ui.Painter,
+        size: u16,
+        start: u32,
+        end: u32,
+        top: f32,
+    ) void {
+        assert(start <= end);
+        const metrics = painter.fontMetrics();
+        const style = ui.PaintText{ .size = size, .color = engine.view.text_color };
+        const line = engine.text()[start..end];
+        const left = painter.bounds.x;
+        if (engine.view.focused and engine.hasSelection()) {
+            const from = @max(engine.selectionStart(), start);
+            const to = @min(engine.selectionEnd(), end);
+            if (from <= to and engine.selectionEnd() > start) {
+                const x0 = painter.measureText(line[0 .. from - start], style);
+                const x1 = painter.measureText(line[0 .. to - start], style);
+                // A selected newline shows as a sliver past the line's end.
+                const newline: f32 = if (engine.selectionEnd() > end) 4 else 0;
+                painter.fill(.{
+                    .x = left + x0,
+                    .y = top,
+                    .width = x1 - x0 + newline,
+                    .height = metrics.line_height,
+                }, engine.view.selection_color);
+            }
+        }
+        const baseline = metrics.calcBaseline(top, metrics.line_height);
+        const preedit = engine.preeditText();
+        const caret_here = engine.cursor >= start and engine.cursor <= end;
+        if (preedit.len == 0 or !caret_here) {
+            _ = painter.textOnBaseline(line, left, baseline, style);
+            return;
+        }
+        const split = engine.cursor - start;
+        var pen = left + painter.textOnBaseline(line[0..split], left, baseline, style);
+        const width = painter.textOnBaseline(preedit, pen, baseline, style);
+        painter.fill(
+            .{ .x = pen, .y = baseline + 2, .width = width, .height = 1 },
+            engine.view.preedit_underline_color,
+        );
+        pen += width;
+        _ = painter.textOnBaseline(line[split..], pen, baseline, style);
+    }
+
+    /// The caret in its blink phase, and the IME's answer at the caret.
+    fn paintCaret(engine: *const AreaEngine, painter: *ui.Painter, size: u16) void {
+        assert(engine.view.focused);
+        const line_height = painter.fontMetrics().line_height;
+        const style = ui.PaintText{ .size = size, .color = engine.view.caret_color };
+        const start = engine.lineStart(engine.cursor);
+        const row: f32 = @floatFromInt(engine.lineOf(engine.cursor));
+        const caret = ui.Rect{
+            .x = painter.bounds.x + painter.measureText(engine.text()[start..engine.cursor], style),
+            .y = painter.bounds.y + row * line_height - engine.scroll_y,
+            .width = 1.5,
+            .height = line_height,
+        };
+        const preedit = engine.preeditText();
+        if (preedit.len == 0 and engine.view.caret_visible) {
+            painter.fill(caret, engine.view.caret_color);
+        }
+        var ime_rect = caret;
+        ime_rect.x += painter.measureText(preedit, style);
+        painter.imeCursor(.{
+            .owner = engine.view.id,
+            .cursor_rect = ime_rect,
+            .selected_start = engine.selectionStart(),
+            .selected_end = engine.selectionEnd(),
+        });
+    }
+
+    /// A track and thumb at the right edge while the lines overflow.
+    fn paintScrollbar(engine: *const AreaEngine, painter: *ui.Painter) void {
+        const bounds = painter.bounds;
+        const line_height = painter.fontMetrics().line_height;
+        const lines: f32 = @floatFromInt(std.mem.count(u8, engine.text(), "\n") + 1);
+        const content_height = lines * line_height;
+        if (content_height <= bounds.height) return;
+        const track = ui.Rect{
+            .x = bounds.x + bounds.width - scrollbar_width,
+            .y = bounds.y,
+            .width = scrollbar_width,
+            .height = bounds.height,
+        };
+        painter.fill(track, engine.view.scrollbar_track_color);
+        const thumb_height = @max(20, bounds.height * bounds.height / content_height);
+        const travel = bounds.height - thumb_height;
+        const scroll_max = content_height - bounds.height;
+        assert(scroll_max > 0);
+        var thumb = track;
+        thumb.y += travel * engine.scroll_y / scroll_max;
+        thumb.height = thumb_height;
+        painter.fill(thumb, engine.view.scrollbar_thumb_color);
+    }
+};
+
 test "core components compile against the core surface" {
     comptime {
         _ = Button;
         _ = Checkbox;
         _ = TextInput;
+        _ = TextArea;
     }
 }

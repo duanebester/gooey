@@ -132,6 +132,9 @@ pub const Cx = struct {
         if (T == text_engine.InputEngine) {
             return window.inputs.retain(target, lifetime, window.frame_number, init);
         }
+        if (T == text_engine.AreaEngine) {
+            return window.areaPool().retain(target, lifetime, window.frame_number, init);
+        }
         return window.retained.retain(T, target, lifetime, init, window.frame_number);
     }
 
@@ -139,12 +142,14 @@ pub const Cx = struct {
         const window = self.window;
         assert(window.phase != .idle);
         if (T == text_engine.InputEngine) return window.inputs.get(handle);
+        if (T == text_engine.AreaEngine) return window.areaPool().get(handle);
         return window.retained.get(T, handle);
     }
 
     pub fn release(self: *Cx, comptime T: type, handle: retained.Handle(T)) void {
         assert(self.window.phase != .idle);
         comptime assert(T != text_engine.InputEngine);
+        comptime assert(T != text_engine.AreaEngine);
         self.window.retained.release(T, handle);
     }
 

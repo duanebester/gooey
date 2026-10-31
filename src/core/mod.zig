@@ -45,6 +45,7 @@ pub const Query = surface.Query;
 pub const Theme = surface.Theme;
 pub const Painter = surface.Painter;
 pub const InputEngine = surface.InputEngine;
+pub const AreaEngine = surface.AreaEngine;
 pub const ResourceLimits = surface.ResourceLimits;
 pub const FontLimits = surface.FontLimits;
 pub const FontSource = surface.FontSource;

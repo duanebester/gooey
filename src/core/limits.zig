@@ -1105,8 +1105,9 @@ pub const TextKindLimits = struct {
 };
 
 /// The three text-engine pools: single-line inputs, multi-line areas, and code
-/// editors. Milestone 1 implements inputs; `area` and `editor` reserve nothing
-/// until phase 4 ports those engines, so every profile sets their count to 0.
+/// editors. `editor` reserves nothing until phase 4 ports that engine, so every
+/// profile but `ceiling` sets its count to 0. An area reserves `bytes_max`
+/// twice (text and history), so the small profiles keep only a few.
 pub const TextLimits = struct {
     input: TextKindLimits,
     area: TextKindLimits,
@@ -1119,17 +1120,17 @@ pub const TextLimits = struct {
     };
     pub const small: TextLimits = .{
         .input = .{ .count_max = 16, .bytes_max = 4 * 1024, .undo_depth_max = 64 },
-        .area = .{ .count_max = 0, .bytes_max = 64 * 1024, .undo_depth_max = 64 },
+        .area = .{ .count_max = 2, .bytes_max = 64 * 1024, .undo_depth_max = 64 },
         .editor = .{ .count_max = 0, .bytes_max = 256 * 1024, .undo_depth_max = 128 },
     };
     pub const standard: TextLimits = .{
         .input = .{ .count_max = 64, .bytes_max = 8 * 1024, .undo_depth_max = 64 },
-        .area = .{ .count_max = 0, .bytes_max = 128 * 1024, .undo_depth_max = 128 },
+        .area = .{ .count_max = 4, .bytes_max = 128 * 1024, .undo_depth_max = 128 },
         .editor = .{ .count_max = 0, .bytes_max = 1024 * 1024, .undo_depth_max = 256 },
     };
     pub const large: TextLimits = .{
         .input = .{ .count_max = 128, .bytes_max = 8 * 1024, .undo_depth_max = 128 },
-        .area = .{ .count_max = 0, .bytes_max = 128 * 1024, .undo_depth_max = 256 },
+        .area = .{ .count_max = 8, .bytes_max = 128 * 1024, .undo_depth_max = 256 },
         .editor = .{ .count_max = 0, .bytes_max = 4 * 1024 * 1024, .undo_depth_max = 512 },
     };
     pub const ceiling: TextLimits = .{

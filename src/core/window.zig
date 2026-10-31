@@ -232,6 +232,10 @@ pub const Window = struct {
     completions: events.CompletionRing,
     retained: retained_mod.Retained,
     inputs: text_engine.InputPool,
+    /// Reserved only when `limits.text.area.count_max > 0`; retaining an
+    /// area otherwise fails fast (`areaPool`).
+    areas: text_engine.AreaPool,
+    areas_reserved: bool,
     /// The text engines' clipboard; a host binds its platform service.
     clipboard: clipboard_mod.Clipboard,
     clipboard_bytes: []u8,
@@ -381,6 +385,15 @@ pub const Window = struct {
         self.screen_reader.initHeadlessInPlace();
     }
 
+    /// The area engines, which an app reserves with `limits.text.area`.
+    pub fn areaPool(self: *Window) *text_engine.AreaPool {
+        if (!self.areas_reserved) {
+            std.debug.panic("text pool 'area' has capacity 0: set limits.text.area.count_max " ++
+                "to the most TextAreas rendered at once (frame {d})", .{self.frame_number});
+        }
+        return &self.areas;
+    }
+
     pub fn node(self: *Window, index: u32) *Node {
         assert(index < self.node_count);
         return &self.nodes[index];
@@ -415,6 +428,7 @@ pub noinline fn initInPlace(self: *Window, gpa: std.mem.Allocator, options: *con
     errdefer deinitRuntimeStorage(self, gpa);
 
     self.store.registerPool(self.inputs.entityPool());
+    if (self.areas_reserved) self.store.registerPool(self.areas.entityPool());
     self.resources.text_system.useRunAllocator(self.text_scratch_allocator.allocator());
     self.cx = .{ .window = self };
     self.presenter = null;
@@ -544,6 +558,16 @@ fn initRuntimeStorage(self: *Window, gpa: std.mem.Allocator, limits: *const Reso
         .undo_depth_max = input.undo_depth_max,
     });
     errdefer self.inputs.deinit(gpa);
+    const area = limits.text.area;
+    self.areas_reserved = area.count_max > 0;
+    if (self.areas_reserved) {
+        try self.areas.initInPlace(gpa, .{
+            .count = area.count_max,
+            .bytes_max = area.bytes_max,
+            .undo_depth_max = area.undo_depth_max,
+        });
+    }
+    errdefer if (self.areas_reserved) self.areas.deinit(gpa);
     // One clipboard buffer for copy and paste, as large as the largest kind
     // that has engines (decision 10).
     self.clipboard_bytes = try gpa.alloc(u8, clipboardBytes(&limits.text));
@@ -579,6 +603,7 @@ fn deinitRuntimeStorage(self: *Window, gpa: std.mem.Allocator) void {
     self.scene.deinit();
     gpa.destroy(self.scene);
     gpa.free(self.clipboard_bytes);
+    if (self.areas_reserved) self.areas.deinit(gpa);
     self.inputs.deinit(gpa);
     self.retained.deinit(gpa);
     self.completions.deinit(gpa);
