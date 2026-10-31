@@ -183,11 +183,9 @@ pub const MacBridge = struct {
             std.debug.assert(elem.fingerprint.isValid());
             const value_hash = valueHash(elem);
             const value_changed = if (self.value_hash) |previous| previous != value_hash else false;
-            var moved_from: ?TextSelection = null;
+            var selection_moved = false;
             if (self.selection) |previous| {
-                if (elem.selection) |current| {
-                    if (!std.meta.eql(previous, current)) moved_from = previous;
-                }
+                if (elem.selection) |current| selection_moved = !std.meta.eql(previous, current);
             }
             self.value_hash = value_hash;
             self.selection = elem.selection;
@@ -195,13 +193,8 @@ pub const MacBridge = struct {
                 setAccessibilitySelectedTextRange(ns, selectedRange(elem));
             }
             if (value_changed) postNotification(ns, NSAccessibilityValueChangedNotification);
-            const previous = moved_from orelse return;
-            if (value_changed) {
-                // An edit moved the caret; VoiceOver echoes it from the value.
+            if (selection_moved) {
                 postNotification(ns, NSAccessibilitySelectedTextChangedNotification);
-            } else {
-                const text = elem.value orelse "";
-                postSelectionMove(ns, selectionMove(previous, elem.selection.?, text));
             }
         }
 
@@ -897,186 +890,6 @@ fn textRangeForIndex(self: objc.c.id, _: objc.c.SEL, index: c_long) callconv(.c)
     return textClamp(.{ .location = location, .length = 1 }, textLength(self));
 }
 
-/// How a selection change reads to VoiceOver, in the `AXTextStateChangeType`,
-/// `AXTextSelectionDirection`, and `AXTextSelectionGranularity` values WebKit
-/// and Chromium post. Without them VoiceOver stays silent on caret moves in an
-/// element that is not an NSTextView.
-const SelectionMove = struct {
-    kind: Kind,
-    direction: Direction,
-    granularity: Granularity,
-
-    const Kind = enum(u8) { move = 2, extend = 3 };
-    const Direction = enum(u8) {
-        unknown = 0,
-        beginning = 1,
-        end = 2,
-        previous = 3,
-        next = 4,
-        discontiguous = 5,
-    };
-    const Granularity = enum(u8) { unknown = 0, character = 1, word = 2, line = 3 };
-};
-
-/// Infer the move from the selections before and after, since the bridge
-/// sees frames, not keys. One scalar is a character move; a longer move to
-/// either end of the one-line field is a line move (Home, End, Cmd+arrow);
-/// any other is a word move (Option+arrow). Collapsing a selection, or
-/// moving both ends, is discontiguous (a click).
-fn selectionMove(previous: TextSelection, current: TextSelection, text: []const u8) SelectionMove {
-    std.debug.assert(previous.start <= previous.end);
-    std.debug.assert(current.end <= text.len);
-    const kind: SelectionMove.Kind = if (current.start == current.end) .move else .extend;
-    const discontiguous: SelectionMove = .{
-        .kind = kind,
-        .direction = .discontiguous,
-        .granularity = .unknown,
-    };
-    var from: u32 = undefined;
-    var to: u32 = undefined;
-    if (previous.start == previous.end) {
-        if (current.start == previous.start) {
-            from = previous.end;
-            to = current.end;
-        } else {
-            from = previous.start;
-            to = current.start;
-        }
-    } else {
-        if (kind == .move) return discontiguous;
-        if (current.start == previous.start) {
-            from = previous.end;
-            to = current.end;
-        } else if (current.end == previous.end) {
-            from = previous.start;
-            to = current.start;
-        } else {
-            return discontiguous;
-        }
-    }
-    return spanMove(kind, from, to, text);
-}
-
-/// Classify a move of one selection end from `from` to `to`.
-fn spanMove(kind: SelectionMove.Kind, from: u32, to: u32, text: []const u8) SelectionMove {
-    std.debug.assert(from != to);
-    std.debug.assert(@max(from, to) <= text.len);
-    const forward = to > from;
-    const span = text[@min(from, to)..@max(from, to)];
-    const direction: SelectionMove.Direction = if (forward) .next else .previous;
-    if (scalarCount(span) == 1) {
-        return .{ .kind = kind, .direction = direction, .granularity = .character };
-    }
-    if (to == 0) return .{ .kind = kind, .direction = .beginning, .granularity = .line };
-    if (to == text.len) return .{ .kind = kind, .direction = .end, .granularity = .line };
-    return .{ .kind = kind, .direction = direction, .granularity = .word };
-}
-
-/// Unicode scalars in UTF-8 `text`: its lead bytes.
-fn scalarCount(text: []const u8) u32 {
-    std.debug.assert(text.len <= std.math.maxInt(u32));
-    var count: u32 = 0;
-    for (text) |byte| {
-        if (byte & 0xC0 != 0x80) count += 1;
-    }
-    return count;
-}
-
-/// `AXSelectedTextChanged` with the move's userInfo, as WebKit posts it.
-fn postSelectionMove(elem: objc.Object, move: SelectionMove) void {
-    std.debug.assert(elem.value != null);
-    const NSNumber = objc.getClass("NSNumber").?;
-    const NSDictionary = objc.getClass("NSDictionary").?;
-    const keys = [_]objc.c.id{
-        (createNSString("AXTextStateChangeType") orelse return).value,
-        (createNSString("AXTextSelectionDirection") orelse return).value,
-        (createNSString("AXTextSelectionGranularity") orelse return).value,
-        (createNSString("AXTextChangeElement") orelse return).value,
-    };
-    const values = [_]objc.c.id{
-        NSNumber.msgSend(objc.c.id, "numberWithInt:", .{@as(c_int, @backingInt(move.kind))}),
-        NSNumber.msgSend(objc.c.id, "numberWithInt:", .{@as(c_int, @backingInt(move.direction))}),
-        NSNumber.msgSend(objc.c.id, "numberWithInt:", .{
-            @as(c_int, @backingInt(move.granularity)),
-        }),
-        elem.value,
-    };
-    const info: objc.c.id = NSDictionary.msgSend(
-        objc.c.id,
-        "dictionaryWithObjects:forKeys:count:",
-        .{ &values, &keys, @as(c_ulong, keys.len) },
-    );
-    std.debug.assert(info != null);
-    const post = @extern(*const fn (objc.c.id, objc.c.id, objc.c.id) callconv(.c) void, .{
-        .name = "NSAccessibilityPostNotificationWithUserInfo",
-    });
-    post(elem.value, NSAccessibilitySelectedTextChangedNotification, info);
-}
-
-test "selectionMove infers how the caret moved" {
-    // Goal: VoiceOver reads a character, word, or line for the matching key.
-    // Methodology: the selections each TextInput key produces in "ab cé"
-    // ("é" is two bytes, one scalar), against the move a reader expects.
-    const text = "ab c\u{e9}";
-    const Case = struct { from: TextSelection, to: TextSelection, expected: SelectionMove };
-    const cases = [_]Case{
-        // Left over "é" is one character back, though two bytes.
-        .{ .from = .{ .start = 6, .end = 6 }, .to = .{ .start = 4, .end = 4 }, .expected = .{
-            .kind = .move,
-            .direction = .previous,
-            .granularity = .character,
-        } },
-        .{ .from = .{ .start = 0, .end = 0 }, .to = .{ .start = 1, .end = 1 }, .expected = .{
-            .kind = .move,
-            .direction = .next,
-            .granularity = .character,
-        } },
-        // Option+Left from the end stops at the word start.
-        .{ .from = .{ .start = 6, .end = 6 }, .to = .{ .start = 3, .end = 3 }, .expected = .{
-            .kind = .move,
-            .direction = .previous,
-            .granularity = .word,
-        } },
-        .{ .from = .{ .start = 4, .end = 4 }, .to = .{ .start = 0, .end = 0 }, .expected = .{
-            .kind = .move,
-            .direction = .beginning,
-            .granularity = .line,
-        } },
-        .{ .from = .{ .start = 0, .end = 0 }, .to = .{ .start = 6, .end = 6 }, .expected = .{
-            .kind = .move,
-            .direction = .end,
-            .granularity = .line,
-        } },
-        // Shift+Left extends from the caret; a second keeps the anchor.
-        .{ .from = .{ .start = 6, .end = 6 }, .to = .{ .start = 4, .end = 6 }, .expected = .{
-            .kind = .extend,
-            .direction = .previous,
-            .granularity = .character,
-        } },
-        .{ .from = .{ .start = 4, .end = 6 }, .to = .{ .start = 3, .end = 6 }, .expected = .{
-            .kind = .extend,
-            .direction = .previous,
-            .granularity = .character,
-        } },
-        // Collapsing a selection, or selecting elsewhere, has no direction.
-        .{ .from = .{ .start = 3, .end = 6 }, .to = .{ .start = 3, .end = 3 }, .expected = .{
-            .kind = .move,
-            .direction = .discontiguous,
-            .granularity = .unknown,
-        } },
-        .{ .from = .{ .start = 0, .end = 1 }, .to = .{ .start = 3, .end = 6 }, .expected = .{
-            .kind = .extend,
-            .direction = .discontiguous,
-            .granularity = .unknown,
-        } },
-    };
-    for (cases) |case| {
-        const actual = selectionMove(case.from, case.to, text);
-        try std.testing.expectEqual(case.expected.kind, actual.kind);
-        try std.testing.expectEqual(case.expected.direction, actual.direction);
-        try std.testing.expectEqual(case.expected.granularity, actual.granularity);
-    }
-}
 fn postAnnouncement(root: objc.Object, message: []const u8, live: types.Live) void {
     std.debug.assert(root.value != null);
     std.debug.assert(message.len <= 65535);
