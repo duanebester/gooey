@@ -232,6 +232,11 @@ pub const LinuxPlatform = struct {
     touch: ?*wayland.Touch = null,
     text_input_manager: ?*wayland.ZwpTextInputManagerV3 = null,
     text_input: ?*wayland.ZwpTextInputV3 = null,
+    /// Enable text-input-v3 whenever the keyboard enters, as the 0.3.1
+    /// windows need. The core host clears it and enables the IME only while
+    /// a text field is focused, so keys typed with no field focused never
+    /// start a composition that nothing receives.
+    text_input_follows_keyboard: bool = true,
     viewporter: ?*wayland.WpViewporter = null,
     /// Shared-memory allocator for CPU-rendered frames. Bound on every build
     /// because it is a core global, but only `wayland_cpu` windows use it.
@@ -1745,10 +1750,7 @@ pub const LinuxPlatform = struct {
         }
 
         // Enable text input for IME when keyboard focus enters
-        if (self.text_input) |ti| {
-            wayland.zwpTextInputV3Enable(ti);
-            wayland.zwpTextInputV3Commit(ti);
-        }
+        if (self.text_input_follows_keyboard) self.enableTextInput();
     }
 
     fn keyboardLeave(
@@ -1768,10 +1770,7 @@ pub const LinuxPlatform = struct {
         }
 
         // Disable text input when keyboard focus leaves
-        if (self.text_input) |ti| {
-            wayland.zwpTextInputV3Disable(ti);
-            wayland.zwpTextInputV3Commit(ti);
-        }
+        if (self.text_input_follows_keyboard) self.disableTextInput();
     }
 
     fn keyboardKeymap(
