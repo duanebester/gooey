@@ -71,7 +71,7 @@ comptime {
 const InputEvent = input.InputEvent;
 
 /// Convert raw scroll event to InputEvent
-fn toInputEvent(raw: RawScrollEvent) InputEvent {
+pub fn toInputEvent(raw: RawScrollEvent) InputEvent {
     return .{
         .scroll = .{
             .position = .{ .x = raw.position_x, .y = raw.position_y },

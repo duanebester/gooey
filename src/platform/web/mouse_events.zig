@@ -127,7 +127,7 @@ const InputEvent = input.InputEvent;
 const MouseEvent = input.MouseEvent;
 
 /// Convert raw mouse event to InputEvent
-fn toInputEvent(raw: RawMouseEvent) InputEvent {
+pub fn toInputEvent(raw: RawMouseEvent) InputEvent {
     const mouse_event = MouseEvent{
         .position = .{ .x = raw.position_x, .y = raw.position_y },
         .button = raw.button.toInput(),

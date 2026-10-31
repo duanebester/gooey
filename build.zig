@@ -2057,6 +2057,20 @@ fn addWasmBuilds(b: *std.Build) void {
         .output_dir = "web/counter",
         .copy_showcase_assets = false,
     });
+    addWasmExample(b, gooey_module, components_module, wasm_target, .{
+        .step_name = "wasm-core-counter",
+        .description = "Build the 0.4.0 core counter for web",
+        .source = "src/examples/core_counter.zig",
+        .output_dir = "web/core-counter",
+        .copy_showcase_assets = false,
+    });
+    addWasmExample(b, gooey_module, components_module, wasm_target, .{
+        .step_name = "wasm-core-todo",
+        .description = "Build the 0.4.0 core todo for web",
+        .source = "src/examples/core_todo.zig",
+        .output_dir = "web/core-todo",
+        .copy_showcase_assets = false,
+    });
 }
 
 fn addWasmShaderImports(b: *std.Build, module: *std.Build.Module) void {
@@ -2110,7 +2124,10 @@ fn addWasmExample(
             .root_source_file = b.path("src/platform/web/entry.zig"),
             .target = wasm_target,
             .optimize = .small,
-            .imports = &.{.{ .name = "application", .module = application_module }},
+            .imports = &.{
+                .{ .name = "application", .module = application_module },
+                .{ .name = "gooey", .module = gooey_module },
+            },
         }),
     });
     executable.entry = .disabled;
