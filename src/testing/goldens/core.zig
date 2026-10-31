@@ -8,8 +8,8 @@
 
 const std = @import("std");
 const gooey = @import("gooey");
-const counter = @import("core_counter_example");
-const todo = @import("core_todo_example");
+const counter = @import("counter_example");
+const todo = @import("todo_example");
 const trace_mod = @import("trace.zig");
 const traces = @import("traces.zig");
 

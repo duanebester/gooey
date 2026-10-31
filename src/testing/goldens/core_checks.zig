@@ -6,8 +6,8 @@
 
 const std = @import("std");
 const gooey = @import("gooey");
-const counter = @import("core_counter_example");
-const todo = @import("core_todo_example");
+const counter = @import("counter_example");
+const todo = @import("todo_example");
 const components = @import("gooey-components");
 const core_driver = @import("core.zig");
 const trace_mod = @import("trace.zig");

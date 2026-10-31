@@ -6,7 +6,6 @@
 
 const std = @import("std");
 const gooey = @import("gooey");
-const legacy = @import("legacy.zig");
 const core = @import("core.zig");
 const goldens_test = @import("goldens_test.zig");
 
@@ -18,8 +17,6 @@ const Capture = *const fn (std.mem.Allocator, std.Io, *TextBuffer) anyerror!void
 const Golden = struct { file_name: []const u8, capture: Capture };
 
 const goldens = [_]Golden{
-    .{ .file_name = "legacy_counter.txt", .capture = legacy.captureCounter },
-    .{ .file_name = "legacy_todo.txt", .capture = legacy.captureTodo },
     .{ .file_name = "core_counter.txt", .capture = core.captureCounter },
     .{ .file_name = "core_todo.txt", .capture = core.captureTodo },
 };

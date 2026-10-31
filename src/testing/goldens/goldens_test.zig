@@ -1,14 +1,14 @@
 //! Golden checks: replay each trace and compare with the checked-in text.
 //!
 //! The `legacy_*.txt` files were captured from the 0.3.1 runtime before the
-//! port to the 0.4.0 core. They are the oracle the core's own run is checked
-//! against. This binary is built with the synthetic text backend, so the
-//! goldens match on every host. Recapture with `zig build goldens`.
+//! port to the 0.4.0 core, and are kept fixed now that the 0.3.1 examples are
+//! gone. They are the oracle the core's own run is checked against. This
+//! binary is built with the synthetic text backend, so the goldens match on
+//! every host. Recapture the core goldens with `zig build goldens`.
 
 const std = @import("std");
 const gooey = @import("gooey");
 const trace = @import("trace.zig");
-const legacy = @import("legacy.zig");
 const core = @import("core.zig");
 const compare = @import("compare.zig");
 
@@ -29,14 +29,6 @@ fn expectGolden(name: []const u8, expected: []const u8, capture: Capture) !void 
     var out = TextBuffer.init(storage, name);
     try capture(std.testing.allocator, std.testing.io, &out);
     try std.testing.expect(trace.matches(name, expected, out.slice()));
-}
-
-test "legacy counter matches its golden" {
-    try expectGolden("legacy_counter", @embedFile("legacy_counter.txt"), legacy.captureCounter);
-}
-
-test "legacy todo matches its golden" {
-    try expectGolden("legacy_todo", @embedFile("legacy_todo.txt"), legacy.captureTodo);
 }
 
 test "core counter matches its golden" {
@@ -88,7 +80,7 @@ test "a replayed trace is byte-identical" {
     defer std.testing.allocator.free(second);
     var out_first = TextBuffer.init(first, "first");
     var out_second = TextBuffer.init(second, "second");
-    try legacy.captureTodo(std.testing.allocator, std.testing.io, &out_first);
-    try legacy.captureTodo(std.testing.allocator, std.testing.io, &out_second);
+    try core.captureTodo(std.testing.allocator, std.testing.io, &out_first);
+    try core.captureTodo(std.testing.allocator, std.testing.io, &out_second);
     try std.testing.expectEqualStrings(out_first.slice(), out_second.slice());
 }

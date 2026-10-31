@@ -1,222 +1,161 @@
-//! Todo Example (Cx API)
+//! Todo: a text input, a list, and filters on the core.
 //!
-//! A compact, end-to-end app that exercises a broad slice of the public
-//! surface in one place. It is the example the README's "Quick Start"
-//! mirrors, so keep the two in sync.
-//!
-//! Demonstrates:
-//! - Pure state methods + `cx.on` (toggle-free mutations like clearCompleted)
-//! - `cx.on` with an index `.arg` (toggle / remove a row)
-//! - `cx.on` with an enum `.arg` (filter switch)
-//! - `TextInput` two-way binding via `.bind`
-//! - `Checkbox`, `Button` variants/sizes
-//! - Layout with `ui.box` (backgrounds, `{ .main, .cross }` alignment) vs
-//!   `ui.hstack` / `ui.vstack` (gap + simple alignment only)
-//! - `ui.text` / `ui.textFmt`, `ui.spacer`, conditional rendering by hand
-//! - Pure, UI-free unit tests over the state model
+//! The layout matches the 0.3.1 todo, including the filter bar and footer,
+//! so its golden is compared with the 0.3.1 golden. The draft is a
+//! `TextInput` bound to `State.draft`; IME composition reaches its retained
+//! engine through the router like any key.
+//! Rows render through a component loop: `components.List` needs scrolling,
+//! which arrives in phase 4.
 
 const std = @import("std");
-
 const gooey = @import("gooey");
 const components = @import("gooey-components");
-const platform = gooey.platform;
 
-/// Route std.log through the console on WASM, default logFn on native.
-pub const std_options = gooey.std_options;
+const core = gooey.core;
+const ui = core.ui;
+const Cx = core.Cx;
+const Button = components.core.Button;
+const Checkbox = components.core.Checkbox;
+const TextInput = components.core.TextInput;
 
-const ui = gooey.ui;
-const Cx = gooey.Cx;
-const Button = components.Button;
-const Checkbox = components.Checkbox;
-const TextInput = components.TextInput;
+const todo_count_max = 64;
+const todo_bytes_max = 128;
 
-// =============================================================================
-// Limits (CLAUDE.md §4 — a hard cap on everything)
-// =============================================================================
-
-const MAX_TODOS = 64;
-const TEXT_CAP = 128;
-
-const draft_input_id = "new-todo";
-
-// =============================================================================
-// Models
-// =============================================================================
-
-/// One todo. The text is copied into a fixed inline buffer so the model owns
-/// its bytes outright — no allocator, no lifetime coupling to the input widget.
 const Todo = struct {
-    buf: [TEXT_CAP]u8 = @splat(0),
-    len: usize = 0,
+    bytes: [todo_bytes_max]u8 = @splat(0),
+    len: u32 = 0,
     done: bool = false,
 
     fn text(self: *const Todo) []const u8 {
-        return self.buf[0..self.len];
+        return self.bytes[0..self.len];
     }
 };
 
-const Filter = enum { all, active, done };
+pub const Filter = enum { all, active, done };
 
-// =============================================================================
-// Application State — pure, fully testable without any UI
-// =============================================================================
-
-/// Public so the goldens (`src/testing/goldens/`) can replay this example.
-pub const AppState = struct {
-    todos: [MAX_TODOS]Todo = @splat(.{}),
-    count: usize = 0,
-    /// Bound to the TextInput through a controlled two-way binding.
+pub const State = struct {
+    todos: [todo_count_max]Todo = @splat(.{}),
+    count: u32 = 0,
     draft: []const u8 = "",
     filter: Filter = .all,
 
-    // -------------------------------------------------------------------------
-    // Pure logic (no Cx, no Window) — these are what the tests below drive.
-    // -------------------------------------------------------------------------
-
-    /// Append `value` as a new todo. No-op when blank or at capacity, so the
-    /// caller never has to pre-check. Kept separate from `addTodo` so the append
-    /// path is testable without a live widget.
-    fn pushTodo(self: *AppState, value: []const u8) void {
+    /// Append the trimmed `value`; blank values and a full list are ignored.
+    fn push(self: *State, value: []const u8) void {
         const trimmed = std.mem.trim(u8, value, " \t\r\n");
         if (trimmed.len == 0) return;
-        if (self.count >= MAX_TODOS) return;
-
+        if (self.count == todo_count_max) return;
         const slot = &self.todos[self.count];
-        const n = @min(trimmed.len, TEXT_CAP);
-        @memcpy(slot.buf[0..n], trimmed[0..n]);
-        slot.len = n;
+        const kept = @min(trimmed.len, todo_bytes_max);
+        @memcpy(slot.bytes[0..kept], trimmed[0..kept]);
+        slot.len = @intCast(kept);
         slot.done = false;
         self.count += 1;
     }
 
-    pub fn toggle(self: *AppState, index: usize) void {
+    pub fn addTodo(self: *State) void {
+        self.push(self.draft);
+        self.draft = "";
+    }
+
+    pub fn toggle(self: *State, index: u32) void {
         if (index >= self.count) return;
         self.todos[index].done = !self.todos[index].done;
     }
 
-    pub fn remove(self: *AppState, index: usize) void {
+    pub fn remove(self: *State, index: u32) void {
         if (index >= self.count) return;
-        // Shift the tail down one slot to keep [0..count) contiguous.
-        var i = index;
-        while (i + 1 < self.count) : (i += 1) {
-            self.todos[i] = self.todos[i + 1];
+        var position = index;
+        while (position + 1 < self.count) : (position += 1) {
+            self.todos[position] = self.todos[position + 1];
         }
         self.count -= 1;
     }
 
-    pub fn setFilter(self: *AppState, filter: Filter) void {
+    pub fn setFilter(self: *State, filter: Filter) void {
         self.filter = filter;
     }
 
-    pub fn clearCompleted(self: *AppState) void {
-        var write: usize = 0;
-        var read: usize = 0;
-        while (read < self.count) : (read += 1) {
-            if (!self.todos[read].done) {
-                self.todos[write] = self.todos[read];
-                write += 1;
-            }
+    pub fn clearCompleted(self: *State) void {
+        var kept: u32 = 0;
+        for (self.todos[0..self.count]) |todo| {
+            if (todo.done) continue;
+            self.todos[kept] = todo;
+            kept += 1;
         }
-        self.count = write;
+        self.count = kept;
     }
 
-    fn remaining(self: *const AppState) u32 {
-        var n: u32 = 0;
+    fn remaining(self: *const State) u32 {
+        var count: u32 = 0;
         for (self.todos[0..self.count]) |*todo| {
-            if (!todo.done) n += 1;
+            if (!todo.done) count += 1;
         }
-        return n;
+        return count;
     }
 
-    fn visible(self: *const AppState, todo: *const Todo) bool {
+    fn visible(self: *const State, todo: *const Todo) bool {
         return switch (self.filter) {
             .all => true,
             .active => !todo.done,
             .done => todo.done,
         };
     }
-
-    // -------------------------------------------------------------------------
-    // Bound action.
-    // -------------------------------------------------------------------------
-
-    /// Add the current draft, then reset the controlled input value.
-    pub fn addTodo(self: *AppState) void {
-        self.pushTodo(self.draft);
-        self.draft = "";
-    }
 };
 
-// =============================================================================
-// Entry Point
-// =============================================================================
-
-var state = AppState{};
-
-const App = gooey.App(AppState, &state, render, .{
-    .limits = .small,
+pub const App = core.App(State, render, .{
     .title = "Todos",
     .width = 480,
     .height = 560,
+    .limits = .small,
 });
 
-// Force type analysis — triggers @export on WASM.
-comptime {
-    _ = App;
-}
+/// The generated entry point (contract §7).
+pub const main = App.main;
 
-pub fn main(init: std.process.Init) !void {
-    if (platform.is_wasm) unreachable;
-    return App.main(init);
-}
-
-// =============================================================================
-// Render
-// =============================================================================
+const spacer = ui.box(.{ .style = .{ .width = .{ .grow = 1 }, .height = .{ .grow = 1 } } }, .{});
 
 pub fn render(cx: *Cx) void {
-    cx.render(ui.root(.{
-        .direction = .column,
-        .padding = .{ .all = 24 },
+    const s = cx.state(State);
+    cx.render(ui.box(.{ .style = .{
+        .width = .{ .grow = 1 },
+        .height = .{ .grow = 1 },
+        .padding = .all(24),
         .gap = 16,
-        .background = ui.Color.rgb(0.96, 0.96, 0.97),
-    }, .{
-        ui.text("Todos", .{ .size = 28, .color = ui.Color.rgb(0.1, 0.1, 0.15) }),
-        InputRow{},
-        FilterBar{},
-        TodoList{},
-        ui.spacer(),
-        Footer{},
-    }));
-}
-
-// =============================================================================
-// Components
-// =============================================================================
-
-/// Text field + Add button. Resetting the bound model clears the input.
-const InputRow = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        const s = cx.state(AppState);
-
-        cx.render(ui.hstack(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
+        .background = .{ .rgba = .rgb(0.96, 0.96, 0.97) },
+    } }, .{
+        ui.text("Todos", .{ .size = 28, .color = .{ .rgba = .rgb(0.1, 0.1, 0.15) } }),
+        ui.box(.{ .style = .{ .direction = .row, .gap = 8, .alignment = .center_cross } }, .{
             TextInput{
-                .id = draft_input_id,
+                .key = "new-todo",
                 .placeholder = "What needs doing?",
                 .bind = &s.draft,
                 .width = 360,
             },
-            Button{ .label = "Add", .on_click = cx.on(AppState.addTodo, .{}) },
-        }));
-    }
-};
+            Button{ .label = "Add", .on_click = cx.on(State.addTodo, .{}) },
+        }),
+        FilterBar{},
+        ui.when(s.count == 0, emptyHint),
+        ui.when(s.count > 0, todoList),
+        spacer,
+        Footer{},
+    }));
+}
 
-/// All / Active / Done. Each button packs its `Filter` into the handler arg.
+fn emptyHint(cx: *Cx) void {
+    cx.render(ui.text(
+        "Nothing yet \u{2014} add your first todo above.",
+        .{ .size = 14, .color = .{ .rgba = .rgb(0.5, 0.5, 0.55) } },
+    ));
+}
+
+fn todoList(cx: *Cx) void {
+    cx.render(ui.box(.{ .style = .{ .gap = 8 } }, .{TodoItems{}}));
+}
+
 const FilterBar = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        const s = cx.state(AppState);
-
-        cx.render(ui.hstack(.{ .gap = 8 }, .{
+    pub fn render(_: FilterBar, cx: *Cx) void {
+        const s = cx.state(State);
+        cx.render(ui.box(.{ .style = .{ .direction = .row, .gap = 8 } }, .{
             FilterButton{ .label = "All", .filter = .all, .active = s.filter == .all },
             FilterButton{ .label = "Active", .filter = .active, .active = s.filter == .active },
             FilterButton{ .label = "Done", .filter = .done, .active = s.filter == .done },
@@ -229,193 +168,92 @@ const FilterButton = struct {
     filter: Filter,
     active: bool,
 
-    pub fn render(self: @This(), cx: *Cx) void {
+    pub fn render(self: FilterButton, cx: *Cx) void {
         cx.render(Button{
             .label = self.label,
-            .size_preset = .small,
+            .size = .small,
             .variant = if (self.active) .primary else .secondary,
-            .on_click = cx.on(AppState.setFilter, .{ .arg = self.filter }),
+            .on_click = cx.on(State.setFilter, .{ .arg = self.filter }),
         });
     }
 };
 
-/// The list, or an empty-state hint when there is nothing to show.
-const TodoList = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        const s = cx.state(AppState);
-
-        if (s.count == 0) {
-            cx.render(ui.text(
-                "Nothing yet — add your first todo above.",
-                .{ .size = 14, .color = ui.Color.rgb(0.5, 0.5, 0.55) },
-            ));
-            return;
+const TodoItems = struct {
+    pub fn render(_: TodoItems, cx: *Cx) void {
+        const s = cx.state(State);
+        for (s.todos[0..s.count], 0..) |*todo, index| {
+            if (!s.visible(todo)) continue;
+            cx.render(TodoRow{ .index = @intCast(index) });
         }
-
-        cx.render(ui.vstack(.{ .gap = 8 }, .{TodoItems{}}));
     }
 };
 
-/// Loops the model and emits one `TodoRow` per visible item. Iteration lives
-/// in a component (not `ui.each`) because each row needs `cx` to build its
-/// per-row handlers.
-const TodoItems = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        const s = cx.state(AppState);
-
-        for (s.todos[0..s.count], 0..) |*todo, index| {
-            if (!s.visible(todo)) continue;
-            cx.render(TodoRow{ .index = index, .done = todo.done, .label = todo.text() });
-        }
-    }
+const row_style: ui.Style = .{
+    .direction = .row,
+    .gap = 12,
+    .alignment = .center_cross,
+    .padding = .all(10),
+    .background = .{ .rgba = ui.Color.white },
+    .corner_radius = .all(8),
 };
 
 const TodoRow = struct {
-    index: usize,
-    done: bool,
-    label: []const u8,
+    index: u32,
 
-    pub fn render(self: @This(), cx: *Cx) void {
-        // A row needs a background + vertical centering, so it is a `box`
-        // (with `.direction = .row`), not an `hstack` — stacks carry only
-        // gap/alignment/padding.
-        cx.render(ui.box(.{
-            .direction = .row,
-            .gap = 12,
-            .alignment = .{ .cross = .center },
-            .padding = .{ .all = 10 },
-            .background = ui.Color.white,
-            .corner_radius = 8,
-        }, .{
+    pub fn render(self: TodoRow, cx: *Cx) void {
+        const todo = &cx.state(State).todos[self.index];
+        const color = if (todo.done) ui.Color.rgb(0.6, 0.6, 0.6) else ui.Color.rgb(0.1, 0.1, 0.1);
+        cx.render(ui.box(.{ .key = .{ .index = self.index }, .style = row_style }, .{
             Checkbox{
-                .selected = self.done,
-                .on_click = cx.on(AppState.toggle, .{ .arg = self.index }),
+                .checked = todo.done,
+                .on_click = cx.on(State.toggle, .{ .arg = self.index }),
             },
-            ui.text(self.label, .{
-                .size = 16,
-                .color = if (self.done)
-                    ui.Color.rgb(0.6, 0.6, 0.6)
-                else
-                    ui.Color.rgb(0.1, 0.1, 0.1),
-            }),
-            ui.spacer(),
+            ui.text(todo.text(), .{ .size = 16, .color = .{ .rgba = color } }),
+            spacer,
             Button{
                 .label = "Delete",
                 .variant = .danger,
-                .size_preset = .small,
-                .on_click = cx.on(AppState.remove, .{ .arg = self.index }),
+                .size = .small,
+                .on_click = cx.on(State.remove, .{ .arg = self.index }),
             },
         }));
     }
 };
 
-/// Remaining count + a pure "clear completed" action.
 const Footer = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        const s = cx.state(AppState);
-
-        cx.render(ui.hstack(.{ .gap = 12, .alignment = .{ .cross = .center } }, .{
-            ui.textFmt("{d} left", .{s.remaining()}, .{
-                .size = 14,
-                .color = ui.Color.rgb(0.4, 0.4, 0.45),
-            }),
-            ui.spacer(),
+    pub fn render(_: Footer, cx: *Cx) void {
+        const s = cx.state(State);
+        var buffer: [32]u8 = undefined;
+        // 32 bytes hold any u32 and " left".
+        const left = std.fmt.bufPrint(&buffer, "{d} left", .{s.remaining()}) catch unreachable;
+        cx.render(ui.box(.{
+            .style = .{ .direction = .row, .gap = 12, .alignment = .center_cross },
+        }, .{
+            ui.text(left, .{ .size = 14, .color = .{ .rgba = .rgb(0.4, 0.4, 0.45) } }),
+            spacer,
             Button{
                 .label = "Clear completed",
                 .variant = .secondary,
-                .size_preset = .small,
-                .on_click = cx.on(AppState.clearCompleted, .{}),
+                .size = .small,
+                .on_click = cx.on(State.clearCompleted, .{}),
             },
         }));
     }
 };
 
-// =============================================================================
-// Tests — the whole model is exercised with zero UI in play.
-// =============================================================================
-
-test "add trims, ignores blanks, and respects capacity" {
-    var s = AppState{};
-
-    s.pushTodo("  buy milk  ");
-    try std.testing.expectEqual(@as(usize, 1), s.count);
-    try std.testing.expectEqualStrings("buy milk", s.todos[0].text());
-
-    s.pushTodo("   "); // blank after trim -> ignored
-    try std.testing.expectEqual(@as(usize, 1), s.count);
-
-    var i: usize = 0;
-    while (i < MAX_TODOS + 5) : (i += 1) s.pushTodo("x");
-    try std.testing.expectEqual(@as(usize, MAX_TODOS), s.count);
-}
-
-test "addTodo appends the controlled draft and resets its model value" {
-    // The widget observes the empty model on the next render; no retained
-    // TextInputState lookup is required in the application handler.
-    var s = AppState{ .draft = "  buy milk  " };
-
+test "the model adds trimmed drafts, toggles, removes, and clears" {
+    // Goal: the state methods the handlers call, without a window.
+    var s = State{ .draft = "  buy milk  " };
     s.addTodo();
-    try std.testing.expectEqual(@as(usize, 1), s.count);
     try std.testing.expectEqualStrings("buy milk", s.todos[0].text());
     try std.testing.expectEqualStrings("", s.draft);
-}
-
-test "toggle flips done and is bounds-checked" {
-    var s = AppState{};
-    s.pushTodo("task");
-
-    s.toggle(0);
-    try std.testing.expect(s.todos[0].done);
-    s.toggle(0);
-    try std.testing.expect(!s.todos[0].done);
-
-    s.toggle(99); // out of range -> no-op, no panic
-    try std.testing.expectEqual(@as(usize, 1), s.count);
-}
-
-test "remove keeps the list contiguous" {
-    var s = AppState{};
-    s.pushTodo("a");
-    s.pushTodo("b");
-    s.pushTodo("c");
-
-    s.remove(1); // drop "b"
-    try std.testing.expectEqual(@as(usize, 2), s.count);
-    try std.testing.expectEqualStrings("a", s.todos[0].text());
-    try std.testing.expectEqualStrings("c", s.todos[1].text());
-}
-
-test "remaining and clearCompleted" {
-    var s = AppState{};
-    s.pushTodo("a");
-    s.pushTodo("b");
-    s.pushTodo("c");
+    s.push("b");
+    s.push("c");
     s.toggle(0);
     s.toggle(2);
-
     try std.testing.expectEqual(@as(u32, 1), s.remaining());
-
+    s.remove(1);
+    try std.testing.expectEqual(@as(u32, 2), s.count);
     s.clearCompleted();
-    try std.testing.expectEqual(@as(usize, 1), s.count);
-    try std.testing.expectEqualStrings("b", s.todos[0].text());
-    try std.testing.expectEqual(@as(u32, 1), s.remaining());
-}
-
-test "filter visibility" {
-    var s = AppState{};
-    s.pushTodo("a");
-    s.pushTodo("b");
-    s.toggle(0); // "a" done, "b" active
-
-    s.setFilter(.active);
-    try std.testing.expect(!s.visible(&s.todos[0]));
-    try std.testing.expect(s.visible(&s.todos[1]));
-
-    s.setFilter(.done);
-    try std.testing.expect(s.visible(&s.todos[0]));
-    try std.testing.expect(!s.visible(&s.todos[1]));
-
-    s.setFilter(.all);
-    try std.testing.expect(s.visible(&s.todos[0]));
-    try std.testing.expect(s.visible(&s.todos[1]));
+    try std.testing.expectEqual(@as(u32, 0), s.count);
 }

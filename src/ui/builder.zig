@@ -1366,7 +1366,7 @@ pub const Builder = struct {
     /// unrenderable type is rejected by name. Strings are the common mistake.
     ///
     /// Zig cannot test compile errors in-process. Checked by hand by adding
-    /// children to `examples/counter.zig` and building `wasm-counter`: a string
+    /// children to the 0.3.1 counter and building `wasm-counter`: a string
     /// literal, a `?[]const u8` holding a string, a `u32`, and a plain field-only
     /// struct each fail with this message; `null` compiles.
     fn nonRenderableChildMessage(comptime T: type) []const u8 {

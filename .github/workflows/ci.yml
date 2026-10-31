@@ -263,7 +263,7 @@ jobs:
             zig-cache-wasm-
 
       - name: Build browser examples
-        run: zig build wasm wasm-counter wasm-core-counter wasm-core-todo
+        run: zig build wasm wasm-counter wasm-todo
 
       - name: Upload browser examples
         uses: actions/upload-artifact@v6
