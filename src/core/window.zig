@@ -15,6 +15,7 @@
 //! layout, so `build.element_count_frame_max` is checked against it.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const id_mod = @import("id.zig");
 const records = @import("records.zig");
 const handler_mod = @import("handler.zig");
@@ -108,6 +109,72 @@ pub const Node = struct {
     // Paint.
     paint_fn: ?*const fn (data: *const anyopaque, painter: *anyopaque) void,
     paint_data: ?*const anyopaque,
+    // Clip and scroll (`Style.clip`, `Style.scroll`).
+    clip: bool,
+    scroll: ?retained_mod.Handle(ScrollState),
+};
+
+/// A scroll box's offset, retained by its key (contract §1), and what the
+/// last emit measured, so the router clamps a wheel step and the next build
+/// clamps a shrunk content without waiting for layout.
+pub const ScrollState = struct {
+    offset_x: f32,
+    offset_y: f32,
+    content_width: f32,
+    content_height: f32,
+    viewport_width: f32,
+    viewport_height: f32,
+    axes: element.Scroll,
+
+    pub fn init(self: *ScrollState) void {
+        self.* = .{
+            .offset_x = 0,
+            .offset_y = 0,
+            .content_width = 0,
+            .content_height = 0,
+            .viewport_width = 0,
+            .viewport_height = 0,
+            .axes = .{},
+        };
+    }
+
+    pub fn maxX(self: *const ScrollState) f32 {
+        if (!self.axes.x) return 0;
+        return @max(0, self.content_width - self.viewport_width);
+    }
+
+    pub fn maxY(self: *const ScrollState) f32 {
+        if (!self.axes.y) return 0;
+        return @max(0, self.content_height - self.viewport_height);
+    }
+
+    /// Keep the offset inside the last measured content. Returns whether
+    /// it moved.
+    pub fn clamp(self: *ScrollState) bool {
+        const x = std.math.clamp(self.offset_x, 0, self.maxX());
+        const y = std.math.clamp(self.offset_y, 0, self.maxY());
+        const moved = x != self.offset_x or y != self.offset_y;
+        self.offset_x = x;
+        self.offset_y = y;
+        assert(self.offset_y >= 0);
+        return moved;
+    }
+
+    /// Scroll by a wheel delta, as 0.3.1's scroll containers do: offsets
+    /// follow the delta, inverted on macOS (natural scrolling). Returns
+    /// whether the offset moved, so a box that cannot scroll lets the wheel
+    /// reach its ancestors.
+    pub fn wheel(self: *ScrollState, delta_x: f32, delta_y: f32) bool {
+        assert(std.math.isFinite(delta_x));
+        assert(std.math.isFinite(delta_y));
+        const direction: f32 = if (builtin.os.tag == .macos) -1 else 1;
+        const before_x = self.offset_x;
+        const before_y = self.offset_y;
+        if (self.maxX() > 0) self.offset_x += delta_x * direction;
+        if (self.maxY() > 0) self.offset_y += delta_y * direction;
+        _ = self.clamp();
+        return self.offset_x != before_x or self.offset_y != before_y;
+    }
 };
 
 /// A family name copied out of a handler's `Effects.setFont`, so the request

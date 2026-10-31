@@ -244,6 +244,151 @@ test "a CodeEditor indents with Tab, selects a line from its gutter, and scrolls
     try testing.expectApproxEqAbs(text_y + line_height, query.imeCursorRect().?.y, 0.001);
 }
 
+/// A scroll box holding a shorter scroll box and a filler, for the scroll
+/// check. The inner box shows 60 of its 90 px; the outer shows 150 of 260.
+const ScrollApp = core.App(struct {}, scrollRender, .{
+    .title = "Scroll",
+    .width = 300,
+    .height = 300,
+    .limits = core.ResourceLimits.small,
+});
+
+const scroll_row_height: f32 = 30;
+
+fn scrollRender(cx: *Cx) void {
+    const fixed = struct {
+        fn height(value: f32) ui.Style {
+            return .{ .width = .{ .fixed = 200 }, .height = .{ .fixed = value } };
+        }
+    };
+    var outer = fixed.height(150);
+    outer.scroll = .{};
+    var inner = fixed.height(60);
+    inner.scroll = .{};
+    cx.render(ui.box(.{ .key = .{ .name = "outer" }, .style = outer }, .{
+        ui.box(.{ .key = .{ .name = "inner" }, .style = inner }, .{ScrollRows{}}),
+        ui.box(.{ .style = fixed.height(200) }, .{}),
+    }));
+}
+
+const ScrollRows = struct {
+    pub fn render(_: ScrollRows, cx: *Cx) void {
+        for (0..3) |index| {
+            cx.render(ui.box(.{
+                .key = .{ .index = index },
+                .style = .{
+                    .width = .{ .fixed = 200 },
+                    .height = .{ .fixed = scroll_row_height },
+                    .background = .{ .rgba = ui.Color.white },
+                },
+            }, .{}));
+        }
+    }
+};
+
+/// The rendered frame's two scroll boxes and their retained offsets.
+const ScrollView = struct {
+    outer: *const core.internals.records.HitRecord,
+    inner: *const core.internals.records.HitRecord,
+    inner_index: u32,
+    outer_offset: f32,
+    inner_offset: f32,
+
+    fn read(window: *core.internals.window.Window) ScrollView {
+        const frame = window.rendered();
+        var outer: ?*const core.internals.records.HitRecord = null;
+        var inner_index: u32 = core.internals.records.index_none;
+        for (frame.hits[0..frame.hit_count], 0..) |*record, index| {
+            if (!record.scroll) continue;
+            if (record.parent == core.internals.records.index_none) {
+                outer = record;
+            } else {
+                inner_index = @intCast(index);
+            }
+        }
+        const inner = &frame.hits[inner_index];
+        const State = core.internals.window.ScrollState;
+        return .{
+            .outer = outer.?,
+            .inner = inner,
+            .inner_index = inner_index,
+            .outer_offset = window.retained.find(State, outer.?.id).?.offset_y,
+            .inner_offset = window.retained.find(State, inner.id).?.offset_y,
+        };
+    }
+};
+
+fn scrollWheel(app: *ScrollApp, now: *u64, x: f32, y: f32, down: f32) void {
+    // Offsets follow the delta, inverted on macOS (`ScrollState.wheel`).
+    const direction: f32 = if (@import("builtin").os.tag == .macos) -1 else 1;
+    app.window.queue.push(.{ .input = .{ .scroll = .{
+        .position = .{ .x = x, .y = y },
+        .delta = .{ .x = 0, .y = down * direction },
+        .modifiers = .{},
+    } } });
+    now.* += 1;
+    app.tick(now.*);
+}
+
+test "a scroll box clips its content, clamps its offset, and passes the wheel on at its end" {
+    // Goal: `Style.scroll` through the real router, layout, and emit.
+    // Methodology: wheel the inner box past its end, then again so the outer
+    // box takes it; wheel the outer past its start. The inner box's rows
+    // must hit only inside its clip, which leaves room for its scrollbar.
+    const app = try testing.allocator.create(ScrollApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    // The first emit measures the overflow, so the scrollbar's clip needs one
+    // more frame; after it the content is steady and nothing re-renders.
+    try testing.expect(app.window.render_requested);
+    now += 1;
+    app.tick(now);
+    try testing.expect(!app.window.render_requested);
+
+    var view = ScrollView.read(&app.window);
+    const inner_x = view.inner.bounds.x + 10;
+    const inner_y = view.inner.bounds.y + 10;
+    scrollWheel(app, &now, inner_x, inner_y, 20);
+    view = ScrollView.read(&app.window);
+    try testing.expectEqual(@as(f32, 20), view.inner_offset);
+    try testing.expectEqual(@as(f32, 0), view.outer_offset);
+    // The inner box moved 10 of the 50 to its end, so it keeps the wheel.
+    scrollWheel(app, &now, inner_x, inner_y, 50);
+    view = ScrollView.read(&app.window);
+    try testing.expectEqual(@as(f32, 30), view.inner_offset);
+    try testing.expectEqual(@as(f32, 0), view.outer_offset);
+
+    // Row 0 is scrolled out of the inner clip and row 1 fills its top half,
+    // 200 px wide less the 10 px scrollbar room.
+    const frame = app.window.rendered();
+    var rows: u32 = 0;
+    for (frame.hits[0..frame.hit_count]) |*record| {
+        if (record.parent != view.inner_index) continue;
+        rows += 1;
+        if (rows == 1) try testing.expectEqual(@as(f32, 0), record.bounds.height);
+        if (rows == 2) {
+            try testing.expectEqual(view.inner.bounds.y, record.bounds.y);
+            try testing.expectEqual(scroll_row_height, record.bounds.height);
+            try testing.expectEqual(@as(f32, 190), record.bounds.width);
+        }
+    }
+    try testing.expectEqual(@as(u32, 3), rows);
+
+    scrollWheel(app, &now, inner_x, inner_y, 50);
+    view = ScrollView.read(&app.window);
+    try testing.expectEqual(@as(f32, 30), view.inner_offset);
+    try testing.expectEqual(@as(f32, 50), view.outer_offset);
+
+    // Past the outer box's start, over the filler: it clamps to zero.
+    scrollWheel(app, &now, inner_x, view.outer.bounds.y + 140, -100);
+    view = ScrollView.read(&app.window);
+    try testing.expectEqual(@as(f32, 0), view.outer_offset);
+    try testing.expectEqual(@as(f32, 30), view.inner_offset);
+}
+
 /// An app whose button opens a file dialog, for the dialog check. Its first
 /// three clicks open a multiple selection; the fourth saves with a name it
 /// builds in its state.
