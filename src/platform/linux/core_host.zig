@@ -236,6 +236,10 @@ pub const Host = struct {
         self.window.setCloseCallback(onClose);
         self.core.presenter = .{ .context = self, .draw = draw };
         self.core.file_dialog = .{ .context = self, .open = openDialog };
+        // `syncIme` alone enables text-input-v3, while a field is focused.
+        // A keyboard enter during window creation may have enabled it.
+        self.window.platform.text_input_follows_keyboard = false;
+        self.window.disableIme();
         assert(self.window.core != null);
     }
 
