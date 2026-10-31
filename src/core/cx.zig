@@ -231,11 +231,36 @@ pub const Cx = struct {
         node.font_size = size;
         node.family = style.family;
         node.variant = variant;
+        const metrics = window.resources.text_system.getMetricsFor(style.family);
         window.layout.text(content, .{
             .font_id = style.family.fontId(variant),
             .font_size = size,
-            .wrap_mode = .none,
+            .line_height = lineHeightPercent(&metrics, style.line_height orelse 100),
+            .wrap_mode = switch (style.wrap) {
+                .none => .none,
+                .words => .words,
+                .newlines => .newlines,
+            },
+            .alignment = switch (style.alignment) {
+                .left => .left,
+                .center => .center,
+                .right => .right,
+            },
         }) catch |err| layoutFailed(window, err);
+    }
+
+    /// The layout engine's line height is a percent of the font size; the
+    /// element's is a percent of the font's line height (contract decision 9).
+    /// Wrapped boxes and emit both pitch lines by this one value, so they agree.
+    fn lineHeightPercent(metrics: *const text_mod.Metrics, font_percent: u16) u16 {
+        assert(font_percent > 0);
+        assert(metrics.point_size > 0);
+        const ratio = metrics.line_height / metrics.point_size;
+        assert(ratio > 0);
+        const percent = @round(ratio * @as(f32, @floatFromInt(font_percent)));
+        assert(percent >= 1);
+        assert(percent <= std.math.maxInt(u16));
+        return @intFromFloat(percent);
     }
 
     fn buildPaint(

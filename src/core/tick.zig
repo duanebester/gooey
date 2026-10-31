@@ -75,6 +75,7 @@ pub fn tickMain(app: anytype, window: *Window, now_ns: u64) bool {
         window.frame_number,
         @errorName(err),
     });
+    window.noteLayoutArenaUse();
 
     window.setPhase(.layout, .emit);
     emit_mod.emit(window);

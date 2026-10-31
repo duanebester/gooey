@@ -37,6 +37,13 @@ pub const LayoutArena = struct {
         self.fixed = std.heap.FixedBufferAllocator.init(buffer);
     }
 
+    /// Bytes served from the fixed buffer since the last reset.
+    pub fn fixedBytesUsed(self: *const Self) usize {
+        const fixed = self.fixed orelse unreachable; // Only the core's fixed arena has a mark.
+        std.debug.assert(fixed.end_index <= fixed.buffer.len);
+        return fixed.end_index;
+    }
+
     /// Get allocator for per-frame data
     pub fn allocator(self: *Self) std.mem.Allocator {
         if (self.fixed) |*fixed| return fixed.allocator();
