@@ -130,6 +130,24 @@ test "a TextArea takes lines, follows the caret, and places it where clicked" {
     try testing.expectApproxEqAbs(inset + line_height, caret.y, 0.001);
     try testing.expectApproxEqAbs(inset + 5 * 8, caret.x, 0.001);
 
+    // The wheel over the area scrolls it, clamped at both ends; over the
+    // window outside it, nothing scrolls. One unit is 20 px, past one line.
+    const wheel_events = [_]struct { x: f32, y: f32, delta: f64, caret_y: f32 }{
+        .{ .x = inset + 1, .y = inset + 1, .delta = 1, .caret_y = inset + 2 * line_height },
+        .{ .x = inset + 1, .y = 150, .delta = -10, .caret_y = inset + 2 * line_height },
+        .{ .x = inset + 1, .y = inset + 1, .delta = -10, .caret_y = inset + line_height },
+    };
+    for (wheel_events) |step| {
+        app.window.queue.push(.{ .input = .{ .scroll = .{
+            .position = .{ .x = step.x, .y = step.y },
+            .delta = .{ .x = 0, .y = step.delta },
+            .modifiers = .{},
+        } } });
+        now += 1;
+        app.tick(now);
+        try testing.expectApproxEqAbs(step.caret_y, query.imeCursorRect().?.y, 0.001);
+    }
+
     // The first visible row is "two"; 2.5 glyphs in is nearest "tw|o".
     const click = mouse(inset + 2.5 * 8 - 0.5, inset + line_height / 2);
     app.window.queue.push(.{ .input = .{ .mouse_down = click } });

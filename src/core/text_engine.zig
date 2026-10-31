@@ -38,6 +38,9 @@ pub const Clipboard = clipboard_mod.Clipboard;
 /// Preedit bytes one engine holds. IME candidates are short phrases.
 pub const preedit_bytes_max: u32 = 256;
 
+/// Pixels an area scrolls per wheel unit, as in 0.3.1.
+pub const wheel_step: f32 = 20;
+
 /// The caret's on and off phases, as in 0.3.1.
 pub const blink_interval_ms: u32 = 530;
 
@@ -494,6 +497,12 @@ pub fn Engine(comptime kind: Kind) type {
                 .text_input => |typed| self.insert(typed.text),
                 .composition => |composing| self.setPreedit(composing.text),
                 .key_down => |key| return self.applyKey(key, clipboard),
+                .scroll => |scroll| {
+                    if (kind == .input) return false;
+                    assert(std.math.isFinite(scroll.delta.y));
+                    // 0.3.1's 20 px per wheel unit; `follow` clamps at build.
+                    self.scroll_y -= @as(f32, @floatCast(scroll.delta.y)) * wheel_step;
+                },
                 else => return false,
             }
             return true;
