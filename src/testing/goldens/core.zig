@@ -62,7 +62,7 @@ pub fn CoreDriver(comptime App: type) type {
             assert(trace.width == @as(f32, @floatFromInt(App.width)));
             assert(trace.height == @as(f32, @floatFromInt(App.height)));
             try self.app.initHeadless(allocator, io, .{ .scale_factor = trace.scale_factor });
-            errdefer self.app.deinit();
+            errdefer self.app.deinitHeadless();
             const render_limits = core_backend.RenderLimits.fromResourceLimits(&App.limits);
             const surface = core_backend.Surface{
                 .native = null,
@@ -80,6 +80,7 @@ pub fn CoreDriver(comptime App: type) type {
         }
 
         pub fn deinit(self: *Self) void {
+            self.app.stop();
             self.renderer.deinit();
             self.app.deinit();
         }

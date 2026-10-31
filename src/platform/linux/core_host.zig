@@ -105,6 +105,9 @@ pub fn run(comptime App: type, app: *App, backing: std.mem.Allocator, io: std.Io
     defer host.deinit();
 
     app.finishInit();
+    // Deferred last, so it runs first: the guard leaves `running` before the
+    // deferred teardown above frees the host, the window, and the platform.
+    defer app.stop();
     assert(app.guard.lifecycle == .running);
     host.scheduleTick();
     host.runLoop();
@@ -184,6 +187,7 @@ pub const Host = struct {
         try self.initWayland();
         errdefer self.deinitWayland();
         self.bindWindow();
+        errdefer self.unbindWindow();
         self.thread = try std.Thread.spawn(.{}, renderThreadMain, .{self});
         assert(self.thread != null);
     }
@@ -235,8 +239,9 @@ pub const Host = struct {
         assert(self.window.core != null);
     }
 
-    /// Stop the render thread and wait for it, then release the Wayland
-    /// objects it used. No draw can start afterwards.
+    /// Stop the render thread and wait for it, then unbind what `bindWindow`
+    /// bound and release the Wayland objects the thread used. No draw can
+    /// start afterwards.
     pub fn deinit(self: *Host) void {
         if (self.thread) |thread| {
             self.stopping.store(true, .release);
@@ -244,9 +249,20 @@ pub const Host = struct {
             thread.join();
             self.thread = null;
         }
-        self.core.presenter = null;
+        self.unbindWindow();
         self.deinitWayland();
         assert(self.stopping.load(.acquire));
+    }
+
+    /// Undo `bindWindow` once the render thread, the atlas consumer, has
+    /// stopped: the shared upload journal requires every consumer to leave
+    /// before it is freed.
+    fn unbindWindow(self: *Host) void {
+        assert(self.thread == null);
+        assert(self.core.atlas_consumer_key == @intFromPtr(self.window));
+        self.core.resources.unregisterAtlasConsumer(self.core.atlas_consumer_key);
+        self.core.presenter = null;
+        self.core.file_dialog = null;
     }
 
     /// Schedule one main tick unless one is already scheduled. Any thread.

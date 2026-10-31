@@ -1792,6 +1792,8 @@ fn addFailFastChecks(
             "capacity 2048 (MAX_WORDS_PER_TEXT), 1 requested" },
         .{ .mode = "core-wrap-frame", .stderr = "wrapped lines exhausted: capacity 1024 " ++
             "(scene.glyph_count_frame_max), 1000 in use, 25 requested" },
+        .{ .mode = "core-deinit-running", .stderr = "App.deinit on a running app: " ++
+            "call App.stop first, before any teardown frees" },
     };
     for (checks) |check| {
         // CoreText shapes at most 1,024 glyphs and 2,047 UTF-16 units per run,

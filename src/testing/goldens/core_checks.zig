@@ -149,7 +149,7 @@ test "a file dialog opened from a handler runs on the main thread after the hand
     const app = try testing.allocator.create(DialogApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
-    defer app.deinit();
+    defer app.deinitHeadless();
     var service = ScriptedDialog{
         .window = &app.window,
         .main_thread = std.Thread.getCurrentId(),
@@ -373,7 +373,7 @@ test "mono text draws with the second family's advances" {
     const app = try testing.allocator.create(FontApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
-    defer app.deinit();
+    defer app.deinitHeadless();
     app.tick(1);
     var xs: [8]f32 = undefined;
     try testing.expectEqual(@as(u32, 6), spriteXs(&app.window, &xs));
@@ -389,7 +389,7 @@ test "effects.setFont reloads the app family once no frame is in flight" {
     const app = try testing.allocator.create(FontApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
-    defer app.deinit();
+    defer app.deinitHeadless();
     const tick = core.internals.tick;
     const window = &app.window;
     const text_system = app.resources.text_system;
@@ -477,7 +477,7 @@ test "wrapped text draws one run per line, pitched and aligned like its layout b
     const app = try testing.allocator.create(WrapApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
-    defer app.deinit();
+    defer app.deinitHeadless();
     app.tick(1);
     var starts: [8]core.internals.records.Rect = undefined;
     try testing.expectEqual(@as(u32, 5), lineStarts(&app.window, &starts));
@@ -488,4 +488,32 @@ test "wrapped text draws one run per line, pitched and aligned like its layout b
         try testing.expectApproxEqAbs(x, start.x - reference.x, 1);
         try testing.expectApproxEqAbs(y, start.y - reference.y, 1);
     }
+}
+
+test "a host's teardown frees through the guard after stop and leaves no atlas consumer" {
+    // Goal: the shutdown order every platform host follows (Bug A on Linux:
+    // frees under a running guard, then an atlas consumer left registered).
+    // Methodology: replay a host's lifecycle on TestBackend. A host record is
+    // reserved through the guard during init and registers an atlas consumer;
+    // after a tick, `stop` leaves `running`, the host unregisters and frees
+    // its record, and `deinit` frees the core, whose upload journal asserts
+    // that no consumer is left. A free before `stop` would panic in the guard.
+    const app = try testing.allocator.create(WrapApp);
+    defer testing.allocator.destroy(app);
+    app.beginInit(testing.allocator);
+    try app.initCore(testing.io, 1);
+    const gpa = app.guard.allocator();
+    const host_record = try gpa.create([64]u8);
+    const key = @intFromPtr(host_record);
+    app.resources.registerAtlasConsumer(key);
+    app.window.atlas_consumer_key = key;
+    app.finishInit();
+    app.tick(1);
+    try testing.expectEqual(@as(u32, 1), app.resources.atlas_uploads.consumer_count);
+
+    app.stop();
+    app.resources.unregisterAtlasConsumer(key);
+    gpa.destroy(host_record);
+    try testing.expectEqual(@as(u32, 0), app.resources.atlas_uploads.consumer_count);
+    app.deinit();
 }
