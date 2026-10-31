@@ -46,7 +46,7 @@ const cx_mod = @import("cx.zig");
 const ui_mod = @import("ui/mod.zig");
 
 // `App` owns application-lifetime state shared across windows
-// (`entities`, `globals` including the `Keymap`, `image_loader`). The WASM
+// (`entities`, `globals`, `image_loader`). The WASM
 // bootstrap heap-allocates one `App` here and hands `*App` to the
 // single `Window` it creates. Single-window flow on WASM mirrors the
 // native runner (`runtime/runner.zig`) — both go through `App` even
@@ -286,15 +286,7 @@ pub fn WebApp(
             // safe to install the borrowed pointer (any earlier
             // and the `Window` does not exist yet).
             const app_ptr = try allocator.create(ContextApp);
-            // `ContextApp.initInPlace` returns `!void` because it
-            // registers an owned `Keymap` in `app.globals`, and `Globals.setOwned`
-            // may fail with `OutOfMemory`. On WASM the bootstrap
-            // has no `defer` analog, so a failure here leaves the
-            // `allocator.create(ContextApp)` allocation orphaned
-            // until the browser tab teardown reclaims the entire
-            // WASM heap — same lifecycle as every other `g_*`
-            // global in this struct.
-            try app_ptr.initInPlace(allocator, io);
+            app_ptr.initInPlace(allocator, io);
             g_app = app_ptr;
 
             try window_ptr.initOwnedPtr(

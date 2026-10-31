@@ -18,6 +18,7 @@ const window_mod = @import("window.zig");
 const tick_mod = @import("tick.zig");
 const lifecycle = @import("lifecycle.zig");
 const cx_mod = @import("cx.zig");
+const keymap_mod = @import("keymap.zig");
 const app_resources = @import("../context/app_resources.zig");
 const text_mod = @import("../text/mod.zig");
 const web_host = @import("../platform/web/core_host.zig");
@@ -33,9 +34,8 @@ pub const Effects = handler_mod.Effects;
 pub const Window = window_mod.Window;
 pub const Cx = cx_mod.Cx;
 
-/// A keymap binding. Keymaps arrive with the router's keymap support in
-/// phase 4; milestone 1 requires `config.keymap` to be empty.
-pub const Binding = struct { key_context: element.KeyContext, action: u64 };
+/// A keymap entry (contract §7): `.{ .keys = "cmd-z", .action = ui.action(Undo) }`.
+pub const Binding = keymap_mod.Binding;
 
 /// The app's comptime configuration (contract §7, decision 10). Only `title`,
 /// `width`, `height`, and `limits` are required; every default below is the
@@ -124,7 +124,6 @@ pub fn App(
 ) type {
     comptime {
         if (config.limits.check()) |violation| @compileError(violation.message());
-        if (config.keymap.len > 0) @compileError("gooey.App: keymaps arrive in phase 4");
         if (config.entities.len > 0) @compileError("gooey.App: entities arrive in phase 4");
         assert(config.width > 0);
         assert(config.height > 0);
@@ -151,6 +150,7 @@ pub fn App(
         pub const width = config.width;
         pub const height = config.height;
         pub const font_limits = fontFaces(State, config);
+        pub const keymap = keymap_mod.compile(config.keymap);
 
         /// The root render function.
         pub fn render(cx: *Cx) void {
@@ -221,6 +221,7 @@ pub fn App(
                 .scale_factor = scale_factor,
                 .limits = &config.limits,
                 .theme = config.theme,
+                .keymap = keymap,
                 .store = &self.store,
                 .resources = &self.resources,
             });

@@ -48,6 +48,7 @@ pub const ui = struct {
     pub const text = element.text;
     pub const paint = element.paint;
     pub const when = element.when;
+    pub const action = element.action;
     pub const Box = element.Box;
     pub const Style = element.Style;
     pub const Text = element.Text;
@@ -79,4 +80,5 @@ test {
     _ = lifecycle;
     _ = layers;
     _ = @import("screen_reader.zig");
+    _ = @import("keymap.zig");
 }

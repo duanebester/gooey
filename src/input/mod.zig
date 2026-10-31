@@ -1,9 +1,9 @@
 //! Input System
 //!
-//! Input events, keycodes, and action bindings.
+//! Input events, keycodes, and keystrokes.
 //!
 //! - `events` - InputEvent, KeyEvent, MouseEvent, KeyCode, Modifiers
-//! - `actions` - Keymap, Keystroke, KeyBinding for declarative keybindings
+//! - `keystroke` - Keystroke, parsed from strings such as "cmd-shift-z"
 
 const std = @import("std");
 
@@ -24,16 +24,10 @@ pub const TextInputEvent = events.TextInputEvent;
 pub const CompositionEvent = events.CompositionEvent;
 
 // =============================================================================
-// Actions (keybinding system)
+// Keystrokes (keymaps live in the core, `core/keymap.zig`)
 // =============================================================================
 
-pub const actions = @import("actions.zig");
-
-pub const Keymap = actions.Keymap;
-pub const Keystroke = actions.Keystroke;
-pub const KeyBinding = actions.KeyBinding;
-pub const ActionTypeId = actions.ActionTypeId;
-pub const actionTypeId = actions.actionTypeId;
+pub const Keystroke = @import("keystroke.zig").Keystroke;
 
 // =============================================================================
 // Event propagation (capture/bubble phases)

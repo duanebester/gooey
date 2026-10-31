@@ -120,6 +120,12 @@ pub const HitRecord = struct {
     on_click: u32,
     on_click_outside: u32,
     on_key: u32,
+    /// `KeyContext.hash`, or 0 for none.
+    key_context: u64,
+    /// `Box.actions`: handlers `[actions_start, actions_start + actions_len)`,
+    /// each with its action id at the same index of `Frame.action_ids`.
+    actions_start: u32,
+    actions_len: u32,
 };
 
 /// One accessibility node. Strings live in the frame's text bytes.
@@ -223,6 +229,9 @@ pub const Frame = struct {
     hits: []HitRecord,
     hit_count: u32,
     handlers: []Handler,
+    /// The action id of each handler appended by `appendAction`; other
+    /// indexes are never read.
+    action_ids: []u64,
     handler_count: u32,
     a11y: []A11yNode,
     a11y_count: u32,
@@ -245,6 +254,8 @@ pub const Frame = struct {
         errdefer gpa.free(self.hits);
         self.handlers = try gpa.alloc(Handler, capacity.handler_count_max);
         errdefer gpa.free(self.handlers);
+        self.action_ids = try gpa.alloc(u64, capacity.handler_count_max);
+        errdefer gpa.free(self.action_ids);
         self.a11y = try gpa.alloc(A11yNode, capacity.a11y_node_count_max);
         errdefer gpa.free(self.a11y);
         self.text_bytes = try gpa.alloc(u8, capacity.text_bytes_max);
@@ -257,6 +268,7 @@ pub const Frame = struct {
         assert(self.paint_count <= self.paint.len);
         gpa.free(self.text_bytes);
         gpa.free(self.a11y);
+        gpa.free(self.action_ids);
         gpa.free(self.handlers);
         gpa.free(self.hits);
         gpa.free(self.paint);
@@ -311,6 +323,24 @@ pub const Frame = struct {
         self.handlers[index] = handler;
         self.handler_count += 1;
         return index;
+    }
+
+    /// Append an action handler; it shares the handler pool and its index.
+    pub fn appendAction(self: *Frame, action: u64, handler: Handler) u32 {
+        assert(action != 0);
+        const index = self.appendHandler(handler);
+        self.action_ids[index] = action;
+        return index;
+    }
+
+    /// The handler for `action` among a hit record's actions, if listed.
+    pub fn actionHandler(self: *const Frame, record: *const HitRecord, action: u64) ?Handler {
+        assert(record.actions_start + record.actions_len <= self.handler_count);
+        const start = record.actions_start;
+        for (self.action_ids[start..][0..record.actions_len], start..) |id, index| {
+            if (id == action) return self.handlers[index];
+        }
+        return null;
     }
 
     pub fn appendA11y(self: *Frame, node: A11yNode) void {

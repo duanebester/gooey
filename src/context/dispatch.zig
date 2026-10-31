@@ -70,7 +70,6 @@ pub const ListenerBlock = struct {
     mouse_down_listeners: std.ArrayListUnmanaged(MouseListener) = .empty,
     key_down_listeners: std.ArrayListUnmanaged(KeyListener) = .empty,
     simple_key_listeners: std.ArrayListUnmanaged(SimpleKeyListener) = .empty,
-    action_listeners: std.ArrayListUnmanaged(ActionListener) = .empty,
     click_outside_listeners: std.ArrayListUnmanaged(Handler) = .empty,
 
     pub fn deinit(self: *ListenerBlock, allocator: std.mem.Allocator) void {
@@ -78,7 +77,6 @@ pub const ListenerBlock = struct {
         self.mouse_down_listeners.deinit(allocator);
         self.key_down_listeners.deinit(allocator);
         self.simple_key_listeners.deinit(allocator);
-        self.action_listeners.deinit(allocator);
         self.click_outside_listeners.deinit(allocator);
     }
 
@@ -88,7 +86,6 @@ pub const ListenerBlock = struct {
         self.mouse_down_listeners.clearRetainingCapacity();
         self.key_down_listeners.clearRetainingCapacity();
         self.simple_key_listeners.clearRetainingCapacity();
-        self.action_listeners.clearRetainingCapacity();
         self.click_outside_listeners.clearRetainingCapacity();
     }
 };
@@ -127,9 +124,6 @@ pub const DispatchNode = struct {
 
     /// Focus ID if this node is focusable
     focus_id: ?FocusId = null,
-
-    /// Key context for scoped keybindings (e.g., "Editor", "Modal")
-    key_context: ?[]const u8 = null,
 
     /// Number of children (for iteration)
     child_count: u32 = 0,
@@ -236,18 +230,8 @@ pub const SimpleKeyListener = struct {
     callback: *const fn (event: KeyEvent) EventResult,
 };
 
-const action_mod = @import("../input/actions.zig");
-pub const ActionTypeId = action_mod.ActionTypeId;
-pub const actionTypeId = action_mod.actionTypeId;
-
 const handler_mod = @import("handler.zig");
 pub const Handler = handler_mod.Handler;
-
-/// Action listener - handles a specific action type
-pub const ActionListener = struct {
-    action_type: ActionTypeId,
-    handler: Handler,
-};
 
 /// Drag source configuration on a dispatch node
 pub const DragSource = struct {
@@ -381,7 +365,6 @@ pub const DispatchTree = struct {
             node.has_floating_descendant = false;
             node.layout_id = null;
             node.focus_id = null;
-            node.key_context = null;
             node.child_count = 0;
             node.auto_child_counter = 0;
             node.drag_source = null;
@@ -475,14 +458,6 @@ pub const DispatchTree = struct {
             // Failure silently breaks focus routing for this element.
             self.focus_to_node.put(self.allocator, focus_id.hash, node_id) catch
                 @panic("dispatch: focus_to_node put failed (OOM during render)");
-        }
-    }
-
-    /// Set key context for current node (for scoped keybindings)
-    pub fn setKeyContext(self: *Self, context: []const u8) void {
-        const node_id = self.currentNode();
-        if (self.getNode(node_id)) |node| {
-            node.key_context = context;
         }
     }
 
@@ -638,14 +613,6 @@ pub const DispatchTree = struct {
     ) ?[]DispatchNodeId {
         const node_id = self.focus_to_node.get(focus_id.hash) orelse return null;
         return self.dispatchPath(node_id, buf);
-    }
-
-    /// Get dispatch path from root (for global action dispatch when nothing focused)
-    pub fn rootPath(self: *const Self, buf: *[MAX_PATH_DEPTH]DispatchNodeId) ?[]DispatchNodeId {
-        if (!self.root.isValid()) return null;
-        // Just return the root node - global handlers should be registered there
-        buf[0] = self.root;
-        return buf[0..1];
     }
 
     // =========================================================================
@@ -900,19 +867,6 @@ pub const DispatchTree = struct {
         return false;
     }
 
-    /// Register an action handler on the current node. UI primitives resolve
-    /// `action_type` with `actionTypeId(Action)` before rendering.
-    pub fn onAction(self: *Self, action_type: ActionTypeId, handler: Handler) void {
-        handler.assertBound();
-        const node_id = self.currentNode();
-        if (self.getNode(node_id)) |node| {
-            node.getOrCreateListeners(self.allocator).action_listeners.append(self.allocator, .{
-                .action_type = action_type,
-                .handler = handler,
-            }) catch @panic("dispatch: action listener registration failed (OOM)");
-        }
-    }
-
     // =========================================================================
     // Drag & Drop
     // =========================================================================
@@ -955,45 +909,6 @@ pub const DispatchTree = struct {
             }
         }
         return null;
-    }
-
-    /// Build the context stack from a dispatch path
-    pub fn contextStack(
-        self: *const Self,
-        path: []const DispatchNodeId,
-        buf: *[MAX_PATH_DEPTH][]const u8,
-    ) [][]const u8 {
-        var count: usize = 0;
-        for (path) |node_id| {
-            const node = self.getNodeConst(node_id) orelse continue;
-            if (node.key_context) |ctx| {
-                if (count < MAX_PATH_DEPTH) {
-                    buf[count] = ctx;
-                    count += 1;
-                }
-            }
-        }
-        return buf[0..count];
-    }
-
-    /// Dispatch an action through the focus path
-    /// Returns true if a handler was found and called
-    pub fn dispatchAction(self: *Self, action_type: ActionTypeId, path: []const DispatchNodeId, window: *Window) bool {
-        // Walk from target to root looking for a handler
-        var i = path.len;
-        while (i > 0) {
-            i -= 1;
-            const node = self.getNodeConst(path[i]) orelse continue;
-            const lb = node.listeners orelse continue;
-
-            for (lb.action_listeners.items) |listener| {
-                if (listener.action_type == action_type) {
-                    listener.handler.call(window);
-                    return true;
-                }
-            }
-        }
-        return false;
     }
 };
 
@@ -1057,29 +972,6 @@ fn testHandler(comptime callback: fn () void) Handler {
             callback();
         }
     }.invoke };
-}
-
-test "DispatchTree registers a pre-resolved action handler" {
-    // The UI builder resolves action types before rendering, so verify the raw
-    // registration path preserves both that ID and its handler reference.
-    const allocator = std.testing.allocator;
-    var tree = DispatchTree.init(allocator);
-    defer tree.deinit();
-
-    const noop = struct {
-        fn callback() void {}
-    }.callback;
-    const handler = testHandler(noop);
-    const action_type: ActionTypeId = 42;
-
-    const root = tree.pushNode();
-    tree.onAction(action_type, handler);
-    tree.popNode();
-
-    const listeners = tree.getNodeConst(root).?.listeners.?;
-    try std.testing.expectEqual(@as(usize, 1), listeners.action_listeners.items.len);
-    try std.testing.expectEqual(action_type, listeners.action_listeners.items[0].action_type);
-    try std.testing.expectEqual(handler.invoke, listeners.action_listeners.items[0].handler.invoke);
 }
 
 test "DispatchTree hit testing" {

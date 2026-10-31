@@ -14,8 +14,6 @@ const DispatchNodeId = dispatch_mod.DispatchNodeId;
 const focus_mod = @import("../context/focus.zig");
 const FocusId = focus_mod.FocusId;
 const FocusHandle = focus_mod.FocusHandle;
-const action_mod = @import("../input/actions.zig");
-const actionTypeId = action_mod.actionTypeId;
 const handler_mod = @import("../context/handler.zig");
 const entity_mod = @import("../context/entity.zig");
 const window_mod = @import("../context/window.zig");
@@ -124,8 +122,6 @@ const Spacer = primitives.Spacer;
 const Button = primitives.Button;
 const SvgPrimitive = primitives.SvgPrimitive;
 const ImagePrimitive = primitives.ImagePrimitive;
-const KeyContextPrimitive = primitives.KeyContextPrimitive;
-const ActionHandlerPrimitive = primitives.ActionHandlerPrimitive;
 
 // Accessibility config
 pub const AccessibleConfig = struct {
@@ -1305,8 +1301,6 @@ pub const Builder = struct {
                 .code_editor => self.renderCodeEditor(child),
                 .spacer => self.renderSpacer(child),
                 .button => self.renderButton(child),
-                .key_context => self.renderKeyContext(child),
-                .action_handler => self.renderActionHandler(child),
                 .svg => self.renderSvg(child),
                 .image => self.renderImage(child),
                 .empty => {},
@@ -1818,14 +1812,6 @@ pub const Builder = struct {
         }) catch |err| self.layoutFailed(err);
     }
 
-    fn renderKeyContext(self: *Self, ctx: KeyContextPrimitive) void {
-        self.dispatch.setKeyContext(ctx.context);
-    }
-
-    fn renderActionHandler(self: *Self, action: ActionHandlerPrimitive) void {
-        self.dispatch.onAction(action.action_type, action.handler);
-    }
-
     // =========================================================================
     // Internal: ID Generation
     // =========================================================================
@@ -1882,34 +1868,6 @@ fn testBuilderHarness(
     scene_ptr.* = Scene.initEmpty(allocator);
     tree.* = DispatchTree.init(allocator);
     return Builder.init(allocator, engine, scene_ptr, tree);
-}
-
-test "onAction primitive registers its pre-resolved action type" {
-    // Render the public primitive through a real Builder to cover the bridge
-    // from its runtime action ID into DispatchTree listener registration.
-    const gpa = std.testing.allocator;
-    var engine: LayoutEngine = undefined;
-    var scene_buf: Scene = undefined;
-    var tree: DispatchTree = undefined;
-    var builder = try testBuilderHarness(gpa, &engine, &scene_buf, &tree);
-    defer builder.deinit();
-    defer engine.deinit();
-    defer scene_buf.deinit();
-    defer tree.deinit();
-
-    const Action = struct {};
-    const invoke = struct {
-        fn invoke(_: *Window, _: EntityId, _: u64) void {}
-    }.invoke;
-    const handler = Handler{ .invoke = invoke };
-
-    builder.box(.{}, .{primitives.onAction(Action, handler)});
-
-    const listeners = tree.getNodeConst(tree.root).?.listeners.?;
-    const action_listeners = listeners.action_listeners.items;
-    try std.testing.expectEqual(@as(usize, 1), action_listeners.len);
-    try std.testing.expectEqual(actionTypeId(Action), action_listeners[0].action_type);
-    try std.testing.expectEqual(handler.invoke, action_listeners[0].handler.invoke);
 }
 
 test "dynamic box has layout and dispatch parity with tuple box" {
@@ -2053,7 +2011,7 @@ test "default text colour follows the active theme; an explicit colour wins" {
     defer scene_buf.deinit();
     defer tree.deinit();
 
-    var app = try @import("../context/app.zig").App.init(gpa, undefined);
+    var app = @import("../context/app.zig").App.init(gpa, undefined);
     defer app.deinit();
     var window: Window = undefined;
     window.app = &app;

@@ -798,7 +798,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "spaceship", .source = "src/examples/spaceship.zig" },
             .{ .name = "dynamic-counters", .source = "src/examples/dynamic_counters.zig" },
             .{ .name = "layout", .source = "src/examples/layout.zig" },
-            .{ .name = "actions", .source = "src/examples/actions.zig" },
+            .{ .name = "actions", .source = "src/examples/actions.zig", .core = true },
             .{ .name = "nested-overlay", .source = "src/examples/nested_overlay.zig" },
             .{ .name = "images", .source = "src/examples/images.zig" },
             .{ .name = "accessible-form", .source = "src/examples/accessible_form.zig" },
@@ -1490,7 +1490,7 @@ fn addMacosCoreExampleTypecheck(
         .optimize = .debug,
     });
     components_mod.addImport("gooey", gooey_mod);
-    const examples = [_][]const u8{ "counter", "todo", "core_file_dialog" };
+    const examples = [_][]const u8{ "counter", "todo", "actions", "core_file_dialog" };
     for (examples) |name| {
         const exe = b.addExecutable(.{
             .name = b.fmt("typecheck-macos-{s}", .{name}),
@@ -1730,10 +1730,6 @@ fn addFailFastChecks(
     const checks = [_]struct { mode: []const u8, stderr: []const u8 }{
         .{ .mode = "deferred-queue", .stderr = "Window pool 'deferred_commands' exhausted: " ++
             "capacity 32, 32 in use, 1 requested." },
-        .{ .mode = "keymap-keystroke", .stderr = "Keymap.bind: invalid keystroke \"cmd-zz\" " ++
-            "for action fail_fast_check.Noop;" },
-        .{ .mode = "keymap-oom", .stderr = "Keymap pool 'bindings' could not grow: capacity 0, " ++
-            "0 in use, 1 requested (OutOfMemory binding \"cmd-z\")" },
         .{ .mode = "dispatch-nodes", .stderr = "DispatchTree pool 'nodes' could not grow: " ++
             "capacity 0, 0 in use, 1 requested (OutOfMemory during render)" },
         .{ .mode = "focus-order", .stderr = "FocusManager pool 'focus_order' could not grow: " ++
@@ -2322,7 +2318,14 @@ fn addGoldens(
         .optimize = optimize,
         .imports = example_imports,
     });
+    const actions_mod = b.createModule(.{
+        .root_source_file = b.path("src/examples/actions.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = example_imports,
+    });
     const goldens_imports: []const std.Build.Module.Import = &.{
+        .{ .name = "actions_example", .module = actions_mod },
         .{ .name = "gooey", .module = gooey_mod },
         .{ .name = "gooey-components", .module = components_mod },
         .{ .name = "counter_example", .module = counter_mod },

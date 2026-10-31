@@ -1,7 +1,7 @@
 //! `Globals` — type-keyed singleton store, capped at `MAX_GLOBALS`.
 //!
 //! A "set/get/update a value of type `G`" registry, indexed by a
-//! comptime-stable type ID, so cross-cutting state (theme, keymap,
+//! comptime-stable type ID, so cross-cutting state (theme,
 //! debugger, ...) is reachable in O(1) without its own field on the
 //! owning context.
 //!
@@ -38,7 +38,7 @@ const builtin = @import("builtin");
 // Limits
 // =============================================================================
 //
-// 32 is generous: current use is a handful of globals (theme, keymap,
+// 32 is generous: current use is a handful of globals (theme,
 // debugger) and the entry struct is small enough that the whole array
 // fits in two 64-byte cache lines on a 64-bit target.
 

@@ -134,10 +134,32 @@ pub const Style = struct {
     pointer_events: PointerEvents = .auto,
 };
 
-/// A comptime-hashed key context name (contract §5). Keymaps arrive with the
-/// router's keymap support in phase 4; milestone 1 rejects a set context.
-pub const KeyContext = struct { hash: u64 };
+/// A comptime-hashed key context name (contract §5): keymap bindings with
+/// this context match only while the box is on the focus path.
+pub const KeyContext = struct {
+    hash: u64,
+
+    pub fn named(comptime name: []const u8) KeyContext {
+        comptime assert(name.len > 0);
+        return .{ .hash = comptime nonZeroHash(name) };
+    }
+};
+
+/// Handle `action` (see `action`) when a keymap binding names it and this
+/// box is on the focus path (contract §5).
 pub const ActionBinding = struct { action: u64, handler: Handler };
+
+/// The id of action type `Action` (`const Undo = struct {};`), for keymap
+/// bindings and `Box.actions`. Hashed at compile time; never 0.
+pub fn action(comptime Action: type) u64 {
+    comptime assert(@typeInfo(Action) == .@"struct");
+    return comptime nonZeroHash(@typeName(Action));
+}
+
+fn nonZeroHash(comptime name: []const u8) u64 {
+    const hash = std.hash.Wyhash.hash(0, name);
+    return if (hash == 0) 1 else hash;
+}
 pub const DragSource = struct { type_id: usize, payload: u64 };
 pub const DropTarget = struct { type_id: usize, on_drop: Handler };
 

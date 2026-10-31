@@ -7,9 +7,8 @@
 //!     model created in one window be observed by a view in another, and
 //!     gives entities a well-defined owner that outlives any single window
 //!     (e.g. an in-flight async task that survives a window close).
-//!   - `globals` — type-keyed singleton store owning the app-wide `Keymap`
-//!     and the `*const Theme` slot, so one keymap and one active theme are
-//!     shared across every window. (`Debugger` stays per-window on
+//!   - `globals` — type-keyed singleton store owning the `*const Theme`
+//!     slot, so one active theme is shared across every window. (`Debugger` stays per-window on
 //!     `Window.globals` — its overlay quads and frame timing are bound to a
 //!     single scene.)
 //!   - `image_loader` — async URL fetch + decode + atlas cache. App-scoped
@@ -23,8 +22,8 @@
 //! `App.init` in the single- vs. multi-window flows. Rather than thread
 //! `*ImageAtlas` through `App.init`, the loader uses two-phase init:
 //!
-//!   1. `App.init` / `App.initInPlace` allocates the entity map, registers
-//!      the `Keymap` global, and leaves `image_loader` undefined
+//!   1. `App.init` / `App.initInPlace` allocates the entity map and leaves
+//!      `image_loader` undefined
 //!      (`image_loader_bound = false`).
 //!   2. `App.bindImageLoader(*ImageAtlas)` runs `initInPlace` on the loader
 //!      at the `App`'s final heap address (asserts single-bind). The
@@ -55,16 +54,10 @@ const entity_mod = @import("entity.zig");
 const EntityMap = entity_mod.EntityMap;
 
 // `Globals` is the type-keyed singleton store (see `global.zig`); on
-// `App` it owns `Keymap` and the `*const Theme` slot. `Debugger` stays
+// `App` it owns the `*const Theme` slot. `Debugger` stays
 // per-window on `Window.globals`.
 const global_mod = @import("global.zig");
 const Globals = global_mod.Globals;
-
-// `Keymap` is registered as an owned global on `App` — one keymap per
-// app, since the action dispatch contract (`cmd-z` means Undo no matter
-// which window is focused) is app-scoped.
-const action_mod = @import("../input/actions.zig");
-const Keymap = action_mod.Keymap;
 
 // `ImageLoader` (URL fetch + decode + atlas cache) and `ImageAtlas`.
 // On `App` the loader has one pending set, one failed set, and one
@@ -78,9 +71,8 @@ const AtlasUploads = @import("../text/atlas_uploads.zig").AtlasUploads;
 /// Application-lifetime state shared across all windows.
 ///
 ///   - `entities` — entity storage for shared state management.
-///   - `globals` — type-keyed singleton store. Owns `Keymap` (registered
-///     by `init` / `initInPlace`) and the `*const Theme` slot (populated
-///     lazily by `Builder.setTheme`).
+///   - `globals` — type-keyed singleton store. Owns the `*const Theme`
+///     slot (populated lazily by `Builder.setTheme`).
 ///   - `image_loader` — async URL fetch + decode + atlas-cache subsystem.
 ///     Late-bound against the shared `*ImageAtlas` via `bindImageLoader`
 ///     (see file header for the two-phase init rationale).
@@ -111,15 +103,10 @@ pub const App = struct {
     /// harmless.
     entities: EntityMap,
 
-    /// Type-keyed singleton store (see `global.zig`). Owns the `Keymap`
-    /// (registered post-init via `setOwned`) and the `*const Theme` slot
-    /// (populated lazily by `Builder.setTheme`). `Debugger` stays on
-    /// `Window.globals` because every window has its own.
-    ///
-    /// Torn down in `App.deinit` via `globals.deinit(allocator)` — the
-    /// thunk built at `setOwned` time picks the right deinit shape per
-    /// type, so `Keymap.deinit` is invoked correctly without the caller
-    /// knowing the registry's internals.
+    /// Type-keyed singleton store (see `global.zig`). Owns the
+    /// `*const Theme` slot (populated lazily by `Builder.setTheme`).
+    /// `Debugger` stays on `Window.globals` because every window has its
+    /// own. Torn down in `App.deinit` via `globals.deinit(allocator)`.
     globals: Globals = .{},
 
     /// Async image-load subsystem (URL fetch + decode + atlas cache).
@@ -154,37 +141,24 @@ pub const App = struct {
     ///
     /// The `EntityMap` is initialised against `allocator` and `io` (cancel
     /// groups need a live `io` to be cancelled on entity removal — null
-    /// `io` is supported for tests only). Also registers an owned `Keymap`
-    /// in `globals`: `setOwned` heap-allocates a `*Keymap`, and that
-    /// pointer survives the by-value return because `globals` holds
-    /// pointers to stable heap addresses, not the pointees themselves.
-    pub fn init(allocator: Allocator, io: std.Io) !Self {
+    /// `io` is supported for tests only).
+    pub fn init(allocator: Allocator, io: std.Io) Self {
         // The `allocator` address-of check catches the rare bug where the
         // caller passed a stack-temp allocator that has gone out of scope;
         // `EntityMap.init` would store the dangling vtable and explode at
         // the first `alloc`.
         std.debug.assert(@intFromPtr(&allocator) != 0);
 
-        var result = Self{
+        const result = Self{
             .allocator = allocator,
             .io = io,
             .entities = EntityMap.init(allocator, io),
             .globals = .{},
         };
-        errdefer result.entities.deinit();
-
-        // Register the app-wide `Keymap`. `setOwned` can fail only on the
-        // heap allocation for the owned `*Keymap` (the registry has room).
-        // The `errdefer` above unwinds the `EntityMap`; the `Keymap`
-        // allocation hasn't happened on the failure path, so nothing
-        // further to free.
-        try result.globals.setOwned(allocator, Keymap, Keymap.init(allocator));
-        errdefer result.globals.deinit(allocator);
 
         // Pair-assert post-conditions: the map is ready for `entities.new`
-        // / `read` / `write` and the Keymap slot is populated.
+        // / `read` / `write`.
         std.debug.assert(result.entities.next_id == 1);
-        std.debug.assert(result.globals.has(Keymap));
 
         // `image_loader` is intentionally left undefined; the caller binds
         // it via `bindImageLoader` after `AppResources` exists. Until then
@@ -199,9 +173,8 @@ pub const App = struct {
     /// back into the caller (WASM stack budget — CLAUDE.md §14).
     ///
     /// `self` must point at uninitialised memory; the function writes
-    /// every field. Returns `!void` because `globals.setOwned(Keymap, ...)`
-    /// can fail with `OutOfMemory`.
-    pub noinline fn initInPlace(self: *Self, allocator: Allocator, io: std.Io) !void {
+    /// every field.
+    pub noinline fn initInPlace(self: *Self, allocator: Allocator, io: std.Io) void {
         std.debug.assert(@intFromPtr(self) != 0);
         std.debug.assert(@intFromPtr(&allocator) != 0);
 
@@ -210,22 +183,16 @@ pub const App = struct {
         self.allocator = allocator;
         self.io = io;
         self.entities = EntityMap.init(allocator, io);
-        errdefer self.entities.deinit();
 
         // `self` was raw memory (caller did `allocator.create` without
         // zeroing), so explicitly default-construct `globals`.
         self.globals = .{};
-
-        // Register the app-wide `Keymap` (see `init` for rationale).
-        try self.globals.setOwned(allocator, Keymap, Keymap.init(allocator));
-        errdefer self.globals.deinit(allocator);
 
         // `self` was raw memory; the explicit `false` marks the unbound
         // state. `image_loader` stays undefined until `bindImageLoader`.
         self.image_loader_bound = false;
 
         std.debug.assert(self.entities.next_id == 1);
-        std.debug.assert(self.globals.has(Keymap));
         std.debug.assert(!self.image_loader_bound);
     }
 
@@ -306,23 +273,14 @@ pub const App = struct {
         // — which the caller must keep valid until after `App.deinit`.
         self.entities.deinit();
 
-        // Tear down owned globals (`Keymap` today). The thunk built at
-        // `setOwned` time invokes the right `deinit` shape per type.
+        // Tear down owned globals. The thunk built at `setOwned` time
+        // invokes the right `deinit` shape per type.
         self.globals.deinit(self.allocator);
     }
 
     // =========================================================================
     // Accessors
     // =========================================================================
-
-    /// Typed accessor for the app-wide keymap. A missing slot is a
-    /// framework bug (every `init*` path registers one), hence the panic
-    /// rather than a runtime fallback.
-    pub fn keymap(self: *Self) *Keymap {
-        return self.globals.get(Keymap) orelse {
-            std.debug.panic("App.keymap(): no Keymap registered in globals (init* did not run?)", .{});
-        };
-    }
 
     // =========================================================================
     // Per-frame hooks
@@ -377,28 +335,25 @@ pub const App = struct {
 const testing = std.testing;
 
 test "App: init and deinit cleanly" {
-    var app = try App.init(testing.allocator, undefined);
+    var app = App.init(testing.allocator, undefined);
     defer app.deinit();
 
     // Fresh app should have an empty entity map.
     try testing.expectEqual(@as(usize, 0), app.entities.count());
-    // And a populated `Keymap` slot.
-    try testing.expect(app.globals.has(Keymap));
 }
 
 test "App: initInPlace produces an equivalent instance" {
     const app = try testing.allocator.create(App);
     defer testing.allocator.destroy(app);
 
-    try app.initInPlace(testing.allocator, undefined);
+    app.initInPlace(testing.allocator, undefined);
     defer app.deinit();
 
     try testing.expectEqual(@as(usize, 0), app.entities.count());
-    try testing.expect(app.globals.has(Keymap));
 }
 
 test "App: entity creation and access through the shared map" {
-    var app = try App.init(testing.allocator, undefined);
+    var app = App.init(testing.allocator, undefined);
     defer app.deinit();
 
     const Counter = struct { value: i32 };
@@ -411,7 +366,7 @@ test "App: entity creation and access through the shared map" {
 test "App: entities survive across simulated windows" {
     // Two `*App` borrows from the same backing struct see the same
     // entities — the cross-window sharing property.
-    var app = try App.init(testing.allocator, undefined);
+    var app = App.init(testing.allocator, undefined);
     defer app.deinit();
 
     const Model = struct { count: i32 };
@@ -426,40 +381,11 @@ test "App: entities survive across simulated windows" {
     try testing.expectEqual(@as(i32, 7), data.count);
 }
 
-test "App: keymap accessor returns the registered Keymap" {
-    // Bind a keystroke through the accessor; reading it back via the same
-    // accessor sees the binding, proving the slot survives across calls.
-    var app = try App.init(testing.allocator, undefined);
-    defer app.deinit();
-
-    const Undo = struct {};
-    app.keymap().bind(Undo, "cmd-z", null);
-
-    const match = app.keymap().match(.z, .{ .cmd = true }, &.{});
-    try testing.expect(match != null);
-}
-
-test "App: keymap is shared across simulated windows" {
-    // Cross-window sharing: a binding registered through "window A"'s
-    // borrow of `App` is visible through "window B"'s borrow.
-    var app = try App.init(testing.allocator, undefined);
-    defer app.deinit();
-
-    const Save = struct {};
-
-    const window_a: *App = &app;
-    window_a.keymap().bind(Save, "cmd-s", null);
-
-    const window_b: *App = &app;
-    const match = window_b.keymap().match(.s, .{ .cmd = true }, &.{});
-    try testing.expect(match != null);
-}
-
 test "App: image_loader starts unbound; deinit skips it" {
     // A fresh `App` reports `image_loader_bound = false` and tears down
     // cleanly without a `bindImageLoader` call — the pattern test fixtures
     // rely on.
-    var app = try App.init(testing.allocator, undefined);
+    var app = App.init(testing.allocator, undefined);
     defer app.deinit();
 
     try testing.expect(!app.image_loader_bound);
@@ -471,7 +397,7 @@ test "App: bindImageLoader wires the loader against the atlas" {
     // empty and `image_loader_bound` flips true.
     const io = std.Io.Threaded.global_single_threaded.io();
 
-    var app = try App.init(testing.allocator, io);
+    var app = App.init(testing.allocator, io);
     defer app.deinit();
 
     var atlas_uploads: AtlasUploads = undefined;
@@ -496,7 +422,7 @@ test "App: image_loader is shared across simulated windows" {
     // eliminates duplicate fetches when two windows request the same URL.
     const io = std.Io.Threaded.global_single_threaded.io();
 
-    var app = try App.init(testing.allocator, io);
+    var app = App.init(testing.allocator, io);
     defer app.deinit();
 
     var atlas_uploads: AtlasUploads = undefined;
@@ -537,7 +463,7 @@ test "App: beginFrame clears stale entity observations" {
     // previous tick. The test simulates one tick: an observer reads a
     // target (registering a frame observation), then `beginFrame` runs at
     // the start of the next tick and clears the slot.
-    var app = try App.init(testing.allocator, undefined);
+    var app = App.init(testing.allocator, undefined);
     defer app.deinit();
 
     const Counter = struct { value: i32 };
@@ -563,7 +489,7 @@ test "App: beginFrame is a no-op when image_loader is unbound" {
     // `ImageLoader`. The guard skips the loader drain when
     // `image_loader_bound = false`; without it the call would walk
     // undefined memory.
-    var app = try App.init(testing.allocator, undefined);
+    var app = App.init(testing.allocator, undefined);
     defer app.deinit();
 
     try testing.expect(!app.image_loader_bound);
@@ -582,7 +508,7 @@ test "App: beginFrame drains image_loader when bound" {
     // `ImageAtlas`).
     const io = std.Io.Threaded.global_single_threaded.io();
 
-    var app = try App.init(testing.allocator, io);
+    var app = App.init(testing.allocator, io);
     defer app.deinit();
 
     var atlas_uploads: AtlasUploads = undefined;

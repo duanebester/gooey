@@ -670,7 +670,7 @@ pub const Window = struct {
             },
             else => {},
         }
-        if (self.core) |binding| return pushCoreInput(binding, event);
+        if (self.core) |binding| return pushCoreInput(binding, event, self.hasMarkedText());
 
         var handled = false;
         if (self.on_input) |callback| {
@@ -693,8 +693,16 @@ pub const Window = struct {
     }
 
     /// Queue `event` for the core's next drain. Only a key the keymap claims
-    /// counts as handled, so every other key still reaches the IME.
-    fn pushCoreInput(binding: CoreBinding, event: input.InputEvent) bool {
+    /// counts as handled, so every other key still reaches the IME. While the
+    /// IME holds marked text it owns every key (Escape cancels the
+    /// composition, Return accepts a candidate), so a key down is neither
+    /// queued nor claimed: no binding or `on_key` handler may act on a
+    /// keystroke that only edited the composition. Windows drops
+    /// `VK_PROCESSKEY` for the same reason.
+    fn pushCoreInput(binding: CoreBinding, event: input.InputEvent, composing: bool) bool {
+        if (composing) {
+            if (event == .key_down) return false;
+        }
         binding.queue.push(.{ .input = event });
         binding.schedule_tick(binding.context);
         return switch (event) {

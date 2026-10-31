@@ -89,16 +89,10 @@ const EntityMap = entity_mod.EntityMap;
 pub const EntityId = entity_mod.EntityId;
 
 // `App` owns application-lifetime state shared across windows (entity
-// map, keymap, app-scoped globals). Each `Window` borrows its parent
+// map, app-scoped globals). Each `Window` borrows its parent
 // via the `app: *App` field below.
 const app_mod = @import("app.zig");
 const App = app_mod.App;
-
-// `Keymap` lives on `App.globals`; `Window.keymap()` forwards to
-// `self.app.keymap()`. The alias survives because the forwarder's
-// return type still names `*Keymap`.
-const action_mod = @import("../input/actions.zig");
-const Keymap = action_mod.Keymap;
 
 // Scene
 const scene_mod = @import("../scene/scene.zig");
@@ -300,7 +294,7 @@ pub const Window = struct {
     // direct field, but it keeps singletons off the struct surface.
 
     /// Type-keyed singleton store (see `global.zig`). Owns `Debugger` only;
-    /// `Keymap` and the `*const Theme` slot are app-scoped on `App.globals`.
+    /// the `*const Theme` slot is app-scoped on `App.globals`.
     /// Default-constructed; populated post-init by every `init*` path via
     /// `setOwned`.
     globals: Globals = .{},
@@ -313,7 +307,7 @@ pub const Window = struct {
     current_phase: DrawPhase = .none,
 
     /// Borrowed `*App` view onto application-lifetime state shared across
-    /// windows: the entity map, and the `Keymap` / `*const Theme` slots in
+    /// windows: the entity map, and the `*const Theme` slot in
     /// `app.globals`. The single-window flow heap-allocates an `App` in
     /// `runtime/runner.zig`; the multi-window flow embeds a `context.App`
     /// inside `runtime/multi_window_app.zig::App`. Either way the pointee
@@ -703,7 +697,7 @@ pub const Window = struct {
         self.resources.registerAtlasConsumer(self.atlasConsumerKey());
         errdefer self.resources.unregisterAtlasConsumer(self.atlasConsumerKey());
 
-        // Per-window globals hold `Debugger` only (`Keymap` is on
+        // Per-window globals hold `Debugger` only (the theme slot is on
         // `App.globals`). `self` is at its final heap address, so `setOwned`
         // writes its bookkeeping directly. No `errdefer` after this last
         // `try`: the function returns immediately after.
@@ -846,7 +840,7 @@ pub const Window = struct {
         self.resources.registerAtlasConsumer(@intFromPtr(platform_window));
         errdefer self.resources.unregisterAtlasConsumer(@intFromPtr(platform_window));
 
-        // Per-window globals hold `Debugger` only (`Keymap` is on
+        // Per-window globals hold `Debugger` only (the theme slot is on
         // `app.globals`). No `errdefer` after this last `try`: the function
         // returns immediately after.
         try self.globals.setOwned(allocator, debugger_mod.Debugger, .{});
@@ -897,7 +891,7 @@ pub const Window = struct {
         self.resources.deinit();
 
         // Teardown covers `Debugger` only (the single per-window owned
-        // global); `Keymap.deinit` runs from `App.deinit`. The thunk built
+        // global). The thunk built
         // at `setOwned` time picks the right shape per type so each global
         // teardown matches its declared `deinit`.
         self.globals.deinit(self.allocator);
@@ -936,16 +930,8 @@ pub const Window = struct {
         return self.current_phase;
     }
 
-    /// Typed accessor for the keymap global, which lives on `App.globals`;
-    /// this forwards to `self.app.keymap()` so call sites
-    /// (`window.keymap().bind(...)`) don't reach through `*App` themselves.
-    /// Panics if the parent `App` was never `init*`'d (a framework bug).
-    pub fn keymap(self: *Self) *Keymap {
-        return self.app.keymap();
-    }
-
-    /// Typed accessor for the debugger global. Same panic contract as
-    /// `keymap()`.
+    /// Typed accessor for the debugger global. Panics if the window was
+    /// never `init*`'d (a framework bug).
     pub fn debugger(self: *Self) *debugger_mod.Debugger {
         return self.globals.get(debugger_mod.Debugger) orelse {
             std.debug.panic("Window.debugger(): no Debugger registered in globals (init* did not run?)", .{});

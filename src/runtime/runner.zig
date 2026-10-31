@@ -36,7 +36,7 @@ const window_mod = @import("../context/window.zig");
 const FontConfig = window_mod.FontConfig;
 
 // `App` owns application-lifetime state shared across windows (the entity
-// map, keymap, image loader). The single-window flow heap-allocates one
+// map, image loader). The single-window flow heap-allocates one
 // `App` in `runCx` and hands `*App` to the `WindowContext`; routing through
 // `App` even with one borrower is the precondition for cross-window
 // observation.
@@ -103,9 +103,7 @@ pub fn runCx(
     // teardown driven by window close still has a live `EntityMap` to walk.
     const app_ptr = try allocator.create(App);
     defer if (owned) allocator.destroy(app_ptr);
-    // `initInPlace` may fail with `OutOfMemory` (it registers an owned
-    // `Keymap`); the `destroy` defer above still runs on that error path.
-    try app_ptr.initInPlace(allocator, io);
+    app_ptr.initInPlace(allocator, io);
     defer if (owned) app_ptr.deinit();
 
     // Create per-window context
