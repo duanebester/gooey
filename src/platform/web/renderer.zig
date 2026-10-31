@@ -944,7 +944,7 @@ pub const WebRenderer = struct {
 
     pub fn render(
         self: *Self,
-        scene: *Scene,
+        scene: *const Scene,
         viewport_width: f32,
         viewport_height: f32,
         clear_r: f32,

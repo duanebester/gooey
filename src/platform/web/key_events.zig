@@ -115,7 +115,7 @@ const KeyEvent = input.KeyEvent;
 const KeyCode = input.KeyCode;
 
 /// Convert raw key event to InputEvent
-fn toInputEvent(raw: RawKeyEvent) InputEvent {
+pub fn toInputEvent(raw: RawKeyEvent) InputEvent {
     const key_event = KeyEvent{
         .key = KeyCode.from(raw.key_code),
         .modifiers = raw.modifiers.toInput(),
