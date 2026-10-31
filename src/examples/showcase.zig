@@ -4,7 +4,7 @@
 //! Organized as a storybook with sections for each component type.
 //!
 //! Navigation:
-//!   - [1-7] Jump to section
+//!   - [1-6] Jump to section
 //!   - [←/→] Previous/Next section
 //!   - [T] Toggle theme
 //!   - [Esc] Close modals/dropdowns
@@ -26,8 +26,6 @@ const Theme = gooey.ui.Theme;
 // Components
 const Button = components.Button;
 const Checkbox = components.Checkbox;
-const TextInput = components.TextInput;
-const TextArea = components.TextArea;
 const Tab = components.Tab;
 const RadioButton = components.RadioButton;
 const RadioGroup = components.RadioGroup;
@@ -47,19 +45,17 @@ const Color = gooey.Color;
 const Section = enum(u8) {
     overview,
     buttons,
-    inputs,
     selection,
     feedback,
     overlays,
     icons,
 
-    const count = 7;
+    const count = 6;
 
     fn title(self: Section) []const u8 {
         return switch (self) {
             .overview => "Overview",
             .buttons => "Buttons",
-            .inputs => "Inputs",
             .selection => "Selection",
             .feedback => "Feedback",
             .overlays => "Overlays",
@@ -91,11 +87,6 @@ const AppState = struct {
     // Button demos
     button_clicks: u32 = 0,
     loading: bool = false,
-
-    // Input demos
-    name: []const u8 = "",
-    email: []const u8 = "",
-    bio: []const u8 = "",
 
     // Checkbox demos
     option_a: bool = true,
@@ -367,7 +358,6 @@ const NavTabList = struct {
         }, .{
             NavItem{ .section = .overview },
             NavItem{ .section = .buttons },
-            NavItem{ .section = .inputs },
             NavItem{ .section = .selection },
             NavItem{ .section = .feedback },
             NavItem{ .section = .overlays },
@@ -502,7 +492,6 @@ const SectionContent = struct {
         switch (s.section) {
             .overview => cx.render(ui.scroll("scroll-overview", scroll_style, .{OverviewSection{}})),
             .buttons => cx.render(ui.scroll("scroll-buttons", scroll_style, .{ButtonsSection{}})),
-            .inputs => cx.render(ui.scroll("scroll-inputs", scroll_style, .{InputsSection{}})),
             .selection => cx.render(ui.scroll("scroll-selection", scroll_style, .{SelectionSection{}})),
             .feedback => cx.render(ui.scroll("scroll-feedback", scroll_style, .{FeedbackSection{}})),
             .overlays => cx.render(ui.scroll("scroll-overlays", scroll_style, .{OverlaysSection{}})),
@@ -1227,70 +1216,6 @@ const ButtonInteractiveCard = struct {
 };
 
 // =============================================================================
-// Inputs Section
-// =============================================================================
-
-const InputsSection = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        cx.render(ui.box(.{ .fill_width = true, .gap = 24 }, .{
-            TextInputCard{},
-            TextAreaCard{},
-        }));
-    }
-};
-
-const TextInputCard = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        const s = cx.state(AppState);
-        const t = cx.theme();
-        const card = Card{ .title = "Text Input", .description = "Single-line text entry with placeholder and binding" };
-
-        card.render(cx, .{
-            ui.box(.{ .gap = 16 }, .{
-                ui.hstack(.{ .gap = 16, .alignment = .{ .cross = .center } }, .{
-                    TextInput{
-                        .id = "name-input",
-                        .placeholder = "Your name",
-                        .width = 200,
-                        .bind = &s.name,
-                        // Uses theme defaults: background=bg, border=border, etc.
-                    },
-                    TextInput{
-                        .id = "email-input",
-                        .placeholder = "Email address",
-                        .width = 200,
-                        .bind = &s.email,
-                    },
-                }),
-                ui.hstack(.{ .gap = 8 }, .{
-                    ui.text("Name:", .{ .size = 13, .color = t.muted }),
-                    ui.text(if (s.name.len > 0) s.name else "(empty)", .{ .size = 13, .color = t.text }),
-                    ui.text("  Email:", .{ .size = 13, .color = t.muted }),
-                    ui.text(if (s.email.len > 0) s.email else "(empty)", .{ .size = 13, .color = t.text }),
-                }),
-            }),
-        });
-    }
-};
-
-const TextAreaCard = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        const card = Card{ .title = "Text Area", .description = "Multi-line text entry for longer content" };
-
-        card.render(cx, .{
-            TextArea{
-                .id = "bio-input",
-                .placeholder = "Tell us about yourself...",
-                .width = 400,
-                .height = 120,
-                .bind = &cx.state(AppState).bio,
-                // Uses theme defaults for all colors
-            },
-        });
-    }
-};
-
-// =============================================================================
 // Selection Section
 // =============================================================================
 
@@ -1757,18 +1682,6 @@ const CustomPathsCard = struct {
 
 fn onEvent(cx: *Cx, event: gooey.input.InputEvent) bool {
     const s = cx.state(AppState);
-    const g = cx.window();
-
-    // Let text widgets handle their input first. The
-    // `runtime/input.focusedText*` helpers walk the matching
-    // `pending_*` lists and hit the pool by layout-id hash.
-    const builder = cx.builder();
-    const input_mod = gooey.runtime.input;
-    if (input_mod.focusedTextInput(g, builder) != null or
-        input_mod.focusedTextArea(g, builder) != null)
-    {
-        return false;
-    }
 
     if (event == .key_down) {
         const key = event.key_down;
@@ -1844,11 +1757,6 @@ fn onEvent(cx: *Cx, event: gooey.input.InputEvent) bool {
             cx.notify();
             return true;
         }
-        if (key.key == .@"7") {
-            s.goToSection(6);
-            cx.notify();
-            return true;
-        }
     }
 
     return false;
@@ -1866,12 +1774,12 @@ test "AppState navigation" {
     try std.testing.expectEqual(Section.buttons, s.section);
 
     s.nextSection();
-    try std.testing.expectEqual(Section.inputs, s.section);
+    try std.testing.expectEqual(Section.selection, s.section);
 
     s.prevSection();
     try std.testing.expectEqual(Section.buttons, s.section);
 
-    s.goToSection(5);
+    s.goToSection(4);
     try std.testing.expectEqual(Section.overlays, s.section);
 }
 

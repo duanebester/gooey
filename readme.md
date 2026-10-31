@@ -1242,64 +1242,40 @@ if (result) |r| {
     r.displayMessage()  // Message for visual display
     r.screenReaderMessage()  // Message for screen readers (falls back to display)
 }
-
-// Use with ValidatedTextInput for full a11y control
-components.ValidatedTextInput{
-    .id = "email",
-    .error_result = validation.requiredResult(s.email, .{
-        .message = "Required",
-        .accessible_message = "The email address field is required",
-    }),
-    .show_error = s.touched_email,
-}
 ```
 
-### ValidatedTextInput Component
+### Showing Errors
 
-All-in-one form field with label, input, error display, and help text:
+Validation returns values; the app decides where and when they appear. Show an
+error beside its field once the field has been touched, and announce it so a
+screen reader hears it:
 
 ```zig
 const State = struct {
     email: []const u8 = "",
     touched_email: bool = false,
 
-    pub fn validateEmail(self: *const State) ?[]const u8 {
+    pub fn emailError(self: *const State) ?[]const u8 {
+        if (!self.touched_email) return null;
         return gooey.validation.all(self.email, .{
             gooey.validation.required,
             gooey.validation.email,
         });
     }
-
-    pub fn onEmailBlur(self: *State) void {
-        self.touched_email = true;
-    }
 };
 
 // In render:
-components.ValidatedTextInput{
-    .id = "email",
-    .label = "Email Address",
-    .required_indicator = true,        // Shows "*" after label
-    .placeholder = "you@example.com",
-    .bind = &s.email,
-    .error_message = s.validateEmail(),  // Simple string error
-    .show_error = s.touched_email,       // Only show after interaction
-    .help_text = "We'll never share your email",
-    .on_blur = cx.on(State.onEmailBlur, .{}),
-    .width = 300,
-}
-
-// Or with structured result for different a11y messages:
-components.ValidatedTextInput{
-    .id = "email",
-    .label = "Email Address",
-    .error_result = validation.emailResult(s.email, .{
-        .message = "Invalid email",
-        .accessible_message = "Please enter a valid email address in the format name@example.com",
+cx.render(ui.vstack(.{ .gap = 4 }, .{
+    ui.text("Email Address *", .{ .size = 13 }),
+    components.TextInput{ .id = "email", .placeholder = "you@example.com", .bind = &s.email },
+    ui.when(s.emailError() != null, .{
+        ui.text(s.emailError() orelse "", .{ .size = 12, .color = ui.Color.red }),
     }),
-    .show_error = s.touched_email,
-}
+}));
 ```
+
+`examples/accessible_form.zig` shows the complete pattern, including live-region
+announcements of validation results.
 
 ### Form-Level Helpers
 
