@@ -124,9 +124,16 @@ pub const MacBridge = struct {
                 clearAccessibilityLabel(ns);
             }
 
-            // Set value
+            // Set value. A toggle without a text value reports its checked
+            // state as VoiceOver expects (0 or 1); otherwise a value that
+            // went away is cleared, so a reused wrapper never reports stale
+            // text.
             if (elem.value) |value| {
                 setAccessibilityValue(ns, value);
+            } else if (isToggle(elem.role)) {
+                setAccessibilityChecked(ns, elem.state.checked);
+            } else {
+                clearAccessibilityValue(ns);
             }
 
             // Set parent relationship
@@ -222,7 +229,9 @@ pub const MacBridge = struct {
         if (!self.voiceover_active) return;
         if (dirty.len == 0) return;
 
-        const root = self.root_element orelse return;
+        // Elements hang under the content view, not the window: replacing the
+        // window's children would hide its titlebar buttons from VoiceOver.
+        const root = self.content_view orelse self.root_element orelse return;
 
         // Sync each dirty element
         for (dirty) |idx| {
@@ -516,6 +525,23 @@ fn setAccessibilityValue(elem: objc.Object, value: []const u8) void {
     defer releaseNSObject(ns_value);
 
     elem.msgSend(void, "setAccessibilityValue:", .{ns_value.value});
+}
+
+fn clearAccessibilityValue(elem: objc.Object) void {
+    std.debug.assert(elem.value != null);
+    elem.msgSend(void, "setAccessibilityValue:", .{@as(objc.c.id, null)});
+}
+
+fn isToggle(role: types.Role) bool {
+    return role == .checkbox or role == .radio or role == .switch_;
+}
+
+fn setAccessibilityChecked(elem: objc.Object, checked: bool) void {
+    std.debug.assert(elem.value != null);
+    const NSNumber = objc.getClass("NSNumber") orelse return;
+    const number: objc.c.id = NSNumber.msgSend(objc.c.id, "numberWithBool:", .{checked});
+    std.debug.assert(number != null);
+    elem.msgSend(void, "setAccessibilityValue:", .{number});
 }
 
 fn setAccessibilityParent(elem: objc.Object, parent: objc.Object) void {
