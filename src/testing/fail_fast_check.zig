@@ -21,6 +21,7 @@
 //! - `core-duplicate-key`: renders two boxes with one key under one parent.
 //! - `core-component-depth`: nests components one level past `component_depth_max`.
 //! - `core-dialog-target`: names a non-root state as a file dialog's completion handler.
+//! - `core-dialog-paths`: a dialog selects one path more than `dialog_path_count_max`.
 //! - `core-mono-unset`: draws `.family = .mono` text in an app with no `fonts.mono`.
 //! - `core-wrap-lines`: wraps one text into one line past `MAX_LINES_PER_TEXT`.
 //! - `core-wrap-words`: wraps one text into one word past `MAX_WORDS_PER_TEXT`.
@@ -44,6 +45,7 @@ const Mode = enum {
     @"core-duplicate-key",
     @"core-component-depth",
     @"core-dialog-target",
+    @"core-dialog-paths",
     @"core-mono-unset",
     @"core-wrap-lines",
     @"core-wrap-words",
@@ -74,6 +76,7 @@ pub fn main(init: std.process.Init) !void {
         .@"core-duplicate-key" => coreTick(init.gpa, init.io, CoreApp.duplicateKey),
         .@"core-component-depth" => coreTick(init.gpa, init.io, CoreApp.nested),
         .@"core-dialog-target" => coreDialogTarget(init.gpa, init.io),
+        .@"core-dialog-paths" => coreDialogPaths(init.gpa, init.io),
         .@"core-mono-unset" => coreTick(init.gpa, init.io, CoreApp.monoText),
         .@"core-wrap-lines" => coreTick(init.gpa, init.io, CoreApp.wrapLines),
         .@"core-wrap-words" => coreTick(init.gpa, init.io, CoreApp.wrapWords),
@@ -244,7 +247,9 @@ const BuilderHarness = struct {
 
 const core = gooey.core;
 
-const CoreState = struct {};
+const CoreState = struct {
+    fn picked(_: *CoreState) void {}
+};
 
 const core_config: core.Config(CoreState) = .{
     .title = "fail-fast",
@@ -289,8 +294,28 @@ const CoreApp = struct {
 
     fn requestDialog(_: *CoreState, effects: *core.Effects) void {
         const on_complete = effects.handler(Stranger.picked);
-        effects.openFileDialog(.{ .kind = .open, .on_complete = on_complete });
+        effects.openFileDialog(.{ .kind = .{ .open = open_many }, .on_complete = on_complete });
     }
+
+    /// A window-sized box whose click requests a multiple selection.
+    fn manyButton(cx: *core.Cx) void {
+        cx.render(core.ui.box(.{
+            .key = .{ .name = "open" },
+            .on_click = cx.on(requestMany, .{}),
+            .style = .{ .width = .{ .grow = 1 }, .height = .{ .grow = 1 } },
+        }, .{}));
+    }
+
+    fn requestMany(_: *CoreState, effects: *core.Effects) void {
+        const on_complete = effects.handler(CoreState.picked);
+        effects.openFileDialog(.{ .kind = .{ .open = open_many }, .on_complete = on_complete });
+    }
+
+    const open_many: core.PathPromptOptions = .{
+        .files = true,
+        .directories = false,
+        .multiple = true,
+    };
 
     const Stranger = struct {
         fn picked(_: *Stranger) void {}
@@ -352,6 +377,41 @@ fn coreAllocation(gpa: std.mem.Allocator, io: std.Io) void {
 
 fn coreDialogTarget(gpa: std.mem.Allocator, io: std.Io) void {
     const app = initCoreApp(core.App(CoreState, CoreApp.dialogButton, core_config), gpa, io);
+    clickCenter(app);
+}
+
+fn coreDialogPaths(gpa: std.mem.Allocator, io: std.Io) void {
+    const app = initCoreApp(core.App(CoreState, CoreApp.manyButton, core_config), gpa, io);
+    var context: u8 = 0;
+    app.window.file_dialog = .{ .context = &context, .open = TooManyPaths.open };
+    clickCenter(app);
+}
+
+/// A dialog service that selects one path more than `nano` allows.
+const TooManyPaths = struct {
+    const count = core.ResourceLimits.nano.events.dialog_path_count_max + 1;
+    const bytes: []const u8 = &joined: {
+        var paths: [3 * count - 1]u8 = undefined;
+        for (0..count) |index| {
+            paths[3 * index] = '/';
+            paths[3 * index + 1] = 'a';
+            if (index + 1 < count) paths[3 * index + 2] = 0;
+        }
+        const result = paths;
+        break :joined result;
+    };
+
+    fn open(
+        _: *anyopaque,
+        _: std.mem.Allocator,
+        _: core.internals.handler.FileDialogRequest,
+    ) core.internals.events.Completion.Outcome {
+        return .{ .file_selected = .{ .bytes = bytes, .count = count } };
+    }
+};
+
+/// Tick once, then click the window's centre and tick again.
+fn clickCenter(app: anytype) void {
     app.tick(1);
     const point = gooey.input.MouseEvent{
         .position = .{ .x = 50, .y = 50 },

@@ -204,8 +204,41 @@ fn openDialog(window: *Window, request: @import("handler.zig").FileDialogRequest
         window.text_scratch_allocator.allocator(),
         request,
     );
+    switch (outcome) {
+        .file_selected => |paths| checkSelection(window, request, paths),
+        .cancelled, .failed => {},
+    }
     window.queue.push(.{ .completion = .{ .request_id = request_id, .outcome = outcome } });
     window.render_requested = true;
+}
+
+/// A selection past `ResourceLimits.events` fails fast (decision 11); one
+/// the request could not produce is the platform's bug.
+fn checkSelection(
+    window: *const Window,
+    request: @import("handler.zig").FileDialogRequest,
+    paths: @import("events.zig").Paths,
+) void {
+    assert(paths.count > 0);
+    switch (request.kind) {
+        .open => |options| if (!options.multiple) assert(paths.count == 1),
+        .save => assert(paths.count == 1),
+    }
+    const limits = &window.limits.events;
+    if (paths.count > limits.dialog_path_count_max) {
+        std.debug.panic("file dialog selected {d} paths: capacity {d}. Raise " ++
+            "ResourceLimits.events.dialog_path_count_max.", .{
+            paths.count,
+            limits.dialog_path_count_max,
+        });
+    }
+    if (paths.bytes.len > limits.dialog_path_bytes_max) {
+        std.debug.panic("file dialog selected {d} bytes of paths: capacity {d}. Raise " ++
+            "ResourceLimits.events.dialog_path_bytes_max.", .{
+            paths.bytes.len,
+            limits.dialog_path_bytes_max,
+        });
+    }
 }
 
 fn freeDialogSlot(window: *Window) u32 {

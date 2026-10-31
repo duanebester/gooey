@@ -8,6 +8,8 @@ const objc = @import("objc");
 const appkit = @import("appkit.zig");
 const interface_mod = @import("../interface.zig");
 
+const assert = std.debug.assert;
+
 // ============================================================================
 // Types (re-exported from interface)
 // ============================================================================
@@ -27,6 +29,7 @@ pub fn promptForPaths(
     allocator: std.mem.Allocator,
     options: PathPromptOptions,
 ) ?PathPromptResult {
+    assert(options.files or options.directories);
     const NSOpenPanel = objc.getClass("NSOpenPanel") orelse return null;
     const panel = NSOpenPanel.msgSend(objc.Object, "openPanel", .{});
 
@@ -36,36 +39,6 @@ pub fn promptForPaths(
     panel.msgSend(void, "setAllowsMultipleSelection:", .{options.multiple});
     panel.msgSend(void, "setCanCreateDirectories:", .{true});
     panel.msgSend(void, "setResolvesAliases:", .{true});
-
-    // Set starting directory
-    if (options.starting_directory) |directory| {
-        if (createFileURL(directory, true)) |dir_url| {
-            panel.msgSend(void, "setDirectoryURL:", .{dir_url.value});
-        }
-    }
-
-    // Set prompt button text
-    if (options.prompt) |prompt| {
-        if (createNSString(prompt)) |ns_prompt| {
-            panel.msgSend(void, "setPrompt:", .{ns_prompt.value});
-        }
-    }
-
-    // Set message/title
-    if (options.message) |message| {
-        if (createNSString(message)) |ns_message| {
-            panel.msgSend(void, "setMessage:", .{ns_message.value});
-        }
-    }
-
-    // Set allowed file types
-    if (options.allowed_extensions) |extensions| {
-        if (createNSArrayFromStrings(extensions)) |ns_array| {
-            // Use allowedContentTypes on macOS 11+, fallback to allowedFileTypes
-            // For simplicity, use the older API which still works
-            panel.msgSend(void, "setAllowedFileTypes:", .{ns_array.value});
-        }
-    }
 
     // Flush pending UI updates before blocking (makes button click feel responsive)
     if (objc.getClass("NSApplication")) |NSApp| {
@@ -122,11 +95,11 @@ pub fn promptForNewPath(
     allocator: std.mem.Allocator,
     options: SavePromptOptions,
 ) ?[]const u8 {
+    if (options.suggested_name) |name| assert(name.len > 0);
     const NSSavePanel = objc.getClass("NSSavePanel") orelse return null;
     const panel = NSSavePanel.msgSend(objc.Object, "savePanel", .{});
 
-    // Configure panel
-    panel.msgSend(void, "setCanCreateDirectories:", .{options.can_create_directories});
+    panel.msgSend(void, "setCanCreateDirectories:", .{true});
 
     // Set initial directory
     if (options.directory) |directory| {
@@ -139,27 +112,6 @@ pub fn promptForNewPath(
     if (options.suggested_name) |name| {
         if (createNSString(name)) |ns_name| {
             panel.msgSend(void, "setNameFieldStringValue:", .{ns_name.value});
-        }
-    }
-
-    // Set prompt button text
-    if (options.prompt) |prompt| {
-        if (createNSString(prompt)) |ns_prompt| {
-            panel.msgSend(void, "setPrompt:", .{ns_prompt.value});
-        }
-    }
-
-    // Set message/title
-    if (options.message) |message| {
-        if (createNSString(message)) |ns_message| {
-            panel.msgSend(void, "setMessage:", .{ns_message.value});
-        }
-    }
-
-    // Set allowed file types
-    if (options.allowed_extensions) |extensions| {
-        if (createNSArrayFromStrings(extensions)) |ns_array| {
-            panel.msgSend(void, "setAllowedFileTypes:", .{ns_array.value});
         }
     }
 
@@ -223,37 +175,4 @@ fn createFileURL(path: []const u8, is_directory: bool) ?objc.Object {
     const ns_path = createNSString(path) orelse return null;
     const NSURL = objc.getClass("NSURL") orelse return null;
     return NSURL.msgSend(objc.Object, "fileURLWithPath:isDirectory:", .{ ns_path.value, is_directory });
-}
-
-/// Create NSArray from string slices
-fn createNSArrayFromStrings(strings: []const []const u8) ?objc.Object {
-    const NSMutableArray = objc.getClass("NSMutableArray") orelse return null;
-
-    const array = NSMutableArray.msgSend(objc.Object, "arrayWithCapacity:", .{@as(c_ulong, strings.len)});
-
-    for (strings) |str| {
-        if (createNSString(str)) |ns_str| {
-            array.msgSend(void, "addObject:", .{ns_str.value});
-        }
-    }
-
-    return array;
-}
-
-// ============================================================================
-// Tests
-// ============================================================================
-
-test "PathPromptOptions defaults" {
-    const opts = PathPromptOptions{};
-    try std.testing.expect(opts.files == true);
-    try std.testing.expect(opts.directories == false);
-    try std.testing.expect(opts.multiple == false);
-}
-
-test "SavePromptOptions defaults" {
-    const opts = SavePromptOptions{};
-    try std.testing.expect(opts.can_create_directories == true);
-    try std.testing.expect(opts.directory == null);
-    try std.testing.expect(opts.suggested_name == null);
 }

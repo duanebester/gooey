@@ -25,7 +25,6 @@ const testing = gooey.testing;
 | `MockClipboard`     | In-memory clipboard             | NSPasteboard, Wayland, Browser     |
 | `MockSvgRasterizer` | Simulate SVG rasterization      | CoreGraphics, Cairo, Canvas        |
 | `MockFontFace`      | Configurable font metrics       | CoreText, FreeType, Browser fonts  |
-| `MockFileDialog`    | Simulate file open/save dialogs | NSOpenPanel, GTK, Browser file API |
 
 ---
 
@@ -327,126 +326,6 @@ test "handle missing glyph" {
 
 ---
 
-## MockFileDialog
-
-Simulates file open/save dialogs for testing file selection workflows.
-
-### Basic Usage
-
-```zig
-test "open file" {
-    var dialog = testing.MockFileDialog.init(testing.allocator);
-    defer dialog.deinit();
-
-    // Configure what the "user" will select
-    try dialog.setOpenResponse(&.{"/path/to/file.txt"});
-
-    // Call the mock dialog
-    const result = dialog.promptForPaths(testing.allocator, .{});
-    defer if (result) |r| r.deinit();
-
-    try std.testing.expect(result != null);
-    try std.testing.expectEqualStrings("/path/to/file.txt", result.?.paths[0]);
-    try std.testing.expectEqual(@as(u32, 1), dialog.open_count);
-}
-```
-
-### Save Dialog
-
-```zig
-test "save file" {
-    var dialog = testing.MockFileDialog.init(testing.allocator);
-    defer dialog.deinit();
-
-    try dialog.setSaveResponse("/documents/report.pdf");
-
-    const result = dialog.promptForNewPath(testing.allocator, .{
-        .suggested_name = "report.pdf",
-        .directory = "/documents",
-    });
-    defer if (result) |r| testing.allocator.free(r);
-
-    try std.testing.expectEqualStrings("/documents/report.pdf", result.?);
-}
-```
-
-### Multiple File Selection
-
-```zig
-test "select multiple files" {
-    var dialog = testing.MockFileDialog.init(testing.allocator);
-    defer dialog.deinit();
-
-    try dialog.setOpenResponse(&.{
-        "/photos/img1.jpg",
-        "/photos/img2.jpg",
-        "/photos/img3.jpg",
-    });
-
-    const result = dialog.promptForPaths(testing.allocator, .{
-        .multiple = true,
-        .allowed_extensions = &.{ "jpg", "png" },
-    });
-    defer if (result) |r| r.deinit();
-
-    try std.testing.expectEqual(@as(usize, 3), result.?.paths.len);
-}
-```
-
-### Simulating User Cancellation
-
-```zig
-test "user cancels dialog" {
-    var dialog = testing.MockFileDialog.init(testing.allocator);
-    defer dialog.deinit();
-
-    dialog.setCancelOpen();
-
-    const result = dialog.promptForPaths(testing.allocator, .{});
-    try std.testing.expect(result == null);
-    try std.testing.expectEqual(@as(u32, 1), dialog.open_count);
-}
-
-test "user cancels save" {
-    var dialog = testing.MockFileDialog.init(testing.allocator);
-    defer dialog.deinit();
-
-    dialog.setCancelSave();
-
-    const result = dialog.promptForNewPath(testing.allocator, .{});
-    try std.testing.expect(result == null);
-}
-```
-
-### Verifying Dialog Options
-
-```zig
-test "directory picker configured correctly" {
-    var dialog = testing.MockFileDialog.init(testing.allocator);
-    defer dialog.deinit();
-
-    _ = dialog.promptForPaths(testing.allocator, .{
-        .directories = true,
-        .files = false,
-        .prompt = "Select Folder",
-    });
-
-    try std.testing.expect(dialog.lastOpenAllowedDirectories());
-    try std.testing.expectEqualStrings("Select Folder", dialog.last_open_options.?.prompt.?);
-}
-```
-
-### Tracked State
-
-| Field               | Description                        |
-| ------------------- | ---------------------------------- |
-| `open_count`        | Number of `promptForPaths` calls   |
-| `save_count`        | Number of `promptForNewPath` calls |
-| `last_open_options` | Options from last open dialog      |
-| `last_save_options` | Options from last save dialog      |
-
----
-
 ## Test Helpers
 
 ### Geometry Assertions
@@ -568,11 +447,6 @@ comptime {
 comptime {
     interface_verify.verifySvgRasterizerInterface(@This());
     interface_verify.verifySvgRasterizerModule(@This());
-}
-
-// In mock_file_dialog.zig
-comptime {
-    interface_verify.verifyFileDialogInterface(@This());
 }
 ```
 

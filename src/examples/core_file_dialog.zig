@@ -1,10 +1,12 @@
-//! A file dialog from a handler on the 0.4.0 core (milestone 1).
+//! File dialogs from handlers on the 0.4.0 core.
 //!
-//! The button's handler only requests the dialog through `Effects`. The
-//! window opens it on the main thread after the drain, outside any handler,
-//! and the next drain delivers the outcome to `completed` as a selected
-//! path, a cancellation, or a failure. The request names its completion
-//! handler directly with `effects.handler` (decision 7).
+//! Each button's handler only requests a dialog through `Effects`, with
+//! GPUI's options (decision 11): open files, several files, or a folder, or
+//! save with a suggested name. The window opens the dialog on the main
+//! thread after the drain, outside any handler, and the next drain delivers
+//! the outcome to `completed`: the selected paths, a cancellation, or a
+//! failure. The request names its completion handler directly with
+//! `effects.handler` (decision 7).
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -22,29 +24,66 @@ const path_bytes_max = 512;
 pub const State = struct {
     path_bytes: [path_bytes_max]u8 = @splat(0),
     path_len: u32 = 0,
-    status: []const u8 = "No file chosen yet.",
+    status_bytes: [64]u8 = @splat(0),
+    status_len: u32 = 0,
 
-    pub fn open(_: *State, effects: *Effects) void {
-        effects.openFileDialog(.{ .kind = .open, .on_complete = effects.handler(State.completed) });
+    pub fn openFile(_: *State, effects: *Effects) void {
+        open(effects, .{ .files = true, .directories = false, .multiple = false });
+    }
+
+    pub fn openFiles(_: *State, effects: *Effects) void {
+        open(effects, .{ .files = true, .directories = false, .multiple = true });
+    }
+
+    pub fn openFolder(_: *State, effects: *Effects) void {
+        open(effects, .{ .files = false, .directories = true, .multiple = false });
     }
 
     pub fn save(_: *State, effects: *Effects) void {
-        effects.openFileDialog(.{ .kind = .save, .on_complete = effects.handler(State.completed) });
+        effects.openFileDialog(.{
+            .kind = .{ .save = .{ .directory = null, .suggested_name = "untitled.txt" } },
+            .on_complete = effects.handler(State.completed),
+        });
     }
 
     pub fn completed(self: *State, effects: *Effects) void {
         const completion = effects.completionEvent().?;
+        self.path_len = 0;
         switch (completion.outcome) {
-            .file_selected => |selected| {
-                const kept = keptLength(selected);
-                @memcpy(self.path_bytes[0..kept], selected[0..kept]);
+            .file_selected => |paths| {
+                const first = paths.first();
+                const kept = keptLength(first);
+                @memcpy(self.path_bytes[0..kept], first[0..kept]);
                 @memset(self.path_bytes[kept..], 0);
                 self.path_len = @intCast(kept);
-                self.status = "Selected:";
+                if (paths.count == 1) {
+                    self.setStatus("Selected:", .{});
+                } else {
+                    self.setStatus("Selected {d} paths; the first:", .{paths.count});
+                }
             },
-            .cancelled => self.status = "Cancelled.",
-            .failed => self.status = "The dialog failed.",
+            .cancelled => self.setStatus("Cancelled.", .{}),
+            .failed => self.setStatus("The dialog failed.", .{}),
         }
+    }
+
+    fn open(effects: *Effects, options: core.PathPromptOptions) void {
+        effects.openFileDialog(.{
+            .kind = .{ .open = options },
+            .on_complete = effects.handler(State.completed),
+        });
+    }
+
+    fn setStatus(self: *State, comptime format: []const u8, args: anytype) void {
+        // Every format above fits 64 bytes with the largest path count
+        // (`dialog_path_count_max` is at most 1,024), so bufPrint cannot fail.
+        const text = std.fmt.bufPrint(&self.status_bytes, format, args) catch unreachable;
+        self.status_len = @intCast(text.len);
+    }
+
+    fn status(self: *const State) []const u8 {
+        if (self.status_len == 0) return "No file chosen yet.";
+        return self.status_bytes[0..self.status_len];
     }
 
     fn chosenPath(self: *const State) []const u8 {
@@ -62,7 +101,7 @@ fn keptLength(value: []const u8) usize {
 
 pub const App = core.App(State, render, .{
     .title = "File dialog",
-    .width = 520,
+    .width = 680,
     .height = 220,
     .limits = .nano,
 });
@@ -79,14 +118,16 @@ pub fn render(cx: *Cx) void {
         .gap = 16,
     } }, .{
         ui.box(.{ .style = .{ .direction = .row, .gap = 8 } }, .{
-            Button{ .label = "Open\u{2026}", .on_click = cx.on(State.open, .{}) },
+            Button{ .label = "Open\u{2026}", .on_click = cx.on(State.openFile, .{}) },
+            Button{ .label = "Open Files\u{2026}", .on_click = cx.on(State.openFiles, .{}) },
+            Button{ .label = "Open Folder\u{2026}", .on_click = cx.on(State.openFolder, .{}) },
             Button{
                 .label = "Save\u{2026}",
                 .variant = .secondary,
                 .on_click = cx.on(State.save, .{}),
             },
         }),
-        ui.text(s.status, .{ .size = 16 }),
+        ui.text(s.status(), .{ .size = 16 }),
         ui.text(s.chosenPath(), .{ .size = 13 }),
     }));
 }

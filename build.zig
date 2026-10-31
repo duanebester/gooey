@@ -212,7 +212,6 @@ pub fn build(b: *std.Build) void {
             .{ .name = "dynamic-counters", .source = "src/examples/dynamic_counters.zig" },
             .{ .name = "actions", .source = "src/examples/actions.zig" },
             .{ .name = "images", .source = "src/examples/images.zig" },
-            .{ .name = "file-dialog", .source = "src/examples/file_dialog.zig" },
             .{ .name = "virtual-list", .source = "src/examples/virtual_list_example.zig" },
             .{ .name = "data-table", .source = "src/examples/data_table_example.zig" },
             .{ .name = "accessible-form", .source = "src/examples/accessible_form.zig" },
@@ -783,7 +782,6 @@ pub fn build(b: *std.Build) void {
 
         const linux_examples = [_]ExampleDefinition{
             .{ .name = "basic", .source = "src/examples/linux_demo.zig", .wayland_only = true },
-            .{ .name = "file-dialog", .source = "src/examples/linux_file_dialog.zig" },
             .{ .name = "drag-drop", .source = "src/examples/drag_drop.zig" },
             .{ .name = "lucide-demo", .source = "src/examples/lucide_demo.zig" },
             .{ .name = "animation", .source = "src/examples/animation.zig" },
@@ -1753,6 +1751,8 @@ fn addFailFastChecks(
         .{ .mode = "core-duplicate-key", .stderr = "duplicate key \"twin\" under element" },
         .{ .mode = "core-dialog-target", .stderr = "file dialog on_complete targets " ++
             "fail_fast_check.CoreApp.Stranger; the root state is fail_fast_check.CoreState" },
+        .{ .mode = "core-dialog-paths", .stderr = "file dialog selected 17 paths: " ++
+            "capacity 16. Raise ResourceLimits.events.dialog_path_count_max." },
         .{ .mode = "core-component-depth", .stderr = "component depth 65 exceeds " ++
             "build.component_depth_max 64 rendering fail_fast_check.CoreApp.Nest" },
         .{ .mode = "core-mono-unset", .stderr = "text uses family .mono, but no second " ++

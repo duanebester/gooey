@@ -204,38 +204,22 @@ pub const RendererCapabilities = struct {
 // File dialog types
 // =============================================================================
 
-/// Options for file open dialogs.
+/// Options for file open dialogs: GPUI's `PathPromptOptions` (contract
+/// decision 11). No defaults, so every call site states what it selects.
+/// At least one of `files` and `directories` is set.
 pub const PathPromptOptions = struct {
-    /// Allow selecting directories.
-    directories: bool = false,
-    /// Allow selecting files.
-    files: bool = true,
-    /// Allow multiple selection.
-    multiple: bool = false,
-    /// Button text (e.g. "Open", "Select").
-    prompt: ?[]const u8 = null,
-    /// Window title/message.
-    message: ?[]const u8 = null,
-    /// Starting directory path.
-    starting_directory: ?[]const u8 = null,
-    /// Allowed file extensions (e.g. `&.{ "txt", "md" }`).
-    allowed_extensions: ?[]const []const u8 = null,
+    files: bool,
+    directories: bool,
+    multiple: bool,
 };
 
-/// Options for file save dialogs.
+/// Options for file save dialogs: GPUI's `prompt_for_new_path` arguments
+/// (contract decision 11). The panel always allows creating directories.
 pub const SavePromptOptions = struct {
-    /// Starting directory path.
-    directory: ?[]const u8 = null,
-    /// Suggested filename.
-    suggested_name: ?[]const u8 = null,
-    /// Button text (e.g. "Save").
-    prompt: ?[]const u8 = null,
-    /// Window title/message.
-    message: ?[]const u8 = null,
-    /// Allowed file extensions (e.g. `&.{ "txt", "md" }`).
-    allowed_extensions: ?[]const []const u8 = null,
-    /// Allow creating directories.
-    can_create_directories: bool = true,
+    /// The folder the panel starts in, or null for the platform's choice.
+    directory: ?[]const u8,
+    /// The file name the panel starts with, or null for none. Never empty.
+    suggested_name: ?[]const u8,
 };
 
 /// Result from a file dialog.

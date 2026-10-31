@@ -9,7 +9,6 @@
 //! - `MockClipboard` - In-memory clipboard for copy/paste testing
 //! - `MockSvgRasterizer` - Simulates SVG rasterization
 //! - `MockFontFace` - Configurable font face for text testing
-//! - `MockFileDialog` - Simulates file open/save dialogs
 //!
 //! ## Example
 //!
@@ -38,7 +37,6 @@ const std = @import("std");
 pub const MockRenderer = @import("mock_renderer.zig").MockRenderer;
 pub const MockClipboard = @import("mock_clipboard.zig").MockClipboard;
 pub const MockFontFace = @import("mock_font_face.zig").MockFontFace;
-pub const MockFileDialog = @import("mock_file_dialog.zig").MockFileDialog;
 
 /// Mock SVG rasterizer module
 pub const mock_svg_rasterizer = @import("mock_svg_rasterizer.zig");
