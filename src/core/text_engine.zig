@@ -382,17 +382,20 @@ pub const InputEngine = struct {
     }
 };
 
-/// Edit commands use Cmd on macOS and the web, as in 0.3.1, and Ctrl on
-/// Windows and Linux, ignored with Alt held. Linux uses Ctrl, not 0.3.1's
-/// Super: GNOME's shell takes Super+A and Super+V, and an IME such as
-/// ibus-mozc turns Super+letters into preedit text (approved 2026-10-31
-/// after SER9's check).
+/// Edit commands use Cmd on Apple platforms and Ctrl elsewhere, ignored with
+/// Alt held. Linux uses Ctrl, not 0.3.1's Super: GNOME's shell takes Super+A
+/// and Super+V, and an IME such as ibus-mozc turns Super+letters into preedit
+/// text (approved 2026-10-31 after SER9's check).
 pub fn editCommand(mods: input.Modifiers) bool {
     if (uses_cmd) return mods.cmd;
     return mods.ctrl and !mods.alt;
 }
 
-const uses_cmd = builtin.os.tag == .macos or builtin.os.tag == .freestanding;
+/// Whether edit commands use Cmd. Native targets know their OS at build time.
+/// One wasm build runs in browsers on every OS, so the web host sets this
+/// once during init from the browser's platform, before the first frame, and
+/// nothing writes it afterwards (0.3.1 used Cmd in every browser).
+pub var uses_cmd: bool = builtin.os.tag == .macos;
 
 fn oneCodepoint(value: []const u8) bool {
     if (value.len == 0) return false;

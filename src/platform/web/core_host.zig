@@ -35,6 +35,7 @@ const core_window = @import("../../core/window.zig");
 const core_router = @import("../../core/router.zig");
 const core_events = @import("../../core/events.zig");
 const records = @import("../../core/records.zig");
+const text_engine = @import("../../core/text_engine.zig");
 const ResourceLimits = @import("../../core/limits.zig").ResourceLimits;
 
 const assert = std.debug.assert;
@@ -176,6 +177,9 @@ pub const Host = struct {
         core.height = @floatCast(self.height);
         core.presenter = .{ .context = self, .draw = draw };
         core.bindScreenReader(null, null);
+        // Text fields follow the user's OS: Cmd in a browser on macOS or iOS,
+        // Ctrl elsewhere, as a native text field there does.
+        text_engine.uses_cmd = imports.isApplePlatform();
         // Paste arrives as text input from the browser's paste event, as in
         // 0.3.1, so the service only writes.
         core.clipboard.service = .{
