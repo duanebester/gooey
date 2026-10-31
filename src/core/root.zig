@@ -78,4 +78,5 @@ test {
     _ = text_engine;
     _ = lifecycle;
     _ = layers;
+    _ = @import("screen_reader.zig");
 }

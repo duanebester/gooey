@@ -130,7 +130,65 @@ pub const A11yNode = struct {
     depth: u8,
     name: TextRange,
     value: TextRange,
+    href: TextRange,
     state: a11y_types.State,
+    heading_level: a11y_types.HeadingLevel,
+    live: a11y_types.Live,
+};
+
+/// Screen-reader announcements (`Effects.announce`) in their own bytes, so a
+/// handler's slice need not outlive it. The window collects them between
+/// builds; each frame carries the ones made since the previous build.
+pub const Announcements = struct {
+    bytes: [bytes_max]u8,
+    bytes_len: u32,
+    items: [count_max]Item,
+    count: u32,
+
+    /// 0.3.1's bound (`MAX_A11Y_ANNOUNCEMENTS`); screen readers queue or drop
+    /// the rest anyway, so more per frame is a programmer error.
+    pub const count_max: u32 = 16;
+    pub const bytes_max: u32 = 1024;
+
+    pub const Item = struct { text: TextRange, live: a11y_types.Live };
+
+    pub fn clear(self: *Announcements) void {
+        self.count = 0;
+        self.bytes_len = 0;
+    }
+
+    /// Copy `message`; exceeding either pool fails fast with its name.
+    pub fn push(self: *Announcements, message: []const u8, live: a11y_types.Live) void {
+        assert(live != .off);
+        assert(message.len > 0);
+        assert(self.count <= count_max);
+        if (self.count == count_max or message.len > bytes_max - self.bytes_len) {
+            std.debug.panic("announcement pool exhausted: capacity {d} announcements and " ++
+                "{d} bytes, {d} and {d} in use, {d} bytes requested", .{
+                count_max,
+                bytes_max,
+                self.count,
+                self.bytes_len,
+                message.len,
+            });
+        }
+        const range = TextRange{ .offset = self.bytes_len, .len = @intCast(message.len) };
+        @memcpy(self.bytes[range.offset..][0..range.len], message);
+        self.bytes_len += range.len;
+        self.items[self.count] = .{ .text = range, .live = live };
+        self.count += 1;
+    }
+
+    pub fn slice(self: *const Announcements) []const Item {
+        assert(self.count <= count_max);
+        return self.items[0..self.count];
+    }
+
+    pub fn text(self: *const Announcements, item: Item) []const u8 {
+        assert(item.text.len > 0);
+        assert(item.text.offset + item.text.len <= self.bytes_len);
+        return self.bytes[item.text.offset..][0..item.text.len];
+    }
 };
 
 /// A byte range in `Frame.text_bytes`. `len == 0` means absent.
@@ -168,6 +226,7 @@ pub const Frame = struct {
     handler_count: u32,
     a11y: []A11yNode,
     a11y_count: u32,
+    announcements: Announcements,
     text_bytes: []u8,
     text_len: u32,
     ime: ?Ime,
@@ -215,6 +274,7 @@ pub const Frame = struct {
         self.hit_count = 0;
         self.handler_count = 0;
         self.a11y_count = 0;
+        self.announcements.clear();
         self.text_len = 0;
         self.ime = null;
         self.frame_number = frame_number;

@@ -208,8 +208,11 @@ pub const Cx = struct {
             .role = a11y.role,
             .label = frame.copyText(a11y.label orelse ""),
             .value = frame.copyText(a11y.value orelse ""),
+            .href = frame.copyText(a11y.href orelse ""),
             .checked = a11y.checked,
             .disabled = a11y.disabled,
+            .heading_level = a11y.heading_level,
+            .live = a11y.live,
         };
         resolveAppearance(window, node, &box.style);
         pushOpen(window, index);

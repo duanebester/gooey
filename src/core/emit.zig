@@ -203,7 +203,10 @@ fn emitA11y(window: *Window, node: *const Node, bounds: Rect, level: u8) u8 {
         .depth = level,
         .name = a11y.label,
         .value = a11y.value,
+        .href = a11y.href,
         .state = .{ .focused = focused, .checked = a11y.checked, .disabled = a11y.disabled },
+        .heading_level = a11y.heading_level,
+        .live = a11y.live,
     });
     return 1;
 }

@@ -15,6 +15,8 @@ const builtin = @import("builtin");
 const id_mod = @import("id.zig");
 const input = @import("../input/mod.zig");
 const events = @import("events.zig");
+const Theme = @import("../ui/theme.zig").Theme;
+const Live = @import("../accessibility/types.zig").Live;
 
 const assert = std.debug.assert;
 
@@ -157,6 +159,8 @@ pub const Effects = struct {
     quit_requested: bool,
     file_dialog: ?FileDialogRequest,
     font_request: ?FontRequest,
+    theme_request: ?*const Theme,
+    announcement: ?Announcement,
     /// The element the router is delivering to, for `focusSelf`.
     current: ElementId,
 
@@ -164,6 +168,9 @@ pub const Effects = struct {
 
     /// A font change: the family name is copied when the handler returns.
     pub const FontRequest = struct { name: []const u8, size: f32 };
+
+    /// Text is copied when the handler returns.
+    pub const Announcement = struct { text: []const u8, politeness: Live };
 
     pub fn init(event: ?*const input.InputEvent, current: ElementId) Effects {
         return .{
@@ -175,6 +182,8 @@ pub const Effects = struct {
             .quit_requested = false,
             .file_dialog = null,
             .font_request = null,
+            .theme_request = null,
+            .announcement = null,
             .current = current,
         };
     }
@@ -226,6 +235,22 @@ pub const Effects = struct {
         assert(name.len > 0);
         assert(size > 0 and size < 1000);
         self.font_request = .{ .name = name, .size = size };
+    }
+
+    /// Switch every element's theme tokens to `theme` (decision 10, C11).
+    /// The next build resolves against it; the clear colour follows `bg`.
+    pub fn setTheme(self: *Effects, theme: *const Theme) void {
+        self.theme_request = theme;
+        assert(self.theme_request.? == theme);
+    }
+
+    /// Ask the screen reader to speak `text` (decision 10, C9). The next
+    /// frame carries it to the platform; at most one per handler.
+    pub fn announce(self: *Effects, text: []const u8, politeness: Live) void {
+        assert(text.len > 0);
+        assert(politeness != .off);
+        assert(self.announcement == null);
+        self.announcement = .{ .text = text, .politeness = politeness };
     }
 
     /// A handler for `method` on the root state, for a request's completion

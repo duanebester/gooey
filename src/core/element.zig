@@ -23,6 +23,8 @@ pub const Theme = ui_theme.Theme;
 pub const Corners = records.Corners;
 pub const Layer = layers.Layer;
 pub const Role = a11y_types.Role;
+pub const HeadingLevel = a11y_types.HeadingLevel;
+pub const Live = a11y_types.Live;
 
 pub const Direction = enum { row, column };
 pub const Sizing = union(enum) { fit, grow: f32, fixed: f32, percent: f32 };
@@ -146,6 +148,10 @@ pub const A11y = struct {
     value: ?[]const u8 = null,
     checked: bool = false,
     disabled: bool = false,
+    heading_level: HeadingLevel = .none,
+    /// How a screen reader reports changes inside this element.
+    live: Live = .off,
+    href: ?[]const u8 = null,
 };
 
 /// Per-instance identity and behaviour (contract §1).

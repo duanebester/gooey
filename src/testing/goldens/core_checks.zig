@@ -497,3 +497,88 @@ test "a host's teardown frees through the guard after stop and leaves no atlas c
     try testing.expectEqual(@as(u32, 0), app.resources.atlas_uploads.consumer_count);
     app.deinit();
 }
+
+const ThemeState = struct {
+    pub fn goDark(_: *ThemeState, effects: *Effects) void {
+        effects.setTheme(&core.Theme.dark);
+        effects.announce("Dark theme", .polite);
+    }
+};
+
+const ThemeApp = core.App(ThemeState, themeRender, .{
+    .title = "Theme",
+    .width = 200,
+    .height = 100,
+    .limits = .nano,
+});
+
+fn themeRender(cx: *Cx) void {
+    cx.render(ui.box(.{
+        .key = .{ .name = "page" },
+        .on_click = cx.on(ThemeState.goDark, .{}),
+        .a11y = .{ .role = .heading, .label = "Settings", .heading_level = .h2 },
+        .style = .{ .width = .{ .grow = 1 }, .height = .{ .grow = 1 }, .background = .surface },
+    }, .{
+        ui.box(.{
+            .a11y = .{ .role = .link, .label = "Docs", .live = .polite, .href = "https://x.dev" },
+            .style = .{ .width = .{ .fixed = 20 }, .height = .{ .fixed = 20 } },
+        }, .{}),
+    }));
+}
+
+fn firstFill(frame: *const core.internals.records.Frame) core.internals.records.Color {
+    for (frame.paint[0..frame.paint_count]) |record| {
+        switch (record) {
+            .quad => |quad| return quad.fill,
+            else => {},
+        }
+    }
+    unreachable;
+}
+
+test "setTheme reaches the next build and announcements ride exactly one frame" {
+    // Goal: decision 10's C11 and C9 on the core. Methodology: click while a
+    // frame is in flight, so neither request may touch that frame; the next
+    // build resolves tokens and the clear colour against the dark theme and
+    // carries the announcement, and the build after it carries none. The
+    // accessibility fields reach the rendered frame unchanged.
+    const app = try testing.allocator.create(ThemeApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    const tick = core.internals.tick;
+    const window = &app.window;
+    const light = &core.Theme.light;
+    const dark = &core.Theme.dark;
+    app.tick(1);
+    const first = window.rendered();
+    try testing.expectEqual(@as(u32, 2), first.a11y_count);
+    try testing.expectEqual(.h2, first.a11y[0].heading_level);
+    try testing.expectEqual(.polite, first.a11y[1].live);
+    try testing.expectEqualStrings("https://x.dev", first.text(first.a11y[1].href).?);
+    try testing.expectEqual(light.surface, firstFill(first));
+
+    window.render_requested = true;
+    try testing.expect(tick.tickMain(app, window, 2));
+    window.queue.push(.{ .input = .{ .mouse_down = mouse(100, 50) } });
+    window.queue.push(.{ .input = .{ .mouse_up = mouse(100, 50) } });
+    try testing.expect(!tick.tickMain(app, window, 3));
+    try testing.expectEqual(light.bg, window.clear_color);
+    try testing.expectEqual(@as(u32, 0), window.built().announcements.count);
+
+    tick.presentBuilt(window);
+    try testing.expect(tick.tickMain(app, window, 4));
+    tick.presentBuilt(window);
+    app.tick(5);
+    const darkened = window.rendered();
+    try testing.expectEqual(dark.bg, window.clear_color);
+    try testing.expectEqual(dark.surface, firstFill(darkened));
+    try testing.expectEqual(@as(u32, 1), darkened.announcements.count);
+    const said = darkened.announcements.slice()[0];
+    try testing.expectEqual(.polite, said.live);
+    try testing.expectEqualStrings("Dark theme", darkened.announcements.text(said));
+
+    window.render_requested = true;
+    app.tick(6);
+    try testing.expectEqual(@as(u32, 0), window.rendered().announcements.count);
+}

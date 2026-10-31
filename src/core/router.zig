@@ -292,6 +292,16 @@ fn invoke(
     }
     if (effects.file_dialog) |request| requestDialog(window, request);
     if (effects.font_request) |request| requestFont(window, request);
+    if (effects.theme_request) |theme| {
+        // Only build reads the theme, on this thread, so the swap is safe
+        // with a frame in flight; the clear colour follows at that build.
+        window.theme = theme;
+        window.render_requested = true;
+    }
+    if (effects.announcement) |announcement| {
+        window.announcements.push(announcement.text, announcement.politeness);
+        window.render_requested = true;
+    }
     return effects.propagation_stopped;
 }
 
