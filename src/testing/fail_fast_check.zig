@@ -27,6 +27,7 @@
 //! - `core-wrap-lines`: wraps one text into one line past `MAX_LINES_PER_TEXT`.
 //! - `core-wrap-words`: wraps one text into one word past `MAX_WORDS_PER_TEXT`.
 //! - `core-wrap-frame`: wraps two texts into one line past the frame's glyph budget.
+//! - `core-deinit-running`: frees a running app without stopping it first.
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -51,6 +52,7 @@ const Mode = enum {
     @"core-wrap-lines",
     @"core-wrap-words",
     @"core-wrap-frame",
+    @"core-deinit-running",
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -82,6 +84,7 @@ pub fn main(init: std.process.Init) !void {
         .@"core-wrap-lines" => coreTick(init.gpa, init.io, CoreApp.wrapLines),
         .@"core-wrap-words" => coreTick(init.gpa, init.io, CoreApp.wrapWords),
         .@"core-wrap-frame" => coreTick(init.gpa, init.io, CoreApp.wrapFrame),
+        .@"core-deinit-running" => coreDeinitRunning(init.gpa, init.io),
     }
     std.debug.print("unreachable: {s} did not panic\n", .{@tagName(mode)});
 }
@@ -384,6 +387,12 @@ fn coreDialogTarget(gpa: std.mem.Allocator, io: std.Io) void {
     app.window.queue.push(.{ .input = .{ .mouse_down = point } });
     app.window.queue.push(.{ .input = .{ .mouse_up = point } });
     app.tick(2);
+}
+
+fn coreDeinitRunning(gpa: std.mem.Allocator, io: std.Io) void {
+    const app = initCoreApp(core.App(CoreState, CoreApp.empty, core_config), gpa, io);
+    app.tick(1);
+    app.deinit();
 }
 
 fn coreTick(gpa: std.mem.Allocator, io: std.Io, comptime render: fn (*core.Cx) void) void {

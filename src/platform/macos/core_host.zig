@@ -104,9 +104,12 @@ pub fn run(comptime App: type, app: *App, backing: std.mem.Allocator, io: std.Io
         .tick_main = App.tickMainErased,
         .io = io,
     });
-    defer host.stop();
+    defer host.deinit();
 
     app.finishInit();
+    // Deferred last, so it runs first: the guard leaves `running` before the
+    // deferred teardown above frees the host, the window, and the platform.
+    defer app.stop();
     assert(app.guard.lifecycle == .running);
     host.scheduleTick();
     platform.run();
@@ -159,6 +162,7 @@ pub const Host = struct {
         self.stopping = .init(false);
         self.render_error_logged = false;
         self.bindWindow();
+        errdefer self.unbindWindow();
         self.link = try createLink(self.window);
         errdefer self.link.release();
         active_host.store(self, .release);
@@ -188,6 +192,24 @@ pub const Host = struct {
         self.core.presenter = .{ .context = self, .draw = draw };
         self.core.file_dialog = .{ .context = self, .open = openDialog };
         assert(self.window.core != null);
+    }
+
+    /// Stop the render thread, then undo `bindWindow`. Runs once, from
+    /// `run`'s teardown; a titlebar close only stops the thread.
+    pub fn deinit(self: *Host) void {
+        self.stop();
+        self.unbindWindow();
+    }
+
+    /// Undo `bindWindow` once the render thread, the atlas consumer, has
+    /// stopped: the shared upload journal requires every consumer to leave
+    /// before it is freed.
+    fn unbindWindow(self: *Host) void {
+        assert(self.thread == null);
+        assert(self.core.atlas_consumer_key == @intFromPtr(self.window));
+        self.core.resources.unregisterAtlasConsumer(self.core.atlas_consumer_key);
+        self.core.presenter = null;
+        self.core.file_dialog = null;
     }
 
     /// Stop the render thread and wait for it: the link is invalidated on

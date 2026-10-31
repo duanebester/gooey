@@ -153,17 +153,18 @@ pub fn App(
         }
 
         /// The generated entry point (contract §7): `pub const main =
-        /// App.main;` in the root file. On WASM, JavaScript drives the app
-        /// through the exports below instead, so `main` does nothing there.
-        /// Milestone 1 runs on macOS; Linux and Windows move onto the core in
+        /// App.main;` in the root file. Runs on macOS and Linux (Wayland). On
+        /// WASM, JavaScript drives the app through the exports below instead,
+        /// so `main` does nothing there. Windows moves onto the core later in
         /// phase 4.
         pub fn main(init: std.process.Init) !void {
             if (comptime builtin.cpu.arch.isWasm()) return;
-            if (comptime builtin.os.tag != .macos) {
-                @compileError("gooey.App.main runs on macOS in milestone 1; other " ++
-                    "platforms move onto the core in phase 4");
-            }
-            const host = @import("../platform/macos/core_host.zig");
+            const host = switch (comptime builtin.os.tag) {
+                .macos => @import("../platform/macos/core_host.zig"),
+                .linux => @import("../platform/linux/core_host.zig"),
+                else => @compileError("gooey.App.main runs on macOS, Linux, and the web; " ++
+                    "Windows moves onto the core later in phase 4"),
+            };
             const self = try init.gpa.create(Self);
             defer init.gpa.destroy(self);
             try host.run(Self, self, init.gpa, init.io);
@@ -215,11 +216,32 @@ pub fn App(
             assert(self.guard.lifecycle == .running);
         }
 
-        /// Free everything `initCore` reserved; also valid when a later init
-        /// step failed before `finishInit`.
-        pub fn deinit(self: *Self) void {
-            assert(self.guard.lifecycle != .deinitializing);
+        /// Stop and free an app made by `initHeadless`: the TestBackend
+        /// path has no host to stop it.
+        pub fn deinitHeadless(self: *Self) void {
+            self.stop();
+            self.deinit();
+            assert(self.guard.lifecycle == .deinitializing);
+        }
+
+        /// Leave `running`, the only way out of it: no tick runs afterwards,
+        /// and frees through the guard are expected. A host defers it right
+        /// after `finishInit`, so it runs before any deferred teardown frees
+        /// the host, the platform window, or the core.
+        pub fn stop(self: *Self) void {
+            assert(self.guard.lifecycle == .running);
+            assert(self.window.phase == .idle);
             self.guard.enterDeinitializing();
+        }
+
+        /// Free everything `initCore` reserved. A running app must `stop`
+        /// first; an init that failed before `finishInit` is still
+        /// initializing, and its teardown starts here.
+        pub fn deinit(self: *Self) void {
+            if (self.guard.lifecycle == .running) std.debug.panic("App.deinit on a " ++
+                "running app: call App.stop first, before any teardown frees", .{});
+            if (self.guard.lifecycle == .initializing) self.guard.enterDeinitializing();
+            assert(self.guard.lifecycle == .deinitializing);
             window_mod.deinit(&self.window);
             self.resources.deinit();
         }

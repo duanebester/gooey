@@ -28,6 +28,8 @@ const ExampleDefinition = struct {
     metal_hud: bool = false,
     /// Drives the Wayland event loop directly, so the fbdev backend skips it.
     wayland_only: bool = false,
+    /// A 0.4.0 core app: on Linux its host needs the Wayland Vulkan backend.
+    core: bool = false,
 };
 
 pub fn build(b: *std.Build) void {
@@ -808,6 +810,13 @@ pub fn build(b: *std.Build) void {
             .{ .name = "animation", .source = "src/examples/animation.zig" },
             .{ .name = "counter", .source = "src/examples/counter.zig" },
             .{ .name = "todo", .source = "src/examples/todo.zig" },
+            .{ .name = "core-counter", .source = "src/examples/core_counter.zig", .core = true },
+            .{ .name = "core-todo", .source = "src/examples/core_todo.zig", .core = true },
+            .{
+                .name = "core-file-dialog",
+                .source = "src/examples/core_file_dialog.zig",
+                .core = true,
+            },
             .{ .name = "code-editor", .source = "src/examples/code_editor.zig" },
             .{ .name = "spaceship", .source = "src/examples/spaceship.zig" },
             .{ .name = "dynamic-counters", .source = "src/examples/dynamic_counters.zig" },
@@ -822,6 +831,7 @@ pub fn build(b: *std.Build) void {
         };
         for (linux_examples) |example| {
             if (example.wayland_only and linux_backend == .fbdev) continue;
+            if (example.core and linux_backend != .wayland_vulkan) continue;
             addLinuxExample(
                 b,
                 mod,
@@ -1782,6 +1792,8 @@ fn addFailFastChecks(
             "capacity 2048 (MAX_WORDS_PER_TEXT), 1 requested" },
         .{ .mode = "core-wrap-frame", .stderr = "wrapped lines exhausted: capacity 1024 " ++
             "(scene.glyph_count_frame_max), 1000 in use, 25 requested" },
+        .{ .mode = "core-deinit-running", .stderr = "App.deinit on a running app: " ++
+            "call App.stop first, before any teardown frees" },
     };
     for (checks) |check| {
         // CoreText shapes at most 1,024 glyphs and 2,047 UTF-16 units per run,
@@ -1935,6 +1947,8 @@ fn addLinuxTypecheck(b: *std.Build) void {
         .{ .source = "src/root.zig", .as_test = true },
         .{ .source = "src/examples/linux_demo.zig", .as_test = false },
         .{ .source = "src/examples/glass.zig", .as_test = false },
+        // The 0.4.0 core host: window binding, render thread, and dialogs.
+        .{ .source = "src/examples/core_todo.zig", .as_test = false },
         .{
             .source = "src/examples/linux_demo.zig",
             .as_test = false,

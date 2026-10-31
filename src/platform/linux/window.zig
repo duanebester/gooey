@@ -24,6 +24,21 @@ const linux_input = @import("input.zig");
 const Allocator = std.mem.Allocator;
 const WindowOptions = interface_mod.WindowOptions;
 const ResourceLimits = @import("../../core/limits.zig").ResourceLimits;
+const core_events = @import("../../core/events.zig");
+const core_router = @import("../../core/router.zig");
+
+/// How a 0.4.0 core app drives this window (contract §9), as on macOS: the
+/// window pushes input and configures into the core's queue and asks the
+/// host for a tick. No `on_input` or `on_render` callback runs and the window
+/// never draws on the main thread; the host's render thread draws.
+pub const CoreBinding = struct {
+    queue: *core_events.EventQueue,
+    query: *const core_router.Query,
+    context: *anyopaque,
+    /// Ask the host for a main-thread tick. Called on the main thread after
+    /// every push.
+    schedule_tick: *const fn (context: *anyopaque) void,
+};
 
 /// The renderer is fixed per build. Selecting it at comptime keeps the
 /// unselected renderer out of the binary, so a CPU build neither links nor
@@ -216,6 +231,9 @@ pub const Window = struct {
 
     /// User data pointer for callbacks
     user_data: ?*anyopaque = null,
+
+    /// Set when a 0.4.0 core app drives this window; see `CoreBinding`.
+    core: ?CoreBinding = null,
 
     // =========================================================================
     // GPU Timing (reported to profiler at start of next frame)
@@ -731,6 +749,8 @@ pub const Window = struct {
         // between the close and the owner's reclaim, so this must be checked
         // here and not only at the call sites.
         if (self.closed) return;
+        // A core app renders what its tick builds, on its render thread.
+        if (self.core != null) return;
 
         self.needs_redraw = true;
         self.scheduleFrame();
@@ -952,6 +972,8 @@ pub const Window = struct {
             else => {},
         }
 
+        if (self.core) |binding| return pushCoreInput(binding, event);
+
         // Dispatch to user callback
         var handled = false;
         if (self.on_input) |callback| {
@@ -967,6 +989,54 @@ pub const Window = struct {
         // Request redraw after input
         self.requestRender();
         return handled;
+    }
+
+    /// Queue `event` for the core's next drain. Only a key the keymap claims
+    /// counts as handled.
+    fn pushCoreInput(binding: CoreBinding, event: input.InputEvent) bool {
+        binding.queue.push(.{ .input = event });
+        binding.schedule_tick(binding.context);
+        return switch (event) {
+            .key_down => |key| binding.query.keymapClaims(key),
+            else => false,
+        };
+    }
+
+    /// Bind a core app. Call once, before the host's render thread starts.
+    pub fn bindCore(self: *Self, binding: CoreBinding) void {
+        std.debug.assert(self.core == null);
+        std.debug.assert(self.on_input == null);
+        std.debug.assert(self.on_render == null);
+        // The initial configure armed a frame callback for the 0.3.1 render
+        // path. Drop it: it would draw on the main thread.
+        if (self.frame_callback) |callback| wayland.callbackDestroy(callback);
+        self.frame_callback = null;
+        self.needs_redraw = false;
+        self.core = binding;
+        std.debug.assert(self.core != null);
+    }
+
+    /// A core app resizes through its queue: the next built frame carries the
+    /// new viewport, and the render thread resizes the swapchain and the
+    /// surface's viewport before it presents that frame, so the new size and
+    /// the buffer drawn for it reach the compositor in one commit.
+    fn resizeCore(self: *Self, binding: CoreBinding) void {
+        std.debug.assert(self.pending_width > 0);
+        std.debug.assert(self.pending_height > 0);
+        std.debug.assert(self.scale_factor > 0);
+        self.pending_resize = false;
+        self.width_px = self.pending_width;
+        self.height_px = self.pending_height;
+        self.size = .{
+            .width = @floatFromInt(self.pending_width),
+            .height = @floatFromInt(self.pending_height),
+        };
+        binding.queue.push(.{ .window = .{ .resized = .{
+            .width = @floatFromInt(self.pending_width),
+            .height = @floatFromInt(self.pending_height),
+            .scale_factor = @floatCast(self.scale_factor),
+        } } });
+        binding.schedule_tick(binding.context);
     }
 
     /// Get current modifier state from platform
@@ -1111,6 +1181,7 @@ pub const Window = struct {
         // than letting it drive a zombie render chain (see `markClosed`).
         if (self.closed) return;
         if (!self.configured) return;
+        std.debug.assert(self.core == null);
         if (!self.needs_redraw and !self.pending_resize and !self.hasPendingAtlasUploads()) return;
 
         // Clear before invoking application code so requestRender() calls made
@@ -1244,6 +1315,7 @@ pub const Window = struct {
             self.pending_resize = true;
             self.pending_width = self.width_px;
             self.pending_height = self.height_px;
+            if (self.core) |binding| self.resizeCore(binding);
         }
         self.requestRender();
     }
@@ -1272,6 +1344,7 @@ pub const Window = struct {
         // Apply pending size changes
         if (self.pending_width > 0 and self.pending_height > 0) {
             self.pending_resize = true;
+            if (self.core) |binding| self.resizeCore(binding);
         }
 
         self.configured = true;
