@@ -68,8 +68,10 @@
     <script type="module">
       const canvas = document.getElementById("canvas");
 
-      // Handle high-DPI displays
-      const dpr = window.devicePixelRatio || 1;
+      // Handle high-DPI displays. `dpr` follows the display: moving the
+      // window to a display with another ratio, or zooming, fires the
+      // resolution query below, which re-reads it and resizes the canvas.
+      let dpr = window.devicePixelRatio || 1;
       // Maximum texture size (WebGPU default limit)
       const MAX_SIZE = 8192;
 
@@ -93,6 +95,32 @@
 
       // Set initial size
       updateCanvasSize();
+
+      // Resize the drawing buffer to the canvas's CSS size at the current
+      // ratio, and reconfigure the context when it changed. A resize clears
+      // the canvas, so the caller must draw a frame afterwards: the 0.4.0
+      // core host calls this at the start of each frame, before it builds.
+      function syncCanvasSize() {
+        if (!updateCanvasSize()) return false;
+        if (context) context.configure({ device, format, alphaMode: "premultiplied" });
+        return true;
+      }
+
+      // A media query matches one ratio, so re-arm it at the new ratio after
+      // every change.
+      function watchDevicePixelRatio() {
+        const query = window.matchMedia(`(resolution: ${dpr}dppx)`);
+        query.addEventListener(
+          "change",
+          () => {
+            dpr = window.devicePixelRatio || 1;
+            syncCanvasSize();
+            watchDevicePixelRatio();
+          },
+          { once: true },
+        );
+      }
+      watchDevicePixelRatio();
 
       // WebGPU state
       let device, queue, context, format;
@@ -1044,6 +1072,7 @@
         getCanvasPixelWidth: () => canvas.width,
         getCanvasPixelHeight: () => canvas.height,
         getDevicePixelRatio: () => dpr,
+        syncCanvasSize: () => syncCanvasSize(),
         setCanvasSize: (w, h) => {
           canvas.width = w;
           canvas.height = h;
@@ -2472,9 +2501,7 @@
           if (resizeTimeout) return; // Already scheduled
           resizeTimeout = setTimeout(() => {
             resizeTimeout = null;
-            if (updateCanvasSize() && context) {
-              context.configure({ device, format, alphaMode: "premultiplied" });
-            }
+            syncCanvasSize();
           }, 16); // ~1 frame debounce
         });
         resizeObserver.observe(canvas);

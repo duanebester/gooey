@@ -205,13 +205,19 @@ pub const Host = struct {
         if (self.platform.isRunning()) imports.requestAnimationFrame();
     }
 
+    /// Size the drawing buffer before the tick builds, so the frame built
+    /// for a new size is the one presented. Resizing clears the canvas, so a
+    /// changed buffer queues a render even when the logical size is unchanged
+    /// (a ratio change). Polled every frame: the browser has no resize event
+    /// that arrives before the next animation frame.
     fn queueResize(self: *Host) void {
+        if (!hasRoom(&self.core.queue)) return; // Next frame polls again.
+        const buffer_resized = imports.syncCanvasSize();
         self.window.updateSize();
         const size = self.window.size;
         const scale = self.window.scale_factor;
-        if (size.width == self.width and size.height == self.height and
-            scale == self.scale_factor) return;
-        if (!hasRoom(&self.core.queue)) return; // Next frame polls again.
+        const same_size = size.width == self.width and size.height == self.height;
+        if (same_size and scale == self.scale_factor and !buffer_resized) return;
         self.width = size.width;
         self.height = size.height;
         self.scale_factor = scale;
