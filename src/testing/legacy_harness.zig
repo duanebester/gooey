@@ -230,6 +230,8 @@ pub const LegacyHarness = struct {
                 .name = element.name,
                 .value = element.value,
                 .state = element.state,
+                .heading_level = element.heading_level,
+                .live = element.live,
                 .bounds = .{
                     .x = element.bounds.x,
                     .y = element.bounds.y,
@@ -247,6 +249,9 @@ pub const A11yLine = struct {
     name: ?[]const u8,
     value: ?[]const u8,
     state: a11y_types.State,
+    heading_level: a11y_types.HeadingLevel = .none,
+    live: a11y_types.Live = .off,
+    href: ?[]const u8 = null,
     bounds: record_dump.Rect,
 };
 
@@ -261,5 +266,8 @@ pub fn writeA11yElement(out: *record_dump.TextBuffer, depth: u32, line: A11yLine
     if (line.state.checked) out.print(" checked", .{});
     if (line.state.selected) out.print(" selected", .{});
     if (line.state.disabled) out.print(" disabled", .{});
+    if (line.heading_level != .none) out.print(" {t}", .{line.heading_level});
+    if (line.live != .off) out.print(" live={t}", .{line.live});
+    if (line.href) |href| out.print(" href=\"{s}\"", .{href});
     out.print("\n", .{});
 }

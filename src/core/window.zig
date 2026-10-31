@@ -30,6 +30,7 @@ const text_mod = @import("../text/mod.zig");
 const app_resources = @import("../context/app_resources.zig");
 const a11y_types = @import("../accessibility/types.zig");
 const cx_mod = @import("cx.zig");
+const A11ySystem = @import("../context/a11y_system.zig").A11ySystem;
 
 const assert = std.debug.assert;
 
@@ -107,8 +108,11 @@ pub const A11yBuilt = struct {
     role: a11y_types.Role,
     label: records.TextRange,
     value: records.TextRange,
+    href: records.TextRange,
     checked: bool,
     disabled: bool,
+    heading_level: a11y_types.HeadingLevel,
+    live: a11y_types.Live,
 };
 
 /// Frame-wide set of keyed ids: duplicate detection during build, and the
@@ -254,6 +258,10 @@ pub const Window = struct {
     /// A font change from `Effects.setFont`, applied by the next tick that
     /// finds no frame in flight; the latest request wins.
     pending_font: ?PendingFont,
+    /// Announcements made since the last build, which hands them to its frame.
+    announcements: records.Announcements,
+    /// The platform's screen-reader bridge and the tree it diffs.
+    screen_reader: *A11ySystem,
     dialog_handlers: [dialog_count_max]?handler_mod.Handler,
     dialogs_opened: u32,
     now_ns: u64,
@@ -323,6 +331,24 @@ pub const Window = struct {
         return span / (self.component_depth_peak - 1);
     }
 
+    /// Replace the headless bridge with the platform's, during
+    /// initialization, once the native window exists. `native_window` and
+    /// `native_view` are what `accessibility.createPlatformBridge` takes:
+    /// NSWindow and NSView on macOS, null elsewhere.
+    pub fn bindScreenReader(self: *Window, native_window: anytype, native_view: anytype) void {
+        assert(self.phase == .idle);
+        self.screen_reader.deinit();
+        self.screen_reader.initInPlace(native_window, native_view);
+        assert(self.screen_reader.bridgeAddressValid());
+    }
+
+    /// Return to the headless bridge before the native window goes away.
+    pub fn unbindScreenReader(self: *Window) void {
+        assert(self.phase == .idle);
+        self.screen_reader.deinit();
+        self.screen_reader.initHeadlessInPlace();
+    }
+
     pub fn node(self: *Window, index: u32) *Node {
         assert(index < self.node_count);
         return &self.nodes[index];
@@ -374,6 +400,7 @@ pub noinline fn initInPlace(self: *Window, gpa: std.mem.Allocator, options: *con
     self.quit_requested = false;
     self.pending_dialog = null;
     self.pending_font = null;
+    self.announcements.clear();
     self.dialogs_opened = 0;
     self.dialog_handlers = @splat(null);
     self.now_ns = 0;
@@ -482,10 +509,16 @@ fn initRuntimeStorage(self: *Window, gpa: std.mem.Allocator, limits: *const Reso
     self.scene.* = try Scene.initCapacity(gpa, &limits.scene);
     errdefer self.scene.deinit();
     self.text_scratch = try gpa.alloc(u8, text_scratch_bytes);
+    errdefer gpa.free(self.text_scratch);
     self.text_scratch_allocator = std.heap.FixedBufferAllocator.init(self.text_scratch);
+    // Headless until a host binds its platform's bridge (`bindScreenReader`).
+    self.screen_reader = try gpa.create(A11ySystem);
+    self.screen_reader.initHeadlessInPlace();
 }
 
 fn deinitRuntimeStorage(self: *Window, gpa: std.mem.Allocator) void {
+    self.screen_reader.deinit();
+    gpa.destroy(self.screen_reader);
     gpa.free(self.text_scratch);
     self.scene.deinit();
     gpa.destroy(self.scene);

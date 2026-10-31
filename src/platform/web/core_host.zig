@@ -174,6 +174,7 @@ pub const Host = struct {
         core.width = @floatCast(self.width);
         core.height = @floatCast(self.height);
         core.presenter = .{ .context = self, .draw = draw };
+        core.bindScreenReader(null, null);
         assert(core.file_dialog == null); // Web dialogs complete asynchronously.
     }
 

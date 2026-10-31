@@ -191,6 +191,7 @@ pub const Host = struct {
         self.platform.setLoopTurnCallback(onLoopTurn);
         self.core.presenter = .{ .context = self, .draw = draw };
         self.core.file_dialog = .{ .context = self, .open = openDialog };
+        self.core.bindScreenReader(self.window.ns_window, self.window.ns_view);
         assert(self.window.core != null);
     }
 
@@ -210,6 +211,7 @@ pub const Host = struct {
         self.core.resources.unregisterAtlasConsumer(self.core.atlas_consumer_key);
         self.core.presenter = null;
         self.core.file_dialog = null;
+        self.core.unbindScreenReader();
     }
 
     /// Stop the render thread and wait for it: the link is invalidated on

@@ -22,6 +22,7 @@ const cx_mod = @import("cx.zig");
 const emit_mod = @import("emit.zig");
 const pack_mod = @import("pack.zig");
 const router = @import("router.zig");
+const screen_reader = @import("screen_reader.zig");
 
 const assert = std.debug.assert;
 
@@ -66,6 +67,11 @@ pub fn tickMain(app: anytype, window: *Window, now_ns: u64) bool {
         .height = window.height,
         .scale_factor = window.scale_factor,
     });
+    // No frame is in flight here, so the render side reads neither until
+    // this frame is published.
+    window.built().announcements = window.announcements;
+    window.announcements.clear();
+    window.clear_color = window.theme.bg;
     cx_mod.beginBuild(window);
     App.render(&window.cx);
     cx_mod.endBuild(window);
@@ -129,6 +135,7 @@ fn flipPresented(window: *Window) void {
     window.awaiting_flip = false;
     window.built_index ^= 1;
     router.updateHover(window);
+    screen_reader.publish(window.screen_reader, window.rendered());
 }
 
 /// Reload the app family a handler asked for (`Effects.setFont`), after the

@@ -127,8 +127,14 @@ pub fn writeA11y(frame: *const records.Frame, out: *TextBuffer) void {
             .name = frame.text(node.name),
             .value = frame.text(node.value),
             .state = node.state,
+            .heading_level = node.heading_level,
+            .live = node.live,
+            .href = frame.text(node.href),
             .bounds = dumpRect(node.bounds),
         });
+    }
+    for (frame.announcements.slice()) |item| {
+        out.print("  announce {t} \"{s}\"\n", .{ item.live, frame.announcements.text(item) });
     }
 }
 

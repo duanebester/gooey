@@ -240,6 +240,7 @@ pub const Host = struct {
         // A keyboard enter during window creation may have enabled it.
         self.window.platform.text_input_follows_keyboard = false;
         self.window.disableIme();
+        self.core.bindScreenReader(null, null);
         assert(self.window.core != null);
     }
 
@@ -267,6 +268,7 @@ pub const Host = struct {
         self.core.resources.unregisterAtlasConsumer(self.core.atlas_consumer_key);
         self.core.presenter = null;
         self.core.file_dialog = null;
+        self.core.unbindScreenReader();
     }
 
     /// Schedule one main tick unless one is already scheduled. Any thread.
