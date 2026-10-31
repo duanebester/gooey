@@ -1774,6 +1774,8 @@ fn addFailFastChecks(
             "fail_fast_check.CoreApp.Stranger; the root state is fail_fast_check.CoreState" },
         .{ .mode = "core-component-depth", .stderr = "component depth 65 exceeds " ++
             "build.component_depth_max 64 rendering fail_fast_check.CoreApp.Nest" },
+        .{ .mode = "core-mono-unset", .stderr = "text uses family .mono, but no second " ++
+            "family is loaded; set Config.font_mono and FontLimits.mono_variants" },
     };
     for (checks) |check| {
         const run = b.addRunArtifact(exe);

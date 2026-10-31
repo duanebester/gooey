@@ -174,6 +174,7 @@ pub const Box = struct {
 };
 
 pub const FontWeight = @import("../text/types.zig").FontWeight;
+pub const FontFamily = @import("../text/types.zig").FontFamily;
 
 /// Text appearance. `size` and `color` default to the theme's base size and
 /// `text` token.
@@ -182,6 +183,9 @@ pub const Text = struct {
     color: ?ColorToken = null,
     weight: FontWeight = .regular,
     italic: bool = false,
+    /// `.mono` draws with `Config.font_mono` (contract decision 8); using it
+    /// with no second family loaded panics on the first frame.
+    family: FontFamily = .app,
 
     pub const Element = struct {
         content: []const u8,

@@ -1376,7 +1376,7 @@ pub const TextAreaState = struct {
     fn measureText(self: *Self, text_system: *TextSystem, text: []const u8) !f32 {
         _ = self;
         if (text.len == 0) return 0;
-        return text_system.measureText(text, .regular);
+        return text_system.measureText(.app, text, .regular);
     }
 
     /// Process a pending click to position cursor at the clicked location

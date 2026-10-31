@@ -68,6 +68,10 @@ pub const App = core.App(State, render, .{
     .theme = &core.Theme.light,
     .keymap = &.{},
     .entities = &.{},
+    .font = null,
+    .font_size = 16,
+    .font_mono = null,
+    .font_limits = null,
     .on_init = null,
 });
 

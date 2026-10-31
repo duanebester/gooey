@@ -28,7 +28,7 @@
 //! defer text.deinit();
 //!
 //! try text.loadSystemFont(.monospace, 14.0);
-//! const width = try text.measureText("Hello, World!", .bold);
+//! const width = try text.measureText(.app, "Hello, World!", .bold);
 //! ```
 //!
 //! The `io` parameter is stored on the struct so lock sites on render
@@ -48,6 +48,7 @@ pub const MeasureTextOptions = types.MeasureTextOptions;
 pub const SystemFont = types.SystemFont;
 pub const FontWeight = types.FontWeight;
 pub const FontVariant = types.FontVariant;
+pub const FontFamily = types.FontFamily;
 pub const FontLimits = @import("../core/limits.zig").FontLimits;
 pub const TextDecoration = types.TextDecoration;
 pub const RasterizedGlyph = types.RasterizedGlyph;

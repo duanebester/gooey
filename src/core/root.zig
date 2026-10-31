@@ -38,6 +38,8 @@ pub const Theme = element.Theme;
 pub const Painter = emit.Painter;
 pub const InputEngine = text_engine.InputEngine;
 pub const ResourceLimits = @import("limits.zig").ResourceLimits;
+pub const FontLimits = app.FontLimits;
+pub const FontSource = app.FontSource;
 
 /// Element constructors and their types: `ui.box`, `ui.text`, `ui.paint`,
 /// `ui.when`, and `ui.Style`.

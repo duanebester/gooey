@@ -291,7 +291,29 @@ fn invoke(
         .blur => setFocus(window, .root),
     }
     if (effects.file_dialog) |request| requestDialog(window, request);
+    if (effects.font_request) |request| requestFont(window, request);
     return effects.propagation_stopped;
+}
+
+/// Copy a font change for the tick to apply (`tick.applyFont`). A name past
+/// `family_name_bytes_max` is a programmer error, named here.
+pub fn requestFont(window: *Window, request: handler_mod.Effects.FontRequest) void {
+    assert(request.size > 0 and request.size < 1000);
+    if (request.name.len == 0 or request.name.len > window_mod.PendingFont.name_bytes_max) {
+        std.debug.panic("effects.setFont: family name of {d} bytes; 1 to {d} are allowed", .{
+            request.name.len,
+            window_mod.PendingFont.name_bytes_max,
+        });
+    }
+    var pending: window_mod.PendingFont = .{
+        .name_buffer = undefined,
+        .name_len = @intCast(request.name.len),
+        .size = request.size,
+    };
+    @memcpy(pending.name_buffer[0..request.name.len], request.name);
+    window.pending_font = pending;
+    window.render_requested = true;
+    assert(window.pending_font.?.name_len == request.name.len);
 }
 
 fn requestDialog(window: *Window, request: handler_mod.FileDialogRequest) void {

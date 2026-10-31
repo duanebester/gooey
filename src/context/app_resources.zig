@@ -41,7 +41,8 @@ const platform = @import("../platform/mod.zig");
 /// `AppResources.initOwned` avoids a circular import on `window.zig`
 /// (the multi-window `App` builds its resources without ever
 /// instantiating a `Window`). Kept field-for-field identical to
-/// `window.FontConfig`; a divergence must be added in both places.
+/// `window.FontConfig`, except `mono`, which only the 0.4.0 core sets; any
+/// other divergence must be added in both places.
 pub const FontConfig = struct {
     /// Font family name (e.g., "Inter", "JetBrains Mono"). When null,
     /// loads the platform's default sans-serif font.
@@ -51,6 +52,10 @@ pub const FontConfig = struct {
     /// The faces loaded at init, one per variant. No default (CLAUDE.md §2):
     /// the app's `FontLimits` profile, such as `FontLimits.nano`.
     limits: FontLimits,
+    /// The optional second family (contract decision 8), loaded into
+    /// `limits.mono_variants` at `font_size`. Null loads none; 0.3.1 apps
+    /// never set it.
+    mono: ?TextSystem.FaceSource = null,
 };
 
 /// Bundle of shared, app-lifetime rendering resources.
@@ -145,6 +150,9 @@ pub const AppResources = struct {
             try text_system.loadFont(name, font_config.font_size);
         } else {
             try text_system.loadSystemFont(.sans_serif, font_config.font_size);
+        }
+        if (font_config.mono) |source| {
+            try text_system.loadMonoFont(source, font_config.font_size);
         }
 
         const svg_atlas = try allocator.create(SvgAtlas);

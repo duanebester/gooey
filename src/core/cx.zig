@@ -229,9 +229,10 @@ pub const Cx = struct {
         const color: element.ColorToken = style.color orelse .text;
         node.text_color = color.resolve(window.theme);
         node.font_size = size;
+        node.family = style.family;
         node.variant = variant;
         window.layout.text(content, .{
-            .font_id = variant.fontId(),
+            .font_id = style.family.fontId(variant),
             .font_size = size,
             .wrap_mode = .none,
         }) catch |err| layoutFailed(window, err);
@@ -363,6 +364,7 @@ fn addNode(window: *Window, kind: window_mod.NodeKind, node_id: ElementId) u32 {
         .text = .empty,
         .text_color = records.Color.transparent,
         .font_size = 0,
+        .family = .app,
         .variant = .regular,
         .paint_fn = null,
         .paint_data = null,
@@ -433,11 +435,14 @@ fn measureText(
 ) layout_mod.engine.TextMeasurement {
     _ = max_width;
     const text_system: *text_mod.TextSystem = @ptrCast(@alignCast(user_data.?));
-    const metrics = text_system.getMetrics() orelse std.debug.panic("no font loaded", .{});
+    if (text_system.getMetrics() == null) std.debug.panic("no font loaded", .{});
     assert(font_size > 0);
+    // Each family measures and sizes lines by its own regular face.
+    const family = text_mod.FontFamily.fromFontId(font_id);
+    const variant = text_mod.FontFamily.variantFromFontId(font_id);
+    const metrics = text_system.getMetricsFor(family);
     const scale = @as(f32, @floatFromInt(font_size)) / metrics.point_size;
-    const variant = text_mod.FontVariant.fromFontId(font_id);
-    const width = text_system.measureText(content, variant) catch |err| {
+    const width = text_system.measureText(family, content, variant) catch |err| {
         std.debug.panic("text measurement failed: {s}", .{@errorName(err)});
     };
     return .{ .width = width * scale, .height = metrics.line_height * scale };

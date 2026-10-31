@@ -126,6 +126,38 @@ pub const FontVariant = enum(u8) {
     }
 };
 
+/// Which loaded family a run draws with (contract decision 8). `app` is the
+/// app's font (`Config.font`); `mono` is the optional second family
+/// (`Config.font_mono`), with its own faces from `FontLimits.mono_variants`.
+pub const FontFamily = enum(u1) {
+    app,
+    mono,
+
+    /// The layout `font_id` of `variant` in this family. App ids equal
+    /// `FontVariant.fontId`, so 0.3.1 layout ids keep their meaning; mono ids
+    /// follow them.
+    pub fn fontId(family: FontFamily, variant: FontVariant) u16 {
+        const result: u16 = @as(u16, @backingInt(family)) * FontVariant.count + variant.fontId();
+        std.debug.assert(result < font_id_count);
+        return result;
+    }
+
+    /// The family a layout `font_id` names. Ids come only from `fontId`.
+    pub fn fromFontId(font_id: u16) FontFamily {
+        std.debug.assert(font_id < font_id_count);
+        return @fromBackingInt(@intCast(font_id / FontVariant.count));
+    }
+
+    /// The variant a layout `font_id` names, in either family.
+    pub fn variantFromFontId(font_id: u16) FontVariant {
+        std.debug.assert(font_id < font_id_count);
+        return FontVariant.fromFontId(font_id % FontVariant.count);
+    }
+
+    pub const count: u8 = 2;
+    pub const font_id_count: u16 = @as(u16, count) * FontVariant.count;
+};
+
 /// Text decoration style
 pub const TextDecoration = packed struct {
     underline: bool = false,

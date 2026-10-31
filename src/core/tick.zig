@@ -45,6 +45,9 @@ pub fn tickMain(app: anytype, window: *Window, now_ns: u64) bool {
     // Shaped runs of the frame in flight may still sit in the scratch.
     if (!in_flight) window.text_scratch_allocator.reset();
     drain(window);
+    // A reload clears the glyph cache and atlas the render side reads while
+    // it draws, so it waits for a tick with no frame in flight.
+    if (!in_flight) applyFont(window);
     if (!window.render_requested) return false;
     if (in_flight) return false;
     window.render_requested = false;
@@ -125,6 +128,24 @@ fn flipPresented(window: *Window) void {
     window.awaiting_flip = false;
     window.built_index ^= 1;
     router.updateHover(window);
+}
+
+/// Reload the app family a handler asked for (`Effects.setFont`), after the
+/// drain. A family that fails to load is an operating error: the text system
+/// keeps the previous one, and the failure is logged with the name.
+fn applyFont(window: *Window) void {
+    assert(window.phase == .idle);
+    const pending = window.pending_font orelse return;
+    window.pending_font = null;
+    assert(!window.frame_in_flight.load(.acquire));
+    window.resources.text_system.loadFont(pending.name(), pending.size) catch |err| {
+        std.log.err("effects.setFont(\"{s}\", {d}) failed: {s}; the previous font stays", .{
+            pending.name(),
+            pending.size,
+            @errorName(err),
+        });
+    };
+    window.render_requested = true;
 }
 
 fn drain(window: *Window) void {
