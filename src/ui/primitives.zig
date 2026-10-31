@@ -19,10 +19,6 @@ pub const CornerRadius = styles.CornerRadius;
 pub const ObjectFit = styles.ObjectFit;
 pub const Handler = styles.Handler;
 
-// Action system
-const action_mod = @import("../input/actions.zig");
-const actionTypeId = action_mod.actionTypeId;
-
 // =============================================================================
 // Primitive Type Enum
 // =============================================================================
@@ -35,8 +31,6 @@ pub const PrimitiveType = enum {
     spacer,
     button,
     empty,
-    key_context,
-    action_handler,
     svg,
     image,
     // Container elements
@@ -237,37 +231,6 @@ pub const ImagePrimitive = struct {
 
     pub const primitive_type: PrimitiveType = .image;
 };
-
-// =============================================================================
-// Action/Context Primitives
-// =============================================================================
-
-/// Key context descriptor - sets dispatch context when rendered
-pub const KeyContextPrimitive = struct {
-    context: []const u8,
-    pub const primitive_type: PrimitiveType = .key_context;
-};
-
-/// Set key context for dispatch (use inside box children)
-pub fn keyContext(context: []const u8) KeyContextPrimitive {
-    return .{ .context = context };
-}
-
-/// Action handler descriptor - registers action handler when rendered
-pub const ActionHandlerPrimitive = struct {
-    action_type: usize, // ActionTypeId
-    handler: Handler,
-    pub const primitive_type: PrimitiveType = .action_handler;
-};
-
-/// Register an action handler (use inside box children):
-/// `ui.onAction(Undo, cx.on(AppState.undo, .{}))`.
-pub fn onAction(comptime Action: type, handler: Handler) ActionHandlerPrimitive {
-    return .{
-        .action_type = actionTypeId(Action),
-        .handler = handler,
-    };
-}
 
 // =============================================================================
 // Conditional Rendering

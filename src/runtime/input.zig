@@ -718,37 +718,12 @@ fn handleKeyDownEvent(cx: *Cx, window: *Window, k: input_mod.KeyEvent) bool {
     return false;
 }
 
-/// Handle key actions through focus path
+/// Deliver a key down to the focused element's key listeners.
 fn handleFocusedKeyAction(cx: *Cx, window: *Window, k: input_mod.KeyEvent) bool {
-    if (window.focus.getFocused()) |focus_id| {
-        var path_buf: [64]DispatchNodeId = undefined;
-        if (window.rendered_frame.dispatch.focusPath(focus_id, &path_buf)) |path| {
-            var ctx_buf: [64][]const u8 = undefined;
-            const contexts = window.rendered_frame.dispatch.contextStack(path, &ctx_buf);
-
-            if (window.keymap().match(k.key, k.modifiers, contexts)) |binding| {
-                if (window.rendered_frame.dispatch.dispatchAction(binding.action_type, path, window)) {
-                    cx.notify();
-                    return true;
-                }
-            }
-
-            if (window.rendered_frame.dispatch.dispatchKeyDown(focus_id, k)) {
-                cx.notify();
-                return true;
-            }
-        }
-    } else {
-        // No focus - try root path
-        var path_buf: [64]DispatchNodeId = undefined;
-        if (window.rendered_frame.dispatch.rootPath(&path_buf)) |path| {
-            if (window.keymap().match(k.key, k.modifiers, &.{})) |binding| {
-                if (window.rendered_frame.dispatch.dispatchAction(binding.action_type, path, window)) {
-                    cx.notify();
-                    return true;
-                }
-            }
-        }
+    const focus_id = window.focus.getFocused() orelse return false;
+    if (window.rendered_frame.dispatch.dispatchKeyDown(focus_id, k)) {
+        cx.notify();
+        return true;
     }
     return false;
 }

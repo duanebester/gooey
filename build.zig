@@ -1730,10 +1730,6 @@ fn addFailFastChecks(
     const checks = [_]struct { mode: []const u8, stderr: []const u8 }{
         .{ .mode = "deferred-queue", .stderr = "Window pool 'deferred_commands' exhausted: " ++
             "capacity 32, 32 in use, 1 requested." },
-        .{ .mode = "keymap-keystroke", .stderr = "Keymap.bind: invalid keystroke \"cmd-zz\" " ++
-            "for action fail_fast_check.Noop;" },
-        .{ .mode = "keymap-oom", .stderr = "Keymap pool 'bindings' could not grow: capacity 0, " ++
-            "0 in use, 1 requested (OutOfMemory binding \"cmd-z\")" },
         .{ .mode = "dispatch-nodes", .stderr = "DispatchTree pool 'nodes' could not grow: " ++
             "capacity 0, 0 in use, 1 requested (OutOfMemory during render)" },
         .{ .mode = "focus-order", .stderr = "FocusManager pool 'focus_order' could not grow: " ++

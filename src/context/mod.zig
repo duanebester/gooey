@@ -89,11 +89,6 @@ pub const KeyEvent = dispatch.KeyEvent;
 pub const MouseListener = dispatch.MouseListener;
 pub const KeyListener = dispatch.KeyListener;
 pub const SimpleKeyListener = dispatch.SimpleKeyListener;
-pub const ActionListener = dispatch.ActionListener;
-
-// Action type ID
-pub const ActionTypeId = dispatch.ActionTypeId;
-pub const actionTypeId = dispatch.actionTypeId;
 
 // =============================================================================
 // Peer subsystems (hover, blur handlers, cancel registry, a11y)
@@ -147,7 +142,7 @@ pub const elementStateTypeId = element_states.typeId;
 //
 // `DrawPhase` tags the per-frame lifecycle so phase-restricted methods
 // can assert their invariants at entry. `Globals` is a type-keyed
-// singleton store for cross-cutting state (theme, keymap, debugger).
+// singleton store for cross-cutting state (theme, debugger).
 
 pub const draw_phase = @import("draw_phase.zig");
 pub const DrawPhase = draw_phase.DrawPhase;

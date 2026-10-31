@@ -64,7 +64,7 @@ const app_resources_mod = @import("../context/app_resources.zig");
 const AppResources = app_resources_mod.AppResources;
 
 // `context.App` owns application-lifetime state shared across windows
-// (entities, keymap, globals, image loader). Embedded by-value below so every
+// (entities, globals, image loader). Embedded by-value below so every
 // `Window` borrows `&self.context_app` and reaches the same `EntityMap` — the
 // property cross-window observation needs.
 const context_app_mod = @import("../context/app.zig");
@@ -209,7 +209,7 @@ pub const App = struct {
     /// tears them down once, in `App.deinit`, after the last window closes.
     resources: AppResources,
 
-    /// Application-lifetime state shared across windows (entities, keymap,
+    /// Application-lifetime state shared across windows (entities,
     /// globals, image loader). Embedded by-value: `&self.context_app` outlives
     /// every `Window` opened from this app, making models observable across
     /// windows.
@@ -278,9 +278,7 @@ pub const App = struct {
         }, atlas_limits);
         errdefer self.resources.deinit();
 
-        // May fail with `OutOfMemory` (it registers an owned `Keymap` in
-        // `app.globals`); it unwinds its own allocations on its error path.
-        try self.context_app.initInPlace(allocator, io);
+        self.context_app.initInPlace(allocator, io);
         errdefer self.context_app.deinit();
 
         // Infallible tail: plain field writes, so nothing below can unwind.

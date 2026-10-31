@@ -9,8 +9,6 @@
 //!
 //! Modes (first argument):
 //! - `deferred-queue`: fills `Window.deferred_commands` and defers one more command.
-//! - `keymap-keystroke`: binds a keystroke string that does not parse.
-//! - `keymap-oom`: binds a valid keystroke when the bindings list cannot grow.
 //! - `dispatch-nodes`: pushes a dispatch node when the node pool cannot grow.
 //! - `focus-order`: registers a focusable when the tab-order list cannot grow.
 //! - `text-edit`: rejects an over-limit edit silently, then fails on a buffer OOM.
@@ -34,8 +32,6 @@ const gooey = @import("gooey");
 
 const Mode = enum {
     @"deferred-queue",
-    @"keymap-keystroke",
-    @"keymap-oom",
     @"dispatch-nodes",
     @"focus-order",
     @"text-edit",
@@ -66,8 +62,6 @@ pub fn main(init: std.process.Init) !void {
     const oom = failing.allocator();
     switch (mode) {
         .@"deferred-queue" => deferredQueue(),
-        .@"keymap-keystroke" => keymapKeystroke(init.gpa),
-        .@"keymap-oom" => keymapOutOfMemory(oom),
         .@"dispatch-nodes" => dispatchNodes(oom),
         .@"focus-order" => focusOrder(oom),
         .@"text-edit" => textEdit(oom),
@@ -108,17 +102,6 @@ fn deferredQueue() void {
     }
     std.debug.assert(window.deferred_count == capacity);
     window.deferCommand(Noop.deferred, .{});
-}
-
-fn keymapKeystroke(gpa: std.mem.Allocator) void {
-    var keymap = gooey.input.Keymap.init(gpa);
-    defer keymap.deinit();
-    keymap.bind(Noop, "cmd-zz", null);
-}
-
-fn keymapOutOfMemory(oom: std.mem.Allocator) void {
-    var keymap = gooey.input.Keymap.init(oom);
-    keymap.bind(Noop, "cmd-z", null);
 }
 
 fn dispatchNodes(oom: std.mem.Allocator) void {
