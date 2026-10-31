@@ -274,9 +274,11 @@ pub const LinuxPlatform = struct {
     /// Owner hook fired once per `run` iteration; see `setLoopTurnCallback`.
     loop_turn_callback: ?LoopTurnCallback = null,
 
-    // IME state (accumulated during event batch, applied on done)
-    ime_preedit_text: ?[]const u8 = null,
-    ime_commit_text: ?[]const u8 = null,
+    // IME state (accumulated during event batch, applied on done). The strings
+    // are copies: libwayland frees an event's string arguments when its
+    // callback returns, and `textInputDone` arrives in a later callback.
+    ime_preedit_text: ImeText = .{},
+    ime_commit_text: ImeText = .{},
     ime_delete_before: u32 = 0,
     ime_delete_after: u32 = 0,
     ime_serial: u32 = 0,
@@ -1967,12 +1969,8 @@ pub const LinuxPlatform = struct {
         _ = cursor_begin;
         _ = cursor_end;
 
-        // Store preedit text - will be applied on done event
-        if (text) |t| {
-            self.ime_preedit_text = std.mem.span(t);
-        } else {
-            self.ime_preedit_text = null;
-        }
+        // Copied now, applied on the done event.
+        self.ime_preedit_text.set(text);
     }
 
     fn textInputCommitString(
@@ -1984,12 +1982,8 @@ pub const LinuxPlatform = struct {
 
         const self: *Self = @ptrCast(@alignCast(data orelse return));
 
-        // Store commit text - will be applied on done event
-        if (text) |t| {
-            self.ime_commit_text = std.mem.span(t);
-        } else {
-            self.ime_commit_text = null;
-        }
+        // Copied now, applied on the done event.
+        self.ime_commit_text.set(text);
     }
 
     fn textInputDeleteSurroundingText(
@@ -2029,21 +2023,21 @@ pub const LinuxPlatform = struct {
         }
 
         // Handle commit string (final text)
-        if (self.ime_commit_text) |commit_text| {
+        if (self.ime_commit_text.get()) |commit_text| {
             window.setInsertedText(commit_text);
             window.clearMarkedText();
             const event = linux_input.textInputEvent(window.inserted_text);
             _ = window.handleInput(event);
-            self.ime_commit_text = null;
+            self.ime_commit_text.clear();
         }
 
         // Handle preedit string (composing text)
-        if (self.ime_preedit_text) |preedit_text| {
+        if (self.ime_preedit_text.get()) |preedit_text| {
             window.setMarkedText(preedit_text);
             const event = linux_input.compositionEvent(window.marked_text);
             _ = window.handleInput(event);
-            self.ime_preedit_text = null;
-        } else if (self.ime_commit_text == null) {
+            self.ime_preedit_text.clear();
+        } else if (self.ime_commit_text.get() == null) {
             // Empty preedit with no commit means composition cancelled
             if (window.hasMarkedText()) {
                 window.clearMarkedText();
@@ -2104,6 +2098,70 @@ fn disconnectedPlatform() LinuxPlatform {
         .window_registry = WindowRegistry.init(std.testing.allocator),
         .allocator = std.testing.allocator,
     };
+}
+
+/// One text-input-v3 string, copied out of libwayland's argument buffer.
+/// Bounded by the window's marked and inserted text buffers: a longer string
+/// is external input, not a programmer error, so it is cut at the last
+/// codepoint boundary that fits (a warning is logged) rather than failing.
+const ImeText = struct {
+    bytes: [bytes_max]u8 = undefined,
+    len: u16 = 0,
+    present: bool = false,
+
+    const bytes_max = @typeInfo(@FieldType(LinuxWindow, "marked_text_buffer")).array.len;
+
+    comptime {
+        std.debug.assert(bytes_max ==
+            @typeInfo(@FieldType(LinuxWindow, "inserted_text_buffer")).array.len);
+        std.debug.assert(bytes_max <= std.math.maxInt(u16));
+    }
+
+    fn set(self: *ImeText, text: ?[*:0]const u8) void {
+        const source = std.mem.span(text orelse {
+            self.clear();
+            return;
+        });
+        const len = codepointPrefixLen(source, bytes_max);
+        if (len < source.len) {
+            std.log.warn("IME string of {d} bytes cut to {d} (buffer {d})", .{
+                source.len,
+                len,
+                bytes_max,
+            });
+        }
+        @memcpy(self.bytes[0..len], source[0..len]);
+        self.len = @intCast(len);
+        self.present = true;
+        std.debug.assert(self.len <= bytes_max);
+    }
+
+    fn get(self: *const ImeText) ?[]const u8 {
+        if (!self.present) return null;
+        std.debug.assert(self.len <= bytes_max);
+        return self.bytes[0..self.len];
+    }
+
+    fn clear(self: *ImeText) void {
+        self.len = 0;
+        self.present = false;
+    }
+};
+
+/// The longest prefix of `text` within `len_max` bytes that ends on a UTF-8
+/// codepoint boundary: a cut never splits a multi-byte sequence.
+fn codepointPrefixLen(text: []const u8, len_max: usize) usize {
+    if (text.len <= len_max) return text.len;
+    var len = len_max;
+    // A continuation byte (0b10xxxxxx) at `len` means the cut splits a
+    // sequence; a sequence is at most 4 bytes, so at most 3 steps back. The
+    // bound also holds for invalid input, which the IME, not Gooey, produced.
+    var steps: u8 = 0;
+    while (steps < 3 and len > 0 and (text[len] & 0xC0) == 0x80) : (steps += 1) {
+        len -= 1;
+    }
+    std.debug.assert(len <= len_max);
+    return len;
 }
 
 test "isRunning is false before run and stays false across quit" {
@@ -2319,4 +2377,36 @@ test "loop state folds a full registry" {
     samples[WindowRegistry.MAX_WINDOWS - 1].open = false;
     const one_closed = foldLoopState(&samples);
     try std.testing.expectEqual(WindowRegistry.MAX_WINDOWS - 1, one_closed.open_count);
+}
+
+test "IME strings survive libwayland freeing the event's argument buffer" {
+    // Goal: Bug B. libwayland frees a text-input-v3 event's strings when its
+    // callback returns, and `textInputDone` reads them in a later callback.
+    // Methodology: store a string, overwrite the source the way a freed and
+    // reused buffer would be, and check the stored copy is unchanged.
+    var source = "nihongo".*;
+    var text: ImeText = .{};
+    text.set(@ptrCast(&source));
+    @memset(source[0 .. source.len - 1], 0xA5);
+    try std.testing.expectEqualStrings("nihongo", text.get().?);
+    text.set(null);
+    try std.testing.expectEqual(@as(?[]const u8, null), text.get());
+}
+
+test "an IME string past the buffer is cut on a codepoint boundary" {
+    // Goal: the bound never splits a UTF-8 sequence. Methodology: fill to one
+    // byte before the limit with ASCII, then a 3-byte "か" that crosses it:
+    // the cut must drop the whole sequence. At exactly the limit nothing is
+    // cut, and a 2-byte limit inside a 3-byte sequence cuts to zero.
+    const limit = ImeText.bytes_max;
+    var long: [limit + 3:0]u8 = undefined;
+    @memset(long[0 .. limit - 1], 'a');
+    @memcpy(long[limit - 1 ..][0..3], "か");
+    long[limit + 2] = 0;
+    var text: ImeText = .{};
+    text.set(&long);
+    try std.testing.expectEqual(@as(usize, limit - 1), text.get().?.len);
+    try std.testing.expect(std.unicode.utf8ValidateSlice(text.get().?));
+    try std.testing.expectEqual(@as(usize, limit), codepointPrefixLen(long[0..limit], limit));
+    try std.testing.expectEqual(@as(usize, 0), codepointPrefixLen("か", 2));
 }
