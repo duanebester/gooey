@@ -779,6 +779,7 @@ pub fn wrapText(
 
     const final_max = finalizeLastLine(text_str, residual, &lines);
 
+    claimWrappedLines(engine, @intCast(lines.len));
     // Copy to arena for return (arena memory persists until frame end).
     const result_lines = try engine.arena.allocator().dupe(types.WrappedLine, lines.slice());
     const line_height = config.lineHeightPx();
@@ -894,6 +895,24 @@ fn finalizeLastLine(
         .width = residual.line_width,
     });
     return residual.line_width;
+}
+
+/// Count a text's lines against the frame's budget before they take arena
+/// space, so an over-budget frame names the pool instead of failing as an
+/// arena allocation.
+fn claimWrappedLines(engine: *LayoutEngine, line_count: u32) void {
+    std.debug.assert(line_count <= MAX_LINES_PER_TEXT);
+    const capacity = engine.wrapped_line_count_frame_max orelse return;
+    std.debug.assert(engine.wrapped_line_count <= capacity);
+    if (line_count > capacity - engine.wrapped_line_count) {
+        std.debug.panic("wrapped lines exhausted: capacity {d} " ++
+            "(scene.glyph_count_frame_max), {d} in use, {d} requested", .{
+            capacity,
+            engine.wrapped_line_count,
+            line_count,
+        });
+    }
+    engine.wrapped_line_count += line_count;
 }
 
 /// Wrapped lines and words are fixed pools: a text past either capacity is a

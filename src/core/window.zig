@@ -8,9 +8,9 @@
 //! Performance sketch per window at `.small` (todo): 2,048 nodes × ~120 B
 //! (0.24 MiB); two frames of 8,192 paint records × 88 B, 2,048 hit records,
 //! 2,048 handlers, and 64 KiB of text (≈1.9 MiB); 128 queued events; 16
-//! input engines × 4 KiB; a 1.6 MiB layout arena for text copies and wrapped
-//! lines, resident only as far as a frame wraps; 256 KiB of text scratch; and
-//! the 0.3.1 scene at `limits.scene`, which pack fills. The layout
+//! input engines × 4 KiB; a 176 KiB layout arena for text copies and 4,096
+//! wrapped lines, resident only as far as a frame writes; 256 KiB of text
+//! scratch; and the 0.3.1 scene at `limits.scene`, which pack fills. The layout
 //! engine keeps its fixed 16,384-element reservation until phase 4 ports
 //! layout, so `build.element_count_frame_max` is checked against it.
 
@@ -391,17 +391,22 @@ pub noinline fn initInPlace(self: *Window, gpa: std.mem.Allocator, options: *con
 }
 
 /// The layout arena holds the frame's text copies (at most the text budget,
-/// doubled for alignment and headroom) and wrapped lines (contract decision 9).
-/// A wrapped line covers at least one byte of its text, so a frame wraps at
-/// most `text_bytes` lines, and each text wraps at most twice (once in sizing,
-/// once more if it sits in a floating subtree). The reservation comes from
-/// fresh pages, so only what a frame touches becomes resident.
-fn layoutArenaBytes(text_bytes: u32) u32 {
+/// doubled as 0.3.1's growing arena allowed) and its wrapped lines (contract
+/// decision 9). The core builds no floating elements, so each text wraps once
+/// per frame, and the layout engine caps a frame's wrapped lines at the glyph
+/// budget: a frame that wraps more lines than it can draw glyphs is almost
+/// all blank lines, a capacity-planning error that panics naming the pool.
+/// From fresh pages, so only what a frame touches becomes resident.
+fn layoutArenaBytes(limits: *const ResourceLimits) u32 {
+    const text_bytes: u64 = limits.build.text_bytes_frame_max;
+    const line_count: u64 = limits.scene.glyph_count_frame_max;
     assert(text_bytes > 0);
+    assert(line_count > 0);
     const line_bytes = @sizeOf(layout_mod.types.WrappedLine);
     comptime assert(line_bytes == 12);
-    const wrap_passes = 2;
-    const bytes = @as(u64, text_bytes) * (2 + wrap_passes * line_bytes);
+    // Build copies every text before layout wraps any, so the line slices
+    // follow the copies with one alignment gap, inside the doubled text bytes.
+    const bytes = text_bytes * 2 + line_count * line_bytes;
     assert(bytes <= std.math.maxInt(u32));
     return @intCast(bytes);
 }
@@ -413,11 +418,11 @@ fn initBuildStorage(self: *Window, gpa: std.mem.Allocator, limits: *const Resour
     errdefer gpa.destroy(self.layout);
     self.layout.* = try LayoutEngine.init(gpa);
     errdefer self.layout.deinit();
-    const arena_bytes = layoutArenaBytes(limits.build.text_bytes_frame_max);
-    self.layout_arena = try reservation.reserve(u8, arena_bytes);
+    self.layout_arena = try reservation.reserve(u8, layoutArenaBytes(limits));
     errdefer reservation.release(u8, self.layout_arena, 0);
     self.layout_arena_used_max = 0;
     self.layout.arena.useFixedBuffer(self.layout_arena);
+    self.layout.wrapped_line_count_frame_max = limits.scene.glyph_count_frame_max;
     self.nodes = try gpa.alloc(Node, element_count);
     errdefer gpa.free(self.nodes);
     self.node_count = 0;

@@ -26,6 +26,7 @@
 //! - `core-mono-unset`: draws `.family = .mono` text in an app with no `font_mono`.
 //! - `core-wrap-lines`: wraps one text into one line past `MAX_LINES_PER_TEXT`.
 //! - `core-wrap-words`: wraps one text into one word past `MAX_WORDS_PER_TEXT`.
+//! - `core-wrap-frame`: wraps two texts into one line past the frame's glyph budget.
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -49,6 +50,7 @@ const Mode = enum {
     @"core-mono-unset",
     @"core-wrap-lines",
     @"core-wrap-words",
+    @"core-wrap-frame",
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -79,6 +81,7 @@ pub fn main(init: std.process.Init) !void {
         .@"core-mono-unset" => coreTick(init.gpa, init.io, CoreApp.monoText),
         .@"core-wrap-lines" => coreTick(init.gpa, init.io, CoreApp.wrapLines),
         .@"core-wrap-words" => coreTick(init.gpa, init.io, CoreApp.wrapWords),
+        .@"core-wrap-frame" => coreTick(init.gpa, init.io, CoreApp.wrapFrame),
     }
     std.debug.print("unreachable: {s} did not panic\n", .{@tagName(mode)});
 }
@@ -332,6 +335,17 @@ const CoreApp = struct {
     fn wrapWords(cx: *core.Cx) void {
         const words = comptime newlinesThenM(gooey.layout.engine.MAX_WORDS_PER_TEXT);
         cx.render(core.ui.text(&words, .{ .wrap = .words }));
+    }
+
+    /// `nano` draws at most 1,024 glyphs, so the frame holds 1,024 wrapped
+    /// lines: the first text claims 1,000 and the second asks for 25.
+    fn wrapFrame(cx: *core.Cx) void {
+        const first = comptime newlinesThenM(999);
+        const second = comptime newlinesThenM(24);
+        cx.render(core.ui.box(.{}, .{
+            core.ui.text(&first, .{ .wrap = .newlines }),
+            core.ui.text(&second, .{ .wrap = .newlines }),
+        }));
     }
 
     fn newlinesThenM(comptime count: u32) [count + 1]u8 {
