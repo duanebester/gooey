@@ -166,6 +166,84 @@ test "a TextArea takes lines, follows the caret, and places it where clicked" {
     try testing.expectApproxEqAbs(inset, query.imeCursorRect().?.y, 0.001);
 }
 
+/// A one-row CodeEditor, for the editor check. No profile reserves editors.
+const EditorState = struct { source: []const u8 = "" };
+
+const editor_limits = limits: {
+    var limits = core.ResourceLimits.small;
+    limits.text.editor.count_max = 1;
+    break :limits limits;
+};
+
+const EditorApp = core.App(EditorState, editorRender, .{
+    .title = "Editor",
+    .width = 400,
+    .height = 200,
+    .limits = editor_limits,
+});
+
+fn editorRender(cx: *Cx) void {
+    const state = cx.state(EditorState);
+    cx.render(ui.box(.{ .style = .{ .width = .{ .grow = 1 }, .height = .{ .grow = 1 } } }, .{
+        components.core.CodeEditor{ .key = "source", .bind = &state.source, .rows = 1 },
+    }));
+}
+
+test "a CodeEditor indents with Tab, selects a line from its gutter, and scrolls" {
+    // Goal: what the editor adds to the area, through the real router and
+    // layout. Methodology: type two lines with a Tab into one row, so the
+    // editor scrolls one line; click the gutter beside the visible line, then
+    // wheel up. The text starts after the border, the 50 px gutter, its 1 px
+    // separator, and the padding.
+    const app = try testing.allocator.create(EditorApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    const query = core.Query{ .window = &app.window };
+    const text_x: f32 = 1 + 50 + 1 + 8;
+    const text_y: f32 = 1 + 8;
+    var now: u64 = 0;
+    app.tick(now);
+    app.window.queue.push(.{ .input = .{ .mouse_down = mouse(text_x + 1, text_y + 1) } });
+    app.window.queue.push(.{ .input = .{ .mouse_up = mouse(text_x + 1, text_y + 1) } });
+    app.window.queue.push(.{ .input = .{ .text_input = .{ .text = "fn main() {" } } });
+    app.window.queue.push(.{ .input = .{ .key_down = chord(.@"return", .{}) } });
+    app.window.queue.push(.{ .input = .{ .key_down = chord(.tab, .{}) } });
+    app.window.queue.push(.{ .input = .{ .text_input = .{ .text = "x" } } });
+    now += 1;
+    app.tick(now);
+    now += 1;
+    app.tick(now);
+    try testing.expectEqualStrings("fn main() {\n    x", app.state.source);
+    const caret = query.imeCursorRect().?;
+    const line_height = caret.height;
+    try testing.expectApproxEqAbs(text_y, caret.y, 0.001);
+    // Four spaces at 4 px, then "x" at 8 px.
+    try testing.expectApproxEqAbs(text_x + 4 * 4 + 8, caret.x, 0.001);
+
+    // The visible row is line 2; its number selects it, newline-less.
+    const gutter_click = mouse(20, text_y + line_height / 2);
+    app.window.queue.push(.{ .input = .{ .mouse_down = gutter_click } });
+    app.window.queue.push(.{ .input = .{ .mouse_up = gutter_click } });
+    now += 1;
+    app.tick(now);
+    now += 1;
+    app.tick(now);
+    const selected = query.imeSelectedRange().?;
+    try testing.expectEqual(@as(u32, 12), selected.offset);
+    try testing.expectEqual(@as(u32, 5), selected.len);
+
+    // The wheel reaches the editor, so line 2 moves down a row.
+    app.window.queue.push(.{ .input = .{ .scroll = .{
+        .position = .{ .x = text_x + 1, .y = text_y + 1 },
+        .delta = .{ .x = 0, .y = 1 },
+        .modifiers = .{},
+    } } });
+    now += 1;
+    app.tick(now);
+    try testing.expectApproxEqAbs(text_y + line_height, query.imeCursorRect().?.y, 0.001);
+}
+
 /// An app whose button opens a file dialog, for the dialog check. Its first
 /// three clicks open a multiple selection; the fourth saves with a name it
 /// builds in its state.

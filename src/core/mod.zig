@@ -49,6 +49,7 @@ pub const Theme = surface.Theme;
 pub const Painter = surface.Painter;
 pub const InputEngine = surface.InputEngine;
 pub const AreaEngine = surface.AreaEngine;
+pub const EditorEngine = surface.EditorEngine;
 pub const ResourceLimits = surface.ResourceLimits;
 pub const FontLimits = surface.FontLimits;
 pub const FontSource = surface.FontSource;

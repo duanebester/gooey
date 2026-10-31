@@ -41,6 +41,7 @@ pub const Theme = element.Theme;
 pub const Painter = emit.Painter;
 pub const InputEngine = text_engine.InputEngine;
 pub const AreaEngine = text_engine.AreaEngine;
+pub const EditorEngine = text_engine.EditorEngine;
 pub const ResourceLimits = @import("limits.zig").ResourceLimits;
 pub const FontLimits = app.FontLimits;
 pub const FontSource = app.FontSource;
