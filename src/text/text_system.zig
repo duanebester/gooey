@@ -850,7 +850,7 @@ pub const TextSystem = struct {
         std.debug.assert(!self.mono_loaded);
         if (self.faces.len == self.app_face_count) {
             std.debug.panic("TextSystem: a second family was loaded but " ++
-                "FontLimits.mono_variants is empty; set Config.font_limits", .{});
+                "Fonts.limits.mono_variants is empty; set Config.fonts.limits", .{});
         }
         if (source == .name and source.name.len > family_name_bytes_max) {
             return error.FontNameTooLong;
@@ -994,7 +994,7 @@ pub const TextSystem = struct {
         std.debug.assert(self.faces_loaded);
         if (family == .mono and !self.mono_loaded) {
             std.debug.panic("TextSystem: text uses family .mono, but no second family " ++
-                "is loaded; set Config.font_mono and FontLimits.mono_variants", .{});
+                "is loaded; set Config.fonts.mono and fonts.limits.mono_variants", .{});
         }
         const slot = self.face_slot_by_variant[@backingInt(family)][@backingInt(variant)];
         if (slot < self.faces.len) {

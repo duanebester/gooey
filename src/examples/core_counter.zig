@@ -50,14 +50,6 @@ pub const App = core.App(State, render, .{
     .width = 500,
     .height = 350,
     .limits = .nano,
-    .theme = &core.Theme.light,
-    .keymap = &.{},
-    .entities = &.{},
-    .font = null,
-    .font_size = 16,
-    .font_mono = null,
-    .font_limits = null,
-    .on_init = null,
 });
 
 /// The generated entry point (contract §7).
