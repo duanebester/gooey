@@ -382,8 +382,9 @@ pub fn Engine(comptime kind: Kind) type {
             return true;
         }
 
-        /// Tab in an editor: one tab character or `indent.size` spaces, as
-        /// one undo step like any multi-byte insert.
+        /// Tab in an editor: `indent.size` spaces as one undo step, like any
+        /// multi-byte insert, or one tab character, which joins the typing
+        /// run like any typed character.
         fn insertIndent(self: *Self) void {
             comptime assert(kind == .editor);
             assert(self.indent.size > 0);
@@ -1108,4 +1109,30 @@ test "a click finds the nearest codepoint boundary" {
     try std.testing.expectEqual(@as(u32, 3), columnAt(fake, "a\u{e9}b", 24));
     try std.testing.expectEqual(@as(u32, 4), columnAt(fake, "a\u{e9}b", 1000));
     try std.testing.expectEqual(@as(u32, 0), columnAt(fake, "", 12));
+}
+
+test "an editor's Tab indents as one step, and a line selection takes its newline" {
+    // Goal: 0.3.1's editor Tab and gutter selection. Method: Tab after typing
+    // must undo alone (a wrong merge would also remove "ab"); a modified Tab
+    // bubbles; a middle line's selection ends after its newline, the last
+    // line's at the text's end.
+    var t: TestOf(.editor) = undefined;
+    t.init();
+    const engine = &t.engine;
+    engine.insert("a");
+    engine.insert("b");
+    try std.testing.expect(t.key(.tab, .{}));
+    try std.testing.expectEqualStrings("ab    ", engine.text());
+    engine.undo();
+    try std.testing.expectEqualStrings("ab", engine.text());
+    try std.testing.expect(!t.key(.tab, .{ .shift = true }));
+    engine.indent = .{ .size = 2, .hard_tabs = true };
+    try std.testing.expect(t.key(.tab, .{}));
+    try std.testing.expectEqualStrings("ab\t", engine.text());
+    engine.insert("\nxy\nz");
+    engine.selectLine(4);
+    try std.testing.expectEqual(@as(u32, 4), engine.cursor);
+    try std.testing.expectEqual(@as(u32, 7), engine.anchor); // "xy\n".
+    engine.selectLine(7);
+    try std.testing.expectEqual(@as(u32, 8), engine.anchor); // "z", no newline.
 }
