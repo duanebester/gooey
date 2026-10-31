@@ -45,7 +45,16 @@ pub fn tickMain(app: anytype, window: *Window, now_ns: u64) bool {
     const in_flight = window.frame_in_flight.load(.acquire);
     // Shaped runs of the frame in flight may still sit in the scratch.
     if (!in_flight) window.text_scratch_allocator.reset();
-    drain(window);
+    // The tick that ran a dialog builds nothing: the frame would show the
+    // state from before the outcome, which only the next drain delivers. On
+    // macOS that extra frame, presented as the modal session ends, can make
+    // Core Animation discard the next one, leaving the stale frame on screen.
+    // The render stays requested and the host ticks again for the queued
+    // outcome, so the next build shows it.
+    if (drain(window)) {
+        assert(window.render_requested);
+        return false;
+    }
     fireDeadline(window, now_ns);
     // A reload clears the glyph cache and atlas the render side reads while
     // it draws, so it waits for a tick with no frame in flight.
@@ -173,7 +182,8 @@ fn applyFont(window: *Window) void {
     window.render_requested = true;
 }
 
-fn drain(window: *Window) void {
+/// Route every queued event. Returns whether a file dialog ran.
+fn drain(window: *Window) bool {
     window.setPhase(.idle, .drain);
     window.completions.drainInto(&window.queue);
     const pending = window.queue.pending();
@@ -181,11 +191,14 @@ fn drain(window: *Window) void {
     window.queue.clear();
     // Copy and cut reach the platform after the drain, outside any handler.
     window.clipboard.flush();
+    const dialog_ran = window.pending_dialog != null;
     if (window.pending_dialog) |request| {
         window.pending_dialog = null;
         openDialog(window, request);
+        assert(window.queue.count > 0); // Its outcome, for the next drain.
     }
     window.setPhase(.drain, .idle);
+    return dialog_ran;
 }
 
 /// Open a requested file dialog on the main thread and queue its outcome

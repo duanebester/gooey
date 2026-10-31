@@ -343,7 +343,8 @@ test "a file dialog opened from a handler runs on the main thread after the hand
     // a button whose handler requests a dialog; the scripted service records
     // the thread and phase it ran in, and answers two selected paths, then
     // cancelled, then failed, then one saved path. Each answer must reach
-    // the completion handler as a distinct outcome a tick later. The save's
+    // the completion handler as a distinct outcome a tick later, and only
+    // that tick may build (the Mac's stale frame after a dialog). The save's
     // folder and name must reach the service from the window's own copy.
     const app = try testing.allocator.create(DialogApp);
     defer testing.allocator.destroy(app);
@@ -367,10 +368,15 @@ test "a file dialog opened from a handler runs on the main thread after the hand
     while (round < 4) : (round += 1) {
         app.window.queue.push(.{ .input = .{ .mouse_down = mouse(20, 20) } });
         app.window.queue.push(.{ .input = .{ .mouse_up = mouse(20, 20) } });
+        const built = app.window.frame_number;
         now += 1;
         app.tick(now); // The click opens the dialog after the drain.
+        // No frame of the state before the outcome; the render waits for it.
+        try testing.expectEqual(built, app.window.frame_number);
+        try testing.expect(app.window.render_requested);
         now += 1;
-        app.tick(now); // The next drain delivers the outcome.
+        app.tick(now); // The next drain delivers the outcome and builds once.
+        try testing.expectEqual(built + 1, app.window.frame_number);
         if (round == 0) {
             try testing.expectEqual(@as(u32, 2), app.state.path_count);
             const selected = app.state.path_bytes[0..app.state.path_len];
