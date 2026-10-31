@@ -21,6 +21,7 @@ const text_mod = @import("../text/mod.zig");
 const text_render = @import("../text/render.zig");
 const scene_mod = @import("../scene/mod.zig");
 const a11y_types = @import("../accessibility/types.zig");
+const layout_mod = @import("../layout/layout.zig");
 
 const assert = std.debug.assert;
 
@@ -29,6 +30,8 @@ const Node = window_mod.Node;
 const Rect = records.Rect;
 const Color = records.Color;
 const index_none = records.index_none;
+const TextData = layout_mod.engine.TextData;
+const TextAlignment = layout_mod.TextConfig.TextAlignment;
 
 /// Drawing access for `ui.paint` functions, valid during emit only.
 pub const Painter = struct {
@@ -145,7 +148,7 @@ pub fn emit(window: *Window) void {
                 a11y_level[depth] = parent_level + emitA11y(window, node, bounds, parent_level);
                 if (node.kind == .paint) emitPaint(window, node, bounds);
             },
-            .text => emitText(window, node, bounds),
+            .text => emitText(window, node, bounds, &elements[index].text_data.?),
         }
     }
 }
@@ -214,14 +217,46 @@ fn emitPaint(window: *Window, node: *const Node, bounds: Rect) void {
     }
 }
 
-fn emitText(window: *Window, node: *const Node, bounds: Rect) void {
+/// One glyph run per wrapped line (contract decision 9), pitched by the layout's
+/// line height and aligned within the parent's content width, as 0.3.1's
+/// `emitTextCommands` places them.
+fn emitText(window: *Window, node: *const Node, bounds: Rect, data: *const TextData) void {
     const content = window.built().text(node.text) orelse return;
-    _ = emitTextLine(window, content, bounds.x, bounds.y, .{
+    assert(content.len == data.text.len);
+    const style: TextStyle = .{
         .size = node.font_size,
         .color = node.text_color,
         .family = node.family,
         .variant = node.variant,
-    });
+    };
+    const align_width = if (data.container_width > 0) data.container_width else bounds.width;
+    const alignment = data.config.alignment;
+    const lines = data.wrapped_lines orelse {
+        const x = bounds.x + alignOffset(alignment, align_width, data.measured_width);
+        _ = emitTextLine(window, content, x, bounds.y, style);
+        return;
+    };
+    assert(lines.len <= layout_mod.engine.MAX_LINES_PER_TEXT);
+    const pitch = data.config.lineHeightPx();
+    assert(pitch > 0);
+    for (lines, 0..) |line, line_index| {
+        assert(line.start_offset <= content.len);
+        assert(line.length <= content.len - line.start_offset);
+        const x = bounds.x + alignOffset(alignment, align_width, line.width);
+        const y = bounds.y + @as(f32, @floatFromInt(line_index)) * pitch;
+        const run = content[line.start_offset..][0..line.length];
+        _ = emitTextLine(window, run, x, y, style);
+    }
+}
+
+fn alignOffset(alignment: TextAlignment, align_width: f32, line_width: f32) f32 {
+    assert(align_width >= 0);
+    assert(line_width >= 0);
+    return switch (alignment) {
+        .left => 0,
+        .center => (align_width - line_width) / 2,
+        .right => align_width - line_width,
+    };
 }
 
 const GlyphSink = struct {

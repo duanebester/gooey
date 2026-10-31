@@ -24,6 +24,8 @@
 //! - `core-component-depth`: nests components one level past `component_depth_max`.
 //! - `core-dialog-target`: names a non-root state as a file dialog's completion handler.
 //! - `core-mono-unset`: draws `.family = .mono` text in an app with no `font_mono`.
+//! - `core-wrap-lines`: wraps one text into one line past `MAX_LINES_PER_TEXT`.
+//! - `core-wrap-words`: wraps one text of one word past `MAX_WORDS_PER_TEXT`.
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -45,6 +47,8 @@ const Mode = enum {
     @"core-component-depth",
     @"core-dialog-target",
     @"core-mono-unset",
+    @"core-wrap-lines",
+    @"core-wrap-words",
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -73,6 +77,8 @@ pub fn main(init: std.process.Init) !void {
         .@"core-component-depth" => coreTick(init.gpa, init.io, CoreApp.nested),
         .@"core-dialog-target" => coreDialogTarget(init.gpa, init.io),
         .@"core-mono-unset" => coreTick(init.gpa, init.io, CoreApp.monoText),
+        .@"core-wrap-lines" => coreTick(init.gpa, init.io, CoreApp.wrapLines),
+        .@"core-wrap-words" => coreTick(init.gpa, init.io, CoreApp.wrapWords),
     }
     std.debug.print("unreachable: {s} did not panic\n", .{@tagName(mode)});
 }
@@ -311,6 +317,30 @@ const CoreApp = struct {
 
     fn monoText(cx: *core.Cx) void {
         cx.render(core.ui.text("code", .{ .family = .mono }));
+    }
+
+    /// One line per newline: exactly one more line than the pool holds.
+    fn wrapLines(cx: *core.Cx) void {
+        const lines = comptime repeated("m\n", gooey.layout.engine.MAX_LINES_PER_TEXT);
+        cx.render(core.ui.text(&lines, .{ .wrap = .newlines }));
+    }
+
+    /// One word per space: exactly one more word than the pool holds.
+    fn wrapWords(cx: *core.Cx) void {
+        const words = comptime repeated("m ", gooey.layout.engine.MAX_WORDS_PER_TEXT);
+        cx.render(core.ui.text(&words, .{ .wrap = .words }));
+    }
+
+    /// `count` copies of a two-byte unit, then one more "m".
+    fn repeated(comptime unit: *const [2]u8, comptime count: u32) [count * 2 + 1]u8 {
+        @setEvalBranchQuota(count * 4);
+        var bytes: [count * 2 + 1]u8 = undefined;
+        for (0..count) |index| {
+            bytes[index * 2] = unit[0];
+            bytes[index * 2 + 1] = unit[1];
+        }
+        bytes[count * 2] = 'm';
+        return bytes;
     }
 };
 

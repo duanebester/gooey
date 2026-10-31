@@ -823,11 +823,11 @@ fn accumulateWordsIntoLines(
         if (word.has_newline) {
             // Handle forced newlines - emit current line and start fresh.
             const total_width = line_width + word.width;
-            lines.append(.{
+            appendLine(lines, .{
                 .start_offset = line_start,
                 .length = word.end - line_start,
                 .width = total_width,
-            }) catch break;
+            });
             max_line_width = @max(max_line_width, total_width);
 
             line_start = word.end + 1; // +1 to skip the newline byte
@@ -839,11 +839,11 @@ fn accumulateWordsIntoLines(
         const potential_width = line_width_with_space + word.width;
         if (wrap_mode == .words and potential_width > max_width and line_width > 0) {
             // Overflow - emit current line WITHOUT this word.
-            lines.append(.{
+            appendLine(lines, .{
                 .start_offset = line_start,
                 .length = word.start - line_start,
                 .width = line_width,
-            }) catch break;
+            });
             max_line_width = @max(max_line_width, line_width);
 
             line_start = word.start;
@@ -851,11 +851,11 @@ fn accumulateWordsIntoLines(
             line_width_with_space = word.width + word.trailing_space_width;
         } else if (wrap_mode == .words and word.width > max_width and line_width == 0) {
             // Single word is wider than max_width - force it onto its own line.
-            lines.append(.{
+            appendLine(lines, .{
                 .start_offset = word.start,
                 .length = word.end - word.start,
                 .width = word.width,
-            }) catch break;
+            });
             max_line_width = @max(max_line_width, word.width);
 
             line_start = word.end;
@@ -888,12 +888,31 @@ fn finalizeLastLine(
     const trimmed = std.mem.trimEnd(u8, remaining, " \t\n");
     if (trimmed.len == 0) return 0;
 
-    lines.append(.{
+    appendLine(lines, .{
         .start_offset = residual.line_start,
         .length = @intCast(trimmed.len),
         .width = residual.line_width,
-    }) catch return 0; // Best effort for final line
+    });
     return residual.line_width;
+}
+
+/// Wrapped lines and words are fixed pools: a text past either capacity is a
+/// capacity-planning error, so it stops here rather than dropping the rest.
+fn appendLine(
+    lines: *FixedCapacityArray(types.WrappedLine, MAX_LINES_PER_TEXT),
+    line: types.WrappedLine,
+) void {
+    lines.append(line) catch std.debug.panic(
+        "wrapped text lines exhausted: capacity {d} (MAX_LINES_PER_TEXT), 1 requested",
+        .{MAX_LINES_PER_TEXT},
+    );
+}
+
+fn appendWord(words: *FixedCapacityArray(WordInfo, MAX_WORDS_PER_TEXT), word: WordInfo) void {
+    words.append(word) catch std.debug.panic(
+        "wrapped text words exhausted: capacity {d} (MAX_WORDS_PER_TEXT), 1 requested",
+        .{MAX_WORDS_PER_TEXT},
+    );
 }
 
 // ============================================================================
@@ -950,17 +969,14 @@ pub fn findWordBoundaries(
         const is_newline = is_ascii and c == '\n';
 
         if (is_newline) {
-            if (emitOnNewline(&state)) {
-                state.in_word = false;
-                state.word_start = state.byte_pos + codepoint_len;
-                state.byte_pos += codepoint_len;
-                continue;
-            }
-            // overflow inside emitOnNewline — bail with whatever we have
-            return @intCast(words.len);
+            emitOnNewline(&state);
+            state.in_word = false;
+            state.word_start = state.byte_pos + codepoint_len;
+            state.byte_pos += codepoint_len;
+            continue;
         } else if (is_space) {
             if (state.in_word) {
-                if (!emitOnSpace(&state)) return @intCast(words.len);
+                emitOnSpace(&state);
                 state.in_word = false;
             }
             // Skip leading/consecutive spaces - next word starts after this space
@@ -984,46 +1000,43 @@ pub fn findWordBoundaries(
     return @intCast(words.len);
 }
 
-/// Append a word at a newline boundary. Returns `false` only on overflow,
-/// which causes the caller to abort the scan with the partial result.
-fn emitOnNewline(state: *WordScanState) bool {
+/// Append a word at a newline boundary.
+fn emitOnNewline(state: *WordScanState) void {
     if (state.in_word) {
         const word_text = state.text[state.word_start..state.byte_pos];
         const word_width = state.measure_fn(word_text, state.config.font_id, state.config.font_size, null, state.user_data).width;
-        state.words.append(.{
+        appendWord(state.words, .{
             .start = state.word_start,
             .end = state.byte_pos,
             .width = word_width,
             .trailing_space_width = 0,
             .has_newline = true,
-        }) catch return false;
+        });
     } else {
         // Empty line (newline with no preceding word content)
-        state.words.append(.{
+        appendWord(state.words, .{
             .start = state.byte_pos,
             .end = state.byte_pos,
             .width = 0,
             .trailing_space_width = 0,
             .has_newline = true,
-        }) catch return false;
+        });
     }
-    return true;
 }
 
 /// Append a word ending at a space character. Caller guarantees `in_word`.
-fn emitOnSpace(state: *WordScanState) bool {
+fn emitOnSpace(state: *WordScanState) void {
     std.debug.assert(state.in_word);
 
     const word_text = state.text[state.word_start..state.byte_pos];
     const word_width = state.measure_fn(word_text, state.config.font_id, state.config.font_size, null, state.user_data).width;
-    state.words.append(.{
+    appendWord(state.words, .{
         .start = state.word_start,
         .end = state.byte_pos,
         .width = word_width,
         .trailing_space_width = state.cached_space_width,
         .has_newline = false,
-    }) catch return false;
-    return true;
+    });
 }
 
 /// Append the trailing word at end-of-string (no terminating space/newline).
@@ -1033,13 +1046,13 @@ fn emitFinalWord(state: *WordScanState) void {
 
     const word_text = state.text[state.word_start..];
     const word_width = state.measure_fn(word_text, state.config.font_id, state.config.font_size, null, state.user_data).width;
-    state.words.append(.{
+    appendWord(state.words, .{
         .start = state.word_start,
         .end = @intCast(state.text.len),
         .width = word_width,
         .trailing_space_width = 0,
         .has_newline = false,
-    }) catch {};
+    });
 }
 
 // ============================================================================

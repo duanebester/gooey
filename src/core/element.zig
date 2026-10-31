@@ -186,6 +186,14 @@ pub const Text = struct {
     /// `.mono` draws with `Config.font_mono` (contract decision 8); using it
     /// with no second family loaded panics on the first frame.
     family: FontFamily = .app,
+    /// Wrapping against the parent's content width (contract decision 9):
+    /// `.words` breaks between words and at newlines, `.newlines` only at
+    /// newlines. Wrapped lines count against the frame's glyph and record limits.
+    wrap: enum { none, words, newlines } = .none,
+    /// Line pitch in percent of the font's line height; null keeps the font's.
+    line_height: ?u16 = null,
+    /// Line placement within the parent's content width, as in 0.3.1.
+    alignment: enum { left, center, right } = .left,
 
     pub const Element = struct {
         content: []const u8,

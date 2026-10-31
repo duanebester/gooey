@@ -1776,6 +1776,10 @@ fn addFailFastChecks(
             "build.component_depth_max 64 rendering fail_fast_check.CoreApp.Nest" },
         .{ .mode = "core-mono-unset", .stderr = "text uses family .mono, but no second " ++
             "family is loaded; set Config.font_mono and FontLimits.mono_variants" },
+        .{ .mode = "core-wrap-lines", .stderr = "wrapped text lines exhausted: " ++
+            "capacity 1024 (MAX_LINES_PER_TEXT), 1 requested" },
+        .{ .mode = "core-wrap-words", .stderr = "wrapped text words exhausted: " ++
+            "capacity 2048 (MAX_WORDS_PER_TEXT), 1 requested" },
     };
     for (checks) |check| {
         const run = b.addRunArtifact(exe);
