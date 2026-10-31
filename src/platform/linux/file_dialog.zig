@@ -255,13 +255,11 @@ fn waitForResponse(
             if (iter.getArgType() != dbus.TYPE_UINT32) return error.InvalidResponse;
             const response_code = iter.getUint32();
 
-            if (response_code == 1) {
-                // User cancelled
-                return null;
-            } else if (response_code != 0) {
-                // Error
-                return error.PortalError;
-            }
+            // The portal's codes: 0 success, 1 cancelled by the user, 2 the
+            // interaction ended some other way, which GNOME's portal sends
+            // for Escape. Both 1 and 2 are a cancel, not an error.
+            if (response_code == 1 or response_code == 2) return null;
+            if (response_code != 0) return error.PortalError;
 
             // Second argument: results dict a{sv}
             if (!iter.next()) return error.InvalidResponse;
