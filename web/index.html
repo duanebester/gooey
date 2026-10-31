@@ -2318,6 +2318,13 @@
           // For now, we use render-to-texture approach instead
         },
 
+        // Text-field edit commands use Cmd on Apple platforms, Ctrl elsewhere.
+        // iPadOS Safari reports "MacIntel", which is the right answer for it.
+        isApplePlatform: () =>
+          /Mac|iPhone|iPad|iPod/.test(
+            navigator.userAgentData?.platform ?? navigator.platform,
+          ),
+
         // Clipboard - write text (fire and forget, async in JS)
         clipboardWriteText: (ptr, len) => {
           const text = getString(ptr, len);
