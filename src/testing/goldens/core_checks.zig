@@ -204,7 +204,7 @@ fn deliverAll(app: *LongRunApp, now: *u64, inputs: []const gooey.input.InputEven
 }
 
 test "a TextArea refuses a line's 1025th character and keeps running" {
-    // Goal: typing, an IME commit, and a paste stop at the line bound
+    // Goal: typing, an IME commit, a paste, and a join stop at the line bound
     // (`line_codepoint_count_max`) rather than reaching the paint, where a
     // longer run fails fast. Method: bind a TextArea to a line of 1024 'c's,
     // put the caret at its end, then type, commit, and paste past the bound;
@@ -250,6 +250,17 @@ test "a TextArea refuses a line's 1025th character and keeps running" {
     const notes = app.state.notes;
     const newline = std.mem.indexOfScalar(u8, notes, '\n').?;
     try testing.expectEqualStrings(pasted[0..1024], notes[newline + 1 ..]);
+
+    // Two full lines: removing the newline between them, by Backspace or by
+    // typing over a selection that holds it, would join 2048 codepoints.
+    deliverAll(app, &now, &.{
+        .{ .key_down = chord(.home, .{}) },
+        .{ .key_down = chord(.delete, .{}) },
+        .{ .key_down = chord(.left, .{ .shift = true }) },
+        .{ .text_input = .{ .text = "q" } },
+    });
+    const both = full[0..1021] ++ "\u{6771}\u{4eac}!\n" ++ pasted[0..1024];
+    try testing.expectEqualStrings(both, app.state.notes);
     try testing.expectEqual(core.internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
 }
 

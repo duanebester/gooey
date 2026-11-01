@@ -261,7 +261,8 @@ pub fn Engine(comptime kind: Kind) type {
             const room = self.bytes.len - (self.len - (end - start));
             const fits: u32 = @intCast(clipboard_mod.prefixFitting(value, room));
             const line_max = line_codepoint_count_max;
-            const kept = lineFitting(self.text(), start, end, value[0..fits], line_max);
+            const kept = lineFitting(self.text(), start, end, value[0..fits], line_max) orelse
+                return;
             assert(kept <= fits);
             if (end == start and kept == 0) return;
             self.history.record(.{
@@ -707,9 +708,11 @@ fn isSpace(byte: u8) bool {
 /// The longest prefix of `value` that, replacing `text[start..end]`, leaves
 /// no line longer than `line_max` codepoints, cut on a codepoint boundary.
 /// Each line the prefix closes must fit on its own; the last one also
-/// carries the text after `end`. A line already past the bound (the app set
-/// it) never grows, though a newline may still split it.
-fn lineFitting(text: []const u8, start: u32, end: u32, value: []const u8, line_max: u32) u32 {
+/// carries the text after `end`. Null refuses the edit: removing a newline
+/// would join lines past the bound even with none of `value`. A line already
+/// past the bound (the app set it) never grows, though an edit may shorten
+/// or split it.
+fn lineFitting(text: []const u8, start: u32, end: u32, value: []const u8, line_max: u32) ?u32 {
     assert(start <= end);
     assert(end <= text.len);
     const before = text[0..start];
@@ -737,7 +740,31 @@ fn lineFitting(text: []const u8, start: u32, end: u32, value: []const u8, line_m
         added -= 1;
     }
     assert(kept <= value.len);
+    const joined = base + added + tail;
+    if (joined > line_max) {
+        assert(added == 0);
+        if (joined > longestLineSpanned(text, start, end)) return null;
+    }
     return kept;
+}
+
+/// Codepoints in the longer of the lines holding `start` and `end`.
+fn longestLineSpanned(text: []const u8, start: u32, end: u32) u32 {
+    assert(start <= end);
+    assert(end <= text.len);
+    const first_start = if (std.mem.lastIndexOfScalar(u8, text[0..start], '\n')) |index|
+        index + 1
+    else
+        0;
+    const first_end = std.mem.indexOfScalarPos(u8, text, start, '\n') orelse text.len;
+    const last_start = if (std.mem.lastIndexOfScalar(u8, text[0..end], '\n')) |index|
+        index + 1
+    else
+        0;
+    const last_end = std.mem.indexOfScalarPos(u8, text, end, '\n') orelse text.len;
+    const first = text_mod.codepointCount(text[first_start..first_end]);
+    const last = text_mod.codepointCount(text[last_start..last_end]);
+    return @max(first, last);
 }
 
 /// `index` if a character starts there (or it is the end), else the start of
@@ -926,19 +953,30 @@ test "an edit keeps the prefix that leaves every line within the bound" {
     // length of the prefix a reader would keep by hand.
     const fit = lineFitting;
     // Typing a fifth codepoint on a full line is refused; a newline is not.
-    try std.testing.expectEqual(@as(u32, 0), fit("abcd", 4, 4, "e", 4));
-    try std.testing.expectEqual(@as(u32, 1), fit("abcd", 4, 4, "\n", 4));
+    try std.testing.expectEqual(@as(?u32, 0), fit("abcd", 4, 4, "e", 4));
+    try std.testing.expectEqual(@as(?u32, 1), fit("abcd", 4, 4, "\n", 4));
     // "東京" after three codepoints: "東" (3 bytes) fits, "京" does not.
-    try std.testing.expectEqual(@as(u32, 3), fit("abc", 3, 3, "\u{6771}\u{4eac}", 4));
+    try std.testing.expectEqual(@as(?u32, 3), fit("abc", 3, 3, "\u{6771}\u{4eac}", 4));
     // A paste cut mid-way: its first line fits, its second stops at four.
-    try std.testing.expectEqual(@as(u32, 6), fit("ab", 2, 2, "c\nwxyz!", 4));
+    try std.testing.expectEqual(@as(?u32, 6), fit("ab", 2, 2, "c\nwxyz!", 4));
     // The tail joins the last line: "ab|c" takes one codepoint, not two.
-    try std.testing.expectEqual(@as(u32, 1), fit("abc", 2, 2, "XY", 4));
+    try std.testing.expectEqual(@as(?u32, 1), fit("abc", 2, 2, "XY", 4));
     // Replacing a selection frees its codepoints; other lines do not count.
-    try std.testing.expectEqual(@as(u32, 3), fit("12345\nabcd\n1", 7, 10, "XYZ", 4));
-    // A line already past the bound never grows, but a newline splits it.
-    try std.testing.expectEqual(@as(u32, 0), fit("abcdef", 3, 3, "x", 4));
-    try std.testing.expectEqual(@as(u32, 1), fit("abcdef", 3, 3, "\n", 4));
+    try std.testing.expectEqual(@as(?u32, 3), fit("12345\nabcd\n1", 7, 10, "XYZ", 4));
+    // A line already past the bound never grows, but a newline splits it
+    // and an edit may shorten it.
+    try std.testing.expectEqual(@as(?u32, 0), fit("abcdef", 3, 3, "x", 4));
+    try std.testing.expectEqual(@as(?u32, 1), fit("abcdef", 3, 3, "\n", 4));
+    try std.testing.expectEqual(@as(?u32, 0), fit("abcdef", 2, 3, "", 4));
+    // Removing a newline joins lines: refused past the bound, by deleting or
+    // by typing over it, and allowed when the joined line fits.
+    try std.testing.expectEqual(@as(?u32, null), fit("abc\nde", 3, 4, "", 4));
+    try std.testing.expectEqual(@as(?u32, null), fit("abcd\nef", 4, 5, "q", 4));
+    try std.testing.expectEqual(@as(?u32, 0), fit("ab\ncd", 2, 3, "", 4));
+    try std.testing.expectEqual(@as(?u32, 1), fit("ab\ncd", 1, 4, "X", 4));
+    // Joining a long line's head to another's tail may not outgrow either.
+    try std.testing.expectEqual(@as(?u32, 0), fit("abcdefg\nxy", 5, 9, "", 4));
+    try std.testing.expectEqual(@as(?u32, null), fit("abcdef\nxy", 6, 7, "", 4));
 }
 
 test "input engine edits by codepoint and commits over a preedit" {
