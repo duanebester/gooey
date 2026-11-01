@@ -370,9 +370,10 @@ fn noteDepth(window: *Window) void {
 fn checkMilestoneOne(box: *const element.Box) void {
     const phase_four = "is not supported until phase 4 of 0.4.0";
     if (box.layer) |layer| {
-        if (layer.kind != .popover) {
-            std.debug.panic("Box.layer .{t}: only .popover layers are implemented " ++
-                "(contract decision 13)", .{layer.kind});
+        switch (layer.kind) {
+            .popover, .modal => {},
+            .tooltip, .drag => std.debug.panic("Box.layer .{t}: only .popover and .modal " ++
+                "layers are implemented (contract decision 13)", .{layer.kind}),
         }
     }
     if (box.draggable != null) std.debug.panic("Box.draggable {s}", .{phase_four});

@@ -183,6 +183,9 @@ fn emitFragment(window: *Window, layers_open: *LayerQueue, root: *const LayerRoo
     var hit_scope: [window_mod.box_depth_max + 1]u32 = undefined;
     var clips = Clips{ .entries = undefined, .len = 0, .base = root.clip };
     if (root.clip) |rect| window.built().appendPaint(.{ .clip_push = rect });
+    if (root.fragment != layers.content_fragment) {
+        if (nodes[root.node_index].layer.?.kind == .modal) blockEarlierHits(window.built());
+    }
     var index = root.node_index;
     while (index < nodes.len) {
         const node = &nodes[index];
@@ -217,6 +220,14 @@ fn emitFragment(window: *Window, layers_open: *LayerQueue, root: *const LayerRoo
     clips.close(window, 0);
     assert(clips.len == 0);
     if (root.clip != null) window.built().appendPaint(.clip_pop);
+}
+
+/// A modal fragment starts here: hit tests stop at its first record, so
+/// nothing emitted before it receives the pointer (contract §6).
+fn blockEarlierHits(frame: *records.Frame) void {
+    assert(frame.modal_hit_start <= frame.hit_count);
+    frame.modal_hit_start = frame.hit_count;
+    assert(frame.hit_count <= frame.hits.len);
 }
 
 /// The index after `index`'s subtree: in pre-order, the first later node no

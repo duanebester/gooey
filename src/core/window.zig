@@ -136,7 +136,8 @@ pub const Node = struct {
     // Clip and scroll (`Style.clip`, `Style.scroll`).
     clip: bool,
     scroll: ?retained_mod.Handle(ScrollState),
-    /// A `.popover` box opens a fragment that emit paints after content.
+    /// A `.popover` or `.modal` box opens a fragment that emit paints after
+    /// the fragment that opened it.
     layer: ?element.Layer,
 };
 

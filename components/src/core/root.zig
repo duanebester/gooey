@@ -370,6 +370,75 @@ const chevrons = [2][2]SelectIcon{
 const select_check = SelectIcon{ .path = Checkbox.checkmark.path, .color = .primary, .opacity = 1 };
 
 // =============================================================================
+// Modal
+// =============================================================================
+
+/// A dialog over a dimmed backdrop, as 0.3.1's `Modal`, on a `.modal` layer:
+/// nothing opened before it receives the pointer (contract §6), and layers
+/// its child opens, such as a `Select`'s menu, sit above it. The app owns
+/// `open`; with `close_on_backdrop`, a press outside the panel calls
+/// `on_close`. 0.3.1's fade and scale wait for the animation cluster.
+pub fn Modal(comptime Child: type) type {
+    return struct {
+        key: []const u8,
+        open: bool,
+        child: Child,
+        on_close: ?Handler = null,
+        close_on_backdrop: bool = true,
+        backdrop: Color = Color.rgba(0, 0, 0, 0.5),
+        content_max_width: ?f32 = 500,
+        content_padding: f32 = 24,
+        /// Defaults to the theme's surface.
+        content_background: ?Color = null,
+        /// Defaults to the theme's `radius_lg`.
+        content_corner_radius: ?f32 = null,
+        content_shadow: ?ui.Shadow = .{
+            .blur = 24,
+            .offset_y = 8,
+            .color = .{ .rgba = Color.rgba(0, 0, 0, 0.25) },
+        },
+        /// The dialog's screen-reader name; defaults to the key.
+        accessible_name: ?[]const u8 = null,
+        accessible_description: ?[]const u8 = null,
+
+        const Self = @This();
+
+        pub fn render(self: Self, cx: *Cx) void {
+            assert(self.key.len > 0);
+            if (self.close_on_backdrop) assert(self.on_close != null);
+            if (!self.open) return;
+            const theme = cx.theme();
+            const background = self.content_background orelse theme.surface;
+            cx.render(ui.box(.{
+                .key = .{ .name = self.key },
+                .layer = .{ .kind = .modal, .anchor = .{ .window = .{} }, .clip = .escape },
+                .style = .{
+                    .width = .{ .grow = 1 },
+                    .height = .{ .grow = 1 },
+                    .background = .{ .rgba = self.backdrop },
+                    .alignment = .center,
+                },
+                .a11y = .{
+                    .role = .dialog,
+                    .label = self.accessible_name orelse self.key,
+                    .description = self.accessible_description,
+                },
+            }, .{ui.box(.{
+                .key = .{ .name = "panel" },
+                .style = .{
+                    .width_max = self.content_max_width,
+                    .padding = .all(self.content_padding),
+                    .background = .{ .rgba = background },
+                    .corner_radius = .all(self.content_corner_radius orelse theme.radius_lg),
+                    .shadow = self.content_shadow,
+                },
+                .on_click_outside = if (self.close_on_backdrop) self.on_close else null,
+            }, .{self.child})}));
+        }
+    };
+}
+
+// =============================================================================
 // List
 // =============================================================================
 

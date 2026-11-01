@@ -11,6 +11,7 @@ const todo = @import("todo_example");
 const actions = @import("actions_example");
 const accessible_form = @import("accessible_form_example");
 const code_editor = @import("code_editor_example");
+const nested_overlay = @import("nested_overlay_example");
 const components = @import("gooey-components");
 const core_driver = @import("core.zig");
 const trace_mod = @import("trace.zig");
@@ -672,6 +673,134 @@ test "a Select's menu opens on a popover above content and outside its clip" {
     try testing.expect(!app.state.open);
     try testing.expectEqual(chosen.?, app.state.selected.?);
     try testing.expect(!comboboxState(app).expanded);
+}
+
+/// A button in content beside a small modal that does not cover it, for the
+/// modal blocking check: the modal's own records never reach the button, so
+/// only the blocking rule keeps the pointer off it.
+const BlockState = struct {
+    modal_open: bool = true,
+    below_clicks: u32 = 0,
+    inside_clicks: u32 = 0,
+
+    pub fn below(self: *BlockState) void {
+        self.below_clicks += 1;
+    }
+
+    pub fn inside(self: *BlockState) void {
+        self.inside_clicks += 1;
+        self.modal_open = false;
+    }
+};
+
+const BlockApp = core.App(BlockState, blockRender, .{
+    .title = "Block",
+    .width = 400,
+    .height = 300,
+    .limits = .nano,
+});
+
+fn blockRender(cx: *Cx) void {
+    const state = cx.state(BlockState);
+    cx.render(ui.box(.{ .style = .{ .padding = .all(10) } }, .{
+        components.core.Button{ .label = "Below", .on_click = cx.on(BlockState.below, .{}) },
+        if (state.modal_open) ui.box(.{
+            .layer = .{
+                .kind = .modal,
+                .anchor = .{ .window = .{ .x = 200, .y = 150 } },
+                .clip = .escape,
+            },
+            .style = .{ .width = .{ .fixed = 120 }, .height = .{ .fixed = 80 } },
+        }, .{
+            components.core.Button{ .label = "Inside", .on_click = cx.on(BlockState.inside, .{}) },
+        }) else null,
+    }));
+}
+
+test "a modal blocks the pointer on every fragment opened before it" {
+    // Goal: contract §6, "a modal fragment blocks hit testing of earlier
+    // fragments". Method: a 120 x 80 modal at (200, 150) leaves the content
+    // button at the top left uncovered; clicking, hovering, and the hit
+    // query over the button must all miss it until the modal closes.
+    const app = try testing.allocator.create(BlockApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    const query = core.Query{ .window = &app.window };
+    const frame = app.window.rendered();
+    try testing.expect(frame.modal_hit_start > 0);
+    const below = frame.hits[0..frame.modal_hit_start];
+    var button: ?gooey.core.internals.records.Rect = null;
+    for (below) |*record| {
+        if (record.on_click != gooey.core.internals.records.index_none) button = record.bounds;
+    }
+    const target = button.?;
+    try testing.expect(target.x + target.width < 200);
+    const x = target.x + target.width / 2;
+    const y = target.y + target.height / 2;
+    try testing.expectEqual(@as(?core.ElementId, null), query.hitTest(.{ .x = x, .y = y }));
+    clickAt(app, &now, x, y);
+    try testing.expectEqual(@as(u32, 0), app.state.below_clicks);
+
+    clickAt(app, &now, 230, 165);
+    try testing.expectEqual(@as(u32, 1), app.state.inside_clicks);
+    try testing.expectEqual(@as(u32, 0), app.window.rendered().modal_hit_start);
+    try testing.expect(query.hitTest(.{ .x = x, .y = y }) != null);
+    clickAt(app, &now, x, y);
+    try testing.expectEqual(@as(u32, 1), app.state.below_clicks);
+}
+
+test "nested_overlay: a Select's menu inside a modal sits above the modal" {
+    // Goal: contract §6, "a layer opened inside a layer's fragment comes
+    // after that fragment", through the ported 0.3.1 regression example.
+    // Method: the modal and its Select start open; the menu's options cover
+    // the modal's keyed yellow area. The options must come after the modal
+    // in paint and hit order and take the click over the area beneath.
+    const app = try testing.allocator.create(nested_overlay.App);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    const frame = app.window.rendered();
+    // Content has no hit records here, so the modal's are the first.
+    const modal_start = frame.modal_hit_start;
+    const modal_fragment = frame.hits[modal_start].fragment;
+    try testing.expect(modal_fragment > 0);
+    var area: ?gooey.core.internals.records.Rect = null;
+    var options: [nested_overlay.options.len]gooey.core.internals.records.Rect = undefined;
+    var option_count: u32 = 0;
+    for (frame.hits[modal_start..frame.hit_count]) |*record| {
+        if (record.fragment == modal_fragment) {
+            if (record.bounds.height == 120) area = record.bounds;
+        } else {
+            try testing.expect(record.fragment > modal_fragment);
+            if (record.on_click == gooey.core.internals.records.index_none) continue;
+            options[option_count] = record.bounds;
+            option_count += 1;
+        }
+    }
+    try testing.expectEqual(@as(u32, nested_overlay.options.len), option_count);
+    // "Bravo" lies over the yellow area, as the example promises.
+    const bravo = options[1];
+    const x = bravo.x + 20;
+    const y = bravo.y + bravo.height / 2;
+    try testing.expect(area.?.contains(x, y));
+    try testing.expect(dialogCount(frame) == 1);
+
+    clickAt(app, &now, x, y);
+    try testing.expectEqual(@as(?usize, 1), app.state.selected);
+    try testing.expect(!app.state.select_open);
+}
+
+fn dialogCount(frame: *const gooey.core.internals.records.Frame) u32 {
+    var count: u32 = 0;
+    for (frame.a11y[0..frame.a11y_count]) |*node| {
+        if (node.role == .dialog) count += 1;
+    }
+    return count;
 }
 
 /// An app whose button opens a file dialog, for the dialog check. Its first

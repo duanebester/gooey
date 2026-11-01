@@ -258,6 +258,10 @@ pub const Frame = struct {
     text_bytes: []u8,
     text_len: u32,
     ime: ?Ime,
+    /// The first hit record of the last modal fragment, or 0 with none open.
+    /// A modal blocks hit testing of earlier fragments (contract §6), and
+    /// fragments emit in order, so hit tests never look below this index.
+    modal_hit_start: u32,
     /// The tick number that built this frame.
     frame_number: u64,
     viewport_width: f32,
@@ -308,6 +312,7 @@ pub const Frame = struct {
         self.announcements.clear();
         self.text_len = 0;
         self.ime = null;
+        self.modal_hit_start = 0;
         self.frame_number = frame_number;
         self.viewport_width = viewport.width;
         self.viewport_height = viewport.height;
