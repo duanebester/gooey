@@ -9,7 +9,6 @@
 //!   • `ImageAtlas.mutex` — stores `io` on the struct
 //!   • `SvgAtlas.mutex`   — stores `io` on the struct
 //!   • `TextSystem.shape_cache_mutex` / `glyph_cache_mutex` — ditto
-//!   • `CodeEditorState.generateUniqueId` counter — a plain atomic
 //!
 //! The one exception is `Window.render_mutex` on macOS. It is
 //! locked from the CVDisplayLink callback thread, which is spawned and

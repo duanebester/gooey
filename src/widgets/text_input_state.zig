@@ -78,7 +78,7 @@ const Modifiers = input_mod.Modifiers;
 ///
 /// Re-exports the shared flat hot-loop rectangle from `text_common.zig`,
 /// which is the single source of truth for the text-widget family
-/// (`TextInput` / `TextArea` / `CodeEditorState`). Keeping this `pub const`
+/// (`TextInput` / `TextArea`). Keeping this `pub const`
 /// alias preserves existing `text_input_state.Bounds` import paths in
 /// `widgets/mod.zig` and the `Builder.DEFAULT_TEXT_INPUT_BOUNDS`
 /// seed value. See

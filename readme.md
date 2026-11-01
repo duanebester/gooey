@@ -130,7 +130,7 @@ zig build run-images       # Image loading and styling
 zig build run-file-dialog  # Native file dialogs
 zig build run-virtual-list # Variable-height list
 zig build run-data-table   # Virtualized table (10k rows)
-zig build run-code-editor  # Code editor with syntax highlighting
+zig build run-code-editor  # Code editor beside a folder's files
 zig build test             # Run tests
 ```
 
@@ -1634,7 +1634,7 @@ For a working reference, see the `Cmd+Q` handler in `src/examples/showcase.zig`,
 | Drag & Drop      | `zig build run-drag-drop`        | Draggable items and drop targets      |
 | Virtual List     | `zig build run-virtual-list`     | Variable-height virtualized list      |
 | Data Table       | `zig build run-data-table`       | Virtualized table with 10,000 rows    |
-| Code Editor      | `zig build run-code-editor`      | Code editor with syntax highlighting  |
+| Code Editor      | `zig build run-code-editor`      | Code editor beside a folder's files   |
 
 See [docs/accessibility.md](docs/accessibility.md) for comprehensive accessibility documentation.
 

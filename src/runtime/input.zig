@@ -30,7 +30,7 @@ const Builder = ui_mod.Builder;
 
 // Widget-state lookups go through `window.element_states`, keyed by
 // `LayoutId.id` hash. Input dispatch hits the pool by `pending_*.layout_id.id`
-// (area/editor scroll routing) and via the `focusedText*` helpers below (the
+// (area scroll routing) and via the `focusedText*` helpers below (the
 // focused-widget fan-out).
 const scroll_container_mod = @import("../widgets/scroll_container.zig");
 const ScrollContainer = scroll_container_mod.ScrollContainer;
@@ -39,8 +39,6 @@ const text_input_state_mod = @import("../widgets/text_input_state.zig");
 const TextInputState = text_input_state_mod.TextInputState;
 const text_area_state_mod = @import("../widgets/text_area_state.zig");
 const TextAreaState = text_area_state_mod.TextAreaState;
-const code_editor_state_mod = @import("../widgets/code_editor_state.zig");
-const CodeEditorState = code_editor_state_mod.CodeEditorState;
 
 // =============================================================================
 // Focused-widget dispatch helpers
@@ -72,19 +70,9 @@ pub fn focusedTextArea(window: *Window, builder: *const Builder) ?*TextAreaState
     return null;
 }
 
-/// Find the focused `CodeEditorState` among the widgets that rendered this frame.
-pub fn focusedCodeEditor(window: *Window, builder: *const Builder) ?*CodeEditorState {
-    std.debug.assert(builder.pending_code_editors.items.len <= Builder.MAX_PENDING_CODE_EDITORS);
-    for (builder.pending_code_editors.items) |pending| {
-        const ce = window.element_states.get(CodeEditorState, @as(u64, pending.layout_id.id)) orelse continue;
-        if (ce.isFocused()) return ce;
-    }
-    return null;
-}
-
 /// Whether the currently focused widget opts into raw keyboard-navigation
 /// keys (Tab / Shift-Tab). Consulted before focus traversal so terminals,
-/// grids, and CodeEditors can consume Tab themselves. Type-erased through
+/// and grids can consume Tab themselves. Type-erased through
 /// the `Focusable` vtable — `runtime/input` never learns the widget type.
 fn focusedWidgetWantsRawKeys(window: *Window) bool {
     const focusable = window.focus.getFocusedWidget() orelse return false;
@@ -199,24 +187,6 @@ fn handleScrollEvent(
         if (!pointInBounds(x, y, bounds)) continue;
 
         const ta = window.element_states.get(TextAreaState, @as(u64, pending.layout_id.id)) orelse continue;
-        if (ta.line_height > 0 and ta.viewport_height > 0) {
-            const delta_y: f32 = @floatCast(scroll_ev.delta.y);
-            const content_height: f32 = @as(f32, @floatFromInt(ta.lineCount())) * ta.line_height;
-            const max_scroll: f32 = @max(0, content_height - ta.viewport_height);
-            const new_offset = ta.scroll_offset_y - delta_y * 20;
-            ta.scroll_offset_y = std.math.clamp(new_offset, 0, max_scroll);
-            cx.notify();
-            return true;
-        }
-    }
-
-    // Check CodeEditors for scroll
-    for (builder.pending_code_editors.items) |pending| {
-        const bounds = window.layout.getBoundingBox(pending.layout_id.id) orelse continue;
-        if (!pointInBounds(x, y, bounds)) continue;
-
-        const ce = window.element_states.get(CodeEditorState, @as(u64, pending.layout_id.id)) orelse continue;
-        const ta = &ce.text_area;
         if (ta.line_height > 0 and ta.viewport_height > 0) {
             const delta_y: f32 = @floatCast(scroll_ev.delta.y);
             const content_height: f32 = @as(f32, @floatFromInt(ta.lineCount())) * ta.line_height;
@@ -377,24 +347,20 @@ fn handleMouseDownEvent(
     // 2. Check if click is in a TextArea
     if (handleTextAreaClick(cx, window, builder, x, y)) return true;
 
-    // 3. Check if click is in a CodeEditor
-    if (handleCodeEditorClick(cx, window, builder, down_ev)) return true;
-
-    // 4. Compute hit target once for focus clearing, click-outside, and dispatch.
+    // 3. Compute hit target once for focus clearing, click-outside, and dispatch.
     const hit_target = window.rendered_frame.dispatch.hitTest(x, y);
 
     // Clicking non-focusable content ends text editing. Focusable targets perform
     // their own transition during dispatch, avoiding a blur/refocus cycle when
     // clicking an already-focused control or one of its rendered children.
     const text_widget_focused = focusedTextInput(window, builder) != null or
-        focusedTextArea(window, builder) != null or
-        focusedCodeEditor(window, builder) != null;
+        focusedTextArea(window, builder) != null;
     if (text_widget_focused and !hitPathHasFocusTarget(window, hit_target)) {
         window.blurAll();
         cx.notify();
     }
 
-    // 5. Check for drag source — start pending drag
+    // 4. Check for drag source — start pending drag
     if (hit_target) |target| {
         _ = handleDragSourceClick(window, target, x, y);
         // Don't return true yet — still dispatch click-outside etc.
@@ -511,35 +477,6 @@ fn handleTextAreaClick(
     return false;
 }
 
-fn handleCodeEditorClick(
-    cx: *Cx,
-    window: *Window,
-    builder: *Builder,
-    down_ev: input_mod.MouseEvent,
-) bool {
-    std.debug.assert(builder.pending_code_editors.items.len <= Builder.MAX_PENDING_CODE_EDITORS);
-
-    const x: f32 = @floatCast(down_ev.position.x);
-    const y: f32 = @floatCast(down_ev.position.y);
-    std.debug.assert(std.math.isFinite(x) and std.math.isFinite(y));
-
-    for (builder.pending_code_editors.items) |pending| {
-        const bounds = window.layout.getBoundingBox(pending.layout_id.id) orelse continue;
-        if (pointInBounds(x, y, bounds)) {
-            // Get the code editor widget and pass the event to it
-            if (window.element_states.get(CodeEditorState, @as(u64, pending.layout_id.id))) |ce| {
-                // Pass mouse event to widget for gutter click handling
-                const input_event = InputEvent{ .mouse_down = down_ev };
-                _ = ce.handleEvent(input_event);
-            }
-            window.focusWidget(pending.id);
-            cx.notify();
-            return true;
-        }
-    }
-    return false;
-}
-
 /// Handle click dispatch through dispatch tree
 fn handleDispatchClick(cx: *Cx, window: *Window, target: DispatchNodeId) bool {
     // Handle focus
@@ -636,12 +573,11 @@ fn handleKeyDownEvent(cx: *Cx, window: *Window, k: input_mod.KeyEvent) bool {
         return true;
     }
 
-    // Escape to blur focused text widgets (TextInput, TextArea, CodeEditor).
+    // Escape to blur focused text widgets (TextInput, TextArea).
     if (k.key == .escape) {
         const builder = cx.builder();
         const has_focused_widget = focusedTextInput(window, builder) != null or
-            focusedTextArea(window, builder) != null or
-            focusedCodeEditor(window, builder) != null;
+            focusedTextArea(window, builder) != null;
         if (has_focused_widget) {
             window.blurAll();
             cx.notify();
@@ -657,13 +593,10 @@ fn handleKeyDownEvent(cx: *Cx, window: *Window, k: input_mod.KeyEvent) bool {
     }
 
     // Tab navigation. A focused widget can opt out of focus traversal via
-    // the `Focusable` vtable (`wantsRawKeys`) so it receives Tab itself:
-    // CodeEditor indents, a terminal grid forwards Tab for shell completion
-    // and Shift-Tab as back-tab. This is one general rule rather than a
-    // hard-coded per-widget branch — the CodeEditor case folds into it
-    // (`CodeEditorState.wantsRawKeys` returns true), and Tab then falls
-    // through to the CodeEditor key arm below (Tab is a control key) or,
-    // for non-widget focusables, on to the app `on_event` hook.
+    // the `Focusable` vtable (`wantsRawKeys`) so it receives Tab itself: a
+    // terminal grid forwards Tab for shell completion and Shift-Tab as
+    // back-tab. This is one general rule rather than a per-widget branch;
+    // Tab then falls through to the app `on_event` hook.
     // The `builder` borrow is shared across the arms below so each
     // pending-list walk is paid for at most once per key event.
     const builder = cx.builder();
@@ -700,16 +633,6 @@ fn handleKeyDownEvent(cx: *Cx, window: *Window, k: input_mod.KeyEvent) bool {
             const binding_deferred = reconcileTextAreaBinding(cx, ta);
             ta.handleKey(k) catch |err| textEditFailed("TextArea.handleKey", err);
             if (!binding_deferred) writeTextAreaBinding(cx, ta);
-            cx.notify();
-            return true;
-        }
-    }
-
-    // Handle focused CodeEditor
-    if (focusedCodeEditor(window, builder)) |ce| {
-        if (isControlKey(k.key, k.modifiers)) {
-            _ = ce.handleKey(k.key, k.modifiers);
-            syncCodeEditorBoundVariablesCx(cx);
             cx.notify();
             return true;
         }
@@ -766,12 +689,6 @@ fn handleTextInputEvent(cx: *Cx, window: *Window, text: []const u8) bool {
         cx.notify();
         return true;
     }
-    if (focusedCodeEditor(window, builder)) |ce| {
-        ce.insertText(text);
-        syncCodeEditorBoundVariablesCx(cx);
-        cx.notify();
-        return true;
-    }
     return false;
 }
 
@@ -787,11 +704,6 @@ fn handleCompositionEvent(cx: *Cx, window: *Window, text: []const u8) bool {
     if (focusedTextArea(window, builder)) |ta| {
         _ = reconcileTextAreaBinding(cx, ta);
         ta.setComposition(text) catch |err| textEditFailed("TextArea.setComposition", err);
-        cx.notify();
-        return true;
-    }
-    if (focusedCodeEditor(window, builder)) |ce| {
-        ce.setComposition(text);
         cx.notify();
         return true;
     }
@@ -858,20 +770,6 @@ pub fn syncBoundVariablesCx(cx: *Cx) void {
 pub fn syncTextAreaBoundVariablesCx(cx: *Cx) void {
     const text_area = focusedTextArea(cx.window(), cx.builder()) orelse return;
     writeTextAreaBinding(cx, text_area);
-}
-
-/// Sync CodeEditor content back to bound variables (Cx version).
-pub fn syncCodeEditorBoundVariablesCx(cx: *Cx) void {
-    const builder = cx.builder();
-    const window = cx.window();
-
-    for (builder.pending_code_editors.items) |pending| {
-        if (pending.style.bind) |bind_ptr| {
-            if (window.element_states.get(CodeEditorState, @as(u64, pending.layout_id.id))) |ce| {
-                bind_ptr.* = ce.getText();
-            }
-        }
-    }
 }
 
 // =============================================================================

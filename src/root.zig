@@ -292,7 +292,6 @@ test {
         _ = wid.UniformListState;
         _ = wid.VirtualListState;
         _ = wid.DataTableState;
-        _ = wid.TreeListState;
 
         // UI styles.
         _ = u.Builder;
@@ -345,10 +344,8 @@ test {
 
         // Widget engines imported directly by `cx.zig`.
         @import("widgets/data_table.zig"),
-        @import("widgets/tree_list.zig"),
         @import("widgets/uniform_list.zig"),
         @import("widgets/virtual_list.zig"),
-        @import("widgets/code_editor_state.zig"),
         @import("widgets/text_input_state.zig"),
         @import("widgets/text_area_state.zig"),
         @import("widgets/scroll_container.zig"),

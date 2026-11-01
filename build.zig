@@ -792,7 +792,11 @@ pub fn build(b: *std.Build) void {
                 .source = "src/examples/core_file_dialog.zig",
                 .core = true,
             },
-            .{ .name = "code-editor", .source = "src/examples/code_editor.zig" },
+            .{
+                .name = "code-editor",
+                .source = "src/examples/code_editor.zig",
+                .core = true,
+            },
             .{ .name = "spaceship", .source = "src/examples/spaceship.zig" },
             .{ .name = "dynamic-counters", .source = "src/examples/dynamic_counters.zig" },
             .{ .name = "layout", .source = "src/examples/layout.zig" },
@@ -1294,7 +1298,6 @@ fn addWindowsBuilds(
 
     const examples = [_]struct { name: []const u8, source: []const u8 }{
         .{ .name = "showcase", .source = "src/examples/showcase.zig" },
-        .{ .name = "code-editor", .source = "src/examples/code_editor.zig" },
         .{ .name = "layout", .source = "src/examples/layout.zig" },
         .{ .name = "animation", .source = "src/examples/animation.zig" },
         .{ .name = "lucide-demo", .source = "src/examples/lucide_demo.zig" },
@@ -2333,9 +2336,16 @@ fn addGoldens(
         .optimize = optimize,
         .imports = example_imports,
     });
+    const code_editor_mod = b.createModule(.{
+        .root_source_file = b.path("src/examples/code_editor.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = example_imports,
+    });
     const goldens_imports: []const std.Build.Module.Import = &.{
         .{ .name = "accessible_form_example", .module = accessible_form_mod },
         .{ .name = "actions_example", .module = actions_mod },
+        .{ .name = "code_editor_example", .module = code_editor_mod },
         .{ .name = "gooey", .module = gooey_mod },
         .{ .name = "gooey-components", .module = components_mod },
         .{ .name = "counter_example", .module = counter_mod },

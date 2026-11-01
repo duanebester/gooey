@@ -44,19 +44,18 @@ const change_tracker_mod = @import("context/change_tracker.zig");
 const handler_mod = @import("context/handler.zig");
 const entity_mod = @import("context/entity.zig");
 // Widget engine-state pools — the `cx.textField` / `cx.textAreaWidget` /
-// `cx.codeEditorWidget` / `cx.scrollView` accessors keyed off these.
+// `cx.scrollView` accessors keyed off these.
 // List and table state types are imported by `cx/lists.zig`, since callers
 // go through `cx.lists.*`.
 const text_field_mod = @import("widgets/text_input_state.zig");
 const text_area_mod = @import("widgets/text_area_state.zig");
-const code_editor_mod = @import("widgets/code_editor_state.zig");
 const scroll_view_mod = @import("widgets/scroll_container.zig");
 
 // `cx.scrollView(id)` goes through
 // `Window.element_states.getOrInsert(ScrollContainer, hash, init)`.
 // `LayoutId.fromString(id).id` is the u32 hash key, matching every
 // other element-state path that comes from a string id (`TextInputState` /
-// `TextAreaState` / `CodeEditorState`).
+// `TextAreaState`).
 const layout_id_mod = @import("layout/layout_id.zig");
 const LayoutId = layout_id_mod.LayoutId;
 const Box = ui_mod.Box;
@@ -397,8 +396,8 @@ pub const Cx = struct {
 
     // Widget access (for advanced use cases). Each returns `null` if
     // no widget with that id has been registered. The returned types
-    // are the *engine* state objects (`TextInputState`, `TextAreaState`,
-    // `CodeEditorState`) — not the user-facing `TextInput` / `TextArea`
+    // are the *engine* state objects (`TextInputState`, `TextAreaState`)
+    // — not the user-facing `TextInput` / `TextArea`
     // declarative components in `components/src/`.
     //
     // Storage lives on `Window.element_states`. Each accessor
@@ -413,9 +412,6 @@ pub const Cx = struct {
     }
     pub fn textAreaWidget(self: *Self, id: []const u8) ?*text_area_mod.TextAreaState {
         return self._window.widgetState(text_area_mod.TextAreaState, id);
-    }
-    pub fn codeEditorWidget(self: *Self, id: []const u8) ?*code_editor_mod.CodeEditorState {
-        return self._window.widgetState(code_editor_mod.CodeEditorState, id);
     }
     pub fn scrollView(self: *Self, id: []const u8) ?*scroll_view_mod.ScrollContainer {
         // Storage lives on `Window.element_states`. Hash the string id once at

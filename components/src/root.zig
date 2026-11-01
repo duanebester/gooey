@@ -8,7 +8,6 @@ pub const Button = @import("button.zig").Button;
 pub const Checkbox = @import("checkbox.zig").Checkbox;
 pub const TextInput = @import("text_input.zig").TextInput;
 pub const TextArea = @import("text_area.zig").TextArea;
-pub const CodeEditor = @import("code_editor.zig").CodeEditor;
 pub const ProgressBar = @import("progress_bar.zig").ProgressBar;
 pub const RadioGroup = @import("radio_group.zig").RadioGroup;
 pub const RadioButton = @import("radio_group.zig").RadioButton;
@@ -38,7 +37,6 @@ test "public component surface compiles" {
         _ = Checkbox;
         _ = TextInput;
         _ = TextArea;
-        _ = CodeEditor;
         _ = ProgressBar;
         _ = RadioGroup;
         _ = RadioButton;
