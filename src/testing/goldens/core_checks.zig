@@ -195,6 +195,64 @@ test "a run past 128 glyphs places every glyph, as text and as a TextArea line" 
     }
 }
 
+fn deliverAll(app: *LongRunApp, now: *u64, inputs: []const gooey.input.InputEvent) void {
+    for (inputs) |event| app.window.queue.push(.{ .input = event });
+    now.* += 1;
+    app.tick(now.*);
+    now.* += 1;
+    app.tick(now.*);
+}
+
+test "a TextArea refuses a line's 1025th character and keeps running" {
+    // Goal: typing, an IME commit, and a paste stop at the line bound
+    // (`line_codepoint_count_max`) rather than reaching the paint, where a
+    // longer run fails fast. Method: bind a TextArea to a line of 1024 'c's,
+    // put the caret at its end, then type, commit, and paste past the bound;
+    // each edit keeps only what fits, cut on a codepoint boundary, and the
+    // app keeps ticking with its lifecycle still running.
+    const app = try testing.allocator.create(LongRunApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    const full: [core.internals.text_engine.line_codepoint_count_max]u8 = @splat('c');
+    app.state.area = true;
+    app.state.notes = &full;
+    var now: u64 = 0;
+    app.tick(now);
+    const command: gooey.input.Modifiers = if (@import("builtin").os.tag == .macos)
+        .{ .cmd = true }
+    else
+        .{ .ctrl = true };
+    deliverAll(app, &now, &.{
+        .{ .mouse_down = mouse(20, 12) },
+        .{ .mouse_up = mouse(20, 12) },
+        .{ .key_down = chord(.end, .{}) },
+        .{ .text_input = .{ .text = "d" } },
+    });
+    try testing.expectEqualStrings(&full, app.state.notes);
+
+    // Three codepoints free: the commit keeps "東京!" and drops the "x".
+    deliverAll(app, &now, &.{
+        .{ .key_down = chord(.delete, .{}) },
+        .{ .key_down = chord(.delete, .{}) },
+        .{ .key_down = chord(.delete, .{}) },
+        .{ .text_input = .{ .text = "\u{6771}\u{4eac}!x" } },
+    });
+    try testing.expectEqualStrings(full[0..1021] ++ "\u{6771}\u{4eac}!", app.state.notes);
+
+    // A new line starts empty, so a paste fills it to the bound and no more.
+    const pasted: [1030]u8 = @splat('p');
+    app.window.clipboard.write(&pasted);
+    deliverAll(app, &now, &.{
+        .{ .key_down = chord(.@"return", .{}) },
+        .{ .key_down = chord(.v, command) },
+    });
+    const notes = app.state.notes;
+    const newline = std.mem.indexOfScalar(u8, notes, '\n').?;
+    try testing.expectEqualStrings(pasted[0..1024], notes[newline + 1 ..]);
+    try testing.expectEqual(core.internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
+}
+
 test "a TextArea takes lines, follows the caret, and places it where clicked" {
     // Goal: the area's engine through the real router, layout, and paint.
     // Methodology: type three lines into two rows, so the area scrolls one

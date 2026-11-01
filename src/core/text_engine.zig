@@ -28,6 +28,7 @@ const input = @import("../input/mod.zig");
 const Cx = @import("cx.zig").Cx;
 const Color = @import("../geometry/geometry.zig").Color;
 const Point = @import("router.zig").Point;
+const text_mod = @import("../text/mod.zig");
 
 const assert = std.debug.assert;
 
@@ -37,6 +38,12 @@ pub const Clipboard = clipboard_mod.Clipboard;
 
 /// Preedit bytes one engine holds. IME candidates are short phrases.
 pub const preedit_bytes_max: u32 = 256;
+
+/// Codepoints one line may hold. Components paint a line as one shaped run,
+/// and a run past `text.run_codepoint_count_max` fails fast as a programmer
+/// error; typed, pasted, and committed text is operating input, so an edit
+/// keeps only what fits, as it does for `bytes_max`.
+pub const line_codepoint_count_max: u32 = text_mod.run_codepoint_count_max;
 
 /// Pixels an area scrolls per wheel unit, as in 0.3.1.
 pub const wheel_step: f32 = 20;
@@ -252,7 +259,10 @@ pub fn Engine(comptime kind: Kind) type {
             assert(start <= end);
             assert(end <= self.len);
             const room = self.bytes.len - (self.len - (end - start));
-            const kept: u32 = @intCast(clipboard_mod.prefixFitting(value, room));
+            const fits: u32 = @intCast(clipboard_mod.prefixFitting(value, room));
+            const line_max = line_codepoint_count_max;
+            const kept = lineFitting(self.text(), start, end, value[0..fits], line_max);
+            assert(kept <= fits);
             if (end == start and kept == 0) return;
             self.history.record(.{
                 .offset = start,
@@ -694,6 +704,42 @@ fn isSpace(byte: u8) bool {
     return byte == ' ' or byte == '\t' or byte == '\n' or byte == '\r';
 }
 
+/// The longest prefix of `value` that, replacing `text[start..end]`, leaves
+/// no line longer than `line_max` codepoints, cut on a codepoint boundary.
+/// Each line the prefix closes must fit on its own; the last one also
+/// carries the text after `end`. A line already past the bound (the app set
+/// it) never grows, though a newline may still split it.
+fn lineFitting(text: []const u8, start: u32, end: u32, value: []const u8, line_max: u32) u32 {
+    assert(start <= end);
+    assert(end <= text.len);
+    const before = text[0..start];
+    const line_start = if (std.mem.lastIndexOfScalar(u8, before, '\n')) |index| index + 1 else 0;
+    const line_end = std.mem.indexOfScalarPos(u8, text, end, '\n') orelse text.len;
+    const tail = text_mod.codepointCount(text[end..line_end]);
+    // Codepoints on the current line before `value`'s, and `value`'s own.
+    var base = text_mod.codepointCount(text[line_start..start]);
+    var added: u32 = 0;
+    var kept: u32 = 0;
+    while (kept < value.len) {
+        if (value[kept] == '\n') {
+            base = 0;
+            added = 0;
+        } else {
+            if (base + added >= line_max) break;
+            added += 1;
+        }
+        kept = nextBoundary(value, kept);
+    }
+    // `added` codepoints follow the last newline kept, so backing off over
+    // them never crosses one.
+    while (added > 0 and base + added + tail > line_max) {
+        kept = previousBoundary(value, kept);
+        added -= 1;
+    }
+    assert(kept <= value.len);
+    return kept;
+}
+
 /// `index` if a character starts there (or it is the end), else the start of
 /// the character it falls inside.
 fn boundaryAtOrBefore(bytes: []const u8, index: u32) u32 {
@@ -871,6 +917,29 @@ fn TestOf(comptime kind: Kind) type {
 }
 
 const TestEngine = TestOf(.input);
+
+test "an edit keeps the prefix that leaves every line within the bound" {
+    // Goal: typed, pasted, and committed text stops at the line bound on a
+    // codepoint boundary, counting codepoints rather than bytes, and the
+    // text after the edit counts toward the line it joins. Method: the pure
+    // `lineFitting` with a 4-codepoint bound; each expectation is the byte
+    // length of the prefix a reader would keep by hand.
+    const fit = lineFitting;
+    // Typing a fifth codepoint on a full line is refused; a newline is not.
+    try std.testing.expectEqual(@as(u32, 0), fit("abcd", 4, 4, "e", 4));
+    try std.testing.expectEqual(@as(u32, 1), fit("abcd", 4, 4, "\n", 4));
+    // "東京" after three codepoints: "東" (3 bytes) fits, "京" does not.
+    try std.testing.expectEqual(@as(u32, 3), fit("abc", 3, 3, "\u{6771}\u{4eac}", 4));
+    // A paste cut mid-way: its first line fits, its second stops at four.
+    try std.testing.expectEqual(@as(u32, 6), fit("ab", 2, 2, "c\nwxyz!", 4));
+    // The tail joins the last line: "ab|c" takes one codepoint, not two.
+    try std.testing.expectEqual(@as(u32, 1), fit("abc", 2, 2, "XY", 4));
+    // Replacing a selection frees its codepoints; other lines do not count.
+    try std.testing.expectEqual(@as(u32, 3), fit("12345\nabcd\n1", 7, 10, "XYZ", 4));
+    // A line already past the bound never grows, but a newline splits it.
+    try std.testing.expectEqual(@as(u32, 0), fit("abcdef", 3, 3, "x", 4));
+    try std.testing.expectEqual(@as(u32, 1), fit("abcdef", 3, 3, "\n", 4));
+}
 
 test "input engine edits by codepoint and commits over a preedit" {
     // Goal: the edits counter and todo need, including the sequence that
