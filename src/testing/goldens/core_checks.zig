@@ -9,6 +9,7 @@ const gooey = @import("gooey");
 const counter = @import("counter_example");
 const todo = @import("todo_example");
 const actions = @import("actions_example");
+const accessible_form = @import("accessible_form_example");
 const components = @import("gooey-components");
 const core_driver = @import("core.zig");
 const trace_mod = @import("trace.zig");
@@ -1218,4 +1219,111 @@ test "cx.requestRenderAfter renders once at the earliest deadline of the last bu
     try testing.expectEqual(@as(?u64, null), app.window.renderDeadlineNs());
     app.tick(10_000 * ms);
     try testing.expectEqual(@as(u32, 3), state.builds);
+}
+
+/// The rendered accessibility node named `name`, by role.
+fn formNode(
+    app: *accessible_form.App,
+    role: core.ui.Role,
+    name: []const u8,
+) ?*const core.internals.records.A11yNode {
+    const frame = app.window.rendered();
+    for (frame.a11y[0..frame.a11y_count]) |*node| {
+        if (node.role != role) continue;
+        if (std.mem.eql(u8, frame.text(node.name) orelse "", name)) return node;
+    }
+    return null;
+}
+
+/// Scroll the form until the node is in the window; returns its bounds.
+fn formReveal(
+    app: *accessible_form.App,
+    now: *u64,
+    role: core.ui.Role,
+    name: []const u8,
+) core.internals.records.Rect {
+    var node = formNode(app, role, name).?;
+    var steps: u32 = 0;
+    while (node.bounds.y + node.bounds.height > 790) : (steps += 1) {
+        assert(steps < 20);
+        const direction: f32 = if (@import("builtin").os.tag == .macos) -1 else 1;
+        app.window.queue.push(.{ .input = .{ .scroll = .{
+            .position = .{ .x = 300, .y = 400 },
+            .delta = .{ .x = 0, .y = 200 * direction },
+            .modifiers = .{},
+        } } });
+        now.* += 1;
+        app.tick(now.*);
+        node = formNode(app, role, name).?;
+    }
+    return node.bounds;
+}
+
+/// Click the centre of a node, scrolling the form first so it is visible.
+fn formClick(app: *accessible_form.App, now: *u64, role: core.ui.Role, name: []const u8) void {
+    const bounds = formReveal(app, now, role, name);
+    clickAt(app, now, bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+}
+
+fn formType(app: *accessible_form.App, now: *u64, name: []const u8, text: []const u8) void {
+    formClick(app, now, .textbox, name);
+    app.window.queue.push(.{ .input = .{ .text_input = .{ .text = text } } });
+    now.* += 1;
+    app.tick(now.*);
+}
+
+test "accessible_form validates, announces, and submits on the core" {
+    // Goal: the accessible_form port end to end through the router, with the
+    // lifecycle guard proving no allocation after init. Methodology: submit
+    // the empty form and read the alerts, field descriptions, and the
+    // assertive announcement; fill it in, pick a radio, an experience level,
+    // and the terms, then submit and read the success alert.
+    const app = try testing.allocator.create(accessible_form.App);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    now += 1;
+    app.tick(now);
+    const radio = formNode(app, .radio, "Phone").?;
+    try testing.expectEqual(@as(?u16, 2), radio.pos_in_set);
+    try testing.expectEqual(@as(?u16, 3), radio.set_size);
+    try testing.expect(!radio.state.checked);
+
+    // The announcement rides the one frame the submit builds.
+    const submit = formReveal(app, &now, .button, "Submit registration form");
+    const submit_x = submit.x + submit.width / 2;
+    const submit_y = submit.y + submit.height / 2;
+    app.window.queue.push(.{ .input = .{ .mouse_down = mouse(submit_x, submit_y) } });
+    app.window.queue.push(.{ .input = .{ .mouse_up = mouse(submit_x, submit_y) } });
+    now += 1;
+    app.tick(now);
+    try testing.expect(formNode(app, .alert, "Name is required") != null);
+    try testing.expect(formNode(app, .alert, "Valid email is required") != null);
+    const frame = app.window.rendered();
+    try testing.expectEqual(@as(u32, 1), frame.announcements.count);
+    const said = frame.announcements.slice()[0];
+    const said_text = frame.announcements.text(said);
+    try testing.expectEqualStrings("Please fix the errors in the form", said_text);
+    const name_field = formNode(app, .textbox, "Full name, required field").?;
+    try testing.expectEqualStrings("Error: Name is required", frame.text(name_field.description).?);
+
+    formType(app, &now, "Full name, required field", "Ada Lovelace");
+    formType(app, &now, "Email address, required field", "ada@example.com");
+    formClick(app, &now, .radio, "Phone");
+    try testing.expect(formNode(app, .radio, "Phone").?.state.checked);
+    formClick(app, &now, .combobox, "Experience level");
+    try testing.expect(formNode(app, .combobox, "Experience level").?.state.expanded);
+    // The first option sits just below the 40 px trigger.
+    const combobox = formNode(app, .combobox, "Experience level").?.bounds;
+    clickAt(app, &now, combobox.x + 20, combobox.y + 60);
+    try testing.expectEqual(@as(?usize, 0), app.state.experience_level);
+    formClick(app, &now, .checkbox, "Accept terms and conditions, required");
+    formClick(app, &now, .button, "Submit registration form");
+    try testing.expect(app.state.show_success);
+    try testing.expectEqualStrings("Ada Lovelace", app.state.name);
+    const success = "Registration successful! Thank you for signing up.";
+    try testing.expect(formNode(app, .alert, success) != null);
+    try testing.expectEqual(core.internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
 }

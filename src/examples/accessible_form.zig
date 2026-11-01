@@ -1,70 +1,55 @@
-//! Accessible Form Example
+//! Accessible form: accessibility patterns on the core.
 //!
-//! Demonstrates comprehensive accessibility patterns in Gooey:
-//! - Form structure with proper headings and groups
-//! - Text inputs with accessible labels
-//! - Checkboxes and radio buttons
-//! - Select dropdowns
-//! - Form validation with live region announcements
-//! - Error states and feedback
-//! - Keyboard navigation
+//! Headings, groups, labelled inputs, a radio group with set positions, a
+//! checkbox, a combobox `Select`, live-region error alerts, and
+//! announcements from the submit handler. Every accessible element is a box
+//! whose `a11y` names its role, so a screen reader also gets its bounds.
 //!
 //! To test accessibility:
 //! - macOS: Enable VoiceOver with Cmd+F5
-//! - Linux: Enable Orca with Super+Alt+S
 //! - Web: Use browser accessibility tools or NVDA/VoiceOver
 //!
-//! Navigate with Tab, activate with Space/Enter, use arrow keys in groups.
+//! Navigate with Tab and type into the focused field.
 
 const std = @import("std");
 const gooey = @import("gooey");
 const components = @import("gooey-components");
-const platform = gooey.platform;
-const ui = gooey.ui;
-const Cx = gooey.Cx;
-const Button = components.Button;
-const Checkbox = components.Checkbox;
-const TextInput = components.TextInput;
-const Select = components.Select;
+
+const core = gooey.core;
+const ui = core.ui;
+const Cx = core.Cx;
+const Effects = core.Effects;
+const Handler = core.Handler;
+const Button = components.core.Button;
+const Checkbox = components.core.Checkbox;
+const TextInput = components.core.TextInput;
+const Select = components.core.Select;
 
 // =============================================================================
 // Form State
 // =============================================================================
 
-const FormState = struct {
-    // Personal info
+pub const State = struct {
+    // Personal info, bound to the text inputs.
     name: []const u8 = "",
     email: []const u8 = "",
     phone: []const u8 = "",
 
-    // Preferences
+    // Preferences.
     contact_method: ContactMethod = .email,
     newsletter: bool = true,
     terms_accepted: bool = false,
 
-    // Experience level selection
+    // Experience level selection.
     experience_level: ?usize = null,
     experience_open: bool = false,
 
-    // Form status
+    // Form status.
     form_submitted: bool = false,
     validation_errors: ValidationErrors = .{},
-    last_validation_message: []const u8 = "",
     show_success: bool = false,
 
-    pub const ContactMethod = enum {
-        email,
-        phone,
-        mail,
-
-        pub fn label(self: ContactMethod) []const u8 {
-            return switch (self) {
-                .email => "Email",
-                .phone => "Phone",
-                .mail => "Postal Mail",
-            };
-        }
-    };
+    pub const ContactMethod = enum { email, phone, mail };
 
     pub const ValidationErrors = struct {
         name: bool = false,
@@ -72,7 +57,6 @@ const FormState = struct {
         terms: bool = false,
     };
 
-    // Experience level options
     pub const experience_options = [_][]const u8{
         "Beginner",
         "Intermediate",
@@ -80,254 +64,200 @@ const FormState = struct {
         "Expert",
     };
 
-    // Actions
-    pub fn toggleNewsletter(self: *FormState) void {
+    pub fn toggleNewsletter(self: *State) void {
         self.newsletter = !self.newsletter;
     }
 
-    pub fn toggleTerms(self: *FormState) void {
+    pub fn toggleTerms(self: *State) void {
         self.terms_accepted = !self.terms_accepted;
-        if (self.terms_accepted) {
-            self.validation_errors.terms = false;
-        }
+        if (self.terms_accepted) self.validation_errors.terms = false;
     }
 
-    pub fn setContactEmail(self: *FormState) void {
-        self.contact_method = .email;
+    pub fn setContact(self: *State, method: ContactMethod) void {
+        self.contact_method = method;
+        assert(self.contact_method == method);
     }
 
-    pub fn setContactPhone(self: *FormState) void {
-        self.contact_method = .phone;
-    }
-
-    pub fn setContactMail(self: *FormState) void {
-        self.contact_method = .mail;
-    }
-
-    pub fn selectExperience(self: *FormState, index: usize) void {
-        std.debug.assert(experience_options.len > 0);
-        std.debug.assert(index < experience_options.len);
+    pub fn selectExperience(self: *State, index: u32) void {
+        assert(index < experience_options.len);
         self.experience_level = index;
         self.experience_open = false;
-        std.debug.assert(self.experience_level.? == index);
-        std.debug.assert(!self.experience_open);
+        assert(self.experience_level.? == index);
     }
 
-    pub fn toggleExperience(self: *FormState) void {
+    pub fn toggleExperience(self: *State) void {
         const was_open = self.experience_open;
         self.experience_open = !self.experience_open;
-        std.debug.assert(self.experience_open != was_open);
+        assert(self.experience_open != was_open);
     }
 
-    pub fn closeExperience(self: *FormState) void {
+    pub fn closeExperience(self: *State) void {
         self.experience_open = false;
-        std.debug.assert(!self.experience_open);
+        assert(!self.experience_open);
     }
 
-    pub fn validate(self: *FormState) bool {
-        var valid = true;
-
-        // Check name
-        if (self.name.len == 0) {
-            self.validation_errors.name = true;
-            valid = false;
-        } else {
-            self.validation_errors.name = false;
-        }
-
-        // Check email (simple validation)
-        if (self.email.len == 0 or std.mem.indexOf(u8, self.email, "@") == null) {
-            self.validation_errors.email = true;
-            valid = false;
-        } else {
-            self.validation_errors.email = false;
-        }
-
-        // Check terms
-        if (!self.terms_accepted) {
-            self.validation_errors.terms = true;
-            valid = false;
-        } else {
-            self.validation_errors.terms = false;
-        }
-
-        if (!valid) {
-            self.last_validation_message = "Please fix the errors in the form";
-        }
-
-        return valid;
+    pub fn validate(self: *State) bool {
+        self.validation_errors = .{
+            .name = self.name.len == 0,
+            .email = self.email.len == 0 or std.mem.indexOf(u8, self.email, "@") == null,
+            .terms = !self.terms_accepted,
+        };
+        const errors = self.validation_errors;
+        return !errors.name and !errors.email and !errors.terms;
     }
 
-    pub fn submit(self: *FormState) void {
+    /// Announces the outcome: errors assertively, success politely.
+    pub fn submit(self: *State, effects: *Effects) void {
         if (self.validate()) {
             self.form_submitted = true;
             self.show_success = true;
-            self.last_validation_message = "Form submitted successfully!";
+            effects.announce("Form submitted successfully!", .polite);
+        } else {
+            effects.announce("Please fix the errors in the form", .assertive);
         }
     }
 
-    pub fn reset(self: *FormState) void {
-        self.* = FormState{};
+    pub fn reset(self: *State) void {
+        self.* = State{};
     }
 
-    pub fn dismissSuccess(self: *FormState) void {
-        self.show_success = false;
+    pub fn dismissSuccess(self: *State) void {
         self.reset();
+        assert(!self.show_success);
     }
 };
 
+const assert = std.debug.assert;
+
 // =============================================================================
-// Entry Points
+// Entry Point
 // =============================================================================
 
-var state = FormState{};
-
-const App = gooey.App(FormState, &state, render, .{
-    .limits = .small,
+pub const App = core.App(State, render, .{
     .title = "Accessible Form Example",
     .width = 600,
     .height = 800,
+    .limits = .small,
 });
 
-comptime {
-    _ = App;
-}
-
-pub fn main(init: std.process.Init) !void {
-    if (platform.is_wasm) unreachable;
-    return App.main(init);
-}
+/// The generated entry point (contract §7).
+pub const main = App.main;
 
 // =============================================================================
 // Main Render
 // =============================================================================
 
-fn render(cx: *Cx) void {
-    const s = cx.state(FormState);
-    const size = cx.windowSize();
-    // Announce validation errors assertively
-    if (s.last_validation_message.len > 0) {
-        if (std.mem.indexOf(u8, s.last_validation_message, "error") != null or
-            std.mem.indexOf(u8, s.last_validation_message, "fix") != null)
-        {
-            cx.announce(s.last_validation_message, .assertive);
-        } else {
-            cx.announce(s.last_validation_message, .polite);
-        }
-        // Clear after announcing
-        s.last_validation_message = "";
-    }
-
-    // Use scroll container for form content
-    cx.render(ui.scroll("form-scroll", .{
-        .width = size.width,
-        .height = size.height,
-        .padding = .{ .all = 32 },
-        .gap = 24,
-        .background = ui.Color.rgb(0.96, 0.96, 0.98),
-        .content_height = 1200, // Approximate content height
+pub fn render(cx: *Cx) void {
+    const s = cx.state(State);
+    cx.render(ui.box(.{
+        .key = .{ .name = "form-scroll" },
+        .style = .{
+            .width = .{ .grow = 1 },
+            .height = .{ .grow = 1 },
+            .padding = .all(32),
+            .gap = 24,
+            .background = .{ .rgba = ui.Color.rgb(0.96, 0.96, 0.98) },
+            .scroll = .{},
+        },
     }, .{
-        // Header
         FormHeader{},
+        if (s.show_success) SuccessMessage{} else null,
+        if (s.show_success) null else FormBody{},
+    }));
+}
 
-        // A11y status indicator
-        A11yStatus{},
-
-        // Show success message or form
-        ui.when(s.show_success, .{
-            SuccessMessage{},
-        }),
-
-        ui.when(!s.show_success, .{
-            // Personal Information Section
-            PersonalInfoSection{
-                .name = s.name,
-                .email = s.email,
-                .phone = s.phone,
-                .errors = s.validation_errors,
-            },
-            // Contact Preferences Section
+const FormBody = struct {
+    pub fn render(_: FormBody, cx: *Cx) void {
+        const s = cx.state(State);
+        cx.render(ui.box(.{ .style = .{ .gap = 24 } }, .{
+            PersonalInfoSection{ .errors = s.validation_errors },
             ContactPreferencesSection{
                 .contact_method = s.contact_method,
                 .newsletter = s.newsletter,
             },
-            // Experience Level Section
             ExperienceSection{
                 .experience_level = s.experience_level,
                 .experience_open = s.experience_open,
             },
-            // Terms and Submit Section
             TermsSection{
                 .terms_accepted = s.terms_accepted,
                 .has_error = s.validation_errors.terms,
             },
-            // Form Actions
             FormActions{},
-        }),
-    }));
+        }));
+    }
+};
+
+// =============================================================================
+// Shared Pieces
+// =============================================================================
+
+const error_color = ui.Color.rgb(0.9, 0.3, 0.3);
+const title_color = ui.Color.rgb(0.2, 0.2, 0.3);
+const label_color = ui.Color.rgb(0.3, 0.3, 0.4);
+
+/// A white card. `group` names it for screen readers.
+fn card(group: ?[]const u8, has_error: bool) ui.Box {
+    return .{
+        .style = .{
+            .padding = .all(20),
+            .gap = 16,
+            .background = .{
+                .rgba = if (has_error) ui.Color.rgb(1, 0.95, 0.95) else ui.Color.white,
+            },
+            .corner_radius = .all(12),
+            .border = .{
+                .width = 1,
+                .color = .{ .rgba = if (has_error) error_color else ui.Color.rgb(0.9, 0.9, 0.9) },
+            },
+        },
+        .a11y = if (group) |name| .{ .role = .group, .label = name } else null,
+    };
 }
 
-// =============================================================================
-// Header Components
-// =============================================================================
+/// A heading box, so the screen reader reads it at its level and place.
+const Heading = struct {
+    text: []const u8,
+    level: @FieldType(ui.A11y, "heading_level"),
+    size: u16,
+    weight: @FieldType(ui.Text, "weight"),
+    color: ui.Color,
 
-const FormHeader = struct {
-    pub fn render(_: FormHeader, cx: *Cx) void {
-        // Main page heading (h1)
-        if (cx.accessible(.{
-            .role = .heading,
-            .name = "Registration Form",
-            .heading_level = .h1,
-        })) {
-            defer cx.accessibleEnd();
-        }
-
-        cx.render(ui.vstack(.{ .gap = 8 }, .{
-            ui.text("Registration Form", .{
-                .size = 32,
-                .weight = .bold,
-                .color = ui.Color.rgb(0.1, 0.1, 0.2),
-            }),
-            ui.text("Please fill out all required fields marked with *", .{
-                .size = 14,
-                .color = ui.Color.rgb(0.5, 0.5, 0.5),
+    pub fn render(self: Heading, cx: *Cx) void {
+        cx.render(ui.box(.{
+            .a11y = .{ .role = .heading, .label = self.text, .heading_level = self.level },
+        }, .{
+            ui.text(self.text, .{
+                .size = self.size,
+                .weight = self.weight,
+                .color = .{ .rgba = self.color },
             }),
         }));
     }
 };
 
-const A11yStatus = struct {
-    pub fn render(_: A11yStatus, cx: *Cx) void {
-        const is_enabled = cx.isA11yEnabled();
+fn sectionHeading(text: []const u8) Heading {
+    return .{ .text = text, .level = .h2, .size = 18, .weight = .semibold, .color = title_color };
+}
 
-        const status_text = if (is_enabled)
-            "Screen reader detected - accessibility features active"
-        else
-            "No screen reader detected";
+// =============================================================================
+// Header
+// =============================================================================
 
-        // Accessible status region
-        if (cx.accessible(.{
-            .role = .status,
-            .name = status_text,
-            .live = .polite,
-        })) {
-            defer cx.accessibleEnd();
-        }
-
-        cx.render(ui.hstack(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
-            ui.box(.{
-                .width = 10,
-                .height = 10,
-                .corner_radius = 5,
-                .background = if (is_enabled)
-                    ui.Color.rgb(0.2, 0.7, 0.3)
-                else
-                    ui.Color.rgb(0.6, 0.6, 0.6),
-            }, .{}),
-            ui.text(
-                if (is_enabled) "Accessibility Active" else "Standard Mode",
-                .{ .size = 12, .color = ui.Color.rgb(0.5, 0.5, 0.5) },
-            ),
+const FormHeader = struct {
+    pub fn render(_: FormHeader, cx: *Cx) void {
+        cx.render(ui.box(.{ .style = .{ .gap = 8 } }, .{
+            Heading{
+                .text = "Registration Form",
+                .level = .h1,
+                .size = 32,
+                .weight = .bold,
+                .color = ui.Color.rgb(0.1, 0.1, 0.2),
+            },
+            ui.text("Please fill out all required fields marked with *", .{
+                .size = 14,
+                .color = .{ .rgba = ui.Color.rgb(0.5, 0.5, 0.5) },
+            }),
         }));
     }
 };
@@ -337,91 +267,48 @@ const A11yStatus = struct {
 // =============================================================================
 
 const PersonalInfoSection = struct {
-    name: []const u8,
-    email: []const u8,
-    phone: []const u8,
-    errors: FormState.ValidationErrors,
+    errors: State.ValidationErrors,
 
-    pub fn render(self: @This(), cx: *Cx) void {
-        const s = cx.state(FormState);
-
-        // Section heading (h2)
-        if (cx.accessible(.{
-            .role = .heading,
-            .name = "Personal Information",
-            .heading_level = .h2,
-        })) {
-            defer cx.accessibleEnd();
-        }
-
-        // Group for form fields
-        if (cx.accessible(.{
-            .role = .group,
-            .name = "Personal information fields",
-        })) {
-            defer cx.accessibleEnd();
-        }
-
-        cx.render(ui.box(.{
-            .padding = .{ .all = 20 },
-            .gap = 16,
-            .background = ui.Color.white,
-            .corner_radius = 12,
-            .border_color = ui.Color.rgb(0.9, 0.9, 0.9),
-            .border_width = .{ .all = 1 },
-        }, .{
-            ui.text("Personal Information", .{
-                .size = 18,
-                .weight = .semibold,
-                .color = ui.Color.rgb(0.2, 0.2, 0.3),
-            }),
-
-            // Name field
+    pub fn render(self: PersonalInfoSection, cx: *Cx) void {
+        const s = cx.state(State);
+        const errors = self.errors;
+        cx.render(ui.box(card("Personal information fields", false), .{
+            sectionHeading("Personal Information"),
             FormField{
                 .label = "Full Name *",
-                .error_message = if (self.errors.name) "Name is required" else null,
+                .error_message = if (errors.name) "Name is required" else null,
             },
             TextInput{
-                .id = "name",
+                .key = "name",
+                .bind = &s.name,
                 .placeholder = "Enter your full name",
                 .accessible_name = "Full name, required field",
-                .accessible_description = if (self.errors.name) "Error: Name is required" else null,
-                .bind = &s.name,
+                .accessible_description = if (errors.name) "Error: Name is required" else null,
                 .width = 300,
-                .border_color = if (self.errors.name)
-                    ui.Color.rgb(0.9, 0.3, 0.3)
-                else
-                    null,
+                .border_color = if (errors.name) error_color else null,
             },
-
-            // Email field
             FormField{
                 .label = "Email Address *",
-                .error_message = if (self.errors.email) "Valid email is required" else null,
+                .error_message = if (errors.email) "Valid email is required" else null,
             },
             TextInput{
-                .id = "email",
+                .key = "email",
+                .bind = &s.email,
                 .placeholder = "name@example.com",
                 .accessible_name = "Email address, required field",
-                .accessible_description = if (self.errors.email) "Error: Please enter a valid email address" else null,
-                .bind = &s.email,
-                .width = 300,
-                .border_color = if (self.errors.email)
-                    ui.Color.rgb(0.9, 0.3, 0.3)
+                .accessible_description = if (errors.email)
+                    "Error: Please enter a valid email address"
                 else
                     null,
+                .width = 300,
+                .border_color = if (errors.email) error_color else null,
             },
-
-            // Phone field (optional)
-            FormField{
-                .label = "Phone Number",
-                .error_message = null,
-            },
+            FormField{ .label = "Phone Number", .error_message = null },
             TextInput{
-                .id = "phone",
+                .key = "phone",
+                .bind = &s.phone,
                 .placeholder = "(555) 123-4567",
                 .accessible_name = "Phone number, optional field",
-                .bind = &s.phone,
                 .width = 300,
             },
         }));
@@ -429,97 +316,62 @@ const PersonalInfoSection = struct {
 };
 
 const ContactPreferencesSection = struct {
-    contact_method: FormState.ContactMethod,
+    contact_method: State.ContactMethod,
     newsletter: bool,
 
-    pub fn render(self: @This(), cx: *Cx) void {
-        // Section heading (h2)
-        if (cx.accessible(.{
-            .role = .heading,
-            .name = "Contact Preferences",
-            .heading_level = .h2,
-        })) {
-            defer cx.accessibleEnd();
-        }
-
-        cx.render(ui.box(.{
-            .padding = .{ .all = 20 },
-            .gap = 16,
-            .background = ui.Color.white,
-            .corner_radius = 12,
-            .border_color = ui.Color.rgb(0.9, 0.9, 0.9),
-            .border_width = .{ .all = 1 },
-        }, .{
-            ui.text("Contact Preferences", .{
-                .size = 18,
-                .weight = .semibold,
-                .color = ui.Color.rgb(0.2, 0.2, 0.3),
-            }),
-
-            // Radio group for contact method
-            RadioGroupSection{
-                .label = "Preferred Contact Method",
-                .contact_method = self.contact_method,
-            },
-
-            // Newsletter checkbox
-            ui.spacerMin(8),
+    pub fn render(self: ContactPreferencesSection, cx: *Cx) void {
+        cx.render(ui.box(card(null, false), .{
+            sectionHeading("Contact Preferences"),
+            RadioGroup{ .label = "Preferred Contact Method", .selected = self.contact_method },
             Checkbox{
-                .id = "newsletter",
-                .selected = self.newsletter,
+                .key = .{ .name = "newsletter" },
+                .checked = self.newsletter,
                 .label = "Subscribe to our newsletter",
                 .accessible_name = "Subscribe to newsletter",
                 .accessible_description = "Receive weekly updates about our products and services",
-                .on_click = cx.on(FormState.toggleNewsletter, .{}),
+                .on_click = cx.on(State.toggleNewsletter, .{}),
             },
         }));
     }
 };
 
-const RadioGroupSection = struct {
+const RadioGroup = struct {
     label: []const u8,
-    contact_method: FormState.ContactMethod,
+    selected: State.ContactMethod,
 
-    pub fn render(self: @This(), cx: *Cx) void {
-        // Radiogroup container
-        if (cx.accessible(.{
-            .role = .group, // radiogroup maps to group
-            .name = self.label,
-        })) {
-            defer cx.accessibleEnd();
-        }
+    const labels = [_][]const u8{ "Email", "Phone", "Postal Mail" };
 
-        cx.render(ui.vstack(.{ .gap = 12 }, .{
+    pub fn render(self: RadioGroup, cx: *Cx) void {
+        // A radio group maps to a group role, as in 0.3.1.
+        cx.render(ui.box(.{
+            .style = .{ .gap = 12, .padding = .{ .top = 8 } },
+            .a11y = .{ .role = .group, .label = self.label },
+        }, .{
             ui.text(self.label, .{
                 .size = 14,
                 .weight = .medium,
-                .color = ui.Color.rgb(0.3, 0.3, 0.4),
+                .color = .{ .rgba = label_color },
             }),
-
-            ui.vstack(.{ .gap = 8 }, .{
-                RadioOption{
-                    .label = "Email",
-                    .selected = self.contact_method == .email,
-                    .pos_in_set = 1,
-                    .set_size = 3,
-                    .on_select = cx.on(FormState.setContactEmail, .{}),
-                },
-                RadioOption{
-                    .label = "Phone",
-                    .selected = self.contact_method == .phone,
-                    .pos_in_set = 2,
-                    .set_size = 3,
-                    .on_select = cx.on(FormState.setContactPhone, .{}),
-                },
-                RadioOption{
-                    .label = "Postal Mail",
-                    .selected = self.contact_method == .mail,
-                    .pos_in_set = 3,
-                    .set_size = 3,
-                    .on_select = cx.on(FormState.setContactMail, .{}),
-                },
-            }),
+            ui.box(.{ .style = .{ .gap = 8 } }, .{RadioOptions{ .selected = self.selected }}),
         }));
+    }
+};
+
+const RadioOptions = struct {
+    selected: State.ContactMethod,
+
+    pub fn render(self: RadioOptions, cx: *Cx) void {
+        const methods = std.enums.values(State.ContactMethod);
+        assert(methods.len == RadioGroup.labels.len);
+        for (methods, 0..) |method, index| {
+            cx.render(RadioOption{
+                .label = RadioGroup.labels[index],
+                .selected = self.selected == method,
+                .pos_in_set = @intCast(index + 1),
+                .set_size = @intCast(methods.len),
+                .on_select = cx.on(State.setContact, .{ .arg = method }),
+            });
+        }
     }
 };
 
@@ -528,56 +380,45 @@ const RadioOption = struct {
     selected: bool,
     pos_in_set: u16,
     set_size: u16,
-    on_select: ui.Handler,
+    on_select: Handler,
 
-    pub fn render(self: @This(), cx: *Cx) void {
-        // Accessible radio button
-        if (cx.accessible(.{
-            .role = .radio,
-            .name = self.label,
-            .state = .{
-                .checked = self.selected,
-            },
-            .pos_in_set = self.pos_in_set,
-            .set_size = self.set_size,
-        })) {
-            defer cx.accessibleEnd();
-        }
+    const accent = ui.Color.rgb(0.2, 0.5, 0.9);
+    const unselected = ui.Color.rgb(0.7, 0.7, 0.7);
 
-        // Wrap in clickable box
+    pub fn render(self: RadioOption, cx: *Cx) void {
+        assert(self.pos_in_set >= 1);
+        assert(self.pos_in_set <= self.set_size);
         cx.render(ui.box(.{
-            .direction = .row,
-            .gap = 8,
-            .alignment = .{ .cross = .center },
+            .key = .{ .name = self.label },
+            .style = .{ .direction = .row, .gap = 8, .alignment = .center_cross },
             .on_click = self.on_select,
+            .a11y = .{
+                .role = .radio,
+                .label = self.label,
+                .checked = self.selected,
+                .pos_in_set = self.pos_in_set,
+                .set_size = self.set_size,
+            },
         }, .{
-            // Radio circle
-            ui.box(.{
-                .width = 18,
-                .height = 18,
-                .corner_radius = 9,
-                .border_color = if (self.selected)
-                    ui.Color.rgb(0.2, 0.5, 0.9)
-                else
-                    ui.Color.rgb(0.7, 0.7, 0.7),
-                .border_width = .{ .all = 2 },
-                .background = ui.Color.white,
-                .alignment = .{ .main = .center, .cross = .center },
-            }, .{
-                // Inner dot when selected
-                ui.when(self.selected, .{
-                    ui.box(.{
-                        .width = 10,
-                        .height = 10,
-                        .corner_radius = 5,
-                        .background = ui.Color.rgb(0.2, 0.5, 0.9),
-                    }, .{}),
-                }),
+            ui.box(.{ .style = .{
+                .width = .{ .fixed = 18 },
+                .height = .{ .fixed = 18 },
+                .corner_radius = .all(9),
+                .border = .{
+                    .width = 2,
+                    .color = .{ .rgba = if (self.selected) accent else unselected },
+                },
+                .background = .{ .rgba = ui.Color.white },
+                .alignment = .center,
+            } }, .{
+                if (self.selected) ui.box(.{ .style = .{
+                    .width = .{ .fixed = 10 },
+                    .height = .{ .fixed = 10 },
+                    .corner_radius = .all(5),
+                    .background = .{ .rgba = accent },
+                } }, .{}) else null,
             }),
-            ui.text(self.label, .{
-                .size = 14,
-                .color = ui.Color.rgb(0.2, 0.2, 0.3),
-            }),
+            ui.text(self.label, .{ .size = 14, .color = .{ .rgba = title_color } }),
         }));
     }
 };
@@ -586,44 +427,23 @@ const ExperienceSection = struct {
     experience_level: ?usize,
     experience_open: bool,
 
-    pub fn render(self: @This(), cx: *Cx) void {
-        // Section heading (h2)
-        if (cx.accessible(.{
-            .role = .heading,
-            .name = "Experience Level",
-            .heading_level = .h2,
-        })) {
-            defer cx.accessibleEnd();
+    pub fn render(self: ExperienceSection, cx: *Cx) void {
+        var on_select: [State.experience_options.len]Handler = undefined;
+        for (&on_select, 0..) |*handler, index| {
+            handler.* = cx.on(State.selectExperience, .{ .arg = @as(u32, @intCast(index)) });
         }
-
-        cx.render(ui.box(.{
-            .padding = .{ .all = 20 },
-            .gap = 16,
-            .background = ui.Color.white,
-            .corner_radius = 12,
-            .border_color = ui.Color.rgb(0.9, 0.9, 0.9),
-            .border_width = .{ .all = 1 },
-        }, .{
-            ui.text("Experience Level", .{
-                .size = 18,
-                .weight = .semibold,
-                .color = ui.Color.rgb(0.2, 0.2, 0.3),
-            }),
-
-            FormField{
-                .label = "Your experience with our products",
-                .error_message = null,
-            },
-
+        cx.render(ui.box(card(null, false), .{
+            sectionHeading("Experience Level"),
+            FormField{ .label = "Your experience with our products", .error_message = null },
             Select{
-                .id = "experience",
-                .options = &FormState.experience_options,
+                .key = "experience",
+                .options = &State.experience_options,
+                .on_select = &on_select,
+                .on_toggle = cx.on(State.toggleExperience, .{}),
+                .on_close = cx.on(State.closeExperience, .{}),
                 .selected = self.experience_level,
+                .open = self.experience_open,
                 .placeholder = "Select your experience level",
-                .is_open = self.experience_open,
-                .on_toggle = cx.on(FormState.toggleExperience, .{}),
-                .on_close = cx.on(FormState.closeExperience, .{}),
-                .on_select = cx.on(FormState.selectExperience, .{}),
                 .accessible_name = "Experience level",
                 .accessible_description = "Select how experienced you are with our products",
             },
@@ -635,75 +455,46 @@ const TermsSection = struct {
     terms_accepted: bool,
     has_error: bool,
 
-    pub fn render(self: @This(), cx: *Cx) void {
-        // Group for terms
-        if (cx.accessible(.{
-            .role = .group,
-            .name = "Terms and conditions agreement",
-        })) {
-            defer cx.accessibleEnd();
-        }
-
-        cx.render(ui.box(.{
-            .padding = .{ .all = 20 },
-            .gap = 12,
-            .background = if (self.has_error)
-                ui.Color.rgb(1.0, 0.95, 0.95)
-            else
-                ui.Color.white,
-            .corner_radius = 12,
-            .border_color = if (self.has_error)
-                ui.Color.rgb(0.9, 0.3, 0.3)
-            else
-                ui.Color.rgb(0.9, 0.9, 0.9),
-            .border_width = .{ .all = 1 },
-        }, .{
+    pub fn render(self: TermsSection, cx: *Cx) void {
+        var box = card("Terms and conditions agreement", self.has_error);
+        box.style.gap = 12;
+        cx.render(ui.box(box, .{
             Checkbox{
-                .id = "terms",
-                .selected = self.terms_accepted,
+                .key = .{ .name = "terms" },
+                .checked = self.terms_accepted,
                 .label = "I accept the Terms and Conditions *",
                 .accessible_name = "Accept terms and conditions, required",
                 .accessible_description = if (self.has_error)
                     "Error: You must accept the terms to continue"
                 else
                     "Required to submit the form",
-                .on_click = cx.on(FormState.toggleTerms, .{}),
+                .on_click = cx.on(State.toggleTerms, .{}),
             },
-
-            ui.when(self.has_error, .{
-                ErrorMessage{
-                    .message = "You must accept the terms and conditions to continue",
-                },
-            }),
+            if (self.has_error) ErrorMessage{
+                .message = "You must accept the terms and conditions to continue",
+            } else null,
         }));
     }
 };
 
 const FormActions = struct {
     pub fn render(_: FormActions, cx: *Cx) void {
-        // Group for form actions
-        if (cx.accessible(.{
-            .role = .group,
-            .name = "Form actions",
-        })) {
-            defer cx.accessibleEnd();
-        }
-
-        cx.render(ui.hstack(.{ .gap = 16 }, .{
+        cx.render(ui.box(.{
+            .style = .{ .direction = .row, .gap = 16 },
+            .a11y = .{ .role = .group, .label = "Form actions" },
+        }, .{
             Button{
                 .label = "Submit",
                 .accessible_name = "Submit registration form",
-                .variant = .primary,
-                .size_preset = .large,
-                .on_click = cx.on(FormState.submit, .{}),
+                .size = .large,
+                .on_click = cx.on(State.submit, .{}),
             },
-
             Button{
                 .label = "Reset",
                 .accessible_name = "Reset form to default values",
                 .variant = .secondary,
-                .size_preset = .large,
-                .on_click = cx.on(FormState.reset, .{}),
+                .size = .large,
+                .on_click = cx.on(State.reset, .{}),
             },
         }));
     }
@@ -717,88 +508,63 @@ const FormField = struct {
     label: []const u8,
     error_message: ?[]const u8,
 
-    pub fn render(self: @This(), cx: *Cx) void {
-        cx.render(ui.vstack(.{ .gap = 4 }, .{
-            ui.text(self.label, .{
-                .size = 14,
-                .weight = .medium,
-                .color = if (self.error_message != null)
-                    ui.Color.rgb(0.9, 0.3, 0.3)
-                else
-                    ui.Color.rgb(0.3, 0.3, 0.4),
-            }),
-            ui.when(self.error_message != null, .{
-                ErrorMessage{ .message = self.error_message orelse "" },
-            }),
+    pub fn render(self: FormField, cx: *Cx) void {
+        const color = if (self.error_message != null) error_color else label_color;
+        cx.render(ui.box(.{ .style = .{ .gap = 4 } }, .{
+            ui.text(self.label, .{ .size = 14, .weight = .medium, .color = .{ .rgba = color } }),
+            if (self.error_message) |message| ErrorMessage{ .message = message } else null,
         }));
     }
 };
 
+/// An assertive live region, so the error is read when it appears.
 const ErrorMessage = struct {
     message: []const u8,
 
-    pub fn render(self: @This(), cx: *Cx) void {
-        // Accessible error alert
-        if (cx.accessible(.{
-            .role = .alert,
-            .name = self.message,
-            .live = .assertive,
-        })) {
-            defer cx.accessibleEnd();
-        }
-
-        cx.render(ui.hstack(.{ .gap = 4, .alignment = .{ .cross = .center } }, .{
-            ui.text("⚠", .{
-                .size = 12,
-                .color = ui.Color.rgb(0.9, 0.3, 0.3),
-            }),
-            ui.text(self.message, .{
-                .size = 12,
-                .color = ui.Color.rgb(0.9, 0.3, 0.3),
-            }),
+    pub fn render(self: ErrorMessage, cx: *Cx) void {
+        assert(self.message.len > 0);
+        cx.render(ui.box(.{
+            .style = .{ .direction = .row, .gap = 4, .alignment = .center_cross },
+            .a11y = .{ .role = .alert, .label = self.message, .live = .assertive },
+        }, .{
+            ui.text("\u{26A0}", .{ .size = 12, .color = .{ .rgba = error_color } }),
+            ui.text(self.message, .{ .size = 12, .color = .{ .rgba = error_color } }),
         }));
     }
 };
 
 const SuccessMessage = struct {
     pub fn render(_: SuccessMessage, cx: *Cx) void {
-        // Accessible success alert
-        if (cx.accessible(.{
-            .role = .alert,
-            .name = "Registration successful! Thank you for signing up.",
-            .live = .assertive,
-        })) {
-            defer cx.accessibleEnd();
-        }
-
+        const green = ui.Color.rgb(0.2, 0.7, 0.3);
         cx.render(ui.box(.{
-            .padding = .{ .all = 32 },
-            .gap = 20,
-            .background = ui.Color.rgb(0.9, 1.0, 0.9),
-            .corner_radius = 12,
-            .border_color = ui.Color.rgb(0.2, 0.7, 0.3),
-            .border_width = .{ .all = 2 },
-            .alignment = .{ .main = .center, .cross = .center },
+            .style = .{
+                .padding = .all(32),
+                .gap = 20,
+                .background = .{ .rgba = ui.Color.rgb(0.9, 1.0, 0.9) },
+                .corner_radius = .all(12),
+                .border = .{ .width = 2, .color = .{ .rgba = green } },
+                .alignment = .center,
+            },
+            .a11y = .{
+                .role = .alert,
+                .label = "Registration successful! Thank you for signing up.",
+                .live = .assertive,
+            },
         }, .{
-            ui.text("✓", .{
-                .size = 48,
-                .color = ui.Color.rgb(0.2, 0.7, 0.3),
-            }),
+            ui.text("\u{2713}", .{ .size = 48, .color = .{ .rgba = green } }),
             ui.text("Registration Successful!", .{
                 .size = 24,
                 .weight = .bold,
-                .color = ui.Color.rgb(0.2, 0.5, 0.3),
+                .color = .{ .rgba = ui.Color.rgb(0.2, 0.5, 0.3) },
             }),
             ui.text("Thank you for signing up. We'll be in touch soon.", .{
                 .size = 16,
-                .color = ui.Color.rgb(0.3, 0.5, 0.4),
+                .color = .{ .rgba = ui.Color.rgb(0.3, 0.5, 0.4) },
             }),
-            ui.spacerMin(12),
             Button{
                 .label = "Submit Another Response",
                 .accessible_name = "Start a new registration",
-                .variant = .primary,
-                .on_click = cx.on(FormState.dismissSuccess, .{}),
+                .on_click = cx.on(State.dismissSuccess, .{}),
             },
         }));
     }
@@ -809,56 +575,29 @@ const SuccessMessage = struct {
 // =============================================================================
 
 test "form validation" {
-    var s = FormState{};
-
-    // Empty form should fail validation
+    var s = State{};
     try std.testing.expect(!s.validate());
     try std.testing.expect(s.validation_errors.name);
     try std.testing.expect(s.validation_errors.email);
     try std.testing.expect(s.validation_errors.terms);
 
-    // Valid form should pass
     s.name = "John Doe";
     s.email = "john@example.com";
     s.terms_accepted = true;
-
     try std.testing.expect(s.validate());
     try std.testing.expect(!s.validation_errors.name);
     try std.testing.expect(!s.validation_errors.email);
     try std.testing.expect(!s.validation_errors.terms);
 }
 
-test "form state toggles" {
-    var s = FormState{};
-
-    // Newsletter toggle
-    try std.testing.expect(s.newsletter);
-    s.toggleNewsletter();
-    try std.testing.expect(!s.newsletter);
-
-    // Terms toggle
-    try std.testing.expect(!s.terms_accepted);
-    s.toggleTerms();
-    try std.testing.expect(s.terms_accepted);
-
-    // Contact method
-    try std.testing.expectEqual(FormState.ContactMethod.email, s.contact_method);
-    s.setContactPhone();
-    try std.testing.expectEqual(FormState.ContactMethod.phone, s.contact_method);
-}
-
 test "form reset" {
-    var s = FormState{};
+    var s = State{};
     s.name = "Test";
-    s.email = "test@test.com";
     s.newsletter = false;
     s.terms_accepted = true;
     s.form_submitted = true;
-
     s.reset();
-
     try std.testing.expectEqualStrings("", s.name);
-    try std.testing.expectEqualStrings("", s.email);
     try std.testing.expect(s.newsletter);
     try std.testing.expect(!s.terms_accepted);
     try std.testing.expect(!s.form_submitted);
