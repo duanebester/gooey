@@ -203,6 +203,21 @@ fn deliverAll(app: *LongRunApp, now: *u64, inputs: []const gooey.input.InputEven
     app.tick(now.*);
 }
 
+/// A clipboard service that counts the writes it receives and reads empty.
+const CountingClipboard = struct {
+    fn read(context: *anyopaque, out: []u8) u32 {
+        _ = context;
+        assert(out.len > 0);
+        return 0;
+    }
+
+    fn write(context: *anyopaque, text: []const u8) void {
+        assert(text.len > 0);
+        const writes: *u32 = @ptrCast(@alignCast(context));
+        writes.* += 1;
+    }
+};
+
 test "a TextArea refuses a line's 1025th character and keeps running" {
     // Goal: typing, an IME commit, a paste, and a join stop at the line bound
     // (`line_codepoint_count_max`) rather than reaching the paint, where a
@@ -251,16 +266,25 @@ test "a TextArea refuses a line's 1025th character and keeps running" {
     const newline = std.mem.indexOfScalar(u8, notes, '\n').?;
     try testing.expectEqualStrings(pasted[0..1024], notes[newline + 1 ..]);
 
-    // Two full lines: removing the newline between them, by Backspace or by
-    // typing over a selection that holds it, would join 2048 codepoints.
+    // Two full lines: removing the newline between them, by Backspace, by
+    // typing over a selection that holds it, or by cutting it, would join
+    // 2048 codepoints. The refused cut leaves the clipboard alone too.
+    var writes: u32 = 0;
+    app.window.clipboard.service = .{
+        .context = &writes,
+        .read = CountingClipboard.read,
+        .write = CountingClipboard.write,
+    };
     deliverAll(app, &now, &.{
         .{ .key_down = chord(.home, .{}) },
         .{ .key_down = chord(.delete, .{}) },
         .{ .key_down = chord(.left, .{ .shift = true }) },
         .{ .text_input = .{ .text = "q" } },
+        .{ .key_down = chord(.x, command) },
     });
     const both = full[0..1021] ++ "\u{6771}\u{4eac}!\n" ++ pasted[0..1024];
     try testing.expectEqualStrings(both, app.state.notes);
+    try testing.expectEqual(@as(u32, 0), writes);
     try testing.expectEqual(core.internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
 }
 

@@ -612,8 +612,14 @@ pub fn Engine(comptime kind: Kind) type {
                 },
                 .c => if (end > start) clipboard.write(self.bytes[start..end]),
                 .x => if (end > start) {
+                    // A cut whose deletion would join lines past the bound is
+                    // refused whole: copying alone would make a paste
+                    // duplicate the text the user meant to move.
+                    const line_max = line_codepoint_count_max;
+                    if (lineFitting(self.text(), start, end, "", line_max) == null) return true;
                     clipboard.write(self.bytes[start..end]);
                     self.replace(start, end, "");
+                    assert(self.cursor == start);
                 },
                 .v => {
                     const pasted = clipboard.read();
