@@ -554,7 +554,6 @@ test "sub-namespace methods are reachable as decls" {
     // renames one, this test fails compilation before any downstream
     // caller does.
     _ = lists_ns.Lists.uniform;
-    _ = lists_ns.Lists.tree;
     _ = lists_ns.Lists.virtual;
     _ = lists_ns.Lists.dataTable;
 

@@ -66,9 +66,8 @@ pub const Position = common.Position;
 ///
 /// Re-exports the shared flat hot-loop rectangle from `text_common.zig`,
 /// which is the single source of truth for the text-widget family
-/// (`TextInput` / `TextArea` / `CodeEditorState`). Keeping this `pub const`
-/// alias preserves existing `text_area_state.Bounds` import paths in
-/// `widgets/mod.zig`, `code_editor_state.zig`, and the
+/// (`TextInput` / `TextArea`). Keeping this `pub const` alias preserves
+/// existing `text_area_state.Bounds` import paths in `widgets/mod.zig` and the
 /// `Builder.DEFAULT_TEXT_AREA_BOUNDS` seed value. See
 /// `text_common.Bounds` for the half-open `[x, x+w) x [y, y+h)`
 /// hit-test rationale.

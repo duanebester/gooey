@@ -10,6 +10,7 @@ const counter = @import("counter_example");
 const todo = @import("todo_example");
 const actions = @import("actions_example");
 const accessible_form = @import("accessible_form_example");
+const code_editor = @import("code_editor_example");
 const components = @import("gooey-components");
 const core_driver = @import("core.zig");
 const trace_mod = @import("trace.zig");
@@ -1326,5 +1327,173 @@ test "accessible_form validates, announces, and submits on the core" {
     try testing.expectEqualStrings("Ada Lovelace", app.state.name);
     const success = "Registration successful! Thank you for signing up.";
     try testing.expect(formNode(app, .alert, success) != null);
+    try testing.expectEqual(core.internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
+}
+
+/// A folder dialog that answers with one path, as the platform's would.
+const FolderDialog = struct {
+    path: []const u8,
+    opened: u32 = 0,
+
+    fn open(
+        context: *anyopaque,
+        scratch: std.mem.Allocator,
+        request: core.internals.handler.FileDialogRequest,
+    ) core.internals.events.Completion.Outcome {
+        const self: *FolderDialog = @ptrCast(@alignCast(context));
+        _ = scratch;
+        assert(request.kind.open.directories);
+        assert(!request.kind.open.files);
+        self.opened += 1;
+        return .{ .file_selected = .{ .bytes = self.path, .count = 1 } };
+    }
+};
+
+/// The rendered accessibility node named `name`, by role, in any app.
+fn nodeNamed(
+    window: *core.internals.window.Window,
+    role: core.ui.Role,
+    name: []const u8,
+) ?*const core.internals.records.A11yNode {
+    const frame = window.rendered();
+    for (frame.a11y[0..frame.a11y_count]) |*node| {
+        if (node.role != role) continue;
+        if (std.mem.eql(u8, frame.text(node.name) orelse "", name)) return node;
+    }
+    return null;
+}
+
+/// The file rows the list built this frame: buttons other than the dialog's.
+fn editorRowsBuilt(app: *code_editor.App) u32 {
+    const frame = app.window.rendered();
+    var count: u32 = 0;
+    for (frame.a11y[0..frame.a11y_count]) |*node| {
+        if (node.role != .button) continue;
+        if (std.mem.eql(u8, frame.text(node.name) orelse "", "Open Folder")) continue;
+        count += 1;
+    }
+    return count;
+}
+
+fn editorClickRow(app: *code_editor.App, now: *u64, name: []const u8) void {
+    const row = nodeNamed(&app.window, .button, name).?.bounds;
+    clickAt(app, now, row.x + row.width / 2, row.y + row.height / 2);
+}
+
+/// Resize the window to `height` and settle: the resize renders, then the
+/// emit that measures the list's new viewport may ask for one more.
+fn editorResize(app: *code_editor.App, now: *u64, height: f32) void {
+    app.window.queue.push(.{ .window = .{ .resized = .{
+        .width = 1000,
+        .height = height,
+        .scale_factor = 1,
+    } } });
+    now.* += 1;
+    app.tick(now.*);
+    now.* += 1;
+    app.tick(now.*);
+}
+
+/// Wheel the file list down until the row named `name` is built.
+fn editorWheelTo(app: *code_editor.App, now: *u64, name: []const u8) void {
+    const list = nodeNamed(&app.window, .button, "a.zig").?.bounds;
+    const direction: f32 = if (@import("builtin").os.tag == .macos) -1 else 1;
+    var steps: u32 = 0;
+    while (nodeNamed(&app.window, .button, name) == null) : (steps += 1) {
+        assert(steps < 10);
+        app.window.queue.push(.{ .input = .{ .scroll = .{
+            .position = .{ .x = list.x + 10, .y = list.y + 10 },
+            .delta = .{ .x = 0, .y = 400 * direction },
+            .modifiers = .{},
+        } } });
+        now.* += 1;
+        app.tick(now.*);
+        now.* += 1;
+        app.tick(now.*);
+    }
+}
+
+/// A folder of 45 visible files: 40 numbered text files and five that
+/// exercise each status, plus a hidden file and a folder the list skips.
+fn editorFolder(dir: std.Io.Dir) !void {
+    const io = testing.io;
+    var name_buffer: [16]u8 = undefined;
+    for (0..40) |index| {
+        const name = try std.fmt.bufPrint(&name_buffer, "file{d:0>2}.txt", .{index});
+        try dir.writeFile(io, .{ .sub_path = name, .data = name });
+    }
+    try dir.writeFile(io, .{ .sub_path = "a.zig", .data = "const a = 1;\n" });
+    try dir.writeFile(io, .{ .sub_path = "bad.txt", .data = "\xff\xfe" });
+    try dir.writeFile(io, .{ .sub_path = "img.png", .data = "\x89PNG" });
+    try dir.writeFile(io, .{ .sub_path = "Notes.md", .data = "# Notes\n" });
+    try dir.writeFile(io, .{ .sub_path = ".hidden", .data = "x" });
+    try dir.createDir(io, "sub", .default_dir);
+    const big = try testing.allocator.alloc(u8, code_editor.file_bytes_max + 1);
+    defer testing.allocator.free(big);
+    @memset(big, 'x');
+    try dir.writeFile(io, .{ .sub_path = "big.txt", .data = big });
+}
+
+test "code_editor lists a folder in a List and opens its files on the core" {
+    // Goal: the code_editor port end to end, with the lifecycle guard
+    // proving no allocation after init. Methodology: choose a folder of 45
+    // files through a scripted dialog; the List must build only the rows in
+    // view, sorted without case, and build the last rows once wheeled to the
+    // end. Clicking rows opens a text file into the editor and shows the
+    // binary, too-large, and image statuses for the others.
+    var folder = std.testing.tmpDir(.{ .iterate = true });
+    defer folder.cleanup();
+    try editorFolder(folder.dir);
+    var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const path_len = try folder.dir.realPath(testing.io, &path_buffer);
+
+    const app = try testing.allocator.create(code_editor.App);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var dialog = FolderDialog{ .path = path_buffer[0..path_len] };
+    app.window.file_dialog = .{ .context = &dialog, .open = FolderDialog.open };
+    var now: u64 = 0;
+    app.tick(now);
+    try testing.expectEqual(@as(u32, 0), editorRowsBuilt(app));
+    const editor = nodeNamed(&app.window, .textarea, "Enter your code here...").?;
+    try testing.expect(std.mem.startsWith(u8, app.window.rendered().text(editor.value).?, "const"));
+
+    const open = nodeNamed(&app.window, .button, "Open Folder").?.bounds;
+    clickAt(app, &now, open.x + 4, open.y + 4);
+    now += 1;
+    app.tick(now);
+    try testing.expectEqual(@as(u32, 1), dialog.opened);
+    try testing.expectEqual(@as(u32, 45), app.state.file_count);
+    try testing.expectEqualStrings("a.zig", app.state.files[0].text());
+    try testing.expectEqualStrings("Notes.md", app.state.files[44].text());
+    // Rows of 26 px in a list about 22 rows tall: the visible ones and one
+    // partial row, never the folder's last file.
+    const built = editorRowsBuilt(app);
+    try testing.expect(built >= 10);
+    try testing.expect(built < 30);
+    try testing.expect(nodeNamed(&app.window, .button, "Notes.md") == null);
+    // A taller window shows more rows: its render builds against the old
+    // viewport, and the emit that measures the new one asks for another.
+    editorResize(app, &now, 1000);
+    try testing.expect(editorRowsBuilt(app) >= built + 10);
+    try testing.expect(nodeNamed(&app.window, .button, "Notes.md") == null);
+
+    editorClickRow(app, &now, "a.zig");
+    try testing.expectEqualStrings("const a = 1;\n", app.state.source);
+    const opened = nodeNamed(&app.window, .textarea, "Enter your code here...").?;
+    try testing.expectEqualStrings("const a = 1;\n", app.window.rendered().text(opened.value).?);
+    editorClickRow(app, &now, "bad.txt");
+    try testing.expectEqual(code_editor.FileStatus.binary_file, app.state.status);
+    editorClickRow(app, &now, "big.txt");
+    try testing.expectEqual(code_editor.FileStatus.file_too_large, app.state.status);
+
+    // Wheel the list to its end: its last rows are built, its first are not.
+    editorWheelTo(app, &now, "Notes.md");
+    try testing.expect(nodeNamed(&app.window, .button, "a.zig") == null);
+    try testing.expect(editorRowsBuilt(app) < 45);
+    editorClickRow(app, &now, "img.png");
+    try testing.expectEqual(code_editor.FileStatus.image_file, app.state.status);
+    try testing.expectEqualStrings("png", app.state.extension_bytes[0..app.state.extension_len]);
     try testing.expectEqual(core.internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
 }

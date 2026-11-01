@@ -268,21 +268,18 @@ fn pinTier1NamespacedUi() void {
 /// `gooey.widgets` — stateful widget engines. Each is reached for by
 /// list / table / scroll examples to size the state struct
 /// explicitly. Helper enum / range types (`ScrollStrategy`,
-/// `SortDirection`, `TreeEntry`) sit alongside the engine because
+/// `SortDirection`) sit alongside the engine because
 /// examples spell them out at call sites.
 fn pinTier1NamespacedWidgets() void {
     comptime {
         _ = gooey.widgets.TextInputState;
         _ = gooey.widgets.TextAreaState;
-        _ = gooey.widgets.CodeEditorState;
         _ = gooey.widgets.ScrollContainer;
         _ = gooey.widgets.UniformListState;
         _ = gooey.widgets.VirtualListState;
         _ = gooey.widgets.DataTableState;
-        _ = gooey.widgets.TreeListState;
         _ = gooey.widgets.ScrollStrategy;
         _ = gooey.widgets.SortDirection;
-        _ = gooey.widgets.TreeEntry;
     }
 }
 

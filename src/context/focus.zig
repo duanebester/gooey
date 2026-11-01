@@ -102,16 +102,15 @@ pub const Focusable = struct {
         /// Clear the widget's focused flag and any IME / selection state.
         blur: *const fn (ptr: *anyopaque) void,
         /// Read the widget's focused flag. Takes `*anyopaque` (not
-        /// `*const`) because some widget types declare
-        /// `isFocused(self: *Self)` rather than `*const Self` (e.g.
-        /// `CodeEditorState` delegates to its embedded `TextArea` and
-        /// cannot promise const access). The thunk does not mutate.
+        /// `*const`) because a widget type may declare
+        /// `isFocused(self: *Self)` rather than `*const Self`. The thunk
+        /// does not mutate.
         is_focused: *const fn (ptr: *anyopaque) bool,
         /// Whether this widget consumes the keyboard-navigation keys
         /// (currently Tab / Shift-Tab) itself rather than yielding them to
         /// the framework's focus traversal. Widgets that want raw keys —
-        /// `CodeEditor` (Tab indents), a terminal grid (Tab is shell
-        /// completion, Shift-Tab is back-tab) — return true so
+        /// a terminal grid (Tab is shell completion, Shift-Tab is
+        /// back-tab) — return true so
         /// `handleKeyDownEvent` stops stealing Tab for focus movement and
         /// lets the key reach the widget and the app `on_event` hook.
         /// Defaults to "no" for the vast majority of focusables.
@@ -255,8 +254,8 @@ pub const FocusHandle = struct {
     }
 
     /// Attach a `Focusable` widget vtable (fluent API). Called by the UI
-    /// builder when rendering a stateful widget (TextInput, TextArea,
-    /// CodeEditor) so the focus manager can drive the widget's
+    /// builder when rendering a stateful widget (TextInput, TextArea)
+    /// so the focus manager can drive the widget's
     /// `focus()` / `blur()` through the trait — no widget-type switch
     /// in `context/`.
     pub fn withWidget(self: Self, focusable: Focusable) Self {

@@ -404,7 +404,8 @@ const scrollbar_thumb_drag_color = Color{ .r = 0, .g = 0, .b = 0, .a = 0.5 };
 /// Record what this emit measured, clamp the offset to it, and draw the
 /// scrollbars after the clipped content, as 0.3.1 does at `scissor_end`.
 /// A clamp or an overflow change makes this frame's layout or clip stale,
-/// so it requests one more render; steady content requests none.
+/// and a resized viewport changes which rows a `List` builds, so each
+/// requests one more render; steady content requests none.
 fn finishScroll(
     window: *Window,
     entry: *const Clips.Entry,
@@ -415,13 +416,17 @@ fn finishScroll(
     const bounds = entry.bounds;
     const overflow_x = state.maxX() > 0;
     const overflow_y = state.maxY() > 0;
+    const resized = state.viewport.width != bounds.width or
+        state.viewport.height != bounds.height;
     state.content_width = @max(0, entry.extent_right + state.offset_x - bounds.x +
         @as(f32, @floatFromInt(padding.right)));
     state.content_height = @max(0, entry.extent_bottom + state.offset_y - bounds.y +
         @as(f32, @floatFromInt(padding.bottom)));
     state.viewport = bounds;
     const moved = state.clamp();
-    if (moved or overflow_x != (state.maxX() > 0) or overflow_y != (state.maxY() > 0)) {
+    if (moved or resized or overflow_x != (state.maxX() > 0) or
+        overflow_y != (state.maxY() > 0))
+    {
         window.render_requested = true;
     }
     inline for (.{ window_mod.ScrollAxis.y, window_mod.ScrollAxis.x }) |axis| {

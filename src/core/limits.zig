@@ -1139,9 +1139,10 @@ pub const TextKindLimits = struct {
 };
 
 /// The three text-engine pools: single-line inputs, multi-line areas, and code
-/// editors. `editor` reserves nothing until phase 4 ports that engine, so every
-/// profile but `ceiling` sets its count to 0. An area reserves `bytes_max`
-/// twice (text and history), so the small profiles keep only a few.
+/// editors. Editors are opt-in: every profile but `ceiling` sets their count to
+/// 0, and an app that shows one sets it (the code-editor example sets 1). An
+/// area or editor reserves `bytes_max` twice (text and history), so the small
+/// profiles keep only a few.
 pub const TextLimits = struct {
     input: TextKindLimits,
     area: TextKindLimits,

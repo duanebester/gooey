@@ -417,69 +417,6 @@ pub const TextAreaStyle = struct {
     scrollbar_thumb_color: Color = Color.rgba(0.5, 0.5, 0.5, 0.4),
 };
 
-/// Code editor style options (extends TextArea)
-pub const CodeEditorStyle = struct {
-    placeholder: []const u8 = "",
-    bind: ?*[]const u8 = null,
-
-    // Handlers
-    on_blur: ?Handler = null,
-
-    // Focus
-    tab_index: i32 = 0,
-    tab_stop: bool = true,
-
-    // Layout
-    width: ?f32 = null,
-    height: ?f32 = null,
-    rows: usize = 10, // Default more rows for code
-    padding: f32 = 8,
-
-    // Visual
-    background: Color = Color.rgb(0.12, 0.12, 0.14),
-    border_color: Color = Color.rgb(0.25, 0.25, 0.28),
-    border_color_focused: Color = Color.rgb(0.3, 0.5, 1.0),
-    border_width: f32 = 1,
-    corner_radius: f32 = 4,
-
-    // Text
-    text_color: Color = Color.rgb(0.9, 0.9, 0.9),
-    placeholder_color: Color = Color.rgb(0.5, 0.5, 0.5),
-    selection_color: Color = Color.rgba(0.3, 0.5, 1.0, 0.3),
-    cursor_color: Color = Color.rgb(0.9, 0.9, 0.9),
-
-    // Scrollbar
-    scrollbar_width: f32 = 8,
-    scrollbar_track_color: Color = Color.rgba(0.5, 0.5, 0.5, 0.1),
-    scrollbar_thumb_color: Color = Color.rgba(0.5, 0.5, 0.5, 0.4),
-
-    // Code editor specific
-    show_line_numbers: bool = true,
-    gutter_width: f32 = 50,
-    gutter_background: Color = Color.rgb(0.1, 0.1, 0.12),
-    line_number_color: Color = Color.rgb(0.45, 0.45, 0.5),
-    current_line_number_color: Color = Color.rgb(0.8, 0.8, 0.85),
-    gutter_separator_color: Color = Color.rgb(0.2, 0.2, 0.22),
-
-    // Current line highlight
-    current_line_background: Color = Color.rgba(0.3, 0.5, 1.0, 0.08),
-
-    // Tab behavior
-    tab_size: u8 = 4,
-    use_hard_tabs: bool = false,
-
-    // Status bar
-    show_status_bar: bool = true,
-    status_bar_height: f32 = 22,
-    status_bar_background: Color = Color.rgb(0.1, 0.1, 0.12),
-    status_bar_text_color: Color = Color.rgb(0.6, 0.6, 0.65),
-    status_bar_separator_color: Color = Color.rgb(0.25, 0.25, 0.28),
-
-    // Language/encoding display
-    language_mode: []const u8 = "Plain Text",
-    encoding: []const u8 = "UTF-8",
-};
-
 // =============================================================================
 // Layout Container Styles
 // =============================================================================
@@ -590,44 +527,6 @@ pub const VirtualListStyle = struct {
     background: ?Color = null,
     /// Corner radius
     corner_radius: f32 = 0,
-
-    /// Scrollbar styling
-    scrollbar_size: f32 = 8,
-    track_color: ?Color = null,
-    thumb_color: ?Color = null,
-};
-
-/// Tree list styling options (virtualized hierarchical list)
-/// Use with TreeListState for expandable/collapsible tree views.
-pub const TreeListStyle = struct {
-    /// Fixed viewport width (optional - defaults to grow)
-    width: ?f32 = null,
-    /// Fixed viewport height (required for virtualization to work well)
-    height: ?f32 = null,
-
-    // Flexible sizing (like Box)
-    grow: bool = false, // Grow both axes
-    grow_width: bool = false, // Grow width only
-    grow_height: bool = false, // Grow height only
-    fill_width: bool = false, // 100% of parent width
-    fill_height: bool = false, // 100% of parent height
-
-    /// Padding inside the list area
-    padding: Box.PaddingValue = .{ .all = 0 },
-    /// Gap between items
-    gap: f32 = 0,
-    /// Background color
-    background: ?Color = null,
-    /// Corner radius
-    corner_radius: f32 = 0,
-
-    /// Pixels of indentation per depth level
-    indent_px: f32 = 16.0,
-
-    /// Show tree lines connecting nodes
-    show_tree_lines: bool = false,
-    /// Color for tree lines (uses theme muted if not set)
-    tree_line_color: ?Color = null,
 
     /// Scrollbar styling
     scrollbar_size: f32 = 8,

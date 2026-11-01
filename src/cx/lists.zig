@@ -23,7 +23,6 @@ const Cx = cx_mod.Cx;
 const ui_mod = @import("../ui/mod.zig");
 const UniformListStyle = ui_mod.UniformListStyle;
 const VirtualListStyle = ui_mod.VirtualListStyle;
-const TreeListStyle = ui_mod.TreeListStyle;
 const DataTableStyle = ui_mod.DataTableStyle;
 
 const uniform_list_mod = @import("../widgets/uniform_list.zig");
@@ -31,10 +30,6 @@ const UniformListState = uniform_list_mod.UniformListState;
 
 const virtual_list_mod = @import("../widgets/virtual_list.zig");
 const VirtualListState = virtual_list_mod.VirtualListState;
-
-const tree_list_mod = @import("../widgets/tree_list.zig");
-const TreeListState = tree_list_mod.TreeListState;
-const TreeEntry = tree_list_mod.TreeEntry;
 
 const data_table_mod = @import("../widgets/data_table.zig");
 const DataTableState = data_table_mod.DataTableState;
@@ -151,91 +146,6 @@ pub const Lists = struct {
         b.layout.closeElement();
 
         uniform_list_mod.registerScroll(b, id, params, content_id, style);
-    }
-
-    // =========================================================================
-    // Tree List
-    // =========================================================================
-
-    /// Render a virtualized tree list with expandable / collapsible
-    /// nodes. The render callback receives the `TreeEntry` and `*Cx`
-    /// for full access.
-    ///
-    /// ```zig
-    /// cx.lists.tree("file-tree", &state.tree_state, .{ .grow_height = true }, renderNode);
-    /// ```
-    pub fn tree(
-        self: *Lists,
-        id: []const u8,
-        tree_state: *TreeListState,
-        style: TreeListStyle,
-        comptime render_item: fn (entry: *const TreeEntry, cx: *Cx) void,
-    ) void {
-        std.debug.assert(id.len > 0);
-
-        const c = self.cx();
-        const b = c._builder;
-
-        // Rebuild flattened entries if the tree shape changed since the
-        // last frame. Cheap when nothing changed.
-        if (tree_state.needs_flatten) {
-            tree_state.rebuild();
-        }
-
-        tree_state.indent_px = style.indent_px;
-
-        // Convert TreeListStyle to UniformListStyle for delegation. Tree
-        // lists are uniform-height under the hood; the only added
-        // dimension is depth-based indenting handled by callers.
-        const list_style = UniformListStyle{
-            .width = style.width,
-            .height = style.height,
-            .grow = style.grow,
-            .grow_width = style.grow_width,
-            .grow_height = style.grow_height,
-            .fill_width = style.fill_width,
-            .fill_height = style.fill_height,
-            .padding = style.padding,
-            .gap = style.gap,
-            .background = style.background,
-            .corner_radius = style.corner_radius,
-            .scrollbar_size = style.scrollbar_size,
-            .track_color = style.track_color,
-            .thumb_color = style.thumb_color,
-        };
-
-        tree_state.list_state.gap_px = style.gap;
-        uniform_list_mod.syncScroll(b, id, &tree_state.list_state);
-
-        const params = uniform_list_mod.computeLayout(id, &tree_state.list_state, list_style);
-
-        const content_id = uniform_list_mod.openElements(
-            b,
-            params,
-            list_style,
-            tree_state.list_state.scroll_offset_px,
-        ) orelse return;
-
-        uniform_list_mod.renderSpacer(b, params.top_spacer_height);
-
-        // Render visible entries with Cx access. Bounds-check the
-        // entry index against the flattened entry buffer — the
-        // visible range is computed from item_count, but `entries`
-        // is the source of truth for what's actually been flattened.
-        std.debug.assert(params.range.start <= params.range.end);
-        var i = params.range.start;
-        while (i < params.range.end) : (i += 1) {
-            if (i < tree_state.entry_count) {
-                render_item(&tree_state.entries[i], c);
-            }
-        }
-
-        uniform_list_mod.renderSpacer(b, params.bottom_spacer_height);
-
-        b.layout.closeElement();
-        b.layout.closeElement();
-
-        uniform_list_mod.registerScroll(b, id, params, content_id, list_style);
     }
 
     // =========================================================================

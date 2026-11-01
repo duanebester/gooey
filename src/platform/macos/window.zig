@@ -1100,7 +1100,7 @@ pub const Window = struct {
     }
 
     /// Set the OS-level mouse pointer icon (not the text-caret drawn by
-    /// `TextInput`/`TextArea`/`CodeEditor` — see `interface.CursorShape`).
+    /// `TextInput`/`TextArea` — see `interface.CursorShape`).
     ///
     /// `NSCursor.set()` pushes onto a stack rather than replacing outright,
     /// but since Gooey calls this once per frame with the fully-resolved

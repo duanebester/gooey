@@ -74,17 +74,13 @@ const TextInputBounds = text_input_state_mod.Bounds;
 const text_area_state_mod = @import("../widgets/text_area_state.zig");
 const TextAreaState = text_area_state_mod.TextAreaState;
 const TextAreaBounds = text_area_state_mod.Bounds;
-const code_editor_state_mod = @import("../widgets/code_editor_state.zig");
-const CodeEditorState = code_editor_state_mod.CodeEditorState;
-const CodeEditorBounds = code_editor_state_mod.Bounds;
 
 /// Default bounds used to seed a freshly-allocated text widget pool slot.
 /// The real per-frame bounds are recomputed after layout by
 /// `runtime/frame.zig`; these seeds only need sane geometry to satisfy the
-/// engines' `init` assertions (e.g. `CodeEditorState.init` asserts width > 0).
+/// engines' `init` assertions (e.g. `TextAreaState.init` asserts width > 0).
 const DEFAULT_TEXT_INPUT_BOUNDS: TextInputBounds = .{ .x = 0, .y = 0, .width = 200, .height = 36 };
 const DEFAULT_TEXT_AREA_BOUNDS: TextAreaBounds = .{ .x = 0, .y = 0, .width = 300, .height = 150 };
-const DEFAULT_CODE_EDITOR_BOUNDS: CodeEditorBounds = .{ .x = 0, .y = 0, .width = 400, .height = 300 };
 
 // Miss-path factories for `ElementStates.getOrInsertWith`. These run only
 // when a widget's pool slot is first seeded — never on a cache hit — so the
@@ -97,9 +93,6 @@ fn makeTextInputState(allocator: std.mem.Allocator) TextInputState {
 fn makeTextAreaState(allocator: std.mem.Allocator) TextAreaState {
     return TextAreaState.init(allocator, DEFAULT_TEXT_AREA_BOUNDS);
 }
-fn makeCodeEditorState(allocator: std.mem.Allocator) CodeEditorState {
-    return CodeEditorState.init(allocator, DEFAULT_CODE_EDITOR_BOUNDS);
-}
 
 // Type aliases used internally as the builder's style/primitive vocabulary.
 // The public `gooey.ui.*` surface re-exports these directly from
@@ -108,7 +101,6 @@ const Color = styles.Color;
 const Box = styles.Box;
 const InputStyle = styles.InputStyle;
 const TextAreaStyle = styles.TextAreaStyle;
-const CodeEditorStyle = styles.CodeEditorStyle;
 const StackStyle = styles.StackStyle;
 const CenterStyle = styles.CenterStyle;
 const ScrollStyle = styles.ScrollStyle;
@@ -117,7 +109,6 @@ const PrimitiveType = primitives.PrimitiveType;
 const Text = primitives.Text;
 const Input = primitives.Input;
 const TextAreaPrimitive = primitives.TextAreaPrimitive;
-const CodeEditorPrimitive = primitives.CodeEditorPrimitive;
 const Spacer = primitives.Spacer;
 const Button = primitives.Button;
 const SvgPrimitive = primitives.SvgPrimitive;
@@ -172,14 +163,12 @@ pub const Builder = struct {
     // =========================================================================
     pub const MAX_PENDING_INPUTS = 256;
     pub const MAX_PENDING_TEXT_AREAS = 64;
-    pub const MAX_PENDING_CODE_EDITORS = 32;
     pub const MAX_PENDING_SCROLLS = 64;
     pub const MAX_PENDING_CANVAS = canvas_mod.MAX_PENDING_CANVAS;
     pub const MAX_DYNAMIC_BOX_DEPTH = 64;
-    // One control-queue record per text widget across all three kinds, so the
-    // cap is the sum of the three data-plane pools.
-    pub const MAX_PENDING_TEXT_WIDGETS =
-        MAX_PENDING_INPUTS + MAX_PENDING_TEXT_AREAS + MAX_PENDING_CODE_EDITORS;
+    // One control-queue record per text widget across both kinds, so the cap
+    // is the sum of the two data-plane pools.
+    pub const MAX_PENDING_TEXT_WIDGETS = MAX_PENDING_INPUTS + MAX_PENDING_TEXT_AREAS;
     // A parent can't hold more auto-id'd children than the layout engine's
     // per-frame element cap. Asserted in `generateId` to fail fast rather than
     // silently wrap the `u32` counter.
@@ -212,10 +201,9 @@ pub const Builder = struct {
     /// Pending input IDs to be rendered (collected during layout, rendered after)
     pending_inputs: std.ArrayList(PendingInput),
     pending_text_areas: std.ArrayList(PendingTextArea),
-    pending_code_editors: std.ArrayList(PendingCodeEditor),
 
     /// Control-plane queue for the post-layout text-widget render pass. Records
-    /// one `{ kind, index }` per widget in tree order so all three kinds replay
+    /// one `{ kind, index }` per widget in tree order so both kinds replay
     /// interleaved in build order (correct when different kinds overlap). The
     /// heavy state stays in the typed data-plane pools above; each slot is 8
     /// bytes rather than sized to the largest style variant.
@@ -237,7 +225,7 @@ pub const Builder = struct {
     /// Set in `boxWithLayoutIdImpl` when the currently-hovered element
     /// declares an explicit cursor; reset every frame in `renderFrameImpl`.
     /// Read by `runtime/frame.zig::updateCursorShape` as the fallback when
-    /// no text widget (input/text area/code editor) is hovered.
+    /// no text widget (input or text area) is hovered.
     hover_cursor: ?styles.CursorShape = null,
 
     /// Open runtime containers. Static tuple containers bypass this storage,
@@ -247,7 +235,7 @@ pub const Builder = struct {
 
     /// Kind discriminant for the text-widget control queue; the render pass
     /// switches on it at comptime to pick the matching data-plane pool.
-    pub const TextWidgetKind = enum { input, text_area, code_editor };
+    pub const TextWidgetKind = enum { input, text_area };
 
     /// One control-plane record: which pool, and which slot within it.
     pub const PendingTextWidget = struct {
@@ -268,15 +256,6 @@ pub const Builder = struct {
         id: []const u8,
         layout_id: LayoutId,
         style: TextAreaStyle,
-        inner_width: f32,
-        inner_height: f32,
-        on_blur: ?Handler = null,
-    };
-
-    pub const PendingCodeEditor = struct {
-        id: []const u8,
-        layout_id: LayoutId,
-        style: CodeEditorStyle,
         inner_width: f32,
         inner_height: f32,
         on_blur: ?Handler = null,
@@ -305,7 +284,6 @@ pub const Builder = struct {
             .pending_inputs = .empty,
             .pending_scrolls = .empty,
             .pending_text_areas = .empty,
-            .pending_code_editors = .empty,
             .pending_text_widgets = .empty,
             .pending_canvas = .empty,
             .pending_scrolls_by_layout_id = .{},
@@ -317,7 +295,6 @@ pub const Builder = struct {
     pub fn deinit(self: *Self) void {
         self.pending_inputs.deinit(self.allocator);
         self.pending_text_areas.deinit(self.allocator);
-        self.pending_code_editors.deinit(self.allocator);
         self.pending_text_widgets.deinit(self.allocator);
         self.pending_scrolls.deinit(self.allocator);
         self.pending_canvas.deinit(self.allocator);
@@ -1298,7 +1275,6 @@ pub const Builder = struct {
                 .text => self.renderText(child),
                 .input => self.renderInput(child),
                 .text_area => self.renderTextArea(child),
-                .code_editor => self.renderCodeEditor(child),
                 .spacer => self.renderSpacer(child),
                 .button => self.renderButton(child),
                 .svg => self.renderSvg(child),
@@ -1594,99 +1570,6 @@ pub const Builder = struct {
                 .tabStop(ta.style.tab_stop);
             if (ta_state_or_null) |text_area| {
                 handle = handle.withWidget(text_area.focusable());
-            }
-            g.focus.register(handle);
-        }
-
-        self.dispatch.popNode();
-    }
-
-    fn renderCodeEditor(self: *Self, ce: CodeEditorPrimitive) void {
-        std.debug.assert(ce.id.len > 0);
-        std.debug.assert(ce.style.rows > 0);
-
-        const layout_id = LayoutId.fromString(ce.id);
-
-        // Push dispatch node
-        _ = self.dispatch.pushNode();
-        self.dispatch.setLayoutId(layout_id.id);
-
-        // Register as focusable
-        const focus_id = FocusId.init(ce.id);
-        self.dispatch.setFocusable(focus_id);
-
-        // Seed the pool slot on first render (see `renderInput`).
-        const ce_state_or_null: ?*CodeEditorState = if (self.window) |g|
-            g.element_states.getOrInsertWith(
-                CodeEditorState,
-                @as(u64, layout_id.id),
-                g.allocator,
-                makeCodeEditorState,
-            ) catch null
-        else
-            null;
-
-        // Check if this code editor is focused (for border color)
-        const is_focused = if (ce_state_or_null) |editor|
-            editor.isFocused()
-        else
-            false;
-
-        // Calculate height: use explicit height or auto-size from rows * line_height
-        const chrome = (ce.style.padding + ce.style.border_width) * 2;
-        const editor_height = ce.style.height orelse blk: {
-            const line_height = if (self.window) |g|
-                if (g.resources.text_system.getMetrics()) |m| m.line_height else 20.0
-            else
-                20.0;
-            const rows_f: f32 = @floatFromInt(ce.style.rows);
-            break :blk (line_height * rows_f) + chrome;
-        };
-
-        // Calculate dimensions
-        const editor_width = ce.style.width orelse 400;
-        const inner_width = editor_width - chrome;
-        const inner_height = editor_height - chrome;
-
-        // Create the outer box with chrome
-        self.layout.openElement(.{
-            .id = layout_id,
-            .layout = .{
-                .sizing = .{
-                    .width = SizingAxis.fixed(editor_width),
-                    .height = SizingAxis.fixed(editor_height),
-                },
-                .padding = Padding.all(@intFromFloat(ce.style.padding + ce.style.border_width)),
-            },
-            .background_color = ce.style.background,
-            .corner_radius = CornerRadius.all(ce.style.corner_radius),
-            .border = BorderConfig.all(
-                if (is_focused) ce.style.border_color_focused else ce.style.border_color,
-                ce.style.border_width,
-            ),
-        }) catch |err| self.layoutFailed(err);
-        self.layout.closeElement();
-
-        // Store for later rendering
-        const code_editor_index = self.pending_code_editors.items.len;
-        self.pending_code_editors.append(self.allocator, .{
-            .id = ce.id,
-            .layout_id = layout_id,
-            .style = ce.style,
-            .inner_width = inner_width,
-            .inner_height = inner_height,
-            .on_blur = ce.style.on_blur,
-        }) catch |err| storageFailed("pending_code_editors", &self.pending_code_editors, err);
-        self.enqueuePendingTextWidget(.code_editor, code_editor_index);
-
-        // Register focus, attaching the widget's `Focusable` vtable (see
-        // `renderInput`).
-        if (self.window) |g| {
-            var handle = FocusHandle.init(ce.id)
-                .tabIndex(ce.style.tab_index)
-                .tabStop(ce.style.tab_stop);
-            if (ce_state_or_null) |editor| {
-                handle = handle.withWidget(editor.focusable());
             }
             g.focus.register(handle);
         }

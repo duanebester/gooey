@@ -107,18 +107,6 @@ pub const MAX_VISIBLE_ITEMS = uniform_list.MAX_VISIBLE_ITEMS;
 pub const virtual_list = @import("virtual_list.zig");
 
 pub const VirtualListState = virtual_list.VirtualListState;
-
-// =============================================================================
-// Code Editor (multi-line with line numbers and highlighting)
-// =============================================================================
-
-pub const code_editor_state = @import("code_editor_state.zig");
-
-pub const CodeEditorState = code_editor_state.CodeEditorState;
-pub const CodeEditorBounds = code_editor_state.Bounds;
-pub const CodeEditorStyle = code_editor_state.Style;
-pub const HighlightSpan = code_editor_state.HighlightSpan;
-pub const MAX_HIGHLIGHT_SPANS = code_editor_state.MAX_HIGHLIGHT_SPANS;
 pub const MAX_VIRTUAL_LIST_ITEMS = virtual_list.MAX_VIRTUAL_LIST_ITEMS;
 // Note: VirtualList uses its own VisibleRange and ScrollStrategy which are
 // compatible with UniformList's versions (same structure)
@@ -142,22 +130,6 @@ pub const MAX_VISIBLE_ROWS = data_table.MAX_VISIBLE_ROWS;
 pub const MAX_VISIBLE_COLUMNS = data_table.MAX_VISIBLE_COLUMNS;
 
 // =============================================================================
-// Tree List (Virtualized hierarchical list)
-// =============================================================================
-
-pub const tree_list = @import("tree_list.zig");
-
-pub const TreeListState = tree_list.TreeListState;
-pub const TreeNode = tree_list.TreeNode;
-pub const TreeEntry = tree_list.TreeEntry;
-pub const TreeLineChar = tree_list.TreeLineChar;
-pub const MAX_TREE_NODES = tree_list.MAX_TREE_NODES;
-pub const MAX_VISIBLE_ENTRIES = tree_list.MAX_VISIBLE_ENTRIES;
-pub const MAX_TREE_DEPTH = tree_list.MAX_TREE_DEPTH;
-pub const MAX_ROOT_NODES = tree_list.MAX_ROOT_NODES;
-pub const DEFAULT_INDENT_PX = tree_list.DEFAULT_INDENT_PX;
-
-// =============================================================================
 // Compile-time interface checks
 // =============================================================================
 //
@@ -174,7 +146,6 @@ pub const DEFAULT_INDENT_PX = tree_list.DEFAULT_INDENT_PX;
 comptime {
     interface_verify.verifyFocusableInterface(TextInputState);
     interface_verify.verifyFocusableInterface(TextAreaState);
-    interface_verify.verifyFocusableInterface(CodeEditorState);
 }
 
 // =============================================================================

@@ -36,8 +36,6 @@ const text_input_state_mod = @import("../widgets/text_input_state.zig");
 const TextInputState = text_input_state_mod.TextInputState;
 const text_area_state_mod = @import("../widgets/text_area_state.zig");
 const TextAreaState = text_area_state_mod.TextAreaState;
-const code_editor_state_mod = @import("../widgets/code_editor_state.zig");
-const CodeEditorState = code_editor_state_mod.CodeEditorState;
 
 // =============================================================================
 // Limits (per CLAUDE.md: "put a limit on everything")
@@ -103,7 +101,6 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     builder.id_counter = 0;
     builder.pending_inputs.clearRetainingCapacity();
     builder.pending_text_areas.clearRetainingCapacity();
-    builder.pending_code_editors.clearRetainingCapacity();
     builder.pending_text_widgets.clearRetainingCapacity();
     builder.pending_scrolls.clearRetainingCapacity();
     builder.pending_canvas.clearRetainingCapacity();
@@ -118,9 +115,8 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     // Assert pending item counts are within limits
     std.debug.assert(builder.pending_inputs.items.len <= Builder.MAX_PENDING_INPUTS);
     std.debug.assert(builder.pending_text_areas.items.len <= Builder.MAX_PENDING_TEXT_AREAS);
-    std.debug.assert(builder.pending_code_editors.items.len <= Builder.MAX_PENDING_CODE_EDITORS);
     // The unified control queue holds one record per
-    // text widget, so it cannot exceed the three pools combined.
+    // text widget, so it cannot exceed the two pools combined.
     std.debug.assert(builder.pending_text_widgets.items.len <= Builder.MAX_PENDING_TEXT_WIDGETS);
     std.debug.assert(builder.pending_scrolls.items.len <= Builder.MAX_PENDING_SCROLLS);
     std.debug.assert(builder.pending_canvas.items.len <= Builder.MAX_PENDING_CANVAS);
@@ -180,7 +176,7 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     // Register blur handlers from pending items
     registerBlurHandlers(window, builder);
 
-    // Render the text widgets (inputs / text areas / code editors) in a
+    // Render the text widgets (inputs and text areas) in a
     // single tree-ordered pass over the unified control queue.
     try renderTextWidgets(window, builder);
 
@@ -266,12 +262,6 @@ fn registerBlurHandlers(window: *Window, builder: *const Builder) void {
             window.registerBlurHandler(pending.id, handler);
         }
     }
-    // Register handlers from pending code editors
-    for (builder.pending_code_editors.items) |pending| {
-        if (pending.on_blur) |handler| {
-            window.registerBlurHandler(pending.id, handler);
-        }
-    }
 }
 
 /// Render all layout commands
@@ -331,10 +321,6 @@ fn renderTextWidgets(window: *Window, builder: *const Builder) !void {
             .text_area => {
                 std.debug.assert(entry.index < builder.pending_text_areas.items.len);
                 try renderTextArea(window, &builder.pending_text_areas.items[entry.index]);
-            },
-            .code_editor => {
-                std.debug.assert(entry.index < builder.pending_code_editors.items.len);
-                try renderCodeEditor(window, &builder.pending_code_editors.items[entry.index]);
             },
         }
     }
@@ -419,57 +405,13 @@ fn renderTextArea(window: *Window, pending: *const Builder.PendingTextArea) !voi
     if (ta_widget.blinkDelayMs()) |delay_ms| window.requestRenderAfter(delay_ms);
 }
 
-/// Render a single pending code editor.
-fn renderCodeEditor(window: *Window, pending: *const Builder.PendingCodeEditor) !void {
-    const bounds = window.layout.getBoundingBox(pending.layout_id.id) orelse return;
-    const ce_widget = window.element_states.get(CodeEditorState, @as(u64, pending.layout_id.id)) orelse return;
-
-    const inset = pending.style.padding + pending.style.border_width;
-    ce_widget.setBounds(.{
-        .x = bounds.x + inset,
-        .y = bounds.y + inset,
-        .width = pending.inner_width,
-        .height = pending.inner_height,
-    });
-
-    // Update code editor specific settings
-    ce_widget.show_line_numbers = pending.style.show_line_numbers;
-    ce_widget.gutter_width = pending.style.gutter_width;
-    ce_widget.tab_size = pending.style.tab_size;
-    ce_widget.use_hard_tabs = pending.style.use_hard_tabs;
-
-    // Update style colors
-    ce_widget.style.text.text_color = render_bridge.colorToHsla(pending.style.text_color);
-    ce_widget.style.text.placeholder_color = render_bridge.colorToHsla(pending.style.placeholder_color);
-    ce_widget.style.text.selection_color = render_bridge.colorToHsla(pending.style.selection_color);
-    ce_widget.style.text.cursor_color = render_bridge.colorToHsla(pending.style.cursor_color);
-    ce_widget.style.gutter_background = render_bridge.colorToHsla(pending.style.gutter_background);
-    ce_widget.style.line_number_color = render_bridge.colorToHsla(pending.style.line_number_color);
-    ce_widget.style.current_line_number_color = render_bridge.colorToHsla(pending.style.current_line_number_color);
-    ce_widget.style.gutter_separator_color = render_bridge.colorToHsla(pending.style.gutter_separator_color);
-    ce_widget.style.current_line_background = render_bridge.colorToHsla(pending.style.current_line_background);
-    applyScrollbarStyle(&ce_widget.text_area.scrollbar_style, &pending.style);
-
-    // Status bar settings
-    ce_widget.show_status_bar = pending.style.show_status_bar;
-    ce_widget.status_bar_height = pending.style.status_bar_height;
-    ce_widget.style.status_bar_background = render_bridge.colorToHsla(pending.style.status_bar_background);
-    ce_widget.style.status_bar_text_color = render_bridge.colorToHsla(pending.style.status_bar_text_color);
-    ce_widget.style.status_bar_separator_color = render_bridge.colorToHsla(pending.style.status_bar_separator_color);
-    ce_widget.language_mode = pending.style.language_mode;
-    ce_widget.encoding = pending.style.encoding;
-
-    ce_widget.setPlaceholder(pending.style.placeholder);
-    try ce_widget.render(window.next_frame.scene, window.resources.text_system, window.scale_factor);
-    // The editor's caret is its embedded text area's, blink timer included.
-    if (ce_widget.text_area.blinkDelayMs()) |delay_ms| window.requestRenderAfter(delay_ms);
-}
-
 /// Copy the app's scrollbar props into a text area's engine scrollbar style.
-/// `style` is a `*const TextAreaStyle` or `*const CodeEditorStyle`; both expose the same
-/// three scrollbar fields. The width is app-supplied and reaches the GPU unclipped, so it
+/// The width is app-supplied and reaches the GPU unclipped, so it
 /// is asserted finite, non-negative, and bounded before use.
-fn applyScrollbarStyle(target: *text_area_state_mod.ScrollbarStyle, style: anytype) void {
+fn applyScrollbarStyle(
+    target: *text_area_state_mod.ScrollbarStyle,
+    style: *const ui_mod.TextAreaStyle,
+) void {
     std.debug.assert(std.math.isFinite(style.scrollbar_width));
     std.debug.assert(style.scrollbar_width >= 0);
     std.debug.assert(style.scrollbar_width <= scrollbar_width_max);
@@ -480,8 +422,8 @@ fn applyScrollbarStyle(target: *text_area_state_mod.ScrollbarStyle, style: anyty
 }
 
 /// Update IME cursor position for the focused text widget. Priority is
-/// input > area > editor; at most one is focused at a time and the IME only
-/// needs one rect.
+/// input > area; at most one is focused at a time and the IME only needs
+/// one rect.
 fn updateImeCursorPosition(window: *Window, builder: *const Builder) void {
     const platform_window = window.getPlatformWindow() orelse return;
     const input_mod = @import("input.zig");
@@ -490,9 +432,6 @@ fn updateImeCursorPosition(window: *Window, builder: *const Builder) void {
         platform_window.setImeCursorRect(rect.x, rect.y, rect.width, rect.height);
     } else if (input_mod.focusedTextArea(window, builder)) |ta| {
         const rect = ta.cursor_rect;
-        platform_window.setImeCursorRect(rect.x, rect.y, rect.width, rect.height);
-    } else if (input_mod.focusedCodeEditor(window, builder)) |ce| {
-        const rect = ce.getCursorRect();
         platform_window.setImeCursorRect(rect.x, rect.y, rect.width, rect.height);
     }
 }
@@ -514,9 +453,6 @@ fn updateCursorShape(window: *Window, builder: *const Builder) void {
         if (pending.layout_id.id == hovered_layout_id) shape = .text;
     }
     for (builder.pending_text_areas.items) |pending| {
-        if (pending.layout_id.id == hovered_layout_id) shape = .text;
-    }
-    for (builder.pending_code_editors.items) |pending| {
         if (pending.layout_id.id == hovered_layout_id) shape = .text;
     }
     if (window.getPlatformWindow()) |platform_window| platform_window.setCursorShape(shape);

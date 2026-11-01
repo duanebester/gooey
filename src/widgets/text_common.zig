@@ -151,8 +151,8 @@ pub const Selection = struct {
 // Bounds — flat hot-loop rectangle for text-widget hit-testing
 // =============================================================================
 
-/// Flat unparameterized rectangle used by `TextInput`, `TextArea`, and
-/// `CodeEditorState` for bounds tracking and hit-testing.
+/// Flat unparameterized rectangle used by `TextInput` and `TextArea` for
+/// bounds tracking and hit-testing.
 ///
 /// **Why this lives here, not on `geometry/geometry.Rect/Bounds(T)`.**
 /// `geometry/geometry`'s `Rect(T)` / `Bounds(T)` is a generic value type with a
@@ -162,8 +162,7 @@ pub const Selection = struct {
 /// `bounds.origin.x` / `bounds.size.width` would add an indirection that
 /// nobody asked for. Keeping the flat shape here, alongside the UTF-8 /
 /// selection / position helpers shared by the text-widget family, gives
-/// `text_input_state.zig`, `text_area_state.zig`, and
-/// `code_editor_state.zig` one tested `Bounds` type.
+/// `text_input_state.zig` and `text_area_state.zig` one tested `Bounds` type.
 ///
 /// **Half-open `[x, x+w)` hit-test convention.** `contains` matches the
 /// framework-wide convention used by `geometry/geometry.Rect.contains` and the
