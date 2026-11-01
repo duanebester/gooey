@@ -112,6 +112,8 @@ pub const Node = struct {
     // Clip and scroll (`Style.clip`, `Style.scroll`).
     clip: bool,
     scroll: ?retained_mod.Handle(ScrollState),
+    /// A `.popover` box opens a fragment that emit paints after content.
+    layer: ?element.Layer,
 };
 
 /// A scroll box's offset, retained by its key (contract §1), and what the
@@ -197,10 +199,15 @@ pub const A11yBuilt = struct {
     label: records.TextRange,
     value: records.TextRange,
     href: records.TextRange,
+    description: records.TextRange,
     checked: bool,
     disabled: bool,
+    expanded: bool,
+    has_popup: bool,
     heading_level: a11y_types.HeadingLevel,
     live: a11y_types.Live,
+    pos_in_set: ?u16,
+    set_size: ?u16,
 };
 
 /// Frame-wide set of keyed ids: duplicate detection during build, and the

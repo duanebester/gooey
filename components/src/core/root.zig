@@ -1,7 +1,7 @@
 //! Library components on the 0.4.0 core: `Button`, `Checkbox`, and
 //! `TextInput`, the three the milestone 1 todo needs (contract "Acceptance:
-//! todo"). Each composes `ui.box`, `ui.text`, and `ui.paint`; none reaches
-//! into the core beyond `Cx`.
+//! todo"), and the ones later ports need. Each composes `ui.box`, `ui.text`,
+//! and `ui.paint`; none reaches into the core beyond `Cx`.
 //!
 //! Their geometry and colours match the 0.3.1 components, so the core's
 //! counter and todo goldens can be compared with the 0.3.1 goldens.
@@ -144,6 +144,210 @@ pub const Checkbox = struct {
     /// The Material "check" icon, as the 0.3.1 checkbox draws it.
     const checkmark = Checkmark{ .path = "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" };
 };
+
+// =============================================================================
+// Select
+// =============================================================================
+
+/// A dropdown of options, as the 0.3.1 `Select` draws it, with its menu on a
+/// `.popover` layer. The app owns `selected` and `open`: the trigger calls
+/// `on_toggle`, a click outside calls `on_close`, and option `i` calls
+/// `on_select[i]`, typically `cx.on(State.choose, .{ .arg = i })`.
+pub const Select = struct {
+    key: []const u8,
+    options: []const []const u8,
+    /// One handler per option.
+    on_select: []const Handler,
+    on_toggle: Handler,
+    on_close: Handler,
+    selected: ?usize = null,
+    open: bool = false,
+    placeholder: []const u8 = "Select...",
+    disabled: bool = false,
+    width: f32 = 200,
+    padding: f32 = 10,
+    /// The combobox's screen-reader name; defaults to the placeholder.
+    accessible_name: ?[]const u8 = null,
+    accessible_description: ?[]const u8 = null,
+
+    pub fn render(self: Select, cx: *Cx) void {
+        assert(self.key.len > 0);
+        assert(self.on_select.len == self.options.len);
+        if (self.selected) |index| assert(index < self.options.len);
+        const theme = cx.theme();
+        const key = Key{ .name = self.key };
+        const trigger_height = @as(f32, @floatFromInt(theme.font_size_base)) +
+            self.padding * 2 + 4;
+        cx.render(ui.box(.{
+            .key = key,
+            .style = .{ .width = .{ .fixed = self.width } },
+            .on_click_outside = if (self.open) self.on_close else null,
+            .a11y = .{
+                .role = .combobox,
+                .label = self.accessible_name orelse self.placeholder,
+                .description = self.accessible_description,
+                .value = self.displayText(),
+                .expanded = self.open,
+                .has_popup = true,
+                .disabled = self.disabled,
+            },
+        }, .{
+            SelectTrigger{ .select = &self, .height = trigger_height },
+            if (self.open) SelectMenu{ .select = &self, .offset_y = trigger_height } else null,
+        }));
+    }
+
+    fn displayText(self: *const Select) []const u8 {
+        const index = self.selected orelse return self.placeholder;
+        return self.options[index];
+    }
+};
+
+const SelectTrigger = struct {
+    select: *const Select,
+    height: f32,
+
+    pub fn render(self: SelectTrigger, cx: *Cx) void {
+        const select = self.select;
+        assert(self.height > 0);
+        const theme = cx.theme();
+        const key = Key{ .name = "trigger" };
+        const hovered = !select.disabled and cx.hovered(cx.id(key));
+        const opacity: f32 = if (select.disabled) 0.6 else 1;
+        const background = if (hovered) theme.overlay else theme.surface;
+        const text_color = if (select.selected == null) theme.muted else theme.text;
+        const chevron = &chevrons[@intFromBool(select.open)][@intFromBool(select.disabled)];
+        cx.render(ui.box(.{
+            .key = key,
+            .style = .{
+                .width = .{ .grow = 1 },
+                .height = .{ .fixed = self.height },
+                .padding = .symmetric(select.padding, select.padding / 2),
+                .background = .{ .rgba = background.withAlpha(opacity) },
+                .border = .{ .width = 1, .color = if (select.open) .border_focus else .border },
+                .corner_radius = .all(theme.radius_md),
+                .direction = .row,
+                .alignment = .{ .main = .space_between, .cross = .center },
+                .cursor = .pointer,
+            },
+            .on_click = if (select.disabled) null else select.on_toggle,
+        }, .{
+            ui.text(select.displayText(), .{
+                .size = theme.font_size_base,
+                .color = .{ .rgba = text_color.withAlpha(opacity) },
+            }),
+            ui.paint(SelectIcon, chevron, SelectIcon.paint, .{
+                .width = .{ .fixed = 10 },
+                .height = .{ .fixed = 10 },
+            }),
+        }));
+    }
+};
+
+const SelectMenu = struct {
+    select: *const Select,
+    offset_y: f32,
+
+    pub fn render(self: SelectMenu, cx: *Cx) void {
+        const select = self.select;
+        assert(select.open);
+        const theme = cx.theme();
+        cx.render(ui.box(.{
+            .layer = .{
+                .kind = .popover,
+                .anchor = .{ .parent = .{ .y = self.offset_y } },
+                .clip = .escape,
+            },
+            .style = .{
+                .width_min = select.width,
+                .padding = .all(4),
+                .background = .surface,
+                .border = .{ .width = 1, .color = .border },
+                .corner_radius = .all(theme.radius_md),
+                .gap = 2,
+                .shadow = .{ .blur = 12, .offset_y = 4 },
+            },
+        }, .{SelectOptions{ .select = select }}));
+    }
+};
+
+const SelectOptions = struct {
+    select: *const Select,
+
+    pub fn render(self: SelectOptions, cx: *Cx) void {
+        const select = self.select;
+        const theme = cx.theme();
+        assert(select.options.len == select.on_select.len);
+        for (select.options, select.on_select, 0..) |label, handler, index| {
+            const key = Key{ .index = index };
+            const chosen = select.selected == index;
+            const hovered = cx.hovered(cx.id(key));
+            const background: ?Color = if (hovered)
+                theme.overlay
+            else if (chosen) theme.primary.withAlpha(0.15) else null;
+            cx.render(ui.box(.{
+                .key = key,
+                .style = .{
+                    .width = .{ .grow = 1 },
+                    .padding = .symmetric(select.padding, select.padding * 0.7),
+                    .background = if (background) |color| .{ .rgba = color } else null,
+                    .corner_radius = .all(theme.radius_md - 2),
+                    .direction = .row,
+                    .gap = 8,
+                    .alignment = .{ .main = .space_between, .cross = .center },
+                    .cursor = .pointer,
+                },
+                .on_click = handler,
+            }, .{
+                ui.text(label, .{ .size = theme.font_size_base, .color = .text }),
+                ui.box(.{ .style = .{
+                    .width = .{ .fixed = 16 },
+                    .height = .{ .fixed = 16 },
+                    .alignment = .center,
+                } }, .{
+                    if (chosen) ui.paint(SelectIcon, &select_check, SelectIcon.paint, .{
+                        .width = .{ .fixed = 14 },
+                        .height = .{ .fixed = 14 },
+                    }) else null,
+                }),
+            }));
+        }
+    }
+};
+
+/// A Material icon tinted by a theme colour at paint time, so one constant
+/// serves every theme.
+const SelectIcon = struct {
+    path: []const u8,
+    color: enum { text, primary },
+    opacity: f32,
+
+    fn paint(self: *const SelectIcon, painter: *ui.Painter) void {
+        const theme = painter.theme();
+        const color = switch (self.color) {
+            .text => theme.text,
+            .primary => theme.primary,
+        };
+        painter.svg(self.path, painter.bounds, .{ .fill = color.withAlpha(self.opacity) });
+    }
+};
+
+const chevron_down = "M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6z";
+const chevron_up = "M7.41 15.41L12 10.83l4.59 4.58L18 14l-6-6-6 6z";
+
+/// Indexed by `open`, then `disabled`.
+const chevrons = [2][2]SelectIcon{
+    .{
+        .{ .path = chevron_down, .color = .text, .opacity = 1 },
+        .{ .path = chevron_down, .color = .text, .opacity = 0.6 },
+    },
+    .{
+        .{ .path = chevron_up, .color = .text, .opacity = 1 },
+        .{ .path = chevron_up, .color = .text, .opacity = 0.6 },
+    },
+};
+
+const select_check = SelectIcon{ .path = Checkbox.checkmark.path, .color = .primary, .opacity = 1 };
 
 // =============================================================================
 // TextInput

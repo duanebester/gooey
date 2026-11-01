@@ -137,35 +137,166 @@ const clip_depth_max: u32 = limits_mod.MAX_CLIP_STACK_DEPTH;
 pub fn emit(window: *Window) void {
     window.assertPhase(.emit);
     window.resources.svg_atlas.resetFrameBudget();
+    assert(window.layout.elements.items().len == window.node_count);
+    emitAccessibility(window);
+    var layers_open = LayerQueue{ .roots = undefined, .len = 0, .opened = 0 };
+    emitFragment(window, &layers_open, &.{
+        .node_index = 0,
+        .fragment = layers.content_fragment,
+        .parent_hit = index_none,
+        .clip = null,
+    });
+    var fragment: u8 = layers.content_fragment;
+    while (layers_open.next(window)) |opened| {
+        assert(fragment < layer_count_ceiling);
+        fragment += 1;
+        var root = opened;
+        root.fragment = fragment;
+        emitFragment(window, &layers_open, &root);
+    }
+    assert(layers_open.len == 0);
+}
+
+/// Accessibility nodes in tree order, whatever fragment paints them, so a
+/// popover's options sit under their combobox for the screen reader.
+fn emitAccessibility(window: *Window) void {
     const elements = window.layout.elements.items();
-    assert(elements.len == window.node_count);
-    var hit_scope: [window_mod.box_depth_max + 1]u32 = undefined;
     var a11y_level: [window_mod.box_depth_max + 1]u8 = undefined;
-    var clips = Clips{ .entries = undefined, .len = 0 };
     for (window.nodes[0..window.node_count], 0..) |*node, index| {
-        const box = elements[index].computed.bounding_box;
-        const bounds = Rect{ .x = box.x, .y = box.y, .width = box.width, .height = box.height };
+        if (node.kind == .text) continue;
         const depth = node.depth;
         assert(depth <= window_mod.box_depth_max);
-        clips.close(window, depth);
-        clips.extend(depth, bounds);
-        const parent_hit = if (depth == 0) index_none else hit_scope[depth - 1];
+        const box = elements[index].computed.bounding_box;
+        const bounds = Rect{ .x = box.x, .y = box.y, .width = box.width, .height = box.height };
         const parent_level: u8 = if (depth == 0) 0 else a11y_level[depth - 1];
+        a11y_level[depth] = parent_level + emitA11y(window, node, bounds, parent_level);
+    }
+}
+
+/// Paint and hit records for one fragment: content from the root node, or a
+/// layer's subtree from its box. A layer box met on the way opens a later
+/// fragment, and its subtree is skipped here.
+fn emitFragment(window: *Window, layers_open: *LayerQueue, root: *const LayerRoot) void {
+    const elements = window.layout.elements.items();
+    const nodes = window.nodes[0..window.node_count];
+    const root_depth = nodes[root.node_index].depth;
+    var hit_scope: [window_mod.box_depth_max + 1]u32 = undefined;
+    var clips = Clips{ .entries = undefined, .len = 0, .base = root.clip };
+    if (root.clip) |rect| window.built().appendPaint(.{ .clip_push = rect });
+    var index = root.node_index;
+    while (index < nodes.len) {
+        const node = &nodes[index];
+        const depth = node.depth;
+        assert(depth <= window_mod.box_depth_max);
+        if (index != root.node_index and depth <= root_depth) break;
+        const box = elements[index].computed.bounding_box;
+        const bounds = Rect{ .x = box.x, .y = box.y, .width = box.width, .height = box.height };
+        clips.close(window, depth);
+        const parent_hit = if (depth == root_depth) root.parent_hit else hit_scope[depth - 1];
+        if (index != root.node_index and node.layer != null) {
+            layers_open.open(window, index, parent_hit, clips.current());
+            index = subtreeEnd(nodes, index);
+            continue;
+        }
+        clips.extend(depth, bounds);
         switch (node.kind) {
             .box, .paint => {
                 emitAppearance(window, node, bounds);
                 const hit_bounds = clips.clipped(bounds);
-                hit_scope[depth] = emitHit(window, node, hit_bounds, parent_hit);
-                a11y_level[depth] = parent_level + emitA11y(window, node, bounds, parent_level);
-                if (node.kind == .paint) emitPaint(window, node, bounds, clips.len);
-                if (node.clip) clips.open(window, node, @intCast(index), bounds);
+                hit_scope[depth] = emitHit(window, node, hit_bounds, .{
+                    .parent = parent_hit,
+                    .fragment = root.fragment,
+                });
+                if (node.kind == .paint) emitPaint(window, node, bounds, clips.sceneDepth());
+                if (node.clip) clips.open(window, node, index, bounds);
             },
             .text => emitText(window, node, bounds, &elements[index].text_data.?),
         }
+        index += 1;
     }
     clips.close(window, 0);
     assert(clips.len == 0);
+    if (root.clip != null) window.built().appendPaint(.clip_pop);
 }
+
+/// The index after `index`'s subtree: in pre-order, the first later node no
+/// deeper than it.
+fn subtreeEnd(nodes: []const Node, index: u32) u32 {
+    assert(index < nodes.len);
+    const depth = nodes[index].depth;
+    var end = index + 1;
+    while (end < nodes.len and nodes[end].depth > depth) end += 1;
+    assert(end > index);
+    return end;
+}
+
+const layer_count_ceiling = limits_mod.layer_count_ceiling;
+
+comptime {
+    // Each layer box is a layout float.
+    assert(layer_count_ceiling <= layout_mod.engine.MAX_FLOATING_ROOTS);
+}
+
+/// Where a fragment starts: its box, the hit record its hits bubble to, and
+/// the clip it inherits (`Layer.clip = .inherit`), if any.
+const LayerRoot = struct {
+    node_index: u32,
+    fragment: u8,
+    parent_hit: u32,
+    clip: ?Rect,
+};
+
+/// Layers opened and not yet emitted. Fragments follow in layer kind order,
+/// then open order (contract §6), which is pre-order: the next fragment is
+/// the lowest kind rank, then the lowest node index.
+const LayerQueue = struct {
+    roots: [layer_count_ceiling]LayerRoot,
+    len: u32,
+    /// Layers opened this frame, for `build.layer_count_frame_max`.
+    opened: u32,
+
+    fn open(self: *LayerQueue, window: *Window, index: u32, parent_hit: u32, clip: ?Rect) void {
+        const layer = window.nodes[index].layer.?;
+        assert(self.len <= self.opened);
+        const opened_max = window.limits.build.layer_count_frame_max;
+        assert(opened_max <= layer_count_ceiling);
+        if (self.opened == opened_max) {
+            std.debug.panic("layers exhausted: capacity {d}, frame {d}. Raise " ++
+                "ResourceLimits.build.layer_count_frame_max.", .{
+                opened_max,
+                window.frame_number,
+            });
+        }
+        self.roots[self.len] = .{
+            .node_index = index,
+            .fragment = layers.content_fragment,
+            .parent_hit = parent_hit,
+            .clip = if (layer.clip == .inherit) clip else null,
+        };
+        self.len += 1;
+        self.opened += 1;
+    }
+
+    fn next(self: *LayerQueue, window: *const Window) ?LayerRoot {
+        assert(self.len <= self.opened);
+        if (self.len == 0) return null;
+        var best: u32 = 0;
+        for (self.roots[1..self.len], 1..) |*root, position| {
+            const candidate = order(window, root);
+            const current = order(window, &self.roots[best]);
+            if (candidate < current) best = @intCast(position);
+        }
+        const root = self.roots[best];
+        self.len -= 1;
+        self.roots[best] = self.roots[self.len];
+        return root;
+    }
+
+    fn order(window: *const Window, root: *const LayerRoot) u64 {
+        const rank: u64 = layers.kindRank(window.nodes[root.node_index].layer.?.kind);
+        return (rank << 32) | root.node_index;
+    }
+};
 
 /// The open `Style.clip` and scroll boxes, innermost last. A box's clip
 /// closes at the first later node no deeper than it, which in pre-order is
@@ -174,6 +305,8 @@ pub fn emit(window: *Window) void {
 const Clips = struct {
     entries: [clip_depth_max]Entry,
     len: u32,
+    /// The clip a layer fragment inherits, pushed before its entries.
+    base: ?Rect,
 
     const Entry = struct {
         depth: u8,
@@ -186,17 +319,28 @@ const Clips = struct {
         extent_bottom: f32,
     };
 
-    fn clipped(self: *const Clips, bounds: Rect) Rect {
+    fn current(self: *const Clips) ?Rect {
         assert(self.len <= clip_depth_max);
+        if (self.len == 0) return self.base;
+        return self.entries[self.len - 1].rect;
+    }
+
+    fn clipped(self: *const Clips, bounds: Rect) Rect {
         assert(bounds.width >= 0);
-        if (self.len == 0) return bounds;
-        return bounds.intersect(self.entries[self.len - 1].rect);
+        const rect = self.current() orelse return bounds;
+        return bounds.intersect(rect);
+    }
+
+    /// Clips open on the scene's stack, the inherited one included.
+    fn sceneDepth(self: *const Clips) u32 {
+        assert(self.len <= clip_depth_max);
+        return self.len + @intFromBool(self.base != null);
     }
 
     fn open(self: *Clips, window: *Window, node: *const Node, index: u32, bounds: Rect) void {
         assert(node.clip);
         assert(self.len <= clip_depth_max);
-        checkClipDepth(window, self.len);
+        checkClipDepth(window, self.sceneDepth());
         var rect = bounds;
         if (node.scroll) |handle| {
             // Keep the scrollbar outside the clip, using the overflow the last
@@ -387,16 +531,20 @@ fn emitAppearance(window: *Window, node: *const Node, bounds: Rect) void {
     } });
 }
 
-fn emitHit(window: *Window, node: *const Node, bounds: Rect, parent_hit: u32) u32 {
-    if (!node.hit) return parent_hit;
+/// `parent` is the nearest enclosing hit record: for a layer's box, the
+/// opener's, so clicks inside a popover count as inside its opener.
+const HitPlace = struct { parent: u32, fragment: u8 };
+
+fn emitHit(window: *Window, node: *const Node, bounds: Rect, place: HitPlace) u32 {
+    if (!node.hit) return place.parent;
     assert(node.id.isKeyed() or node.on_click != index_none or node.focusable or
         node.on_key != index_none or node.on_click_outside != index_none or
         node.key_context != 0 or node.actions_len > 0 or node.scroll != null);
     return window.built().appendHit(.{
         .id = node.id,
         .bounds = bounds,
-        .fragment = layers.content_fragment,
-        .parent = parent_hit,
+        .fragment = place.fragment,
+        .parent = place.parent,
         .focusable = node.focusable,
         .scroll = node.scroll != null,
         .on_click = node.on_click,
@@ -420,9 +568,18 @@ fn emitA11y(window: *Window, node: *const Node, bounds: Rect, level: u8) u8 {
         .name = a11y.label,
         .value = a11y.value,
         .href = a11y.href,
-        .state = .{ .focused = focused, .checked = a11y.checked, .disabled = a11y.disabled },
+        .description = a11y.description,
+        .state = .{
+            .focused = focused,
+            .checked = a11y.checked,
+            .disabled = a11y.disabled,
+            .expanded = a11y.expanded,
+            .has_popup = a11y.has_popup,
+        },
         .heading_level = a11y.heading_level,
         .live = a11y.live,
+        .pos_in_set = a11y.pos_in_set,
+        .set_size = a11y.set_size,
     });
     return 1;
 }
