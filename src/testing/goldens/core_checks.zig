@@ -390,6 +390,64 @@ test "a scroll box clips its content, clamps its offset, and passes the wheel on
     try testing.expectEqual(@as(f32, 30), view.inner_offset);
 }
 
+fn scrollMouse(app: *ScrollApp, now: *u64, event: gooey.input.InputEvent) void {
+    app.window.queue.push(.{ .input = event });
+    now.* += 1;
+    app.tick(now.*);
+}
+
+fn thumbDragged(app: *ScrollApp) bool {
+    const frame = app.window.rendered();
+    for (frame.paint[0..frame.paint_count]) |record| {
+        if (record != .quad) continue;
+        if (record.quad.fill.a == 0.5 and record.quad.fill.r == 0) return true;
+    }
+    return false;
+}
+
+test "a scroll box's thumb drags and its track jumps, as 0.3.1's did" {
+    // Goal: scrollbar parity with 0.3.1's ScrollContainer. Methodology: the
+    // outer box shows 150 of 260 px, so its 146 px track holds an 84.23 px
+    // thumb with 61.77 px of travel for 110 px of offset. Drag the thumb half
+    // its travel and past its end, then press the track a quarter down. (The
+    // inner box's bar lies under the outer one's gutter, outside its clip.)
+    const app = try testing.allocator.create(ScrollApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    now += 1;
+    app.tick(now);
+    const box = ScrollView.read(&app.window).outer.bounds;
+    const bar_x = box.x + box.width - 10 + 4;
+    const travel: f32 = 146.0 - 146.0 * 150.0 / 260.0;
+
+    scrollMouse(app, &now, .{ .mouse_down = mouse(bar_x, box.y + 10) });
+    try testing.expect(thumbDragged(app));
+    scrollMouse(app, &now, .{ .mouse_dragged = mouse(bar_x, box.y + 10 + travel / 2) });
+    try testing.expectApproxEqAbs(@as(f32, 55), ScrollView.read(&app.window).outer_offset, 0.01);
+    // Dragging past the end clamps; the inner box does not move.
+    scrollMouse(app, &now, .{ .mouse_dragged = mouse(bar_x, box.y + 400) });
+    const view = ScrollView.read(&app.window);
+    try testing.expectEqual(@as(f32, 110), view.outer_offset);
+    try testing.expectEqual(@as(f32, 0), view.inner_offset);
+    scrollMouse(app, &now, .{ .mouse_up = mouse(bar_x, box.y + 400) });
+    try testing.expect(!thumbDragged(app));
+    // Moving after the release drags nothing.
+    scrollMouse(app, &now, .{ .mouse_moved = mouse(bar_x, box.y + 5) });
+    try testing.expectEqual(@as(f32, 110), ScrollView.read(&app.window).outer_offset);
+
+    // At the end the thumb sits at the bottom; the track's top quarter
+    // jumps to a quarter of the offset.
+    const quarter = box.y + 2 + 146 * 0.25;
+    scrollMouse(app, &now, .{ .mouse_down = mouse(bar_x, quarter) });
+    scrollMouse(app, &now, .{ .mouse_up = mouse(bar_x, quarter) });
+    try testing.expectApproxEqAbs(@as(f32, 27.5), ScrollView.read(&app.window).outer_offset, 0.01);
+    try testing.expect(!thumbDragged(app));
+    try testing.expectEqual(core.ElementId.root, app.window.scroll_drag);
+}
+
 /// A Select in a clipped panel above a button, for the popover check. The
 /// panel is shorter than the open menu, and the menu covers the button.
 const SelectState = struct {

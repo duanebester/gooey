@@ -112,11 +112,13 @@ fn routeInput(window: *Window, event: *const input.InputEvent) void {
         .mouse_up => |mouse| {
             const point = pointOf(mouse.position);
             window.pointer = .{ .x = point.x, .y = point.y };
+            if (window.scroll_drag != .root) endScrollDrag(window);
             release(window, event, point);
         },
         .mouse_moved, .mouse_dragged => |mouse| {
             const point = pointOf(mouse.position);
             window.pointer = .{ .x = point.x, .y = point.y };
+            if (window.scroll_drag != .root) dragScrollbar(window, point);
             updateHover(window);
         },
         .mouse_exited => {
@@ -141,6 +143,7 @@ fn pointOf(position: anytype) Point {
 fn press(window: *Window, event: *const input.InputEvent, point: Point) void {
     const frame = window.rendered();
     const target = hitIndex(frame, point);
+    if (pressScrollbar(window, target, point)) return;
     window.press_len = pathOf(frame, target, &window.press_path);
     clickOutside(window, event, target);
     var focus_id: ElementId = .root;
@@ -178,6 +181,54 @@ fn release(window: *Window, event: *const input.InputEvent, point: Point) void {
         }
         index = record.parent;
     }
+}
+
+/// A press on a scroll box's scrollbar drags its thumb or jumps along its
+/// track, and is consumed: no click, focus, or click-outside, as in 0.3.1.
+/// The innermost scroll box whose bar is under the pointer takes it.
+fn pressScrollbar(window: *Window, target: u32, point: Point) bool {
+    assert(window.scroll_drag == .root);
+    const frame = window.rendered();
+    var index = target;
+    var depth: u32 = 0;
+    while (index != index_none) : (depth += 1) {
+        assert(depth <= window_mod.box_depth_max);
+        const record = &frame.hits[index];
+        if (record.scroll) {
+            if (window.retained.find(window_mod.ScrollState, record.id)) |state| {
+                if (state.press(point.x, point.y)) {
+                    if (state.dragging != null) window.scroll_drag = record.id;
+                    window.render_requested = true;
+                    window.press_len = 0;
+                    return true;
+                }
+            }
+        }
+        index = record.parent;
+    }
+    return false;
+}
+
+/// The dragged box stops dragging if it stopped rendering, which retired
+/// its state.
+fn dragScrollbar(window: *Window, point: Point) void {
+    assert(window.scroll_drag.isKeyed());
+    const state = window.retained.find(window_mod.ScrollState, window.scroll_drag) orelse {
+        window.scroll_drag = .root;
+        return;
+    };
+    assert(state.dragging != null);
+    if (state.drag(point.x, point.y)) window.render_requested = true;
+}
+
+/// The release ends the drag and redraws the thumb in its resting colour.
+fn endScrollDrag(window: *Window) void {
+    assert(window.scroll_drag.isKeyed());
+    if (window.retained.find(window_mod.ScrollState, window.scroll_drag)) |state| {
+        state.dragging = null;
+    }
+    window.scroll_drag = .root;
+    window.render_requested = true;
 }
 
 /// The ids from `index` up to the root; returns the count written.

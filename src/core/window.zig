@@ -118,15 +118,28 @@ pub const Node = struct {
 
 /// A scroll box's offset, retained by its key (contract §1), and what the
 /// last emit measured, so the router clamps a wheel step and the next build
-/// clamps a shrunk content without waiting for layout.
+/// clamps a shrunk content without waiting for layout. The scrollbar's
+/// geometry lives here too, so emit draws the bar the router hit-tests.
 pub const ScrollState = struct {
     offset_x: f32,
     offset_y: f32,
     content_width: f32,
     content_height: f32,
-    viewport_width: f32,
-    viewport_height: f32,
+    /// The box's bounds at the last emit, unclipped.
+    viewport: records.Rect,
     axes: element.Scroll,
+    /// The thumb the pointer is dragging, as 0.3.1's scroll containers do,
+    /// with the pointer coordinate and offset along that axis at the press.
+    dragging: ?ScrollAxis,
+    drag_pointer_start: f32,
+    drag_offset_start: f32,
+
+    // 0.3.1's scrollbar (`widgets/scroll_container.zig`). Its hover colour
+    // shows while the thumb is dragged; 0.3.1 never set its hover flag.
+    pub const scrollbar_size: f32 = 8;
+    pub const scrollbar_padding: f32 = 2;
+    pub const scrollbar_room: f32 = scrollbar_size + scrollbar_padding;
+    pub const scrollbar_thumb_min: f32 = 30;
 
     pub fn init(self: *ScrollState) void {
         self.* = .{
@@ -134,20 +147,36 @@ pub const ScrollState = struct {
             .offset_y = 0,
             .content_width = 0,
             .content_height = 0,
-            .viewport_width = 0,
-            .viewport_height = 0,
+            .viewport = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
             .axes = .{},
+            .dragging = null,
+            .drag_pointer_start = 0,
+            .drag_offset_start = 0,
         };
     }
 
     pub fn maxX(self: *const ScrollState) f32 {
         if (!self.axes.x) return 0;
-        return @max(0, self.content_width - self.viewport_width);
+        return @max(0, self.content_width - self.viewport.width);
     }
 
     pub fn maxY(self: *const ScrollState) f32 {
         if (!self.axes.y) return 0;
-        return @max(0, self.content_height - self.viewport_height);
+        return @max(0, self.content_height - self.viewport.height);
+    }
+
+    fn max(self: *const ScrollState, axis: ScrollAxis) f32 {
+        return switch (axis) {
+            .x => self.maxX(),
+            .y => self.maxY(),
+        };
+    }
+
+    fn offset(self: *ScrollState, axis: ScrollAxis) *f32 {
+        return switch (axis) {
+            .x => &self.offset_x,
+            .y => &self.offset_y,
+        };
     }
 
     /// Keep the offset inside the last measured content. Returns whether
@@ -177,7 +206,111 @@ pub const ScrollState = struct {
         _ = self.clamp();
         return self.offset_x != before_x or self.offset_y != before_y;
     }
+
+    /// The scrollbar track along `axis`, inset by the padding at the box's
+    /// far edge; null when the content does not overflow that axis.
+    pub fn track(self: *const ScrollState, axis: ScrollAxis) ?records.Rect {
+        if (self.max(axis) == 0) return null;
+        const box = self.viewport;
+        return switch (axis) {
+            .y => .{
+                .x = box.x + box.width - scrollbar_room,
+                .y = box.y + scrollbar_padding,
+                .width = scrollbar_size,
+                .height = @max(0, box.height - scrollbar_padding * 2),
+            },
+            .x => .{
+                .x = box.x + scrollbar_padding,
+                .y = box.y + box.height - scrollbar_room,
+                .width = @max(0, box.width - scrollbar_padding * 2),
+                .height = scrollbar_size,
+            },
+        };
+    }
+
+    /// The thumb within `bar` (`track(axis)`): proportional to the visible
+    /// share of the content, at least `scrollbar_thumb_min`, placed by the
+    /// scroll fraction.
+    pub fn thumb(self: *const ScrollState, axis: ScrollAxis, bar: records.Rect) records.Rect {
+        const span = self.thumbSpan(axis, bar);
+        var rect = bar;
+        switch (axis) {
+            .y => {
+                rect.y += span.start;
+                rect.height = span.length;
+            },
+            .x => {
+                rect.x += span.start;
+                rect.width = span.length;
+            },
+        }
+        assert(rect.width <= bar.width);
+        assert(rect.height <= bar.height);
+        return rect;
+    }
+
+    const Span = struct { start: f32, length: f32, range: f32 };
+
+    fn thumbSpan(self: *const ScrollState, axis: ScrollAxis, bar: records.Rect) Span {
+        const offset_max = self.max(axis);
+        assert(offset_max > 0);
+        const track_length = if (axis == .y) bar.height else bar.width;
+        const viewport_length = if (axis == .y) self.viewport.height else self.viewport.width;
+        const content_length = if (axis == .y) self.content_height else self.content_width;
+        const proportional = track_length * viewport_length / content_length;
+        const length = @min(track_length, @max(scrollbar_thumb_min, proportional));
+        const offset_value = if (axis == .y) self.offset_y else self.offset_x;
+        const fraction = offset_value / offset_max;
+        assert(fraction >= 0);
+        assert(fraction <= 1);
+        const range = track_length - length;
+        return .{ .start = range * fraction, .length = length, .range = range };
+    }
+
+    /// A press on a scrollbar: on the thumb it starts a drag; elsewhere on
+    /// the track it jumps to the pressed fraction, as 0.3.1 does. Returns
+    /// whether the point was on a scrollbar.
+    pub fn press(self: *ScrollState, x: f32, y: f32) bool {
+        assert(self.dragging == null);
+        inline for (.{ ScrollAxis.y, ScrollAxis.x }) |axis| {
+            if (self.track(axis)) |bar| {
+                if (bar.contains(x, y)) {
+                    const along = if (axis == .y) y else x;
+                    if (self.thumb(axis, bar).contains(x, y)) {
+                        self.dragging = axis;
+                        self.drag_pointer_start = along;
+                        self.drag_offset_start = self.offset(axis).*;
+                    } else {
+                        const start = if (axis == .y) bar.y else bar.x;
+                        const length = if (axis == .y) bar.height else bar.width;
+                        self.offset(axis).* = (along - start) / length * self.max(axis);
+                        _ = self.clamp();
+                    }
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /// Follow a dragged thumb: the pointer's travel along the track, scaled
+    /// from the thumb's range to the offset's. Returns whether it moved.
+    pub fn drag(self: *ScrollState, x: f32, y: f32) bool {
+        const axis = self.dragging.?;
+        const bar = self.track(axis) orelse return false;
+        const span = self.thumbSpan(axis, bar);
+        if (span.range <= 0) return false;
+        const along = if (axis == .y) y else x;
+        const target = self.offset(axis);
+        const before = target.*;
+        const travel = along - self.drag_pointer_start;
+        target.* = self.drag_offset_start + travel / span.range * self.max(axis);
+        _ = self.clamp();
+        return target.* != before;
+    }
 };
+
+pub const ScrollAxis = enum { x, y };
 
 /// A family name copied out of a handler's `Effects.setFont`, so the request
 /// outlives the handler's slice.
@@ -345,6 +478,9 @@ pub const Window = struct {
     /// press that slides off a button does not click it (decision 7).
     press_path: [box_depth_max]ElementId,
     press_len: u32,
+    /// The scroll box whose thumb is being dragged, or `.root`. The drag
+    /// lives in its `ScrollState` until the release.
+    scroll_drag: ElementId,
     pointer: ?struct { x: f32, y: f32 },
     // Tick state.
     phase: Phase,
@@ -538,6 +674,7 @@ pub noinline fn initInPlace(self: *Window, gpa: std.mem.Allocator, options: *con
     self.focus = .root;
     self.hover_len = 0;
     self.press_len = 0;
+    self.scroll_drag = .root;
     self.pointer = null;
     self.phase = .idle;
     self.frame_in_flight = .init(false);
