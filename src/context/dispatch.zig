@@ -23,13 +23,10 @@ const std = @import("std");
 const layout_types = @import("../layout/types.zig");
 const focus_mod = @import("focus.zig");
 const window_mod = @import("window.zig");
-const drag_mod = @import("drag.zig");
 
 const BoundingBox = layout_types.BoundingBox;
 const FocusId = focus_mod.FocusId;
 const Window = window_mod.Window;
-pub const DragTypeId = drag_mod.DragTypeId;
-pub const dragTypeId = drag_mod.dragTypeId;
 
 // =============================================================================
 // Dispatch Node ID
@@ -145,12 +142,6 @@ pub const DispatchNode = struct {
     /// inline size by ~232 bytes (10 × ArrayListUnmanaged → 1 pointer).
     listeners: ?*ListenerBlock = null,
 
-    // Drag & Drop
-    /// Drag source (if this node is draggable)
-    drag_source: ?DragSource = null,
-    /// Drop target (if this node accepts drops)
-    drop_target: ?DropTargetListener = null,
-
     /// Pointer events mode - when true, this node is transparent to hit testing
     /// (like CSS pointer-events: none)
     pointer_events_none: bool = false,
@@ -190,8 +181,6 @@ pub const DispatchNode = struct {
         if (self.listeners) |block| {
             block.clearRetainingCapacity();
         }
-        self.drag_source = null;
-        self.drop_target = null;
         self.pointer_events_none = false;
     }
 };
@@ -232,18 +221,6 @@ pub const SimpleKeyListener = struct {
 
 const handler_mod = @import("handler.zig");
 pub const Handler = handler_mod.Handler;
-
-/// Drag source configuration on a dispatch node
-pub const DragSource = struct {
-    value_ptr: *anyopaque,
-    type_id: DragTypeId,
-};
-
-/// Drop target configuration on a dispatch node
-pub const DropTargetListener = struct {
-    type_id: DragTypeId,
-    handler: ?Handler,
-};
 
 // =============================================================================
 // Dispatch Tree
@@ -367,8 +344,6 @@ pub const DispatchTree = struct {
             node.focus_id = null;
             node.child_count = 0;
             node.auto_child_counter = 0;
-            node.drag_source = null;
-            node.drop_target = null;
             node.pointer_events_none = false;
             // Listeners already cleared by resetListeners() in reset()
         } else {
@@ -865,50 +840,6 @@ pub const DispatchTree = struct {
         }
 
         return false;
-    }
-
-    // =========================================================================
-    // Drag & Drop
-    // =========================================================================
-
-    /// Register a drag source on the current node
-    pub fn setDragSource(self: *Self, comptime T: type, value: *T) void {
-        const node_id = self.currentNode();
-        if (self.getNode(node_id)) |node| {
-            node.drag_source = .{
-                .value_ptr = value,
-                .type_id = dragTypeId(T),
-            };
-        }
-    }
-
-    /// Register a drop target on the current node
-    pub fn setDropTarget(self: *Self, comptime T: type, handler: ?Handler) void {
-        const node_id = self.currentNode();
-        if (self.getNode(node_id)) |node| {
-            node.drop_target = .{
-                .type_id = dragTypeId(T),
-                .handler = handler,
-            };
-        }
-    }
-
-    /// Find drop target in dispatch path (walks from hit node to root)
-    pub fn findDropTarget(
-        self: *Self,
-        path: []const DispatchNodeId,
-        type_id: DragTypeId,
-    ) ?struct { node_id: DispatchNodeId, handler: ?Handler } {
-        for (path) |node_id| {
-            if (self.getNodeConst(node_id)) |node| {
-                if (node.drop_target) |target| {
-                    if (target.type_id == type_id) {
-                        return .{ .node_id = node_id, .handler = target.handler };
-                    }
-                }
-            }
-        }
-        return null;
     }
 };
 

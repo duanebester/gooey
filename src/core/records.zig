@@ -136,6 +136,13 @@ pub const HitRecord = struct {
     scroll: bool,
     /// `Style.cursor`; null defers to the parent record's.
     cursor: ?CursorShape,
+    /// `Box.draggable`: the payload's `typeId`, or 0 for none.
+    drag_type: usize,
+    drag_payload: u64,
+    /// `Box.drop_target`: the accepted `typeId` (0 for none) and the index
+    /// of its `on_drop` handler.
+    drop_type: usize,
+    on_drop: u32,
     on_click: u32,
     on_click_outside: u32,
     on_key: u32,

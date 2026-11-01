@@ -12,6 +12,7 @@ const actions = @import("actions_example");
 const accessible_form = @import("accessible_form_example");
 const code_editor = @import("code_editor_example");
 const nested_overlay = @import("nested_overlay_example");
+const drag_drop = @import("drag_drop_example");
 const components = @import("gooey-components");
 const core_driver = @import("core.zig");
 const trace_mod = @import("trace.zig");
@@ -888,6 +889,102 @@ test "nested_overlay: a Select's menu inside a modal sits above the modal" {
     try testing.expect(!app.state.select_open);
 }
 
+const DragApp = drag_drop.App;
+const Rect = gooey.core.internals.records.Rect;
+
+/// The hit record of the card carrying `id`, or of the list taking drops.
+fn dragRecord(app: *DragApp, card: ?drag_drop.ItemId, right: bool) Rect {
+    const frame = app.window.rendered();
+    for (frame.hits[0..frame.hit_count]) |*record| {
+        if (card) |id| {
+            if (record.drag_type != 0 and record.drag_payload == id) return record.bounds;
+        } else if (record.drop_type != 0 and (record.bounds.x > 150) == right) {
+            return record.bounds;
+        }
+    }
+    unreachable;
+}
+
+fn dragTo(app: *DragApp, now: *u64, event: gooey.input.InputEvent) void {
+    app.window.queue.push(.{ .input = event });
+    now.* += 1;
+    app.tick(now.*);
+}
+
+/// The alpha of the first quad filled with `color`, or null.
+fn quadAlpha(frame: *const gooey.core.internals.records.Frame, color: ui.Color) ?f32 {
+    for (frame.paint[0..frame.paint_count]) |record| {
+        if (record != .quad) continue;
+        const fill = record.quad.fill;
+        if (fill.r == color.r and fill.g == color.g and fill.b == color.b) return fill.a;
+    }
+    return null;
+}
+
+test "drag_drop: a card drags to the other list; a short press, Escape, or a miss moves none" {
+    // Goal: contract §5's drag through the router, layers, and emit, on the
+    // ported example. Method: press Banana and move 2 px (the threshold):
+    // still a press. Move over the right list: the drag starts, the list is
+    // `over`, the source dims to 0.4, the `.drag` preview paints at 0.85,
+    // and the press no longer clicks. Release: Banana moves right. Then a
+    // drag cancelled by Escape and one released over no list move nothing.
+    const app = try testing.allocator.create(DragApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    const banana = dragRecord(app, 1, false);
+    const right = dragRecord(app, null, true);
+    const start_x = banana.x + 20;
+    const start_y = banana.y + banana.height / 2;
+    dragTo(app, &now, .{ .mouse_down = mouse(start_x, start_y) });
+    dragTo(app, &now, .{ .mouse_dragged = mouse(start_x + 2, start_y) });
+    try testing.expect(app.window.drag.phase == .armed);
+    const target_x = right.x + right.width / 2;
+    const target_y = right.y + right.height / 2;
+    dragTo(app, &now, .{ .mouse_dragged = mouse(target_x, target_y) });
+    try testing.expect(app.window.drag.phase == .active);
+    dragTo(app, &now, .{ .mouse_dragged = mouse(target_x + 1, target_y) });
+    const frame = app.window.rendered();
+    const right_id = app.window.drag.over;
+    try testing.expect(right_id != .root);
+    const banana_color = drag_drop.items[1].color;
+    try testing.expectApproxEqAbs(@as(f32, 0.4), quadAlpha(frame, banana_color).?, 0.001);
+    var preview_alpha: ?f32 = null;
+    for (frame.paint[0..frame.paint_count]) |record| {
+        if (record != .quad) continue;
+        if (!std.meta.eql(record.quad.fill.r, banana_color.r)) continue;
+        if (record.quad.bounds.x == target_x + 1 - 60) preview_alpha = record.quad.fill.a;
+    }
+    try testing.expectApproxEqAbs(@as(f32, 0.85), preview_alpha.?, 0.001);
+    // A started drag clicks nothing on release.
+    try testing.expectEqual(@as(u32, 0), app.window.press_len);
+
+    dragTo(app, &now, .{ .mouse_up = mouse(target_x + 1, target_y) });
+    try testing.expectEqualSlices(drag_drop.ItemId, &.{ 0, 2, 3 }, app.state.list(.left).slice());
+    try testing.expectEqualSlices(drag_drop.ItemId, &.{1}, app.state.list(.right).slice());
+    try testing.expect(app.window.drag.phase == .idle);
+    app.tick(now + 1);
+    now += 1;
+    try testing.expectEqual(@as(?f32, 1), quadAlpha(app.window.rendered(), banana_color));
+
+    // Escape cancels: Apple stays put though released over the right list.
+    const apple = dragRecord(app, 0, false);
+    dragTo(app, &now, .{ .mouse_down = mouse(apple.x + 20, apple.y + 10) });
+    dragTo(app, &now, .{ .mouse_dragged = mouse(target_x, target_y) });
+    dragTo(app, &now, .{ .key_down = chord(.escape, .{}) });
+    try testing.expect(app.window.drag.phase == .idle);
+    dragTo(app, &now, .{ .mouse_up = mouse(target_x, target_y) });
+    // A drag released over the title, outside both lists, moves nothing.
+    dragTo(app, &now, .{ .mouse_down = mouse(apple.x + 20, apple.y + 10) });
+    dragTo(app, &now, .{ .mouse_dragged = mouse(40, 20) });
+    dragTo(app, &now, .{ .mouse_up = mouse(40, 20) });
+    try testing.expectEqualSlices(drag_drop.ItemId, &.{ 0, 2, 3 }, app.state.list(.left).slice());
+    try testing.expectEqualSlices(drag_drop.ItemId, &.{1}, app.state.list(.right).slice());
+    try testing.expectEqual(core.internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
+}
+
 fn dialogCount(frame: *const gooey.core.internals.records.Frame) u32 {
     var count: u32 = 0;
     for (frame.a11y[0..frame.a11y_count]) |*node| {
@@ -1148,9 +1245,10 @@ test "every build opens an atlas frame so the glyph LRU can evict" {
     try testing.expectEqual(first + 3, uploads.frameCurrent());
 }
 
-/// Four 40 px rows above empty space, for the cursor check: a Button, a
+/// Five 40 px rows above empty space, for the cursor check: a Button, a
 /// TextInput, a box that sets only a cursor around a keyed child that sets
-/// none, and a keyed box whose cursor follows its state.
+/// none, a keyed box whose cursor follows its state, and a keyed pointer box
+/// the pointer passes through (`pointer_events = .none`).
 const CursorState = struct {
     draft: []const u8 = "",
     text: bool = false,
@@ -1194,6 +1292,14 @@ fn cursorRender(cx: *Cx) void {
                 .style = flip,
             }, .{}),
         }),
+        ui.box(.{ .style = row }, .{
+            ui.box(.{ .key = .{ .name = "ghost" }, .style = .{
+                .width = .{ .fixed = 30 },
+                .height = .{ .fixed = 30 },
+                .cursor = .pointer,
+                .pointer_events = .none,
+            } }, .{}),
+        }),
     }));
 }
 
@@ -1209,7 +1315,8 @@ test "the cursor resolves from the hovered record and its ancestors" {
     // the pointer, as `Box.cursor` did in 0.3.1. Method: move over each row.
     // The leaf sets no cursor, so its cursor-only parent's applies; a box
     // whose cursor changes under a still pointer resolves anew from the next
-    // frame; empty space and a pointer outside the window give `.default`.
+    // frame; empty space, a box the pointer passes through, and a pointer
+    // outside the window give `.default`.
     const app = try testing.allocator.create(CursorApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -1222,7 +1329,8 @@ test "the cursor resolves from the hovered record and its ancestors" {
     try testing.expectEqual(CursorShape.pointer, cursorAt(app, &now, 10, 90));
     try testing.expectEqual(CursorShape.pointer, cursorAt(app, &now, 2, 82));
     try testing.expectEqual(CursorShape.pointer, cursorAt(app, &now, 10, 130));
-    try testing.expectEqual(CursorShape.default, cursorAt(app, &now, 10, 180));
+    try testing.expectEqual(CursorShape.default, cursorAt(app, &now, 10, 170));
+    try testing.expectEqual(CursorShape.default, cursorAt(app, &now, 100, 170));
     try testing.expectEqual(CursorShape.default, cursorAt(app, &now, 280, 4));
 
     // The flip box turns its cursor to `.text` while the pointer stays put.

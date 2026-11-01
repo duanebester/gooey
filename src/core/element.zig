@@ -162,8 +162,27 @@ fn nonZeroHash(comptime name: []const u8) u64 {
     const hash = std.hash.Wyhash.hash(0, name);
     return if (hash == 0) 1 else hash;
 }
-pub const DragSource = struct { type_id: usize, payload: u64 };
-pub const DropTarget = struct { type_id: usize, on_drop: Handler };
+/// A box the pointer can drag, carrying a typed payload by value (contract
+/// §5): an id, an index, or another value of at most 8 bytes.
+pub const DragSource = struct {
+    type_id: usize,
+    payload: u64,
+
+    pub fn of(comptime T: type, payload: T) DragSource {
+        return .{ .type_id = handler_mod.typeId(T), .payload = handler_mod.packArg(T, payload) };
+    }
+};
+
+/// A box that accepts drops of one payload type. `on_drop` reads the
+/// payload with `Effects.dropPayload`.
+pub const DropTarget = struct {
+    type_id: usize,
+    on_drop: Handler,
+
+    pub fn of(comptime T: type, on_drop: Handler) DropTarget {
+        return .{ .type_id = handler_mod.typeId(T), .on_drop = on_drop };
+    }
+};
 
 /// Accessibility annotation. Strings are copied when the box is built.
 pub const A11y = struct {

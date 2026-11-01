@@ -176,6 +176,10 @@ pub const Effects = struct {
     clipboard: ?*Clipboard,
     /// The element the router is delivering to, for `focusSelf`.
     current: ElementId,
+    /// The dropped payload, while delivering to `DropTarget.on_drop`.
+    drop: ?Drop,
+
+    pub const Drop = struct { type_id: usize, payload: u64 };
 
     pub const FocusRequest = union(enum) { none, focus: ElementId, blur };
 
@@ -199,6 +203,7 @@ pub const Effects = struct {
             .announcement = null,
             .clipboard = null,
             .current = current,
+            .drop = null,
         };
     }
 
@@ -210,6 +215,15 @@ pub const Effects = struct {
     /// The completion being delivered, for `FileDialogRequest.on_complete`.
     pub fn completionEvent(self: *const Effects) ?*const events.Completion {
         return self.completion;
+    }
+
+    /// The payload dropped on a `DropTarget`, inside its `on_drop`; null
+    /// elsewhere or when the payload is not a `T`.
+    pub fn dropPayload(self: *const Effects, comptime T: type) ?T {
+        const dropped = self.drop orelse return null;
+        assert(dropped.type_id != 0);
+        if (dropped.type_id != typeId(T)) return null;
+        return unpackArg(T, dropped.payload);
     }
 
     pub fn requestRender(self: *Effects) void {
