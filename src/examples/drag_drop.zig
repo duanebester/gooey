@@ -146,11 +146,14 @@ const ItemList = struct {
                 },
             },
         }, .{
-            ui.box(.{ .style = .{ .padding = .{ .bottom = 8 } } }, .{
-                ui.text(self.title, .{ .size = 18, .color = .{ .rgba = .rgb(0.8, 0.8, 0.8) } }),
-            }),
+            ui.text(self.title, .{ .size = 18, .color = .{ .rgba = .rgb(0.8, 0.8, 0.8) } }),
+            // 0.3.1's `spacerMin(8)` and trailing `spacer()`: both grow, so a
+            // list taller than its cards shares the slack above and below.
+            // Its minimum added nothing in a column, so neither has one.
+            ui.box(.{ .style = .{ .height = .{ .grow = 1 } } }, .{}),
             Cards{ .ids = ids },
             ui.when(ids.len == 0, emptyState),
+            ui.box(.{ .style = .{ .height = .{ .grow = 1 } } }, .{}),
         }));
     }
 };
