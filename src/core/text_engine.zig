@@ -201,7 +201,17 @@ pub fn Engine(comptime kind: Kind) type {
                 return;
             }
             if (value.len == self.len and std.mem.eql(u8, value, self.text())) return;
+            // As 0.3.1's `syncBoundText`: the caret and anchor keep their
+            // offsets, clamped to the new text and moved back to a character
+            // start, so an app replacing the text (opening a file) does not
+            // move the view to its end.
+            const cursor = self.cursor;
+            const anchor = self.anchor;
             self.setText(value);
+            self.cursor = boundaryAtOrBefore(self.text(), @min(cursor, self.len));
+            self.anchor = boundaryAtOrBefore(self.text(), @min(anchor, self.len));
+            assert(self.cursor <= self.len);
+            assert(self.anchor <= self.len);
             binding.* = self.text();
         }
 
@@ -684,6 +694,18 @@ fn isSpace(byte: u8) bool {
     return byte == ' ' or byte == '\t' or byte == '\n' or byte == '\r';
 }
 
+/// `index` if a character starts there (or it is the end), else the start of
+/// the character it falls inside.
+fn boundaryAtOrBefore(bytes: []const u8, index: u32) u32 {
+    assert(index <= bytes.len);
+    var position = index;
+    while (position > 0 and position < bytes.len and isContinuation(bytes[position])) {
+        position -= 1;
+    }
+    assert(position <= index);
+    return position;
+}
+
 fn previousBoundary(bytes: []const u8, index: u32) u32 {
     assert(index > 0);
     var position = index - 1;
@@ -874,6 +896,32 @@ test "input engine edits by codepoint and commits over a preedit" {
     try std.testing.expectEqual(@as(u32, 16), engine.len);
     engine.deleteForward();
     try std.testing.expectEqualStrings("caX\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}", engine.text());
+}
+
+test "a value the app binds keeps the caret's offset, as 0.3.1's did" {
+    // Goal: an app replacing the text (code_editor opening a file) leaves the
+    // caret where it was rather than at the end, which would scroll an area
+    // to its last line. Method: place the caret, then bind a text with a
+    // codepoint across it, then a shorter one that clamps a selection.
+    var t: TestOf(.area) = undefined;
+    t.init();
+    const engine = &t.engine;
+    var bound: []const u8 = "line one\nline two";
+    engine.syncBound(&bound);
+    try std.testing.expectEqual(@as(u32, 0), engine.cursor);
+    engine.cursor = 3;
+    engine.anchor = 3;
+    bound = "ab\u{e9}cd\nefgh";
+    engine.syncBound(&bound);
+    try std.testing.expectEqualStrings("ab\u{e9}cd\nefgh", engine.text());
+    try std.testing.expectEqual(@as(u32, 2), engine.cursor);
+    try std.testing.expectEqual(@as(u32, 2), engine.anchor);
+    engine.cursor = 9;
+    engine.anchor = 1;
+    bound = "short";
+    engine.syncBound(&bound);
+    try std.testing.expectEqual(@as(u32, 5), engine.cursor);
+    try std.testing.expectEqual(@as(u32, 1), engine.anchor);
 }
 
 test "shift moves select, typing replaces the selection, and words and lines move" {
