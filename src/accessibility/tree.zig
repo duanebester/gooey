@@ -336,7 +336,7 @@ pub const Tree = struct {
     }
 
     /// Find element in current frame by fingerprint (O(1) via hash map)
-    fn findElementByFingerprint(self: *const Self, fp: Fingerprint) ?u16 {
+    pub fn findElementByFingerprint(self: *const Self, fp: Fingerprint) ?u16 {
         std.debug.assert(fp.isValid());
         return self.current_fingerprint_map.find(fp);
     }
