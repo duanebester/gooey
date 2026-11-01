@@ -162,6 +162,38 @@ test "shrink behavior" {
     try std.testing.expect(child2.computed.sized_width <= 100);
 }
 
+test "a grow scroll container's children overflow it instead of shrinking" {
+    // Goal: a scroll container sized by the uniform-grow fast path (the only
+    // grow-both-axes child of its parent) lets its children keep their size
+    // along the scroll axis, as every other sizing path does. Methodology: a
+    // 100 px tall viewport holds a vertical scroll container whose box child
+    // fits two 80 px children; the box must keep its 160 px.
+    var engine = try LayoutEngine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    engine.beginFrame(200, 100);
+    try engine.openElement(.{ .layout = .{ .sizing = Sizing.fill(), .layout_direction = .top_to_bottom } });
+    try engine.openElement(.{
+        .layout = .{ .sizing = Sizing.fill(), .layout_direction = .top_to_bottom },
+        .scroll = .{ .vertical = true },
+    });
+    try engine.openElement(.{ .layout = .{ .layout_direction = .top_to_bottom } });
+    for (0..2) |_| {
+        try engine.openElement(.{ .layout = .{ .sizing = .{
+            .width = SizingAxis.fixed(50),
+            .height = SizingAxis.fixed(80),
+        } } });
+        engine.closeElement();
+    }
+    engine.closeElement();
+    engine.closeElement();
+    engine.closeElement();
+    _ = try engine.endFrame();
+
+    try std.testing.expectEqual(@as(f32, 100), engine.elements.getConst(1).computed.sized_height);
+    try std.testing.expectEqual(@as(f32, 160), engine.elements.getConst(2).computed.sized_height);
+}
+
 test "aspect ratio" {
     var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
