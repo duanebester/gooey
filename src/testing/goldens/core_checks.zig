@@ -1244,12 +1244,13 @@ fn formReveal(
 ) core.internals.records.Rect {
     var node = formNode(app, role, name).?;
     var steps: u32 = 0;
-    while (node.bounds.y + node.bounds.height > 790) : (steps += 1) {
+    while (node.bounds.y < 10 or node.bounds.y + node.bounds.height > 790) : (steps += 1) {
         assert(steps < 20);
+        const down: f32 = if (node.bounds.y < 10) -200 else 200;
         const direction: f32 = if (@import("builtin").os.tag == .macos) -1 else 1;
         app.window.queue.push(.{ .input = .{ .scroll = .{
             .position = .{ .x = 300, .y = 400 },
-            .delta = .{ .x = 0, .y = 200 * direction },
+            .delta = .{ .x = 0, .y = down * direction },
             .modifiers = .{},
         } } });
         now.* += 1;

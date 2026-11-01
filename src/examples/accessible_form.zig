@@ -323,6 +323,8 @@ const ContactPreferencesSection = struct {
         cx.render(ui.box(card(null, false), .{
             sectionHeading("Contact Preferences"),
             RadioGroup{ .label = "Preferred Contact Method", .selected = self.contact_method },
+            // 0.3.1's `ui.spacerMin(8)`: the newsletter sits apart from the radios.
+            ui.box(.{ .style = .{ .height = .{ .fixed = 8 } } }, .{}),
             Checkbox{
                 .key = .{ .name = "newsletter" },
                 .checked = self.newsletter,
