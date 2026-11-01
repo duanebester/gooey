@@ -51,7 +51,7 @@ pub const Painter = struct {
     pub fn quad(self: *Painter, value: records.Quad) void {
         assert(value.bounds.width >= 0);
         assert(value.bounds.height >= 0);
-        self.window.built().appendPaint(.{ .quad = value });
+        appendFaded(self.window, .{ .quad = value });
     }
 
     pub fn fill(self: *Painter, bounds: Rect, color: Color) void {
@@ -155,6 +155,7 @@ pub fn emit(window: *Window) void {
         emitFragment(window, &layers_open, &root);
     }
     assert(layers_open.len == 0);
+    window.paint_opacity = 1;
 }
 
 /// Accessibility nodes in tree order, whatever fragment paints them, so a
@@ -181,6 +182,8 @@ fn emitFragment(window: *Window, layers_open: *LayerQueue, root: *const LayerRoo
     const nodes = window.nodes[0..window.node_count];
     const root_depth = nodes[root.node_index].depth;
     var hit_scope: [window_mod.box_depth_max + 1]u32 = undefined;
+    var opacity_at: [window_mod.box_depth_max + 1]f32 = undefined;
+    const base_opacity = ancestorOpacity(nodes, root.node_index);
     var clips = Clips{ .entries = undefined, .len = 0, .base = root.clip };
     if (root.clip) |rect| window.built().appendPaint(.{ .clip_push = rect });
     if (root.fragment != layers.content_fragment) {
@@ -202,6 +205,9 @@ fn emitFragment(window: *Window, layers_open: *LayerQueue, root: *const LayerRoo
             continue;
         }
         clips.extend(depth, bounds);
+        const inherited = if (depth == root_depth) base_opacity else opacity_at[depth - 1];
+        opacity_at[depth] = inherited * node.opacity;
+        window.paint_opacity = opacity_at[depth];
         switch (node.kind) {
             .box, .paint => {
                 emitAppearance(window, node, bounds);
@@ -220,6 +226,22 @@ fn emitFragment(window: *Window, layers_open: *LayerQueue, root: *const LayerRoo
     clips.close(window, 0);
     assert(clips.len == 0);
     if (root.clip != null) window.built().appendPaint(.clip_pop);
+}
+
+/// The product of `Style.opacity` over a layer box's ancestors, which a
+/// fragment emitted apart from them still inherits; 1 for the root.
+fn ancestorOpacity(nodes: []const Node, index: u32) f32 {
+    assert(index < nodes.len);
+    var opacity: f32 = 1;
+    var parent = nodes[index].parent;
+    var depth: u32 = 0;
+    while (parent != index_none) : (depth += 1) {
+        assert(depth <= window_mod.box_depth_max);
+        opacity *= nodes[parent].opacity;
+        parent = nodes[parent].parent;
+    }
+    assert(opacity <= 1);
+    return opacity;
 }
 
 /// A modal fragment starts here: hit tests stop at its first record, so
@@ -469,10 +491,36 @@ fn emitScrollbar(window: *Window, track: Rect, thumb: Rect, dragged: bool) void 
     } });
 }
 
+/// Append a quad or sprite with the emitting subtree's `Style.opacity`
+/// folded into its colours, as 0.3.1 folds inherited opacity into each
+/// command's alpha.
+fn appendFaded(window: *Window, record: records.Record) void {
+    const opacity = window.paint_opacity;
+    assert(opacity >= 0);
+    assert(opacity <= 1);
+    var faded_record = record;
+    switch (faded_record) {
+        .quad => |*quad| {
+            quad.fill = faded(quad.fill, opacity);
+            quad.border.color = faded(quad.border.color, opacity);
+        },
+        .sprite => |*sprite| {
+            sprite.tint = faded(sprite.tint, opacity);
+            sprite.secondary = faded(sprite.secondary, opacity);
+        },
+        else => unreachable, // Clips and meshes are appended directly.
+    }
+    window.built().appendPaint(faded_record);
+}
+
+fn faded(color: Color, opacity: f32) Color {
+    assert(opacity <= 1);
+    return .{ .r = color.r, .g = color.g, .b = color.b, .a = color.a * opacity };
+}
+
 fn emitAppearance(window: *Window, node: *const Node, bounds: Rect) void {
-    const frame = window.built();
     if (node.shadow) |shadow| {
-        if (shadow.blur > 0) frame.appendPaint(.{ .quad = .{
+        if (shadow.blur > 0) appendFaded(window, .{ .quad = .{
             .bounds = bounds,
             .fill = node.shadow_color,
             .border = .none,
@@ -483,7 +531,7 @@ fn emitAppearance(window: *Window, node: *const Node, bounds: Rect) void {
         } });
     }
     if (node.background == null and node.border.width == 0) return;
-    frame.appendPaint(.{ .quad = .{
+    appendFaded(window, .{ .quad = .{
         .bounds = bounds,
         .fill = node.background orelse Color.transparent,
         .border = node.border,
@@ -501,7 +549,7 @@ fn emitHit(window: *Window, node: *const Node, bounds: Rect, place: HitPlace) u3
     assert(node.id.isKeyed() or node.on_click != index_none or node.focusable or
         node.on_key != index_none or node.on_click_outside != index_none or
         node.key_context != 0 or node.actions_len > 0 or node.scroll != null or
-        node.cursor != null);
+        node.cursor != null or node.drag_type != 0 or node.drop_type != 0);
     return window.built().appendHit(.{
         .id = node.id,
         .bounds = bounds,
@@ -510,6 +558,10 @@ fn emitHit(window: *Window, node: *const Node, bounds: Rect, place: HitPlace) u3
         .focusable = node.focusable,
         .scroll = node.scroll != null,
         .cursor = node.cursor,
+        .drag_type = node.drag_type,
+        .drag_payload = node.drag_payload,
+        .drop_type = node.drop_type,
+        .on_drop = node.on_drop,
         .on_click = node.on_click,
         .on_click_outside = node.on_click_outside,
         .on_key = node.on_key,
@@ -657,7 +709,8 @@ fn emitTextBaseline(
     if (content.len == 0) return 0;
     const text_system = window.resources.text_system;
     const size: f32 = @floatFromInt(style.size);
-    var sink = GlyphSink{ .frame = window.built(), .color = style.color };
+    const color = faded(style.color, window.paint_opacity);
+    var sink = GlyphSink{ .frame = window.built(), .color = color };
     return text_render.placeText(
         text_system,
         content,
@@ -690,7 +743,7 @@ fn emitSvg(window: *Window, path: []const u8, bounds: Rect, options: SvgStyle) v
     if (cached.region.width == 0) return;
     const uv = cached.uv();
     const scale = window.scale_factor;
-    window.built().appendPaint(.{ .sprite = .{
+    appendFaded(window, .{ .sprite = .{
         .bounds = .{
             .x = @floor(bounds.x * scale) / scale,
             .y = @floor(bounds.y * scale) / scale,

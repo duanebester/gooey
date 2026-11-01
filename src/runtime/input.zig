@@ -5,9 +5,9 @@
 //!
 //! This module is structured as focused sub-functions per CLAUDE.md guidelines:
 //! - handleScrollEvent: scroll wheel input
-//! - handleMouseMoveEvent: hover state and drag updates
+//! - handleMouseMoveEvent: hover state
 //! - handleMouseDownEvent: click dispatch, scrollbar interaction
-//! - handleMouseUpEvent: end drag operations
+//! - handleMouseUpEvent: end scrollbar drags
 //! - handleKeyboardEvent: key routing to focused widgets
 
 const std = @import("std");
@@ -15,7 +15,6 @@ const geometry = @import("../geometry/geometry.zig");
 
 // Core imports
 const window_mod = @import("../context/window.zig");
-const drag_mod = @import("../context/drag.zig");
 const input_mod = @import("../input/events.zig");
 const dispatch_mod = @import("../context/dispatch.zig");
 const debugger_mod = @import("../debug/debugger.zig");
@@ -254,7 +253,7 @@ fn handleMouseDragEvent(
     return false;
 }
 
-/// Handle mouse move events for hover state and drag activation
+/// Handle mouse move events for hover state
 fn handleMouseMoveEvent(
     cx: *Cx,
     window: *Window,
@@ -266,39 +265,6 @@ fn handleMouseMoveEvent(
     const x: f32 = @floatCast(position.x);
     const y: f32 = @floatCast(position.y);
 
-    // Check if pending drag should become active
-    if (window.pending_drag) |pending| {
-        const dx = x - pending.start_position.x;
-        const dy = y - pending.start_position.y;
-        const distance = @sqrt(dx * dx + dy * dy);
-
-        if (distance > drag_mod.DRAG_THRESHOLD) {
-            // Promote to active drag
-            window.active_drag = .{
-                .value_ptr = pending.value_ptr,
-                .type_id = pending.type_id,
-                .cursor_offset = .{ .x = dx, .y = dy },
-                .cursor_position = .{ .x = x, .y = y },
-                .start_position = pending.start_position,
-                .source_layout_id = pending.source_layout_id,
-            };
-            window.pending_drag = null;
-            cx.notify();
-            return true;
-        }
-    }
-
-    // Update active drag position and find drop target
-    if (window.active_drag) |*drag| {
-        drag.cursor_position = .{ .x = x, .y = y };
-
-        // Find drop target under cursor
-        updateDragOverTarget(window, x, y, drag.type_id);
-
-        cx.notify();
-        return true;
-    }
-
     // Normal hover update
     if (window.updateHover(x, y)) {
         cx.notify();
@@ -306,24 +272,6 @@ fn handleMouseMoveEvent(
     }
 
     return false;
-}
-
-/// Find and track the drop target under cursor during drag
-fn updateDragOverTarget(window: *Window, x: f32, y: f32, drag_type_id: drag_mod.DragTypeId) void {
-    window.drag_over_target = null;
-
-    if (window.rendered_frame.dispatch.hitTest(x, y)) |hit| {
-        var path_buf: [64]DispatchNodeId = undefined;
-        const path = window.rendered_frame.dispatch.dispatchPath(hit, &path_buf);
-        if (path.len > 0) {
-            // Walk up path to find compatible drop target
-            if (window.rendered_frame.dispatch.findDropTarget(path, drag_type_id)) |target| {
-                if (window.rendered_frame.dispatch.getNodeConst(target.node_id)) |node| {
-                    window.drag_over_target = node.layout_id;
-                }
-            }
-        }
-    }
 }
 
 // =============================================================================
@@ -360,23 +308,17 @@ fn handleMouseDownEvent(
         cx.notify();
     }
 
-    // 4. Check for drag source — start pending drag
-    if (hit_target) |target| {
-        _ = handleDragSourceClick(window, target, x, y);
-        // Don't return true yet — still dispatch click-outside etc.
-    }
-
-    // 6. Dispatch click-outside events (for closing dropdowns, modals, etc.)
+    // 4. Dispatch click-outside events (for closing dropdowns, modals, etc.)
     if (window.rendered_frame.dispatch.dispatchClickOutsideWithTarget(x, y, hit_target, window)) {
         cx.notify();
     }
 
-    // 7. Dispatch click to hit target
+    // 5. Dispatch click to hit target
     if (hit_target) |target| {
         if (handleDispatchClick(cx, window, target)) return true;
     }
 
-    // 8. Debugger: handle click to select element for inspection
+    // 6. Debugger: handle click to select element for inspection
     if (window.debugger().isActive()) {
         window.debugger().handleClick(window.hover.hovered_layout_id);
         cx.notify();
@@ -395,33 +337,6 @@ fn hitPathHasFocusTarget(window: *const Window, hit_target: ?DispatchNodeId) boo
     for (path) |node_id| {
         const node = window.rendered_frame.dispatch.getNodeConst(node_id) orelse continue;
         if (node.focus_id != null) return true;
-    }
-    return false;
-}
-
-/// Check if click hit a drag source, start pending drag if so
-/// Walks up the dispatch path to find drag source on parent elements
-fn handleDragSourceClick(window: *Window, target: DispatchNodeId, x: f32, y: f32) bool {
-    // Don't start new drag if one is active
-    if (window.active_drag != null or window.pending_drag != null) return false;
-
-    // Build dispatch path from hit target to root
-    var path_buf: [64]DispatchNodeId = undefined;
-    const path = window.rendered_frame.dispatch.dispatchPath(target, &path_buf);
-
-    // Walk up path to find drag source (closest to hit point first)
-    for (path) |node_id| {
-        if (window.rendered_frame.dispatch.getNodeConst(node_id)) |node| {
-            if (node.drag_source) |source| {
-                window.pending_drag = .{
-                    .value_ptr = source.value_ptr,
-                    .type_id = source.type_id,
-                    .start_position = .{ .x = x, .y = y },
-                    .source_layout_id = node.layout_id,
-                };
-                return true;
-            }
-        }
     }
     return false;
 }
@@ -501,48 +416,12 @@ fn handleDispatchClick(cx: *Cx, window: *Window, target: DispatchNodeId) bool {
 // Mouse Up Handling
 // =============================================================================
 
-/// Handle mouse up events (end drag operations)
+/// Handle mouse up events (end scrollbar drags)
 fn handleMouseUpEvent(
     cx: *Cx,
     window: *Window,
     builder: *Builder,
 ) bool {
-    // Handle drop if drag is active
-    if (window.active_drag) |drag| {
-        defer {
-            window.active_drag = null;
-            window.pending_drag = null;
-            window.drag_over_target = null;
-        }
-
-        const x = drag.cursor_position.x;
-        const y = drag.cursor_position.y;
-
-        if (window.rendered_frame.dispatch.hitTest(x, y)) |hit| {
-            var path_buf: [64]DispatchNodeId = undefined;
-            const path = window.rendered_frame.dispatch.dispatchPath(hit, &path_buf);
-            if (path.len > 0) {
-                if (window.rendered_frame.dispatch.findDropTarget(path, drag.type_id)) |target| {
-                    // Execute drop handler
-                    if (target.handler) |handler| {
-                        handler.call(window);
-                    }
-                    cx.notify();
-                    return true;
-                }
-            }
-        }
-
-        // Drag ended without drop
-        cx.notify();
-        return true;
-    }
-
-    // Cancel pending drag on mouse up (click without drag)
-    if (window.pending_drag != null) {
-        window.pending_drag = null;
-    }
-
     // O(1) check: use tracked active drag ID for scroll
     if (builder.getActiveScrollDrag()) |drag_id| {
         if (window.element_states.get(ScrollContainer, @as(u64, drag_id))) |sc| {
@@ -566,13 +445,6 @@ fn handleMouseUpEvent(
 
 /// Handle key down events
 fn handleKeyDownEvent(cx: *Cx, window: *Window, k: input_mod.KeyEvent) bool {
-    // Cancel drag on Escape
-    if (k.key == .escape and (window.active_drag != null or window.pending_drag != null)) {
-        window.cancelDrag();
-        cx.notify();
-        return true;
-    }
-
     // Escape to blur focused text widgets (TextInput, TextArea).
     if (k.key == .escape) {
         const builder = cx.builder();

@@ -1,453 +1,255 @@
-//! Drag & Drop Example
+//! Drag and drop example, on the core.
 //!
-//! Demonstrates:
-//! - Draggable items with stable state storage
-//! - Drop targets with visual feedback
-//! - Moving items between two lists
-//! - Drag-over styling (background color change)
-//! - Works on macOS, Linux, and WASM
+//! Cards drag between two lists. A card carries its item id as the drag
+//! payload (contract §5); each list is a drop target for item ids that
+//! restyles while a card is over it, the dragged card dims, and a preview
+//! follows the pointer on a `.drag` layer that the pointer passes through.
 
 const std = @import("std");
-
 const gooey = @import("gooey");
 
-/// WASM-compatible logging - redirect std.log to console.log via JS imports
-pub const std_options = gooey.std_options;
-const platform = gooey.platform;
-const ui = gooey.ui;
-const Cx = gooey.Cx;
-const Window = gooey.Window;
+const core = gooey.core;
+const ui = core.ui;
+const Cx = core.Cx;
+const Effects = core.Effects;
+const Color = ui.Color;
 
-// =============================================================================
-// Item Type - What we're dragging
-// =============================================================================
+const assert = std.debug.assert;
 
-const Item = struct {
-    id: u32,
-    name: []const u8,
-    color: ui.Color,
+/// What a card carries while it is dragged: an index into `items`.
+pub const ItemId = u32;
+
+pub const Item = struct { name: []const u8, color: Color };
+
+pub const items = [_]Item{
+    .{ .name = "Apple", .color = .rgb(0.9, 0.3, 0.3) },
+    .{ .name = "Banana", .color = .rgb(0.95, 0.85, 0.3) },
+    .{ .name = "Cherry", .color = .rgb(0.8, 0.2, 0.4) },
+    .{ .name = "Date", .color = .rgb(0.6, 0.4, 0.2) },
 };
 
-/// Which list side (shared between ItemList and ItemsRenderer)
-const Side = enum { left, right };
+pub const Side = enum(u8) { left, right };
 
-// =============================================================================
-// Application State
-// =============================================================================
+/// One list's item ids in display order. Every item is in exactly one list.
+pub const List = struct {
+    ids: [items.len]ItemId = undefined,
+    count: u32 = 0,
 
-const MAX_ITEMS = 8;
-
-const AppState = struct {
-    // Left list items (stable storage for drag pointers)
-    left_items: [MAX_ITEMS]?Item = @splat(null),
-    left_count: usize = 0,
-
-    // Right list items
-    right_items: [MAX_ITEMS]?Item = @splat(null),
-    right_count: usize = 0,
-
-    const Self = @This();
-
-    pub fn init() Self {
-        var s = Self{};
-
-        // Initialize left list with some items
-        const initial_items = [_]Item{
-            .{ .id = 1, .name = "Apple", .color = ui.Color.rgb(0.9, 0.3, 0.3) },
-            .{ .id = 2, .name = "Banana", .color = ui.Color.rgb(0.95, 0.85, 0.3) },
-            .{ .id = 3, .name = "Cherry", .color = ui.Color.rgb(0.8, 0.2, 0.4) },
-            .{ .id = 4, .name = "Date", .color = ui.Color.rgb(0.6, 0.4, 0.2) },
-        };
-
-        for (initial_items) |item| {
-            s.left_items[s.left_count] = item;
-            s.left_count += 1;
-        }
-
-        return s;
+    pub fn slice(self: *const List) []const ItemId {
+        assert(self.count <= items.len);
+        return self.ids[0..self.count];
     }
 
-    /// Find and remove an item by ID from either list
-    fn removeItem(self: *Self, id: u32) ?Item {
-        // Check left list
-        for (&self.left_items, 0..) |*slot, i| {
-            if (slot.*) |item| {
-                if (item.id == id) {
-                    const removed = item;
-                    // Shift remaining items
-                    var j = i;
-                    while (j + 1 < self.left_count) : (j += 1) {
-                        self.left_items[j] = self.left_items[j + 1];
-                    }
-                    self.left_items[self.left_count - 1] = null;
-                    self.left_count -= 1;
-                    return removed;
-                }
-            }
-        }
-
-        // Check right list
-        for (&self.right_items, 0..) |*slot, i| {
-            if (slot.*) |item| {
-                if (item.id == id) {
-                    const removed = item;
-                    var j = i;
-                    while (j + 1 < self.right_count) : (j += 1) {
-                        self.right_items[j] = self.right_items[j + 1];
-                    }
-                    self.right_items[self.right_count - 1] = null;
-                    self.right_count -= 1;
-                    return removed;
-                }
-            }
-        }
-
-        return null;
+    fn append(self: *List, id: ItemId) void {
+        assert(id < items.len);
+        assert(self.count < items.len);
+        self.ids[self.count] = id;
+        self.count += 1;
     }
 
-    /// Add item to left list
-    fn addToLeft(self: *Self, item: Item) void {
-        if (self.left_count < MAX_ITEMS) {
-            self.left_items[self.left_count] = item;
-            self.left_count += 1;
-        }
-    }
-
-    /// Add item to right list
-    fn addToRight(self: *Self, item: Item) void {
-        if (self.right_count < MAX_ITEMS) {
-            self.right_items[self.right_count] = item;
-            self.right_count += 1;
-        }
-    }
-
-    /// Handle drop on left list
-    pub fn onDropLeft(self: *Self, g: *Window) void {
-        if (g.getActiveDrag()) |drag| {
-            if (drag.getValue(Item)) |item| {
-                if (self.removeItem(item.id)) |removed| {
-                    self.addToLeft(removed);
-                }
-            }
-        }
-    }
-
-    /// Handle drop on right list
-    pub fn onDropRight(self: *Self, g: *Window) void {
-        if (g.getActiveDrag()) |drag| {
-            if (drag.getValue(Item)) |item| {
-                if (self.removeItem(item.id)) |removed| {
-                    self.addToRight(removed);
-                }
-            }
-        }
-    }
-
-    /// Get mutable pointer to left item at index
-    pub fn getLeftItem(self: *Self, index: usize) ?*Item {
-        if (index < self.left_count) {
-            if (self.left_items[index]) |*item| {
-                return item;
-            }
-        }
-        return null;
-    }
-
-    /// Get mutable pointer to right item at index
-    pub fn getRightItem(self: *Self, index: usize) ?*Item {
-        if (index < self.right_count) {
-            if (self.right_items[index]) |*item| {
-                return item;
-            }
-        }
-        return null;
+    /// Remove `id` if this list holds it, keeping the others' order.
+    fn remove(self: *List, id: ItemId) bool {
+        assert(self.count <= items.len);
+        const index = std.mem.indexOfScalar(ItemId, self.slice(), id) orelse return false;
+        const tail = self.ids[index + 1 .. self.count];
+        std.mem.copyForwards(ItemId, self.ids[index .. self.count - 1], tail);
+        self.count -= 1;
+        return true;
     }
 };
 
-// =============================================================================
-// Entry Points
-// =============================================================================
+pub const State = struct {
+    lists: [2]List = .{ allItems(), .{} },
 
-var state = AppState.init();
+    fn allItems() List {
+        var all: List = .{};
+        for (0..items.len) |id| all.append(@intCast(id));
+        return all;
+    }
 
-const App = gooey.App(AppState, &state, render, .{
-    .limits = .small,
+    pub fn list(self: *const State, side: Side) *const List {
+        return &self.lists[@backingInt(side)];
+    }
+
+    /// Move the dropped item to the end of `side`'s list, as 0.3.1 did.
+    pub fn dropOn(self: *State, side: Side, effects: *Effects) void {
+        const id = effects.dropPayload(ItemId) orelse return;
+        assert(id < items.len);
+        self.move(id, side);
+    }
+
+    pub fn move(self: *State, id: ItemId, side: Side) void {
+        assert(id < items.len);
+        const removed = self.lists[0].remove(id) or self.lists[1].remove(id);
+        assert(removed);
+        self.lists[@backingInt(side)].append(id);
+        assert(self.lists[0].count + self.lists[1].count == items.len);
+    }
+};
+
+pub const App = core.App(State, render, .{
     .title = "Drag & Drop Demo",
     .width = 700,
     .height = 500,
+    .limits = .small,
 });
 
-comptime {
-    _ = App;
-}
+/// The generated entry point (contract §7).
+pub const main = App.main;
 
-pub fn main(init: std.process.Init) !void {
-    if (platform.is_wasm) unreachable;
-    return App.main(init);
-}
-
-// =============================================================================
-// Render Function
-// =============================================================================
-
-fn render(cx: *Cx) void {
-    const size = cx.windowSize();
-
-    cx.render(ui.box(.{
-        .width = size.width,
-        .height = size.height,
-        .padding = .{ .all = 32 },
+pub fn render(cx: *Cx) void {
+    cx.render(ui.box(.{ .style = .{
+        .width = .{ .grow = 1 },
+        .height = .{ .grow = 1 },
+        .padding = .all(32),
         .gap = 24,
-        .direction = .column,
-        .background = ui.Color.rgb(0.12, 0.12, 0.14),
-    }, .{
-        // Title
-        ui.text("Drag & Drop Demo", .{
-            .size = 28,
-            .color = ui.Color.white,
-        }),
-
+        .background = .{ .rgba = .rgb(0.12, 0.12, 0.14) },
+    } }, .{
+        ui.text("Drag & Drop Demo", .{ .size = 28, .color = .{ .rgba = .white } }),
         ui.text("Drag items between the two lists", .{
             .size = 14,
-            .color = ui.Color.rgba(0.6, 0.6, 0.6, 1.0),
+            .color = .{ .rgba = .rgb(0.6, 0.6, 0.6) },
         }),
-
-        // Two columns with lists
-        ListColumns{},
-
-        // Drag preview overlay (renders on top when dragging)
+        ui.box(.{ .style = .{ .direction = .row, .gap = 32 } }, .{
+            ItemList{ .side = .left, .title = "Fruits" },
+            ItemList{ .side = .right, .title = "Basket" },
+        }),
         DragPreview{},
     }));
 }
 
-// =============================================================================
-// Components
-// =============================================================================
-
-const ListColumns = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        cx.render(ui.hstack(.{
-            .gap = 32,
-            .alignment = .{ .cross = .stretch },
-        }, .{
-            ItemList{ .side = .left, .title = "Fruits" },
-            ItemList{ .side = .right, .title = "Basket" },
-        }));
-    }
-};
-
+/// A list is a drop target for item ids, highlighted while a card is over it.
 const ItemList = struct {
     side: Side,
     title: []const u8,
 
-    pub fn render(self: @This(), cx: *Cx) void {
-        const s = cx.state(AppState);
-
-        const count = if (self.side == .left) s.left_count else s.right_count;
-
-        const drop_handler = if (self.side == .left)
-            cx.on(AppState.onDropLeft, .{})
-        else
-            cx.on(AppState.onDropRight, .{});
-
-        // List container (drop target)
+    pub fn render(self: ItemList, cx: *Cx) void {
+        const key: core.Key = .{ .name = @tagName(self.side) };
+        const over = if (cx.drag(ItemId)) |drag| drag.over == cx.id(key) else false;
+        const ids = cx.state(State).list(self.side).slice();
         cx.render(ui.box(.{
-            .drop_target = ui.DropTarget.init(Item, drop_handler),
-            .background = ui.Color.rgb(0.18, 0.18, 0.2),
-            .drag_over_background = ui.Color.rgb(0.25, 0.35, 0.45),
-            .corner_radius = 12,
-            .padding = .{ .all = 16 },
-            .gap = 8,
-            .direction = .column,
-            .grow = true,
-            .min_width = 200,
-            .min_height = 300,
-            .border_width = .{ .all = 2 },
-            .border_color = ui.Color.rgb(0.25, 0.25, 0.28),
-            .drag_over_border_color = ui.Color.rgb(0.4, 0.6, 0.9),
+            .key = key,
+            .drop_target = .of(ItemId, cx.on(State.dropOn, .{ .arg = self.side })),
+            .style = .{
+                .width_min = 200,
+                .height = .{ .grow = 1 },
+                .height_min = 300,
+                .padding = .all(16),
+                .gap = 8,
+                .corner_radius = .all(12),
+                .background = .{
+                    .rgba = if (over) .rgb(0.25, 0.35, 0.45) else .rgb(0.18, 0.18, 0.2),
+                },
+                .border = .{
+                    .width = 2,
+                    .color = .{ .rgba = if (over) .rgb(0.4, 0.6, 0.9) else .rgb(0.25, 0.25, 0.28) },
+                },
+            },
         }, .{
-            // List title
-            ui.text(self.title, .{
-                .size = 18,
-                .color = ui.Color.rgba(0.8, 0.8, 0.8, 1.0),
-            }),
-
-            ui.spacerMin(8),
-
-            // Items - render each item
-            ItemsRenderer{ .side = self.side, .count = count },
-
-            // Empty state
-            ui.when(count == 0, EmptyState{}),
-
-            // Spacer to push content up
-            ui.spacer(),
+            ui.text(self.title, .{ .size = 18, .color = .{ .rgba = .rgb(0.8, 0.8, 0.8) } }),
+            // 0.3.1's `spacerMin(8)` and trailing `spacer()`: both grow, so a
+            // list taller than its cards shares the slack above and below.
+            // Its minimum added nothing in a column, so neither has one.
+            ui.box(.{ .style = .{ .height = .{ .grow = 1 } } }, .{}),
+            Cards{ .ids = ids },
+            ui.when(ids.len == 0, emptyState),
+            ui.box(.{ .style = .{ .height = .{ .grow = 1 } } }, .{}),
         }));
     }
 };
 
-const ItemsRenderer = struct {
-    side: Side,
-    count: usize,
+const Cards = struct {
+    ids: []const ItemId,
 
-    pub fn render(self: @This(), cx: *Cx) void {
-        const s = cx.state(AppState);
-
-        for (0..self.count) |i| {
-            const item_ptr = if (self.side == .left)
-                s.getLeftItem(i)
-            else
-                s.getRightItem(i);
-
-            if (item_ptr) |item| {
-                cx.render(ui.box(.{}, .{
-                    DraggableCard{ .item = item },
-                }));
-            }
+    pub fn render(self: Cards, cx: *Cx) void {
+        assert(self.ids.len <= items.len);
+        const dragged: ?ItemId = if (cx.drag(ItemId)) |drag| drag.payload else null;
+        for (self.ids) |id| {
+            assert(id < items.len);
+            cx.render(ui.box(.{
+                .key = .{ .index = id },
+                .draggable = .of(ItemId, id),
+                .style = .{
+                    .direction = .row,
+                    .gap = 12,
+                    .alignment = .center_cross,
+                    .padding = .symmetric(16, 12),
+                    .corner_radius = .all(8),
+                    .background = .{ .rgba = items[id].color },
+                    .opacity = if (dragged == id) 0.4 else 1,
+                },
+            }, .{
+                DragHandle{},
+                ui.text(items[id].name, .{ .size = 16, .color = .{ .rgba = .white } }),
+            }));
         }
     }
 };
 
-const DraggableCard = struct {
-    item: *Item,
-
-    pub fn render(self: @This(), cx: *Cx) void {
-        const item = self.item;
-
-        // Check if this item is being dragged (for opacity)
-        const is_being_dragged = if (cx.getGooey()) |g| blk: {
-            if (g.getActiveDrag()) |drag| {
-                if (drag.getValue(Item)) |dragged| {
-                    break :blk dragged.id == item.id;
-                }
-            }
-            break :blk false;
-        } else false;
-
-        cx.render(ui.box(.{
-            .draggable = ui.Draggable.init(Item, item),
-            .background = item.color,
-            .corner_radius = 8,
-            .padding = .{ .symmetric = .{ .x = 16, .y = 12 } },
-            .opacity = if (is_being_dragged) 0.4 else 1.0,
-        }, .{
-            DragCardContent{ .item = item },
-        }));
-    }
-};
-
-const DragCardContent = struct {
-    item: *Item,
-
-    pub fn render(self: @This(), cx: *Cx) void {
-        cx.render(ui.hstack(.{ .gap = 12, .alignment = .{ .cross = .center } }, .{
-            // Drag handle icon (three lines)
-            DragHandle{},
-            // Item name
-            ui.text(self.item.name, .{
-                .size = 16,
-                .color = ui.Color.white,
-            }),
-        }));
-    }
-};
-
+/// Three short lines.
 const DragHandle = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        cx.render(ui.vstack(.{ .gap = 3 }, .{
-            HandleLine{},
-            HandleLine{},
-            HandleLine{},
+    pub fn render(_: DragHandle, cx: *Cx) void {
+        const line: ui.Style = .{
+            .width = .{ .fixed = 16 },
+            .height = .{ .fixed = 2 },
+            .background = .{ .rgba = .rgba(1, 1, 1, 0.5) },
+            .corner_radius = .all(1),
+        };
+        cx.render(ui.box(.{ .style = .{ .gap = 3 } }, .{
+            ui.box(.{ .style = line }, .{}),
+            ui.box(.{ .style = line }, .{}),
+            ui.box(.{ .style = line }, .{}),
         }));
     }
 };
 
-const HandleLine = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        cx.render(ui.box(.{
-            .width = 16,
-            .height = 2,
-            .background = ui.Color.rgba(1, 1, 1, 0.5),
-            .corner_radius = 1,
-        }, .{}));
-    }
-};
-
-const EmptyState = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        cx.render(ui.box(.{
-            .alignment = .{ .main = .center, .cross = .center },
-            .padding = .{ .all = 32 },
-            .grow = true,
-        }, .{
-            ui.text("Drop items here", .{
-                .size = 14,
-                .color = ui.Color.rgba(0.4, 0.4, 0.4, 1.0),
-            }),
-        }));
-    }
-};
-
-/// Drag preview - floating element that follows cursor during drag
-const DragPreview = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        const g = cx.window();
-
-        // Only render if there's an active drag
-        const drag = g.getActiveDrag() orelse return;
-
-        // Get the dragged item
-        const item = drag.getValue(Item) orelse return;
-
-        // Position preview at cursor with slight offset
-        const preview_x = drag.cursor_position.x - 60; // Center horizontally
-        const preview_y = drag.cursor_position.y - 20; // Slightly above cursor
-
-        cx.render(ui.box(.{
-            .floating = .{
-                .offset_x = preview_x,
-                .offset_y = preview_y,
-                .z_index = 1000, // On top of everything
-            },
-            .pointer_events = .none, // Don't block drop targets underneath
-            .background = item.color,
-            .corner_radius = 8,
-            .padding = .{ .symmetric = .{ .x = 16, .y = 12 } },
-            .opacity = 0.85,
-            .shadow = .{
-                .blur_radius = 12,
-                .color = ui.Color.rgba(0, 0, 0, 0.4),
-                .offset_y = 4,
-            },
-        }, .{
-            ui.text(item.name, .{
-                .size = 16,
-                .color = ui.Color.white,
-            }),
-        }));
-    }
-};
-
-// =============================================================================
-// Tests
-// =============================================================================
-
-test "AppState init" {
-    const s = AppState.init();
-    try std.testing.expectEqual(@as(usize, 4), s.left_count);
-    try std.testing.expectEqual(@as(usize, 0), s.right_count);
+fn emptyState(cx: *Cx) void {
+    cx.render(ui.box(.{ .style = .{
+        .width = .{ .grow = 1 },
+        .height = .{ .grow = 1 },
+        .padding = .all(32),
+        .alignment = .center,
+    } }, .{
+        ui.text("Drop items here", .{ .size = 14, .color = .{ .rgba = .rgb(0.4, 0.4, 0.4) } }),
+    }));
 }
 
-test "AppState remove and add" {
-    var s = AppState.init();
+/// The dragged card at the pointer, above everything and transparent to it,
+/// so the list underneath stays the drop target.
+const DragPreview = struct {
+    pub fn render(_: DragPreview, cx: *Cx) void {
+        const drag = cx.drag(ItemId) orelse return;
+        assert(drag.payload < items.len);
+        const item = items[drag.payload];
+        cx.render(ui.box(.{
+            .layer = .{
+                .kind = .drag,
+                .anchor = .{ .window = .{ .x = drag.x - 60, .y = drag.y - 20 } },
+                .clip = .escape,
+            },
+            .style = .{
+                .padding = .symmetric(16, 12),
+                .corner_radius = .all(8),
+                .background = .{ .rgba = item.color },
+                .opacity = 0.85,
+                .pointer_events = .none,
+                .shadow = .{ .blur = 12, .offset_y = 4, .color = .{ .rgba = .rgba(0, 0, 0, 0.4) } },
+            },
+        }, .{
+            ui.text(item.name, .{ .size = 16, .color = .{ .rgba = .white } }),
+        }));
+    }
+};
 
-    // Remove from left
-    const removed = s.removeItem(2); // Banana
-    try std.testing.expect(removed != null);
-    try std.testing.expectEqual(@as(usize, 3), s.left_count);
-
-    // Add to right
-    s.addToRight(removed.?);
-    try std.testing.expectEqual(@as(usize, 1), s.right_count);
-    try std.testing.expectEqualStrings("Banana", s.right_items[0].?.name);
+test "items start on the left and move between lists in order" {
+    var state: State = .{};
+    try std.testing.expectEqualSlices(ItemId, &.{ 0, 1, 2, 3 }, state.list(.left).slice());
+    try std.testing.expectEqual(@as(usize, 0), state.list(.right).slice().len);
+    state.move(1, .right);
+    state.move(3, .right);
+    try std.testing.expectEqualSlices(ItemId, &.{ 0, 2 }, state.list(.left).slice());
+    try std.testing.expectEqualSlices(ItemId, &.{ 1, 3 }, state.list(.right).slice());
+    // A drop on its own list moves the item to that list's end.
+    state.move(0, .left);
+    try std.testing.expectEqualSlices(ItemId, &.{ 2, 0 }, state.list(.left).slice());
 }

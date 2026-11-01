@@ -782,7 +782,7 @@ pub fn build(b: *std.Build) void {
 
         const linux_examples = [_]ExampleDefinition{
             .{ .name = "basic", .source = "src/examples/linux_demo.zig", .wayland_only = true },
-            .{ .name = "drag-drop", .source = "src/examples/drag_drop.zig" },
+            .{ .name = "drag-drop", .source = "src/examples/drag_drop.zig", .core = true },
             .{ .name = "lucide-demo", .source = "src/examples/lucide_demo.zig" },
             .{ .name = "animation", .source = "src/examples/animation.zig" },
             .{ .name = "counter", .source = "src/examples/counter.zig", .core = true },
@@ -1503,6 +1503,7 @@ fn addMacosCoreExampleTypecheck(
         "todo",
         "actions",
         "core_file_dialog",
+        "drag_drop",
         "nested_overlay",
     };
     for (examples) |name| {
@@ -2353,6 +2354,12 @@ fn addGoldens(
         .optimize = optimize,
         .imports = example_imports,
     });
+    const drag_drop_mod = b.createModule(.{
+        .root_source_file = b.path("src/examples/drag_drop.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = example_imports,
+    });
     const goldens_imports: []const std.Build.Module.Import = &.{
         .{ .name = "accessible_form_example", .module = accessible_form_mod },
         .{ .name = "actions_example", .module = actions_mod },
@@ -2360,6 +2367,7 @@ fn addGoldens(
         .{ .name = "gooey", .module = gooey_mod },
         .{ .name = "gooey-components", .module = components_mod },
         .{ .name = "counter_example", .module = counter_mod },
+        .{ .name = "drag_drop_example", .module = drag_drop_mod },
         .{ .name = "nested_overlay_example", .module = nested_overlay_mod },
         .{ .name = "todo_example", .module = todo_mod },
     };
