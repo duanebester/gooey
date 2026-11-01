@@ -94,7 +94,7 @@ pub const Painter = struct {
         const text_system = self.window.resources.text_system;
         const metrics = text_system.getMetricsFor(style.family);
         const width = text_system.measureText(style.family, content, style.variant) catch |err| {
-            std.debug.panic("text measurement failed: {s}", .{@errorName(err)});
+            window_mod.textFailed(self.window.frame_number, content, err);
         };
         return width * @as(f32, @floatFromInt(style.size)) / metrics.point_size;
     }
@@ -655,10 +655,7 @@ fn emitTextBaseline(
         style.family,
         style.variant,
         &sink,
-    ) catch |err| std.debug.panic("text emit failed in frame {d}: {s}", .{
-        window.frame_number,
-        @errorName(err),
-    });
+    ) catch |err| window_mod.textFailed(window.frame_number, content, err);
 }
 
 fn emitSvg(window: *Window, path: []const u8, bounds: Rect, options: SvgStyle) void {

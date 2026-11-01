@@ -65,6 +65,30 @@ comptime {
         text_scratch_bytes);
 }
 
+comptime {
+    // The longest run every shaper accepts fits the scratch four times over:
+    // the web shaper holds codepoints, byte offsets, and a growing glyph list
+    // in it at once, and the run's owner frees it before the next run shapes.
+    const run_bytes = text_mod.run_codepoint_count_max * @sizeOf(text_mod.ShapedGlyph);
+    assert(4 * run_bytes <= text_scratch_bytes);
+}
+
+/// Fail fast on text the core cannot shape or measure (CLAUDE.md §2): a run
+/// past the shapers' bound is a capacity error and names it.
+pub fn textFailed(frame_number: u64, content: []const u8, err: anyerror) noreturn {
+    if (err == error.TextRunTooLong) {
+        std.debug.panic("text run of {d} codepoints exceeds text.run_codepoint_count_max " ++
+            "{d}, the longest run one shaping may hold in the {d}-byte text scratch, in " ++
+            "frame {d}. Split the text into shorter runs.", .{
+            text_mod.codepointCount(content),
+            text_mod.run_codepoint_count_max,
+            text_scratch_bytes,
+            frame_number,
+        });
+    }
+    std.debug.panic("text shaping failed in frame {d}: {s}", .{ frame_number, @errorName(err) });
+}
+
 /// File dialogs awaiting their completion. One opens per tick, and its
 /// completion is delivered the next tick, so a handful covers bursts.
 pub const dialog_count_max: u32 = 8;

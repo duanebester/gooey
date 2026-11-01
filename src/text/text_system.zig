@@ -664,6 +664,15 @@ else
 // Public Types
 // =============================================================================
 
+/// The most codepoints one shaped run may hold, on every backend. CoreText
+/// shapes at most 2048 UTF-16 units and 1024 glyphs per CTRun, DirectWrite
+/// 2048 UTF-16 units, and the 0.4.0 core's per-tick text scratch holds the
+/// shaped glyphs of one such run with room for the shaper's growth (asserted
+/// in `core/window.zig`). A codepoint is at most two UTF-16 units and, in the
+/// scripts Gooey shapes, at most one glyph. A longer run fails shaping with
+/// `error.TextRunTooLong` before any backend sees it.
+pub const run_codepoint_count_max: u32 = 1024;
+
 pub const FontFace = font_face_mod.FontFace;
 pub const Metrics = types.Metrics;
 pub const GlyphMetrics = types.GlyphMetrics;
@@ -1106,6 +1115,7 @@ pub const TextSystem = struct {
         }
 
         // Cache miss - perform shaping
+        if (codepointCount(text) > run_codepoint_count_max) return error.TextRunTooLong;
         if (self.shaper == null) {
             self.shaper = PlatformShaper.init(self.allocator);
         }
@@ -2178,4 +2188,16 @@ fn copyRegion(atlas: *const Atlas, region: atlas_mod.Region, out: []u8) usize {
         @memcpy(out[row * region.width ..][0..region.width], data[source..][0..region.width]);
     }
     return @as(usize, region.width) * region.height;
+}
+
+/// The codepoints in `text`, counting lead bytes, so invalid UTF-8 still
+/// yields a bound rather than an error.
+pub fn codepointCount(text: []const u8) u32 {
+    std.debug.assert(text.len <= std.math.maxInt(u32));
+    var count: u32 = 0;
+    for (text) |byte| {
+        if (byte & 0xC0 != 0x80) count += 1;
+    }
+    std.debug.assert(count <= text.len);
+    return count;
 }

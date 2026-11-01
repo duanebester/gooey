@@ -23,8 +23,11 @@
 //! - `core-dialog-target`: names a non-root state as a file dialog's completion handler.
 //! - `core-dialog-paths`: a dialog selects one path more than `dialog_path_count_max`.
 //! - `core-mono-unset`: draws `.family = .mono` text in an app with no `fonts.mono`.
-//! - `core-wrap-lines`: wraps one text into one line past `MAX_LINES_PER_TEXT`.
-//! - `core-wrap-words`: wraps one text into one word past `MAX_WORDS_PER_TEXT`.
+//! - `core-wrap-lines`: one text of a line past `MAX_LINES_PER_TEXT`. Layout
+//!   measures it whole first, so the per-run shaping bound
+//!   (`text.run_codepoint_count_max`) stops it, on every platform.
+//! - `core-wrap-words`: one text of a word past `MAX_WORDS_PER_TEXT`, which
+//!   the same bound stops first.
 //! - `core-wrap-frame`: wraps two texts into one line past the frame's glyph budget.
 //! - `core-deinit-running`: frees a running app without stopping it first.
 
