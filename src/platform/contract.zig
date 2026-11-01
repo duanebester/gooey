@@ -610,10 +610,6 @@ fn verifyImeBridge(comptime Window: type) void {
             .returns = void,
         });
         verifyFn(Window, "clearMarkedText", .{ .params = &.{self_mut}, .returns = void });
-        verifyFn(Window, "setInsertedText", .{
-            .params = &.{ self_mut, []const u8 },
-            .returns = void,
-        });
         verifyFn(Window, "hasMarkedText", .{
             .params = &.{*const Window},
             .returns = bool,

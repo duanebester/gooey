@@ -261,7 +261,7 @@ same pair Wayland and macOS produce, so the text widgets need no Windows code.
   `DefWindowProcW`, which delivers it as `WM_CHAR` without loss; a longer preedit is
   logged and the previous one stays. Unpaired surrogates become U+FFFD. 1024 units encode
   to at most 3072 UTF-8 bytes, which the marked and inserted buffers (`ime.bytes_max`)
-  hold exactly, so `setMarkedText` and `setInsertedText` assert the length instead of
+  hold exactly, so `setMarkedText` and the commit assert the length instead of
   truncating.
 - **Not yet.** The caret position inside the composition (`GCS_CURSORPOS`) and clause
   attributes, because `CompositionEvent` carries only text; reconversion; and TSF. The

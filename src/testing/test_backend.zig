@@ -134,7 +134,7 @@ pub const call_count_max: u32 = 256;
 /// Bytes of window title storage, excluding any terminator.
 pub const title_bytes_max: u32 = 64;
 
-/// Bytes of IME marked/inserted text storage.
+/// Bytes of IME marked text storage.
 pub const ime_bytes_max: u32 = 64;
 
 /// Largest accepted window edge in logical pixels. One past this is rejected by
@@ -265,7 +265,6 @@ pub const CallTag = enum(u8) {
     set_image_atlas,
     set_marked_text,
     clear_marked_text,
-    set_inserted_text,
     set_ime_cursor_rect,
     dispatch_input,
     resize,
@@ -284,7 +283,6 @@ pub const CallTag = enum(u8) {
 /// | `window_init`, `window_deinit`    | slot index                      |
 /// | `set_title`                       | copied byte count               |
 /// | `set_marked_text`                 | copied byte count               |
-/// | `set_inserted_text`               | copied byte count               |
 /// | `set_appearance`                  | 1 for dark, 0 for light         |
 /// | `set_cursor_shape`                | `@intFromEnum(CursorShape)`     |
 /// | `request_render`, `focus`         | call count after this call      |
@@ -973,13 +971,11 @@ pub const TestPlatform = struct {
 fn zeroWindowStorage(window: *TestWindow) void {
     @memset(&window.title_buffer, 0);
     @memset(&window.marked_buffer, 0);
-    @memset(&window.inserted_buffer, 0);
 
     window.slot_index = 0;
     window.window_id = .invalid;
     window.title_len = 0;
     window.marked_len = 0;
-    window.inserted_len = 0;
     window.closed = false;
     window.render_request_count = 0;
     window.focus_count = 0;
@@ -999,7 +995,6 @@ fn zeroWindowStorage(window: *TestWindow) void {
     // and so leaves a previous occupant's tail readable (`CLAUDE.md` §21).
     assert(window.title_buffer[title_bytes_max - 1] == 0);
     assert(window.marked_buffer[ime_bytes_max - 1] == 0);
-    assert(window.inserted_buffer[ime_bytes_max - 1] == 0);
 }
 
 /// Encode an event's union tag as a record detail.
@@ -1038,8 +1033,6 @@ pub const TestWindow = struct {
     title_buffer: [title_bytes_max]u8,
     marked_len: u32,
     marked_buffer: [ime_bytes_max]u8,
-    inserted_len: u32,
-    inserted_buffer: [ime_bytes_max]u8,
     ime_cursor_rect: [4]f32,
 
     scene: ?*const scene_mod.Scene,
@@ -1161,7 +1154,6 @@ pub const TestWindow = struct {
         // every field is established by this function.
         self.title_len = 0;
         self.marked_len = 0;
-        self.inserted_len = 0;
 
         self.setTitle(options.title);
 
@@ -1463,24 +1455,7 @@ pub const TestWindow = struct {
         @memset(&self.marked_buffer, 0);
         self.marked_len = 0;
 
-        // Cancelling a composition must not disturb text already committed;
-        // the two buffers are independent, and sharing one would break this.
-        assert(self.inserted_len <= ime_bytes_max);
         self.platform.recordCall(.clear_marked_text, self.window_id, 0);
-    }
-
-    pub fn setInsertedText(self: *Self, text: []const u8) void {
-        assert(imeTextFits(text));
-        assert(self.inserted_len <= ime_bytes_max);
-
-        @memcpy(self.inserted_buffer[0..text.len], text);
-        @memset(self.inserted_buffer[text.len..], 0);
-        self.inserted_len = @intCast(text.len);
-
-        if (self.inserted_len < ime_bytes_max) {
-            assert(self.inserted_buffer[ime_bytes_max - 1] == 0);
-        }
-        self.platform.recordCall(.set_inserted_text, self.window_id, self.inserted_len);
     }
 
     pub fn hasMarkedText(self: *const Self) bool {
@@ -1505,12 +1480,6 @@ pub const TestWindow = struct {
     pub fn markedText(self: *const Self) []const u8 {
         assert(self.marked_len <= ime_bytes_max);
         return self.marked_buffer[0..self.marked_len];
-    }
-
-    /// The inserted text actually stored.
-    pub fn insertedText(self: *const Self) []const u8 {
-        assert(self.inserted_len <= ime_bytes_max);
-        return self.inserted_buffer[0..self.inserted_len];
     }
 
     // =========================================================================
@@ -2364,8 +2333,8 @@ test "IME state reflects exactly what was set" {
     try testing.expect(!win.hasMarkedText());
     for (win.marked_buffer) |byte| try testing.expectEqual(@as(u8, 0), byte);
 
-    win.setInsertedText(&@as([ime_bytes_max]u8, @splat('x')));
-    try testing.expectEqual(@as(usize, ime_bytes_max), win.insertedText().len);
+    win.setMarkedText(&@as([ime_bytes_max]u8, @splat('x')));
+    try testing.expectEqual(@as(usize, ime_bytes_max), win.markedText().len);
     try testing.expect(!TestWindow.imeTextFits(&@as([ime_bytes_max + 1]u8, @splat('x'))));
 
     win.setImeCursorRect(1, 2, 3, 4);

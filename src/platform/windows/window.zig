@@ -1032,13 +1032,6 @@ pub const Window = struct {
         assert(!self.hasMarkedText());
     }
 
-    pub fn setInsertedText(self: *Self, text: []const u8) void {
-        assert(text.len <= ime_bytes_max);
-        assert(std.unicode.utf8ValidateSlice(text));
-        @memcpy(self.inserted_text_buffer[0..text.len], text);
-        self.inserted_text_len = text.len;
-    }
-
     pub fn hasMarkedText(self: *const Self) bool {
         assert(self.marked_text_len <= ime_bytes_max);
         return self.marked_text_len > 0;
