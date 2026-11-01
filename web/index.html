@@ -741,6 +741,15 @@
         );
       }
 
+      // Length of the longest prefix of UTF-8 `bytes` that fits in `limit`
+      // without splitting a codepoint; continuation bytes are 0b10xxxxxx.
+      function utf8PrefixLength(bytes, limit) {
+        if (bytes.length <= limit) return bytes.length;
+        let n = limit;
+        while (n > 0 && (bytes[n] & 0xc0) === 0x80) n--;
+        return n;
+      }
+
       function appendText(text) {
         if (!textBufferPtr) return;
 
@@ -756,11 +765,12 @@
         const currentLen = lenPtr[0];
         const available = TEXT_BUFFER_SIZE - currentLen;
 
-        if (encoded.length > available) {
-          console.warn("[Gooey] Text buffer full, truncating input");
+        const writeLen = utf8PrefixLength(encoded, available);
+        if (writeLen < encoded.length) {
+          console.warn(
+            `[Gooey] Text buffer full, kept ${writeLen} of ${encoded.length} bytes`,
+          );
         }
-
-        const writeLen = Math.min(encoded.length, available);
         dataPtr.set(encoded.subarray(0, writeLen), currentLen);
         lenPtr[0] = currentLen + writeLen;
       }
@@ -796,7 +806,12 @@
         const dataPtr = compositionBufferPtr + 8; // data starts at offset 8
 
         const encoded = new TextEncoder().encode(text);
-        const writeLen = Math.min(encoded.length, 256);
+        const writeLen = utf8PrefixLength(encoded, 256);
+        if (writeLen < encoded.length) {
+          console.warn(
+            `[Gooey] Composition cut to ${writeLen} of ${encoded.length} bytes`,
+          );
+        }
 
         // Write text
         for (let i = 0; i < writeLen; i++) {

@@ -426,6 +426,9 @@ test {
     }) |leaf| {
         std.testing.refAllDecls(leaf);
     }
+    // The macOS host's NSTextInputClient tests need AppKit, so only a macOS
+    // test binary reaches them.
+    if (comptime builtin.os.tag == .macos) _ = @import("platform/macos/input_view.zig");
     // The fbdev backend is only selected by `-Dlinux-backend=fbdev`, but its
     // pixel conversion, evdev translation, and clipboard logic are pure and
     // must stay tested in the default Linux test run.

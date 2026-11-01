@@ -26,6 +26,8 @@ const WindowOptions = interface_mod.WindowOptions;
 const ResourceLimits = @import("../../core/limits.zig").ResourceLimits;
 const core_events = @import("../../core/events.zig");
 const core_router = @import("../../core/router.zig");
+const core_clipboard = @import("../../core/clipboard.zig");
+const core_text_engine = @import("../../core/text_engine.zig");
 
 /// How a 0.4.0 core app drives this window (contract §9), as on macOS: the
 /// window pushes input and configures into the core's queue and asks the
@@ -188,11 +190,7 @@ pub const Window = struct {
 
     /// Marked (composing) text from IME
     marked_text: []const u8 = "",
-    marked_text_buffer: [256]u8 = undefined,
-
-    /// Inserted text from IME (committed)
-    inserted_text: []const u8 = "",
-    inserted_text_buffer: [256]u8 = undefined,
+    marked_text_buffer: [marked_text_bytes_max]u8 = undefined,
 
     /// Whether IME is currently active for this window
     ime_active: bool = false,
@@ -837,31 +835,27 @@ pub const Window = struct {
     // IME Support
     // =========================================================================
 
-    /// Set the marked (composing) text for IME
+    /// The composition the window keeps, as long as the text engines'
+    /// preedit, which shows no more.
+    pub const marked_text_bytes_max = core_text_engine.preedit_bytes_max;
+
+    /// Set the marked (composing) text for IME. A longer composition is
+    /// external input, so it is cut at a codepoint boundary, never inside a
+    /// UTF-8 sequence, and the cut logged.
     pub fn setMarkedText(self: *Self, text: []const u8) void {
-        if (text.len > self.marked_text_buffer.len) {
-            @memcpy(self.marked_text_buffer[0..], text[0..self.marked_text_buffer.len]);
-            self.marked_text = self.marked_text_buffer[0..self.marked_text_buffer.len];
-        } else {
-            @memcpy(self.marked_text_buffer[0..text.len], text);
-            self.marked_text = self.marked_text_buffer[0..text.len];
+        const kept = core_clipboard.prefixFitting(text, marked_text_bytes_max);
+        if (kept < text.len) {
+            std.log.warn("IME composition of {d} bytes cut to {d}", .{ text.len, kept });
         }
+        @memcpy(self.marked_text_buffer[0..kept], text[0..kept]);
+        self.marked_text = self.marked_text_buffer[0..kept];
+        std.debug.assert(self.marked_text.len <= marked_text_bytes_max);
+        if (kept > 0 and kept < text.len) std.debug.assert(text[kept] & 0xC0 != 0x80);
     }
 
     /// Clear the marked text (composition ended or cancelled)
     pub fn clearMarkedText(self: *Self) void {
         self.marked_text = "";
-    }
-
-    /// Set the inserted text for IME (copies to window-owned buffer)
-    pub fn setInsertedText(self: *Self, text: []const u8) void {
-        if (text.len > self.inserted_text_buffer.len) {
-            @memcpy(self.inserted_text_buffer[0..], text[0..self.inserted_text_buffer.len]);
-            self.inserted_text = self.inserted_text_buffer[0..self.inserted_text_buffer.len];
-        } else {
-            @memcpy(self.inserted_text_buffer[0..text.len], text);
-            self.inserted_text = self.inserted_text_buffer[0..text.len];
-        }
     }
 
     /// Set the IME cursor rect (call from TextInput during render)

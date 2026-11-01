@@ -11,6 +11,7 @@
 
 const std = @import("std");
 const input = @import("../input/mod.zig");
+const clipboard = @import("clipboard.zig");
 
 const assert = std.debug.assert;
 
@@ -190,8 +191,10 @@ pub const EventQueue = struct {
         var copy = event;
         switch (copy) {
             .input => |*value| switch (value.*) {
-                .text_input => |*text| text.text = self.copyBytes(text.text),
-                .composition => |*text| text.text = self.copyBytes(text.text),
+                .text_input => |*text| text.text = self.copyPlatformText(text.text, "text"),
+                .composition => |*text| {
+                    text.text = self.copyPlatformText(text.text, "composition");
+                },
                 .key_down, .key_up => |*key| {
                     if (key.characters) |bytes| key.characters = self.copyBytes(bytes);
                     if (key.characters_ignoring_modifiers) |bytes| {
@@ -210,6 +213,28 @@ pub const EventQueue = struct {
             else => {},
         }
         return copy;
+    }
+
+    /// Typed, dictated, or composed text is operating input whose length
+    /// the app cannot plan: text past the queue's free text bytes
+    /// (`ResourceLimits.events.text_bytes_max`) is cut at the last codepoint
+    /// boundary that fits, and the cut logged, rather than split or refused.
+    fn copyPlatformText(self: *EventQueue, bytes: []const u8, kind: []const u8) []const u8 {
+        assert(self.text_len <= self.text_bytes.len);
+        const room = self.text_bytes.len - self.text_len;
+        const kept = clipboard.prefixFitting(bytes, room);
+        if (kept < bytes.len) {
+            std.log.warn("event queue: {s} of {d} bytes cut to {d}; {d} of {d} text bytes " ++
+                "were free. Raise ResourceLimits.events.text_bytes_max.", .{
+                kind,
+                bytes.len,
+                kept,
+                room,
+                self.text_bytes.len,
+            });
+        }
+        assert(kept <= room);
+        return self.copyBytes(bytes[0..kept]);
     }
 
     fn copyBytes(self: *EventQueue, bytes: []const u8) []const u8 {
@@ -355,6 +380,33 @@ test "queue coalesces moves and scrolls and copies text" {
     try std.testing.expectEqual(@as(u64, 2), queue.coalesced_count);
     queue.clear();
     try std.testing.expectEqual(@as(usize, 0), queue.pending().len);
+}
+
+test "platform text past the free text bytes is cut on a codepoint boundary" {
+    // Goal: long dictation or an IME commit never splits a UTF-8 sequence
+    // or panics (the 0.3.1 macOS host cut "a" x 255 + "東京" at byte 256).
+    // Methodology: a 256-byte queue keeps the 255 'a' bytes and drops "東京"
+    // whole; a composition that no longer fits at all arrives empty, which
+    // clears the preedit until the next update. A 512-byte queue keeps the
+    // string whole.
+    var long: [255 + "東京".len]u8 = undefined;
+    @memset(long[0..255], 'a');
+    @memcpy(long[255..], "東京");
+    var queue: EventQueue = undefined;
+    try queue.initInPlace(std.testing.allocator, .{ .event_count_max = 4, .text_bytes_max = 256 });
+    defer queue.deinit(std.testing.allocator);
+    queue.push(.{ .input = .{ .text_input = .{ .text = &long } } });
+    const kept = queue.pending()[0].input.text_input.text;
+    try std.testing.expectEqual(@as(usize, 255), kept.len);
+    try std.testing.expect(std.unicode.utf8ValidateSlice(kept));
+    queue.push(.{ .input = .{ .composition = .{ .text = "東" } } });
+    try std.testing.expectEqualStrings("", queue.pending()[1].input.composition.text);
+
+    var roomy: EventQueue = undefined;
+    try roomy.initInPlace(std.testing.allocator, .{ .event_count_max = 1, .text_bytes_max = 512 });
+    defer roomy.deinit(std.testing.allocator);
+    roomy.push(.{ .input = .{ .text_input = .{ .text = &long } } });
+    try std.testing.expectEqualStrings(&long, roomy.pending()[0].input.text_input.text);
 }
 
 test "completion ring delivers distinct outcomes in order" {

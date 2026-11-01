@@ -2023,9 +2023,11 @@ pub const LinuxPlatform = struct {
 
         // Handle commit string (final text)
         if (self.ime_commit_text.get()) |commit_text| {
-            window.setInsertedText(commit_text);
+            // Whole, up to the protocol's bound: the core queue copies it
+            // (cutting it at a codepoint boundary past its text budget), and
+            // 0.3.1's widgets insert it before `handleInput` returns.
             window.clearMarkedText();
-            const event = linux_input.textInputEvent(window.inserted_text);
+            const event = linux_input.textInputEvent(commit_text);
             _ = window.handleInput(event);
             self.ime_commit_text.clear();
         }
@@ -2100,20 +2102,20 @@ fn disconnectedPlatform() LinuxPlatform {
 }
 
 /// One text-input-v3 string, copied out of libwayland's argument buffer.
-/// Bounded by the window's marked and inserted text buffers: a longer string
-/// is external input, not a programmer error, so it is cut at the last
+/// Bounded by the Wayland message size, which text-input-v3 states as 4000
+/// bytes of text, so a commit arrives whole; a longer string is still
+/// external input, not a programmer error, so it is cut at the last
 /// codepoint boundary that fits (a warning is logged) rather than failing.
 const ImeText = struct {
     bytes: [bytes_max]u8 = undefined,
     len: u16 = 0,
     present: bool = false,
 
-    const bytes_max = @typeInfo(@FieldType(LinuxWindow, "marked_text_buffer")).array.len;
+    const bytes_max = 4000;
 
     comptime {
-        std.debug.assert(bytes_max ==
-            @typeInfo(@FieldType(LinuxWindow, "inserted_text_buffer")).array.len);
         std.debug.assert(bytes_max <= std.math.maxInt(u16));
+        std.debug.assert(bytes_max >= LinuxWindow.marked_text_bytes_max);
     }
 
     fn set(self: *ImeText, text: ?[*:0]const u8) void {

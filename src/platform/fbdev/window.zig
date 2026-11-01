@@ -24,6 +24,7 @@ const geometry = @import("../../geometry/geometry.zig");
 const scene_mod = @import("../../scene/mod.zig");
 const text_mod = @import("../../text/mod.zig");
 const input = @import("../../input/events.zig");
+const core_clipboard = @import("../../core/clipboard.zig");
 const cpu = @import("../cpu/renderer.zig");
 const fbdev_platform = @import("platform.zig");
 const FbdevPlatform = fbdev_platform.FbdevPlatform;
@@ -78,8 +79,6 @@ pub const Window = struct {
     // contract's composition bridge still stores what callers hand it.
     marked_text_buffer: [ime_bytes_max]u8 = undefined,
     marked_text_len: usize = 0,
-    inserted_text_buffer: [ime_bytes_max]u8 = undefined,
-    inserted_text_len: usize = 0,
     ime_cursor_rect: geometry.RectF = .{
         .origin = .{ .x = 0, .y = 0 },
         .size = .{ .width = 1, .height = 20 },
@@ -401,20 +400,16 @@ pub const Window = struct {
     // IME bridge
     // =========================================================================
 
+    /// A longer composition is cut at a codepoint boundary, never inside a
+    /// UTF-8 sequence.
     pub fn setMarkedText(self: *Self, text: []const u8) void {
-        const len = @min(text.len, ime_bytes_max);
+        const len = core_clipboard.prefixFitting(text, ime_bytes_max);
         @memcpy(self.marked_text_buffer[0..len], text[0..len]);
         self.marked_text_len = len;
     }
 
     pub fn clearMarkedText(self: *Self) void {
         self.marked_text_len = 0;
-    }
-
-    pub fn setInsertedText(self: *Self, text: []const u8) void {
-        const len = @min(text.len, ime_bytes_max);
-        @memcpy(self.inserted_text_buffer[0..len], text[0..len]);
-        self.inserted_text_len = len;
     }
 
     pub fn hasMarkedText(self: *const Self) bool {

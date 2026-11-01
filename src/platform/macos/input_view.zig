@@ -9,6 +9,7 @@ const geometry = @import("../../geometry/geometry.zig");
 const appkit = @import("appkit.zig");
 const Window = @import("window.zig").Window;
 const CoreBinding = @import("window.zig").CoreBinding;
+const core_events = @import("../../core/events.zig");
 const mac_bridge = @import("../../accessibility/mac_bridge.zig");
 
 const NSRect = appkit.NSRect;
@@ -500,7 +501,7 @@ fn attributedSubstring(
     const clamped = clampRange(range, length);
     const NSString = objc.getClass("NSString") orelse return null;
     const NSAttributedString = objc.getClass("NSAttributedString") orelse return null;
-    var bytes: [257]u8 = undefined;
+    var bytes: [Window.marked_text_bytes_max + 1]u8 = undefined;
     @memcpy(bytes[0..window.marked_text.len], window.marked_text);
     bytes[window.marked_text.len] = 0;
     const string = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{
@@ -529,10 +530,12 @@ fn insertText(
 
     std.debug.print("insertText: \"{s}\"\n", .{str});
 
-    // Copy to window-owned buffer before the objc call returns
-    window.setInsertedText(str);
+    // `str` lives until this call returns, and `handleInput` is done with it
+    // by then: the core queue copies it (cutting it at a codepoint boundary
+    // past its text budget), and 0.3.1's widgets insert it. No window buffer
+    // sits between, so long dictation or a long IME commit arrives whole.
     window.clearMarkedText();
-    _ = window.handleInput(.{ .text_input = .{ .text = window.inserted_text } });
+    _ = window.handleInput(.{ .text_input = .{ .text = str } });
 }
 
 fn characterIndexForPoint(_: objc.c.id, _: objc.c.SEL, _: NSPoint) callconv(.c) c_ulong {
@@ -597,4 +600,52 @@ fn doCommandBySelector(self: objc.c.id, _: objc.c.SEL, selector: objc.c.SEL) cal
             _ = window.handleInput(.{ .key_down = key_event });
         }
     }
+}
+
+fn testNoTick(_: *anyopaque) void {}
+
+test "insertText delivers long text whole and setMarkedText cuts it at a codepoint" {
+    // Goal: dictation or an IME commit past 256 bytes reaches the core whole
+    // and valid. 0.3.1 cut "a" x 255 + "東京" at byte 256, inside "東", and the
+    // next paint panicked in the shaper. Methodology: call the real
+    // NSTextInputClient methods on a view bound to a core queue and read the
+    // queued events: the insert arrives whole, and the composition, which the
+    // window keeps for the input method, is cut before "東".
+    var queue: core_events.EventQueue = undefined;
+    try queue.initInPlace(std.testing.allocator, .{
+        .event_count_max = 4,
+        .text_bytes_max = 1024,
+    });
+    defer queue.deinit(std.testing.allocator);
+    var window: Window = undefined;
+    var context: u8 = 0;
+    window.core = .{
+        .queue = &queue,
+        .query = undefined, // Read for key events only.
+        .context = &context,
+        .schedule_tick = testNoTick,
+    };
+    window.clearMarkedText();
+    const frame = NSRect{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = 100, .height = 100 } };
+    const view = try create(frame, &window);
+    defer view.release();
+
+    const filler: [255]u8 = @splat('a');
+    const long: [:0]const u8 = filler ++ "東京";
+    const NSString = objc.getClass("NSString").?;
+    const string = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{
+        long.ptr,
+    });
+    const none = NSRange{ .location = 0, .length = 0 };
+    view.msgSend(void, "insertText:replacementRange:", .{ string.value, none });
+    try std.testing.expectEqualStrings(long, queue.pending()[0].input.text_input.text);
+
+    view.msgSend(void, "setMarkedText:selectedRange:replacementRange:", .{
+        string.value,
+        none,
+        none,
+    });
+    const marked = queue.pending()[1].input.composition.text;
+    try std.testing.expectEqualStrings(&filler, marked);
+    try std.testing.expectEqualStrings(marked, window.marked_text);
 }

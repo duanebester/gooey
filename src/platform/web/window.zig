@@ -456,14 +456,6 @@ pub const WebWindow = struct {
         std.debug.assert(self.marked_text_len == 0);
     }
 
-    /// Truthfulness note: committed text reaches Gooey through the JS text
-    /// ring buffer (`text_buffer.zig`), not through this call, so there is no
-    /// host sink for it. Kept for contract parity with the native backends.
-    pub fn setInsertedText(self: *Self, text: []const u8) void {
-        std.debug.assert(text.len <= composition_buffer.BUFFER_SIZE);
-        std.debug.assert(!self.closed);
-    }
-
     /// Whether a composition is in flight.
     ///
     /// Answers from the browser's own composition state where available — that
