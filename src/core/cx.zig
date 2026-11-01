@@ -337,7 +337,7 @@ pub fn beginBuild(window: *Window) void {
     window.keys.clear();
     window.build_deadline_ns = window_mod.deadline_none;
     window.layout.beginFrame(window.width, window.height);
-    window.layout.setMeasureTextFn(measureText, window.resources.text_system);
+    window.layout.setMeasureTextFn(measureText, window);
     const root_style = element.Style{
         .width = .{ .fixed = window.width },
         .height = .{ .fixed = window.height },
@@ -590,7 +590,8 @@ fn measureText(
     user_data: ?*anyopaque,
 ) layout_mod.engine.TextMeasurement {
     _ = max_width;
-    const text_system: *text_mod.TextSystem = @ptrCast(@alignCast(user_data.?));
+    const window: *const Window = @ptrCast(@alignCast(user_data.?));
+    const text_system = window.resources.text_system;
     if (text_system.getMetrics() == null) std.debug.panic("no font loaded", .{});
     assert(font_size > 0);
     // Each family measures and sizes lines by its own regular face.
@@ -599,7 +600,7 @@ fn measureText(
     const metrics = text_system.getMetricsFor(family);
     const scale = @as(f32, @floatFromInt(font_size)) / metrics.point_size;
     const width = text_system.measureText(family, content, variant) catch |err| {
-        std.debug.panic("text measurement failed: {s}", .{@errorName(err)});
+        window_mod.textFailed(window.frame_number, content, err);
     };
     return .{ .width = width * scale, .height = metrics.line_height * scale };
 }

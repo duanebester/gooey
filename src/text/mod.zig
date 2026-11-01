@@ -82,6 +82,8 @@ pub const TextSystem = text_system.TextSystem;
 /// True in builds that select the deterministic synthetic text backend.
 pub const is_synthetic = text_system.is_synthetic;
 pub const ShapedRunCache = text_system.ShapedRunCache;
+pub const run_codepoint_count_max = text_system.run_codepoint_count_max;
+pub const codepointCount = text_system.codepointCount;
 pub const SUBPIXEL_VARIANTS_X = text_system.SUBPIXEL_VARIANTS_X;
 
 // Platform backends

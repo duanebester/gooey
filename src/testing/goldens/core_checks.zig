@@ -99,6 +99,102 @@ fn areaRender(cx: *Cx) void {
     }));
 }
 
+/// `count` copies of the two-byte "é", built at comptime.
+fn repeatedE(comptime count: u32) [2 * count]u8 {
+    @setEvalBranchQuota(4 * count + 1000);
+    var bytes: [2 * count]u8 = undefined;
+    for (0..count) |index| {
+        bytes[2 * index] = 0xC3;
+        bytes[2 * index + 1] = 0xA9;
+    }
+    return bytes;
+}
+
+test "one shaped run holds run_codepoint_count_max codepoints and no more" {
+    // Goal: the per-run bound every shaper and the text scratch hold, in
+    // codepoints rather than bytes. Method: shape exactly the bound in
+    // two-byte codepoints (twice the bound in bytes), then one ASCII
+    // codepoint past it, which must fail before reaching the shaper.
+    const app = try testing.allocator.create(LongRunApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    const text_system = app.window.resources.text_system;
+    const bound = gooey.text.run_codepoint_count_max;
+    const at_bound = comptime repeatedE(bound);
+    var run = try text_system.shapeText(.app, &at_bound, .regular, null);
+    try testing.expectEqual(@as(usize, bound), run.glyphs.len);
+    run.deinit(text_system.run_allocator);
+    const past_bound: [bound + 1]u8 = @splat('a');
+    try testing.expectError(
+        error.TextRunTooLong,
+        text_system.shapeText(.app, &past_bound, .regular, null),
+    );
+}
+
+/// One run one glyph longer than the text system's 128-glyph stack buffers,
+/// shown as a text element or as a TextArea line.
+const LongRunState = struct {
+    area: bool = false,
+    notes: []const u8 = &long_run,
+
+    const long_run: [129]u8 = @splat('a');
+};
+
+const LongRunApp = core.App(LongRunState, longRunRender, .{
+    .title = "Long run",
+    .width = 1400,
+    .height = 200,
+    .limits = .small,
+});
+
+fn longRunRender(cx: *Cx) void {
+    const state = cx.state(LongRunState);
+    cx.render(ui.box(.{ .style = .{ .width = .{ .grow = 1 }, .height = .{ .grow = 1 } } }, .{
+        if (state.area) components.core.TextArea{
+            .key = "notes",
+            .bind = &state.notes,
+            .rows = 1,
+            .width = 1300,
+        } else null,
+        if (state.area) null else ui.text(&LongRunState.long_run, .{}),
+    }));
+}
+
+fn spriteCount(frame: *const gooey.core.internals.records.Frame) u32 {
+    var count: u32 = 0;
+    for (frame.paint[0..frame.paint_count]) |record| {
+        if (record == .sprite) count += 1;
+    }
+    return count;
+}
+
+test "a run past 128 glyphs places every glyph, as text and as a TextArea line" {
+    // Goal: glyph placement batches its 128-entry stack buffers. Before
+    // batching, a 129-glyph run failed an assertion in Debug and wrote past
+    // the buffers in release. Method: paint 129 'a's as a text element and as
+    // a TextArea line wide enough to show them all; count the glyph sprites,
+    // and check that the last glyph sits 128 advances (8 px) after the first.
+    inline for (.{ false, true }) |area| {
+        const app = try testing.allocator.create(LongRunApp);
+        defer testing.allocator.destroy(app);
+        try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+        defer app.deinitHeadless();
+        app.state.area = area;
+        app.tick(0);
+        const frame = app.window.rendered();
+        try testing.expectEqual(@as(u32, 129), spriteCount(frame));
+        var first: ?f32 = null;
+        var last: f32 = 0;
+        for (frame.paint[0..frame.paint_count]) |record| {
+            if (record != .sprite) continue;
+            if (first == null) first = record.sprite.bounds.x;
+            last = record.sprite.bounds.x;
+        }
+        try testing.expectApproxEqAbs(first.? + 128 * 8, last, 0.001);
+    }
+}
+
 test "a TextArea takes lines, follows the caret, and places it where clicked" {
     // Goal: the area's engine through the real router, layout, and paint.
     // Methodology: type three lines into two rows, so the area scrolls one
@@ -1413,8 +1509,10 @@ fn editorWheelTo(app: *code_editor.App, now: *u64, name: []const u8) void {
     }
 }
 
-/// A folder of 45 visible files: 40 numbered text files and five that
+/// A folder of 47 visible files: 40 numbered text files and seven that
 /// exercise each status, plus a hidden file and a folder the list skips.
+/// `line1024.txt` holds a line of 1024 two-byte codepoints, at the shaping
+/// bound in codepoints but twice it in bytes; `line1025.txt` is one past.
 fn editorFolder(dir: std.Io.Dir) !void {
     const io = testing.io;
     var name_buffer: [16]u8 = undefined;
@@ -1426,6 +1524,10 @@ fn editorFolder(dir: std.Io.Dir) !void {
     try dir.writeFile(io, .{ .sub_path = "bad.txt", .data = "\xff\xfe" });
     try dir.writeFile(io, .{ .sub_path = "img.png", .data = "\x89PNG" });
     try dir.writeFile(io, .{ .sub_path = "Notes.md", .data = "# Notes\n" });
+    const at_bound = "x\n".* ++ repeatedE(gooey.text.run_codepoint_count_max) ++ "\n".*;
+    try dir.writeFile(io, .{ .sub_path = "line1024.txt", .data = &at_bound });
+    const past_bound: [gooey.text.run_codepoint_count_max + 1]u8 = @splat('a');
+    try dir.writeFile(io, .{ .sub_path = "line1025.txt", .data = &past_bound });
     try dir.writeFile(io, .{ .sub_path = ".hidden", .data = "x" });
     try dir.createDir(io, "sub", .default_dir);
     const big = try testing.allocator.alloc(u8, code_editor.file_bytes_max + 1);
@@ -1436,11 +1538,11 @@ fn editorFolder(dir: std.Io.Dir) !void {
 
 test "code_editor lists a folder in a List and opens its files on the core" {
     // Goal: the code_editor port end to end, with the lifecycle guard
-    // proving no allocation after init. Methodology: choose a folder of 45
+    // proving no allocation after init. Methodology: choose a folder of 47
     // files through a scripted dialog; the List must build only the rows in
     // view, sorted without case, and build the last rows once wheeled to the
     // end. Clicking rows opens a text file into the editor and shows the
-    // binary, too-large, and image statuses for the others.
+    // binary, too-large, image, and line-too-long statuses for the others.
     var folder = std.testing.tmpDir(.{ .iterate = true });
     defer folder.cleanup();
     try editorFolder(folder.dir);
@@ -1464,9 +1566,9 @@ test "code_editor lists a folder in a List and opens its files on the core" {
     now += 1;
     app.tick(now);
     try testing.expectEqual(@as(u32, 1), dialog.opened);
-    try testing.expectEqual(@as(u32, 45), app.state.file_count);
+    try testing.expectEqual(@as(u32, 47), app.state.file_count);
     try testing.expectEqualStrings("a.zig", app.state.files[0].text());
-    try testing.expectEqualStrings("Notes.md", app.state.files[44].text());
+    try testing.expectEqualStrings("Notes.md", app.state.files[46].text());
     // Rows of 26 px in a list about 22 rows tall: the visible ones and one
     // partial row, never the folder's last file.
     const built = editorRowsBuilt(app);
@@ -1491,9 +1593,16 @@ test "code_editor lists a folder in a List and opens its files on the core" {
     // Wheel the list to its end: its last rows are built, its first are not.
     editorWheelTo(app, &now, "Notes.md");
     try testing.expect(nodeNamed(&app.window, .button, "a.zig") == null);
-    try testing.expect(editorRowsBuilt(app) < 45);
+    try testing.expect(editorRowsBuilt(app) < 47);
     editorClickRow(app, &now, "img.png");
     try testing.expectEqual(code_editor.FileStatus.image_file, app.state.status);
     try testing.expectEqualStrings("png", app.state.extension_bytes[0..app.state.extension_len]);
+    // A line past the shaping bound is refused; one at it opens and paints
+    // as eight batches of glyphs.
+    editorClickRow(app, &now, "line1025.txt");
+    try testing.expectEqual(code_editor.FileStatus.line_too_long, app.state.status);
+    editorClickRow(app, &now, "line1024.txt");
+    try testing.expectEqual(code_editor.FileStatus.displaying_code, app.state.status);
+    try testing.expectEqual(@as(usize, 2 + 2 * 1024 + 1), app.state.source.len);
     try testing.expectEqual(core.internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
 }

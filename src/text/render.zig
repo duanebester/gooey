@@ -38,10 +38,10 @@ const SUBPIXEL_VARIANTS_F: f32 = @floatFromInt(SUBPIXEL_VARIANTS_X);
 /// Maximum glyphs per text run.  Matches ShapedRunCache capacity.
 const MAX_GLYPHS_PER_RUN: u32 = ShapedRunCache.MAX_GLYPHS_PER_ENTRY;
 
-// WASM stack budget check (rule #14): renderText allocates five stack buffers
-// sized at MAX_GLYPHS_PER_RUN.  Assert the combined footprint stays under 16 KB
-// so it fits comfortably within WASM's 1 MB stack even in deep call chains
-// (widget render → layout traversal → renderText).
+// WASM stack budget check (rule #14): a run's shaped-glyph buffer and the four
+// batch buffers in `placeBatches` are sized at MAX_GLYPHS_PER_RUN. Assert the
+// combined footprint stays under 16 KB so it fits comfortably within WASM's
+// 1 MB stack even in deep call chains (widget render → layout → renderText).
 comptime {
     const frame_bytes = MAX_GLYPHS_PER_RUN * (@sizeOf(ShapedGlyph) + @sizeOf(f32) + @sizeOf(f32) + @sizeOf(u8) + @sizeOf(CachedGlyph));
     std.debug.assert(frame_bytes <= 16384);
@@ -122,50 +122,20 @@ pub fn renderText(
     defer if (shaped.owned) shaped.deinit(text_system.run_allocator);
 
     const scaled_width = shaped.width * size_scale;
-    const glyph_count = shaped.glyphs.len;
+    if (shaped.glyphs.len == 0) return scaled_width;
 
-    if (glyph_count == 0) return scaled_width;
-    std.debug.assert(glyph_count <= MAX_GLYPHS_PER_RUN);
-
-    // Phase 1: Compute device-pixel positions and subpixel offsets (no lock).
-    var device_positions_x: [MAX_GLYPHS_PER_RUN]f32 = undefined;
-    var device_positions_y: [MAX_GLYPHS_PER_RUN]f32 = undefined;
-    var subpixel_offsets_x: [MAX_GLYPHS_PER_RUN]u8 = undefined;
-
-    computeGlyphDevicePositions(
-        shaped.glyphs,
-        x,
-        baseline_y,
-        size_scale,
-        scale_factor,
-        device_positions_x[0..glyph_count],
-        device_positions_y[0..glyph_count],
-        subpixel_offsets_x[0..glyph_count],
-    );
-
-    // Phase 2: Batch-resolve all glyphs under a single glyph_cache_mutex lock.
-    // One lock/unlock for the entire run instead of N separate lock/unlock pairs.
-    var cached_results: [MAX_GLYPHS_PER_RUN]CachedGlyph = undefined;
-
-    try text_system.resolveGlyphBatch(
-        .app,
-        shaped.glyphs,
-        options.variant,
-        font_size,
-        subpixel_offsets_x[0..glyph_count],
-        cached_results[0..glyph_count],
-    );
-
-    // Phase 3: Build GlyphInstances and emit to the scene (no lock).
-    try emitGlyphsToScene(
-        scene,
-        cached_results[0..glyph_count],
-        device_positions_x[0..glyph_count],
-        device_positions_y[0..glyph_count],
-        scale_factor,
-        color,
-        options,
-    );
+    const sink = SceneSink{
+        .scene = scene,
+        .scale_factor = scale_factor,
+        .color = color,
+        .options = options,
+    };
+    try placeBatches(text_system, .app, options.variant, font_size, shaped.glyphs, .{
+        .x = x,
+        .baseline_y = baseline_y,
+        .size_scale = size_scale,
+        .scale_factor = scale_factor,
+    }, &sink);
 
     // Render decorations (underline, strikethrough) if requested.
     // The variant's own metrics, so a bold underline uses the bold face's thickness.
@@ -178,10 +148,118 @@ pub fn renderText(
 }
 
 // =============================================================================
+// Batches
+// =============================================================================
+
+/// Where a shaped run starts, and how its base-size advances scale.
+const RunOrigin = struct {
+    x: f32,
+    baseline_y: f32,
+    size_scale: f32,
+    scale_factor: f32,
+};
+
+/// Resolve `glyphs` and hand them to `sink.batch` in batches of at most
+/// `MAX_GLYPHS_PER_RUN`, the size of the stack buffers, carrying the pen
+/// across batches. A run of any length is placed exactly as one batch would
+/// place it, and the glyph cache lock is taken once per batch. Shaping is
+/// not split, so kerning and ligatures across a batch edge are kept.
+fn placeBatches(
+    text_system: *TextSystem,
+    family: FontFamily,
+    variant: FontVariant,
+    font_size: f32,
+    glyphs: []const ShapedGlyph,
+    origin: RunOrigin,
+    sink: anytype,
+) !void {
+    std.debug.assert(glyphs.len > 0);
+    std.debug.assert(origin.scale_factor > 0);
+    var device_x: [MAX_GLYPHS_PER_RUN]f32 = undefined;
+    var device_y: [MAX_GLYPHS_PER_RUN]f32 = undefined;
+    var subpixel_x: [MAX_GLYPHS_PER_RUN]u8 = undefined;
+    var cached: [MAX_GLYPHS_PER_RUN]CachedGlyph = undefined;
+    const batch_count = @divFloor(glyphs.len - 1, MAX_GLYPHS_PER_RUN) + 1;
+    var pen_x = origin.x;
+    var start: usize = 0;
+    for (0..batch_count) |_| {
+        const end = @min(glyphs.len, start + MAX_GLYPHS_PER_RUN);
+        const batch = glyphs[start..end];
+        const count = batch.len;
+        std.debug.assert(count > 0);
+        std.debug.assert(count <= MAX_GLYPHS_PER_RUN);
+        pen_x = computeGlyphDevicePositions(
+            batch,
+            pen_x,
+            origin.baseline_y,
+            origin.size_scale,
+            origin.scale_factor,
+            device_x[0..count],
+            device_y[0..count],
+            subpixel_x[0..count],
+        );
+        try text_system.resolveGlyphBatch(
+            family,
+            batch,
+            variant,
+            font_size,
+            subpixel_x[0..count],
+            cached[0..count],
+        );
+        try sink.batch(cached[0..count], device_x[0..count], device_y[0..count]);
+        start = end;
+    }
+    std.debug.assert(start == glyphs.len);
+}
+
+/// `renderText`'s batches go to the scene.
+const SceneSink = struct {
+    scene: *Scene,
+    scale_factor: f32,
+    color: Hsla,
+    options: *RenderTextOptions,
+
+    fn batch(
+        self: *const SceneSink,
+        glyphs: []const CachedGlyph,
+        xs: []const f32,
+        ys: []const f32,
+    ) !void {
+        const scene = self.scene;
+        try emitGlyphsToScene(scene, glyphs, xs, ys, self.scale_factor, self.color, self.options);
+    }
+};
+
+/// `placeText`'s batches go to its caller's sink one glyph at a time.
+fn GlyphSink(comptime Sink: type) type {
+    return struct {
+        sink: Sink,
+        scale_factor: f32,
+
+        fn batch(
+            self: *const @This(),
+            glyphs: []const CachedGlyph,
+            xs: []const f32,
+            ys: []const f32,
+        ) !void {
+            std.debug.assert(glyphs.len == xs.len);
+            std.debug.assert(glyphs.len == ys.len);
+            const scale_factor = self.scale_factor;
+            for (glyphs, xs, ys) |glyph, dx, dy| {
+                const instance = placeGlyph(glyph, dx, dy, scale_factor, Hsla.black) orelse
+                    continue;
+                self.sink.glyph(instance);
+            }
+        }
+    };
+}
+
+// =============================================================================
 // Phase 1: Device Position Computation
 // =============================================================================
 
-/// Compute device-pixel coordinates and subpixel X offsets for each glyph.
+/// Compute device-pixel coordinates and subpixel X offsets for each glyph,
+/// returning the pen after the last advance, where the next batch starts.
 /// Tracks pen_x cumulatively across the glyph run.
 fn computeGlyphDevicePositions(
     shaped_glyphs: []const ShapedGlyph,
@@ -192,7 +270,7 @@ fn computeGlyphDevicePositions(
     out_device_x: []f32,
     out_device_y: []f32,
     out_subpixel_x: []u8,
-) void {
+) f32 {
     std.debug.assert(shaped_glyphs.len > 0);
     std.debug.assert(shaped_glyphs.len == out_device_x.len);
     std.debug.assert(shaped_glyphs.len == out_device_y.len);
@@ -220,6 +298,7 @@ fn computeGlyphDevicePositions(
 
         pen_x += scaled_advance;
     }
+    return pen_x;
 }
 
 // =============================================================================
@@ -323,38 +402,14 @@ pub fn placeText(
     var glyph_buf: [MAX_GLYPHS_PER_RUN]ShapedGlyph = undefined;
     var shaped = try text_system.shapeTextInto(family, text, variant, null, &glyph_buf);
     defer if (shaped.owned) shaped.deinit(text_system.run_allocator);
-    const glyph_count = shaped.glyphs.len;
-    if (glyph_count == 0) return shaped.width * size_scale;
-    std.debug.assert(glyph_count <= MAX_GLYPHS_PER_RUN);
-
-    var device_x: [MAX_GLYPHS_PER_RUN]f32 = undefined;
-    var device_y: [MAX_GLYPHS_PER_RUN]f32 = undefined;
-    var subpixel_x: [MAX_GLYPHS_PER_RUN]u8 = undefined;
-    computeGlyphDevicePositions(
-        shaped.glyphs,
-        x,
-        baseline_y,
-        size_scale,
-        scale_factor,
-        device_x[0..glyph_count],
-        device_y[0..glyph_count],
-        subpixel_x[0..glyph_count],
-    );
-    var cached: [MAX_GLYPHS_PER_RUN]CachedGlyph = undefined;
-    try text_system.resolveGlyphBatch(
-        family,
-        shaped.glyphs,
-        variant,
-        font_size,
-        subpixel_x[0..glyph_count],
-        cached[0..glyph_count],
-    );
-    const xs = device_x[0..glyph_count];
-    const ys = device_y[0..glyph_count];
-    for (cached[0..glyph_count], xs, ys) |glyph, dx, dy| {
-        const instance = placeGlyph(glyph, dx, dy, scale_factor, Hsla.black) orelse continue;
-        sink.glyph(instance);
-    }
+    if (shaped.glyphs.len == 0) return shaped.width * size_scale;
+    const batch_sink = GlyphSink(@TypeOf(sink)){ .sink = sink, .scale_factor = scale_factor };
+    try placeBatches(text_system, family, variant, font_size, shaped.glyphs, .{
+        .x = x,
+        .baseline_y = baseline_y,
+        .size_scale = size_scale,
+        .scale_factor = scale_factor,
+    }, &batch_sink);
     return shaped.width * size_scale;
 }
 

@@ -69,6 +69,7 @@ pub const FileStatus = enum {
     binary_file,
     image_file,
     file_too_large,
+    line_too_long,
 
     fn message(self: FileStatus) []const u8 {
         return switch (self) {
@@ -76,6 +77,10 @@ pub const FileStatus = enum {
             .binary_file => "Binary files cannot be displayed",
             .image_file => "Image preview not yet supported",
             .file_too_large => "File is too large to display (>256 KiB)",
+            .line_too_long => std.fmt.comptimePrint(
+                "Line too long to display (>{d} characters)",
+                .{gooey.text.run_codepoint_count_max},
+            ),
         };
     }
 };
@@ -174,6 +179,11 @@ pub const State = struct {
         } else if (!std.unicode.utf8ValidateSlice(content)) {
             self.status = .binary_file;
             self.source = "";
+        } else if (longestLine(content) > gooey.text.run_codepoint_count_max) {
+            // The editor paints a line as one shaped run, which fails fast
+            // past the shapers' bound; refuse the file instead.
+            self.status = .line_too_long;
+            self.source = "";
         } else {
             self.status = .displaying_code;
             self.source = content;
@@ -253,6 +263,15 @@ const image_extensions = [_][]const u8{
 
 fn isImageExtension(extension: []const u8) bool {
     return matchesAny(extension, &image_extensions);
+}
+
+/// The codepoints in `content`'s longest line.
+fn longestLine(content: []const u8) u32 {
+    var longest: u32 = 0;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| longest = @max(longest, gooey.text.codepointCount(line));
+    assert(longest <= content.len);
+    return longest;
 }
 
 fn isBinaryExtension(extension: []const u8) bool {
@@ -447,7 +466,7 @@ const EditorPanel = struct {
             .displaying_code => unreachable,
             .binary_file => &status_icons[0],
             .image_file => &status_icons[1],
-            .file_too_large => &status_icons[2],
+            .file_too_large, .line_too_long => &status_icons[2],
         };
         cx.render(ui.box(.{ .style = .{
             .width = .{ .fixed = editor_width },
