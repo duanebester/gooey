@@ -370,6 +370,97 @@ const chevrons = [2][2]SelectIcon{
 const select_check = SelectIcon{ .path = Checkbox.checkmark.path, .color = .primary, .opacity = 1 };
 
 // =============================================================================
+// List
+// =============================================================================
+
+/// A vertical list of `count` rows of one height that builds only the rows
+/// in view (contract §1), as 0.3.1's uniform list: a keyed scroll box whose
+/// retained offset and last measured viewport pick the rows, with spacers
+/// above and below standing in for the rest so the wheel and scrollbar see
+/// every row. `Row` has an `index: u32` field, a `render`, and a
+/// `row_height: f32` declaration; each row sits in a box keyed by its index,
+/// so state a row keys survives scrolling. The list grows to fill its parent:
+/// a viewport sized by its rows would add one row per frame.
+pub fn List(comptime Row: type) type {
+    comptime {
+        assert(@FieldType(Row, "index") == u32);
+        assert(@TypeOf(Row.row_height) == f32 or @TypeOf(Row.row_height) == comptime_float);
+        assert(Row.row_height >= 1);
+    }
+    return struct {
+        key: []const u8,
+        count: u32,
+
+        const Self = @This();
+        const ScrollState = core.internals.window.ScrollState;
+        const row_height: f32 = Row.row_height;
+
+        pub fn render(self: Self, cx: *Cx) void {
+            assert(self.key.len > 0);
+            const key = Key{ .name = self.key };
+            // The box retains this state by its key; retaining it first
+            // reads the offset and viewport the router and last emit left.
+            const handle = cx.retain(ScrollState, cx.id(key), .frame, ScrollState.init);
+            const range = visibleRows(cx.get(ScrollState, handle), self.count);
+            assert(range.start <= range.end);
+            assert(range.end <= self.count);
+            cx.render(ui.box(.{ .key = key, .style = .{
+                .width = .{ .grow = 1 },
+                .height = .{ .grow = 1 },
+                .scroll = .{},
+            } }, .{
+                spacer(range.start),
+                ListRows(Row){ .start = range.start, .end = range.end },
+                spacer(self.count - range.end),
+            }));
+        }
+
+        /// The first row the offset reaches through the last row the viewport
+        /// shows, plus one for a partial row. An unmeasured viewport shows one
+        /// row; the emit that measures it requests the render that fills it.
+        fn visibleRows(state: *const ScrollState, count: u32) struct { start: u32, end: u32 } {
+            const content_height = row_height * @as(f32, @floatFromInt(count));
+            const offset_max = @max(0, content_height - state.viewport.height);
+            const offset = std.math.clamp(state.offset_y, 0, offset_max);
+            const first: u32 = @intFromFloat(@floor(offset / row_height));
+            const shown: u32 = @intFromFloat(@ceil(state.viewport.height / row_height));
+            assert(shown <= list_rows_visible_max);
+            const start = @min(first, count);
+            return .{ .start = start, .end = @min(count, start + shown + 1) };
+        }
+
+        fn spacer(rows: u32) ui.Box.Element(@TypeOf(.{})) {
+            const height = row_height * @as(f32, @floatFromInt(rows));
+            return ui.box(.{ .style = .{ .height = .{ .fixed = height } } }, .{});
+        }
+    };
+}
+
+/// Rows a viewport can show: one as tall as the tallest framebuffer, of
+/// 1 px rows. A taller viewport (a list inside a taller scrolled box) fails
+/// fast rather than building rows past any screen.
+const list_rows_visible_max: u32 = core.limits.MAX_FRAMEBUFFER_HEIGHT;
+
+fn ListRows(comptime Row: type) type {
+    return struct {
+        start: u32,
+        end: u32,
+
+        pub fn render(self: @This(), cx: *Cx) void {
+            assert(self.start <= self.end);
+            assert(self.end - self.start <= list_rows_visible_max + 1);
+            var index = self.start;
+            while (index < self.end) : (index += 1) {
+                cx.render(ui.box(.{ .key = .{ .index = index }, .style = .{
+                    .width = .{ .grow = 1 },
+                    .height = .{ .fixed = Row.row_height },
+                } }, .{Row{ .index = index }}));
+            }
+        }
+    };
+}
+
+// =============================================================================
 // TextInput
 // =============================================================================
 
