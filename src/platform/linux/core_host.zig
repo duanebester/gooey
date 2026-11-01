@@ -44,6 +44,7 @@ const clipboard = @import("clipboard.zig");
 const linux_backend = @import("../linux_backend.zig");
 const scene_mod = @import("../../scene/mod.zig");
 const core_window = @import("../../core/window.zig");
+const core_element = @import("../../core/element.zig");
 const core_tick = @import("../../core/tick.zig");
 const core_router = @import("../../core/router.zig");
 const core_events = @import("../../core/events.zig");
@@ -143,6 +144,8 @@ pub const Host = struct {
     ime_enabled: bool,
     /// The IME rect last sent to the compositor, while enabled.
     ime_rect: ?records.Rect,
+    /// The cursor last set on the window.
+    cursor: core_element.CursorShape,
 
     // Render thread only.
     frame_callback: ?*wayland.Callback,
@@ -180,6 +183,7 @@ pub const Host = struct {
         self.quit = false;
         self.ime_enabled = false;
         self.ime_rect = null;
+        self.cursor = .default;
         self.frame_callback = null;
         self.frame_callback_deadline_ns = 0;
         self.surface_width = self.window.width_px;
@@ -323,6 +327,7 @@ pub const Host = struct {
         assert(self.core.phase == .idle);
         self.tick_main(self.app, self.nowNs());
         assert(self.core.phase == .idle);
+        self.applyCursor();
         if (self.core.quit_requested) {
             self.quit = true;
             return;
@@ -383,6 +388,16 @@ pub const Host = struct {
             unreachable; // The divisor is a nonzero constant.
         assert(remaining_ms > 0);
         return @intCast(@min(remaining_ms, std.math.maxInt(i32)));
+    }
+
+    /// Set the cursor the tick resolved from the hovered record, only when it
+    /// changed, so an idle pointer sends the compositor nothing.
+    fn applyCursor(self: *Host) void {
+        assert(self.core.phase == .idle);
+        if (self.core.cursor == self.cursor) return;
+        self.window.setCursorShape(self.core.cursor);
+        self.cursor = self.core.cursor;
+        assert(self.cursor == self.core.cursor);
     }
 
     /// Send the rendered frame's IME state to text-input-v3: enabled while a

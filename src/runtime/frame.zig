@@ -439,7 +439,7 @@ fn updateImeCursorPosition(window: *Window, builder: *const Builder) void {
 /// Text controls select an I-beam, boxes with an explicit `Box.cursor`
 /// select that shape, and all other content resets to the platform's
 /// default cursor. Implemented on Linux (`wp_cursor_shape_manager_v1`)
-/// and macOS (`NSCursor`); a no-op on web (see `platform.PlatformCapabilities.custom_cursors`).
+/// and macOS (`NSCursor`); skipped on web, where only the core host sets one.
 fn updateCursorShape(window: *Window, builder: *const Builder) void {
     std.debug.assert(builder.pending_inputs.items.len <= Builder.MAX_PENDING_INPUTS);
     std.debug.assert(builder.pending_text_areas.items.len <= Builder.MAX_PENDING_TEXT_AREAS);

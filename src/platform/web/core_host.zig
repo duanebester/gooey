@@ -32,6 +32,7 @@ const text_buffer = @import("text_buffer.zig");
 const composition_buffer = @import("composition_buffer.zig");
 const scene_mod = @import("../../scene/mod.zig");
 const core_window = @import("../../core/window.zig");
+const core_element = @import("../../core/element.zig");
 const core_router = @import("../../core/router.zig");
 const core_events = @import("../../core/events.zig");
 const records = @import("../../core/records.zig");
@@ -125,6 +126,8 @@ pub const Host = struct {
     scale_factor: f64,
     /// The caret rect last handed to the browser's hidden input.
     ime_rect: ?records.Rect,
+    /// The cursor last set on the canvas.
+    cursor: core_element.CursorShape,
 
     pub const Options = struct {
         title: []const u8,
@@ -153,6 +156,7 @@ pub const Host = struct {
         self.height = self.window.size.height;
         self.scale_factor = self.window.scale_factor;
         self.ime_rect = null;
+        self.cursor = .default;
         assert(self.scale_factor > 0);
     }
 
@@ -214,6 +218,12 @@ pub const Host = struct {
                 self.window.setImeCursorRect(caret.x, caret.y, caret.width, caret.height);
             }
         }
+        // Only a change reaches the canvas's CSS, not every frame.
+        if (self.core.cursor != self.cursor) {
+            self.window.setCursorShape(self.core.cursor);
+            self.cursor = self.core.cursor;
+        }
+        assert(self.cursor == self.core.cursor);
         if (self.core.quit_requested) self.platform.quit();
         if (self.platform.isRunning()) imports.requestAnimationFrame();
     }

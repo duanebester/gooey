@@ -52,6 +52,10 @@ pub extern "env" fn getCanvasPixelHeight() u32;
 pub extern "env" fn setCanvasSize(width: u32, height: u32) void;
 pub extern "env" fn setDocumentTitle(ptr: [*]const u8, len: u32) void;
 
+/// Set the canvas's CSS cursor: `@intFromEnum(interface.CursorShape)`, in
+/// the order `default`, `text`, `pointer`.
+pub extern "env" fn setCanvasCursor(shape: u32) void;
+
 /// Position the hidden input element for IME candidate window placement
 pub extern "env" fn setImeCursorPosition(x: f32, y: f32, width: f32, height: f32) void;
 

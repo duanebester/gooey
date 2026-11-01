@@ -12,6 +12,7 @@ const id_mod = @import("id.zig");
 const geometry = @import("../geometry/geometry.zig");
 const handler_mod = @import("handler.zig");
 const a11y_types = @import("../accessibility/types.zig");
+const CursorShape = @import("../platform/interface.zig").CursorShape;
 
 const assert = std.debug.assert;
 
@@ -133,6 +134,8 @@ pub const HitRecord = struct {
     focusable: bool,
     /// A `Style.scroll` box: the wheel scrolls its retained `ScrollState`.
     scroll: bool,
+    /// `Style.cursor`; null defers to the parent record's.
+    cursor: ?CursorShape,
     on_click: u32,
     on_click_outside: u32,
     on_key: u32,

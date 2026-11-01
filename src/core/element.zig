@@ -108,7 +108,8 @@ pub const Shadow = struct {
 
 pub const ClipPolicy = enum { none, clip };
 pub const Scroll = struct { x: bool = false, y: bool = true };
-pub const CursorShape = enum { default, pointer, text };
+/// The platform's shape, so hosts apply a resolved cursor without a mapping.
+pub const CursorShape = @import("../platform/interface.zig").CursorShape;
 pub const PointerEvents = enum { auto, none };
 
 /// Layout and appearance: plain data with no per-element arguments, so a

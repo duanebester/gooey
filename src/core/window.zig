@@ -112,6 +112,7 @@ pub const Node = struct {
     // Box.
     focusable: bool,
     hit: bool,
+    cursor: ?element.CursorShape,
     on_click: u32,
     on_click_outside: u32,
     on_key: u32,
@@ -498,6 +499,9 @@ pub const Window = struct {
     focus: ElementId,
     hover_path: [box_depth_max]ElementId,
     hover_len: u32,
+    /// The hovered record's cursor, or the nearest ancestor's that sets one;
+    /// `.default` over none. Hosts apply it after a tick when it changed.
+    cursor: element.CursorShape,
     /// Ids from the pressed record up to the root, captured on press. A
     /// release fires the click handlers of records in this path only, so a
     /// press that slides off a button does not click it (decision 7).
@@ -698,6 +702,7 @@ pub noinline fn initInPlace(self: *Window, gpa: std.mem.Allocator, options: *con
     self.file_dialog = null;
     self.focus = .root;
     self.hover_len = 0;
+    self.cursor = .default;
     self.press_len = 0;
     self.scroll_drag = .root;
     self.pointer = null;
