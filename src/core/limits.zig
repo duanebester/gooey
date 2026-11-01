@@ -946,6 +946,9 @@ pub const handler_count_element_max: u32 = 3;
 pub const MAX_COMPONENT_DEPTH: u32 = 128;
 
 /// Build-phase capacities: the element tree one frame may describe.
+/// Fragments are numbered in a `u8` after content's zero.
+pub const layer_count_ceiling: u32 = std.math.maxInt(u8);
+
 pub const BuildLimits = struct {
     /// Elements (`box`, `text`, `paint`) per frame.
     element_count_frame_max: u32,
@@ -955,36 +958,43 @@ pub const BuildLimits = struct {
     key_count_frame_max: u32,
     /// Bytes of text and accessibility strings copied per frame (rule 6).
     text_bytes_frame_max: u32,
+    /// Boxes with a `layer` per frame; each opens one fragment (contract §6).
+    layer_count_frame_max: u32,
 
     pub const nano: BuildLimits = .{
         .element_count_frame_max = 512,
         .component_depth_max = 64,
         .key_count_frame_max = 256,
         .text_bytes_frame_max = 16 * 1024,
+        .layer_count_frame_max = 8,
     };
     pub const small: BuildLimits = .{
         .element_count_frame_max = 2_048,
         .component_depth_max = 64,
         .key_count_frame_max = 1_024,
         .text_bytes_frame_max = 64 * 1024,
+        .layer_count_frame_max = 16,
     };
     pub const standard: BuildLimits = .{
         .element_count_frame_max = 4_096,
         .component_depth_max = 64,
         .key_count_frame_max = 4_096,
         .text_bytes_frame_max = 256 * 1024,
+        .layer_count_frame_max = 32,
     };
     pub const large: BuildLimits = .{
         .element_count_frame_max = 16_384,
         .component_depth_max = 64,
         .key_count_frame_max = 16_384,
         .text_bytes_frame_max = 1024 * 1024,
+        .layer_count_frame_max = 64,
     };
     pub const ceiling: BuildLimits = .{
         .element_count_frame_max = MAX_LAYOUT_ENGINE_ELEMENTS,
         .component_depth_max = MAX_COMPONENT_DEPTH,
         .key_count_frame_max = MAX_LAYOUT_ENGINE_ELEMENTS,
         .text_bytes_frame_max = 4 * 1024 * 1024,
+        .layer_count_frame_max = layer_count_ceiling,
     };
 };
 

@@ -222,11 +222,15 @@ pub const Cx = struct {
             window.retained.get(window_mod.ScrollState, handle)
         else
             null;
-        const index = openNodeScrolled(window, .box, box_id, &box.style, scroll_state);
+        const index = openNodeWith(window, .box, box_id, &box.style, .{
+            .scroll = scroll_state,
+            .layer = box.layer,
+        });
         const node = window.node(index);
         const frame = window.built();
         node.scroll = scroll;
         node.clip = box.style.clip == .clip or scroll != null;
+        node.layer = box.layer;
         node.focusable = box.focusable;
         node.on_click = handlerIndex(frame, box.on_click);
         node.on_click_outside = handlerIndex(frame, box.on_click_outside);
@@ -243,10 +247,15 @@ pub const Cx = struct {
             .label = frame.copyText(a11y.label orelse ""),
             .value = frame.copyText(a11y.value orelse ""),
             .href = frame.copyText(a11y.href orelse ""),
+            .description = frame.copyText(a11y.description orelse ""),
             .checked = a11y.checked,
             .disabled = a11y.disabled,
+            .expanded = a11y.expanded,
+            .has_popup = a11y.has_popup,
             .heading_level = a11y.heading_level,
             .live = a11y.live,
+            .pos_in_set = a11y.pos_in_set,
+            .set_size = a11y.set_size,
         };
         resolveAppearance(window, node, &box.style);
         pushOpen(window, index);
@@ -360,7 +369,12 @@ fn noteDepth(window: *Window) void {
 
 fn checkMilestoneOne(box: *const element.Box) void {
     const phase_four = "is not supported until phase 4 of 0.4.0";
-    if (box.layer != null) std.debug.panic("Box.layer {s}", .{phase_four});
+    if (box.layer) |layer| {
+        if (layer.kind != .popover) {
+            std.debug.panic("Box.layer .{t}: only .popover layers are implemented " ++
+                "(contract decision 13)", .{layer.kind});
+        }
+    }
     if (box.draggable != null) std.debug.panic("Box.draggable {s}", .{phase_four});
     if (box.drop_target != null) std.debug.panic("Box.drop_target {s}", .{phase_four});
     if (box.style.opacity != 1) std.debug.panic("Style.opacity {s}", .{phase_four});
@@ -433,6 +447,7 @@ fn addNode(window: *Window, kind: window_mod.NodeKind, node_id: ElementId) u32 {
         .paint_data = null,
         .clip = false,
         .scroll = null,
+        .layer = null,
     };
     window.node_count += 1;
     return index;
@@ -445,28 +460,57 @@ fn openNode(
     style: *const element.Style,
 ) u32 {
     assert(style.scroll == null);
-    return openNodeScrolled(window, kind, node_id, style, null);
+    return openNodeWith(window, kind, node_id, style, .{ .scroll = null, .layer = null });
 }
 
-/// `scroll` is a scroll box's retained state, whose offset the layout applies
-/// to its children; null for every other box.
-fn openNodeScrolled(
+const OpenOptions = struct {
+    /// A scroll box's retained state, whose offset the layout applies to its
+    /// children; null for every other box.
+    scroll: ?*const window_mod.ScrollState,
+    /// A layer box floats at its anchor, outside its parent's layout.
+    layer: ?element.Layer,
+};
+
+fn openNodeWith(
     window: *Window,
     kind: window_mod.NodeKind,
     node_id: ElementId,
     style: *const element.Style,
-    scroll: ?*const window_mod.ScrollState,
+    options: OpenOptions,
 ) u32 {
-    if (style.scroll != null) assert(scroll != null);
+    if (style.scroll != null) assert(options.scroll != null);
     const index = addNode(window, kind, node_id);
     var decl = declaration(style);
     if (style.scroll) |axes| decl.scroll = .{
         .horizontal = axes.x,
         .vertical = axes.y,
-        .scroll_offset = .{ .x = scroll.?.offset_x, .y = scroll.?.offset_y },
+        .scroll_offset = .{ .x = options.scroll.?.offset_x, .y = options.scroll.?.offset_y },
     };
+    if (options.layer) |layer| decl.floating = floating(layer.anchor);
     window.layout.openElement(decl) catch |err| layoutFailed(window, err);
     return index;
+}
+
+/// A layer's anchor as layout floating: its top-left corner at the offset
+/// from the opener's top-left corner, or from the window's.
+fn floating(anchor: element.Anchor) layout_mod.FloatingConfig {
+    const config: layout_mod.FloatingConfig = switch (anchor) {
+        .parent => |offset| .{
+            .offset = .{ .x = offset.x, .y = offset.y },
+            .attach_to_parent = true,
+            .element_attach = .left_top,
+            .parent_attach = .left_top,
+        },
+        .window => |offset| .{
+            .offset = .{ .x = offset.x, .y = offset.y },
+            .attach_to_parent = false,
+            .element_attach = .left_top,
+            .parent_attach = .left_top,
+        },
+    };
+    assert(config.z_index == 0);
+    assert(config.parent_id == null);
+    return config;
 }
 
 /// A scroll box's offset, retained by its key for as long as it renders

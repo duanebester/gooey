@@ -153,9 +153,12 @@ pub const A11yNode = struct {
     name: TextRange,
     value: TextRange,
     href: TextRange,
+    description: TextRange,
     state: a11y_types.State,
     heading_level: a11y_types.HeadingLevel,
     live: a11y_types.Live,
+    pos_in_set: ?u16,
+    set_size: ?u16,
 };
 
 /// Screen-reader announcements (`Effects.announce`) in their own bytes, so a

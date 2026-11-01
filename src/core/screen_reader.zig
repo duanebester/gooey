@@ -62,9 +62,12 @@ fn push(tree: *a11y.Tree, frame: *const records.Frame, node: *const records.A11y
         .role = node.role,
         .name = frame.text(node.name),
         .value = frame.text(node.value),
+        .description = if (node.description.len > 0) frame.text(node.description) else null,
         .state = node.state,
         .live = node.live,
         .heading_level = node.heading_level,
+        .pos_in_set = node.pos_in_set,
+        .set_size = node.set_size,
     }) orelse std.debug.panic("accessibility tree full: capacity {d} elements, depth {d}; " ++
         "frame {d} has {d} nodes", .{
         a11y.constants.MAX_ELEMENTS,

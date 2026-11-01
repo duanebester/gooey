@@ -22,6 +22,7 @@ pub const Color = geometry.Color;
 pub const Theme = ui_theme.Theme;
 pub const Corners = records.Corners;
 pub const Layer = layers.Layer;
+pub const Anchor = layers.Anchor;
 pub const Role = a11y_types.Role;
 pub const HeadingLevel = a11y_types.HeadingLevel;
 pub const Live = a11y_types.Live;
@@ -174,6 +175,15 @@ pub const A11y = struct {
     /// How a screen reader reports changes inside this element.
     live: Live = .off,
     href: ?[]const u8 = null,
+    /// Help text a screen reader reads after the name.
+    description: ?[]const u8 = null,
+    /// A disclosure such as a combobox is open.
+    expanded: bool = false,
+    /// Activating the element opens a popup (a listbox or menu).
+    has_popup: bool = false,
+    /// One-based position among `set_size` siblings, as in a radio group.
+    pos_in_set: ?u16 = null,
+    set_size: ?u16 = null,
 };
 
 /// Per-instance identity and behaviour (contract §1).

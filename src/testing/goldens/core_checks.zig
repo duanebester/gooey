@@ -21,6 +21,7 @@ const Effects = core.Effects;
 const TextBuffer = gooey.testing.record_dump.TextBuffer;
 
 const testing = std.testing;
+const assert = std.debug.assert;
 
 /// Set to print the depth and stack measurements recorded in the plan.
 const print_measurements = false;
@@ -387,6 +388,134 @@ test "a scroll box clips its content, clamps its offset, and passes the wheel on
     view = ScrollView.read(&app.window);
     try testing.expectEqual(@as(f32, 0), view.outer_offset);
     try testing.expectEqual(@as(f32, 30), view.inner_offset);
+}
+
+/// A Select in a clipped panel above a button, for the popover check. The
+/// panel is shorter than the open menu, and the menu covers the button.
+const SelectState = struct {
+    selected: ?usize = null,
+    open: bool = false,
+    below_clicks: u32 = 0,
+
+    const options = [_][]const u8{ "One", "Two", "Three" };
+
+    pub fn toggle(self: *SelectState) void {
+        self.open = !self.open;
+    }
+
+    pub fn close(self: *SelectState) void {
+        self.open = false;
+    }
+
+    pub fn choose(self: *SelectState, index: u32) void {
+        self.selected = index;
+        self.open = false;
+    }
+
+    pub fn below(self: *SelectState) void {
+        self.below_clicks += 1;
+    }
+};
+
+const SelectApp = core.App(SelectState, selectRender, .{
+    .title = "Select",
+    .width = 400,
+    .height = 300,
+    .limits = core.ResourceLimits.small,
+});
+
+fn selectRender(cx: *Cx) void {
+    const state = cx.state(SelectState);
+    var on_select: [SelectState.options.len]core.Handler = undefined;
+    for (&on_select, 0..) |*handler, index| {
+        handler.* = cx.on(SelectState.choose, .{ .arg = @as(u32, @intCast(index)) });
+    }
+    cx.render(ui.box(.{ .style = .{ .padding = .all(10), .gap = 8 } }, .{
+        ui.box(.{ .style = .{ .height = .{ .fixed = 50 }, .clip = .clip } }, .{
+            components.core.Select{
+                .key = "level",
+                .options = &SelectState.options,
+                .on_select = &on_select,
+                .on_toggle = cx.on(SelectState.toggle, .{}),
+                .on_close = cx.on(SelectState.close, .{}),
+                .selected = state.selected,
+                .open = state.open,
+                .accessible_name = "Level",
+                .accessible_description = "How far along you are",
+            },
+        }),
+        components.core.Button{ .label = "Below", .on_click = cx.on(SelectState.below, .{}) },
+    }));
+}
+
+fn clickAt(app: anytype, now: *u64, x: f32, y: f32) void {
+    app.window.queue.push(.{ .input = .{ .mouse_down = mouse(x, y) } });
+    app.window.queue.push(.{ .input = .{ .mouse_up = mouse(x, y) } });
+    now.* += 1;
+    app.tick(now.*);
+    now.* += 1;
+    app.tick(now.*);
+}
+
+fn comboboxState(app: *SelectApp) gooey.accessibility.State {
+    const frame = app.window.rendered();
+    for (frame.a11y[0..frame.a11y_count]) |*node| {
+        if (node.role != .combobox) continue;
+        assert(std.mem.eql(u8, "How far along you are", frame.text(node.description).?));
+        return node.state;
+    }
+    unreachable;
+}
+
+test "a Select's menu opens on a popover above content and outside its clip" {
+    // Goal: the `.popover` layer through the real router and emit. Method:
+    // open the menu, whose options overflow the 50 px clipped panel and
+    // cover the button below it; click where an option and the button
+    // overlap; reopen and click outside. The option must win the click.
+    const app = try testing.allocator.create(SelectApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    try testing.expect(!comboboxState(app).expanded);
+    try testing.expect(comboboxState(app).has_popup);
+
+    clickAt(app, &now, 20, 20);
+    try testing.expect(app.state.open);
+    try testing.expect(comboboxState(app).expanded);
+    const frame = app.window.rendered();
+    var button: ?gooey.core.internals.records.Rect = null;
+    var options: [3]gooey.core.internals.records.Rect = undefined;
+    var option_count: u32 = 0;
+    for (frame.hits[0..frame.hit_count]) |*record| {
+        if (record.on_click == gooey.core.internals.records.index_none) continue;
+        if (record.fragment == 1) {
+            options[option_count] = record.bounds;
+            option_count += 1;
+        } else if (record.bounds.y > 50) {
+            button = record.bounds;
+        }
+    }
+    try testing.expectEqual(@as(u32, 3), option_count);
+    // The panel clips at y = 60; the menu escapes it.
+    try testing.expect(options[2].y + options[2].height > 60);
+    const target = button.?;
+    var chosen: ?usize = null;
+    for (options, 0..) |option, index| {
+        if (option.contains(target.x + 10, target.y + 4)) chosen = index;
+    }
+    clickAt(app, &now, target.x + 10, target.y + 4);
+    try testing.expectEqual(chosen.?, app.state.selected.?);
+    try testing.expectEqual(@as(u32, 0), app.state.below_clicks);
+    try testing.expect(!app.state.open);
+
+    clickAt(app, &now, 20, 20);
+    try testing.expect(app.state.open);
+    clickAt(app, &now, 390, 290);
+    try testing.expect(!app.state.open);
+    try testing.expectEqual(chosen.?, app.state.selected.?);
+    try testing.expect(!comboboxState(app).expanded);
 }
 
 /// An app whose button opens a file dialog, for the dialog check. Its first
