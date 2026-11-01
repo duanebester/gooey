@@ -34,6 +34,8 @@ pub const Button = struct {
     size: Size = .medium,
     disabled: bool = false,
     on_click: ?Handler = null,
+    /// The screen-reader name; defaults to the label.
+    accessible_name: ?[]const u8 = null,
 
     pub const Variant = enum { primary, secondary, danger };
     pub const Size = enum { small, medium, large };
@@ -60,7 +62,11 @@ pub const Button = struct {
                 .cursor = .pointer,
             },
             .on_click = if (self.disabled) null else self.on_click,
-            .a11y = .{ .role = .button, .label = self.label, .disabled = self.disabled },
+            .a11y = .{
+                .role = .button,
+                .label = self.accessible_name orelse self.label,
+                .disabled = self.disabled,
+            },
         }, .{
             ui.text(self.label, .{
                 .size = fontSize(self.size, theme.font_size_base),
@@ -106,6 +112,11 @@ pub const Checkbox = struct {
     on_click: ?Handler = null,
     key: ?Key = null,
     size: f32 = 18,
+    /// Text beside the box, which clicks it too.
+    label: ?[]const u8 = null,
+    /// The screen-reader name; defaults to the label.
+    accessible_name: ?[]const u8 = null,
+    accessible_description: ?[]const u8 = null,
 
     pub fn render(self: Checkbox, cx: *Cx) void {
         assert(self.size > 0);
@@ -115,7 +126,12 @@ pub const Checkbox = struct {
             .key = self.key,
             .style = .{ .direction = .row, .gap = 8, .alignment = .center_cross },
             .on_click = self.on_click,
-            .a11y = .{ .role = .checkbox, .checked = self.checked },
+            .a11y = .{
+                .role = .checkbox,
+                .label = self.accessible_name orelse self.label,
+                .description = self.accessible_description,
+                .checked = self.checked,
+            },
         }, .{
             ui.box(.{ .style = .{
                 .width = .{ .fixed = self.size },
@@ -130,6 +146,10 @@ pub const Checkbox = struct {
                     .height = .{ .fixed = mark_size },
                 }) else null,
             }),
+            if (self.label) |label| ui.text(label, .{
+                .size = theme.font_size_base,
+                .color = .text,
+            }) else null,
         }));
     }
 
@@ -364,6 +384,11 @@ pub const TextInput = struct {
     width: f32 = 200,
     padding: f32 = 8,
     border_width: f32 = 1,
+    /// The unfocused border, such as an error colour; defaults to the theme's.
+    border_color: ?Color = null,
+    /// The screen-reader name; defaults to the placeholder.
+    accessible_name: ?[]const u8 = null,
+    accessible_description: ?[]const u8 = null,
 
     pub fn render(self: TextInput, cx: *Cx) void {
         assert(self.key.len > 0);
@@ -389,14 +414,17 @@ pub const TextInput = struct {
                 .background = .surface,
                 .border = .{
                     .width = self.border_width,
-                    .color = if (focused) .border_focus else .border,
+                    .color = if (focused)
+                        .border_focus
+                    else if (self.border_color) |color| .{ .rgba = color } else .border,
                 },
                 .corner_radius = .all(theme.radius_md),
                 .cursor = .text,
             },
             .a11y = .{
                 .role = .textbox,
-                .label = self.placeholder,
+                .label = self.accessible_name orelse self.placeholder,
+                .description = self.accessible_description,
                 .value = if (engine.len > 0) engine.text() else null,
             },
         }, .{

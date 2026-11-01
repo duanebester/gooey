@@ -799,7 +799,11 @@ pub fn build(b: *std.Build) void {
             .{ .name = "actions", .source = "src/examples/actions.zig", .core = true },
             .{ .name = "nested-overlay", .source = "src/examples/nested_overlay.zig" },
             .{ .name = "images", .source = "src/examples/images.zig" },
-            .{ .name = "accessible-form", .source = "src/examples/accessible_form.zig" },
+            .{
+                .name = "accessible-form",
+                .source = "src/examples/accessible_form.zig",
+                .core = true,
+            },
             .{ .name = "virtual-list", .source = "src/examples/virtual_list_example.zig" },
             .{ .name = "data-table", .source = "src/examples/data_table_example.zig" },
             .{ .name = "disktree", .source = "src/examples/disktree.zig" },
@@ -1296,7 +1300,6 @@ fn addWindowsBuilds(
         .{ .name = "lucide-demo", .source = "src/examples/lucide_demo.zig" },
         .{ .name = "images", .source = "src/examples/images.zig" },
         .{ .name = "data-table", .source = "src/examples/data_table_example.zig" },
-        .{ .name = "accessible-form", .source = "src/examples/accessible_form.zig" },
         .{ .name = "clipboard", .source = "src/examples/clipboard.zig" },
         .{ .name = "file-dialog", .source = "src/examples/file_dialog.zig" },
     };
@@ -2324,7 +2327,14 @@ fn addGoldens(
         .optimize = optimize,
         .imports = example_imports,
     });
+    const accessible_form_mod = b.createModule(.{
+        .root_source_file = b.path("src/examples/accessible_form.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = example_imports,
+    });
     const goldens_imports: []const std.Build.Module.Import = &.{
+        .{ .name = "accessible_form_example", .module = accessible_form_mod },
         .{ .name = "actions_example", .module = actions_mod },
         .{ .name = "gooey", .module = gooey_mod },
         .{ .name = "gooey-components", .module = components_mod },
