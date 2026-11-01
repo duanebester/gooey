@@ -801,7 +801,11 @@ pub fn build(b: *std.Build) void {
             .{ .name = "dynamic-counters", .source = "src/examples/dynamic_counters.zig" },
             .{ .name = "layout", .source = "src/examples/layout.zig" },
             .{ .name = "actions", .source = "src/examples/actions.zig", .core = true },
-            .{ .name = "nested-overlay", .source = "src/examples/nested_overlay.zig" },
+            .{
+                .name = "nested-overlay",
+                .source = "src/examples/nested_overlay.zig",
+                .core = true,
+            },
             .{ .name = "images", .source = "src/examples/images.zig" },
             .{
                 .name = "accessible-form",
@@ -1494,7 +1498,13 @@ fn addMacosCoreExampleTypecheck(
         .optimize = .debug,
     });
     components_mod.addImport("gooey", gooey_mod);
-    const examples = [_][]const u8{ "counter", "todo", "actions", "core_file_dialog" };
+    const examples = [_][]const u8{
+        "counter",
+        "todo",
+        "actions",
+        "core_file_dialog",
+        "nested_overlay",
+    };
     for (examples) |name| {
         const exe = b.addExecutable(.{
             .name = b.fmt("typecheck-macos-{s}", .{name}),
@@ -2342,6 +2352,12 @@ fn addGoldens(
         .optimize = optimize,
         .imports = example_imports,
     });
+    const nested_overlay_mod = b.createModule(.{
+        .root_source_file = b.path("src/examples/nested_overlay.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = example_imports,
+    });
     const goldens_imports: []const std.Build.Module.Import = &.{
         .{ .name = "accessible_form_example", .module = accessible_form_mod },
         .{ .name = "actions_example", .module = actions_mod },
@@ -2349,6 +2365,7 @@ fn addGoldens(
         .{ .name = "gooey", .module = gooey_mod },
         .{ .name = "gooey-components", .module = components_mod },
         .{ .name = "counter_example", .module = counter_mod },
+        .{ .name = "nested_overlay_example", .module = nested_overlay_mod },
         .{ .name = "todo_example", .module = todo_mod },
     };
 

@@ -3,8 +3,9 @@
 //! Content is fragment zero. A box with a `layer` opens a fragment; fragments
 //! paint in `order` and hit-test in reverse, so what is on top receives input.
 //! Emit writes each fragment's paint after the previous one's into the one
-//! stream, and tags its hit records with the fragment. Only `.popover` is
-//! implemented (contract decision 13); `Cx` fails fast on the other kinds.
+//! stream, and tags its hit records with the fragment. A modal fragment
+//! blocks hit testing of every earlier fragment. Only `.popover` and `.modal`
+//! are implemented (contract decision 13); `Cx` fails fast on the other kinds.
 
 const std = @import("std");
 
