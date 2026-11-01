@@ -1055,6 +1055,94 @@ test "every build opens an atlas frame so the glyph LRU can evict" {
     try testing.expectEqual(first + 3, uploads.frameCurrent());
 }
 
+/// Four 40 px rows above empty space, for the cursor check: a Button, a
+/// TextInput, a box that sets only a cursor around a keyed child that sets
+/// none, and a keyed box whose cursor follows its state.
+const CursorState = struct {
+    draft: []const u8 = "",
+    text: bool = false,
+
+    fn toggle(self: *CursorState) void {
+        self.text = !self.text;
+    }
+};
+
+const CursorApp = core.App(CursorState, cursorRender, .{
+    .title = "Cursor",
+    .width = 300,
+    .height = 200,
+    .limits = .nano,
+});
+
+const CursorShape = @FieldType(core.internals.window.Window, "cursor");
+
+fn cursorRender(cx: *Cx) void {
+    const state = cx.state(CursorState);
+    const row: ui.Style = .{ .height = .{ .fixed = 40 } };
+    const square: ui.Style = .{ .width = .{ .fixed = 30 }, .height = .{ .fixed = 30 } };
+    var flip = square;
+    flip.cursor = if (state.text) .text else .pointer;
+    cx.render(ui.box(.{ .style = .{ .width = .{ .grow = 1 } } }, .{
+        ui.box(.{ .style = row }, .{
+            components.core.Button{ .label = "Go", .on_click = cx.on(CursorState.toggle, .{}) },
+        }),
+        ui.box(.{ .style = row }, .{
+            components.core.TextInput{ .key = "draft", .bind = &state.draft },
+        }),
+        ui.box(.{ .style = row }, .{
+            ui.box(.{ .style = .{ .padding = .all(5), .cursor = .pointer } }, .{
+                ui.box(.{ .key = .{ .name = "leaf" }, .style = square }, .{}),
+            }),
+        }),
+        ui.box(.{ .style = row }, .{
+            ui.box(.{
+                .key = .{ .name = "flip" },
+                .on_click = cx.on(CursorState.toggle, .{}),
+                .style = flip,
+            }, .{}),
+        }),
+    }));
+}
+
+fn cursorAt(app: *CursorApp, now: *u64, x: f32, y: f32) CursorShape {
+    app.window.queue.push(.{ .input = .{ .mouse_moved = mouse(x, y) } });
+    now.* += 1;
+    app.tick(now.*);
+    return app.window.cursor;
+}
+
+test "the cursor resolves from the hovered record and its ancestors" {
+    // Goal: the cursor hosts apply after a tick comes from the record under
+    // the pointer, as `Box.cursor` did in 0.3.1. Method: move over each row.
+    // The leaf sets no cursor, so its cursor-only parent's applies; a box
+    // whose cursor changes under a still pointer resolves anew from the next
+    // frame; empty space and a pointer outside the window give `.default`.
+    const app = try testing.allocator.create(CursorApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    try testing.expectEqual(CursorShape.default, app.window.cursor);
+    try testing.expectEqual(CursorShape.pointer, cursorAt(app, &now, 4, 4));
+    try testing.expectEqual(CursorShape.text, cursorAt(app, &now, 4, 44));
+    try testing.expectEqual(CursorShape.pointer, cursorAt(app, &now, 10, 90));
+    try testing.expectEqual(CursorShape.pointer, cursorAt(app, &now, 2, 82));
+    try testing.expectEqual(CursorShape.pointer, cursorAt(app, &now, 10, 130));
+    try testing.expectEqual(CursorShape.default, cursorAt(app, &now, 10, 180));
+    try testing.expectEqual(CursorShape.default, cursorAt(app, &now, 280, 4));
+
+    // The flip box turns its cursor to `.text` while the pointer stays put.
+    _ = cursorAt(app, &now, 10, 130);
+    clickAt(app, &now, 10, 130);
+    try testing.expect(app.state.text);
+    try testing.expectEqual(CursorShape.text, app.window.cursor);
+    app.window.queue.push(.{ .input = .{ .mouse_exited = mouse(10, 130) } });
+    now += 1;
+    app.tick(now);
+    try testing.expectEqual(CursorShape.default, app.window.cursor);
+}
+
 test "clicks fire on release over the pressed control" {
     // Goal: decision 7's click-on-release rule. Methodology: on counter, a
     // press alone must not click; releasing over the pressed "+" clicks it

@@ -257,17 +257,14 @@ pub const WebWindow = struct {
         std.debug.assert(self.dark_appearance == dark);
     }
 
-    /// Record the requested cursor.
-    ///
-    /// `capabilities.custom_cursors` is `false` on this backend: CSS can
-    /// express all three shapes, but `imports.zig` has no `setCanvasCursor`
-    /// binding, so the JS host cannot consume the request. The capability flag
-    /// is the contract's way of saying an operation is unsupported, so it must
-    /// stay `false` until that import lands. The shape is still stored rather
-    /// than dropped, so wiring the import is the only remaining step.
+    /// Set the canvas's CSS cursor. Only a change crosses into JS, so a
+    /// caller that sets the same shape every frame restyles nothing.
     pub fn setCursorShape(self: *Self, shape: interface.CursorShape) void {
         std.debug.assert(!self.closed);
+        std.debug.assert(@backingInt(shape) <= @backingInt(interface.CursorShape.pointer));
+        if (self.cursor_shape == shape) return;
 
+        imports.setCanvasCursor(@backingInt(shape));
         self.cursor_shape = shape;
 
         std.debug.assert(self.cursor_shape == shape);

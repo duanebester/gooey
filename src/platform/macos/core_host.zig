@@ -34,6 +34,7 @@ const appkit = @import("appkit.zig");
 const geometry = @import("../../geometry/geometry.zig");
 const scene_mod = @import("../../scene/mod.zig");
 const core_window = @import("../../core/window.zig");
+const core_element = @import("../../core/element.zig");
 const core_tick = @import("../../core/tick.zig");
 const core_router = @import("../../core/router.zig");
 const core_events = @import("../../core/events.zig");
@@ -137,6 +138,8 @@ pub const Host = struct {
     stopping: std.atomic.Value(bool),
     /// Renderer errors are logged once; later frames clear and retry.
     render_error_logged: bool,
+    /// The cursor last set on the window, main thread only.
+    cursor: core_element.CursorShape,
 
     pub const Options = struct {
         platform: *MacPlatform,
@@ -166,6 +169,7 @@ pub const Host = struct {
         self.render_deadline_ns = .init(core_window.deadline_none);
         self.stopping = .init(false);
         self.render_error_logged = false;
+        self.cursor = .default;
         self.bindWindow();
         errdefer self.unbindWindow();
         self.link = try createLink(self.window);
@@ -267,6 +271,7 @@ fn mainTick(context: ?*anyopaque) callconv(.c) void {
     // still running. The outer tick reschedules below once it returns.
     if (host.core.phase != .idle) return;
     host.tick_main(host.app, host.nowNs());
+    applyCursor(host);
     host.render_deadline_ns.store(host.core.render_deadline_ns, .release);
     if (host.core.quit_requested) {
         host.stop();
@@ -279,6 +284,16 @@ fn mainTick(context: ?*anyopaque) callconv(.c) void {
     const in_flight = host.core.frame_in_flight.load(.acquire);
     const pending = host.core.render_requested or host.core.queue.count > 0;
     if (pending and !in_flight) host.scheduleTick();
+}
+
+/// Set the cursor the tick resolved from the hovered record, only when it
+/// changed, so an idle pointer makes no `NSCursor` calls.
+fn applyCursor(host: *Host) void {
+    assert(host.core.phase == .idle);
+    if (host.core.cursor == host.cursor) return;
+    host.window.setCursorShape(host.core.cursor);
+    host.cursor = host.core.cursor;
+    assert(host.cursor == host.core.cursor);
 }
 
 fn onClose(window: *PlatformWindow) bool {

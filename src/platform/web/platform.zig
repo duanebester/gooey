@@ -47,12 +47,8 @@ pub const WebPlatform = struct {
         .clipboard = true,
         .file_dialogs = true, // Via <input type="file"> and Blob downloads
         .ime = true, // Via beforeinput/compositionend events
-        // CSS could express every `CursorShape`, but `imports.zig` has no
-        // cursor binding, so `WebWindow.setCursorShape` only records the
-        // request and the JS host never applies it. Set this to `true` in the
-        // same change that adds the import (design decision 7: unsupported
-        // operations must be explicit, and this is the mechanism).
-        .custom_cursors = false,
+        .custom_cursors = true, // Via the canvas's CSS `cursor`
+
         .window_drag_by_content = false,
         .name = "Web/WASM",
         .graphics_backend = "WebGPU",

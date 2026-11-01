@@ -239,9 +239,10 @@ pub const Cx = struct {
         node.actions_start = frame.handler_count;
         for (box.actions) |binding| _ = frame.appendAction(binding.action, binding.handler);
         node.actions_len = @intCast(box.actions.len);
+        node.cursor = box.style.cursor;
         node.hit = box.key != null or scroll != null or box.focusable or box.on_click != null or
             box.on_click_outside != null or box.on_key != null or
-            box.key_context != null or box.actions.len > 0;
+            box.key_context != null or box.actions.len > 0 or box.style.cursor != null;
         if (box.a11y) |a11y| node.a11y = .{
             .role = a11y.role,
             .label = frame.copyText(a11y.label orelse ""),
@@ -427,6 +428,7 @@ fn addNode(window: *Window, kind: window_mod.NodeKind, node_id: ElementId) u32 {
         .child_count = 0,
         .focusable = false,
         .hit = false,
+        .cursor = null,
         .on_click = index_none,
         .on_click_outside = index_none,
         .on_key = index_none,

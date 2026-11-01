@@ -1098,6 +1098,10 @@
         setDocumentTitle: (ptr, len) => {
           document.title = getString(ptr, len);
         },
+        // `interface.CursorShape` order: default, text, pointer.
+        setCanvasCursor: (shape) => {
+          canvas.style.cursor = ["default", "text", "pointer"][shape];
+        },
         setImeCursorPosition(x, y, width, height) {
           const hiddenInput = document.getElementById("hiddenInput");
           const dpr = window.devicePixelRatio || 1;

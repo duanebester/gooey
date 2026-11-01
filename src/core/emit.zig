@@ -500,7 +500,8 @@ fn emitHit(window: *Window, node: *const Node, bounds: Rect, place: HitPlace) u3
     if (!node.hit) return place.parent;
     assert(node.id.isKeyed() or node.on_click != index_none or node.focusable or
         node.on_key != index_none or node.on_click_outside != index_none or
-        node.key_context != 0 or node.actions_len > 0 or node.scroll != null);
+        node.key_context != 0 or node.actions_len > 0 or node.scroll != null or
+        node.cursor != null);
     return window.built().appendHit(.{
         .id = node.id,
         .bounds = bounds,
@@ -508,6 +509,7 @@ fn emitHit(window: *Window, node: *const Node, bounds: Rect, place: HitPlace) u3
         .parent = place.parent,
         .focusable = node.focusable,
         .scroll = node.scroll != null,
+        .cursor = node.cursor,
         .on_click = node.on_click,
         .on_click_outside = node.on_click_outside,
         .on_key = node.on_key,

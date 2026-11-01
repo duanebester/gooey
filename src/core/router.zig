@@ -15,6 +15,7 @@
 
 const std = @import("std");
 const records = @import("records.zig");
+const element = @import("element.zig");
 const handler_mod = @import("handler.zig");
 const events = @import("events.zig");
 const window_mod = @import("window.zig");
@@ -554,14 +555,21 @@ pub fn updateHover(window: *Window) void {
     const frame = window.rendered();
     var path: [window_mod.box_depth_max]ElementId = undefined;
     var len: u32 = 0;
+    // The innermost record that sets a cursor wins, as `Box.cursor` did in
+    // 0.3.1. Resolved even when the path is unchanged: a new frame may give
+    // the same records another cursor.
+    var cursor: ?element.CursorShape = null;
     if (window.pointer) |pointer| {
         var index = hitIndex(frame, .{ .x = pointer.x, .y = pointer.y });
         while (index != index_none) : (len += 1) {
             assert(len < window_mod.box_depth_max);
             path[len] = frame.hits[index].id;
+            if (cursor == null) cursor = frame.hits[index].cursor;
             index = frame.hits[index].parent;
         }
     }
+    window.cursor = cursor orelse .default;
+    if (len == 0) assert(window.cursor == .default);
     const same = len == window.hover_len and
         std.mem.eql(ElementId, path[0..len], window.hover_path[0..len]);
     if (same) return;
