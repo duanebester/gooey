@@ -462,10 +462,8 @@ fn distributeToGrandchildren(
         const child = engine.elements.get(ci);
         if (child.config.floating == null) {
             if (child.first_child_index) |grandchild| {
-                const child_layout = child.config.layout;
-                const content_width = @max(0, child.computed.sized_width - child_layout.padding.totalX());
-                const content_height = @max(0, child.computed.sized_height - child_layout.padding.totalY());
-                distributeSpace(engine, grandchild, child_layout, content_width, content_height, depth + 1);
+                const content = childContentArea(child);
+                distributeSpace(engine, grandchild, child.config.layout, content.width, content.height, depth + 1);
             }
         }
         child_idx = child.next_sibling_index;
@@ -564,21 +562,27 @@ fn assignShrunkSize(
 /// scroll-overflow semantics on the scrollable axes.
 fn recurseShrinkChildren(engine: *LayoutEngine, child: *LayoutElement, depth: u32) void {
     std.debug.assert(depth < MAX_RECURSION_DEPTH);
-    const child_layout = child.config.layout;
+    if (child.first_child_index) |grandchild| {
+        const content = childContentArea(child);
+        distributeSpace(engine, grandchild, child.config.layout, content.width, content.height, depth + 1);
+    }
+}
 
+/// The space a sized element offers its children: its content box, unbounded
+/// along a scroll container's scrollable axes so its children overflow
+/// rather than shrink. Every path that recurses into children uses it.
+fn childContentArea(child: *const LayoutElement) struct { width: f32, height: f32 } {
+    const child_layout = child.config.layout;
     // Use @max(0, ...) to prevent negative dimensions when element shrinks below padding
     var content_width = @max(0, child.computed.sized_width - child_layout.padding.totalX());
     var content_height = @max(0, child.computed.sized_height - child_layout.padding.totalY());
-
-    // For scroll containers, allow children to overflow in scrollable directions
     if (child.config.scroll) |scroll| {
         if (scroll.horizontal) content_width = std.math.floatMax(f32);
         if (scroll.vertical) content_height = std.math.floatMax(f32);
     }
-
-    if (child.first_child_index) |grandchild| {
-        distributeSpace(engine, grandchild, child_layout, content_width, content_height, depth + 1);
-    }
+    std.debug.assert(content_width >= 0);
+    std.debug.assert(content_height >= 0);
+    return .{ .width = content_width, .height = content_height };
 }
 
 /// Distribute extra space to grow elements (slow path). Non-grow children

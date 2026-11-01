@@ -394,14 +394,12 @@ fn checkClipDepth(window: *const Window, depth: u32) void {
         "ResourceLimits.scene.clip_depth_max.", .{ depth + 1, depth_max, window.frame_number });
 }
 
-// 0.3.1's scroll container scrollbar (`widgets/scroll_container.zig`).
-const scrollbar_size: f32 = 8;
-const scrollbar_padding: f32 = 2;
-const scrollbar_room: f32 = scrollbar_size + scrollbar_padding;
-const scrollbar_thumb_min: f32 = 30;
+// 0.3.1's scroll container scrollbar colours (`widgets/scroll_container.zig`).
+const scrollbar_room = window_mod.ScrollState.scrollbar_room;
 const scrollbar_radius: f32 = 4;
 const scrollbar_track_color = Color{ .r = 0, .g = 0, .b = 0, .a = 0.05 };
 const scrollbar_thumb_color = Color{ .r = 0, .g = 0, .b = 0, .a = 0.3 };
+const scrollbar_thumb_drag_color = Color{ .r = 0, .g = 0, .b = 0, .a = 0.5 };
 
 /// Record what this emit measured, clamp the offset to it, and draw the
 /// scrollbars after the clipped content, as 0.3.1 does at `scissor_end`.
@@ -421,73 +419,20 @@ fn finishScroll(
         @as(f32, @floatFromInt(padding.right)));
     state.content_height = @max(0, entry.extent_bottom + state.offset_y - bounds.y +
         @as(f32, @floatFromInt(padding.bottom)));
-    state.viewport_width = bounds.width;
-    state.viewport_height = bounds.height;
+    state.viewport = bounds;
     const moved = state.clamp();
     if (moved or overflow_x != (state.maxX() > 0) or overflow_y != (state.maxY() > 0)) {
         window.render_requested = true;
     }
-    emitScrollbars(window, bounds, state);
-}
-
-fn emitScrollbars(window: *Window, bounds: Rect, state: *const window_mod.ScrollState) void {
-    assert(state.offset_y <= state.maxY());
-    assert(state.offset_x <= state.maxX());
-    if (state.maxY() > 0) {
-        const track = Rect{
-            .x = bounds.x + bounds.width - scrollbar_room,
-            .y = bounds.y + scrollbar_padding,
-            .width = scrollbar_size,
-            .height = @max(0, bounds.height - scrollbar_padding * 2),
-        };
-        const thumb = scrollbarThumb(track.height, bounds.height, state.content_height, .{
-            .offset = state.offset_y,
-            .offset_max = state.maxY(),
-        });
-        var thumb_rect = track;
-        thumb_rect.y += thumb.start;
-        thumb_rect.height = thumb.length;
-        emitScrollbar(window, track, thumb_rect);
-    }
-    if (state.maxX() > 0) {
-        const track = Rect{
-            .x = bounds.x + scrollbar_padding,
-            .y = bounds.y + bounds.height - scrollbar_room,
-            .width = @max(0, bounds.width - scrollbar_padding * 2),
-            .height = scrollbar_size,
-        };
-        const thumb = scrollbarThumb(track.width, bounds.width, state.content_width, .{
-            .offset = state.offset_x,
-            .offset_max = state.maxX(),
-        });
-        var thumb_rect = track;
-        thumb_rect.x += thumb.start;
-        thumb_rect.width = thumb.length;
-        emitScrollbar(window, track, thumb_rect);
+    inline for (.{ window_mod.ScrollAxis.y, window_mod.ScrollAxis.x }) |axis| {
+        if (state.track(axis)) |bar| {
+            const dragged = state.dragging == axis;
+            emitScrollbar(window, bar, state.thumb(axis, bar), dragged);
+        }
     }
 }
 
-const Thumb = struct { start: f32, length: f32 };
-
-/// The thumb along a track: proportional to the visible share of the
-/// content, at least `scrollbar_thumb_min`, placed by the scroll fraction.
-fn scrollbarThumb(
-    track_length: f32,
-    viewport_length: f32,
-    content_length: f32,
-    position: struct { offset: f32, offset_max: f32 },
-) Thumb {
-    assert(content_length > viewport_length);
-    assert(position.offset_max > 0);
-    const proportional = track_length * viewport_length / content_length;
-    const length = @min(track_length, @max(scrollbar_thumb_min, proportional));
-    const fraction = position.offset / position.offset_max;
-    assert(fraction >= 0);
-    assert(fraction <= 1);
-    return .{ .start = (track_length - length) * fraction, .length = length };
-}
-
-fn emitScrollbar(window: *Window, track: Rect, thumb: Rect) void {
+fn emitScrollbar(window: *Window, track: Rect, thumb: Rect, dragged: bool) void {
     assert(thumb.width <= track.width);
     assert(thumb.height <= track.height);
     const corners = records.Corners.all(scrollbar_radius);
@@ -501,7 +446,7 @@ fn emitScrollbar(window: *Window, track: Rect, thumb: Rect) void {
     } });
     frame.appendPaint(.{ .quad = .{
         .bounds = thumb,
-        .fill = scrollbar_thumb_color,
+        .fill = if (dragged) scrollbar_thumb_drag_color else scrollbar_thumb_color,
         .border = .none,
         .corners = corners,
         .blur = 0,
