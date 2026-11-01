@@ -31,6 +31,20 @@ pub const Rect = struct {
         if (x < self.x or y < self.y) return false;
         return x < self.x + self.width and y < self.y + self.height;
     }
+
+    /// The overlap of two rects; zero-sized at `self`'s origin when none.
+    pub fn intersect(self: Rect, other: Rect) Rect {
+        assert(self.width >= 0);
+        assert(other.width >= 0);
+        const left = @max(self.x, other.x);
+        const top = @max(self.y, other.y);
+        const right = @min(self.x + self.width, other.x + other.width);
+        const bottom = @min(self.y + self.height, other.y + other.height);
+        if (right <= left or bottom <= top) {
+            return .{ .x = self.x, .y = self.y, .width = 0, .height = 0 };
+        }
+        return .{ .x = left, .y = top, .width = right - left, .height = bottom - top };
+    }
 };
 
 pub const Corners = struct {
@@ -117,6 +131,8 @@ pub const HitRecord = struct {
     fragment: u8,
     parent: u32,
     focusable: bool,
+    /// A `Style.scroll` box: the wheel scrolls its retained `ScrollState`.
+    scroll: bool,
     on_click: u32,
     on_click_outside: u32,
     on_key: u32,

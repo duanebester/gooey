@@ -234,9 +234,11 @@ fn bubble(window: *Window, event: *const input.InputEvent, start: u32, slot: Slo
     }
 }
 
-/// The wheel scrolls the innermost text area or editor under the pointer,
-/// through its key handler, as 0.3.1 scrolled them. Nothing else scrolls
-/// until `Style.scroll` lands; the event is otherwise dropped.
+/// The wheel scrolls the innermost scrollable under the pointer: a text area
+/// or editor through its key handler, as 0.3.1 scrolled them, or a
+/// `Style.scroll` box through its retained offset. A box already at its end
+/// passes the wheel to the boxes around it, as 0.3.1's nested scroll
+/// containers do; a wheel nothing can take is dropped.
 fn wheel(window: *Window, event: *const input.InputEvent, point: Point) void {
     assert(event.* == .scroll);
     const frame = window.rendered();
@@ -254,8 +256,23 @@ fn wheel(window: *Window, event: *const input.InputEvent, point: Point) void {
                 return;
             }
         }
+        if (record.scroll) {
+            if (scrollBox(window, record.id, &event.scroll)) return;
+        }
         index = record.parent;
     }
+}
+
+/// Returns whether the box's offset moved. The rendered frame's records
+/// outlive the box only if it stopped rendering, which retires its state.
+fn scrollBox(window: *Window, id: ElementId, scroll: *const input.ScrollEvent) bool {
+    assert(id.isKeyed());
+    const state = window.retained.find(window_mod.ScrollState, id) orelse return false;
+    const delta_x: f32 = @floatCast(scroll.delta.x);
+    const delta_y: f32 = @floatCast(scroll.delta.y);
+    if (!state.wheel(delta_x, delta_y)) return false;
+    window.render_requested = true;
+    return true;
 }
 
 fn keyToFocus(window: *Window, event: *const input.InputEvent) void {

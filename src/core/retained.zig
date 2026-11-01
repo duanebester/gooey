@@ -304,6 +304,16 @@ pub const Retained = struct {
         return .{ .slot = slot, .generation = slab.generations[slot] };
     }
 
+    /// `T` retained for `id`, if any, without touching it: for the router,
+    /// which reads state the last build retained (a scroll offset).
+    pub fn find(self: *Retained, comptime T: type, id: ElementId) ?*T {
+        assert(id.isKeyed());
+        const slab = &self.slabs[comptime classOf(T)];
+        const slot = slab.find(id, handler_mod.typeId(T)) orelse return null;
+        assert(slab.meta[slot].in_use);
+        return @ptrCast(slab.slotBytes(slot).ptr);
+    }
+
     pub fn get(self: *Retained, comptime T: type, handle: Handle(T)) *T {
         const slab = &self.slabs[comptime classOf(T)];
         assert(handle.slot < slab.slotCount());

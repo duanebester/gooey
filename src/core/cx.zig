@@ -217,9 +217,16 @@ pub const Cx = struct {
         checkMilestoneOne(box);
         const parent_index = window.open_stack[window.open_depth - 1];
         const box_id = resolveId(window, parent_index, box.key);
-        const index = openNode(window, .box, box_id, &box.style);
+        const scroll = retainScroll(window, box, box_id);
+        const scroll_state: ?*const window_mod.ScrollState = if (scroll) |handle|
+            window.retained.get(window_mod.ScrollState, handle)
+        else
+            null;
+        const index = openNodeScrolled(window, .box, box_id, &box.style, scroll_state);
         const node = window.node(index);
         const frame = window.built();
+        node.scroll = scroll;
+        node.clip = box.style.clip == .clip or scroll != null;
         node.focusable = box.focusable;
         node.on_click = handlerIndex(frame, box.on_click);
         node.on_click_outside = handlerIndex(frame, box.on_click_outside);
@@ -228,7 +235,7 @@ pub const Cx = struct {
         node.actions_start = frame.handler_count;
         for (box.actions) |binding| _ = frame.appendAction(binding.action, binding.handler);
         node.actions_len = @intCast(box.actions.len);
-        node.hit = box.key != null or box.focusable or box.on_click != null or
+        node.hit = box.key != null or scroll != null or box.focusable or box.on_click != null or
             box.on_click_outside != null or box.on_key != null or
             box.key_context != null or box.actions.len > 0;
         if (box.a11y) |a11y| node.a11y = .{
@@ -356,8 +363,6 @@ fn checkMilestoneOne(box: *const element.Box) void {
     if (box.layer != null) std.debug.panic("Box.layer {s}", .{phase_four});
     if (box.draggable != null) std.debug.panic("Box.draggable {s}", .{phase_four});
     if (box.drop_target != null) std.debug.panic("Box.drop_target {s}", .{phase_four});
-    if (box.style.scroll != null) std.debug.panic("Style.scroll {s}", .{phase_four});
-    if (box.style.clip != .none) std.debug.panic("Style.clip {s}", .{phase_four});
     if (box.style.opacity != 1) std.debug.panic("Style.opacity {s}", .{phase_four});
 }
 
@@ -426,6 +431,8 @@ fn addNode(window: *Window, kind: window_mod.NodeKind, node_id: ElementId) u32 {
         .variant = .regular,
         .paint_fn = null,
         .paint_data = null,
+        .clip = false,
+        .scroll = null,
     };
     window.node_count += 1;
     return index;
@@ -437,9 +444,56 @@ fn openNode(
     node_id: ElementId,
     style: *const element.Style,
 ) u32 {
+    assert(style.scroll == null);
+    return openNodeScrolled(window, kind, node_id, style, null);
+}
+
+/// `scroll` is a scroll box's retained state, whose offset the layout applies
+/// to its children; null for every other box.
+fn openNodeScrolled(
+    window: *Window,
+    kind: window_mod.NodeKind,
+    node_id: ElementId,
+    style: *const element.Style,
+    scroll: ?*const window_mod.ScrollState,
+) u32 {
+    if (style.scroll != null) assert(scroll != null);
     const index = addNode(window, kind, node_id);
-    window.layout.openElement(declaration(style)) catch |err| layoutFailed(window, err);
+    var decl = declaration(style);
+    if (style.scroll) |axes| decl.scroll = .{
+        .horizontal = axes.x,
+        .vertical = axes.y,
+        .scroll_offset = .{ .x = scroll.?.offset_x, .y = scroll.?.offset_y },
+    };
+    window.layout.openElement(decl) catch |err| layoutFailed(window, err);
     return index;
+}
+
+/// A scroll box's offset, retained by its key for as long as it renders
+/// (contract §1). The last emit's measurement clamps it, so content that
+/// shrank never shows past its end.
+fn retainScroll(
+    window: *Window,
+    box: *const element.Box,
+    box_id: ElementId,
+) ?retained.Handle(window_mod.ScrollState) {
+    const axes = box.style.scroll orelse return null;
+    if (box.key == null) {
+        std.debug.panic("Style.scroll needs a key: its offset is retained by the box's key " ++
+            "(frame {d})", .{window.frame_number});
+    }
+    assert(axes.x or axes.y);
+    const handle = window.retained.retain(
+        window_mod.ScrollState,
+        box_id,
+        .frame,
+        window_mod.ScrollState.init,
+        window.frame_number,
+    );
+    const state = window.retained.get(window_mod.ScrollState, handle);
+    state.axes = axes;
+    _ = state.clamp();
+    return handle;
 }
 
 fn pushOpen(window: *Window, index: u32) void {
