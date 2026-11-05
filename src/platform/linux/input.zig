@@ -232,11 +232,12 @@ pub const xkb_mod = struct {
 };
 
 // =============================================================================
-// Keycode Mapping
+// Evdev → KeyTag Translation
 // =============================================================================
 
-/// Convert Linux evdev keycode to cross-platform KeyCode
-pub fn evdevToKeyCode(evdev_key: u32) input.KeyCode {
+/// Translate a Linux evdev keycode (as delivered by wl_keyboard) to the
+/// platform-neutral KeyTag. Unrecognized codes become `.unknown`.
+pub fn evdevToKeyTag(evdev_key: u32) input.KeyTag {
     return switch (evdev_key) {
         // Letters
         evdev.KEY_A => .a,
@@ -283,8 +284,8 @@ pub fn evdevToKeyCode(evdev_key: u32) input.KeyCode {
         evdev.KEY_TAB => .tab,
         evdev.KEY_ENTER => .@"return",
         evdev.KEY_SPACE => .space,
-        evdev.KEY_BACKSPACE => .delete,
-        evdev.KEY_DELETE => .forward_delete,
+        evdev.KEY_BACKSPACE => .backspace,
+        evdev.KEY_DELETE => .delete,
         evdev.KEY_CAPSLOCK => .caps_lock,
 
         // Arrow keys
@@ -321,7 +322,7 @@ pub fn evdevToKeyCode(evdev_key: u32) input.KeyCode {
         evdev.KEY_F19 => .f19,
         evdev.KEY_F20 => .f20,
 
-        // Punctuation. KeyCode names are positional (US ANSI); text input goes
+        // Punctuation. KeyTag names are positional (US ANSI); text input goes
         // through the layout-aware path, so positional names are fine here.
         evdev.KEY_MINUS => .minus,
         evdev.KEY_EQUAL => .equal,
@@ -356,15 +357,15 @@ pub fn evdevToKeyCode(evdev_key: u32) input.KeyCode {
         evdev.KEY_KPEQUAL => .keypad_equals,
         evdev.KEY_NUMLOCK => .keypad_clear,
 
-        // Modifiers
+        // Modifiers. Neutral tag names: Alt → .alt, Super/Meta → .super.
         evdev.KEY_LEFTSHIFT => .shift,
         evdev.KEY_RIGHTSHIFT => .right_shift,
         evdev.KEY_LEFTCTRL => .control,
         evdev.KEY_RIGHTCTRL => .right_control,
-        evdev.KEY_LEFTALT => .option,
-        evdev.KEY_RIGHTALT => .right_option,
-        evdev.KEY_LEFTMETA => .command,
-        evdev.KEY_RIGHTMETA => .right_command,
+        evdev.KEY_LEFTALT => .alt,
+        evdev.KEY_RIGHTALT => .right_alt,
+        evdev.KEY_LEFTMETA => .super,
+        evdev.KEY_RIGHTMETA => .right_super,
 
         else => .unknown,
     };
@@ -450,7 +451,7 @@ pub fn createKeyEvent(
     is_repeat: bool,
 ) input.KeyEvent {
     return .{
-        .key = evdevToKeyCode(evdev_key),
+        .key = evdevToKeyTag(evdev_key),
         .modifiers = modifiers,
         .characters = null, // TODO: xkbcommon integration for text input
         .characters_ignoring_modifiers = null,
@@ -695,23 +696,34 @@ pub const KeyRepeatTracker = struct {
 // Tests
 // =============================================================================
 
-test "evdev to keycode mapping" {
+test "evdev to key tag translation" {
     const testing = std.testing;
 
-    try testing.expectEqual(input.KeyCode.a, evdevToKeyCode(evdev.KEY_A));
-    try testing.expectEqual(input.KeyCode.z, evdevToKeyCode(evdev.KEY_Z));
-    try testing.expectEqual(input.KeyCode.@"1", evdevToKeyCode(evdev.KEY_1));
-    try testing.expectEqual(input.KeyCode.@"return", evdevToKeyCode(evdev.KEY_ENTER));
-    try testing.expectEqual(input.KeyCode.escape, evdevToKeyCode(evdev.KEY_ESC));
-    try testing.expectEqual(input.KeyCode.left, evdevToKeyCode(evdev.KEY_LEFT));
-    try testing.expectEqual(input.KeyCode.f1, evdevToKeyCode(evdev.KEY_F1));
-    try testing.expectEqual(input.KeyCode.f13, evdevToKeyCode(evdev.KEY_F13));
-    try testing.expectEqual(input.KeyCode.f20, evdevToKeyCode(evdev.KEY_F20));
-    try testing.expectEqual(input.KeyCode.left_bracket, evdevToKeyCode(evdev.KEY_LEFTBRACE));
-    try testing.expectEqual(input.KeyCode.keypad_enter, evdevToKeyCode(evdev.KEY_KPENTER));
-    try testing.expectEqual(input.KeyCode.keypad_5, evdevToKeyCode(evdev.KEY_KP5));
-    try testing.expectEqual(input.KeyCode.keypad_clear, evdevToKeyCode(evdev.KEY_NUMLOCK));
-    try testing.expectEqual(input.KeyCode.unknown, evdevToKeyCode(9999));
+    try testing.expectEqual(input.KeyTag.a, evdevToKeyTag(evdev.KEY_A));
+    try testing.expectEqual(input.KeyTag.z, evdevToKeyTag(evdev.KEY_Z));
+    try testing.expectEqual(input.KeyTag.@"1", evdevToKeyTag(evdev.KEY_1));
+    try testing.expectEqual(input.KeyTag.@"return", evdevToKeyTag(evdev.KEY_ENTER));
+    try testing.expectEqual(input.KeyTag.escape, evdevToKeyTag(evdev.KEY_ESC));
+    try testing.expectEqual(input.KeyTag.left, evdevToKeyTag(evdev.KEY_LEFT));
+    try testing.expectEqual(input.KeyTag.f1, evdevToKeyTag(evdev.KEY_F1));
+    try testing.expectEqual(input.KeyTag.f13, evdevToKeyTag(evdev.KEY_F13));
+    try testing.expectEqual(input.KeyTag.f20, evdevToKeyTag(evdev.KEY_F20));
+    try testing.expectEqual(input.KeyTag.left_bracket, evdevToKeyTag(evdev.KEY_LEFTBRACE));
+    try testing.expectEqual(input.KeyTag.keypad_enter, evdevToKeyTag(evdev.KEY_KPENTER));
+    try testing.expectEqual(input.KeyTag.keypad_5, evdevToKeyTag(evdev.KEY_KP5));
+    try testing.expectEqual(input.KeyTag.keypad_clear, evdevToKeyTag(evdev.KEY_NUMLOCK));
+
+    // Neutral modifier naming: Alt/Option → .alt, Super/Meta → .super.
+    try testing.expectEqual(input.KeyTag.alt, evdevToKeyTag(evdev.KEY_LEFTALT));
+    try testing.expectEqual(input.KeyTag.right_alt, evdevToKeyTag(evdev.KEY_RIGHTALT));
+    try testing.expectEqual(input.KeyTag.super, evdevToKeyTag(evdev.KEY_LEFTMETA));
+    try testing.expectEqual(input.KeyTag.right_super, evdevToKeyTag(evdev.KEY_RIGHTMETA));
+
+    // Backspace and Delete are distinct keys with PC names.
+    try testing.expectEqual(input.KeyTag.backspace, evdevToKeyTag(evdev.KEY_BACKSPACE));
+    try testing.expectEqual(input.KeyTag.delete, evdevToKeyTag(evdev.KEY_DELETE));
+
+    try testing.expectEqual(input.KeyTag.unknown, evdevToKeyTag(9999));
 }
 
 test "modifier parsing" {

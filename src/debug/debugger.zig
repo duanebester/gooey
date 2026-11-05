@@ -23,7 +23,7 @@ const Scene = scene_mod.Scene;
 const Quad = scene_mod.Quad;
 const Hsla = scene_mod.Hsla;
 const BoundingBox = layout_mod.BoundingBox;
-const KeyCode = input_mod.KeyCode;
+const KeyTag = input_mod.KeyTag;
 const Modifiers = input_mod.Modifiers;
 const LayoutElement = engine_mod.LayoutElement;
 const ElementType = engine_mod.ElementType;
@@ -300,7 +300,7 @@ pub const Debugger = struct {
         }
     }
 
-    pub fn isToggleShortcut(key: KeyCode, mods: Modifiers) bool {
+    pub fn isToggleShortcut(key: KeyTag, mods: Modifiers) bool {
         if (key != .i or !mods.shift) return false;
         return mods.cmd or mods.ctrl;
     }

@@ -58,7 +58,7 @@ const Quad = scene_mod.Quad;
 const Hsla = scene_mod.Hsla;
 const GlyphInstance = scene_mod.GlyphInstance;
 const TextSystem = text_mod.TextSystem;
-const KeyCode = input_mod.KeyCode;
+const KeyTag = input_mod.KeyTag;
 const InputEvent = input_mod.InputEvent;
 const Modifiers = input_mod.Modifiers;
 
@@ -530,8 +530,7 @@ pub const TextAreaState = struct {
         const mods = key.modifiers;
 
         switch (code) {
-            .delete => {
-                // Backspace
+            .backspace => {
                 if (self.hasSelection()) {
                     self.deleteSelectionWithHistory();
                 } else if (self.cursor_byte > 0) {
@@ -562,7 +561,7 @@ pub const TextAreaState = struct {
                     self.notifyChange();
                 }
             },
-            .forward_delete => {
+            .delete => {
                 if (self.hasSelection()) {
                     self.deleteSelectionWithHistory();
                 } else if (self.cursor_byte < self.buffer.items.len) {

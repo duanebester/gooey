@@ -883,7 +883,7 @@ pub fn syncCodeEditorBoundVariablesCx(cx: *Cx) void {
 // =============================================================================
 
 /// Check if a key event should be forwarded to text widgets
-pub fn isControlKey(key: input_mod.KeyCode, mods: input_mod.Modifiers) bool {
+pub fn isControlKey(key: input_mod.KeyTag, mods: input_mod.Modifiers) bool {
     // Forward key events when cmd/ctrl is held (for shortcuts like Cmd+A, Cmd+C, etc.)
     if (mods.cmd or mods.ctrl) {
         return true;
@@ -894,8 +894,8 @@ pub fn isControlKey(key: input_mod.KeyCode, mods: input_mod.Modifiers) bool {
         .right,
         .up,
         .down,
+        .backspace,
         .delete,
-        .forward_delete,
         .@"return",
         .tab,
         .escape,

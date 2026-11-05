@@ -7,6 +7,7 @@
 //! - wayland-client (core protocol)
 //! - xdg-shell (window management)
 //! - xdg-decoration (server-side decorations)
+//! - fractional-scale-v1 (fractional output scale, e.g. 1.5x on niri)
 
 const std = @import("std");
 
@@ -69,6 +70,10 @@ pub const WpViewport = opaque {};
 pub const WpCursorShapeManagerV1 = opaque {};
 pub const WpCursorShapeDeviceV1 = opaque {};
 
+// Fractional scale protocol types (fractional output scale support)
+pub const WpFractionalScaleManagerV1 = opaque {};
+pub const WpFractionalScaleV1 = opaque {};
+
 // Wayland array type (used in listeners)
 pub const Array = extern struct {
     size: usize,
@@ -123,6 +128,17 @@ pub const CallbackListener = extern struct {
         data: ?*anyopaque,
         callback: *Callback,
         callback_data: u32,
+    ) callconv(.c) void = null,
+};
+
+/// Listener for wp_fractional_scale_v1. The compositor reports its preferred
+/// scale in units of 1/120, which the integer `wl_surface.preferred_buffer_scale`
+/// cannot express; e.g. 180 means 1.5x.
+pub const FractionalScaleListener = extern struct {
+    preferred_scale: ?*const fn (
+        data: ?*anyopaque,
+        fractional_scale: *WpFractionalScaleV1,
+        factor_120ths: u32,
     ) callconv(.c) void = null,
 };
 
@@ -652,6 +668,10 @@ const wp_viewporter_get_viewport_types = [_]?*const Interface{ wp_viewport_inter
 const wp_cursor_shape_device_v1_interface_ptr: ?*const Interface = &wp_cursor_shape_device_v1_interface;
 const wp_cursor_shape_manager_v1_get_pointer_types = [_]?*const Interface{ wp_cursor_shape_device_v1_interface_ptr, &wl_pointer_interface };
 
+// Fractional scale forward declarations
+const wp_fractional_scale_v1_interface_ptr: ?*const Interface = &wp_fractional_scale_v1_interface;
+const wp_fractional_scale_manager_v1_get_fractional_scale_types = [_]?*const Interface{ wp_fractional_scale_v1_interface_ptr, &wl_surface_interface };
+
 // Type arrays for text input v3 events with object arguments
 const zwp_text_input_v3_enter_types = [_]?*const Interface{&wl_surface_interface};
 const zwp_text_input_v3_leave_types = [_]?*const Interface{&wl_surface_interface};
@@ -1126,6 +1146,103 @@ pub fn viewportDestroy(viewport: *WpViewport) void {
     wl_proxy_destroy(@ptrCast(viewport));
 }
 
+// =============================================================================
+// wp_fractional_scale functions (fractional output scale support)
+// =============================================================================
+
+/// wp_fractional_scale_manager_v1 request opcodes in protocol declaration order.
+/// See `SurfaceRequest` for why opcodes are named instead of written as literals.
+const FractionalScaleManagerRequest = enum(u32) {
+    destroy = 0,
+    get_fractional_scale = 1,
+};
+
+/// wp_fractional_scale_v1 request opcodes in protocol declaration order.
+const FractionalScaleRequest = enum(u32) {
+    destroy = 0,
+};
+
+/// Bind to wp_fractional_scale_manager_v1
+pub fn bindFractionalScaleManager(registry: *Registry, name: u32, version: u32) ?*WpFractionalScaleManagerV1 {
+    return @ptrCast(@alignCast(registryBind(
+        registry,
+        name,
+        &wp_fractional_scale_manager_v1_interface,
+        @min(version, 1),
+    )));
+}
+
+/// Create a wp_fractional_scale_v1 for a surface.
+///
+/// The reported scale is only applicable through wp_viewporter: the buffer is
+/// rendered at logical size times the fractional scale and the viewport maps it
+/// back to the logical destination size. A compositor that advertises the
+/// manager without wp_viewporter therefore cannot be honored, and callers must
+/// check for a viewport before binding.
+pub fn fractionalScaleManagerGetFractionalScale(
+    manager: *WpFractionalScaleManagerV1,
+    surface: *Surface,
+) ?*WpFractionalScaleV1 {
+    const result = wl_proxy_marshal_flags(
+        @ptrCast(manager),
+        @backingInt(FractionalScaleManagerRequest.get_fractional_scale),
+        &wp_fractional_scale_v1_interface,
+        wl_proxy_get_version(@ptrCast(manager)),
+        0,
+        @as(?*anyopaque, null),
+        @as(*anyopaque, @ptrCast(surface)),
+    );
+    return @ptrCast(@alignCast(result));
+}
+
+pub fn fractionalScaleV1AddListener(
+    fractional_scale: *WpFractionalScaleV1,
+    listener: *const FractionalScaleListener,
+    data: ?*anyopaque,
+) bool {
+    return wl_proxy_add_listener(@ptrCast(fractional_scale), @ptrCast(listener), data) == 0;
+}
+
+pub fn fractionalScaleV1Destroy(fractional_scale: *WpFractionalScaleV1) void {
+    _ = wl_proxy_marshal_flags(
+        @ptrCast(fractional_scale),
+        @backingInt(FractionalScaleRequest.destroy),
+        null,
+        wl_proxy_get_version(@ptrCast(fractional_scale)),
+        MARSHAL_FLAG_DESTROY,
+    );
+}
+
+test "wp_fractional_scale opcodes and events match the protocol table" {
+    // Goal: catch the request enums and the hand-written interface tables
+    // drifting apart, which would silently marshal the wrong request or
+    // mis-demarshal `preferred_scale`. Methodology: opcode names must equal the
+    // table entry at the same index, and the event signature must stay the
+    // protocol's "u" (uint32 scale in 1/120ths).
+    const manager_names = @typeInfo(FractionalScaleManagerRequest).@"enum".field_names;
+    const manager_values = @typeInfo(FractionalScaleManagerRequest).@"enum".field_values;
+    const manager_methods: [*]const Message = @ptrCast(wp_fractional_scale_manager_v1_interface.methods.?);
+    const manager_method_count: usize = @intCast(wp_fractional_scale_manager_v1_interface.method_count);
+    inline for (manager_names, manager_values) |name, opcode| {
+        try std.testing.expect(opcode < manager_method_count);
+        try std.testing.expectEqualStrings(name, std.mem.span(manager_methods[opcode].name));
+    }
+
+    const scale_names = @typeInfo(FractionalScaleRequest).@"enum".field_names;
+    const scale_values = @typeInfo(FractionalScaleRequest).@"enum".field_values;
+    const scale_methods: [*]const Message = @ptrCast(wp_fractional_scale_v1_interface.methods.?);
+    const scale_method_count: usize = @intCast(wp_fractional_scale_v1_interface.method_count);
+    inline for (scale_names, scale_values) |name, opcode| {
+        try std.testing.expect(opcode < scale_method_count);
+        try std.testing.expectEqualStrings(name, std.mem.span(scale_methods[opcode].name));
+    }
+
+    try std.testing.expectEqual(@as(c_int, 1), wp_fractional_scale_v1_interface.event_count);
+    const events: [*]const Message = @ptrCast(wp_fractional_scale_v1_interface.events.?);
+    try std.testing.expectEqualStrings("preferred_scale", std.mem.span(events[0].name));
+    try std.testing.expectEqualStrings("u", std.mem.span(events[0].signature));
+}
+
 // Callback operations
 pub fn callbackAddListener(callback: *Callback, listener: *const CallbackListener, data: ?*anyopaque) bool {
     return wl_proxy_add_listener(@ptrCast(callback), @ptrCast(listener), data) == 0;
@@ -1415,7 +1532,7 @@ pub fn xdgToplevelSetAppId(toplevel: *XdgToplevel, app_id: [*:0]const u8) void {
 pub fn xdgToplevelSetMinSize(toplevel: *XdgToplevel, width: i32, height: i32) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(toplevel),
-        7, // XDG_TOPLEVEL_SET_MIN_SIZE
+        8, // XDG_TOPLEVEL_SET_MIN_SIZE (set_max_size is opcode 7)
         null,
         wl_proxy_get_version(@ptrCast(toplevel)),
         0,
@@ -1427,7 +1544,7 @@ pub fn xdgToplevelSetMinSize(toplevel: *XdgToplevel, width: i32, height: i32) vo
 pub fn xdgToplevelSetMaxSize(toplevel: *XdgToplevel, width: i32, height: i32) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(toplevel),
-        8, // XDG_TOPLEVEL_SET_MAX_SIZE
+        7, // XDG_TOPLEVEL_SET_MAX_SIZE
         null,
         wl_proxy_get_version(@ptrCast(toplevel)),
         0,
@@ -1697,6 +1814,7 @@ pub const ZXDG_DECORATION_MANAGER_V1_INTERFACE_NAME = "zxdg_decoration_manager_v
 pub const ZWP_TEXT_INPUT_MANAGER_V3_INTERFACE_NAME = "zwp_text_input_manager_v3";
 pub const WP_VIEWPORTER_INTERFACE_NAME = "wp_viewporter";
 pub const WP_CURSOR_SHAPE_MANAGER_V1_INTERFACE_NAME = "wp_cursor_shape_manager_v1";
+pub const WP_FRACTIONAL_SCALE_MANAGER_V1_INTERFACE_NAME = "wp_fractional_scale_manager_v1";
 
 // =============================================================================
 // wp_viewporter interface (for HiDPI support)
@@ -1715,6 +1833,40 @@ pub const wp_viewporter_interface: Interface = .{
     .methods = @ptrCast(&wp_viewporter_methods),
     .event_count = 0,
     .events = null,
+};
+
+// wp_fractional_scale_manager_v1 methods: destroy, get_fractional_scale
+const wp_fractional_scale_manager_v1_methods = [_]Message{
+    .{ .name = "destroy", .signature = "", .types = null },
+    .{ .name = "get_fractional_scale", .signature = "no", .types = @ptrCast(&wp_fractional_scale_manager_v1_get_fractional_scale_types) },
+};
+
+pub const wp_fractional_scale_manager_v1_interface: Interface = .{
+    .name = "wp_fractional_scale_manager_v1",
+    .version = 1,
+    .method_count = 2,
+    .methods = @ptrCast(&wp_fractional_scale_manager_v1_methods),
+    .event_count = 0,
+    .events = null,
+};
+
+// wp_fractional_scale_v1 methods: destroy. Events: preferred_scale, whose
+// argument is the compositor's preferred scale in units of 1/120 (180 = 1.5x).
+const wp_fractional_scale_v1_methods = [_]Message{
+    .{ .name = "destroy", .signature = "", .types = null },
+};
+
+const wp_fractional_scale_v1_events = [_]Message{
+    .{ .name = "preferred_scale", .signature = "u", .types = null },
+};
+
+pub const wp_fractional_scale_v1_interface: Interface = .{
+    .name = "wp_fractional_scale_v1",
+    .version = 1,
+    .method_count = 1,
+    .methods = @ptrCast(&wp_fractional_scale_v1_methods),
+    .event_count = 1,
+    .events = @ptrCast(&wp_fractional_scale_v1_events),
 };
 
 // wp_cursor_shape_manager_v1 methods: destroy, get_pointer, get_tablet_tool_v2

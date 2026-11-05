@@ -232,6 +232,7 @@ pub const LinuxPlatform = struct {
     text_input_manager: ?*wayland.ZwpTextInputManagerV3 = null,
     text_input: ?*wayland.ZwpTextInputV3 = null,
     viewporter: ?*wayland.WpViewporter = null,
+    fractional_scale_manager: ?*wayland.WpFractionalScaleManagerV1 = null,
     cursor_shape_manager: ?*wayland.WpCursorShapeManagerV1 = null,
     cursor_shape_device: ?*wayland.WpCursorShapeDeviceV1 = null,
     output: ?*wayland.Output = null,
@@ -976,6 +977,11 @@ pub const LinuxPlatform = struct {
         return self.viewporter;
     }
 
+    /// Get the fractional scale manager (for fractional output scale, may be null)
+    pub fn getFractionalScaleManager(self: *Self) ?*wayland.WpFractionalScaleManagerV1 {
+        return self.fractional_scale_manager;
+    }
+
     /// Get current scale factor
     pub fn getScaleFactor(self: *const Self) f64 {
         return @floatFromInt(self.scale_factor);
@@ -1076,6 +1082,8 @@ pub const LinuxPlatform = struct {
             }
         } else if (std.mem.eql(u8, interface_name, wayland.WP_VIEWPORTER_INTERFACE_NAME)) {
             self.viewporter = wayland.bindViewporter(registry, name, version);
+        } else if (std.mem.eql(u8, interface_name, wayland.WP_FRACTIONAL_SCALE_MANAGER_V1_INTERFACE_NAME)) {
+            self.fractional_scale_manager = wayland.bindFractionalScaleManager(registry, name, version);
         } else if (std.mem.eql(u8, interface_name, wayland.WP_CURSOR_SHAPE_MANAGER_V1_INTERFACE_NAME)) {
             self.cursor_shape_manager = @ptrCast(@alignCast(wayland.registryBind(
                 registry,
