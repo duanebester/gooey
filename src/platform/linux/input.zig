@@ -88,6 +88,7 @@ pub const evdev = struct {
     pub const KEY_BACKSPACE: u32 = 14;
     pub const KEY_DELETE: u32 = 111;
     pub const KEY_CAPSLOCK: u32 = 58;
+    pub const KEY_SCROLLLOCK: u32 = 70;
 
     // Arrow keys
     pub const KEY_LEFT: u32 = 105;
@@ -661,36 +662,200 @@ pub const ClickTracker = struct {
 };
 
 // =============================================================================
-// Key Repeat Detection
+// Key Repeat Scheduling
 // =============================================================================
 
-/// Key repeat state tracker
-pub const KeyRepeatTracker = struct {
-    /// Currently pressed keys (bitset for common keys)
-    pressed_keys: std.bit_set.Static(256) = .empty,
+/// Client-side key repeat scheduler.
+///
+/// The Wayland spec leaves key repeat to the client: `repeat_info` hands it a
+/// rate (keys per second) and delay (milliseconds), and it must synthesize
+/// every repeat itself. In practice some compositors synthesize repeats
+/// anyway, in two observed shapes: a `pressed` for a key never released, or
+/// press/release pairs re-pressing the key every interval. The scheduler owns
+/// the timer for spec-following compositors, classifies presses so
+/// compositor-synthesized repeats are forwarded (never doubled), and lets the
+/// platform's event loop clamp its poll timeout to the next deadline, firing
+/// at most one repeat per iteration so a starved loop slows repeats instead
+/// of bursting a backlog.
+pub const KeyRepeatScheduler = struct {
+    /// Smallest synthesized interval, so an extreme compositor rate cannot
+    /// turn the event loop into a busy spin.
+    const interval_ms_min: i64 = 1;
+
+    /// A press arriving within this many milliseconds of the same key's
+    /// release can only be compositor-synthesized: a human cannot re-press a
+    /// key faster than one repeat interval. Bounded by the interval itself so
+    /// a huge reported rate cannot make fast human re-presses misclassify.
+    const repress_gap_ms_max: i64 = 60;
+
+    /// Repeats per second as reported by `repeat_info`. Zero disables repeat
+    /// entirely, matching a compositor that never sent the event.
+    rate_per_second: i32 = 0,
+
+    /// Milliseconds a key must be held before the first repeat.
+    delay_ms: i32 = 0,
+
+    /// The key scheduled to repeat, or 0 for none. Evdev key 0 is
+    /// KEY_RESERVED, so it can safely act as the sentinel.
+    active_key: u32 = 0,
+
+    /// The most recently pressed key that has not been released, tracked
+    /// independently of whether repeat is enabled. A second `pressed` for this
+    /// key without an intervening release is physically impossible from a
+    /// human, so it can only be a compositor-synthesized repeat. Detecting it
+    /// prevents double-speed repeat when the scheduler also fires.
+    held_key: u32 = 0,
+
+    /// The key and time of the most recent release, so a paired
+    /// compositor-synthesized re-press (release immediately followed by a
+    /// press of the same key) is recognized as a repeat rather than a fresh
+    /// press.
+    released_key: u32 = 0,
+    released_at_ms: i64 = 0,
+
+    /// Absolute awake-clock millisecond of the next repeat.
+    next_fire_ms: i64 = 0,
 
     const Self = @This();
 
-    /// Check if a key is already pressed (repeat) and mark it as pressed
-    pub fn checkAndPress(self: *Self, evdev_key: u32) bool {
-        if (evdev_key >= 256) return false;
-
-        const was_pressed = self.pressed_keys.isSet(evdev_key);
-        self.pressed_keys.set(evdev_key);
-        return was_pressed;
+    /// Interval between repeats in milliseconds, or null when repeat is off.
+    fn intervalMs(self: *const Self) ?i64 {
+        if (self.rate_per_second <= 0) return null;
+        const interval = @divTrunc(@as(i64, 1000), self.rate_per_second);
+        return @max(interval, interval_ms_min);
     }
 
-    /// Mark a key as released
-    pub fn release(self: *Self, evdev_key: u32) void {
-        if (evdev_key >= 256) return;
-        self.pressed_keys.unset(evdev_key);
+    /// Store the compositor's repeat parameters. `rate` of zero or less
+    /// disables repeat; `delay_ms` must already be non-negative.
+    pub fn configure(self: *Self, rate_per_second: i32, delay_ms: i32) void {
+        std.debug.assert(delay_ms >= 0);
+        self.rate_per_second = @max(rate_per_second, 0);
+        self.delay_ms = delay_ms;
+        if (self.rate_per_second <= 0) self.clear();
     }
 
-    /// Reset all key states (e.g., on focus loss)
-    pub fn reset(self: *Self) void {
-        self.pressed_keys = .empty;
+    /// Record a press of `evdev_key` at `now_ms` and arm the repeat timer.
+    /// Returns true when the press is a compositor-synthesized repeat —
+    /// either a `pressed` for a key still held, or a re-press within one
+    /// interval of the same key's release — which the platform must forward
+    /// as a repeat instead of a fresh key-down. The most recent press owns
+    /// the repeat, as on other platforms.
+    pub fn press(self: *Self, evdev_key: u32, now_ms: i64) bool {
+        std.debug.assert(evdev_key > 0);
+        std.debug.assert(now_ms >= 0);
+
+        // Compositor shape 1: pressed again while never released.
+        if (evdev_key == self.held_key) {
+            self.notifyExternalRepeat(now_ms);
+            return true;
+        }
+
+        // Compositor shape 2: release immediately re-pressed by the
+        // compositor's next repeat beat.
+        if (evdev_key == self.released_key and
+            now_ms - self.released_at_ms <= repress_gap_ms_max)
+        {
+            self.released_key = 0;
+            self.notifyExternalRepeat(now_ms);
+            return true;
+        }
+
+        self.held_key = evdev_key;
+        self.released_key = 0;
+        if (self.intervalMs() == null) return false;
+
+        self.active_key = evdev_key;
+        self.next_fire_ms = now_ms + @max(self.delay_ms, 0);
+        return false;
+    }
+
+    /// Stop repeating when the released key is the scheduled or held one, and
+    /// remember the release so a paired compositor re-press is classified as a
+    /// repeat. The release is recorded unconditionally: after an external
+    /// paired press the key is not held by the scheduler, and the tight
+    /// re-press gap keeps a human's next press of the same key fresh.
+    /// Releasing a different key must not cancel the repeat of the most
+    /// recent press.
+    pub fn release(self: *Self, evdev_key: u32, now_ms: i64) void {
+        std.debug.assert(evdev_key > 0);
+        std.debug.assert(now_ms >= 0);
+
+        if (self.active_key == evdev_key) {
+            self.active_key = 0;
+            self.next_fire_ms = 0;
+        }
+        if (self.held_key == evdev_key) self.held_key = 0;
+        self.released_key = evdev_key;
+        self.released_at_ms = now_ms;
+    }
+
+    /// Cancel any scheduled repeat (focus loss, window close).
+    pub fn clear(self: *Self) void {
+        self.active_key = 0;
+        self.held_key = 0;
+        self.released_key = 0;
+        self.next_fire_ms = 0;
+    }
+
+    /// Records that the compositor itself synthesized a repeat for the held
+    /// key. The scheduler pushes its own deadline one interval past the
+    /// external repeat, so its timer never fires on top of compositor
+    /// repeats: exactly one source owns the cadence at any moment. A no-op
+    /// when nothing is armed (repeat disabled): the external repeats speak
+    /// for themselves.
+    pub fn notifyExternalRepeat(self: *Self, now_ms: i64) void {
+        std.debug.assert(now_ms >= 0);
+        const interval = self.intervalMs() orelse return;
+        if (self.active_key == 0) return;
+
+        self.next_fire_ms = now_ms + interval;
+    }
+
+    /// Millisecond deadline the event loop should clamp its poll timeout to,
+    /// or null when nothing is scheduled.
+    pub fn nextFireMs(self: *const Self) ?i64 {
+        if (self.active_key == 0) return null;
+        std.debug.assert(self.next_fire_ms > 0 or self.delay_ms == 0);
+        return self.next_fire_ms;
+    }
+
+    /// Returns the key to repeat at `now_ms`, or null. At most one repeat is
+    /// produced per call; after a stall the cadence restarts from now rather
+    /// than bursting the missed beats.
+    pub fn fireDue(self: *Self, now_ms: i64) ?u32 {
+        std.debug.assert(now_ms >= 0);
+        if (self.active_key == 0) return null;
+        if (now_ms < self.next_fire_ms) return null;
+
+        const repeating = self.active_key;
+        const interval = self.intervalMs() orelse {
+            self.clear();
+            return null;
+        };
+        self.next_fire_ms = now_ms + interval;
+        return repeating;
     }
 };
+
+/// Whether an evdev key is a modifier or lock key. These never repeat: holding
+/// Shift must not synthesize Shift key-down events.
+pub fn isModifierKey(evdev_key: u32) bool {
+    return switch (evdev_key) {
+        evdev.KEY_LEFTSHIFT,
+        evdev.KEY_RIGHTSHIFT,
+        evdev.KEY_LEFTCTRL,
+        evdev.KEY_RIGHTCTRL,
+        evdev.KEY_LEFTALT,
+        evdev.KEY_RIGHTALT,
+        evdev.KEY_LEFTMETA,
+        evdev.KEY_RIGHTMETA,
+        evdev.KEY_CAPSLOCK,
+        evdev.KEY_NUMLOCK,
+        evdev.KEY_SCROLLLOCK,
+        => true,
+        else => false,
+    };
+}
 
 // =============================================================================
 // Tests
@@ -754,22 +919,155 @@ test "click tracker" {
     try testing.expectEqual(@as(u32, 1), tracker.recordClick(2500, 100, 100, wayland.BTN_LEFT));
 }
 
-test "key repeat tracker" {
+test "key repeat scheduler arms, fires, and cancels" {
+    // Goal: cover the scheduler's happy path and its cancellation edges.
+    // Methodology: drive `fireDue` with explicit clock values and check the
+    // returned key and deadline arithmetic at each boundary. All presses here
+    // are human-speed (far above the compositor re-press gap), so they
+    // classify as fresh.
     const testing = std.testing;
 
-    var tracker = KeyRepeatTracker{};
+    var scheduler = KeyRepeatScheduler{};
+    scheduler.configure(25, 200);
 
-    // First press - not a repeat
-    try testing.expect(!tracker.checkAndPress(evdev.KEY_A));
+    // Nothing scheduled before any press.
+    try testing.expectEqual(@as(?i64, null), scheduler.nextFireMs());
+    try testing.expectEqual(@as(?u32, null), scheduler.fireDue(1000));
 
-    // Second press - is a repeat
-    try testing.expect(tracker.checkAndPress(evdev.KEY_A));
+    // Press: no repeat before the delay elapses, then one repeat per call.
+    try testing.expect(!scheduler.press(evdev.KEY_A, 1000));
+    try testing.expectEqual(@as(?i64, 1200), scheduler.nextFireMs());
+    try testing.expectEqual(@as(?u32, null), scheduler.fireDue(1199));
+    try testing.expectEqual(@as(?u32, evdev.KEY_A), scheduler.fireDue(1200));
+    // 25 Hz = 40 ms interval, measured from the fire time.
+    try testing.expectEqual(@as(?i64, 1240), scheduler.nextFireMs());
+    try testing.expectEqual(@as(?u32, null), scheduler.fireDue(1239));
+    try testing.expectEqual(@as(?u32, evdev.KEY_A), scheduler.fireDue(1240));
 
-    // Release
-    tracker.release(evdev.KEY_A);
+    // Releasing a different key must not cancel the held key's repeat.
+    scheduler.release(evdev.KEY_B, 1241);
+    try testing.expectEqual(@as(?i64, 1280), scheduler.nextFireMs());
 
-    // Press again - not a repeat
-    try testing.expect(!tracker.checkAndPress(evdev.KEY_A));
+    // Releasing the scheduled key cancels it.
+    scheduler.release(evdev.KEY_A, 1242);
+    try testing.expectEqual(@as(?i64, null), scheduler.nextFireMs());
+    try testing.expectEqual(@as(?u32, null), scheduler.fireDue(2000));
+}
+
+test "key repeat scheduler recent press owns the repeat" {
+    // Goal: holding A and pressing B repeats B, and releasing B does not leave
+    // a repeat armed for the older A. Methodology: sequential presses with a
+    // shared clock, inspecting both the classification and fire results.
+    const testing = std.testing;
+
+    var scheduler = KeyRepeatScheduler{};
+    scheduler.configure(10, 0);
+
+    try testing.expect(!scheduler.press(evdev.KEY_A, 0));
+    try testing.expect(!scheduler.press(evdev.KEY_B, 50));
+    try testing.expectEqual(@as(?u32, evdev.KEY_B), scheduler.fireDue(100));
+    try testing.expectEqual(@as(?u32, evdev.KEY_B), scheduler.fireDue(200));
+
+    scheduler.release(evdev.KEY_B, 250);
+    try testing.expectEqual(@as(?i64, null), scheduler.nextFireMs());
+}
+
+test "key repeat scheduler resyncs after a stall instead of bursting" {
+    // Goal: a starved event loop must not emit a burst of repeats. Methodology:
+    // fire far past several deadlines and verify exactly one repeat returns
+    // and the next deadline restarts one interval from the fire time.
+    const testing = std.testing;
+
+    var scheduler = KeyRepeatScheduler{};
+    scheduler.configure(10, 100);
+
+    try testing.expect(!scheduler.press(evdev.KEY_A, 0));
+    // 1000 ms late: nine beats were missed, but only one repeat fires.
+    try testing.expectEqual(@as(?u32, evdev.KEY_A), scheduler.fireDue(1100));
+    // 10 Hz = 100 ms interval, restarted from the late fire time.
+    try testing.expectEqual(@as(?i64, 1200), scheduler.nextFireMs());
+    try testing.expectEqual(@as(?u32, null), scheduler.fireDue(1199));
+    try testing.expectEqual(@as(?u32, evdev.KEY_A), scheduler.fireDue(1200));
+}
+
+test "key repeat scheduler zero rate disables repeat" {
+    // Goal: a compositor that reports rate 0 (or never sends repeat_info)
+    // must produce no repeats. Methodology: configure with zero, press, fire
+    // far past any plausible deadline.
+    const testing = std.testing;
+
+    var scheduler = KeyRepeatScheduler{};
+    scheduler.configure(0, 200);
+    try testing.expect(!scheduler.press(evdev.KEY_A, 0));
+    try testing.expectEqual(@as(?i64, null), scheduler.nextFireMs());
+    try testing.expectEqual(@as(?u32, null), scheduler.fireDue(100_000));
+
+    // Reconfiguring to zero cancels an already-armed repeat.
+    scheduler.configure(30, 100);
+    scheduler.release(evdev.KEY_A, 500);
+    try testing.expect(!scheduler.press(evdev.KEY_A, 1000));
+    try testing.expectEqual(@as(?i64, 1100), scheduler.nextFireMs());
+    scheduler.configure(0, 100);
+    try testing.expectEqual(@as(?i64, null), scheduler.nextFireMs());
+}
+
+test "key repeat scheduler classifies compositor-synthesized repeats" {
+    // Goal: compositors that repeat on the client's behalf must not be doubled
+    // by the scheduler's timer. Two shapes occur in the wild: a `pressed` for
+    // a key never released, and press/release pairs re-pressing the key every
+    // interval. Methodology: replay both shapes against the scheduler and
+    // verify each synthesizes `press` returning true (forward as repeat) while
+    // the timer's deadline stays out of the way, and that a human-speed
+    // re-press of the same key still classifies as fresh.
+    const testing = std.testing;
+
+    // Shape 1: pressed again while never released (25 Hz = 40 ms interval).
+    var scheduler = KeyRepeatScheduler{};
+    scheduler.configure(25, 200);
+    try testing.expect(!scheduler.press(evdev.KEY_A, 1000));
+    try testing.expect(scheduler.press(evdev.KEY_A, 1200));
+    try testing.expectEqual(@as(?i64, 1240), scheduler.nextFireMs());
+    try testing.expectEqual(@as(?u32, null), scheduler.fireDue(1239));
+
+    // Shape 2: press/release pairs, like the wire log of a repeating
+    // compositor: press at t, release at t, re-press 40 ms later.
+    var paired = KeyRepeatScheduler{};
+    paired.configure(25, 600);
+    try testing.expect(!paired.press(evdev.KEY_A, 0));
+    paired.release(evdev.KEY_A, 600);
+    try testing.expect(paired.press(evdev.KEY_A, 640));
+    paired.release(evdev.KEY_A, 640);
+    try testing.expect(paired.press(evdev.KEY_A, 680));
+    // The timer never fires between compositor beats.
+    try testing.expectEqual(@as(?u32, null), paired.fireDue(679));
+
+    // A human re-pressing the same key 300 ms later is a fresh press.
+    paired.release(evdev.KEY_A, 680);
+    try testing.expect(!paired.press(evdev.KEY_A, 980));
+    try testing.expectEqual(@as(?i64, 980 + 600), paired.nextFireMs());
+}
+test "isModifierKey excludes modifiers and locks from repeat" {
+    // Goal: modifier and lock keys must never be scheduled for repeat.
+    // Methodology: exhaustive spot checks over both sides of the switch.
+    const testing = std.testing;
+
+    try testing.expect(isModifierKey(evdev.KEY_LEFTSHIFT));
+    try testing.expect(isModifierKey(evdev.KEY_RIGHTSHIFT));
+    try testing.expect(isModifierKey(evdev.KEY_LEFTCTRL));
+    try testing.expect(isModifierKey(evdev.KEY_RIGHTCTRL));
+    try testing.expect(isModifierKey(evdev.KEY_LEFTALT));
+    try testing.expect(isModifierKey(evdev.KEY_RIGHTALT));
+    try testing.expect(isModifierKey(evdev.KEY_LEFTMETA));
+    try testing.expect(isModifierKey(evdev.KEY_RIGHTMETA));
+    try testing.expect(isModifierKey(evdev.KEY_CAPSLOCK));
+    try testing.expect(isModifierKey(evdev.KEY_NUMLOCK));
+    try testing.expect(isModifierKey(evdev.KEY_SCROLLLOCK));
+
+    try testing.expect(!isModifierKey(evdev.KEY_A));
+    try testing.expect(!isModifierKey(evdev.KEY_SPACE));
+    try testing.expect(!isModifierKey(evdev.KEY_LEFT));
+    try testing.expect(!isModifierKey(evdev.KEY_DELETE));
+    try testing.expect(!isModifierKey(evdev.KEY_BACKSPACE));
 }
 
 test "IME text input event" {

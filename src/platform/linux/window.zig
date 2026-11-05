@@ -192,9 +192,6 @@ pub const Window = struct {
     /// Click tracker for multi-click detection
     click_tracker: linux_input.ClickTracker = .{},
 
-    /// Key repeat tracker
-    key_repeat_tracker: linux_input.KeyRepeatTracker = .{},
-
     /// Currently pressed mouse button (for drag detection)
     pressed_button: ?input.MouseButton = null,
 
