@@ -676,6 +676,20 @@ const wp_fractional_scale_manager_v1_get_fractional_scale_types = [_]?*const Int
 const zwp_text_input_v3_enter_types = [_]?*const Interface{&wl_surface_interface};
 const zwp_text_input_v3_leave_types = [_]?*const Interface{&wl_surface_interface};
 
+// xdg_wm_base request opcodes in protocol declaration order. See `SurfaceRequest` for
+// why opcodes are named instead of written as literals at the call sites.
+const WmBaseRequest = enum(u32) {
+    destroy = 0,
+    create_positioner = 1,
+    get_xdg_surface = 2,
+    pong = 3,
+};
+
+// xdg_wm_base event opcodes in protocol declaration order.
+const WmBaseEvent = enum(u32) {
+    ping = 0,
+};
+
 // xdg_wm_base events: ping
 const xdg_wm_base_events = [_]Message{
     .{ .name = "ping", .signature = "u", .types = null },
@@ -696,6 +710,20 @@ pub const xdg_wm_base_interface: Interface = .{
     .methods = @ptrCast(&xdg_wm_base_methods),
     .event_count = 1,
     .events = @ptrCast(&xdg_wm_base_events),
+};
+
+// xdg_surface request opcodes in protocol declaration order.
+const XdgSurfaceRequest = enum(u32) {
+    destroy = 0,
+    get_toplevel = 1,
+    get_popup = 2,
+    set_window_geometry = 3,
+    ack_configure = 4,
+};
+
+// xdg_surface event opcodes in protocol declaration order.
+const XdgSurfaceEvent = enum(u32) {
+    configure = 0,
 };
 
 // xdg_surface events: configure
@@ -719,6 +747,34 @@ pub const xdg_surface_interface: Interface = .{
     .methods = @ptrCast(&xdg_surface_methods),
     .event_count = 1,
     .events = @ptrCast(&xdg_surface_events),
+};
+
+// xdg_toplevel request opcodes in protocol declaration order. This is the interface
+// whose `set_min_size`/`set_max_size` opcodes were transposed, so every request used by
+// a marshal helper must appear here and be checked against the table in the tests.
+const ToplevelRequest = enum(u32) {
+    destroy = 0,
+    set_parent = 1,
+    set_title = 2,
+    set_app_id = 3,
+    show_window_menu = 4,
+    move = 5,
+    resize = 6,
+    set_max_size = 7,
+    set_min_size = 8,
+    set_maximized = 9,
+    unset_maximized = 10,
+    set_fullscreen = 11,
+    unset_fullscreen = 12,
+    set_minimized = 13,
+};
+
+// xdg_toplevel event opcodes in protocol declaration order.
+const ToplevelEvent = enum(u32) {
+    configure = 0,
+    close = 1,
+    configure_bounds = 2,
+    wm_capabilities = 3,
 };
 
 // xdg_toplevel events: configure, close, configure_bounds, wm_capabilities
@@ -766,6 +822,25 @@ pub const xdg_positioner_interface: Interface = .{
 };
 
 // XDG decoration interfaces
+// zxdg_decoration_manager_v1 request opcodes in protocol declaration order.
+const DecorationManagerRequest = enum(u32) {
+    destroy = 0,
+    get_toplevel_decoration = 1,
+};
+
+// zxdg_toplevel_decoration_v1 request opcodes in protocol declaration order.
+const DecorationRequest = enum(u32) {
+    destroy = 0,
+    set_mode = 1,
+    unset_mode = 2,
+};
+
+// zxdg_toplevel_decoration_v1 event opcodes in protocol declaration order.
+const DecorationEvent = enum(u32) {
+    configure = 0,
+};
+
+// zxdg_decoration_manager_v1 methods: destroy, get_toplevel_decoration
 const zxdg_decoration_manager_v1_methods = [_]Message{
     .{ .name = "destroy", .signature = "", .types = null },
     .{ .name = "get_toplevel_decoration", .signature = "no", .types = @ptrCast(&zxdg_decoration_manager_get_decoration_types) },
@@ -818,7 +893,36 @@ pub const zwp_text_input_manager_v3_interface: Interface = .{
     .events = null,
 };
 
-// zwp_text_input_v3 events: enter, leave, preedit_string, commit_string, delete_surrounding_text, done
+// zwp_text_input_manager_v3 request opcodes in protocol declaration order.
+const TextInputManagerRequest = enum(u32) {
+    destroy = 0,
+    get_text_input = 1,
+};
+
+// zwp_text_input_v3 request opcodes in protocol declaration order.
+const TextInputV3Request = enum(u32) {
+    destroy = 0,
+    enable = 1,
+    disable = 2,
+    set_surrounding_text = 3,
+    set_text_change_cause = 4,
+    set_content_type = 5,
+    set_cursor_rectangle = 6,
+    commit = 7,
+};
+
+// zwp_text_input_v3 event opcodes in protocol declaration order.
+const TextInputV3Event = enum(u32) {
+    enter = 0,
+    leave = 1,
+    preedit_string = 2,
+    commit_string = 3,
+    delete_surrounding_text = 4,
+    done = 5,
+};
+
+// zwp_text_input_v3 events: enter, leave, preedit_string, commit_string,
+// delete_surrounding_text, done
 const zwp_text_input_v3_events = [_]Message{
     .{ .name = "enter", .signature = "o", .types = @ptrCast(&zwp_text_input_v3_enter_types) },
     .{ .name = "leave", .signature = "o", .types = @ptrCast(&zwp_text_input_v3_leave_types) },
@@ -922,10 +1026,31 @@ pub fn registryAddListener(registry: *Registry, listener: *const RegistryListene
     return wl_proxy_add_listener(@ptrCast(registry), @ptrCast(listener), data) == 0;
 }
 
+// wl_registry request opcodes in protocol declaration order. Verified against
+// libwayland's generated `wl_registry_interface` table.
+const RegistryRequest = enum(u32) {
+    bind = 0,
+};
+
+// wl_compositor request opcodes in protocol declaration order. Verified against
+// libwayland's generated `wl_compositor_interface` table.
+const CompositorRequest = enum(u32) {
+    create_surface = 0,
+    create_region = 1,
+};
+
+// wl_region request opcodes in protocol declaration order. Verified against
+// libwayland's generated `wl_region_interface` table.
+const RegionRequest = enum(u32) {
+    destroy = 0,
+    add = 1,
+    subtract = 2,
+};
+
 pub fn registryBind(registry: *Registry, name: u32, interface: *const Interface, version: u32) ?*anyopaque {
     return wl_proxy_marshal_flags(
         @ptrCast(registry),
-        0, // WL_REGISTRY_BIND
+        @backingInt(RegistryRequest.bind),
         interface,
         version,
         0,
@@ -944,7 +1069,7 @@ pub fn registryDestroy(registry: *Registry) void {
 pub fn compositorCreateSurface(compositor: *Compositor) ?*Surface {
     const result = wl_proxy_marshal_flags(
         @ptrCast(compositor),
-        0, // WL_COMPOSITOR_CREATE_SURFACE
+        @backingInt(CompositorRequest.create_surface),
         &wl_surface_interface,
         wl_proxy_get_version(@ptrCast(compositor)),
         0,
@@ -956,7 +1081,7 @@ pub fn compositorCreateSurface(compositor: *Compositor) ?*Surface {
 pub fn compositorCreateRegion(compositor: *Compositor) ?*Region {
     const result = wl_proxy_marshal_flags(
         @ptrCast(compositor),
-        1, // WL_COMPOSITOR_CREATE_REGION
+        @backingInt(CompositorRequest.create_region),
         &wl_region_interface,
         wl_proxy_get_version(@ptrCast(compositor)),
         0,
@@ -1064,7 +1189,131 @@ test "wl_surface request opcodes match libwayland's protocol table" {
     }
 }
 
-// =============================================================================
+/// Checks a request enum against a hand-written methods table: every enum member's
+/// opcode must land on the same-named request with the protocol's signature, and the
+/// table must declare exactly the enum's requests (no missing or extra entries).
+fn expectRequestTable(
+    comptime RequestEnum: type,
+    comptime expected_signatures: []const []const u8,
+    comptime methods: []const Message,
+) !void {
+    const names = @typeInfo(RequestEnum).@"enum".field_names;
+    const values = @typeInfo(RequestEnum).@"enum".field_values;
+    try std.testing.expectEqual(methods.len, names.len);
+    try std.testing.expectEqual(methods.len, expected_signatures.len);
+    inline for (names, values, expected_signatures) |name, opcode, signature| {
+        try std.testing.expect(opcode < methods.len);
+        try std.testing.expectEqualStrings(name, std.mem.span(methods[opcode].name));
+        try std.testing.expectEqualStrings(signature, std.mem.span(methods[opcode].signature));
+    }
+}
+
+/// Checks an event enum against a hand-written events table, as `expectRequestTable`
+/// does for requests.
+fn expectEventTable(
+    comptime EventEnum: type,
+    comptime expected_signatures: []const []const u8,
+    comptime events: []const Message,
+) !void {
+    try expectRequestTable(EventEnum, expected_signatures, events);
+}
+
+/// Checks a request enum against libwayland's generated interface table. The table may
+/// contain requests Gooey does not send (such as wl_seat's `release`), so unlike
+/// `expectRequestTable` the enum only has to agree with the entries it names.
+fn expectLibwaylandRequests(
+    comptime RequestEnum: type,
+    comptime expected_signatures: []const []const u8,
+    comptime interface: *const Interface,
+) !void {
+    const names = @typeInfo(RequestEnum).@"enum".field_names;
+    const values = @typeInfo(RequestEnum).@"enum".field_values;
+    const method_count: usize = @intCast(interface.method_count);
+    const methods: [*]const Message = @ptrCast(interface.methods.?);
+    inline for (names, values, expected_signatures) |name, opcode, signature| {
+        try std.testing.expect(opcode < method_count);
+        try std.testing.expectEqualStrings(name, std.mem.span(methods[opcode].name));
+        try std.testing.expectEqualStrings(signature, std.mem.span(methods[opcode].signature));
+    }
+}
+
+// Signatures from the xdg-shell and extension protocol XMLs. A mismatch means the
+// hand-written table would make wl_proxy_marshal_flags marshal the wrong wire format,
+// which fails at runtime inside the compositor rather than at compile time here.
+const xdg_wm_base_signatures = [_][]const u8{ "", "n", "no", "u" };
+const xdg_surface_signatures = [_][]const u8{ "", "n", "noo", "iiii", "u" };
+const xdg_toplevel_signatures = [_][]const u8{
+    "", "?o", "s", "s", "ouii", "ou", "ouu", "ii", "ii", "", "", "?o", "", "",
+};
+const xdg_toplevel_event_signatures = [_][]const u8{ "iia", "", "ii", "a" };
+const decoration_signatures = [_][]const u8{ "", "u", "" };
+const text_input_v3_signatures = [_][]const u8{ "", "", "", "sii", "u", "uu", "iiii", "" };
+const text_input_v3_event_signatures = [_][]const u8{ "o", "o", "?sii", "?s", "uu", "u" };
+
+test "xdg_wm_base requests and events match the protocol" {
+    // Goal: catch the WmBaseRequest enum and the hand-written xdg_wm_base table drifting
+    // apart. Methodology: each opcode must name the same request and wire signature as
+    // the protocol XML, and the table must contain exactly those requests.
+    try expectRequestTable(WmBaseRequest, &xdg_wm_base_signatures, &xdg_wm_base_methods);
+    try expectEventTable(WmBaseEvent, &.{"u"}, &xdg_wm_base_events);
+}
+
+test "xdg_surface requests and events match the protocol" {
+    // Goal and methodology as for xdg_wm_base above.
+    try expectRequestTable(XdgSurfaceRequest, &xdg_surface_signatures, &xdg_surface_methods);
+    try expectEventTable(XdgSurfaceEvent, &.{"u"}, &xdg_surface_events);
+}
+
+test "xdg_toplevel requests and events match the protocol" {
+    // Goal: `xdgToplevelSetMinSize` and `xdgToplevelSetMaxSize` shipped with transposed
+    // opcodes because no test pinned them; this closes that gap. Methodology: every
+    // xdg_toplevel request and event opcode must name the protocol's request and wire
+    // signature, and the table must contain exactly the protocol's 14 requests.
+    try expectRequestTable(ToplevelRequest, &xdg_toplevel_signatures, &xdg_toplevel_methods);
+    try expectEventTable(ToplevelEvent, &xdg_toplevel_event_signatures, &xdg_toplevel_events);
+}
+
+test "zxdg decoration requests match the protocol" {
+    // Goal and methodology as for xdg_wm_base above, for the decoration interfaces.
+    try expectRequestTable(DecorationManagerRequest, &.{ "", "no" }, &zxdg_decoration_manager_v1_methods);
+    try expectRequestTable(DecorationRequest, &decoration_signatures, &zxdg_toplevel_decoration_v1_methods);
+    try expectEventTable(DecorationEvent, &.{"u"}, &zxdg_toplevel_decoration_v1_events);
+}
+
+test "zwp_text_input_v3 requests and events match the protocol" {
+    // Goal and methodology as for xdg_wm_base above, for the text input interfaces.
+    try expectRequestTable(TextInputManagerRequest, &.{ "", "no" }, &zwp_text_input_manager_v3_methods);
+    try expectRequestTable(TextInputV3Request, &text_input_v3_signatures, &zwp_text_input_v3_methods);
+    try expectEventTable(TextInputV3Event, &text_input_v3_event_signatures, &zwp_text_input_v3_events);
+}
+
+test "libwayland-backed request opcodes match libwayland's protocol tables" {
+    // Goal: catch the registry, compositor, region, and seat request enums drifting from
+    // the tables libwayland-client generates from the protocol XML. Methodology: each
+    // opcode must land on the same-named request, and each named request must have the
+    // protocol's signature. Registry's `bind` is skipped for signatures because
+    // libwayland extends the signature with the new_id type's own code at runtime.
+    const registry_names = @typeInfo(RegistryRequest).@"enum".field_names;
+    const registry_values = @typeInfo(RegistryRequest).@"enum".field_values;
+    const registry_methods: [*]const Message = @ptrCast(wl_registry_interface.methods.?);
+    const registry_method_count: usize = @intCast(wl_registry_interface.method_count);
+    inline for (registry_names, registry_values) |name, opcode| {
+        try std.testing.expect(opcode < registry_method_count);
+        try std.testing.expectEqualStrings(name, std.mem.span(registry_methods[opcode].name));
+    }
+    try expectLibwaylandRequests(CompositorRequest, &.{ "n", "n" }, &wl_compositor_interface);
+    try expectLibwaylandRequests(RegionRequest, &.{ "", "iiii", "iiii" }, &wl_region_interface);
+    try expectLibwaylandRequests(SeatRequest, &.{ "n", "n", "n" }, &wl_seat_interface);
+}
+
+test "viewporter and cursor shape requests match the protocol" {
+    // Goal and methodology as for xdg_wm_base above, for the remaining hand-written
+    // wayland-protocols interfaces Gooey marshals.
+    try expectRequestTable(ViewporterRequest, &.{ "", "no" }, &wp_viewporter_methods);
+    try expectRequestTable(ViewportRequest, &.{ "", "ffff", "ii" }, &wp_viewport_methods);
+    try expectRequestTable(CursorShapeManagerRequest, &.{ "", "no", "no" }, &wp_cursor_shape_manager_v1_methods);
+    try expectRequestTable(CursorShapeDeviceRequest, &.{ "", "uu" }, &wp_cursor_shape_device_v1_methods);
+}
 // wp_viewporter functions (HiDPI support)
 // =============================================================================
 
@@ -1082,7 +1331,7 @@ pub fn bindViewporter(registry: *Registry, name: u32, version: u32) ?*WpViewport
 pub fn viewporterGetViewport(viewporter: *WpViewporter, surface: *Surface) ?*WpViewport {
     const result = wl_proxy_marshal_flags(
         @ptrCast(viewporter),
-        1, // WP_VIEWPORTER_GET_VIEWPORT
+        @backingInt(ViewporterRequest.get_viewport),
         &wp_viewport_interface,
         wl_proxy_get_version(@ptrCast(viewporter)),
         0,
@@ -1096,7 +1345,7 @@ pub fn viewporterGetViewport(viewporter: *WpViewporter, surface: *Surface) ?*WpV
 pub fn viewporterDestroy(viewporter: *WpViewporter) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(viewporter),
-        0, // WP_VIEWPORTER_DESTROY
+        @backingInt(ViewporterRequest.destroy),
         null,
         wl_proxy_get_version(@ptrCast(viewporter)),
         0,
@@ -1109,7 +1358,7 @@ pub fn viewporterDestroy(viewporter: *WpViewporter) void {
 pub fn viewportSetDestination(viewport: *WpViewport, width: i32, height: i32) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(viewport),
-        2, // WP_VIEWPORT_SET_DESTINATION
+        @backingInt(ViewportRequest.set_destination),
         null,
         wl_proxy_get_version(@ptrCast(viewport)),
         0,
@@ -1123,7 +1372,7 @@ pub fn viewportSetDestination(viewport: *WpViewport, width: i32, height: i32) vo
 pub fn viewportSetSource(viewport: *WpViewport, x: Fixed, y: Fixed, width: Fixed, height: Fixed) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(viewport),
-        1, // WP_VIEWPORT_SET_SOURCE
+        @backingInt(ViewportRequest.set_source),
         null,
         wl_proxy_get_version(@ptrCast(viewport)),
         0,
@@ -1138,7 +1387,7 @@ pub fn viewportSetSource(viewport: *WpViewport, x: Fixed, y: Fixed, width: Fixed
 pub fn viewportDestroy(viewport: *WpViewport) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(viewport),
-        0, // WP_VIEWPORT_DESTROY
+        @backingInt(ViewportRequest.destroy),
         null,
         wl_proxy_get_version(@ptrCast(viewport)),
         0,
@@ -1256,7 +1505,7 @@ pub fn callbackDestroy(callback: *Callback) void {
 pub fn regionAdd(region: *Region, x: i32, y: i32, width: i32, height: i32) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(region),
-        1, // WL_REGION_ADD
+        @backingInt(RegionRequest.add),
         null,
         wl_proxy_get_version(@ptrCast(region)),
         0,
@@ -1270,7 +1519,7 @@ pub fn regionAdd(region: *Region, x: i32, y: i32, width: i32, height: i32) void 
 pub fn regionDestroy(region: *Region) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(region),
-        0, // WL_REGION_DESTROY
+        @backingInt(RegionRequest.destroy),
         null,
         wl_proxy_get_version(@ptrCast(region)),
         MARSHAL_FLAG_DESTROY,
@@ -1282,10 +1531,18 @@ pub fn seatAddListener(seat: *Seat, listener: *const SeatListener, data: ?*anyop
     return wl_proxy_add_listener(@ptrCast(seat), @ptrCast(listener), data) == 0;
 }
 
+// wl_seat request opcodes in protocol declaration order. Verified against libwayland's
+// generated `wl_seat_interface` table, which also contains `release` (opcode 3).
+const SeatRequest = enum(u32) {
+    get_pointer = 0,
+    get_keyboard = 1,
+    get_touch = 2,
+};
+
 pub fn seatGetPointer(seat: *Seat) ?*Pointer {
     const result = wl_proxy_marshal_flags(
         @ptrCast(seat),
-        0, // WL_SEAT_GET_POINTER
+        @backingInt(SeatRequest.get_pointer),
         &wl_pointer_interface,
         wl_proxy_get_version(@ptrCast(seat)),
         0,
@@ -1297,7 +1554,7 @@ pub fn seatGetPointer(seat: *Seat) ?*Pointer {
 pub fn seatGetKeyboard(seat: *Seat) ?*Keyboard {
     const result = wl_proxy_marshal_flags(
         @ptrCast(seat),
-        1, // WL_SEAT_GET_KEYBOARD
+        @backingInt(SeatRequest.get_keyboard),
         &wl_keyboard_interface,
         wl_proxy_get_version(@ptrCast(seat)),
         0,
@@ -1324,7 +1581,7 @@ pub fn pointerDestroy(pointer: *Pointer) void {
 pub fn cursorShapeManagerGetPointer(manager: *WpCursorShapeManagerV1, pointer: *Pointer) ?*WpCursorShapeDeviceV1 {
     const result = wl_proxy_marshal_flags(
         @ptrCast(manager),
-        1, // get_pointer
+        @backingInt(CursorShapeManagerRequest.get_pointer),
         &wp_cursor_shape_device_v1_interface,
         wl_proxy_get_version(@ptrCast(manager)),
         0,
@@ -1337,7 +1594,7 @@ pub fn cursorShapeManagerGetPointer(manager: *WpCursorShapeManagerV1, pointer: *
 pub fn cursorShapeManagerDestroy(manager: *WpCursorShapeManagerV1) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(manager),
-        0, // destroy
+        @backingInt(CursorShapeManagerRequest.destroy),
         null,
         wl_proxy_get_version(@ptrCast(manager)),
         MARSHAL_FLAG_DESTROY,
@@ -1347,7 +1604,7 @@ pub fn cursorShapeManagerDestroy(manager: *WpCursorShapeManagerV1) void {
 pub fn cursorShapeDeviceSetShape(device: *WpCursorShapeDeviceV1, serial: u32, shape: u32) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(device),
-        1, // set_shape
+        @backingInt(CursorShapeDeviceRequest.set_shape),
         null,
         wl_proxy_get_version(@ptrCast(device)),
         0,
@@ -1359,7 +1616,7 @@ pub fn cursorShapeDeviceSetShape(device: *WpCursorShapeDeviceV1, serial: u32, sh
 pub fn cursorShapeDeviceDestroy(device: *WpCursorShapeDeviceV1) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(device),
-        0, // destroy
+        @backingInt(CursorShapeDeviceRequest.destroy),
         null,
         wl_proxy_get_version(@ptrCast(device)),
         MARSHAL_FLAG_DESTROY,
@@ -1381,7 +1638,7 @@ pub fn keyboardDestroy(keyboard: *Keyboard) void {
 pub fn seatGetTouch(seat: *Seat) ?*Touch {
     const result = wl_proxy_marshal_flags(
         @ptrCast(seat),
-        2, // WL_SEAT_GET_TOUCH
+        @backingInt(SeatRequest.get_touch),
         &wl_touch_interface,
         wl_proxy_get_version(@ptrCast(seat)),
         0,
@@ -1419,7 +1676,7 @@ pub fn xdgWmBaseAddListener(wm_base: *XdgWmBase, listener: *const XdgWmBaseListe
 pub fn xdgWmBasePong(wm_base: *XdgWmBase, serial: u32) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(wm_base),
-        3, // XDG_WM_BASE_PONG (destroy=0, create_positioner=1, get_xdg_surface=2, pong=3)
+        @backingInt(WmBaseRequest.pong),
         null,
         wl_proxy_get_version(@ptrCast(wm_base)),
         0,
@@ -1430,7 +1687,7 @@ pub fn xdgWmBasePong(wm_base: *XdgWmBase, serial: u32) void {
 pub fn xdgWmBaseGetXdgSurface(wm_base: *XdgWmBase, surface: *Surface) ?*XdgSurface {
     const result = wl_proxy_marshal_flags(
         @ptrCast(wm_base),
-        2, // XDG_WM_BASE_GET_XDG_SURFACE
+        @backingInt(WmBaseRequest.get_xdg_surface),
         &xdg_surface_interface,
         wl_proxy_get_version(@ptrCast(wm_base)),
         0,
@@ -1443,7 +1700,7 @@ pub fn xdgWmBaseGetXdgSurface(wm_base: *XdgWmBase, surface: *Surface) ?*XdgSurfa
 pub fn xdgWmBaseDestroy(wm_base: *XdgWmBase) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(wm_base),
-        0, // XDG_WM_BASE_DESTROY
+        @backingInt(WmBaseRequest.destroy),
         null,
         wl_proxy_get_version(@ptrCast(wm_base)),
         MARSHAL_FLAG_DESTROY,
@@ -1458,7 +1715,7 @@ pub fn xdgSurfaceAddListener(xdg_surface: *XdgSurface, listener: *const XdgSurfa
 pub fn xdgSurfaceGetToplevel(xdg_surface: *XdgSurface) ?*XdgToplevel {
     const result = wl_proxy_marshal_flags(
         @ptrCast(xdg_surface),
-        1, // XDG_SURFACE_GET_TOPLEVEL
+        @backingInt(XdgSurfaceRequest.get_toplevel),
         &xdg_toplevel_interface,
         wl_proxy_get_version(@ptrCast(xdg_surface)),
         0,
@@ -1470,7 +1727,7 @@ pub fn xdgSurfaceGetToplevel(xdg_surface: *XdgSurface) ?*XdgToplevel {
 pub fn xdgSurfaceAckConfigure(xdg_surface: *XdgSurface, serial: u32) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(xdg_surface),
-        4, // XDG_SURFACE_ACK_CONFIGURE
+        @backingInt(XdgSurfaceRequest.ack_configure),
         null,
         wl_proxy_get_version(@ptrCast(xdg_surface)),
         0,
@@ -1481,7 +1738,7 @@ pub fn xdgSurfaceAckConfigure(xdg_surface: *XdgSurface, serial: u32) void {
 pub fn xdgSurfaceSetWindowGeometry(xdg_surface: *XdgSurface, x: i32, y: i32, width: i32, height: i32) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(xdg_surface),
-        3, // XDG_SURFACE_SET_WINDOW_GEOMETRY
+        @backingInt(XdgSurfaceRequest.set_window_geometry),
         null,
         wl_proxy_get_version(@ptrCast(xdg_surface)),
         0,
@@ -1495,7 +1752,7 @@ pub fn xdgSurfaceSetWindowGeometry(xdg_surface: *XdgSurface, x: i32, y: i32, wid
 pub fn xdgSurfaceDestroy(xdg_surface: *XdgSurface) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(xdg_surface),
-        0, // XDG_SURFACE_DESTROY
+        @backingInt(XdgSurfaceRequest.destroy),
         null,
         wl_proxy_get_version(@ptrCast(xdg_surface)),
         MARSHAL_FLAG_DESTROY,
@@ -1510,7 +1767,7 @@ pub fn xdgToplevelAddListener(toplevel: *XdgToplevel, listener: *const XdgToplev
 pub fn xdgToplevelSetTitle(toplevel: *XdgToplevel, title: [*:0]const u8) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(toplevel),
-        2, // XDG_TOPLEVEL_SET_TITLE
+        @backingInt(ToplevelRequest.set_title),
         null,
         wl_proxy_get_version(@ptrCast(toplevel)),
         0,
@@ -1521,7 +1778,7 @@ pub fn xdgToplevelSetTitle(toplevel: *XdgToplevel, title: [*:0]const u8) void {
 pub fn xdgToplevelSetAppId(toplevel: *XdgToplevel, app_id: [*:0]const u8) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(toplevel),
-        3, // XDG_TOPLEVEL_SET_APP_ID
+        @backingInt(ToplevelRequest.set_app_id),
         null,
         wl_proxy_get_version(@ptrCast(toplevel)),
         0,
@@ -1532,7 +1789,7 @@ pub fn xdgToplevelSetAppId(toplevel: *XdgToplevel, app_id: [*:0]const u8) void {
 pub fn xdgToplevelSetMinSize(toplevel: *XdgToplevel, width: i32, height: i32) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(toplevel),
-        8, // XDG_TOPLEVEL_SET_MIN_SIZE (set_max_size is opcode 7)
+        @backingInt(ToplevelRequest.set_min_size),
         null,
         wl_proxy_get_version(@ptrCast(toplevel)),
         0,
@@ -1544,7 +1801,7 @@ pub fn xdgToplevelSetMinSize(toplevel: *XdgToplevel, width: i32, height: i32) vo
 pub fn xdgToplevelSetMaxSize(toplevel: *XdgToplevel, width: i32, height: i32) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(toplevel),
-        7, // XDG_TOPLEVEL_SET_MAX_SIZE
+        @backingInt(ToplevelRequest.set_max_size),
         null,
         wl_proxy_get_version(@ptrCast(toplevel)),
         0,
@@ -1558,7 +1815,7 @@ pub fn xdgToplevelSetMaxSize(toplevel: *XdgToplevel, width: i32, height: i32) vo
 pub fn xdgToplevelMove(toplevel: *XdgToplevel, seat: *Seat, serial: u32) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(toplevel),
-        5, // XDG_TOPLEVEL_MOVE
+        @backingInt(ToplevelRequest.move),
         null,
         wl_proxy_get_version(@ptrCast(toplevel)),
         0,
@@ -1585,7 +1842,7 @@ pub const ResizeEdge = enum(u32) {
 pub fn xdgToplevelResize(toplevel: *XdgToplevel, seat: *Seat, serial: u32, edges: ResizeEdge) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(toplevel),
-        6, // XDG_TOPLEVEL_RESIZE
+        @backingInt(ToplevelRequest.resize),
         null,
         wl_proxy_get_version(@ptrCast(toplevel)),
         0,
@@ -1598,7 +1855,7 @@ pub fn xdgToplevelResize(toplevel: *XdgToplevel, seat: *Seat, serial: u32, edges
 pub fn xdgToplevelDestroy(toplevel: *XdgToplevel) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(toplevel),
-        0, // XDG_TOPLEVEL_DESTROY
+        @backingInt(ToplevelRequest.destroy),
         null,
         wl_proxy_get_version(@ptrCast(toplevel)),
         MARSHAL_FLAG_DESTROY,
@@ -1615,7 +1872,7 @@ pub fn zxdgDecorationManagerV1GetToplevelDecoration(
 ) ?*ZxdgToplevelDecorationV1 {
     const result = wl_proxy_marshal_flags(
         @ptrCast(manager),
-        1, // ZXDG_DECORATION_MANAGER_V1_GET_TOPLEVEL_DECORATION
+        @backingInt(DecorationManagerRequest.get_toplevel_decoration),
         &zxdg_toplevel_decoration_v1_interface,
         wl_proxy_get_version(@ptrCast(manager)),
         0,
@@ -1628,7 +1885,7 @@ pub fn zxdgDecorationManagerV1GetToplevelDecoration(
 pub fn zxdgDecorationManagerV1Destroy(manager: *ZxdgDecorationManagerV1) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(manager),
-        0, // ZXDG_DECORATION_MANAGER_V1_DESTROY
+        @backingInt(DecorationManagerRequest.destroy),
         null,
         wl_proxy_get_version(@ptrCast(manager)),
         MARSHAL_FLAG_DESTROY,
@@ -1646,7 +1903,7 @@ pub fn zxdgToplevelDecorationV1AddListener(
 pub fn zxdgToplevelDecorationV1SetMode(decoration: *ZxdgToplevelDecorationV1, mode: ZxdgToplevelDecorationV1Mode) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(decoration),
-        1, // ZXDG_TOPLEVEL_DECORATION_V1_SET_MODE
+        @backingInt(DecorationRequest.set_mode),
         null,
         wl_proxy_get_version(@ptrCast(decoration)),
         0,
@@ -1657,7 +1914,7 @@ pub fn zxdgToplevelDecorationV1SetMode(decoration: *ZxdgToplevelDecorationV1, mo
 pub fn zxdgToplevelDecorationV1Destroy(decoration: *ZxdgToplevelDecorationV1) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(decoration),
-        0, // destroy
+        @backingInt(DecorationRequest.destroy),
         null,
         wl_proxy_get_version(@ptrCast(decoration)),
         MARSHAL_FLAG_DESTROY,
@@ -1672,7 +1929,7 @@ pub fn zxdgToplevelDecorationV1Destroy(decoration: *ZxdgToplevelDecorationV1) vo
 pub fn zwpTextInputManagerV3GetTextInput(manager: *ZwpTextInputManagerV3, seat: *Seat) ?*ZwpTextInputV3 {
     return @ptrCast(wl_proxy_marshal_flags(
         @ptrCast(manager),
-        1, // get_text_input
+        @backingInt(TextInputManagerRequest.get_text_input),
         &zwp_text_input_v3_interface,
         wl_proxy_get_version(@ptrCast(manager)),
         0,
@@ -1685,7 +1942,7 @@ pub fn zwpTextInputManagerV3GetTextInput(manager: *ZwpTextInputManagerV3, seat: 
 pub fn zwpTextInputManagerV3Destroy(manager: *ZwpTextInputManagerV3) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(manager),
-        0, // destroy
+        @backingInt(TextInputManagerRequest.destroy),
         null,
         wl_proxy_get_version(@ptrCast(manager)),
         MARSHAL_FLAG_DESTROY,
@@ -1701,7 +1958,7 @@ pub fn zwpTextInputV3AddListener(text_input: *ZwpTextInputV3, listener: *const Z
 pub fn zwpTextInputV3Destroy(text_input: *ZwpTextInputV3) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(text_input),
-        0, // destroy
+        @backingInt(TextInputV3Request.destroy),
         null,
         wl_proxy_get_version(@ptrCast(text_input)),
         MARSHAL_FLAG_DESTROY,
@@ -1712,7 +1969,7 @@ pub fn zwpTextInputV3Destroy(text_input: *ZwpTextInputV3) void {
 pub fn zwpTextInputV3Enable(text_input: *ZwpTextInputV3) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(text_input),
-        1, // enable
+        @backingInt(TextInputV3Request.enable),
         null,
         wl_proxy_get_version(@ptrCast(text_input)),
         0,
@@ -1723,7 +1980,7 @@ pub fn zwpTextInputV3Enable(text_input: *ZwpTextInputV3) void {
 pub fn zwpTextInputV3Disable(text_input: *ZwpTextInputV3) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(text_input),
-        2, // disable
+        @backingInt(TextInputV3Request.disable),
         null,
         wl_proxy_get_version(@ptrCast(text_input)),
         0,
@@ -1734,7 +1991,7 @@ pub fn zwpTextInputV3Disable(text_input: *ZwpTextInputV3) void {
 pub fn zwpTextInputV3SetSurroundingText(text_input: *ZwpTextInputV3, text: [*:0]const u8, cursor: i32, anchor: i32) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(text_input),
-        3, // set_surrounding_text
+        @backingInt(TextInputV3Request.set_surrounding_text),
         null,
         wl_proxy_get_version(@ptrCast(text_input)),
         0,
@@ -1748,7 +2005,7 @@ pub fn zwpTextInputV3SetSurroundingText(text_input: *ZwpTextInputV3, text: [*:0]
 pub fn zwpTextInputV3SetTextChangeCause(text_input: *ZwpTextInputV3, cause: ZwpTextInputV3ChangeCause) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(text_input),
-        4, // set_text_change_cause
+        @backingInt(TextInputV3Request.set_text_change_cause),
         null,
         wl_proxy_get_version(@ptrCast(text_input)),
         0,
@@ -1760,7 +2017,7 @@ pub fn zwpTextInputV3SetTextChangeCause(text_input: *ZwpTextInputV3, cause: ZwpT
 pub fn zwpTextInputV3SetContentType(text_input: *ZwpTextInputV3, hint: ZwpTextInputV3ContentHint, purpose: ZwpTextInputV3ContentPurpose) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(text_input),
-        5, // set_content_type
+        @backingInt(TextInputV3Request.set_content_type),
         null,
         wl_proxy_get_version(@ptrCast(text_input)),
         0,
@@ -1773,7 +2030,7 @@ pub fn zwpTextInputV3SetContentType(text_input: *ZwpTextInputV3, hint: ZwpTextIn
 pub fn zwpTextInputV3SetCursorRectangle(text_input: *ZwpTextInputV3, x: i32, y: i32, width: i32, height: i32) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(text_input),
-        6, // set_cursor_rectangle
+        @backingInt(TextInputV3Request.set_cursor_rectangle),
         null,
         wl_proxy_get_version(@ptrCast(text_input)),
         0,
@@ -1788,7 +2045,7 @@ pub fn zwpTextInputV3SetCursorRectangle(text_input: *ZwpTextInputV3, x: i32, y: 
 pub fn zwpTextInputV3Commit(text_input: *ZwpTextInputV3) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(text_input),
-        7, // commit
+        @backingInt(TextInputV3Request.commit),
         null,
         wl_proxy_get_version(@ptrCast(text_input)),
         0,
@@ -1821,6 +2078,19 @@ pub const WP_FRACTIONAL_SCALE_MANAGER_V1_INTERFACE_NAME = "wp_fractional_scale_m
 // =============================================================================
 
 // wp_viewporter methods: destroy, get_viewport
+// wp_viewporter request opcodes in protocol declaration order.
+const ViewporterRequest = enum(u32) {
+    destroy = 0,
+    get_viewport = 1,
+};
+
+// wp_viewport request opcodes in protocol declaration order.
+const ViewportRequest = enum(u32) {
+    destroy = 0,
+    set_source = 1,
+    set_destination = 2,
+};
+
 const wp_viewporter_methods = [_]Message{
     .{ .name = "destroy", .signature = "", .types = null },
     .{ .name = "get_viewport", .signature = "no", .types = @ptrCast(&wp_viewporter_get_viewport_types) },
@@ -1870,6 +2140,19 @@ pub const wp_fractional_scale_v1_interface: Interface = .{
 };
 
 // wp_cursor_shape_manager_v1 methods: destroy, get_pointer, get_tablet_tool_v2
+// wp_cursor_shape_manager_v1 request opcodes in protocol declaration order.
+const CursorShapeManagerRequest = enum(u32) {
+    destroy = 0,
+    get_pointer = 1,
+    get_tablet_tool_v2 = 2,
+};
+
+// wp_cursor_shape_device_v1 request opcodes in protocol declaration order.
+const CursorShapeDeviceRequest = enum(u32) {
+    destroy = 0,
+    set_shape = 1,
+};
+
 const wp_cursor_shape_manager_v1_methods = [_]Message{
     .{ .name = "destroy", .signature = "", .types = null },
     .{ .name = "get_pointer", .signature = "no", .types = @ptrCast(&wp_cursor_shape_manager_v1_get_pointer_types) },
