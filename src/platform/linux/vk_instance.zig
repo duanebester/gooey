@@ -20,6 +20,10 @@ pub const enable_validation_layers = @import("builtin").mode == .debug;
 pub const InstanceResult = struct {
     instance: vk.Instance,
     debug_messenger: vk.DebugUtilsMessengerEXT,
+    /// True when every instance extension required by
+    /// `VK_KHR_swapchain_maintenance1` was enabled. The device extension is
+    /// only attempted when this is true.
+    swapchain_maintenance1_ready: bool,
 };
 
 pub const QueueFamilies = struct {
@@ -36,6 +40,9 @@ pub const DeviceResult = struct {
     device: vk.Device,
     graphics_queue: vk.Queue,
     present_queue: vk.Queue,
+    /// True when `VK_KHR_swapchain_maintenance1` is enabled, allowing present
+    /// fences via `VkSwapchainPresentFenceInfoKHR`.
+    swapchain_maintenance1: bool,
 };
 
 // =============================================================================
@@ -44,6 +51,7 @@ pub const DeviceResult = struct {
 
 const MAX_PHYSICAL_DEVICES: u32 = 16;
 const MAX_QUEUE_FAMILIES: u32 = 32;
+const MAX_ENUM_EXTENSIONS: u32 = 128;
 
 // =============================================================================
 // Error Types
@@ -103,8 +111,8 @@ pub fn createInstance() InstanceError!InstanceResult {
         .pApplicationInfo = &app_info,
         .enabledLayerCount = if (use_validation) validation_layers.len else 0,
         .ppEnabledLayerNames = if (use_validation) &validation_layers else null,
-        .enabledExtensionCount = @intCast(extensions.count),
-        .ppEnabledExtensionNames = extensions.ptr,
+        .enabledExtensionCount = extensions.count,
+        .ppEnabledExtensionNames = extensions.names[0..extensions.count].ptr,
     };
 
     var instance: vk.Instance = null;
@@ -125,6 +133,7 @@ pub fn createInstance() InstanceError!InstanceResult {
     return .{
         .instance = instance,
         .debug_messenger = debug_messenger,
+        .swapchain_maintenance1_ready = extensions.swapchain_maintenance1_ready,
     };
 }
 
@@ -205,9 +214,15 @@ pub fn pickPhysicalDevice(
 }
 
 /// Create a logical device with graphics and present queues.
+///
+/// When `allow_swapchain_maintenance1` is true and the physical device
+/// advertises `VK_KHR_swapchain_maintenance1`, the extension and its feature
+/// are enabled so presentation can be tracked with fences. The device still
+/// gets created without the extension if the driver rejects it.
 pub fn createLogicalDevice(
     physical_device: vk.PhysicalDevice,
     families: QueueFamilies,
+    allow_swapchain_maintenance1: bool,
 ) DeviceCreationError!DeviceResult {
     std.debug.assert(physical_device != null);
 
@@ -236,23 +251,48 @@ pub fn createLogicalDevice(
         queue_create_count = 2;
     }
 
-    const device_extensions = [_][*:0]const u8{"VK_KHR_swapchain"};
+    var use_swapchain_maintenance1 = allow_swapchain_maintenance1 and
+        deviceExtensionAvailable(physical_device, vk.KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME);
 
-    const create_info = vk.DeviceCreateInfo{
-        .sType = vk.VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+    const device_extensions = [_][*:0]const u8{
+        "VK_KHR_swapchain",
+        vk.KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME,
+    };
+    var extension_count: u32 = if (use_swapchain_maintenance1) 2 else 1;
+
+    const maintenance_features = vk.PhysicalDeviceSwapchainMaintenance1FeaturesKHR{
+        .sType = vk.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_KHR,
         .pNext = null,
+        .swapchainMaintenance1 = vk.TRUE,
+    };
+
+    var create_info = vk.DeviceCreateInfo{
+        .sType = vk.VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+        .pNext = if (use_swapchain_maintenance1) @ptrCast(&maintenance_features) else null,
         .flags = 0,
         .queueCreateInfoCount = queue_create_count,
         .pQueueCreateInfos = &queue_create_infos,
         .enabledLayerCount = 0,
         .ppEnabledLayerNames = null,
-        .enabledExtensionCount = device_extensions.len,
-        .ppEnabledExtensionNames = &device_extensions,
+        .enabledExtensionCount = extension_count,
+        .ppEnabledExtensionNames = device_extensions[0..extension_count].ptr,
         .pEnabledFeatures = null,
     };
 
     var device: vk.Device = null;
-    const result = vk.vkCreateDevice(physical_device, &create_info, null, &device);
+    var result = vk.vkCreateDevice(physical_device, &create_info, null, &device);
+    if (!vk.succeeded(result) and use_swapchain_maintenance1) {
+        // The driver advertised the extension but rejected the feature or its
+        // dependency chain — fall back to unsynchronized present tracking.
+        std.log.warn("VK_KHR_swapchain_maintenance1 rejected by driver, retrying without it", .{});
+        use_swapchain_maintenance1 = false;
+        extension_count = 1;
+        create_info.pNext = null;
+        create_info.enabledExtensionCount = extension_count;
+        create_info.ppEnabledExtensionNames = device_extensions[0..extension_count].ptr;
+        device = null;
+        result = vk.vkCreateDevice(physical_device, &create_info, null, &device);
+    }
     if (!vk.succeeded(result)) {
         return DeviceCreationError.DeviceCreationFailed;
     }
@@ -270,6 +310,7 @@ pub fn createLogicalDevice(
         .device = device,
         .graphics_queue = graphics_queue,
         .present_queue = present_queue,
+        .swapchain_maintenance1 = use_swapchain_maintenance1,
     };
 }
 
@@ -385,24 +426,75 @@ fn createDebugMessenger(
 
 /// Instance extensions, parameterized by whether validation is active.
 const ExtensionList = struct {
-    ptr: [*]const [*:0]const u8,
-    count: u32,
+    names: [MAX_INSTANCE_EXTENSIONS][*:0]const u8 = undefined,
+    count: u32 = 0,
+    /// All three extensions required by `VK_KHR_swapchain_maintenance1` were
+    /// added to the list. The device extension may only be enabled when true.
+    swapchain_maintenance1_ready: bool = false,
 };
 
-fn instanceExtensions(use_validation: bool) ExtensionList {
-    const base = [_][*:0]const u8{
-        "VK_KHR_surface",
-        "VK_KHR_wayland_surface",
-    };
-    const debug = [_][*:0]const u8{
-        "VK_KHR_surface",
-        "VK_KHR_wayland_surface",
-        "VK_EXT_debug_utils",
-    };
+const MAX_INSTANCE_EXTENSIONS: u32 = 8;
 
-    if (use_validation) {
-        return .{ .ptr = &debug, .count = debug.len };
-    } else {
-        return .{ .ptr = &base, .count = base.len };
+fn instanceExtensions(use_validation: bool) ExtensionList {
+    var list = ExtensionList{};
+
+    addInstanceExtension(&list, "VK_KHR_surface");
+    addInstanceExtension(&list, "VK_KHR_wayland_surface");
+    if (use_validation) addInstanceExtension(&list, "VK_EXT_debug_utils");
+
+    // VK_KHR_swapchain_maintenance1 depends on VK_KHR_surface_maintenance1,
+    // which in turn depends on VK_KHR_get_surface_capabilities2. The device
+    // extension also depends on VK_KHR_get_physical_device_properties2 (the
+    // instance is Vulkan 1.0). Enable all three only when the loader has them.
+    const has_properties2 = instanceExtensionAvailable(vk.KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
+    const has_capabilities2 = instanceExtensionAvailable(vk.KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME);
+    const has_surface_maintenance1 = has_capabilities2 and
+        instanceExtensionAvailable(vk.KHR_SURFACE_MAINTENANCE_1_EXTENSION_NAME);
+
+    if (has_properties2) addInstanceExtension(&list, vk.KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
+    if (has_capabilities2) addInstanceExtension(&list, vk.KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME);
+    if (has_surface_maintenance1) addInstanceExtension(&list, vk.KHR_SURFACE_MAINTENANCE_1_EXTENSION_NAME);
+
+    list.swapchain_maintenance1_ready = has_properties2 and has_capabilities2 and has_surface_maintenance1;
+    return list;
+}
+
+fn addInstanceExtension(list: *ExtensionList, name: [*:0]const u8) void {
+    std.debug.assert(list.count < MAX_INSTANCE_EXTENSIONS);
+    list.names[list.count] = name;
+    list.count += 1;
+}
+
+fn instanceExtensionAvailable(name: [*:0]const u8) bool {
+    var count: u32 = 0;
+    if (!vk.succeeded(vk.vkEnumerateInstanceExtensionProperties(null, &count, null))) return false;
+    if (count == 0) return false;
+
+    var props: [MAX_ENUM_EXTENSIONS]vk.ExtensionProperties = undefined;
+    var available: u32 = @min(count, MAX_ENUM_EXTENSIONS);
+    if (!vk.succeeded(vk.vkEnumerateInstanceExtensionProperties(null, &available, &props))) return false;
+
+    for (props[0..available]) |prop| {
+        const prop_name: [*:0]const u8 = @ptrCast(&prop.extensionName);
+        if (std.mem.eql(u8, std.mem.span(prop_name), std.mem.span(name))) return true;
     }
+    return false;
+}
+
+fn deviceExtensionAvailable(physical_device: vk.PhysicalDevice, name: [*:0]const u8) bool {
+    std.debug.assert(physical_device != null);
+
+    var count: u32 = 0;
+    if (!vk.succeeded(vk.vkEnumerateDeviceExtensionProperties(physical_device, null, &count, null))) return false;
+    if (count == 0) return false;
+
+    var props: [MAX_ENUM_EXTENSIONS]vk.ExtensionProperties = undefined;
+    var available: u32 = @min(count, MAX_ENUM_EXTENSIONS);
+    if (!vk.succeeded(vk.vkEnumerateDeviceExtensionProperties(physical_device, null, &available, &props))) return false;
+
+    for (props[0..available]) |prop| {
+        const prop_name: [*:0]const u8 = @ptrCast(&prop.extensionName);
+        if (std.mem.eql(u8, std.mem.span(prop_name), std.mem.span(name))) return true;
+    }
+    return false;
 }

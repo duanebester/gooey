@@ -39,18 +39,17 @@ pub const SubAllocation = struct {
 };
 
 pub const SyncObjects = struct {
+    /// One acquire semaphore per frame in flight. Safe to reuse: the frame's
+    /// fence signals only after the submission that waits on it completes.
     image_available_semaphores: [FRAME_COUNT]vk.Semaphore,
-    render_finished_semaphores: [FRAME_COUNT]vk.Semaphore,
     in_flight_fences: [FRAME_COUNT]vk.Fence,
 
     /// Destroy all sync objects. Safe to call with null entries.
     pub fn destroy(self: *SyncObjects, device: vk.Device) void {
-        std.debug.assert(device != null);
+        assert(device != null);
         for (0..FRAME_COUNT) |i| {
             if (self.image_available_semaphores[i]) |sem| vk.vkDestroySemaphore(device, sem, null);
             self.image_available_semaphores[i] = null;
-            if (self.render_finished_semaphores[i]) |sem| vk.vkDestroySemaphore(device, sem, null);
-            self.render_finished_semaphores[i] = null;
             if (self.in_flight_fences[i]) |fence| vk.vkDestroyFence(device, fence, null);
             self.in_flight_fences[i] = null;
         }
@@ -427,17 +426,20 @@ pub fn allocateCommandBuffers(
 // Public API — Synchronization
 // =============================================================================
 
-/// Create all synchronization objects: per-frame semaphores and fences,
-/// plus a dedicated transfer fence.
+/// Create all synchronization objects: per-frame acquire semaphores and fences.
+///
+/// Present-complete semaphores intentionally do NOT live here: they are tied
+/// to swapchain images (see `VulkanRenderer.present_semaphores`), because a
+/// per-frame present semaphore may still be waited on by an asynchronous
+/// present when the frame slot is reused (VUID-vkQueueSubmit-pSignalSemaphores-00067).
 ///
 /// All fences are created in the signaled state so the first vkWaitForFences
 /// call succeeds immediately.
 pub fn createSyncObjects(device: vk.Device) SyncError!SyncObjects {
-    std.debug.assert(device != null);
+    assert(device != null);
 
     var result: SyncObjects = .{
         .image_available_semaphores = @as([FRAME_COUNT]vk.Semaphore, @splat(null)),
-        .render_finished_semaphores = @as([FRAME_COUNT]vk.Semaphore, @splat(null)),
         .in_flight_fences = @as([FRAME_COUNT]vk.Fence, @splat(null)),
     };
     errdefer result.destroy(device);
@@ -458,14 +460,68 @@ pub fn createSyncObjects(device: vk.Device) SyncError!SyncObjects {
         var res = vk.vkCreateSemaphore(device, &semaphore_info, null, &result.image_available_semaphores[i]);
         if (!vk.succeeded(res)) return SyncError.SyncObjectCreationFailed;
 
-        res = vk.vkCreateSemaphore(device, &semaphore_info, null, &result.render_finished_semaphores[i]);
-        if (!vk.succeeded(res)) return SyncError.SyncObjectCreationFailed;
-
         res = vk.vkCreateFence(device, &fence_info, null, &result.in_flight_fences[i]);
         if (!vk.succeeded(res)) return SyncError.SyncObjectCreationFailed;
     }
 
     return result;
+}
+
+/// Create `out.len` binary semaphores. Entries left null on failure; call
+/// `destroySemaphores` to clean up a partially created slice.
+pub fn createSemaphores(device: vk.Device, out: []vk.Semaphore) SyncError!void {
+    assert(device != null);
+    assert(out.len > 0);
+
+    const semaphore_info = vk.SemaphoreCreateInfo{
+        .sType = vk.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+        .pNext = null,
+        .flags = 0,
+    };
+
+    for (out) |*semaphore| {
+        assert(semaphore.* == null);
+        const res = vk.vkCreateSemaphore(device, &semaphore_info, null, semaphore);
+        if (!vk.succeeded(res)) return SyncError.SyncObjectCreationFailed;
+        assert(semaphore.* != null);
+    }
+}
+
+/// Destroy a slice of semaphores and null the entries. Safe with null entries.
+pub fn destroySemaphores(device: vk.Device, semaphores: []vk.Semaphore) void {
+    assert(device != null);
+    for (semaphores) |*semaphore| {
+        if (semaphore.*) |sem| vk.vkDestroySemaphore(device, sem, null);
+        semaphore.* = null;
+    }
+}
+
+/// Create `out.len` fences, optionally in the signaled state.
+pub fn createFences(device: vk.Device, out: []vk.Fence, signaled: bool) SyncError!void {
+    assert(device != null);
+    assert(out.len > 0);
+
+    const fence_info = vk.FenceCreateInfo{
+        .sType = vk.VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+        .pNext = null,
+        .flags = if (signaled) vk.VK_FENCE_CREATE_SIGNALED_BIT else 0,
+    };
+
+    for (out) |*fence| {
+        assert(fence.* == null);
+        const res = vk.vkCreateFence(device, &fence_info, null, fence);
+        if (!vk.succeeded(res)) return SyncError.SyncObjectCreationFailed;
+        assert(fence.* != null);
+    }
+}
+
+/// Destroy a slice of fences and null the entries. Safe with null entries.
+pub fn destroyFences(device: vk.Device, fences: []vk.Fence) void {
+    assert(device != null);
+    for (fences) |*fence| {
+        if (fence.*) |f| vk.vkDestroyFence(device, f, null);
+        fence.* = null;
+    }
 }
 
 // =============================================================================

@@ -235,6 +235,8 @@ pub const VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO: StructureType = 2;
 pub const VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO: StructureType = 3;
 pub const VK_STRUCTURE_TYPE_SUBMIT_INFO: StructureType = 4;
 pub const VK_STRUCTURE_TYPE_PRESENT_INFO_KHR: StructureType = 1000001001;
+pub const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_KHR: StructureType = 1000275000;
+pub const VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_KHR: StructureType = 1000275001;
 pub const VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR: StructureType = 1000006000;
 pub const VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR: StructureType = 1000001000;
 pub const VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO: StructureType = 15;
@@ -844,6 +846,20 @@ pub const PresentInfoKHR = extern struct {
     pImageIndices: ?[*]const u32,
     pResults: ?[*]Result,
 };
+/// `VK_KHR_swapchain_maintenance1`: per-present completion fences, chained into
+/// `VkPresentInfoKHR::pNext`.
+pub const SwapchainPresentFenceInfoKHR = extern struct {
+    sType: StructureType,
+    pNext: ?*const anyopaque,
+    swapchainCount: u32,
+    pFences: ?[*]const Fence,
+};
+/// `VK_KHR_swapchain_maintenance1`: device feature enabling present fences.
+pub const PhysicalDeviceSwapchainMaintenance1FeaturesKHR = extern struct {
+    sType: StructureType,
+    pNext: ?*anyopaque,
+    swapchainMaintenance1: Bool32,
+};
 pub const DescriptorSetLayoutBinding = extern struct {
     binding: u32,
     descriptorType: DescriptorType,
@@ -1357,6 +1373,10 @@ pub const LayerProperties = extern struct {
     implementationVersion: u32,
     description: [256]u8,
 };
+pub const ExtensionProperties = extern struct {
+    extensionName: [256]u8,
+    specVersion: u32,
+};
 pub const MappedMemoryRange = extern struct {
     sType: StructureType,
     pNext: ?*const anyopaque,
@@ -1431,6 +1451,17 @@ pub extern fn vkGetPhysicalDeviceQueueFamilyProperties(
 pub extern fn vkEnumerateInstanceLayerProperties(
     pPropertyCount: *u32,
     pProperties: ?[*]LayerProperties,
+) callconv(.c) Result;
+pub extern fn vkEnumerateInstanceExtensionProperties(
+    pLayerName: ?[*:0]const u8,
+    pPropertyCount: *u32,
+    pProperties: ?[*]ExtensionProperties,
+) callconv(.c) Result;
+pub extern fn vkEnumerateDeviceExtensionProperties(
+    physicalDevice: PhysicalDevice,
+    pLayerName: ?[*:0]const u8,
+    pPropertyCount: *u32,
+    pProperties: ?[*]ExtensionProperties,
 ) callconv(.c) Result;
 pub extern fn vkGetInstanceProcAddr(
     instance: Instance,
@@ -1943,6 +1974,16 @@ pub extern fn vkDestroySampler(
 /// Validation layer name for Khronos validation
 pub const VALIDATION_LAYER_NAME: [*:0]const u8 = "VK_LAYER_KHRONOS_validation";
 
+/// Instance extensions required to enable `VK_KHR_swapchain_maintenance1`.
+/// The device extension depends on these, so they must be enabled first (or
+/// the instance must be Vulkan 1.1+, which this renderer does not require).
+pub const KHR_SURFACE_MAINTENANCE_1_EXTENSION_NAME: [*:0]const u8 = "VK_KHR_surface_maintenance1";
+pub const KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME: [*:0]const u8 = "VK_KHR_get_surface_capabilities2";
+pub const KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME: [*:0]const u8 = "VK_KHR_get_physical_device_properties2";
+
+/// Device extension for fence-tracked presentation.
+pub const KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME: [*:0]const u8 = "VK_KHR_swapchain_maintenance1";
+
 /// Check if the Khronos validation layer is available
 pub fn isValidationLayerAvailable() bool {
     var layer_count: u32 = 0;
@@ -2126,6 +2167,13 @@ comptime {
     assert(@sizeOf(MemoryType) == 8);
     assert(@sizeOf(MemoryHeap) == 16);
     assert(@sizeOf(LayerProperties) == 520);
+    assert(@sizeOf(ExtensionProperties) == 260);
+    assert(@offsetOf(ExtensionProperties, "specVersion") == 256);
+    assert(@sizeOf(SwapchainPresentFenceInfoKHR) == 32);
+    assert(@offsetOf(SwapchainPresentFenceInfoKHR, "swapchainCount") == 16);
+    assert(@offsetOf(SwapchainPresentFenceInfoKHR, "pFences") == 24);
+    assert(@sizeOf(PhysicalDeviceSwapchainMaintenance1FeaturesKHR) == 24);
+    assert(@offsetOf(PhysicalDeviceSwapchainMaintenance1FeaturesKHR, "swapchainMaintenance1") == 16);
     assert(@sizeOf(MappedMemoryRange) == 40);
     assert(@sizeOf(MemoryBarrier) == 24);
     assert(@sizeOf(BufferMemoryBarrier) == 56);
