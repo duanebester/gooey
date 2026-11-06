@@ -651,7 +651,7 @@ fn on_event(cx: *Cx, event: gooey.input.InputEvent) bool {
         if (key == .@"return") {
             state.open_selected();
         } else {
-            if (key == .escape or key == .delete) {
+            if (key == .escape or key == .backspace) {
                 state.go_up();
             } else {
                 return false;

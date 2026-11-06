@@ -282,7 +282,7 @@ fn keyUp(self: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) void 
     // Don't try to get characters - they can be invalid for system events
     // Text input comes through insertText: via IME
     _ = window.handleInput(.{ .key_up = .{
-        .key = input.KeyCode.from(key_code),
+        .key = appkit.keyTagFromVirtualKey(key_code),
         .modifiers = parseModifiers(modifier_flags),
         .characters = null,
         .characters_ignoring_modifiers = null,
@@ -308,7 +308,7 @@ fn parseKeyEvent(event_id: objc.c.id) ?input.KeyEvent {
     const characters_unmod = getCharactersIgnoringModifiers(event);
 
     return .{
-        .key = input.KeyCode.from(key_code),
+        .key = appkit.keyTagFromVirtualKey(key_code),
         .modifiers = parseModifiers(modifier_flags),
         .characters = characters,
         .characters_ignoring_modifiers = characters_unmod,
@@ -382,7 +382,7 @@ fn performKeyEquivalent(self: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) cal
     // Only handle events with command modifier (key equivalents)
     if (mods.cmd) {
         const key_event = input.KeyEvent{
-            .key = input.KeyCode.from(key_code),
+            .key = appkit.keyTagFromVirtualKey(key_code),
             .modifiers = mods,
             .characters = null, // Don't get characters - can crash for key equivalents
             .characters_ignoring_modifiers = null,

@@ -112,12 +112,139 @@ comptime {
 
 const InputEvent = input.InputEvent;
 const KeyEvent = input.KeyEvent;
-const KeyCode = input.KeyCode;
+const KeyTag = input.KeyTag;
+
+/// Ordered table of key tags addressable from JavaScript.
+///
+/// `KeyTag` deliberately carries no numeric identity (it is a pure name set,
+/// not any platform's code space), but the JS→WASM ring buffer needs a compact
+/// wire encoding. The contract is: JS maps a DOM `code` to the *index* of the
+/// tag in this table (see `web/index.html` `KEY_CODE_MAP`). The mirror image
+/// of this table lives in that map; the two must stay in sync.
+pub const web_key_table = [_]KeyTag{
+    // Letters
+    .a,
+    .s,
+    .d,
+    .f,
+    .h,
+    .g,
+    .z,
+    .x,
+    .c,
+    .v,
+    .b,
+    .q,
+    .w,
+    .e,
+    .r,
+    .y,
+    .t,
+    .o,
+    .u,
+    .i,
+    .p,
+    .l,
+    .j,
+    .k,
+    .n,
+    .m,
+    // Numbers
+    .@"1",
+    .@"2",
+    .@"3",
+    .@"4",
+    .@"5",
+    .@"6",
+    .@"7",
+    .@"8",
+    .@"9",
+    .@"0",
+    // Special keys
+    .@"return",
+    .tab,
+    .space,
+    .backspace,
+    .escape,
+    .delete,
+    // Modifiers
+    .shift,
+    .control,
+    .alt,
+    .super,
+    .right_shift,
+    .right_control,
+    .right_alt,
+    .right_super,
+    .caps_lock,
+    // Arrows
+    .left,
+    .right,
+    .down,
+    .up,
+    // Navigation
+    .home,
+    .end,
+    .page_up,
+    .page_down,
+    // Function keys
+    .f1,
+    .f2,
+    .f3,
+    .f4,
+    .f5,
+    .f6,
+    .f7,
+    .f8,
+    .f9,
+    .f10,
+    .f11,
+    .f12,
+    // Punctuation (positional US ANSI names)
+    .minus,
+    .equal,
+    .left_bracket,
+    .right_bracket,
+    .backslash,
+    .semicolon,
+    .quote,
+    .comma,
+    .period,
+    .slash,
+    .grave,
+    // Keypad
+    .keypad_0,
+    .keypad_1,
+    .keypad_2,
+    .keypad_3,
+    .keypad_4,
+    .keypad_5,
+    .keypad_6,
+    .keypad_7,
+    .keypad_8,
+    .keypad_9,
+    .keypad_decimal,
+    .keypad_multiply,
+    .keypad_plus,
+    .keypad_divide,
+    .keypad_enter,
+    .keypad_minus,
+    .keypad_equals,
+    .keypad_clear,
+};
+
+/// Decode a wire index from the JS ring buffer into a KeyTag. Out-of-range
+/// indices mean the JS table drifted from `web_key_table`; they decode to
+/// `.unknown` rather than panicking in the event path.
+fn keyTagFromWireIndex(index: u16) KeyTag {
+    if (index >= web_key_table.len) return .unknown;
+    return web_key_table[index];
+}
 
 /// Convert raw key event to InputEvent
 fn toInputEvent(raw: RawKeyEvent) InputEvent {
     const key_event = KeyEvent{
-        .key = KeyCode.from(raw.key_code),
+        .key = keyTagFromWireIndex(raw.key_code),
         .modifiers = raw.modifiers.toInput(),
         .characters = null, // Text comes via TextInputBuffer
         .characters_ignoring_modifiers = null,

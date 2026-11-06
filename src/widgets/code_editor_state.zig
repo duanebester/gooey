@@ -39,7 +39,7 @@ const EventResult = event.EventResult;
 
 const input_mod = @import("../input/events.zig");
 const InputEvent = input_mod.InputEvent;
-const KeyCode = input_mod.KeyCode;
+const KeyTag = input_mod.KeyTag;
 const Modifiers = input_mod.Modifiers;
 
 // =============================================================================
@@ -431,7 +431,7 @@ pub const CodeEditorState = struct {
         self.text_area.setComposition(text) catch {};
     }
 
-    pub fn handleKey(self: *Self, key: KeyCode, mods: Modifiers) bool {
+    pub fn handleKey(self: *Self, key: KeyTag, mods: Modifiers) bool {
         // Handle tab key specially for code editor
         if (key == .tab and !mods.shift and !mods.ctrl and !mods.alt) {
             if (self.use_hard_tabs) {
