@@ -70,24 +70,35 @@ pub const SUBPIXEL_VARIANTS_X = text_system.SUBPIXEL_VARIANTS_X;
 // Debug utilities (for diagnosing native vs web differences)
 pub const text_debug = @import("text_debug.zig");
 
-// Platform backends
+// Platform backends. Every member is always present so callers can name a
+// backend without guarding on the target OS; unused ones resolve to an empty
+// struct, matching `svg/mod.zig`'s conditional-import shape.
 const platform = @import("../platform/mod.zig");
 const is_wasm = platform.is_wasm;
-
 const is_linux = platform.is_linux;
+const is_windows = platform.is_windows;
 
-pub const backends = if (is_wasm)
-    struct {
-        pub const web = @import("backends/web/mod.zig");
-    }
-else if (is_linux)
-    struct {
-        pub const freetype = @import("backends/freetype/mod.zig");
-    }
-else
-    struct {
-        pub const coretext = @import("backends/coretext/mod.zig");
-    };
+pub const backends = struct {
+    pub const web = if (is_wasm)
+        @import("backends/web/mod.zig")
+    else
+        struct {};
+
+    pub const freetype = if (!is_wasm and is_linux)
+        @import("backends/freetype/mod.zig")
+    else
+        struct {};
+
+    pub const dwrite = if (!is_wasm and is_windows)
+        @import("backends/dwrite/mod.zig")
+    else
+        struct {};
+
+    pub const coretext = if (!is_wasm and !is_linux and !is_windows)
+        @import("backends/coretext/mod.zig")
+    else
+        struct {};
+};
 
 test {
     std.testing.refAllDecls(@This());

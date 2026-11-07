@@ -13,6 +13,12 @@ const NSPoint = appkit.NSPoint;
 const NSRange = appkit.NSRange;
 const NSEventModifierFlags = appkit.NSEventModifierFlags;
 
+/// Logical pixels one classic wheel notch scrolls, matching native macOS
+/// scroll speed. Only applied to non-precise sources; trackpads pass their
+/// pixel deltas straight through. Keep in sync with the Linux and Windows
+/// backends' `WHEEL_NOTCH_PIXELS` so the wheel feels identical everywhere.
+const wheel_notch_pixels: f64 = 100.0;
+
 var view_class: ?objc.Class = null;
 
 /// Register the GooeyMetalView class with the Objective-C runtime.
@@ -236,9 +242,26 @@ fn scrollWheel(self: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c)
     const delta_y = event.msgSend(f64, "scrollingDeltaY", .{});
     const modifier_flags = event.msgSend(c_ulong, "modifierFlags", .{});
 
+    // `hasPreciseScrollingDeltas` marks trackpads and hi-res mice: their
+    // deltas are already pixel distances and pass through. A classic mouse
+    // wheel reports ~1..10 points per notch — scale it to the distance a
+    // native macOS app scrolls per notch so the wheel moves at native speed.
+    // AppKit's sign is content-follows-finger (scroll down = negative);
+    // negate to Gooey's axis convention: positive delta = scrolled down.
+    const precise = event.msgSend(bool, "hasPreciseScrollingDeltas", .{});
+    var dx = delta_x;
+    var dy = delta_y;
+    if (!precise) {
+        const scale = wheel_notch_pixels / 10.0;
+        dx *= scale;
+        dy *= scale;
+    }
+    dx = -dx;
+    dy = -dy;
+
     _ = window.handleInput(.{ .scroll = .{
         .position = geometry.Point(f64).init(view_loc.x, view_loc.y),
-        .delta = geometry.Point(f64).init(delta_x, delta_y),
+        .delta = geometry.Point(f64).init(dx, dy),
         .modifiers = parseModifiers(modifier_flags),
     } });
 }

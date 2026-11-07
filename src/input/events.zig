@@ -167,6 +167,15 @@ pub const MouseEvent = struct {
     modifiers: Modifiers,
 };
 
+/// Scroll wheel / touchpad input.
+///
+/// `delta` is a distance in **logical pixels** the content should move, not
+/// notch counts: each backend normalizes its native wheel event so one notch
+/// scrolls the same distance a native app scrolls (~100 px, see
+/// `input/events.zig` consumers), and precision sources (trackpads, hi-res
+/// wheels) pass device pixel deltas straight through. Sign: positive Y means
+/// the user scrolled *down* (content moves up), matching Wayland's axis
+/// convention.
 pub const ScrollEvent = struct {
     position: geometry.Point(f64),
     delta: geometry.Point(f64),

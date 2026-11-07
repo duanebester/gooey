@@ -5,7 +5,7 @@
 //! ## Platform Backends
 //!
 //! - **macOS**: CoreGraphics (CGPath, CGContext) - `backends/coregraphics.zig`
-//! - **Linux**: Cairo software renderer - `backends/cairo.zig`
+//! - **Linux / Windows**: pure-Zig software scanline renderer - `backends/software.zig`
 //! - **Web**: Canvas2D (Path2D, OffscreenCanvas) - `backends/canvas.zig`
 //!
 //! ## Usage
@@ -33,7 +33,7 @@ const builtin = @import("builtin");
 pub const path = @import("path.zig");
 
 // Re-exports of the public SVG-parsing surface. Backends (CoreGraphics,
-// Cairo, Canvas2D) and tests reach for these via `svg_mod.SvgPath` etc.
+// software, Canvas2D) and tests reach for these via `svg_mod.SvgPath` etc.
 pub const Vec2 = path.Vec2;
 pub const IndexSlice = path.IndexSlice;
 pub const PathCommand = path.PathCommand;
@@ -69,18 +69,22 @@ pub const StrokeOptions = rasterizer.StrokeOptions;
 // =============================================================================
 
 const is_wasm = builtin.cpu.arch == .wasm32 or builtin.cpu.arch == .wasm64;
+const is_macos = builtin.os.tag == .macos;
+const is_linux = builtin.os.tag == .linux;
+const is_windows = builtin.os.tag == .windows;
 
-/// Platform-specific backends for direct access
+/// Platform-specific backends for direct access. Each member mirrors the
+/// dispatcher in `rasterizer.zig`; unused ones resolve to an empty struct.
 pub const backends = struct {
     /// CoreGraphics backend (macOS)
-    pub const coregraphics = if (!is_wasm and builtin.os.tag == .macos)
+    pub const coregraphics = if (is_macos)
         @import("backends/coregraphics.zig")
     else
         struct {};
 
-    /// Cairo backend (Linux)
-    pub const cairo = if (!is_wasm and builtin.os.tag == .linux)
-        @import("backends/cairo.zig")
+    /// Pure-Zig software scanline backend (Linux and Windows)
+    pub const software = if (is_linux or is_windows)
+        @import("backends/software.zig")
     else
         struct {};
 

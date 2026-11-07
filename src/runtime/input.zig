@@ -190,6 +190,11 @@ fn handleScrollEvent(
     builder: *Builder,
     scroll_ev: input_mod.ScrollEvent,
 ) bool {
+    // Text-area scroll distance per unit of `delta`. `delta` is a pixel
+    // distance (see `ScrollEvent`), so this scales it to pixel-precise line
+    // scrolling: one native wheel notch (~100 px) moves ~5 lines.
+    const line_height_scroll_factor: f32 = 0.25;
+
     const x: f32 = @floatCast(scroll_ev.position.x);
     const y: f32 = @floatCast(scroll_ev.position.y);
 
@@ -200,10 +205,12 @@ fn handleScrollEvent(
 
         const ta = window.element_states.get(TextAreaState, @as(u64, pending.layout_id.id)) orelse continue;
         if (ta.line_height > 0 and ta.viewport_height > 0) {
+            // `delta` is already a logical pixel distance (see ScrollEvent);
+            // scale by line height so wheel notches land near line boundaries.
             const delta_y: f32 = @floatCast(scroll_ev.delta.y);
             const content_height: f32 = @as(f32, @floatFromInt(ta.lineCount())) * ta.line_height;
             const max_scroll: f32 = @max(0, content_height - ta.viewport_height);
-            const new_offset = ta.scroll_offset_y - delta_y * 20;
+            const new_offset = ta.scroll_offset_y - delta_y * line_height_scroll_factor;
             ta.scroll_offset_y = std.math.clamp(new_offset, 0, max_scroll);
             cx.notify();
             return true;
@@ -221,7 +228,7 @@ fn handleScrollEvent(
             const delta_y: f32 = @floatCast(scroll_ev.delta.y);
             const content_height: f32 = @as(f32, @floatFromInt(ta.lineCount())) * ta.line_height;
             const max_scroll: f32 = @max(0, content_height - ta.viewport_height);
-            const new_offset = ta.scroll_offset_y - delta_y * 20;
+            const new_offset = ta.scroll_offset_y - delta_y * line_height_scroll_factor;
             ta.scroll_offset_y = std.math.clamp(new_offset, 0, max_scroll);
             cx.notify();
             return true;

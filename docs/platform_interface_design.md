@@ -3,7 +3,7 @@
 ## Status
 
 Partially implemented. This document records the platform architecture, identifies boundary
-drift, and defines a staged design for macOS, Linux, WebAssembly, and test backends.
+drift, and defines a staged design for macOS, Linux, Windows, WebAssembly, and test backends.
 
 Date: 2026-09-15.
 
@@ -32,6 +32,9 @@ every platform method was out of scope and would have swamped the architectural 
 | `src/testing/test_backend.zig`       | Fixed-capacity headless backend, same contract          |
 | `verify*Interface` name-only checks  | Removed (dead, superseded)                              |
 | `zig build typecheck-linux`          | New step; analyzes Linux from any host                  |
+| Windows backend                      | `src/platform/windows`: Win32 + shared Vulkan + DirectWrite |
+| Windows DX11 renderer option         | `-Dgpu-backend=dx11` — comptime `window.Renderer` switch; Vulkan stays the default |
+| `zig build typecheck-windows`        | Analyzes Windows from any host (mirrors `typecheck-linux`) |
 | Host-initiated window reclamation    | `setLoopTurnCallback` per-turn hook on the contract     |
 | `PlatformWindow.getPlatform`         | Contract-pinned; replaced `plat`/`platform` field reads |
 | Quit-on-last-window policy           | `QuitPolicy`, platform-conventional by default          |
@@ -48,6 +51,51 @@ all ten test binaries), `zig build wasm`, and `zig build typecheck-linux` all pa
 backend has no native CI on the development host, so the `typecheck-linux` step exists to give
 it real compiler coverage. Every Linux binding, including Vulkan, is a plain `extern`
 declaration, so the step needs no headers or options and CI runs it on the macOS job.
+
+The Windows backend (`src/platform/windows`) follows the same zero-dependency pattern: `win32/`
+is a curated subset of the generated zigwin32 package (see `win32/README.md`), consumed directly
+by the platform files with no hand-maintained facade or SHIM bindings. The low-level Vulkan
+modules (`vulkan.zig`, `vk_swapchain`, `vk_pipelines`, `vk_descriptors`, `vk_buffers`,
+`vk_atlas`, `vk_types`, `scene_renderer`) are thin re-exports of the Linux implementations; the
+higher-level `vk_renderer`, `vk_instance`, `window`, `platform`, and `input` files are
+Windows-side implementations, and the Vulkan shaders are embedded from `../linux/shaders` so the
+GLSL/SPIR-V sources are not duplicated. Text is shaped and rasterized through hand-written
+DirectWrite COM vtables (`src/text/backends/dwrite`). Clipboard, file dialogs, and IME are
+deliberately not advertised in `capabilities` yet. Like Linux it is a `blocking_event_loop`
+backend, paced by `DwmFlush` when frames are pending.
+
+#### Windows GPU backend selection (`-Dgpu-backend`)
+
+The renderer is a compile-time type choice, not a runtime union — the platform layer stays
+compile-time monomorphic (see [platform abstraction](#platform-abstraction)):
+
+```zig
+// src/platform/windows/window.zig
+pub const Renderer = switch (build_options.gpu_backend) {
+    .vulkan => vk_renderer.VulkanRenderer,   // default; shared with Linux
+    .dx11    => dx11_renderer.Dx11Renderer,  // Windows-only
+};
+```
+
+`zig build -Dgpu-backend=vulkan` and `zig build -Dgpu-backend=dx11` produce two binaries for
+A/B comparison of the same showcase; `typecheck-windows` accepts
+`-Dtypecheck-gpu-backend=dx11` to analyze the DX11 path on any host. Both backends implement
+the same call surface (`init`/`initWithWin32Surface`/`resize`/`setClearColor`/`stage*Atlas`/
+`render`/`deinit`), so `window.zig` call sites are unchanged.
+
+The DX11 backend mirrors the gpui-ce design: native D3D11 + DXGI rather than reusing the
+Vulkan path. It shares everything renderer-logic-side with Vulkan — the scene batch iterator,
+the GPU instance structs (`vk_types.zig`), and the unified primitive conversion — and replaces
+only the WSI layer: FLIP_DISCARD swapchain (BGRA8, 3 buffers, `Present(1)` vsync), a 4x MSAA
+scene target resolved into the backbuffer (the counterpart of Vulkan's resolve render pass),
+dynamic instance buffers with `Map(WRITE_DISCARD)`, and per-atlas staging textures with
+dirty-rect `CopySubresourceRegion`. Shaders are HLSL ports of the GLSL sources
+(`src/platform/windows/shaders/hlsl`, keep the two in sync), compiled at init via
+`D3DCompile` loaded at runtime from `d3dcompiler_47.dll`. The COM and Win32 declarations live
+in `src/platform/windows/win32/`, a curated subset of the generated win32-zig package
+(`win32-25.0.28-preview`) copied verbatim with its relative imports intact; `win32/README.md`
+records the file list and the dependency exception. Device-loss is handled minimally (log +
+skip frames); `Present` failures other than device-removed are logged and tolerated.
 
 ### Known gaps
 
@@ -653,7 +701,15 @@ src/platform/
 ├── services.zig            # Shared request and completion types.
 ├── macos/                  # AppKit, Metal, CoreText, native services.
 ├── linux/                  # Wayland, Vulkan, native services.
+├── windows/                # Win32, Vulkan/DX11, DirectWrite, native services.
+│   └── win32/              # Curated generated zigwin32 binding subset.
 └── web/                    # Browser imports, WebGPU, browser services.
+
+src/text/backends/
+├── freetype/               # Linux: FreeType/HarfBuzz/Fontconfig.
+├── coretext/               # macOS: CoreText/CoreGraphics.
+├── dwrite/                 # Windows: DirectWrite COM bindings.
+└── web/                    # WASM: browser text APIs.
 
 src/testing/
 └── test_backend.zig        # Fixed-capacity backend passing the same contract.

@@ -33,7 +33,7 @@ pub const StrokeOptions = struct {
 
 /// Rasterize SVG path data to RGBA buffer
 ///
-/// Returns PlatformNotSupported on Linux and other unsupported platforms.
+/// Returns PlatformNotSupported on targets without an SVG backend.
 pub fn rasterize(
     allocator: std.mem.Allocator,
     path_data: []const u8,
@@ -46,7 +46,7 @@ pub fn rasterize(
 
 /// Rasterize SVG path data with extended options
 ///
-/// Returns PlatformNotSupported on Linux and other unsupported platforms.
+/// Returns PlatformNotSupported on targets without an SVG backend.
 pub fn rasterizeWithOptions(
     allocator: std.mem.Allocator,
     path_data: []const u8,

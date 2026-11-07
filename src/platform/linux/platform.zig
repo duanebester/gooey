@@ -256,6 +256,12 @@ pub const LinuxPlatform = struct {
     modifier_ctrl: bool = false,
     modifier_shift: bool = false,
     modifier_super: bool = false,
+    /// Set by `axis_source` while a wheel gesture is in flight: wheel deltas
+    /// are normalized to native-notch distance, touchpad deltas pass through.
+    axis_is_wheel: bool = false,
+    /// Accumulated value120 units since the last `axis` event on each axis,
+    /// for wheels whose libinput axis value is not notch-normalized.
+    wheel_value120: [2]i32 = .{ 0, 0 },
 
     /// Client-side key repeat state. Wayland compositors send repeat rate and
     /// delay once via `repeat_info` and never re-send `pressed` for a held
@@ -1494,6 +1500,10 @@ pub const LinuxPlatform = struct {
         }
     }
 
+    /// One wheel notch scrolls this far, matching native GTK/Qt apps.
+    /// Touchpad (finger/continuous) deltas bypass this and pass through.
+    const WHEEL_NOTCH_PIXELS: f64 = 100.0;
+
     fn pointerAxis(
         data: ?*anyopaque,
         pointer: *wayland.Pointer,
@@ -1505,8 +1515,25 @@ pub const LinuxPlatform = struct {
         _ = time;
         const self: *Self = @ptrCast(@alignCast(data));
 
-        // Convert axis value to delta
-        const delta = wayland.fixedToDouble(value);
+        var delta = wayland.fixedToDouble(value);
+
+        // Wheel deltas are normalized so one notch scrolls a native-app
+        // distance; touchpad deltas are already pixel distances and pass
+        // through untouched (both arrive positive-down, Gooey's axis).
+        if (self.axis_is_wheel) {
+            const axis_index: usize = if (axis == .vertical_scroll) 0 else 1;
+            // `axis_value120` reports exact notch units for precision wheels.
+            // When the compositor supplies it, scale from the accumulated
+            // units rather than the (often coarser) axis value; otherwise the
+            // axis value is already ~10/notch on most compositors.
+            const units = self.wheel_value120[axis_index];
+            if (units != 0) {
+                delta = @as(f64, @floatFromInt(units)) / 120.0 * WHEEL_NOTCH_PIXELS;
+                self.wheel_value120[axis_index] = 0;
+            } else {
+                delta = delta / 10.0 * WHEEL_NOTCH_PIXELS;
+            }
+        }
 
         // Dispatch scroll event to active window
         if (self.active_window) |window| {
@@ -1546,9 +1573,11 @@ pub const LinuxPlatform = struct {
         pointer: *wayland.Pointer,
         axis_source: wayland.PointerAxisSource,
     ) callconv(.c) void {
-        _ = data;
         _ = pointer;
-        _ = axis_source;
+        const self: *Self = @ptrCast(@alignCast(data));
+        // libinput: `wheel`/`wheel_tilt` are notched hardware wheels; `finger`
+        // and `continuous` are pixel-generating touchpad sources.
+        self.axis_is_wheel = axis_source == .wheel or axis_source == .wheel_tilt;
     }
 
     fn pointerAxisStop(
@@ -1571,8 +1600,10 @@ pub const LinuxPlatform = struct {
     ) callconv(.c) void {
         _ = data;
         _ = pointer;
-        _ = axis;
         _ = discrete;
+        // Discrete clicks arrive with an `axis` value of the same gesture;
+        // nothing to accumulate here — `axis_value120` supersedes it.
+        _ = axis;
     }
 
     fn pointerAxisValue120(
@@ -1581,10 +1612,10 @@ pub const LinuxPlatform = struct {
         axis: wayland.PointerAxis,
         value120: i32,
     ) callconv(.c) void {
-        _ = data;
         _ = pointer;
-        _ = axis;
-        _ = value120;
+        const self: *Self = @ptrCast(@alignCast(data));
+        const axis_index: usize = if (axis == .vertical_scroll) 0 else 1;
+        self.wheel_value120[axis_index] += value120;
     }
 
     fn pointerAxisRelativeDirection(

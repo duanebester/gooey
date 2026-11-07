@@ -1,6 +1,9 @@
-//! SVG Rasterizer for Linux - Software rendering
+//! SVG Rasterizer - Pure-Zig software rendering (Linux and Windows)
 //!
-//! Rasterizes SVG path data to RGBA buffers using a scanline fill algorithm.
+//! Rasterizes SVG path data to RGBA buffers using a scanline fill algorithm
+//! with vertical supersampling for anti-aliasing. It depends on no system
+//! graphics library, so the same implementation serves both native platforms
+//! that lack a host 2D API worth binding (macOS uses CoreGraphics instead).
 //! Output format: R = fill alpha, G = stroke alpha, B = 0, A = max(fill, stroke)
 
 const std = @import("std");

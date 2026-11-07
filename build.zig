@@ -1,5 +1,8 @@
 const std = @import("std");
 
+/// Windows GPU renderer backend selection, resolved from `-Dgpu-backend=`.
+pub const GpuBackend = enum { vulkan, dx11 };
+
 const ExampleDefinition = struct {
     name: []const u8,
     source: []const u8,
@@ -68,6 +71,26 @@ pub fn build(b: *std.Build) void {
     // Platform detection
     const is_native_macos = target.result.os.tag == .macos;
     const is_native_linux = target.result.os.tag == .linux;
+    const is_native_windows = target.result.os.tag == .windows;
+
+    // GPU renderer backend for the Windows platform: Vulkan (default, the
+    // established path shared with Linux) or DirectX 11 (gpui-style
+    // compatibility fallback). Resolved comptime via the `build_options`
+    // module — the platform layer stays compile-time monomorphic, so the two
+    // backends are compared by building two binaries, not by runtime dispatch.
+    const gpu_backend_raw = b.option(
+        []const u8,
+        "gpu-backend",
+        "Windows GPU renderer backend: \"vulkan\" (default) or \"dx11\"",
+    ) orelse "vulkan";
+    const gpu_backend: GpuBackend = if (std.mem.eql(u8, gpu_backend_raw, "vulkan"))
+        .vulkan
+    else if (std.mem.eql(u8, gpu_backend_raw, "dx11"))
+        .dx11
+    else {
+        std.debug.print("invalid -Dgpu-backend value '{s}' (expected \"vulkan\" or \"dx11\")\n", .{gpu_backend_raw});
+        std.process.exit(1);
+    };
 
     if (is_native_macos) {
         // Local, zero-dependency Objective-C runtime wrapper (a trimmed in-tree
@@ -1200,8 +1223,83 @@ pub fn build(b: *std.Build) void {
         test_valgrind_step.dependOn(&valgrind_run.step);
     }
 
+    // =============================================================================
+    // Windows Native Builds (Win32 + Vulkan + DirectWrite)
+    // =============================================================================
+
+    if (is_native_windows) {
+        // Comptime build options: the renderer backend switch. Attached to
+        // every Windows-compiled gooey module (native + typecheck).
+        const build_options = b.addOptions();
+        build_options.addOption(GpuBackend, "gpu_backend", gpu_backend);
+
+        // Create the gooey module for Windows. user32/gdi32/dwmapi resolve from
+        // the mingw import libraries Zig ships; Vulkan comes from the system
+        // DLL (the bindings are plain extern declarations, no SDK headers).
+        const mod = b.addModule("gooey", .{
+            .root_source_file = b.path("src/root.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        mod.addOptions("build_options", build_options);
+
+        linkWindowsGooeyLibraries(mod);
+
+        // =========================================================================
+        // Gooey Components Module
+        // =========================================================================
+
+        const components_mod = b.addModule("gooey-components", .{
+            .root_source_file = b.path("components/src/root.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        components_mod.addImport("gooey", mod);
+
+        // =========================================================================
+        // Windows examples (showcase)
+        // =========================================================================
+
+        addWindowsExample(
+            b,
+            mod,
+            components_mod,
+            target,
+            optimize,
+            "gooey",
+            "src/examples/showcase.zig",
+            "showcase",
+            "run",
+        );
+
+        // =====================================================================
+        // Tests
+        // =====================================================================
+
+        const mod_tests = b.addTest(.{
+            .root_module = mod,
+            .use_llvm = true,
+        });
+        linkWindowsLibraries(mod_tests);
+        const run_mod_tests = b.addRunArtifact(mod_tests);
+
+        const components_tests = b.addTest(.{
+            .root_module = components_mod,
+            .use_llvm = true,
+        });
+        linkWindowsLibraries(components_tests);
+        const run_components_tests = b.addRunArtifact(components_tests);
+
+        const test_step = b.step("test", "Run tests");
+        test_step.dependOn(&run_mod_tests.step);
+        test_step.dependOn(&run_components_tests.step);
+        test_step.dependOn(&run_compare_tests.step);
+        test_step.dependOn(&run_bench_tests.step);
+    }
+
     addWasmBuilds(b);
     addLinuxTypecheck(b);
+    addWindowsTypecheck(b);
 }
 
 // =============================================================================
@@ -1242,6 +1340,10 @@ pub fn linkSystemDeps(step: *std.Build.Step.Compile) void {
 
     if (os == .linux) {
         linkLinuxLibraries(step);
+    }
+
+    if (os == .windows) {
+        linkWindowsLibraries(step);
     }
 }
 
@@ -1467,20 +1569,21 @@ fn addLinuxTypecheck(b: *std.Build) void {
     comptime std.debug.assert(roots.len <= typecheck_linux_root_count_max);
 
     for (roots) |root| {
-        addLinuxTypecheckRoot(b, step, linux_target, root);
+        addTypecheckRoot(b, step, linux_target, root, .vulkan);
     }
 }
 
-/// Analyzes one root for the Linux target. Split out so `addLinuxTypecheck`
-/// keeps the root list, and this owns per-root module wiring.
-fn addLinuxTypecheckRoot(
+/// Analyzes one root for a typecheck step. Split out so `addLinuxTypecheck`
+/// and `addWindowsTypecheck` keep their own root lists, and this owns the
+/// per-root module wiring.
+fn addTypecheckRoot(
     b: *std.Build,
     step: *std.Build.Step,
     target: std.Build.ResolvedTarget,
     root: TypecheckRoot,
+    gpu_backend: GpuBackend,
 ) void {
     std.debug.assert(root.source.len > 0);
-    std.debug.assert(target.result.os.tag == .linux);
 
     const gooey_mod = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
@@ -1488,6 +1591,15 @@ fn addLinuxTypecheckRoot(
         .optimize = .debug,
         .link_libc = true,
     });
+
+    // Windows roots reach `window.zig`, which imports `build_options` for the
+    // renderer-backend switch; Linux roots compile the Linux backend, which
+    // does not.
+    if (target.result.os.tag == .windows) {
+        const build_options = b.addOptions();
+        build_options.addOption(GpuBackend, "gpu_backend", gpu_backend);
+        gooey_mod.addOptions("build_options", build_options);
+    }
 
     const compile = if (root.as_test) b.addTest(.{
         .root_module = gooey_mod,
@@ -1511,7 +1623,7 @@ fn addLinuxTypecheckRoot(
         });
 
         break :blk b.addExecutable(.{
-            .name = b.fmt("typecheck-linux-{s}", .{std.fs.path.stem(root.source)}),
+            .name = b.fmt("typecheck-{s}-{s}", .{ @tagName(target.result.os.tag), std.fs.path.stem(root.source) }),
             .root_module = root_mod,
         });
     };
@@ -1519,6 +1631,48 @@ fn addLinuxTypecheckRoot(
     // Depend on the compile step *only*. Installing it or calling
     // `getEmittedBin()` would populate `generated_bin` and re-enable linking.
     step.dependOn(&compile.step);
+}
+
+/// Adds the `typecheck-windows` step: full semantic analysis of the
+/// Windows/Win32/Vulkan/DirectWrite backend from any host, with no linking.
+///
+/// Mirrors `typecheck-linux`: every Windows binding (`win32.zig`, the
+/// DirectWrite COM vtables) is a plain `extern` declaration, so analysis needs
+/// no SDK headers. `src/examples/linux_demo.zig` — the hand-rolled-loop demo —
+/// is the cross-platform entry point that reaches the window/event/render path
+/// on both Linux and Windows.
+fn addWindowsTypecheck(b: *std.Build) void {
+    const step = b.step(
+        "typecheck-windows",
+        "Semantically analyze the Windows backend from any host",
+    );
+
+    // GPU backend for this typecheck pass. `zig build typecheck-windows` pins
+    // Vulkan (the default); pass `-Dtypecheck-gpu-backend=dx11` to analyze the
+    // DX11 renderer instead. Both backends only add Win32 extern declarations,
+    // so neither needs linking.
+    const typecheck_gpu_backend: GpuBackend = if (std.mem.eql(
+        u8,
+        b.option([]const u8, "typecheck-gpu-backend", "GPU backend for the typecheck roots: \"vulkan\" (default) or \"dx11\"") orelse "vulkan",
+        "dx11",
+    )) .dx11 else .vulkan;
+    const windows_target = b.resolveTargetQuery(.{
+        .cpu_arch = .x86_64,
+        .os_tag = .windows,
+        .abi = .gnu,
+    });
+    std.debug.assert(windows_target.result.os.tag == .windows);
+    std.debug.assert(windows_target.result.cpu.arch == .x86_64);
+
+    const roots = [_]TypecheckRoot{
+        .{ .source = "src/root.zig", .as_test = true },
+        .{ .source = "src/examples/linux_demo.zig", .as_test = false },
+    };
+    comptime std.debug.assert(roots.len <= typecheck_linux_root_count_max);
+
+    for (roots) |root| {
+        addTypecheckRoot(b, step, windows_target, root, typecheck_gpu_backend);
+    }
 }
 
 fn addWasmBuilds(b: *std.Build) void {
@@ -1630,6 +1784,46 @@ fn addWasmExample(
             b.fmt("{s}/assets/gooey-logo-final.png", .{options.output_dir}),
         ).step);
     }
+}
+
+/// Helper to add a Windows native example. `run_step_name` and
+/// `build_step_name` let the showcase keep its `run`/`showcase` steps while
+/// other examples use `run-<name>`/`<name>`.
+fn addWindowsExample(
+    b: *std.Build,
+    gooey_module: *std.Build.Module,
+    components_module: *std.Build.Module,
+    target: std.Build.ResolvedTarget,
+    optimize: std.lang.Optimize,
+    name: []const u8,
+    source: []const u8,
+    build_step_name: []const u8,
+    run_step_name: []const u8,
+) void {
+    const exe = b.addExecutable(.{
+        .name = name,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path(source),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "gooey", .module = gooey_module },
+                .{ .name = "gooey-components", .module = components_module },
+            },
+        }),
+    });
+
+    const install = b.addInstallArtifact(exe, .{});
+    b.getInstallStep().dependOn(&install.step);
+
+    const build_step = b.step(build_step_name, b.fmt("Build the {s} example", .{name}));
+    build_step.dependOn(&install.step);
+
+    const run_step = b.step(run_step_name, b.fmt("Run the {s} example", .{name}));
+    const run_cmd = b.addRunArtifact(exe);
+    run_step.dependOn(&run_cmd.step);
+    run_cmd.step.dependOn(b.getInstallStep());
+    run_cmd.addPassthruArgs();
 }
 
 /// Helper to add a Linux native example with Vulkan + Wayland system libraries.
@@ -1749,4 +1943,43 @@ fn linkLinuxLibraries(step: *std.Build.Step.Compile) void {
     mod.linkSystemLibrary("png", .{});
     mod.linkSystemLibrary("dbus-1", .{});
     mod.link_libc = true;
+}
+
+/// Adds the Windows system DLL directory to the library search path.
+/// `vulkan-1` has no mingw import library, so the linker needs to find the DLL
+/// itself; `SystemRoot`/`WINDIR` give the location without a hard-coded drive.
+/// Other Windows libraries resolve from the mingw import set Zig ships.
+fn addWindowsSystemDllPath(mod: *std.Build.Module) void {
+    const environ = std.process.Environ{ .block = .global };
+    const roots = [_][]const u8{ "SystemRoot", "WINDIR" };
+    for (roots) |key| {
+        if (environ.getAlloc(std.heap.page_allocator, key)) |root| {
+            defer std.heap.page_allocator.free(root);
+            const path = std.fs.path.join(std.heap.page_allocator, &.{ root, "System32" }) catch return;
+            defer std.heap.page_allocator.free(path);
+            mod.addLibraryPath(.{ .cwd_relative = path });
+            return;
+        } else |_| {}
+    }
+}
+
+/// Links the Windows system libraries the `gooey` module needs. Every binding
+/// is a plain `extern` declaration, so no SDK headers are needed; `vulkan-1`,
+/// `d3d11`, `dxgi`, and `dwrite` resolve from the system DLLs and the mingw
+/// import libraries. The shader compiler (`d3dcompiler_47`) is deliberately
+/// not linked — `dx11_renderer.zig` loads it at runtime via `LoadLibraryA`
+/// because mingw has no consistently named import library for it, while the
+/// DLL is a guaranteed system component.
+fn linkWindowsGooeyLibraries(mod: *std.Build.Module) void {
+    addWindowsSystemDllPath(mod);
+    mod.linkSystemLibrary("vulkan-1", .{});
+    mod.linkSystemLibrary("d3d11", .{});
+    mod.linkSystemLibrary("dxgi", .{});
+    mod.linkSystemLibrary("dwrite", .{});
+    mod.link_libc = true;
+}
+
+/// Links the standard set of Windows system libraries.
+fn linkWindowsLibraries(step: *std.Build.Step.Compile) void {
+    linkWindowsGooeyLibraries(step.root_module);
 }

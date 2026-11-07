@@ -22,6 +22,7 @@ const SUBPIXEL_VARIANTS_Y = types.SUBPIXEL_VARIANTS_Y;
 
 const is_wasm = platform.is_wasm;
 const is_linux = platform.is_linux;
+const is_windows = platform.is_windows;
 
 /// Key for glyph lookup - includes subpixel variant
 pub const GlyphKey = struct {
@@ -556,6 +557,19 @@ pub const GlyphCache = struct {
             const FreeTypeFace = @import("backends/freetype/face.zig").FreeTypeFace;
             break :blk try FreeTypeFace.renderGlyphFromFont(
                 @ptrCast(@alignCast(font_ptr)),
+                glyph_id,
+                font_size,
+                self.scale_factor,
+                subpixel_shift_x,
+                subpixel_shift_y,
+                self.render_buffer,
+                self.render_buffer_size,
+            );
+        } else if (is_windows) blk: {
+            const DirectWriteFace = @import("backends/dwrite/face.zig").DirectWriteFace;
+            const face: *DirectWriteFace = @ptrCast(@alignCast(font_ptr));
+            break :blk try DirectWriteFace.renderGlyphFromFont(
+                face.font_face,
                 glyph_id,
                 font_size,
                 self.scale_factor,
