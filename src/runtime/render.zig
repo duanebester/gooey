@@ -195,11 +195,27 @@ fn renderText(window_ctx: *Window, cmd: layout_mod.RenderCommand) !void {
     const text_data = cmd.data.text;
     const font_size_f: f32 = @floatFromInt(text_data.font_size);
 
-    // Calculate baseline using requested font size
+    // Baseline for the line box at `bounding_box`. The box is the text
+    // element's layout height, which is the full line box
+    // (ascender + descender + line gap). Centering that box in a container
+    // therefore sinks the visible glyphs: a font's descender whitespace sits
+    // below the baseline while ascender/descender are asymmetric for most UI
+    // faces, so the visual mass (cap height) sits low in the box. Compensate
+    // by centering the cap-height band in the box instead: baseline =
+    // top + (line_height - cap_height) / 2 + cap_height. Every glyph hangs
+    // from the same baseline, so multi-line blocks shift uniformly rather
+    // than misaligning per line.
     const baseline_y = if (window_ctx.resources.text_system.getMetrics()) |metrics| blk: {
         const scale = font_size_f / metrics.point_size;
-        const scaled_ascender = metrics.ascender * scale;
-        break :blk cmd.bounding_box.y + scaled_ascender;
+        const line_height = metrics.line_height * scale;
+        // Cap height is the visual anchor; faces without a measured cap
+        // height fall back to ~0.7 of the ascent (the same estimate
+        // face loaders use when the OS/2 table omits it).
+        const cap_height = if (metrics.cap_height > 0)
+            metrics.cap_height * scale
+        else
+            metrics.ascender * scale * 0.7;
+        break :blk cmd.bounding_box.y + (line_height - cap_height) / 2 + cap_height;
     } else cmd.bounding_box.y + cmd.bounding_box.height * 0.75;
 
     const use_clip = window_ctx.next_frame.scene.hasActiveClip();

@@ -81,23 +81,27 @@ pub const HarfBuzzShaper = struct {
 
             // HarfBuzz positions are in font units - scale by font size
             // The hb_ft bridge should handle scaling, but positions are still in 26.6
-            const x_advance = ft.f26dot6ToFloat(pos.x_advance);
             const y_advance = ft.f26dot6ToFloat(pos.y_advance);
             const x_offset = ft.f26dot6ToFloat(pos.x_offset);
             const y_offset = ft.f26dot6ToFloat(pos.y_offset);
 
+            // HarfBuzz maps characters the face lacks to .notdef (0); route
+            // those codepoints to a fallback font so they render instead of
+            // showing as tofu.
+            const resolved = resolveGlyph(face, text, info, pos);
+
             glyph_buffer.appendAssumeCapacity(.{
-                .glyph_id = @intCast(info.codepoint),
+                .glyph_id = resolved.glyph_id,
                 .x_offset = x_offset,
                 .y_offset = y_offset,
-                .x_advance = x_advance,
+                .x_advance = resolved.x_advance,
                 .y_advance = y_advance,
                 .cluster = info.cluster,
-                .font_ref = null, // No fallback font handling yet
-                .is_color = false, // TODO: detect color glyphs
+                .font_ref = resolved.font_ref,
+                .is_color = resolved.is_color,
             });
 
-            total_width += x_advance;
+            total_width += resolved.x_advance;
         }
 
         return ShapedRun{
@@ -153,23 +157,24 @@ pub const HarfBuzzShaper = struct {
             const info = glyph_infos[i];
             const pos = glyph_positions[i];
 
-            const x_advance = ft.f26dot6ToFloat(pos.x_advance);
             const y_advance = ft.f26dot6ToFloat(pos.y_advance);
             const x_offset = ft.f26dot6ToFloat(pos.x_offset);
             const y_offset = ft.f26dot6ToFloat(pos.y_offset);
 
+            const resolved = resolveGlyph(face, text, info, pos);
+
             glyph_buffer.appendAssumeCapacity(.{
-                .glyph_id = @intCast(info.codepoint),
+                .glyph_id = resolved.glyph_id,
                 .x_offset = x_offset,
                 .y_offset = y_offset,
-                .x_advance = x_advance,
+                .x_advance = resolved.x_advance,
                 .y_advance = y_advance,
                 .cluster = info.cluster,
-                .font_ref = null,
-                .is_color = false,
+                .font_ref = resolved.font_ref,
+                .is_color = resolved.is_color,
             });
 
-            total_width += x_advance;
+            total_width += resolved.x_advance;
         }
 
         return ShapedRun{
@@ -178,3 +183,61 @@ pub const HarfBuzzShaper = struct {
         };
     }
 };
+
+/// One shaped glyph after fallback resolution.
+const ResolvedGlyph = struct {
+    glyph_id: u16,
+    x_advance: f32,
+    font_ref: ?*anyopaque,
+    is_color: bool,
+};
+
+/// Resolve one shaped glyph. Glyphs the face covers pass through with
+/// HarfBuzz's advance; .notdef glyphs (HarfBuzz's mapping for characters the
+/// face lacks) are looked up in a fallback face via Fontconfig, taking that
+/// face's glyph ID, advance, and color flag instead.
+fn resolveGlyph(
+    face: *const FreeTypeFace,
+    text: []const u8,
+    info: ft.hb_glyph_info_t,
+    pos: ft.hb_glyph_position_t,
+) ResolvedGlyph {
+    const primary_glyph_id: u16 = @intCast(info.codepoint);
+    if (primary_glyph_id != 0) {
+        return .{
+            .glyph_id = primary_glyph_id,
+            .x_advance = ft.f26dot6ToFloat(pos.x_advance),
+            .font_ref = null,
+            .is_color = false,
+        };
+    }
+
+    if (codepointAtCluster(text, info.cluster)) |cp| {
+        if (face.getFallbackGlyph(cp)) |fb_glyph| {
+            return .{
+                .glyph_id = fb_glyph.glyph_id,
+                .x_advance = fb_glyph.advance,
+                .font_ref = fb_glyph.ft_face,
+                .is_color = fb_glyph.is_color,
+            };
+        }
+    }
+
+    // Genuinely missing everywhere: keep the primary face's .notdef metrics.
+    return .{
+        .glyph_id = primary_glyph_id,
+        .x_advance = ft.f26dot6ToFloat(pos.x_advance),
+        .font_ref = null,
+        .is_color = false,
+    };
+}
+
+/// Decode the UTF-8 codepoint at a HarfBuzz cluster offset (a byte index
+/// into the shaped text).
+fn codepointAtCluster(text: []const u8, cluster: u32) ?u21 {
+    const idx: usize = @intCast(cluster);
+    if (idx >= text.len) return null;
+    const seq_len = std.unicode.utf8ByteSequenceLength(text[idx]) catch return null;
+    if (idx + seq_len > text.len) return null;
+    return std.unicode.utf8Decode(text[idx..][0..seq_len]) catch null;
+}

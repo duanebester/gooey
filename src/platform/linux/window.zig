@@ -42,6 +42,11 @@ const surface_listener = wayland.SurfaceListener{
     .preferred_buffer_transform = Window.surfacePreferredTransform,
 };
 
+// Fractional scale listener - must persist for lifetime of the wp_fractional_scale_v1
+const fractional_scale_listener = wayland.FractionalScaleListener{
+    .preferred_scale = Window.fractionalPreferredScale,
+};
+
 const decoration_listener = wayland.ZxdgToplevelDecorationV1Listener{
     .configure = Window.decorationConfigure,
 };
@@ -73,6 +78,12 @@ pub const Window = struct {
     decoration: ?*wayland.ZxdgToplevelDecorationV1 = null,
     frame_callback: ?*wayland.Callback = null,
     viewport: ?*wayland.WpViewport = null,
+    fractional_scale: ?*wayland.WpFractionalScaleV1 = null,
+
+    /// Compositor's preferred fractional scale in 1/120ths (e.g. 180 = 1.5x).
+    /// 0 until the first `preferred_scale` event arrives; only then is the
+    /// fractional scale authoritative over the integer output scale.
+    fractional_scale_120ths: u32 = 0,
 
     // Window state.
     //
@@ -181,9 +192,6 @@ pub const Window = struct {
     /// Click tracker for multi-click detection
     click_tracker: linux_input.ClickTracker = .{},
 
-    /// Key repeat tracker
-    key_repeat_tracker: linux_input.KeyRepeatTracker = .{},
-
     /// Currently pressed mouse button (for drag detection)
     pressed_button: ?input.MouseButton = null,
 
@@ -289,6 +297,26 @@ pub const Window = struct {
         // Set up surface listener (uses module-level static listener)
         _ = wayland.surfaceAddListener(self.wl_surface.?, &surface_listener, self);
 
+        // Negotiate fractional scaling (e.g. niri at 1.5x). The scale is only
+        // applicable through wp_viewporter, whose destination maps the
+        // physical-size buffer back to logical size, so bind only when the
+        // compositor also provides wp_viewporter. Must precede the first
+        // roundtrip so the initial `preferred_scale` is delivered here.
+        if (plat.getFractionalScaleManager()) |manager| {
+            if (plat.getViewporter() != null) {
+                self.fractional_scale = wayland.fractionalScaleManagerGetFractionalScale(manager, self.wl_surface.?);
+                if (self.fractional_scale) |fs| {
+                    _ = wayland.fractionalScaleV1AddListener(fs, &fractional_scale_listener, self);
+                }
+            }
+        }
+
+        // errdefer for fractional scale (created above, may be null)
+        errdefer {
+            if (self.fractional_scale) |fs| wayland.fractionalScaleV1Destroy(fs);
+            self.fractional_scale = null;
+        }
+
         // Create XDG surface
         const xdg_wm_base = plat.getXdgWmBase() orelse return error.NoXdgWmBase;
         self.xdg_surface = wayland.xdgWmBaseGetXdgSurface(xdg_wm_base, self.wl_surface.?) orelse return error.FailedToCreateXdgSurface;
@@ -347,7 +375,9 @@ pub const Window = struct {
         // Commit surface to trigger configure events
         wayland.surfaceCommit(self.wl_surface.?);
 
-        // Wait for initial configure - this may update scale_factor via preferred_buffer_scale callback
+        // Wait for initial configure - this may update scale_factor via
+        // preferred_buffer_scale or, when fractional scaling is negotiated, via
+        // the wp_fractional_scale_v1 preferred_scale callback
         _ = wayland.wl_display_roundtrip(plat.display.?);
 
         // errdefer for decoration (created above, may be null)
@@ -457,6 +487,12 @@ pub const Window = struct {
 
         // Clean up renderer
         self.renderer.deinit();
+
+        // Destroy the fractional scale object before the surface it tracks
+        if (self.fractional_scale) |fs| {
+            wayland.fractionalScaleV1Destroy(fs);
+            self.fractional_scale = null;
+        }
 
         // Destroy Wayland objects in reverse order
         if (self.decoration) |dec| wayland.zxdgToplevelDecorationV1Destroy(dec);
@@ -1217,6 +1253,10 @@ pub const Window = struct {
         factor: i32,
     ) callconv(.c) void {
         const self: *Self = @ptrCast(@alignCast(data));
+        // With wp_fractional_scale_v1 bound, the integer preferred scale is not
+        // authoritative: it rounds the compositor's real fractional preference,
+        // which arrives through the fractional `preferred_scale` event instead.
+        if (self.fractional_scale != null) return;
         const new_scale: f64 = @floatFromInt(factor);
         if (self.scale_factor != new_scale) {
             self.scale_factor = new_scale;
@@ -1230,6 +1270,36 @@ pub const Window = struct {
             self.pending_resize = true;
             self.pending_width = self.width_px;
             self.pending_height = self.height_px;
+        }
+        self.requestRender();
+    }
+
+    fn fractionalPreferredScale(
+        data: ?*anyopaque,
+        fractional_scale: *wayland.WpFractionalScaleV1,
+        factor_120ths: u32,
+    ) callconv(.c) void {
+        _ = fractional_scale;
+        const self: *Self = @ptrCast(@alignCast(data));
+        // A zero scale is a protocol violation: the value is in 1/120ths, so
+        // even a degenerate 0.5x preference arrives as 60.
+        std.debug.assert(factor_120ths > 0);
+        self.fractional_scale_120ths = factor_120ths;
+        const new_scale: f64 = @as(f64, @floatFromInt(factor_120ths)) / 120.0;
+        if (self.scale_factor != new_scale) {
+            self.scale_factor = new_scale;
+            // Before the first configure there is nothing to rebuild: the
+            // swapchain is created afterwards from the updated scale factor.
+            // Afterwards a scale-only change keeps the logical size and
+            // rebuilds the buffer; a configure already pending owns the
+            // pending size, so only fill it in when none is queued.
+            if (self.configured) {
+                if (!self.pending_resize) {
+                    self.pending_width = self.width_px;
+                    self.pending_height = self.height_px;
+                }
+                self.pending_resize = true;
+            }
         }
         self.requestRender();
     }

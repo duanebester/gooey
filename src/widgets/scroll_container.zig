@@ -11,7 +11,6 @@
 //! scrolling when content exceeds the viewport size.
 
 const std = @import("std");
-const builtin = @import("builtin");
 const scene_mod = @import("../scene/mod.zig");
 const layout_types = @import("../layout/types.zig");
 
@@ -98,11 +97,11 @@ pub const ScrollState = struct {
 
     /// Scroll by delta (e.g., from scroll wheel)
     pub fn scrollBy(self: *Self, delta_x: f32, delta_y: f32) void {
-        // macOS uses "natural scrolling" (scroll up = content moves down)
-        // Linux/Windows use traditional scrolling (scroll up = content moves up)
-        const direction: f32 = if (builtin.os.tag == .macos) -1.0 else 1.0;
-        self.offset_x = std.math.clamp(self.offset_x + delta_x * direction, 0, self.maxScrollX());
-        self.offset_y = std.math.clamp(self.offset_y + delta_y * direction, 0, self.maxScrollY());
+        // The ScrollEvent contract pins the axis: positive delta = the user
+        // scrolled down (content moves up). Every backend normalizes its
+        // native sign before dispatching, so no per-OS branching here.
+        self.offset_x = std.math.clamp(self.offset_x + delta_x, 0, self.maxScrollX());
+        self.offset_y = std.math.clamp(self.offset_y + delta_y, 0, self.maxScrollY());
     }
 
     /// Scroll to absolute position

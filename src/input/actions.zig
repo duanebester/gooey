@@ -23,7 +23,7 @@
 const std = @import("std");
 const input_mod = @import("events.zig");
 
-const KeyCode = input_mod.KeyCode;
+const KeyTag = input_mod.KeyTag;
 const Modifiers = input_mod.Modifiers;
 
 // =============================================================================
@@ -32,7 +32,7 @@ const Modifiers = input_mod.Modifiers;
 
 /// A parsed keystroke like "cmd-z" or "ctrl-shift-s"
 pub const Keystroke = struct {
-    key: KeyCode,
+    key: KeyTag,
     modifiers: Modifiers,
 
     const Self = @This();
@@ -68,7 +68,7 @@ pub const Keystroke = struct {
     }
 
     /// Check if this keystroke matches a key event
-    pub fn matches(self: Self, key: KeyCode, mods: Modifiers) bool {
+    pub fn matches(self: Self, key: KeyTag, mods: Modifiers) bool {
         return self.key == key and
             self.modifiers.cmd == mods.cmd and
             self.modifiers.ctrl == mods.ctrl and
@@ -81,41 +81,34 @@ pub const Keystroke = struct {
         return std.mem.eql(u8, haystack[0..needle.len], needle);
     }
 
-    fn parseKeyName(name: []const u8) ?KeyCode {
-        // Single character keys
-        if (name.len == 1) {
-            const c = name[0];
-            if (c >= 'a' and c <= 'z') {
-                // Map 'a'-'z' to KeyCode - but they're not contiguous!
-                // Need to use the map instead
-            }
-        }
-
+    fn parseKeyName(name: []const u8) ?KeyTag {
         // Named keys (including single chars)
-        const map = std.StaticStringMap(KeyCode).initComptime(.{
+        const map = std.StaticStringMap(KeyTag).initComptime(.{
             // Letters
-            .{ "a", .a },           .{ "b", .b },         .{ "c", .c },              .{ "d", .d },
-            .{ "e", .e },           .{ "f", .f },         .{ "g", .g },              .{ "h", .h },
-            .{ "i", .i },           .{ "j", .j },         .{ "k", .k },              .{ "l", .l },
-            .{ "m", .m },           .{ "n", .n },         .{ "o", .o },              .{ "p", .p },
-            .{ "q", .q },           .{ "r", .r },         .{ "s", .s },              .{ "t", .t },
-            .{ "u", .u },           .{ "v", .v },         .{ "w", .w },              .{ "x", .x },
+            .{ "a", .a },           .{ "b", .b },         .{ "c", .c },                 .{ "d", .d },
+            .{ "e", .e },           .{ "f", .f },         .{ "g", .g },                 .{ "h", .h },
+            .{ "i", .i },           .{ "j", .j },         .{ "k", .k },                 .{ "l", .l },
+            .{ "m", .m },           .{ "n", .n },         .{ "o", .o },                 .{ "p", .p },
+            .{ "q", .q },           .{ "r", .r },         .{ "s", .s },                 .{ "t", .t },
+            .{ "u", .u },           .{ "v", .v },         .{ "w", .w },                 .{ "x", .x },
             .{ "y", .y },           .{ "z", .z },
             // Numbers
-                    .{ "0", .@"0" },           .{ "1", .@"1" },
-            .{ "2", .@"2" },        .{ "3", .@"3" },      .{ "4", .@"4" },           .{ "5", .@"5" },
-            .{ "6", .@"6" },        .{ "7", .@"7" },      .{ "8", .@"8" },           .{ "9", .@"9" },
+                    .{ "0", .@"0" },              .{ "1", .@"1" },
+            .{ "2", .@"2" },        .{ "3", .@"3" },      .{ "4", .@"4" },              .{ "5", .@"5" },
+            .{ "6", .@"6" },        .{ "7", .@"7" },      .{ "8", .@"8" },              .{ "9", .@"9" },
             // Special keys
-            .{ "escape", .escape }, .{ "esc", .escape },  .{ "return", .@"return" }, .{ "enter", .@"return" },
-            .{ "tab", .tab },       .{ "space", .space }, .{ "backspace", .delete }, .{ "delete", .forward_delete },
+            .{ "escape", .escape }, .{ "esc", .escape },  .{ "return", .@"return" },    .{ "enter", .@"return" },
+            .{ "tab", .tab },       .{ "space", .space },
+            // "delete" is the Del key (PC naming); backspace has its own name.
+            .{ "backspace", .backspace }, .{ "delete", .delete },
             // Arrows
-            .{ "up", .up },         .{ "down", .down },   .{ "left", .left },        .{ "right", .right },
+            .{ "up", .up },         .{ "down", .down },   .{ "left", .left },           .{ "right", .right },
             // Navigation
-            .{ "home", .home },     .{ "end", .end },     .{ "pageup", .page_up },   .{ "pagedown", .page_down },
+            .{ "home", .home },     .{ "end", .end },     .{ "pageup", .page_up },      .{ "pagedown", .page_down },
             // Function keys
-            .{ "f1", .f1 },         .{ "f2", .f2 },       .{ "f3", .f3 },            .{ "f4", .f4 },
-            .{ "f5", .f5 },         .{ "f6", .f6 },       .{ "f7", .f7 },            .{ "f8", .f8 },
-            .{ "f9", .f9 },         .{ "f10", .f10 },     .{ "f11", .f11 },          .{ "f12", .f12 },
+            .{ "f1", .f1 },         .{ "f2", .f2 },       .{ "f3", .f3 },               .{ "f4", .f4 },
+            .{ "f5", .f5 },         .{ "f6", .f6 },       .{ "f7", .f7 },               .{ "f8", .f8 },
+            .{ "f9", .f9 },         .{ "f10", .f10 },     .{ "f11", .f11 },             .{ "f12", .f12 },
         });
 
         return map.get(name);
@@ -185,7 +178,7 @@ pub const Keymap = struct {
     /// Find a matching binding for a key event given the active contexts
     pub fn match(
         self: *const Self,
-        key: KeyCode,
+        key: KeyTag,
         mods: Modifiers,
         active_contexts: []const []const u8,
     ) ?KeyBinding {
@@ -222,17 +215,17 @@ pub const Keymap = struct {
 
 test "Keystroke parsing" {
     const ks1 = Keystroke.parse("cmd-z").?;
-    try std.testing.expectEqual(KeyCode.z, ks1.key);
+    try std.testing.expectEqual(KeyTag.z, ks1.key);
     try std.testing.expect(ks1.modifiers.cmd);
     try std.testing.expect(!ks1.modifiers.shift);
 
     const ks2 = Keystroke.parse("ctrl-shift-s").?;
-    try std.testing.expectEqual(KeyCode.s, ks2.key);
+    try std.testing.expectEqual(KeyTag.s, ks2.key);
     try std.testing.expect(ks2.modifiers.ctrl);
     try std.testing.expect(ks2.modifiers.shift);
 
     const ks3 = Keystroke.parse("escape").?;
-    try std.testing.expectEqual(KeyCode.escape, ks3.key);
+    try std.testing.expectEqual(KeyTag.escape, ks3.key);
 }
 
 test "Keymap binding and matching" {

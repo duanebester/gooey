@@ -45,6 +45,9 @@ pub const scene_renderer = @import("scene_renderer.zig");
 // D-Bus integration (for XDG portals)
 pub const dbus = @import("dbus.zig");
 
+// Clipboard (Wayland data device)
+pub const clipboard = @import("clipboard.zig");
+
 // File dialogs (via XDG Desktop Portal)
 pub const file_dialog = @import("file_dialog.zig");
 

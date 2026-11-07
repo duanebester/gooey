@@ -232,6 +232,7 @@ pub const LinuxPlatform = struct {
     text_input_manager: ?*wayland.ZwpTextInputManagerV3 = null,
     text_input: ?*wayland.ZwpTextInputV3 = null,
     viewporter: ?*wayland.WpViewporter = null,
+    fractional_scale_manager: ?*wayland.WpFractionalScaleManagerV1 = null,
     cursor_shape_manager: ?*wayland.WpCursorShapeManagerV1 = null,
     cursor_shape_device: ?*wayland.WpCursorShapeDeviceV1 = null,
     output: ?*wayland.Output = null,
@@ -255,6 +256,17 @@ pub const LinuxPlatform = struct {
     modifier_ctrl: bool = false,
     modifier_shift: bool = false,
     modifier_super: bool = false,
+    /// Set by `axis_source` while a wheel gesture is in flight: wheel deltas
+    /// are normalized to native-notch distance, touchpad deltas pass through.
+    axis_is_wheel: bool = false,
+    /// Accumulated value120 units since the last `axis` event on each axis,
+    /// for wheels whose libinput axis value is not notch-normalized.
+    wheel_value120: [2]i32 = .{ 0, 0 },
+
+    /// Client-side key repeat state. Wayland compositors send repeat rate and
+    /// delay once via `repeat_info` and never re-send `pressed` for a held
+    /// key, so synthesizing repeats is the client's job.
+    key_repeat: linux_input.KeyRepeatScheduler = .{},
 
     // Active window for input dispatch, frame pacing and interactive
     // move/resize. Derived from `window_registry.active_window` — write it
@@ -604,6 +616,10 @@ pub const LinuxPlatform = struct {
             if (self.loop_turn_callback) |on_turn| on_turn(self);
             if (!self.running) break;
 
+            // Fire the key repeat due before rendering, so a held key's
+            // synthesized event is visible in this iteration's frame.
+            self.fireKeyRepeat();
+
             // With no open window there is no surface to present and no
             // surface for the compositor to send events to, so no further
             // iteration could observe a state change. Stopping here is not a
@@ -666,9 +682,20 @@ pub const LinuxPlatform = struct {
             linux_window.awakeTimeMs(),
         );
 
-        std.debug.assert(timeout_ms >= 0);
-        std.debug.assert(timeout_ms <= HIDDEN_FRAME_POLL_MS or !pacing.all_waiting_for_frame);
-        return timeout_ms;
+        // Wake for the next client-side key repeat: Wayland compositors do not
+        // re-send held keys, so the loop itself must poll on the repeat
+        // deadline or a held key would never repeat.
+        const now_ms = linux_window.awakeTimeMs();
+        const repeat_deadline = self.key_repeat.nextFireMs();
+        const clamped_ms = pollTimeoutUntilDeadline(
+            timeout_ms,
+            repeat_deadline,
+            now_ms,
+        );
+
+        std.debug.assert(clamped_ms >= 0);
+        std.debug.assert(clamped_ms <= HIDDEN_FRAME_POLL_MS or !pacing.all_waiting_for_frame);
+        return clamped_ms;
     }
 
     /// Sample every registered window and fold the event loop's decision.
@@ -833,6 +860,10 @@ pub const LinuxPlatform = struct {
             return false;
         }
 
+        // Hand-rolled loops drive input pacing themselves, so they need the
+        // client-side repeat fired here just as `run` does.
+        self.fireKeyRepeat();
+
         return true;
     }
 
@@ -976,6 +1007,11 @@ pub const LinuxPlatform = struct {
         return self.viewporter;
     }
 
+    /// Get the fractional scale manager (for fractional output scale, may be null)
+    pub fn getFractionalScaleManager(self: *Self) ?*wayland.WpFractionalScaleManagerV1 {
+        return self.fractional_scale_manager;
+    }
+
     /// Get current scale factor
     pub fn getScaleFactor(self: *const Self) f64 {
         return @floatFromInt(self.scale_factor);
@@ -1076,6 +1112,8 @@ pub const LinuxPlatform = struct {
             }
         } else if (std.mem.eql(u8, interface_name, wayland.WP_VIEWPORTER_INTERFACE_NAME)) {
             self.viewporter = wayland.bindViewporter(registry, name, version);
+        } else if (std.mem.eql(u8, interface_name, wayland.WP_FRACTIONAL_SCALE_MANAGER_V1_INTERFACE_NAME)) {
+            self.fractional_scale_manager = wayland.bindFractionalScaleManager(registry, name, version);
         } else if (std.mem.eql(u8, interface_name, wayland.WP_CURSOR_SHAPE_MANAGER_V1_INTERFACE_NAME)) {
             self.cursor_shape_manager = @ptrCast(@alignCast(wayland.registryBind(
                 registry,
@@ -1462,6 +1500,10 @@ pub const LinuxPlatform = struct {
         }
     }
 
+    /// One wheel notch scrolls this far, matching native GTK/Qt apps.
+    /// Touchpad (finger/continuous) deltas bypass this and pass through.
+    const WHEEL_NOTCH_PIXELS: f64 = 100.0;
+
     fn pointerAxis(
         data: ?*anyopaque,
         pointer: *wayland.Pointer,
@@ -1473,8 +1515,25 @@ pub const LinuxPlatform = struct {
         _ = time;
         const self: *Self = @ptrCast(@alignCast(data));
 
-        // Convert axis value to delta
-        const delta = wayland.fixedToDouble(value);
+        var delta = wayland.fixedToDouble(value);
+
+        // Wheel deltas are normalized so one notch scrolls a native-app
+        // distance; touchpad deltas are already pixel distances and pass
+        // through untouched (both arrive positive-down, Gooey's axis).
+        if (self.axis_is_wheel) {
+            const axis_index: usize = if (axis == .vertical_scroll) 0 else 1;
+            // `axis_value120` reports exact notch units for precision wheels.
+            // When the compositor supplies it, scale from the accumulated
+            // units rather than the (often coarser) axis value; otherwise the
+            // axis value is already ~10/notch on most compositors.
+            const units = self.wheel_value120[axis_index];
+            if (units != 0) {
+                delta = @as(f64, @floatFromInt(units)) / 120.0 * WHEEL_NOTCH_PIXELS;
+                self.wheel_value120[axis_index] = 0;
+            } else {
+                delta = delta / 10.0 * WHEEL_NOTCH_PIXELS;
+            }
+        }
 
         // Dispatch scroll event to active window
         if (self.active_window) |window| {
@@ -1514,9 +1573,11 @@ pub const LinuxPlatform = struct {
         pointer: *wayland.Pointer,
         axis_source: wayland.PointerAxisSource,
     ) callconv(.c) void {
-        _ = data;
         _ = pointer;
-        _ = axis_source;
+        const self: *Self = @ptrCast(@alignCast(data));
+        // libinput: `wheel`/`wheel_tilt` are notched hardware wheels; `finger`
+        // and `continuous` are pixel-generating touchpad sources.
+        self.axis_is_wheel = axis_source == .wheel or axis_source == .wheel_tilt;
     }
 
     fn pointerAxisStop(
@@ -1539,8 +1600,10 @@ pub const LinuxPlatform = struct {
     ) callconv(.c) void {
         _ = data;
         _ = pointer;
-        _ = axis;
         _ = discrete;
+        // Discrete clicks arrive with an `axis` value of the same gesture;
+        // nothing to accumulate here — `axis_value120` supersedes it.
+        _ = axis;
     }
 
     fn pointerAxisValue120(
@@ -1549,10 +1612,10 @@ pub const LinuxPlatform = struct {
         axis: wayland.PointerAxis,
         value120: i32,
     ) callconv(.c) void {
-        _ = data;
         _ = pointer;
-        _ = axis;
-        _ = value120;
+        const self: *Self = @ptrCast(@alignCast(data));
+        const axis_index: usize = if (axis == .vertical_scroll) 0 else 1;
+        self.wheel_value120[axis_index] += value120;
     }
 
     fn pointerAxisRelativeDirection(
@@ -1712,10 +1775,11 @@ pub const LinuxPlatform = struct {
         _ = keys;
         const self: *Self = @ptrCast(@alignCast(data));
 
-        // Reset key repeat tracker on focus gain
-        if (self.active_window) |window| {
-            window.key_repeat_tracker.reset();
-        }
+        // Cancel any repeat armed under the previous focus. The `keys` array
+        // of already-held keys is not re-armed: without having seen their
+        // presses there is no reliable delay anchor, and the user's next real
+        // press re-arms repeat naturally.
+        self.key_repeat.clear();
 
         // Enable text input for IME when keyboard focus enters
         if (self.text_input) |ti| {
@@ -1734,9 +1798,10 @@ pub const LinuxPlatform = struct {
         _ = surface;
         const self: *Self = @ptrCast(@alignCast(data));
 
-        // Reset key repeat tracker and click tracker on focus loss
+        // Focus loss must stop repeats and click tracking: the compositor
+        // silently withholds the release events of keys held at leave time.
+        self.key_repeat.clear();
         if (self.active_window) |window| {
-            window.key_repeat_tracker.reset();
             window.click_tracker.reset();
         }
 
@@ -1768,12 +1833,16 @@ pub const LinuxPlatform = struct {
     fn keyboardRepeatInfo(
         data: ?*anyopaque,
         keyboard: *wayland.Keyboard,
-        _: i32,
-        _: i32,
+        rate: i32,
+        delay: i32,
     ) callconv(.c) void {
-        _ = data;
         _ = keyboard;
-        // Repeat info received - could be used for key repeat handling
+        const self: *Self = @ptrCast(@alignCast(data));
+
+        // The compositor sends rate in keys per second and delay in
+        // milliseconds. Rate zero means the user disabled repeat; the
+        // scheduler treats that as "repeat off".
+        self.key_repeat.configure(rate, delay);
     }
 
     fn keyboardKey(
@@ -1800,15 +1869,21 @@ pub const LinuxPlatform = struct {
         );
 
         if (state == .pressed) {
-            // Check if this is a repeat
-            var is_repeat = false;
-            if (self.active_window) |window| {
-                is_repeat = window.key_repeat_tracker.checkAndPress(key);
-            }
+            // Classify the press: the scheduler distinguishes a genuine press
+            // (which it arms for client-side repeat) from a compositor-
+            // synthesized repeat (repeated `pressed`, or a release instantly
+            // re-pressed), which must be forwarded as a repeat and never
+            // doubled by the timer.
+            const now_ms = linux_window.awakeTimeMs();
+            const external_repeat = if (self.active_window != null and
+                !linux_input.isModifierKey(key))
+                self.key_repeat.press(key, now_ms)
+            else
+                false;
 
             // Dispatch key_down event to active window
             if (self.active_window) |window| {
-                const event = linux_input.keyDownEvent(key, modifiers, is_repeat);
+                const event = linux_input.keyDownEvent(key, modifiers, external_repeat);
                 const handled = window.handleInput(event);
 
                 // Handle built-in shortcuts only if not handled by app
@@ -1847,11 +1922,42 @@ pub const LinuxPlatform = struct {
             }
         } else {
             // Key released
+            self.key_repeat.release(key, linux_window.awakeTimeMs());
             if (self.active_window) |window| {
-                window.key_repeat_tracker.release(key);
-
                 const event = linux_input.keyUpEvent(key, modifiers);
                 _ = window.handleInput(event);
+            }
+        }
+    }
+
+    /// Fires the key repeat due now, if any, into the active window.
+    ///
+    /// Called from the event loop at most once per iteration: a starved loop
+    /// slows the cadence rather than bursting a backlog of repeats. Each fire
+    /// re-derives modifiers and text from the current state, so holding a key
+    /// while pressing Shift repeats the shifted character, like other
+    /// platforms.
+    fn fireKeyRepeat(self: *Self) void {
+        const window = self.active_window orelse return;
+        const key = self.key_repeat.fireDue(linux_window.awakeTimeMs()) orelse return;
+
+        const modifiers = linux_input.modifiersFromFlags(
+            self.modifier_shift,
+            self.modifier_ctrl,
+            self.modifier_alt,
+            self.modifier_super,
+        );
+
+        const event = linux_input.keyDownEvent(key, modifiers, true);
+        _ = window.handleInput(event);
+
+        // Repeats of printable keys also re-send the character, matching the
+        // initial press: skip shortcut modifiers, which suppress text.
+        if (!self.modifier_ctrl and !self.modifier_alt and !self.modifier_super) {
+            if (linux_input.evdevKeyToChar(key, self.modifier_shift)) |char| {
+                var char_buf: [1]u8 = .{char};
+                const text_event = linux_input.textInputEvent(&char_buf);
+                _ = window.handleInput(text_event);
             }
         }
     }

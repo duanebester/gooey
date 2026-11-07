@@ -153,6 +153,15 @@ pub const FT_SizeRec = extern struct {
     internal: ?*anyopaque,
 };
 
+/// One embedded bitmap strike of a fixed-size face (`face.available_sizes`).
+pub const FT_Bitmap_Size = extern struct {
+    height: FT_Short,
+    width: FT_Short,
+    size: FT_Pos, // 26.6 fractional points
+    x_ppem: FT_Pos, // 26.6 fractional pixels per EM
+    y_ppem: FT_Pos,
+};
+
 // FreeType generic (for client data)
 pub const FT_Generic = extern struct {
     data: ?*anyopaque,
@@ -309,6 +318,12 @@ pub extern "c" fn FT_Set_Pixel_Sizes(
     face: FT_Face,
     pixel_width: FT_UInt, // 0 = same as height
     pixel_height: FT_UInt,
+) FT_Error;
+
+/// Select a bitmap strike by index (see `FT_Bitmap_Size`).
+pub extern "c" fn FT_Select_Size(
+    face: FT_Face,
+    strike_index: FT_Int,
 ) FT_Error;
 
 pub extern "c" fn FT_Get_Char_Index(face: FT_Face, charcode: FT_ULong) FT_UInt;
@@ -572,6 +587,7 @@ pub const FC_SPACING = "spacing";
 pub const FC_FILE = "file";
 pub const FC_INDEX = "index";
 pub const FC_SCALABLE = "scalable";
+pub const FC_CHARSET = "charset";
 pub const FC_FONTFORMAT = "fontformat";
 
 // Fontconfig weight values
@@ -665,6 +681,27 @@ pub extern "c" fn FcPatternGetDouble(
     object: [*:0]const u8,
     n: c_int,
     d: *f64,
+) FcResult;
+
+pub extern "c" fn FcCharSetCreate() ?*FcCharSet;
+
+pub extern "c" fn FcCharSetAddChar(cs: *FcCharSet, ucs4: FcChar32) FcBool;
+
+pub extern "c" fn FcCharSetHasChar(cs: *const FcCharSet, ucs4: FcChar32) FcBool;
+
+pub extern "c" fn FcCharSetDestroy(cs: *FcCharSet) void;
+
+pub extern "c" fn FcPatternAddCharSet(
+    p: *FcPattern,
+    object: [*:0]const u8,
+    cs: *FcCharSet,
+) FcBool;
+
+pub extern "c" fn FcPatternGetCharSet(
+    p: *FcPattern,
+    object: [*:0]const u8,
+    n: c_int,
+    cs: *?*FcCharSet,
 ) FcResult;
 
 pub extern "c" fn FcConfigSubstitute(

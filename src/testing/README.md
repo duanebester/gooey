@@ -23,7 +23,7 @@ const testing = gooey.testing;
 | ------------------- | ------------------------------- | ---------------------------------- |
 | `MockRenderer`      | Track render calls              | Metal, Vulkan, WebGPU              |
 | `MockClipboard`     | In-memory clipboard             | NSPasteboard, Wayland, Browser     |
-| `MockSvgRasterizer` | Simulate SVG rasterization      | CoreGraphics, Cairo, Canvas        |
+| `MockSvgRasterizer` | Simulate SVG rasterization      | CoreGraphics, software, Canvas     |
 | `MockFontFace`      | Configurable font metrics       | CoreText, FreeType, Browser fonts  |
 | `MockFileDialog`    | Simulate file open/save dialogs | NSOpenPanel, GTK, Browser file API |
 

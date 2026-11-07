@@ -648,11 +648,14 @@ pub const MeasureCache = struct {
 
 const is_wasm = platform.is_wasm;
 const is_linux = platform.is_linux;
+const is_windows = platform.is_windows;
 
 const backend = if (is_wasm)
     @import("backends/web/mod.zig")
 else if (is_linux)
     @import("backends/freetype/mod.zig")
+else if (is_windows)
+    @import("backends/dwrite/mod.zig")
 else
     @import("backends/coretext/mod.zig");
 
@@ -661,6 +664,8 @@ const PlatformFace = if (is_wasm)
     backend.WebFontFace
 else if (is_linux)
     backend.FreeTypeFace
+else if (is_windows)
+    backend.DirectWriteFace
 else
     backend.CoreTextFace;
 
@@ -669,6 +674,8 @@ const PlatformShaper = if (is_wasm)
     backend.WebShaper
 else if (is_linux)
     backend.HarfBuzzShaper
+else if (is_windows)
+    backend.DirectWriteShaper
 else
     backend.CoreTextShaper;
 
@@ -784,24 +791,34 @@ pub const TextSystem = struct {
         std.debug.assert(name.len > 0);
         std.debug.assert(size > 0 and size < 1000);
 
-        if (self.current_face) |*f| f.deinit();
-        self.current_face = try PlatformFace.init(name, size);
-        self.cache.clear();
-        // Force cache invalidation by setting invalid font ptr. Needed because
-        // the keyed font_ptr is the address of `current_face`, which is stable
-        // across font loads and so cannot itself signal the change.
-        self.shape_cache.current_font_ptr = 0;
-        self.measure_cache.current_font_ptr = 0;
+        // Load before releasing the old face so a failed load never leaves
+        // the system without a usable font — the caller's `try` (app init,
+        // runtime setFont) must not turn one bad family name into a dead
+        // text system.
+        const new_face = PlatformFace.init(name, size) catch |err| blk: {
+            std.log.warn("Font '{s}' failed to load ({}) — falling back to system sans-serif", .{ name, err });
+            break :blk try PlatformFace.initSystem(.sans_serif, size);
+        };
+        self.swapFace(new_face);
     }
 
     /// Load a system font
     pub fn loadSystemFont(self: *Self, style: SystemFont, size: f32) !void {
         std.debug.assert(size > 0 and size < 1000);
 
+        const new_face = try PlatformFace.initSystem(style, size);
+        self.swapFace(new_face);
+    }
+
+    /// Install a freshly loaded face, releasing the previous one and
+    /// invalidating every cache keyed to the old face.
+    fn swapFace(self: *Self, new_face: PlatformFace) void {
         if (self.current_face) |*f| f.deinit();
-        self.current_face = try PlatformFace.initSystem(style, size);
+        self.current_face = new_face;
         self.cache.clear();
-        // Force cache invalidation (see `loadFont`).
+        // Force cache invalidation by setting invalid font ptr. Needed because
+        // the keyed font_ptr is the address of `current_face`, which is stable
+        // across font loads and so cannot itself signal the change.
         self.shape_cache.current_font_ptr = 0;
         self.measure_cache.current_font_ptr = 0;
     }

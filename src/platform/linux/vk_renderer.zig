@@ -50,6 +50,7 @@ pub const enable_validation_layers = vk_instance.enable_validation_layers;
 pub const FRAME_COUNT = vk_types.FRAME_COUNT;
 pub const MAX_SURFACE_FORMATS = vk_types.MAX_SURFACE_FORMATS;
 pub const MAX_PRESENT_MODES = vk_types.MAX_PRESENT_MODES;
+pub const MAX_SWAPCHAIN_IMAGES = vk_swapchain.MAX_SWAPCHAIN_IMAGES;
 
 pub const Uniforms = vk_types.Uniforms;
 pub const GpuGlyph = vk_types.GpuGlyph;
@@ -128,7 +129,6 @@ const FrameResources = struct {
     // Sync objects
     fence: vk.Fence = null,
     image_available_semaphore: vk.Semaphore = null,
-    render_finished_semaphore: vk.Semaphore = null,
 
     // Command buffer
     command_buffer: vk.CommandBuffer = null,
@@ -164,11 +164,31 @@ pub const VulkanRenderer = struct {
 
     // Swapchain
     swapchain: vk.Swapchain = null,
-    swapchain_images: [8]vk.Image = @splat(null),
-    swapchain_image_views: [8]vk.ImageView = @splat(null),
+    swapchain_images: [MAX_SWAPCHAIN_IMAGES]vk.Image = @splat(null),
+    swapchain_image_views: [MAX_SWAPCHAIN_IMAGES]vk.ImageView = @splat(null),
     swapchain_image_count: u32 = 0,
     swapchain_format: vk.Format = vk.VK_FORMAT_B8G8R8A8_UNORM,
     swapchain_extent: vk.Extent2D = .{ .width = 0, .height = 0 },
+
+    // Present synchronization.
+    //
+    // One binary semaphore per swapchain image, indexed by the image index
+    // returned from vkAcquireNextImageKHR. A per-frame semaphore is unsafe:
+    // presentation is asynchronous, so a signal can race a present that is
+    // still waiting on the same semaphore (VUID-vkQueueSubmit-pSignalSemaphores-00067).
+    // An image cannot be acquired again until its previous present completed,
+    // which makes the per-image semaphore safe to re-signal.
+    present_semaphores: [MAX_SWAPCHAIN_IMAGES]vk.Semaphore = @splat(null),
+
+    // Optional VK_KHR_swapchain_maintenance1 present tracking. When enabled,
+    // each present signals a per-image fence so the swapchain can be destroyed
+    // as soon as every outstanding present is done instead of draining queues.
+    swapchain_maintenance1: bool = false,
+    present_fences: [MAX_SWAPCHAIN_IMAGES]vk.Fence = @splat(null),
+    present_fences_pending: [MAX_SWAPCHAIN_IMAGES]bool = @splat(false),
+    /// A present returned an error, so the present queue may still reference
+    /// the swapchain without a usable fence; drain the queue before teardown.
+    present_queue_dirty: bool = false,
 
     // MSAA resources
     msaa_image: vk.Image = null,
@@ -186,7 +206,7 @@ pub const VulkanRenderer = struct {
 
     // Render pass & framebuffers
     render_pass: vk.RenderPass = null,
-    framebuffers: [8]vk.Framebuffer = @splat(null),
+    framebuffers: [MAX_SWAPCHAIN_IMAGES]vk.Framebuffer = @splat(null),
 
     // Pipeline layouts (2 shared — improvement #9: 4 → 2 handles)
     unified_pipeline_layout: vk.PipelineLayout = null,
@@ -304,6 +324,7 @@ pub const VulkanRenderer = struct {
 
         // MSAA + swapchain image views + swapchain
         self.destroyMSAAResources();
+        self.destroySwapchainSyncObjects();
         vk_swapchain.destroyImageViews(self.device, &self.swapchain_image_views);
         if (self.swapchain) |sc| {
             vk.vkDestroySwapchainKHR(self.device, sc, null);
@@ -352,6 +373,7 @@ pub const VulkanRenderer = struct {
         }
 
         vk_swapchain.destroyImageViews(self.device, &self.swapchain_image_views);
+        self.destroySwapchainSyncObjects();
         if (self.swapchain) |sc| vk.vkDestroySwapchainKHR(self.device, sc, null);
         self.swapchain = null;
 
@@ -390,8 +412,6 @@ pub const VulkanRenderer = struct {
             frame.fence = null;
             if (frame.image_available_semaphore) |s| vk.vkDestroySemaphore(self.device, s, null);
             frame.image_available_semaphore = null;
-            if (frame.render_finished_semaphore) |s| vk.vkDestroySemaphore(self.device, s, null);
-            frame.render_finished_semaphore = null;
 
             // Per-frame buffers — only destroy handles; memory is owned by host_memory_pool
             vk_buffers.destroyBufferOnly(self.device, frame.uniform_buffer);
@@ -431,6 +451,85 @@ pub const VulkanRenderer = struct {
         self.staging_buffer = null;
         self.staging_memory = null;
         self.staging_mapped = null;
+    }
+
+    /// Wait for every frame's submission to finish. Covers GPU reads of the
+    /// swapchain images, framebuffers, and per-frame buffers.
+    fn waitForAllFrames(self: *Self) void {
+        std.debug.assert(self.device != null);
+        for (0..FRAME_COUNT) |i| {
+            _ = vk.vkWaitForFences(
+                self.device,
+                1,
+                (&self.frames[i].fence)[0..1],
+                vk.TRUE,
+                std.math.maxInt(u64),
+            );
+        }
+    }
+
+    /// Wait until no present operation references the current swapchain.
+    ///
+    /// Frame fences only prove that *submission* completed; the presentation
+    /// engine consumes the present-wait semaphore asynchronously afterwards.
+    /// Destroying the swapchain (or its per-image semaphores) before then is
+    /// what triggers "vkDestroySwapchainKHR(): ... currently in use by
+    /// VkQueue". With VK_KHR_swapchain_maintenance1 the per-image present
+    /// fences report completion precisely; otherwise the present queue is
+    /// drained.
+    fn waitForPresentCompletion(self: *Self) void {
+        std.debug.assert(self.device != null);
+        std.debug.assert(self.present_queue != null);
+
+        if (self.swapchain_maintenance1 and !self.present_queue_dirty) {
+            for (self.present_fences_pending, 0..) |pending, i| {
+                if (!pending) continue;
+                _ = vk.vkWaitForFences(
+                    self.device,
+                    1,
+                    (&self.present_fences[i])[0..1],
+                    vk.TRUE,
+                    std.math.maxInt(u64),
+                );
+            }
+            self.present_fences_pending = @splat(false);
+            return;
+        }
+
+        // Either maintenance1 is unavailable, or a present returned an error
+        // (its fence may never signal). A queue drain is the conservative
+        // portable fallback.
+        _ = vk.vkQueueWaitIdle(self.present_queue);
+        self.present_fences_pending = @splat(false);
+        self.present_queue_dirty = false;
+    }
+
+    /// Create the per-image present semaphores (and, when maintenance1 is
+    /// enabled, the per-image present fences) for the current swapchain.
+    fn createSwapchainSyncObjects(self: *Self) vk_buffers.SyncError!void {
+        std.debug.assert(self.device != null);
+        std.debug.assert(self.swapchain_image_count > 0);
+        std.debug.assert(self.swapchain_image_count <= MAX_SWAPCHAIN_IMAGES);
+
+        const count: usize = self.swapchain_image_count;
+        errdefer self.destroySwapchainSyncObjects();
+
+        try vk_buffers.createSemaphores(self.device, self.present_semaphores[0..count]);
+        if (self.swapchain_maintenance1) {
+            try vk_buffers.createFences(self.device, self.present_fences[0..count], true);
+        }
+        self.present_fences_pending = @splat(false);
+        self.present_queue_dirty = false;
+    }
+
+    /// Destroy the per-image present semaphores and present fences. Callers
+    /// must have drained presentation first (see `waitForPresentCompletion`).
+    fn destroySwapchainSyncObjects(self: *Self) void {
+        if (self.device == null) return;
+        vk_buffers.destroySemaphores(self.device, self.present_semaphores[0..]);
+        vk_buffers.destroyFences(self.device, self.present_fences[0..]);
+        self.present_fences_pending = @splat(false);
+        self.present_queue_dirty = false;
     }
 
     fn destroyDescriptorLayouts(self: *Self) void {
@@ -518,10 +617,15 @@ pub const VulkanRenderer = struct {
         std.log.info("Using MSAA sample count: {}", .{self.sample_count});
 
         // ---- Logical device + queues (vk_instance) ----
-        const dev = try vk_instance.createLogicalDevice(self.physical_device, phys.families);
+        const dev = try vk_instance.createLogicalDevice(
+            self.physical_device,
+            phys.families,
+            inst.swapchain_maintenance1_ready,
+        );
         self.device = dev.device;
         self.graphics_queue = dev.graphics_queue;
         self.present_queue = dev.present_queue;
+        self.swapchain_maintenance1 = dev.swapchain_maintenance1;
         errdefer {
             if (self.device) |d| vk.vkDestroyDevice(d, null);
             self.device = null;
@@ -550,6 +654,10 @@ pub const VulkanRenderer = struct {
         self.swapchain_format = sc.format;
         self.swapchain_extent = sc.extent;
         errdefer self.destroySwapchainResources();
+
+        // Per-image present semaphores (+ present fences when maintenance1 is
+        // enabled) live for exactly as long as this swapchain.
+        try self.createSwapchainSyncObjects();
 
         // ---- MSAA resources (vk_swapchain) ----
         const msaa = try vk_swapchain.createMSAAResources(
@@ -603,7 +711,6 @@ pub const VulkanRenderer = struct {
         for (0..FRAME_COUNT) |i| {
             self.frames[i].fence = sync.in_flight_fences[i];
             self.frames[i].image_available_semaphore = sync.image_available_semaphores[i];
-            self.frames[i].render_finished_semaphore = sync.render_finished_semaphores[i];
             self.frames[i].command_buffer = cmd_bufs.render[i];
         }
         errdefer self.destroyFrameResources();
@@ -881,15 +988,7 @@ pub const VulkanRenderer = struct {
         const physical_height: u32 = @intFromFloat(@as(f64, @floatFromInt(height)) * scale_factor);
 
         // Wait only for our frames — not ALL GPU work (improvement #4)
-        for (0..FRAME_COUNT) |i| {
-            _ = vk.vkWaitForFences(
-                self.device,
-                1,
-                (&self.frames[i].fence)[0..1],
-                vk.TRUE,
-                std.math.maxInt(u64),
-            );
-        }
+        self.waitForAllFrames();
 
         // Update uniform buffer with LOGICAL pixel dimensions
         self.updateUniformBuffer(width, height);
@@ -905,10 +1004,17 @@ pub const VulkanRenderer = struct {
     /// The render pass is NOT recreated — it depends only on format and sample count,
     /// neither of which changes on resize.
     fn recreateSwapchain(self: *Self, width: u32, height: u32) !void {
+        // The old swapchain and its per-image semaphores must not be touched
+        // while either the GPU (frame fences) or the presentation engine
+        // (present fences / queue drain) still references them.
+        self.waitForAllFrames();
+        self.waitForPresentCompletion();
+
         // Destroy old resources in dependency order
         vk_swapchain.destroyFramebuffers(self.device, &self.framebuffers);
         self.destroyMSAAResources();
         vk_swapchain.destroyImageViews(self.device, &self.swapchain_image_views);
+        self.destroySwapchainSyncObjects();
 
         // Create new swapchain, passing old one for resource recycling
         const old_swapchain = self.swapchain;
@@ -927,6 +1033,10 @@ pub const VulkanRenderer = struct {
         self.swapchain_extent = sc.extent;
         // Format must not change on resize — assert per CLAUDE.md Rule #11
         std.debug.assert(sc.format == self.swapchain_format);
+
+        // Present sync objects are per image, so they are recreated with the
+        // swapchain rather than with the frame slots.
+        try self.createSwapchainSyncObjects();
 
         // Destroy old swapchain after new one is created
         if (old_swapchain) |old| {
@@ -1172,15 +1282,7 @@ pub const VulkanRenderer = struct {
         // Check if swapchain needs recreation from previous frame
         if (self.swapchain_needs_recreate) {
             self.swapchain_needs_recreate = false;
-            for (0..FRAME_COUNT) |i| {
-                _ = vk.vkWaitForFences(
-                    self.device,
-                    1,
-                    (&self.frames[i].fence)[0..1],
-                    vk.TRUE,
-                    std.math.maxInt(u64),
-                );
-            }
+            self.waitForAllFrames();
             self.recreateSwapchain(self.swapchain_extent.width, self.swapchain_extent.height) catch |err| {
                 std.debug.print("Failed to recreate swapchain: {}\n", .{err});
                 return;
@@ -1192,6 +1294,17 @@ pub const VulkanRenderer = struct {
         // Wait only for THIS frame's fence — GPU is done reading this
         // frame's staging lane and command buffer.
         _ = vk.vkWaitForFences(self.device, 1, (&frame.fence)[0..1], vk.TRUE, std.math.maxInt(u64));
+
+        // Acquire the image BEFORE resetting the fence. If acquisition fails
+        // (out of date) we return without submitting; resetting first would
+        // leave the fence unsignaled and deadlock the next wait on this slot.
+        var image_index: u32 = 0;
+        switch (self.acquireNextImage(frame, &image_index)) {
+            .ok => {},
+            .out_of_date => return,
+            .fatal => unreachable,
+        }
+
         _ = vk.vkResetFences(self.device, 1, (&frame.fence)[0..1]);
 
         // Stage pending atlas dirty rects into per-frame staging lane.
@@ -1200,14 +1313,6 @@ pub const VulkanRenderer = struct {
         var transfer_count: u32 = 0;
         var transfers: [MAX_ATLAS_TRANSFERS]AtlasTransferRecord = undefined;
         self.processAtlasUploads(&transfers, &transfer_count);
-
-        // Acquire swapchain image
-        var image_index: u32 = 0;
-        switch (self.acquireNextImage(frame, &image_index)) {
-            .ok => {},
-            .out_of_date => return,
-            .fatal => unreachable,
-        }
 
         // Record command buffer: atlas transfers → render pass → draw
         const cmd = frame.command_buffer;
@@ -1356,6 +1461,14 @@ pub const VulkanRenderer = struct {
     fn submitAndPresent(self: *Self, cmd: vk.CommandBuffer, frame: *const FrameResources, image_index: u32) void {
         std.debug.assert(cmd != null);
         std.debug.assert(self.graphics_queue != null);
+        std.debug.assert(image_index < self.swapchain_image_count);
+        std.debug.assert(image_index < MAX_SWAPCHAIN_IMAGES);
+
+        // Per-image present semaphore. Safe to signal: vkAcquireNextImageKHR
+        // only returns this image after the previous present that waited on
+        // this semaphore completed, so it is unsignaled again.
+        const present_semaphore = self.present_semaphores[image_index];
+        std.debug.assert(present_semaphore != null);
 
         const wait_stages = [_]u32{vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
         const submit_info = vk.SubmitInfo{
@@ -1367,15 +1480,46 @@ pub const VulkanRenderer = struct {
             .commandBufferCount = 1,
             .pCommandBuffers = (&cmd)[0..1],
             .signalSemaphoreCount = 1,
-            .pSignalSemaphores = (&frame.render_finished_semaphore)[0..1],
+            .pSignalSemaphores = (&present_semaphore)[0..1],
         };
         _ = vk.vkQueueSubmit(self.graphics_queue, 1, (&submit_info)[0..1], frame.fence);
 
+        // VK_KHR_swapchain_maintenance1: attach a fence to this present. It
+        // signals when the presentation engine is done with the image, which
+        // is earlier than a queue drain and lets swapchain teardown wait for
+        // exactly the presents still in flight.
+        var present_fence_info: vk.SwapchainPresentFenceInfoKHR = undefined;
+        if (self.swapchain_maintenance1) {
+            const present_fence = self.present_fences[image_index];
+            std.debug.assert(present_fence != null);
+
+            // Re-acquiring the image means the previous present completed, so
+            // this wait should return immediately. Reset before re-arming.
+            if (self.present_fences_pending[image_index]) {
+                _ = vk.vkWaitForFences(
+                    self.device,
+                    1,
+                    (&present_fence)[0..1],
+                    vk.TRUE,
+                    std.math.maxInt(u64),
+                );
+            }
+            _ = vk.vkResetFences(self.device, 1, (&present_fence)[0..1]);
+            self.present_fences_pending[image_index] = true;
+
+            present_fence_info = .{
+                .sType = vk.VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_KHR,
+                .pNext = null,
+                .swapchainCount = 1,
+                .pFences = (&present_fence)[0..1],
+            };
+        }
+
         const present_info = vk.PresentInfoKHR{
             .sType = vk.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-            .pNext = null,
+            .pNext = if (self.swapchain_maintenance1) @ptrCast(&present_fence_info) else null,
             .waitSemaphoreCount = 1,
-            .pWaitSemaphores = (&frame.render_finished_semaphore)[0..1],
+            .pWaitSemaphores = (&present_semaphore)[0..1],
             .swapchainCount = 1,
             .pSwapchains = (&self.swapchain)[0..1],
             .pImageIndices = (&image_index)[0..1],
@@ -1384,8 +1528,17 @@ pub const VulkanRenderer = struct {
         const present_result = vk.vkQueuePresentKHR(self.present_queue, &present_info);
         switch (present_result) {
             vk.SUCCESS => {},
-            vk.SUBOPTIMAL_KHR, vk.ERROR_OUT_OF_DATE_KHR => {
+            vk.SUBOPTIMAL_KHR => {
                 self.swapchain_needs_recreate = true;
+            },
+            vk.ERROR_OUT_OF_DATE_KHR => {
+                self.swapchain_needs_recreate = true;
+                // A failed present can leave its fence unsignaled. Fall back
+                // to a queue drain during teardown instead of waiting on it.
+                if (self.swapchain_maintenance1) {
+                    self.present_fences_pending[image_index] = false;
+                }
+                self.present_queue_dirty = true;
             },
             else => {
                 std.debug.print("vkQueuePresentKHR failed: {}\n", .{present_result});

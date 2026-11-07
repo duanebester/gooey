@@ -95,11 +95,17 @@ pub const is_linux = builtin.os.tag == .linux;
 /// by backend selection, which goes through `backend` below.
 pub const is_macos = builtin.os.tag == .macos;
 
+/// True on Windows. Read by the text backend selection and any policy that
+/// follows platform convention; backend selection itself goes through
+/// `backend` below.
+pub const is_windows = builtin.os.tag == .windows;
+
 pub const backend = if (is_wasm)
     @import("web/mod.zig")
 else switch (builtin.os.tag) {
     .macos => @import("macos/mod.zig"),
     .linux => @import("linux/mod.zig"),
+    .windows => @import("windows/mod.zig"),
     else => @compileError("Unsupported platform: " ++ @tagName(builtin.os.tag)),
 };
 
@@ -146,11 +152,13 @@ pub const PlatformWindow = backend.PlatformWindow;
 /// local of that frame. See `docs/platform_interface_design.md`, "Known gaps".
 pub const drive_model: DriveModel = backend.drive_model;
 
-/// DisplayLink for vsync (native only, not available on Linux)
+/// DisplayLink for vsync (macOS only).
 pub const DisplayLink = if (is_wasm)
     void // Not applicable on web
 else if (is_linux)
     void // Linux uses Wayland frame callbacks
+else if (is_windows)
+    void // Windows paces frames from the compositor, with no link object
 else
     backend.DisplayLink;
 
@@ -158,26 +166,18 @@ else
 // Platform-specific modules (for advanced usage)
 // =============================================================================
 
-pub const macos = if (!is_wasm and !is_linux) @import("macos/mod.zig") else struct {};
+// Every backend owns a `mod.zig` that is already the canonical, contract-pinned
+// namespace for that OS (see `contract.verifyBackend` in each). Re-export it
+// directly instead of re-listing its members here: the advanced namespace then
+// stays in lockstep with the backend and cannot drift from it.
+pub const macos = if (is_macos) @import("macos/mod.zig") else struct {};
 
 // Legacy alias for backwards compatibility
 pub const mac = macos;
 
-pub const linux = if (is_linux) struct {
-    pub const platform = @import("linux/platform.zig");
-    pub const window = @import("linux/window.zig");
-    pub const wayland = @import("linux/wayland.zig");
-    pub const vulkan = @import("linux/vulkan.zig");
-    pub const vk_renderer = @import("linux/vk_renderer.zig");
-    pub const unified = @import("unified.zig");
-    pub const clipboard = @import("linux/clipboard.zig");
-    pub const dbus = @import("linux/dbus.zig");
-    pub const file_dialog = @import("linux/file_dialog.zig");
-    // Type aliases
-    pub const LinuxPlatform = platform.LinuxPlatform;
-    pub const Window = window.Window;
-    pub const VulkanRenderer = vk_renderer.VulkanRenderer;
-} else struct {};
+pub const linux = if (is_linux) @import("linux/mod.zig") else struct {};
+
+pub const windows = if (is_windows) @import("windows/mod.zig") else struct {};
 
 // PR 9 Task 2.5 — `image_loader` moved from `root.wasm_image_loader`
 // (and the duplicate private `runtime/render.zig::wasm_loader` shim) into
@@ -186,13 +186,11 @@ pub const linux = if (is_linux) struct {
 // next to the rest of the `web` namespace (`platform`, `window`,
 // `imports`, `file_dialog`) and lets non-WASM callers resolve through the
 // same path without each call site rolling its own stub.
-pub const web = if (is_wasm) struct {
-    pub const platform = @import("web/platform.zig");
-    pub const window = @import("web/window.zig");
-    pub const imports = @import("web/imports.zig");
-    pub const file_dialog = @import("web/file_dialog.zig");
-    pub const image_loader = @import("web/image_loader.zig");
-} else struct {
+//
+// WASM re-exports `web/mod.zig` like every other backend; native keeps only
+// the `image_loader` no-op stub, because `runtime/render.zig` names
+// `platform.web.image_loader` unconditionally.
+pub const web = if (is_wasm) @import("web/mod.zig") else struct {
     // Stub mirroring `web/image_loader.zig`'s public surface so non-WASM
     // call sites compile against the same names. All entry points are
     // no-ops on native — runtime image loading on native goes through

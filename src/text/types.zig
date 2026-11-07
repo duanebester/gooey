@@ -70,10 +70,20 @@ pub const Metrics = struct {
 
     /// Calculate baseline Y for vertically centering text in a box.
     /// Returns the Y coordinate of the baseline in logical pixels.
+    ///
+    /// Centers the cap-height band (the glyph visual mass) in the box rather
+    /// than the ascender..descender band — the same convention as the layout
+    /// text path in runtime/render.zig. A face's descender whitespace hangs
+    /// below the baseline, so centering asc+desc sinks the visible glyphs;
+    /// cap-centering keeps CJK/Latin glyphs optically centered and, for the
+    /// line-box-sized input/textarea widgets, stops the descender tail from
+    /// being clipped by the widget's content clip.
     pub inline fn calcBaseline(self: Metrics, box_y: f32, box_height: f32) f32 {
-        const text_height = self.ascender + self.descender;
-        const padding_top = (box_height - text_height) * 0.5;
-        return box_y + padding_top + self.ascender;
+        const cap_height = if (self.cap_height > 0)
+            self.cap_height
+        else
+            self.ascender * 0.7;
+        return box_y + (box_height - cap_height) / 2 + cap_height;
     }
 };
 

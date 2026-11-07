@@ -255,11 +255,12 @@ pub const TabBar = struct {
             .gap = self.gap,
             .background = container_bg,
             .corner_radius = container_radius,
-            .padding = container_padding,
+            .padding = container_padding orelse .{ .all = 0 },
             .fill_width = self.fill_width,
             .alignment = .{ .cross = .center },
         }, .{
             TabBarItems{
+                .bar_base_id = layout_id.id,
                 .tabs = self.tabs,
                 .selected = self.selected,
                 .on_select = self.on_select,
@@ -281,6 +282,9 @@ pub const TabBar = struct {
 };
 
 const TabBarItems = struct {
+    // Resolved id of the owning TabBar; item ids are scoped under it so two
+    // bars showing the same labels don't collide in the global id namespace.
+    bar_base_id: u32,
     tabs: []const []const u8,
     selected: ?usize,
     on_select: ?OnSelectHandler,
@@ -304,6 +308,7 @@ const TabBarItems = struct {
             const item_selected = if (self.selected) |sel| i == sel else false;
 
             cx.with(TabBarItem{
+                .bar_base_id = self.bar_base_id,
                 .label = label,
                 .index = i,
                 .selected = item_selected,
@@ -327,6 +332,9 @@ const TabBarItems = struct {
 };
 
 const TabBarItem = struct {
+    // See TabBarItems.bar_base_id: item identity = hash(label, bar id, index)
+    // instead of a bare global label hash.
+    bar_base_id: u32,
     label: []const u8,
     index: usize,
     selected: bool,
@@ -384,7 +392,9 @@ const TabBarItem = struct {
             null;
 
         // Resolve identity once for both a11y and the box (PR 11b.2b).
-        const layout_id = cx.idFor(self.label);
+        // Scoped under the owning bar: a bare label hash is global, and
+        // multiple bars can legitimately show the same labels.
+        const layout_id = gooey.layout.LayoutId.childIndexed(self.bar_base_id, self.label, @intCast(self.index));
 
         // Push accessible element (role: tab)
         const a11y_pushed = cx.accessible(.{

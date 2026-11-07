@@ -1,8 +1,8 @@
 //! Input System
 //!
-//! Input events, keycodes, and action bindings.
+//! Input events, key tags, and action bindings.
 //!
-//! - `events` - InputEvent, KeyEvent, MouseEvent, KeyCode, Modifiers
+//! - `events` - InputEvent, KeyEvent, MouseEvent, KeyTag, Modifiers
 //! - `actions` - Keymap, Keystroke, KeyBinding for declarative keybindings
 
 const std = @import("std");
@@ -18,7 +18,7 @@ pub const MouseEvent = events.MouseEvent;
 pub const MouseButton = events.MouseButton;
 pub const ScrollEvent = events.ScrollEvent;
 pub const KeyEvent = events.KeyEvent;
-pub const KeyCode = events.KeyCode;
+pub const KeyTag = events.KeyTag;
 pub const Modifiers = events.Modifiers;
 pub const TextInputEvent = events.TextInputEvent;
 pub const CompositionEvent = events.CompositionEvent;
