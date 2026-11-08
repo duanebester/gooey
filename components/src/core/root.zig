@@ -442,87 +442,208 @@ pub fn Modal(comptime Child: type) type {
 // List
 // =============================================================================
 
-/// A vertical list of `count` rows of one height that builds only the rows
-/// in view (contract §1), as 0.3.1's uniform list: a keyed scroll box whose
-/// retained offset and last measured viewport pick the rows, with spacers
-/// above and below standing in for the rest so the wheel and scrollbar see
-/// every row. `Row` has an `index: u32` field, a `render`, and a
-/// `row_height: f32` declaration; each row sits in a box keyed by its index,
-/// so state a row keys survives scrolling. The list grows to fill its parent:
-/// a viewport sized by its rows would add one row per frame.
+/// A vertical list of `count` rows that builds only the rows in view
+/// (contract §1): a keyed scroll box whose retained offset and last measured
+/// viewport pick the rows, with spacers above and below standing in for the
+/// rest so the wheel and scrollbar see every row. `Row` has an `index: u32`
+/// field and a `render`, and declares its heights one of two ways:
+///
+/// - `row_height: f32`, one height for every row, as 0.3.1's uniform list.
+///   The rows in view follow from the offset in constant time.
+/// - `fn height(cx: *Cx, index: u32) f32` and `count_max: u32`, a height per
+///   row, as 0.3.1's virtual list. Each render sums every row's height, so
+///   `count_max` bounds that work; a longer list fails fast.
+///
+/// Each row sits in a box keyed by its index, so state a row keys survives
+/// scrolling. `gap` separates rows, and `style` dresses the scroll box
+/// (background, border, corners, padding). The list grows to fill its
+/// parent: a viewport sized by its rows would add one row per frame.
 pub fn List(comptime Row: type) type {
     comptime {
         assert(@FieldType(Row, "index") == u32);
-        assert(@TypeOf(Row.row_height) == f32 or @TypeOf(Row.row_height) == comptime_float);
-        assert(Row.row_height >= 1);
+        assert(@hasDecl(Row, "row_height") != @hasDecl(Row, "height"));
+        if (@hasDecl(Row, "row_height")) assert(Row.row_height >= 1);
+        if (@hasDecl(Row, "height")) assert(Row.count_max <= list_count_max);
     }
     return struct {
         key: []const u8,
         count: u32,
+        gap: f32 = 0,
+        style: ui.Style = .{},
 
         const Self = @This();
         const ScrollState = core.internals.window.ScrollState;
-        const row_height: f32 = Row.row_height;
+        const uniform = @hasDecl(Row, "row_height");
 
         pub fn render(self: Self, cx: *Cx) void {
             assert(self.key.len > 0);
+            assert(self.gap >= 0);
+            self.checkStyle();
+            if (!uniform) self.checkCount();
             const key = Key{ .name = self.key };
             // The box retains this state by its key; retaining it first
             // reads the offset and viewport the router and last emit left.
             const handle = cx.retain(ScrollState, cx.id(key), .frame, ScrollState.init);
-            const range = visibleRows(cx.get(ScrollState, handle), self.count);
+            const range = self.visibleRows(cx, cx.get(ScrollState, handle));
             assert(range.start <= range.end);
             assert(range.end <= self.count);
-            cx.render(ui.box(.{ .key = key, .style = .{
-                .width = .{ .grow = 1 },
-                .height = .{ .grow = 1 },
-                .scroll = .{},
-            } }, .{
-                spacer(range.start),
-                ListRows(Row){ .start = range.start, .end = range.end },
-                spacer(self.count - range.end),
+            var style = self.style;
+            style.width = .{ .grow = 1 };
+            style.height = .{ .grow = 1 };
+            style.scroll = .{};
+            cx.render(ui.box(.{ .key = key, .style = style }, .{
+                spacer(range.above),
+                ListRows(Row){
+                    .start = range.start,
+                    .end = range.end,
+                    .count = self.count,
+                    .gap = self.gap,
+                },
+                spacer(range.below),
             }));
         }
 
-        /// The first row the offset reaches through the last row the viewport
-        /// shows, plus one for a partial row. An unmeasured viewport shows one
-        /// row; the emit that measures it requests the render that fills it.
-        fn visibleRows(state: *const ScrollState, count: u32) struct { start: u32, end: u32 } {
-            const content_height = row_height * @as(f32, @floatFromInt(count));
-            const offset_max = @max(0, content_height - state.viewport.height);
-            const offset = std.math.clamp(state.offset_y, 0, offset_max);
-            const first: u32 = @intFromFloat(@floor(offset / row_height));
-            const shown: u32 = @intFromFloat(@ceil(state.viewport.height / row_height));
-            assert(shown <= list_rows_visible_max);
-            const start = @min(first, count);
-            return .{ .start = start, .end = @min(count, start + shown + 1) };
+        /// The list owns the scroll box's size, scrolling, and row spacing.
+        fn checkStyle(self: Self) void {
+            assert(self.style.width == .fit);
+            assert(self.style.height == .fit);
+            assert(self.style.scroll == null);
+            assert(self.style.gap == 0);
+            assert(self.style.direction == .column);
         }
 
-        fn spacer(rows: u32) ui.Box.Element(@TypeOf(.{})) {
-            const height = row_height * @as(f32, @floatFromInt(rows));
+        fn checkCount(self: Self) void {
+            if (self.count <= Row.count_max) return;
+            std.debug.panic("List \"{s}\" of {d} rows: capacity {d}. Raise {s}.count_max.", .{
+                self.key, self.count, Row.count_max, @typeName(Row),
+            });
+        }
+
+        /// The rows from the first one the offset reaches through the last
+        /// one the viewport shows, partial rows included, and the heights
+        /// above and below them. An unmeasured viewport shows one row; the
+        /// emit that measures it requests the render that fills it.
+        fn visibleRows(self: Self, cx: *Cx, state: *const ScrollState) ListRange {
+            const padding = self.style.padding;
+            const rows_height = self.contentHeight(cx);
+            const content_height = rows_height + padding.top + padding.bottom;
+            const offset_max = @max(0, content_height - state.viewport.height);
+            const offset = std.math.clamp(state.offset_y, 0, offset_max);
+            const view_top = offset - padding.top;
+            const range = if (uniform)
+                uniformRows(view_top, state.viewport.height, self.count, self.gap)
+            else
+                variableRows(cx, view_top, state.viewport.height, self.count, self.gap);
+            const end_top = if (uniform)
+                pitch(self.gap) * @as(f32, @floatFromInt(range.end))
+            else
+                range.below;
+            const below = if (range.end == self.count) 0 else rows_height - end_top;
+            assert(range.above >= 0);
+            assert(below >= 0);
+            var result = range;
+            result.below = below;
+            return result;
+        }
+
+        /// Every row's height and the gaps between them.
+        fn contentHeight(self: Self, cx: *Cx) f32 {
+            if (self.count == 0) return 0;
+            const gaps = self.gap * @as(f32, @floatFromInt(self.count - 1));
+            if (uniform) return Row.row_height * @as(f32, @floatFromInt(self.count)) + gaps;
+            var total: f32 = gaps;
+            var index: u32 = 0;
+            while (index < self.count) : (index += 1) total += listRowHeight(Row, cx, index);
+            return total;
+        }
+
+        fn pitch(gap: f32) f32 {
+            return Row.row_height + gap;
+        }
+
+        /// The first row the view's top reaches through the last its height
+        /// covers, plus one for a partial row. `below` is unset.
+        fn uniformRows(view_top: f32, view_height: f32, count: u32, gap: f32) ListRange {
+            const row_pitch = pitch(gap);
+            const first: u32 = @intFromFloat(@floor(@max(0, view_top) / row_pitch));
+            const shown: u32 = @intFromFloat(@ceil(view_height / row_pitch));
+            assert(shown <= list_rows_visible_max);
+            const start = @min(first, count);
+            const end = @min(count, start + shown + 1);
+            const above = row_pitch * @as(f32, @floatFromInt(start));
+            return .{ .start = start, .end = end, .above = above, .below = 0 };
+        }
+
+        /// One scan from the first row: rows whose bottoms stay above the
+        /// view are skipped, then rows are taken until one starts at or past
+        /// the view's bottom, and always one. `below` carries the end row's
+        /// top for `visibleRows` to subtract.
+        fn variableRows(cx: *Cx, view_top: f32, view_height: f32, count: u32, gap: f32) ListRange {
+            assert(count <= Row.count_max);
+            assert(view_height >= 0);
+            var top: f32 = 0;
+            var index: u32 = 0;
+            while (index < count) : (index += 1) {
+                const height = listRowHeight(Row, cx, index);
+                if (top + height > view_top) break;
+                top += height + gap;
+            }
+            const start = index;
+            const above = top;
+            const view_bottom = view_top + view_height;
+            while (index < count) : (index += 1) {
+                if (index > start and top >= view_bottom) break;
+                if (index - start > list_rows_visible_max) break;
+                top += listRowHeight(Row, cx, index) + gap;
+            }
+            return .{ .start = start, .end = index, .above = above, .below = top };
+        }
+
+        fn spacer(height: f32) ui.Box.Element(@TypeOf(.{})) {
+            assert(height >= 0);
             return ui.box(.{ .style = .{ .height = .{ .fixed = height } } }, .{});
         }
     };
 }
+
+const ListRange = struct { start: u32, end: u32, above: f32, below: f32 };
 
 /// Rows a viewport can show: one as tall as the tallest framebuffer, of
 /// 1 px rows. A taller viewport (a list inside a taller scrolled box) fails
 /// fast rather than building rows past any screen.
 const list_rows_visible_max: u32 = core.limits.MAX_FRAMEBUFFER_HEIGHT;
 
+/// The longest list of per-row heights: each render sums them all, and
+/// 65,536 calls stay well inside a frame.
+pub const list_count_max: u32 = 65_536;
+
+fn listRowHeight(comptime Row: type, cx: *Cx, index: u32) f32 {
+    const height: f32 = if (@hasDecl(Row, "row_height")) Row.row_height else Row.height(cx, index);
+    assert(height >= 0);
+    return height;
+}
+
+/// The rows in view, each in a box keyed by its index and as tall as the
+/// row plus the gap below it; the last row has no gap below.
 fn ListRows(comptime Row: type) type {
     return struct {
         start: u32,
         end: u32,
+        count: u32,
+        gap: f32,
 
         pub fn render(self: @This(), cx: *Cx) void {
             assert(self.start <= self.end);
+            assert(self.end <= self.count);
             assert(self.end - self.start <= list_rows_visible_max + 1);
             var index = self.start;
             while (index < self.end) : (index += 1) {
+                const gap: f32 = if (index + 1 < self.count) self.gap else 0;
+                const height = listRowHeight(Row, cx, index);
                 cx.render(ui.box(.{ .key = .{ .index = index }, .style = .{
                     .width = .{ .grow = 1 },
-                    .height = .{ .fixed = Row.row_height },
+                    .height = .{ .fixed = height + gap },
+                    .padding = .{ .bottom = gap },
                 } }, .{Row{ .index = index }}));
             }
         }

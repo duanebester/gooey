@@ -498,25 +498,6 @@ test "toggle collection pattern" {
     try std.testing.expectEqual(@as(usize, 0), sel.selectedCount());
 }
 
-test "DataTableCallbacks type structure" {
-    // The canonical generic lives at `cx.lists.Lists.DataTableCallbacks(Cx)`;
-    // this pins its field layout.
-    const lists = @import("cx/lists.zig");
-    const Callbacks = lists.Lists.DataTableCallbacks(Cx);
-
-    // Verify the struct has the expected fields
-    const info = @typeInfo(Callbacks);
-    try std.testing.expectEqual(@as(usize, 3), info.@"struct".field_names.len);
-
-    // Verify field names
-    try std.testing.expectEqualStrings("render_header", info.@"struct".field_names[0]);
-    try std.testing.expectEqualStrings("render_cell", info.@"struct".field_names[1]);
-    try std.testing.expectEqualStrings("render_row", info.@"struct".field_names[2]);
-
-    // Verify render_row has a default value (is optional)
-    try std.testing.expect(info.@"struct".field_attrs[2].default_value_ptr != null);
-}
-
 // =============================================================================
 // Sub-namespace surface tests.
 //
@@ -554,8 +535,6 @@ test "sub-namespace methods are reachable as decls" {
     // renames one, this test fails compilation before any downstream
     // caller does.
     _ = lists_ns.Lists.uniform;
-    _ = lists_ns.Lists.virtual;
-    _ = lists_ns.Lists.dataTable;
 
     _ = focus_ns.Focus.next;
     _ = focus_ns.Focus.prev;

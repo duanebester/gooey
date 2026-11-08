@@ -1,4 +1,4 @@
-//! `cx.lists` — virtualized list and table widget APIs.
+//! `cx.lists` — the virtualized uniform list widget API.
 //!
 //! This module hosts the bodies of the list-building helpers. They are
 //! accessed through the `cx.lists.<name>(...)` sub-namespace, which is
@@ -22,18 +22,9 @@ const Cx = cx_mod.Cx;
 
 const ui_mod = @import("../ui/mod.zig");
 const UniformListStyle = ui_mod.UniformListStyle;
-const VirtualListStyle = ui_mod.VirtualListStyle;
-const DataTableStyle = ui_mod.DataTableStyle;
 
 const uniform_list_mod = @import("../widgets/uniform_list.zig");
 const UniformListState = uniform_list_mod.UniformListState;
-
-const virtual_list_mod = @import("../widgets/virtual_list.zig");
-const VirtualListState = virtual_list_mod.VirtualListState;
-
-const data_table_mod = @import("../widgets/data_table.zig");
-const DataTableState = data_table_mod.DataTableState;
-const ColRange = data_table_mod.ColRange;
 
 /// Zero-sized namespace marker. Lives as the `lists` field on `Cx` and
 /// recovers the parent context via `@fieldParentPtr` from each method.
@@ -58,29 +49,6 @@ pub const Lists = struct {
     /// pointer alignment matches `Cx`'s.
     inline fn cx(self: *Lists) *Cx {
         return @fieldParentPtr("lists", self);
-    }
-
-    /// Callbacks for data-table rendering. All callbacks receive `*Cx`
-    /// for full state and handler access. Mirrors the previous
-    /// `Cx.DataTableCallbacks` shape so callers can move with a single
-    /// import change.
-    pub fn DataTableCallbacks(comptime CxType: type) type {
-        return struct {
-            /// Render a header cell. Required.
-            render_header: *const fn (col: u32, cx: *CxType) void,
-
-            /// Render a data cell. Required.
-            render_cell: *const fn (row: u32, col: u32, cx: *CxType) void,
-
-            /// Optional: custom row wrapper for row-level styling /
-            /// click handling. If null, the framework renders a
-            /// default row container.
-            ///
-            /// User is responsible for opening the row container,
-            /// iterating `visible_cols` to call `render_cell`, and
-            /// closing the container.
-            render_row: ?*const fn (row: u32, visible_cols: ColRange, cx: *CxType) void = null,
-        };
     }
 
     // =========================================================================
@@ -146,161 +114,5 @@ pub const Lists = struct {
         b.layout.closeElement();
 
         uniform_list_mod.registerScroll(b, id, params, content_id, style);
-    }
-
-    // =========================================================================
-    // Virtual List
-    // =========================================================================
-
-    /// Render a virtualized variable-height list.
-    ///
-    /// The render callback receives `*Cx` for full access to state and
-    /// handlers, and must return the actual height of the rendered
-    /// item so the list can cache it for scrollbar math.
-    ///
-    /// ```zig
-    /// cx.lists.virtual("my-list", &state.list_state, .{ .grow_height = true }, renderItem);
-    ///
-    /// fn renderItem(index: u32, cx: *Cx) f32 {
-    ///     const s = cx.stateConst(State);
-    ///     const item = s.items[index];
-    ///     const height: f32 = if (item.expanded) 100.0 else 40.0;
-    ///     cx.render(ui.box(.{ .height = height }, .{ ui.text(item.description, .{}) }));
-    ///     return height;
-    /// }
-    /// ```
-    pub fn virtual(
-        self: *Lists,
-        id: []const u8,
-        list_state: *VirtualListState,
-        style: VirtualListStyle,
-        comptime render_item: fn (index: u32, cx: *Cx) f32,
-    ) void {
-        std.debug.assert(id.len > 0);
-
-        const c = self.cx();
-        const b = c._builder;
-
-        list_state.gap_px = style.gap;
-        virtual_list_mod.syncScroll(b, id, list_state);
-
-        const params = virtual_list_mod.computeLayout(id, list_state, style);
-
-        const content_id = virtual_list_mod.openElements(
-            b,
-            params,
-            style,
-            list_state.scroll_offset_px,
-        ) orelse return;
-
-        virtual_list_mod.renderSpacer(b, params.top_spacer_height);
-
-        // Render visible items with Cx access and cache their heights.
-        // The returned height is what the next frame's layout uses, so
-        // callers must return the height they actually committed to.
-        std.debug.assert(params.range.start <= params.range.end);
-        var i = params.range.start;
-        while (i < params.range.end) : (i += 1) {
-            const height = render_item(i, c);
-            std.debug.assert(height >= 0.0);
-            list_state.setHeight(i, height);
-        }
-
-        virtual_list_mod.renderSpacer(b, params.bottom_spacer_height);
-
-        b.layout.closeElement();
-        b.layout.closeElement();
-
-        virtual_list_mod.registerScroll(b, id, params, content_id, style);
-    }
-
-    // =========================================================================
-    // Data Table
-    // =========================================================================
-
-    /// Render a virtualized data table.
-    ///
-    /// `callbacks.render_header` and `callbacks.render_cell` are
-    /// required; `callbacks.render_row` is optional and lets callers
-    /// take over the row container for row-level click handling and
-    /// styling.
-    ///
-    /// ```zig
-    /// cx.lists.dataTable("table", &state.table_state, .{ .grow = true }, .{
-    ///     .render_header = renderHeader,
-    ///     .render_cell = renderCell,
-    /// });
-    /// ```
-    pub fn dataTable(
-        self: *Lists,
-        id: []const u8,
-        table_state: *DataTableState,
-        style: DataTableStyle,
-        comptime callbacks: DataTableCallbacks(Cx),
-    ) void {
-        std.debug.assert(id.len > 0);
-
-        const c = self.cx();
-        const b = c._builder;
-
-        // Sync gap and scroll state from style.
-        table_state.row_gap_px = style.row_gap;
-        data_table_mod.syncScroll(b, id, table_state);
-
-        const params = data_table_mod.computeLayout(id, table_state, style);
-
-        // Open viewport + content. `null` means the table is
-        // collapsed to zero size this frame and there's nothing to
-        // render — bail out without touching the builder stack.
-        const content_id = data_table_mod.openElements(
-            b,
-            params,
-            style,
-            table_state.scroll_offset_x,
-            table_state.scroll_offset_y,
-        ) orelse return;
-
-        // Header row — rendered first so it pins to the top of the
-        // viewport regardless of scroll position.
-        if (table_state.show_header) {
-            data_table_mod.renderHeaderCx(b, table_state, params, style, c, callbacks.render_header);
-        }
-
-        if (params.top_spacer > 0) {
-            data_table_mod.renderSpacer(b, params.content_width, params.top_spacer);
-        }
-
-        // Render visible rows. When the caller provides a custom
-        // `render_row`, it is responsible for the row container; the
-        // default path delegates to `renderRowCx`.
-        const range = params.visible_range;
-        std.debug.assert(range.rows.start <= range.rows.end);
-        var row = range.rows.start;
-        while (row < range.rows.end) : (row += 1) {
-            if (callbacks.render_row) |render_row| {
-                render_row(row, range.cols, c);
-            } else {
-                data_table_mod.renderRowCx(
-                    b,
-                    table_state,
-                    row,
-                    range.cols,
-                    params,
-                    style,
-                    c,
-                    callbacks.render_cell,
-                );
-            }
-        }
-
-        if (params.bottom_spacer > 0) {
-            data_table_mod.renderSpacer(b, params.content_width, params.bottom_spacer);
-        }
-
-        // Close content container and viewport.
-        b.layout.closeElement();
-        b.layout.closeElement();
-
-        data_table_mod.registerScroll(b, id, params, content_id, style);
     }
 };

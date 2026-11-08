@@ -564,9 +564,7 @@ pub const Cx = struct {
     }
 
     // =========================================================================
-    // Lists / tables — reach for `cx.lists.*` directly. The
-    // `DataTableCallbacks(Cx)` generic type lives at
-    // `cx.lists.Lists.DataTableCallbacks(Cx)` as its sole canonical home.
+    // Lists — reach for `cx.lists.*` directly.
     // =========================================================================
 };
 

@@ -30,10 +30,12 @@
 //!   the same bound stops first.
 //! - `core-wrap-frame`: wraps two texts into one line past the frame's glyph budget.
 //! - `core-deinit-running`: frees a running app without stopping it first.
+//! - `core-list-count`: a `List` of per-row heights one row past its `count_max`.
 //! - `core-mesh-points`: a polyline one point past `nano`'s polyline point limit.
 
 const std = @import("std");
 const gooey = @import("gooey");
+const components = @import("gooey-components");
 
 const Mode = enum {
     @"deferred-queue",
@@ -55,6 +57,7 @@ const Mode = enum {
     @"core-wrap-words",
     @"core-wrap-frame",
     @"core-deinit-running",
+    @"core-list-count",
     @"core-mesh-points",
 };
 
@@ -87,6 +90,7 @@ pub fn main(init: std.process.Init) !void {
         .@"core-wrap-words" => coreTick(init.gpa, init.io, CoreApp.wrapWords),
         .@"core-wrap-frame" => coreTick(init.gpa, init.io, CoreApp.wrapFrame),
         .@"core-deinit-running" => coreDeinitRunning(init.gpa, init.io),
+        .@"core-list-count" => coreTick(init.gpa, init.io, CoreApp.longList),
         .@"core-mesh-points" => coreTick(init.gpa, init.io, CoreApp.longPolyline),
     }
     std.debug.print("unreachable: {s} did not panic\n", .{@tagName(mode)});
@@ -357,6 +361,22 @@ const CoreApp = struct {
         }));
     }
 
+    /// One row more than the row type's `count_max`.
+    fn longList(cx: *core.Cx) void {
+        cx.render(components.core.List(TallRow){ .key = "rows", .count = TallRow.count_max + 1 });
+    }
+
+    const TallRow = struct {
+        index: u32,
+
+        pub const count_max: u32 = 64;
+
+        pub fn height(_: *core.Cx, _: u32) f32 {
+            return 10;
+        }
+
+        pub fn render(_: TallRow, _: *core.Cx) void {}
+    };
     /// One point more than `nano` allows polylines in a frame.
     fn longPolyline(cx: *core.Cx) void {
         const nothing: u8 = 0;
