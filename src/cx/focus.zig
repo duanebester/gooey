@@ -4,7 +4,16 @@
 //! are accessed through the
 //! `cx.focus.<name>(...)` sub-namespace, which is implemented as a
 //! zero-sized field on `Cx` whose methods recover `*Cx` via
-//! `@fieldParentPtr`. See `lists.zig` for the rationale.
+//! `@fieldParentPtr`.
+//!
+//! ## Why a sub-namespace?
+//!
+//! Holding every widget-coordination API at the top level of `cx.zig`
+//! would force unrelated plumbing to share the namespace of core context
+//! operations. Grouping closely related calls under explicit
+//! sub-namespaces (focus, animations, entities, element states) lets each
+//! grouping be read on its own, while the call shape stays free of extra
+//! parentheses.
 //!
 //! ## Naming inside the namespace
 //!
@@ -20,12 +29,14 @@ const Cx = cx_mod.Cx;
 
 /// Zero-sized namespace marker. Lives as the `focus` field on `Cx`
 /// and recovers the parent context via `@fieldParentPtr` from each
-/// method. See `lists.zig` for the rationale (CLAUDE.md §10 — don't
-/// take aliases).
+/// method. Storing a real pointer would duplicate `*Cx` and risk it
+/// drifting from the field that owns it (CLAUDE.md §10 — don't take
+/// aliases); the zero-sized field keeps `Cx`'s layout unchanged.
 pub const Focus = struct {
     /// Force this ZST to inherit `Cx`'s alignment via a zero-byte
-    /// `[0]usize` filler — see the matching note in `cx/lists.zig`
-    /// for the rationale. Without this, the namespace field would
+    /// `[0]usize` filler: it adds no bytes but raises the struct's
+    /// alignment to `Cx`'s, which `@fieldParentPtr` needs to recover a
+    /// `*Cx` without an alignment-increasing cast. Without this, the namespace field would
     /// limit `Cx`'s overall alignment to 1 and `@fieldParentPtr`
     /// would fail to compile with "increases pointer alignment".
     _align: [0]usize = .{},

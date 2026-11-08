@@ -14,6 +14,7 @@ const code_editor = @import("code_editor_example");
 const nested_overlay = @import("nested_overlay_example");
 const virtual_list = @import("virtual_list_example");
 const data_table = @import("data_table_example");
+const lucide = @import("lucide_example");
 const components = @import("gooey-components");
 const core_driver = @import("core.zig");
 const trace_mod = @import("trace.zig");
@@ -2214,5 +2215,90 @@ test "data_table sorts 10,000 rows from its headers and builds only the rows in 
     try testing.expectEqual(data_table.Column.id, app.state.sort_column.?);
     try testing.expectEqual(data_table.SortDirection.ascending, app.state.sort_direction);
     try testing.expectEqual(@as(u32, 0), app.state.order[0]);
+    try testing.expectEqual(core.internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
+}
+
+/// The 32 px icon cells built this frame, in tree order.
+fn lucideCells(window: *core.internals.window.Window, cells: []core.internals.records.Rect) u32 {
+    const frame = window.rendered();
+    var count: u32 = 0;
+    for (frame.hits[0..frame.hit_count]) |*record| {
+        if (record.bounds.width != 32) continue;
+        if (record.bounds.height != 32) continue;
+        cells[count] = record.bounds;
+        count += 1;
+    }
+    return count;
+}
+
+fn lucideCellQuad(
+    window: *core.internals.window.Window,
+    cell: core.internals.records.Rect,
+) ?ui.Color {
+    const frame = window.rendered();
+    for (frame.paint[0..frame.paint_count]) |record| {
+        if (record != .quad) continue;
+        const bounds = record.quad.bounds;
+        if (bounds.x != cell.x or bounds.y != cell.y) continue;
+        if (bounds.width == 32) return record.quad.fill;
+    }
+    return null;
+}
+
+test "lucide_demo builds the icon rows in view and lights the cell under the pointer" {
+    // Goal: the lucide_demo port end to end, with the lifecycle guard
+    // proving no allocation after init. Methodology: only whole rows of 16
+    // cells in view are built, each with an SVG sprite once rasterized; the
+    // cell under the pointer takes the hover colour and its neighbour keeps
+    // the cell colour; wheeled to the end, the last row holds the remainder.
+    const app = try testing.allocator.create(lucide.App);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    // Rasterization is budgeted per frame; settle until every icon is drawn
+    // (87 ticks at the time of writing).
+    var settle: u32 = 0;
+    while (settle < 200) : (settle += 1) {
+        app.tick(now);
+        now += 1;
+        if (!app.window.render_requested) break;
+    }
+    try testing.expect(!app.window.render_requested);
+    var cells: [1024]core.internals.records.Rect = undefined;
+    const count = lucideCells(&app.window, &cells);
+    try testing.expectEqual(@as(u32, 0), count % 16);
+    try testing.expect(count >= 16 * 15);
+    try testing.expect(count < 16 * 30);
+    var sprites: u32 = 0;
+    const frame = app.window.rendered();
+    for (frame.paint[0..frame.paint_count]) |record| {
+        if (record == .sprite and record.sprite.atlas == .svg) sprites += 1;
+    }
+    // Rows past the clip are built and drawn but hit nothing, so every
+    // whole row in view has a sprite per cell, and some rows below do too.
+    try testing.expectEqual(@as(u32, 0), sprites % 16);
+    try testing.expect(sprites >= count);
+    try testing.expect(sprites <= count + 3 * 16);
+
+    const hover = ui.Color.hex(0x334155);
+    const plain = ui.Color.hex(0x1e293b);
+    try testing.expectEqual(plain.r, lucideCellQuad(&app.window, cells[1]).?.r);
+    const pointer = mouse(cells[1].x + 16, cells[1].y + 16);
+    app.window.queue.push(.{ .input = .{ .mouse_moved = pointer } });
+    app.tick(now);
+    now += 1;
+    try testing.expectEqual(hover.r, lucideCellQuad(&app.window, cells[1]).?.r);
+    try testing.expectEqual(plain.r, lucideCellQuad(&app.window, cells[0]).?.r);
+
+    listWheel(app, &now, 100_000);
+    settle = 0;
+    while (settle < 200 and app.window.render_requested) : (settle += 1) {
+        app.tick(now);
+        now += 1;
+    }
+    const end_count = lucideCells(&app.window, &cells);
+    const remainder = lucide.TOTAL_ICONS % 16;
+    try testing.expectEqual(if (remainder == 0) 0 else 16 - remainder, (16 - end_count % 16) % 16);
     try testing.expectEqual(core.internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
 }

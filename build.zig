@@ -783,7 +783,11 @@ pub fn build(b: *std.Build) void {
         const linux_examples = [_]ExampleDefinition{
             .{ .name = "basic", .source = "src/examples/linux_demo.zig", .wayland_only = true },
             .{ .name = "drag-drop", .source = "src/examples/drag_drop.zig" },
-            .{ .name = "lucide-demo", .source = "src/examples/lucide_demo.zig" },
+            .{
+                .name = "lucide-demo",
+                .source = "src/examples/lucide_demo.zig",
+                .core = true,
+            },
             .{ .name = "animation", .source = "src/examples/animation.zig" },
             .{ .name = "counter", .source = "src/examples/counter.zig", .core = true },
             .{ .name = "todo", .source = "src/examples/todo.zig", .core = true },
@@ -1319,7 +1323,6 @@ fn addWindowsBuilds(
         .{ .name = "showcase", .source = "src/examples/showcase.zig" },
         .{ .name = "layout", .source = "src/examples/layout.zig" },
         .{ .name = "animation", .source = "src/examples/animation.zig" },
-        .{ .name = "lucide-demo", .source = "src/examples/lucide_demo.zig" },
         .{ .name = "images", .source = "src/examples/images.zig" },
         .{ .name = "clipboard", .source = "src/examples/clipboard.zig" },
         .{ .name = "file-dialog", .source = "src/examples/file_dialog.zig" },
@@ -1520,6 +1523,7 @@ fn addMacosCoreExampleTypecheck(
         "nested_overlay",
         "virtual_list_example",
         "data_table_example",
+        "lucide_demo",
     };
     for (examples) |name| {
         const exe = b.addExecutable(.{
@@ -2387,6 +2391,12 @@ fn addGoldens(
         .optimize = optimize,
         .imports = example_imports,
     });
+    const lucide_mod = b.createModule(.{
+        .root_source_file = b.path("src/examples/lucide_demo.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = example_imports,
+    });
     const goldens_imports: []const std.Build.Module.Import = &.{
         .{ .name = "accessible_form_example", .module = accessible_form_mod },
         .{ .name = "actions_example", .module = actions_mod },
@@ -2395,6 +2405,7 @@ fn addGoldens(
         .{ .name = "gooey", .module = gooey_mod },
         .{ .name = "gooey-components", .module = components_mod },
         .{ .name = "counter_example", .module = counter_mod },
+        .{ .name = "lucide_example", .module = lucide_mod },
         .{ .name = "nested_overlay_example", .module = nested_overlay_mod },
         .{ .name = "todo_example", .module = todo_mod },
         .{ .name = "virtual_list_example", .module = virtual_list_mod },

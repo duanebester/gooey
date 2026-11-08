@@ -86,7 +86,7 @@ pub const FontLimits = @import("core/limits.zig").FontLimits;
 
 /// The unified rendering context handed to every `render` callback.
 /// Holds the state pointer, layout builder, animation pools, and the
-/// `cx.lists` / `cx.animations` / `cx.focus` / `cx.entities` /
+/// `cx.animations` / `cx.focus` / `cx.entities` /
 /// `cx.element_states` sub-namespaces.
 pub const Cx = @import("app.zig").Cx;
 
@@ -166,7 +166,7 @@ pub const text = @import("text/mod.zig");
 /// Declarative UI builder + theme + style types.
 pub const ui = @import("ui/mod.zig");
 
-/// Stateful widget engines: the uniform list, text engines, and the
+/// Stateful widget engines: the text engines and the
 /// scroll container.
 pub const widgets = @import("widgets/mod.zig");
 
@@ -261,7 +261,6 @@ test {
     comptime {
         // Borrow the top-level namespace aliases without shadowing them.
         const anim = animation;
-        const wid = widgets;
         const u = ui;
         const lay = layout;
         const plat = platform;
@@ -287,9 +286,6 @@ test {
         _ = anim.AnimationStore;
         _ = anim.Easing;
         _ = anim.Duration;
-
-        // Widgets.
-        _ = wid.UniformListState;
 
         // UI styles.
         _ = u.Builder;
@@ -341,7 +337,6 @@ test {
         @import("animation/store.zig"),
 
         // Widget engines imported directly by `cx.zig`.
-        @import("widgets/uniform_list.zig"),
         @import("widgets/text_input_state.zig"),
         @import("widgets/text_area_state.zig"),
         @import("widgets/scroll_container.zig"),

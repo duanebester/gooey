@@ -6,7 +6,7 @@
 //!   * State access — `cx.state(AppState)` / `cx.stateConst(AppState)`.
 //!   * Rendering    — `cx.render(ui.box(...))`.
 //!   * Handlers     — `cx.on(method, options)` and `cx.deferCommand`.
-//!   * Sub-namespaces: `cx.lists`, `cx.animations`,
+//!   * Sub-namespaces: `cx.animations`,
 //!                    `cx.entities`, `cx.focus`, and
 //!                    `cx.element_states` (keyed pool of
 //!                    per-element retained state).
@@ -45,8 +45,6 @@ const handler_mod = @import("context/handler.zig");
 const entity_mod = @import("context/entity.zig");
 // Widget engine-state pools — the `cx.textField` / `cx.textAreaWidget` /
 // `cx.scrollView` accessors keyed off these.
-// List and table state types are imported by `cx/lists.zig`, since callers
-// go through `cx.lists.*`.
 const text_field_mod = @import("widgets/text_input_state.zig");
 const text_area_mod = @import("widgets/text_area_state.zig");
 const scroll_view_mod = @import("widgets/scroll_container.zig");
@@ -82,10 +80,9 @@ const Theme = ui_mod.Theme;
 
 // Sub-namespace modules. Each exposes a zero-sized struct
 // that lives as a field on `Cx`; methods on those structs recover
-// `*Cx` via `@fieldParentPtr`, giving the `cx.lists.uniform(...)` /
-// `cx.animations.spring(...)` call shape without extra storage
+// `*Cx` via `@fieldParentPtr`, giving the `cx.animations.spring(...)`
+// call shape without extra storage
 // (CLAUDE.md §10 — don't take aliases) and without extra parens.
-const lists_mod = @import("cx/lists.zig");
 const animations_mod = @import("cx/animations.zig");
 const entities_mod = @import("cx/entities.zig");
 const focus_mod = @import("cx/focus.zig");
@@ -113,7 +110,6 @@ pub const Cx = struct {
     // Sub-namespaces. Zero-sized fields default-initialised so
     // call-site struct literals (e.g. in `runtime/window_context.zig`)
     // need not mention them.
-    lists: lists_mod.Lists = .{},
     animations: animations_mod.Animations = .{},
     entities: entities_mod.Entities = .{},
     focus: focus_mod.Focus = .{},
@@ -562,10 +558,6 @@ pub const Cx = struct {
         // catch-all retained-storage namespace.
         return self._window.change_tracker.changed(key_hash, value_hash);
     }
-
-    // =========================================================================
-    // Lists — reach for `cx.lists.*` directly.
-    // =========================================================================
 };
 
 // =============================================================================
