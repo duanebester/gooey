@@ -160,14 +160,19 @@ pub const GMEM_MOVEABLE: u32 = 0x0002;
 pub const GMEM_ZEROINIT: u32 = 0x0040;
 
 // `PeekMessageW` and `MsgWaitForMultipleObjectsEx`.
+pub const PM_NOREMOVE: u32 = 0x0000;
 pub const PM_REMOVE: u32 = 0x0001;
 // Windows 8 and later add `QS_TOUCH | QS_POINTER` to `QS_INPUT`; without them
 // touch and pen input would not wake the loop.
 pub const QS_ALLINPUT: u32 = 0x1CFF;
+pub const QS_SENDMESSAGE: u32 = 0x0040;
+/// `PeekMessageW` processes only messages sent from other threads.
+pub const PM_QS_SENDMESSAGE: u32 = QS_SENDMESSAGE << 16;
 pub const MWMO_INPUTAVAILABLE: u32 = 0x0004;
 pub const WAIT_FAILED: u32 = 0xFFFF_FFFF;
 pub const WAIT_OBJECT_0: u32 = 0x0000_0000;
 pub const WAIT_TIMEOUT: u32 = 0x0000_0102;
+pub const INFINITE: u32 = 0xFFFF_FFFF;
 
 // `CreateWaitableTimerExW` flags (synchapi.h). High resolution needs Windows 10
 // 1803; earlier systems reject the flag with `ERROR_INVALID_PARAMETER`.
@@ -293,6 +298,36 @@ pub extern "kernel32" fn SetWaitableTimer(
     lpArgToCompletionRoutine: ?*anyopaque,
     fResume: BOOL,
 ) callconv(.winapi) BOOL;
+pub extern "kernel32" fn CreateEventW(
+    lpEventAttributes: ?*anyopaque,
+    bManualReset: BOOL,
+    bInitialState: BOOL,
+    lpName: ?LPCWSTR,
+) callconv(.winapi) ?HANDLE;
+pub extern "kernel32" fn SetEvent(hEvent: HANDLE) callconv(.winapi) BOOL;
+pub extern "kernel32" fn WaitForMultipleObjects(
+    nCount: u32,
+    lpHandles: [*]const HANDLE,
+    bWaitAll: BOOL,
+    dwMilliseconds: u32,
+) callconv(.winapi) u32;
+pub extern "kernel32" fn QueryPerformanceCounter(lpPerformanceCount: *i64) callconv(.winapi) BOOL;
+pub extern "kernel32" fn QueryPerformanceFrequency(lpFrequency: *i64) callconv(.winapi) BOOL;
+
+/// `DWM_TIMING_INFO` is declared under `#pragma pack(1)`, so it is read as
+/// bytes at the offsets `dwmapi.h` gives rather than as an `extern struct`.
+/// Only the fields the core host paces by are named.
+pub const DwmTimingInfo = struct {
+    pub const bytes_count: u32 = 292;
+    pub const refresh_period_offset: u32 = 12; // `qpcRefreshPeriod`
+    pub const vblank_offset: u32 = 28; // `qpcVBlank`
+};
+/// With `hwnd` null, the timing of the composition on the primary display
+/// (required from Windows 8.1 on). Returns an `HRESULT`.
+pub extern "dwmapi" fn DwmGetCompositionTimingInfo(
+    hwnd: ?HWND,
+    pTimingInfo: *align(4) [DwmTimingInfo.bytes_count]u8,
+) callconv(.winapi) i32;
 
 pub extern "user32" fn RegisterClassExW(lpwcx: *const WNDCLASSEXW) callconv(.winapi) ATOM;
 pub extern "user32" fn UnregisterClassW(

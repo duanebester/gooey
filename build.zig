@@ -1309,6 +1309,11 @@ fn addWindowsBuilds(
         .{ .name = "data-table", .source = "src/examples/data_table_example.zig" },
         .{ .name = "clipboard", .source = "src/examples/clipboard.zig" },
         .{ .name = "file-dialog", .source = "src/examples/file_dialog.zig" },
+        // 0.4.0 core apps, on `platform/windows/core_host.zig`.
+        .{ .name = "counter", .source = "src/examples/counter.zig" },
+        .{ .name = "todo", .source = "src/examples/todo.zig" },
+        .{ .name = "actions", .source = "src/examples/actions.zig" },
+        .{ .name = "nested-overlay", .source = "src/examples/nested_overlay.zig" },
     };
     for (examples) |example| {
         addWindowsExample(b, mod, components_mod, target, optimize, example.name, example.source);
@@ -1442,11 +1447,26 @@ fn addWindowsTypecheck(b: *std.Build) void {
         }),
     });
 
+    // The 0.4.0 core host: window binding, render thread, IME, clipboard.
+    const core_app = b.addExecutable(.{
+        .name = "typecheck-windows-todo",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/examples/todo.zig"),
+            .target = windows_target,
+            .optimize = .debug,
+            .imports = &.{
+                .{ .name = "gooey", .module = gooey_mod },
+                .{ .name = "gooey-components", .module = components_mod },
+            },
+        }),
+    });
+
     // Depend on the compile steps only; see `addLinuxTypecheckRoot`.
     step.dependOn(&demo.step);
     step.dependOn(&tests.step);
     step.dependOn(&shared_tests.step);
     step.dependOn(&app.step);
+    step.dependOn(&core_app.step);
 }
 
 /// `typecheck-macos`: semantically analyze the macOS backend, its tests, and
