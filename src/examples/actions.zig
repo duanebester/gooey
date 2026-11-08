@@ -1,10 +1,16 @@
 //! Actions: keymaps, key contexts, and action handlers on the core.
 //!
 //! Undo, Redo, and Cancel are bound globally and handled by the root box.
-//! Save is bound only inside the "Editor" key context, so cmd-s does nothing
-//! until focus is inside the editor panel. The layout matches the 0.3.1
-//! actions example, so its golden is compared with the 0.3.1 golden.
+//! Save is bound only inside the "Editor" key context, so the save chord does
+//! nothing until focus is inside the editor panel. The layout matches the
+//! 0.3.1 actions example, so its golden is compared with the 0.3.1 golden.
+//!
+//! The shortcuts use Cmd on macOS and Ctrl elsewhere, chosen at comptime:
+//! a keymap names exact modifiers, and the Windows shell owns Win+Z and
+//! Win+S. The goldens build `AppWith(.cmd)`, so they match 0.3.1 on every
+//! host.
 
+const builtin = @import("builtin");
 const gooey = @import("gooey");
 const components = @import("gooey-components");
 
@@ -40,22 +46,53 @@ pub const State = struct {
     }
 };
 
-pub const App = core.App(State, render, .{
-    .title = "Actions Demo",
-    .width = 800,
-    .height = 600,
-    .limits = .nano,
-    .keymap = &.{
-        .{ .keys = "cmd-z", .action = ui.action(Undo) },
-        .{ .keys = "cmd-shift-z", .action = ui.action(Redo) },
-        .{ .keys = "cmd-s", .action = ui.action(Save), .key_context = .named("Editor") },
-        .{ .keys = "escape", .action = ui.action(Cancel) },
-    },
-});
+/// The modifier the shortcuts use; its name is the keymap prefix and the
+/// labels' spelling.
+pub const Modifier = enum { cmd, ctrl };
+
+pub const modifier_native: Modifier = if (builtin.os.tag == .macos) .cmd else .ctrl;
+
+pub const App = AppWith(modifier_native);
 
 pub const main = App.main;
 
-pub fn render(cx: *Cx) void {
+pub fn AppWith(comptime modifier: Modifier) type {
+    const m = @tagName(modifier);
+    return core.App(State, Demo(modifier).render, .{
+        .title = "Actions Demo",
+        .width = 800,
+        .height = 600,
+        .limits = .nano,
+        .keymap = &.{
+            .{ .keys = m ++ "-z", .action = ui.action(Undo) },
+            .{ .keys = m ++ "-shift-z", .action = ui.action(Redo) },
+            .{ .keys = m ++ "-s", .action = ui.action(Save), .key_context = .named("Editor") },
+            .{ .keys = "escape", .action = ui.action(Cancel) },
+        },
+    });
+}
+
+fn Demo(comptime modifier: Modifier) type {
+    const m = @tagName(modifier);
+    return struct {
+        fn render(cx: *Cx) void {
+            renderDemo(cx, .{
+                .placeholder = "Type here... (" ++ m ++ "+s to save)",
+                .undo = "Undo (" ++ m ++ "+z)",
+                .redo = "Redo (" ++ m ++ "+shift+z)",
+            });
+        }
+    };
+}
+
+/// The texts that name the shortcuts.
+const Labels = struct {
+    placeholder: []const u8,
+    undo: []const u8,
+    redo: []const u8,
+};
+
+fn renderDemo(cx: *Cx, labels: Labels) void {
     const s = cx.state(State);
     cx.render(ui.box(.{
         .actions = &.{
@@ -67,13 +104,15 @@ pub fn render(cx: *Cx) void {
     }, .{
         ui.text("Actions Demo", .{ .size = 24 }),
         ui.text(s.message, .{ .size = 14 }),
-        EditorPanel{},
-        ButtonRow{},
+        EditorPanel{ .placeholder = labels.placeholder },
+        ButtonRow{ .undo = labels.undo, .redo = labels.redo },
     }));
 }
 
 const EditorPanel = struct {
-    pub fn render(_: EditorPanel, cx: *Cx) void {
+    placeholder: []const u8,
+
+    pub fn render(self: EditorPanel, cx: *Cx) void {
         const s = cx.state(State);
         cx.render(ui.box(.{
             .key_context = .named("Editor"),
@@ -82,7 +121,7 @@ const EditorPanel = struct {
         }, .{
             TextInput{
                 .key = "editor",
-                .placeholder = "Type here... (cmd+s to save)",
+                .placeholder = self.placeholder,
                 .bind = &s.draft,
             },
         }));
@@ -90,10 +129,13 @@ const EditorPanel = struct {
 };
 
 const ButtonRow = struct {
-    pub fn render(_: ButtonRow, cx: *Cx) void {
+    undo: []const u8,
+    redo: []const u8,
+
+    pub fn render(self: ButtonRow, cx: *Cx) void {
         cx.render(ui.box(.{ .style = .{ .direction = .row, .gap = 8 } }, .{
-            Button{ .label = "Undo (cmd+z)", .on_click = cx.on(State.undo, .{}) },
-            Button{ .label = "Redo (cmd+shift+z)", .on_click = cx.on(State.redo, .{}) },
+            Button{ .label = self.undo, .on_click = cx.on(State.undo, .{}) },
+            Button{ .label = self.redo, .on_click = cx.on(State.redo, .{}) },
         }));
     }
 };

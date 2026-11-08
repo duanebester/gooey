@@ -10,9 +10,10 @@
 //!
 //! - **Modality.** The dialog is owned by the thread's active window, which
 //!   Windows disables while it is shown. The dialog runs its own message loop,
-//!   so Gooey windows still receive `WM_PAINT` and redraw, but the platform
-//!   loop does not turn. Call it from a deferred command (`cx.deferCommand`),
-//!   not from inside an input handler.
+//!   so Gooey windows still receive `WM_PAINT`, but the platform loop does
+//!   not turn. Call it from a deferred command (`cx.deferCommand`), not from
+//!   inside an input handler; the core host calls it from the drain, after
+//!   every handler.
 //! - **Directories.** `directories = true` picks folders only, as on Linux:
 //!   the Common Item Dialog cannot offer files and folders together.
 //! - **Paths.** Returned paths are WTF-8, the encoding Zig's file APIs take on
