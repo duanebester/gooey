@@ -7,7 +7,11 @@ software SVG rasterizer, the system clipboard, native file dialogs, IME composit
 Automation accessibility, and the shared Vulkan renderer. Verified on an Intel UHD 620 at
 150% scale. The [checklist](#win32-checklist) has what remains.
 
+0.4.0 core apps (`gooey.core.App`) run on the [core host](#core-host): counter, todo,
+actions, and nested-overlay so far.
+
 ```sh
+zig build run-todo           # a 0.4.0 core app (core examples listed in addWindowsBuilds)
 zig build run-showcase       # a gooey.App example (others listed in addWindowsBuilds)
 zig build run-clipboard      # copy and paste through TextInput and TextArea
 zig build run-file-dialog    # open, multi-select, folder, and save dialogs
@@ -196,6 +200,44 @@ the bindings. Validation layers ship with the SDK, so without it Debug builds lo
   this.
 - `platform/mod.zig` keys `DisplayLink` and the `macos` namespace on `is_macos`, not "not
   web and not Linux", which would select macOS code on Windows.
+
+### Core host
+
+`src/platform/windows/core_host.zig` runs a 0.4.0 core app, as the macOS and Linux hosts
+do (contract rule 1). `gooey.core.App.main` selects it with one `.windows` arm in
+`core/app.zig`.
+
+- **Threads.** The main thread created the window, so it receives its messages, and runs
+  the host's loop: at most one tick (drain, build, layout, emit) per turn, then a wait, then
+  at most `message_batch_max` messages. The window pushes input into the core's queue
+  (`Window.bindCore`, `CoreBinding`) and schedules a tick, so no tick runs inside a window
+  procedure. A render thread packs and draws the frame in flight; the two meet only at
+  `frame_in_flight`, a `presentable` flag, and two auto-reset events. After binding, the
+  renderer belongs to the render thread: the window never draws, resizes the swapchain,
+  or answers `WM_PAINT` on the main thread.
+- **Pacing.** After each present the render thread waits for the first vertical blank at
+  least half a refresh away, read from `DwmGetCompositionTimingInfo` (primary display) and
+  timed with a high-resolution waitable timer. Frames follow the display's rate (60, 120,
+  144 Hz), at most one per refresh; without usable DWM timing it falls back to 60 Hz.
+  Mailbox presentation still never blocks.
+- **Sizes.** The host reads the window's logical size and scale once per tick and pushes
+  a resize when they changed, so a live resize queues one event per tick. The render
+  thread rebuilds the swapchain for the viewport the frame was built at, rounded up to
+  whole logical pixels as before. A minimized or zero-area window skips its frames;
+  restoring it pushes a resize so the next frame is drawn.
+- **Live move and resize.** The modal loop's timer runs the host's turn instead of
+  `runModalTurn`, so the app keeps ticking during the drag.
+- **IME.** Each turn the host reads `Query.imeCursorRect` from the rendered frame: the
+  window's input context is attached (`ImmAssociateContextEx`) only while a text field is
+  focused, so keys typed elsewhere never start a composition no field shows, and the
+  candidate list follows the caret.
+- **Clipboard.** The text engines read through `clipboard.readText(out)`, which decodes
+  straight into the core's reserved paste buffer (CR LF collapsed, cut at a codepoint),
+  and write through `setText`.
+- **Teardown.** The render thread may be inside a present when the window closes, and a
+  present may send the window's thread a message and wait for the reply, so `deinit`
+  waits for it while handling sent messages only.
+- **Not yet.** File dialogs, UI Automation, and the remaining core examples.
 
 ### Clipboard
 
@@ -584,8 +626,8 @@ the event loop.
 - [x] Accessibility through UI Automation (read-only; see the section above).
 - [x] Window budget, `min_size`/`max_size` at creation, work-area clamping, frames during
       move and resize, focus-loss release, scale changes reaching the atlases.
-- [ ] Frame pacing on a render thread paced by the display, matching the macOS decision
-      (today: a 60 Hz cap on the window thread, wrong on 50, 120, and 144 Hz displays).
+- [x] Frame pacing on a render thread paced by the display, for core apps (DWM timing,
+      one present per refresh). 0.3.1 apps keep the 60 Hz cap on the window thread.
 - [ ] Dark title bar and appearance (`DwmSetWindowAttribute`, theme-change tracking).
 - [ ] Custom title-bar hit testing (`WM_NCHITTEST`).
 - [ ] CPU fallback renderer for machines without a Vulkan driver (some VMs, RDP).

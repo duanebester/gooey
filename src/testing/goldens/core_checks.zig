@@ -2215,6 +2215,93 @@ test "data_table sorts 10,000 rows from its headers and builds only the rows in 
     try testing.expectEqual(data_table.Column.id, app.state.sort_column.?);
     try testing.expectEqual(data_table.SortDirection.ascending, app.state.sort_direction);
     try testing.expectEqual(@as(u32, 0), app.state.order[0]);
+}
+
+const MeshApp = core.App(struct {}, meshRender, .{
+    .title = "Meshes",
+    .width = 300,
+    .height = 300,
+    .limits = core.ResourceLimits.small,
+});
+
+const mesh_red = ui.Color.rgb(1, 0, 0);
+const mesh_blue = ui.Color.rgb(0, 0, 1);
+
+fn meshRender(cx: *Cx) void {
+    const nothing: u8 = 0;
+    cx.render(ui.paint(u8, &nothing, meshPaint, .{
+        .width = .{ .fixed = 200 },
+        .height = .{ .fixed = 200 },
+    }));
+}
+
+fn meshPaint(_: *const u8, painter: *ui.Painter) void {
+    // Two red triangles in a row join one mesh; the blue circle starts another.
+    painter.triangles(&.{ .{ 0, 0 }, .{ 10, 0 }, .{ 0, 10 } }, mesh_red);
+    painter.triangles(&.{ .{ 20, 0 }, .{ 30, 0 }, .{ 20, 10 } }, mesh_red);
+    painter.circle(.{ 100, 100 }, 10, mesh_blue);
+    painter.line(.{ 10, 50 }, .{ 90, 50 }, 2, mesh_red);
+    painter.line(.{ 0, 0 }, .{ 30, 40 }, 2, mesh_red);
+    painter.polyline(&.{ .{ 0, 150 }, .{ 50, 120 }, .{ 100, 160 } }, 2, mesh_blue);
+    painter.pointCloud(&.{ .{ 10, 190 }, .{ 20, 190 }, .{ 30, 190 }, .{ 40, 190 } }, 3, mesh_red);
+}
+
+test "Painter meshes pack into the scene's paths, polylines, and point clouds" {
+    // Goal: paint meshes end to end on TestBackend, under the lifecycle
+    // guard (packing triangles must not allocate the scene's frame meshes
+    // after init). Methodology: the paint function draws two touching red
+    // triangle fills, a circle of 10 px (12 sides at scale 1, so 10 fan
+    // triangles), an axis-aligned and a diagonal line, a polyline, and a
+    // point cloud. The records and the packed scene are checked by kind and
+    // count, and the circle's first fan triangle by its corners.
+    const app = try testing.allocator.create(MeshApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    app.tick(0);
+    const frame = app.window.rendered();
+    var meshes: [8]core.internals.records.Mesh = undefined;
+    var mesh_count: usize = 0;
+    var quads: u32 = 0;
+    for (frame.paint[0..frame.paint_count]) |record| {
+        switch (record) {
+            .mesh => |mesh| {
+                meshes[mesh_count] = mesh;
+                mesh_count += 1;
+            },
+            .quad => |quad| if (quad.fill.r == 1 and quad.bounds.height == 2) {
+                quads += 1;
+                try testing.expectEqual(@as(f32, 49), quad.bounds.y);
+                try testing.expectEqual(@as(f32, 80), quad.bounds.width);
+            },
+            else => {},
+        }
+    }
+    try testing.expectEqual(@as(u32, 1), quads);
+    try testing.expectEqual(@as(usize, 5), mesh_count);
+    const Topology = core.internals.records.Mesh.Topology;
+    try testing.expectEqual(Topology.triangles, meshes[0].topology);
+    try testing.expectEqual(@as(u32, 6), meshes[0].range.count);
+    try testing.expectEqual(@as(u32, 30), meshes[1].range.count);
+    try testing.expectEqual(@as(f32, 1), meshes[1].fill.b);
+    try testing.expectEqual(@as(u32, 6), meshes[2].range.count);
+    try testing.expectEqual(Topology.strip_expanded, meshes[3].topology);
+    try testing.expectEqual(@as(f32, 2), meshes[3].width);
+    try testing.expectEqual(Topology.point_instanced, meshes[4].topology);
+    try testing.expectEqual(@as(u32, 4), meshes[4].range.count);
+    // The fan starts at the circle's rightmost corner; the next corner is
+    // 30 degrees on. The paint box sits at the window's origin.
+    const fan = frame.meshPoints(meshes[1].range);
+    try testing.expectEqual(@as(f32, 110), fan[0].x);
+    try testing.expectEqual(@as(f32, 100), fan[0].y);
+    try testing.expectApproxEqAbs(@as(f32, 100 + 10 * @cos(std.math.pi / 6.0)), fan[1].x, 1e-4);
+    try testing.expectApproxEqAbs(@as(f32, 105), fan[1].y, 1e-4);
+
+    const scene = app.window.scene;
+    try testing.expectEqual(@as(usize, 3), scene.pathCount());
+    try testing.expectEqual(@as(usize, 1), scene.polylineCount());
+    try testing.expectEqual(@as(usize, 1), scene.pointCloudCount());
+    try testing.expectEqual(@as(u32, 3), scene.getPolylines()[0].point_count);
     try testing.expectEqual(core.internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
 }
 

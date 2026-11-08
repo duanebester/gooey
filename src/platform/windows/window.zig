@@ -2,10 +2,12 @@
 //!
 //! The window procedure (`windowProc`) is the only entry point Windows calls.
 //! It routes every input message through `input.Translator.translate` and
-//! delivers the result through `handleInput`, so phase 4's event queue
-//! replaces one call (`docs/windows-port.md`, seam 1). Drawing goes through
-//! the shared Vulkan renderer's `render(scene)`, the one entry phase 5 swaps
-//! for a `PackedFrame` (seam 2).
+//! delivers the result through `handleInput`: to the 0.3.1 `on_input`
+//! callback, or, once a 0.4.0 core app binds the window (`CoreBinding`), into
+//! the core's event queue. Drawing goes through the shared Vulkan renderer's
+//! `render(scene)`, the one entry phase 5 swaps for a `PackedFrame` (seam 2):
+//! on this thread for a 0.3.1 app, on the core host's render thread for a
+//! core app.
 //!
 //! ## Sizes
 //!
@@ -35,6 +37,8 @@ const ime = @import("ime.zig");
 const windows_input = @import("input.zig");
 const windows_platform = @import("platform.zig");
 const limits_mod = @import("../../core/limits.zig");
+const core_events = @import("../../core/events.zig");
+const core_router = @import("../../core/router.zig");
 const WindowsPlatform = windows_platform.WindowsPlatform;
 
 const assert = std.debug.assert;
@@ -62,6 +66,22 @@ const modal_turn_timer_id: usize = 1;
 /// (15.6 ms by default), so this asks for one turn per tick, close to the
 /// 60 Hz frame cap; frames are drawn on every turn that has one requested.
 const modal_turn_period_ms: u32 = 10;
+
+/// How a 0.4.0 core app drives this window (contract §9), as on macOS and
+/// Linux: the window pushes input into the core's queue and asks the host for
+/// a tick. No `on_input` or `on_render` callback runs, the window never draws
+/// on this thread, and its renderer belongs to the host's render thread.
+pub const CoreBinding = struct {
+    queue: *core_events.EventQueue,
+    query: *const core_router.Query,
+    context: *anyopaque,
+    /// Ask the host for a main-thread tick. Called on this thread after every
+    /// push and whenever the client area or the minimized state changes.
+    schedule_tick: *const fn (context: *anyopaque) void,
+    /// One host loop turn from inside a modal move or resize loop, which
+    /// holds the thread in `DefWindowProcW` below the host's own loop.
+    modal_turn: *const fn (context: *anyopaque) void,
+};
 
 /// The loop's clock for `Window.waitTimeoutNs`, named because two fields
 /// share a type.
@@ -168,6 +188,8 @@ pub const Window = struct {
     on_resize: ?ResizeCallback = null,
     on_post_input: ?PostInputCallback = null,
     user_data: ?*anyopaque = null,
+    /// Set when a 0.4.0 core app drives this window; see `CoreBinding`.
+    core: ?CoreBinding = null,
 
     pub const InputCallback = *const fn (*Self, input.InputEvent) bool;
     pub const RenderCallback = *const fn (*Self) void;
@@ -244,7 +266,7 @@ pub const Window = struct {
         options: *const WindowOptions,
     ) void {
         // A field added to `Window` must be initialized here too.
-        comptime assert(@typeInfo(Self).@"struct".field_names.len == 50);
+        comptime assert(@typeInfo(Self).@"struct".field_names.len == 51);
         self.allocator = allocator;
         self.platform = plat;
         self.window_id = .invalid;
@@ -296,6 +318,7 @@ pub const Window = struct {
         self.on_resize = null;
         self.on_post_input = null;
         self.user_data = null;
+        self.core = null;
 
         assert(self.scale_factor > 0);
         assert(!self.renderer.initialized);
@@ -479,7 +502,7 @@ pub const Window = struct {
     /// has a client area. A zero-area client is not reported as minimized
     /// (a restore animation, a shell that collapses the window), and the
     /// renderer cannot build a swapchain with a zero extent.
-    fn isPresentable(self: *const Self) bool {
+    pub fn isPresentable(self: *const Self) bool {
         assert(self.client_width_px <= client_px_max_u32);
         assert(self.client_height_px <= client_px_max_u32);
         if (self.closed or self.minimized) return false;
@@ -507,6 +530,8 @@ pub const Window = struct {
 
     /// Build and present one frame.
     pub fn renderFrame(self: *Self) void {
+        // A core app draws on its host's render thread, never here.
+        assert(self.core == null);
         if (!self.isPresentable() or self.rendering) return;
         assert(self.renderer.initialized);
         if (!self.swapchainMatchesClient()) {
@@ -572,6 +597,9 @@ pub const Window = struct {
             .width = @as(f64, @floatFromInt(client.width_px)) / self.scale_factor,
             .height = @as(f64, @floatFromInt(client.height_px)) / self.scale_factor,
         };
+        // A core app's host reads the new size at its next tick, and its
+        // render thread rebuilds the swapchain for the frame built at it.
+        if (self.core) |binding| return binding.schedule_tick(binding.context);
         if (!self.renderer.initialized) return;
         if (!had_area) self.requestRender();
         if (self.swapchainMatchesClient()) return;
@@ -780,6 +808,7 @@ pub const Window = struct {
             else => {},
         }
         if (event == .mouse_exited) assert(!self.mouse_inside);
+        if (self.core) |binding| return pushCoreInput(binding, event);
         var handled = false;
         if (self.on_input) |callback| handled = callback(self, event);
         if (self.on_post_input) |callback| callback(self);
@@ -787,6 +816,45 @@ pub const Window = struct {
         // A callback may close the window; an open one always redraws.
         if (!self.closed) assert(self.needs_redraw);
         return handled;
+    }
+
+    /// Queue `event` for the core's next drain. Only a key the keymap claims
+    /// counts as handled.
+    fn pushCoreInput(binding: CoreBinding, event: input.InputEvent) bool {
+        binding.queue.push(.{ .input = event });
+        binding.schedule_tick(binding.context);
+        return switch (event) {
+            .key_down => |key| binding.query.keymapClaims(key),
+            else => false,
+        };
+    }
+
+    /// Bind a core app. Call once, before the host's render thread starts:
+    /// from then on the renderer belongs to that thread.
+    pub fn bindCore(self: *Self, binding: CoreBinding) void {
+        assert(self.core == null);
+        assert(self.on_input == null);
+        assert(self.on_render == null);
+        assert(!self.rendering);
+        self.needs_redraw = false;
+        self.render_deadline_ms = null;
+        self.core = binding;
+        assert(self.core != null);
+    }
+
+    /// Attach the window's default input context, or detach it so keys reach
+    /// the window without an IME. The core host attaches it only while a text
+    /// field is focused; attaching places the candidate list again, because
+    /// the context it restores has not seen the caret.
+    pub fn setImeEnabled(self: *Self, enabled: bool) void {
+        assert(self.core != null);
+        const hwnd = self.hwnd orelse return;
+        const flags: u32 = if (enabled) ime.IACE_DEFAULT else 0;
+        if (ime.ImmAssociateContextEx(hwnd, null, flags) == win32.FALSE) {
+            std.log.warn("windows: ImmAssociateContextEx({d}) failed", .{flags});
+            return;
+        }
+        if (enabled) self.applyImePlacement();
     }
 
     /// Ask for one `WM_MOUSELEAVE` when the pointer next leaves the client.
@@ -915,6 +983,8 @@ pub const Window = struct {
 
     pub fn requestRender(self: *Self) void {
         if (self.closed) return;
+        // A core app renders what its tick builds, on its render thread.
+        if (self.core != null) return;
         // An open window keeps its `HWND` until `deinit`.
         assert(self.hwnd != null);
         self.needs_redraw = true;
@@ -1193,13 +1263,19 @@ pub const Window = struct {
         assert(wparam <= 4);
         const was_minimized = self.minimized;
         self.minimized = wparam == win32.SIZE_MINIMIZED;
-        if (self.minimized) return;
+        if (self.minimized) {
+            // The core host stops presenting until the window is restored.
+            if (self.core) |binding| binding.schedule_tick(binding.context);
+            return;
+        }
         const size_bits: usize = @bitCast(lparam);
         self.applyClientSize(.{
             .width_px = win32.loWord(size_bits),
             .height_px = win32.hiWord(size_bits),
         });
-        if (was_minimized) self.requestRender();
+        if (!was_minimized) return;
+        self.requestRender();
+        if (self.core) |binding| binding.schedule_tick(binding.context);
     }
 
     /// Adopt the new monitor's scale and move to the rectangle Windows
@@ -1325,6 +1401,7 @@ pub const Window = struct {
             self.handleExitSizeMove();
             return;
         }
+        if (self.core) |binding| return binding.modal_turn(binding.context);
         self.platform.runModalTurn();
     }
 
@@ -1354,7 +1431,7 @@ pub const Window = struct {
                 // A resize repaints before the next modal turn; drawing here
                 // keeps the new area filled. `DefWindowProcW` then validates
                 // the region.
-                if (self.needs_redraw) self.renderFrame();
+                if (self.core == null and self.needs_redraw) self.renderFrame();
                 return null;
             },
             win32.WM_SETCURSOR => {
@@ -1498,7 +1575,7 @@ fn assertSizeLimit(size: geometry.Size(f64)) void {
 /// Whether the shared renderer holds a complete swapchain: a handle and one
 /// framebuffer per image. Its `resize` reports no error, and a failed
 /// rebuild leaves the framebuffers destroyed.
-fn rendererSwapchainUsable(renderer: *const VulkanRenderer) bool {
+pub fn rendererSwapchainUsable(renderer: *const VulkanRenderer) bool {
     assert(renderer.initialized);
     if (renderer.swapchain == null) return false;
     const image_count = renderer.swapchain_image_count;

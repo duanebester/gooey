@@ -5,9 +5,11 @@
 //! keeps its candidate list. `WM_IME_COMPOSITION` is read here and delivered
 //! as the shared `text_input` (committed text) and `composition` (preedit)
 //! events, the same pair the Wayland and macOS backends produce. The caret
-//! rectangle the runtime publishes each frame through `setImeCursorRect`
-//! places the candidate list; phase 4 of 0.4.0 moves that rectangle to
-//! `Query.imeCursorRect` without changing anything in this file.
+//! rectangle reaches `setImeCursorRect` and places the candidate list: each
+//! frame from the 0.3.1 runtime, or each loop turn from the core host's
+//! `Query.imeCursorRect`. The core host also detaches the input context while
+//! no text field is focused (`ImmAssociateContextEx`), so composition typed
+//! then is not swallowed.
 //!
 //! ## Memory (CLAUDE.md section 2)
 //!
@@ -97,11 +99,21 @@ pub const ISC_SHOWUICOMPOSITIONWINDOW: usize = 0x8000_0000;
 pub const CFS_POINT: u32 = 0x0002;
 pub const CFS_EXCLUDE: u32 = 0x0080;
 
+// `ImmAssociateContextEx` flag that gives the window its default context back.
+pub const IACE_DEFAULT: u32 = 0x0010;
+
 // `ImmGetCompositionStringW` error results.
 const IMM_ERROR_NODATA: i32 = -1;
 const IMM_ERROR_GENERAL: i32 = -2;
 
 pub extern "imm32" fn ImmGetContext(hWnd: win32.HWND) callconv(.winapi) ?HIMC;
+/// With `hIMC` null and no flags, the window has no context, so keys go
+/// straight to it; `IACE_DEFAULT` restores the default context.
+pub extern "imm32" fn ImmAssociateContextEx(
+    hWnd: win32.HWND,
+    hIMC: ?HIMC,
+    dwFlags: u32,
+) callconv(.winapi) win32.BOOL;
 pub extern "imm32" fn ImmReleaseContext(hWnd: win32.HWND, hIMC: HIMC) callconv(.winapi) win32.BOOL;
 pub extern "imm32" fn ImmGetCompositionStringW(
     hIMC: HIMC,
