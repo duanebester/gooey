@@ -54,8 +54,6 @@ pub const Gradient = gradient_mod.Gradient;
 pub const LineCap = path_mod.LineCap;
 pub const LineJoin = path_mod.LineJoin;
 pub const StrokeStyle = path_mod.StrokeStyle;
-/// ColoredPoint for building custom per-point colored arrays
-pub const ColoredPoint = scene_mod.ColoredPoint;
 
 // Scene types
 const Scene = scene_mod.Scene;
@@ -69,7 +67,6 @@ const MeshPool = scene_mod.MeshPool;
 const Quad = scene_mod.Quad;
 const Polyline = scene_mod.Polyline;
 const PointCloud = scene_mod.PointCloud;
-const ColoredPointCloud = scene_mod.ColoredPointCloud;
 
 // =============================================================================
 // Constants (per CLAUDE.md: "put a limit on everything")
@@ -729,77 +726,6 @@ pub const DrawContext = struct {
             self.scene.insertPointCloudWithOrder(pc, self.nextOrder(), self.clip_bounds) catch {};
         } else {
             self.scene.insertPointCloudClipped(pc) catch {};
-        }
-    }
-
-    // =========================================================================
-    // Colored Point Cloud API (per-point colors, single draw call)
-    // =========================================================================
-
-    /// Draw multiple circles, each with its own color, via GPU instancing (one
-    /// draw call) — far cheaper than N `fillCircle` calls.
-    pub fn pointCloudColored(
-        self: *Self,
-        points: []const struct { x: f32, y: f32, color: Color },
-        radius: f32,
-    ) void {
-        std.debug.assert(points.len >= 1); // Need at least 1 point
-        std.debug.assert(radius > 0);
-
-        if (points.len < 1) return;
-
-        // Allocate positions and colors from scene's allocator (arena), not stack
-        const scene_positions = self.scene.allocator.alloc(Point, points.len) catch return;
-        const scene_colors = self.scene.allocator.alloc(Hsla, points.len) catch return;
-
-        // Transform positions to scene coordinates and convert colors
-        const ox = self.bounds.origin.x;
-        const oy = self.bounds.origin.y;
-        for (points, 0..) |p, i| {
-            scene_positions[i] = .{ .x = ox + p.x, .y = oy + p.y };
-            scene_colors[i] = Hsla.fromColor(p.color);
-        }
-
-        // Create and insert colored point cloud primitive
-        const cpc = ColoredPointCloud.init(scene_positions, scene_colors, radius);
-        if (self.isOrdered()) {
-            self.scene.insertColoredPointCloudWithOrder(cpc, self.nextOrder(), self.clip_bounds) catch {};
-        } else {
-            self.scene.insertColoredPointCloud(cpc) catch {};
-        }
-    }
-
-    /// Like `pointCloudColored`, but takes parallel position and color arrays.
-    pub fn pointCloudColoredArrays(
-        self: *Self,
-        centers: []const [2]f32,
-        colors: []const Color,
-        radius: f32,
-    ) void {
-        std.debug.assert(centers.len >= 1); // Need at least 1 point
-        std.debug.assert(centers.len == colors.len); // Same count
-        std.debug.assert(radius > 0);
-
-        if (centers.len < 1) return;
-
-        // Allocate positions and colors from scene's allocator (arena), not stack
-        const scene_positions = self.scene.allocator.alloc(Point, centers.len) catch return;
-        const scene_colors = self.scene.allocator.alloc(Hsla, centers.len) catch return;
-
-        // Transform positions to scene coordinates and convert colors
-        const ox = self.bounds.origin.x;
-        const oy = self.bounds.origin.y;
-        for (centers, colors, 0..) |c, col, i| {
-            scene_positions[i] = .{ .x = ox + c[0], .y = oy + c[1] };
-            scene_colors[i] = Hsla.fromColor(col);
-        }
-
-        // Create and insert colored point cloud primitive
-        const cpc = ColoredPointCloud.init(scene_positions, scene_colors, radius);
-        if (self.isOrdered()) {
-            self.scene.insertColoredPointCloudWithOrder(cpc, self.nextOrder(), self.clip_bounds) catch {};
-        } else {
-            self.scene.insertColoredPointCloud(cpc) catch {};
         }
     }
 

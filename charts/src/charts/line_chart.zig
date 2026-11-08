@@ -8,8 +8,7 @@
 //! This avoids embedding large arrays on the stack (per CLAUDE.md).
 
 const std = @import("std");
-const builtin = @import("builtin");
-const gooey = @import("gooey");
+const paint = @import("../paint.zig");
 const constants = @import("../constants.zig");
 const types = @import("../types.zig");
 const util = @import("../util.zig");
@@ -27,18 +26,13 @@ const Series = types.Series;
 const DataPoint = types.DataPoint;
 const ChartTheme = theme_mod.ChartTheme;
 
-pub const Color = gooey.ui.Color;
-pub const DrawContext = gooey.ui.DrawContext;
+pub const Color = paint.Color;
+pub const Painter = paint.Painter;
 // NOTE: Path is ~70KB on the stack, so we avoid it and use strokeLine instead
 
 const MAX_SERIES = constants.MAX_SERIES;
 const MAX_DATA_POINTS = constants.MAX_DATA_POINTS;
-const ENABLE_PERF_LOGGING = constants.ENABLE_PERF_LOGGING;
-const PERF_WARNING_THRESHOLD_NS = constants.PERF_WARNING_THRESHOLD_NS;
 const LOD_THRESHOLD = constants.LOD_THRESHOLD;
-
-// Decimation point type alias for LTTB algorithm
-const DecimationPoint = util.DecimationPoint;
 
 // =============================================================================
 // Default Color Palette (imported from theme.zig - single source of truth)
@@ -161,28 +155,15 @@ pub const LineChart = struct {
     // Rendering
     // ==========================================================================
 
-    /// Render the line chart to a DrawContext.
-    pub fn render(self: *const LineChart, ctx: *DrawContext) void {
-        // Performance timing
-        const start_time = if (ENABLE_PERF_LOGGING) std.time.nanoTimestamp() else 0;
-        defer if (ENABLE_PERF_LOGGING) {
-            const elapsed = std.time.nanoTimestamp() - start_time;
-            if (elapsed > PERF_WARNING_THRESHOLD_NS) {
-                if (builtin.mode == .debug) {
-                    std.log.warn("LineChart render: {d:.2}ms exceeds 8ms budget", .{
-                        @as(f64, @floatFromInt(elapsed)) / 1_000_000.0,
-                    });
-                }
-            }
-        };
-
+    /// Render the line chart, offset by the paint element's bounds.
+    pub fn render(self: *const LineChart, painter: *Painter) void {
         // Assertions at API boundary
         std.debug.assert(self.data.len > 0);
         std.debug.assert(self.width > 0 and self.height > 0);
 
         // Calculate inner bounds
-        const inner_x = self.margin_left;
-        const inner_y = self.margin_top;
+        const inner_x = painter.bounds.x + self.margin_left;
+        const inner_y = painter.bounds.y + self.margin_top;
         const inner_width = self.width - self.margin_left - self.margin_right;
         const inner_height = self.height - self.margin_top - self.margin_bottom;
 
@@ -212,43 +193,31 @@ pub const LineChart = struct {
 
         // Draw grid (behind lines)
         if (self.show_grid) {
-            self.drawGrid(ctx, x_scale, y_scale, inner_x, inner_y, inner_width, inner_height);
+            self.drawGrid(painter, x_scale, y_scale, inner_x, inner_y, inner_width, inner_height);
         }
 
         // Draw area fills first (behind lines)
         if (self.show_area) {
-            self.drawAreas(ctx, x_scale, y_scale, inner_y + inner_height);
+            self.drawAreas(painter, x_scale, y_scale, inner_y + inner_height);
         }
 
         // Draw lines
-        self.drawLines(ctx, x_scale, y_scale);
+        self.drawLines(painter, x_scale, y_scale);
 
         // Draw point markers (on top of lines)
         if (self.show_points) {
-            self.drawPoints(ctx, x_scale, y_scale);
+            self.drawPoints(painter, x_scale, y_scale);
         }
 
-        // Draw axes (on top)
+        // Axes on top.
         if (self.show_x_axis) {
-            var x_opts = self.x_axis_opts;
-            x_opts.orientation = .bottom;
-            // Apply theme colors if available
-            if (self.chart_theme) |t| {
-                x_opts.color = t.axis_color;
-                x_opts.label_color = t.tick_color;
-            }
-            Axis.drawLinear(ctx, x_scale, inner_x, inner_y + inner_height, x_opts);
+            const x_opts = Axis.themed(self.x_axis_opts, .bottom, self.chart_theme);
+            Axis.drawLinear(painter, x_scale, inner_x, inner_y + inner_height, x_opts);
         }
 
         if (self.show_y_axis) {
-            var y_opts = self.y_axis_opts;
-            y_opts.orientation = .left;
-            // Apply theme colors if available
-            if (self.chart_theme) |t| {
-                y_opts.color = t.axis_color;
-                y_opts.label_color = t.tick_color;
-            }
-            Axis.drawLinear(ctx, y_scale, inner_x, inner_y, y_opts);
+            const y_opts = Axis.themed(self.y_axis_opts, .left, self.chart_theme);
+            Axis.drawLinear(painter, y_scale, inner_x, inner_y, y_opts);
         }
     }
 
@@ -306,7 +275,7 @@ pub const LineChart = struct {
     /// Draw grid lines.
     fn drawGrid(
         self: *const LineChart,
-        ctx: *DrawContext,
+        painter: *Painter,
         x_scale: LinearScale,
         y_scale: LinearScale,
         x: f32,
@@ -321,7 +290,7 @@ pub const LineChart = struct {
         }
 
         Grid.drawLinearXY(
-            ctx,
+            painter,
             x_scale,
             y_scale,
             .{ .x = x, .y = y, .width = w, .height = h },
@@ -334,7 +303,7 @@ pub const LineChart = struct {
     /// Draw filled areas under lines.
     fn drawAreas(
         self: *const LineChart,
-        ctx: *DrawContext,
+        painter: *Painter,
         x_scale: LinearScale,
         y_scale: LinearScale,
         baseline: f32,
@@ -346,7 +315,7 @@ pub const LineChart = struct {
             // Debug: use full opacity to test if triangles render
             const area_color = Color.rgba(color.r, color.g, color.b, 0.3);
 
-            self.drawSeriesArea(ctx, series, x_scale, y_scale, baseline, area_color);
+            self.drawSeriesArea(painter, series, x_scale, y_scale, baseline, area_color);
         }
     }
 
@@ -354,7 +323,7 @@ pub const LineChart = struct {
     /// Subdivides each segment into smaller strips with interpolated heights.
     fn drawSeriesArea(
         self: *const LineChart,
-        ctx: *DrawContext,
+        painter: *Painter,
         series: *const Series,
         x_scale: LinearScale,
         y_scale: LinearScale,
@@ -391,152 +360,72 @@ pub const LineChart = struct {
                 const h = baseline - sub_y;
 
                 if (h > 0) {
-                    ctx.fillRect(sub_x, sub_y, sub_width, h, color);
+                    painter.fill(
+                        .{ .x = sub_x, .y = sub_y, .width = sub_width, .height = h },
+                        color,
+                    );
                 }
             }
         }
     }
 
     /// Draw all series lines.
-    fn drawLines(self: *const LineChart, ctx: *DrawContext, x_scale: LinearScale, y_scale: LinearScale) void {
+    fn drawLines(
+        self: *const LineChart,
+        painter: *Painter,
+        x_scale: LinearScale,
+        y_scale: LinearScale,
+    ) void {
         for (self.data, 0..) |*series, series_idx| {
             if (series.data_len < 2) continue;
 
             const color = self.getSeriesColor(series, series_idx);
-            self.drawSeriesLine(ctx, series, x_scale, y_scale, color);
+            self.drawSeriesLine(painter, series, x_scale, y_scale, color);
         }
     }
 
-    /// Draw line for a single series using polyline API (single draw call).
-    /// This is much more efficient than N strokeLine calls:
-    /// - N strokeLine calls: N draw calls, N tessellations, N GPU uploads
-    /// - One polyline: 1 draw call, 0 tessellations, 1 GPU upload
-    ///
-    /// For large datasets (>LOD_THRESHOLD), uses LTTB decimation to reduce
-    /// point count while preserving visual shape.
+    /// Draw a series as one polyline, decimated with LTTB past `lod_target_points`.
     fn drawSeriesLine(
         self: *const LineChart,
-        ctx: *DrawContext,
+        painter: *Painter,
         series: *const Series,
         x_scale: LinearScale,
         y_scale: LinearScale,
         color: Color,
     ) void {
-        if (series.data_len < 2) return;
-
-        // Check if LOD decimation is needed
-        const use_lod = self.enable_lod and series.data_len > self.lod_target_points;
-
-        // Build points array (stack allocation is fine - just f32 pairs, ~32KB max)
+        std.debug.assert(series.data_len >= 2);
         var points: [MAX_DATA_POINTS][2]f32 = undefined;
-        var count: usize = 0;
+        const count = scale_mod.projectSeries(series, x_scale, y_scale, self.lodPoints(), &points);
+        if (count >= 2) painter.polyline(points[0..count], self.line_width, color);
+    }
 
-        if (use_lod) {
-            // Apply LTTB decimation for large datasets
-            var input_points: [MAX_DATA_POINTS]DecimationPoint = undefined;
-            var decimated: [MAX_DATA_POINTS]DecimationPoint = undefined;
-
-            // Convert to decimation format
-            var i: u32 = 0;
-            while (i < series.data_len and i < MAX_DATA_POINTS) : (i += 1) {
-                input_points[i] = .{ .x = series.data[i].x, .y = series.data[i].y };
-            }
-
-            // Decimate using LTTB algorithm
-            const decimated_count = util.decimateLTTB(
-                input_points[0..series.data_len],
-                series.data_len,
-                &decimated,
-                self.lod_target_points,
+    /// Draw each series' markers as one point cloud, after every line.
+    fn drawPoints(
+        self: *const LineChart,
+        painter: *Painter,
+        x_scale: LinearScale,
+        y_scale: LinearScale,
+    ) void {
+        std.debug.assert(self.data.len > 0);
+        std.debug.assert(self.point_radius > 0);
+        var centers: [MAX_DATA_POINTS][2]f32 = undefined;
+        for (self.data, 0..) |*series, series_idx| {
+            if (series.data_len == 0) continue;
+            const count = scale_mod.projectSeries(
+                series,
+                x_scale,
+                y_scale,
+                self.lodPoints(),
+                &centers,
             );
-
-            // Scale decimated points
-            var j: u32 = 0;
-            while (j < decimated_count) : (j += 1) {
-                points[count] = .{ x_scale.scale(decimated[j].x), y_scale.scale(decimated[j].y) };
-                count += 1;
-            }
-        } else {
-            // Use all points directly
-            var i: u32 = 0;
-            while (i < series.data_len and count < MAX_DATA_POINTS) : (i += 1) {
-                const point = &series.data[i];
-                points[count] = .{ x_scale.scale(point.x), y_scale.scale(point.y) };
-                count += 1;
-            }
-        }
-
-        // Single draw call for entire line
-        if (count >= 2) {
-            ctx.polyline(points[0..count], self.line_width, color);
+            const color = self.getSeriesColor(series, series_idx);
+            painter.pointCloud(centers[0..count], self.point_radius, color);
         }
     }
 
-    /// Draw point markers for ALL series in a single batched draw call.
-    /// OPTIMIZED: Uses pointCloudColoredArrays to render all points across all series
-    /// in ONE GPU draw call using instanced rendering.
-    /// Per-series drawing: N series = N draw calls
-    /// Batched:            1 draw call for all points with per-point colors
-    ///
-    /// For large datasets (>LOD_THRESHOLD), uses LTTB decimation per series to reduce
-    /// point count while preserving visual shape.
-    fn drawPoints(self: *const LineChart, ctx: *DrawContext, x_scale: LinearScale, y_scale: LinearScale) void {
-        std.debug.assert(self.data.len > 0);
-
-        var centers: [MAX_DATA_POINTS][2]f32 = undefined;
-        var colors: [MAX_DATA_POINTS]Color = undefined;
-        var total_count: usize = 0;
-
-        for (self.data, 0..) |*series, series_idx| {
-            if (series.data_len == 0) continue;
-
-            const color = self.getSeriesColor(series, series_idx);
-
-            // Check if LOD decimation is needed for this series
-            const use_lod = self.enable_lod and series.data_len > self.lod_target_points;
-
-            if (use_lod) {
-                // Apply LTTB decimation for large datasets
-                var input_points: [MAX_DATA_POINTS]DecimationPoint = undefined;
-                var decimated: [MAX_DATA_POINTS]DecimationPoint = undefined;
-
-                // Convert to decimation format
-                var i: u32 = 0;
-                while (i < series.data_len and i < MAX_DATA_POINTS) : (i += 1) {
-                    input_points[i] = .{ .x = series.data[i].x, .y = series.data[i].y };
-                }
-
-                // Decimate using LTTB algorithm
-                const decimated_count = util.decimateLTTB(
-                    input_points[0..series.data_len],
-                    series.data_len,
-                    &decimated,
-                    self.lod_target_points,
-                );
-
-                // Scale decimated points and add to batch
-                var j: u32 = 0;
-                while (j < decimated_count and total_count < MAX_DATA_POINTS) : (j += 1) {
-                    centers[total_count] = .{ x_scale.scale(decimated[j].x), y_scale.scale(decimated[j].y) };
-                    colors[total_count] = color;
-                    total_count += 1;
-                }
-            } else {
-                // Use all points directly
-                var i: u32 = 0;
-                while (i < series.data_len and total_count < MAX_DATA_POINTS) : (i += 1) {
-                    const point = &series.data[i];
-                    centers[total_count] = .{ x_scale.scale(point.x), y_scale.scale(point.y) };
-                    colors[total_count] = color;
-                    total_count += 1;
-                }
-            }
-        }
-
-        // Single draw call for ALL points across ALL series (instanced rendering)
-        if (total_count >= 1) {
-            ctx.pointCloudColoredArrays(centers[0..total_count], colors[0..total_count], self.point_radius);
-        }
+    /// The point count series decimate to, or null with LOD off.
+    fn lodPoints(self: *const LineChart) ?u32 {
+        return if (self.enable_lod) self.lod_target_points else null;
     }
 
     /// Get color for a series (use series color or fall back to theme/default palette).

@@ -14,6 +14,7 @@ const code_editor = @import("code_editor_example");
 const nested_overlay = @import("nested_overlay_example");
 const virtual_list = @import("virtual_list_example");
 const data_table = @import("data_table_example");
+const dashboard = @import("dashboard_example");
 const components = @import("gooey-components");
 const core_driver = @import("core.zig");
 const trace_mod = @import("trace.zig");
@@ -2307,4 +2308,77 @@ test "Painter meshes pack into the scene's paths, polylines, and point clouds" {
     try testing.expectEqual(@as(usize, 1), scene.pointCloudCount());
     try testing.expectEqual(@as(u32, 3), scene.getPolylines()[0].point_count);
     try testing.expectEqual(core.internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
+}
+
+test "dashboard draws every chart within .standard and t switches its theme" {
+    // Goal: the charts reach the core's mesh records within the dashboard's
+    // `.standard` limits (an overflow panics), every series draws, and the
+    // keymap's "t" toggles the theme. Methodology: one frame, then the mesh
+    // records by kind: the two line series are one polyline each and one
+    // marker cloud each at radius 4; the three scatter segments are one
+    // cloud each at radius 7 and 0.85 alpha. The root box's fill is the
+    // dark background, then the light one after "t".
+    const App = dashboard.App;
+    const app = try testing.allocator.create(App);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 2 });
+    defer app.deinitHeadless();
+    app.tick(0);
+
+    const Cloud = struct { radius: f32, alpha: f32, blue: f32 };
+    const expected_clouds = [_]Cloud{
+        .{ .radius = 4, .alpha = 1, .blue = ui.Color.hex(0x06b6d4).b },
+        .{ .radius = 4, .alpha = 1, .blue = ui.Color.hex(0x94a3b8).b },
+        .{ .radius = 7, .alpha = 0.85, .blue = ui.Color.hex(0x8b5cf6).b },
+        .{ .radius = 7, .alpha = 0.85, .blue = ui.Color.hex(0x06b6d4).b },
+        .{ .radius = 7, .alpha = 0.85, .blue = ui.Color.hex(0x64748b).b },
+    };
+    var clouds: u32 = 0;
+    var lines: u32 = 0;
+    var triangle_meshes: u32 = 0;
+    const frame = app.window.rendered();
+    for (frame.paint[0..frame.paint_count]) |record| {
+        if (record != .mesh) continue;
+        const mesh = record.mesh;
+        switch (mesh.topology) {
+            .triangles => triangle_meshes += 1,
+            .strip_expanded => {
+                try testing.expectEqual(@as(u32, 12), mesh.range.count);
+                try testing.expectEqual(@as(f32, 2.5), mesh.width);
+                lines += 1;
+            },
+            .point_instanced => {
+                const want = expected_clouds[clouds];
+                try testing.expectEqual(want.radius, mesh.width);
+                try testing.expectApproxEqAbs(want.alpha, mesh.fill.a, 0.001);
+                try testing.expectApproxEqAbs(want.blue, mesh.fill.b, 0.001);
+                clouds += 1;
+            },
+        }
+    }
+    try testing.expectEqual(@as(u32, 2), lines);
+    try testing.expectEqual(@as(u32, expected_clouds.len), clouds);
+    // The accent dot, the legend's three circles, two rings of slices, and
+    // the conversion ring's centre circles: one mesh per run of a colour.
+    try testing.expect(triangle_meshes >= 1 + 3 + 5 + 2 + 3);
+
+    try testing.expectEqual(ui.Color.hex(0x0f172a), rootFill(&app.window));
+    app.window.queue.push(.{ .input = .{ .key_down = chord(.t, .{}) } });
+    app.tick(1);
+    try testing.expect(!app.state.is_dark_theme);
+    try testing.expectEqual(ui.Color.hex(0xf1f5f9), rootFill(&app.window));
+    try testing.expectEqual(core.internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
+}
+
+/// The fill of the frame's window-sized quad: the root box's background.
+fn rootFill(window: *core.internals.window.Window) ui.Color {
+    const frame = window.rendered();
+    for (frame.paint[0..frame.paint_count]) |record| {
+        if (record != .quad) continue;
+        const bounds = record.quad.bounds;
+        if (bounds.width == window.width and bounds.height == window.height) {
+            return record.quad.fill;
+        }
+    }
+    unreachable;
 }

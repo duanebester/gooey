@@ -219,6 +219,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "disktree", .source = "src/examples/disktree.zig" },
             .{ .name = "lucide-demo", .source = "src/examples/lucide_demo.zig" },
             .{ .name = "code-editor", .source = "src/examples/code_editor.zig" },
+            .{ .name = "dashboard", .source = "src/examples/dashboard.zig" },
             .{ .name = "multi-window", .source = "src/examples/multi_window.zig" },
             .{ .name = "ai-canvas-spike", .source = "src/examples/ai_canvas_spike.zig" },
             .{ .name = "ai-canvas", .source = "src/examples/ai_canvas.zig" },
@@ -228,6 +229,7 @@ pub fn build(b: *std.Build) void {
                 b,
                 mod,
                 components_mod,
+                charts_mod,
                 objc_mod,
                 target,
                 optimize,
@@ -237,12 +239,6 @@ pub fn build(b: *std.Build) void {
             );
         }
         addGenuiNativeExample(b, mod, components_mod, genui_mod, objc_mod, target, optimize);
-
-        // =========================================================================
-        // Charts Examples
-        // =========================================================================
-
-        addChartsExample(b, mod, charts_mod, objc_mod, target, optimize, "dashboard", "src/examples/dashboard.zig");
 
         // =====================================================================
         // Tests
@@ -722,6 +718,13 @@ pub fn build(b: *std.Build) void {
         });
         components_mod.addImport("gooey", mod);
 
+        const charts_mod = b.addModule("gooey-charts", .{
+            .root_source_file = b.path("charts/src/root.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        charts_mod.addImport("gooey", mod);
+
         // =========================================================================
         // Gooey Gen UI Module
         // =========================================================================
@@ -823,6 +826,7 @@ pub fn build(b: *std.Build) void {
                 .core = true,
             },
             .{ .name = "disktree", .source = "src/examples/disktree.zig" },
+            .{ .name = "dashboard", .source = "src/examples/dashboard.zig", .core = true },
         };
         for (linux_examples) |example| {
             if (example.wayland_only and linux_backend == .fbdev) continue;
@@ -831,6 +835,7 @@ pub fn build(b: *std.Build) void {
                 b,
                 mod,
                 components_mod,
+                charts_mod,
                 target,
                 optimize,
                 compile_shaders_step,
@@ -1143,6 +1148,11 @@ pub fn build(b: *std.Build) void {
         if (!skip_shader_compile) components_tests.step.dependOn(compile_shaders_step);
         const run_components_tests = b.addRunArtifact(components_tests);
 
+        const charts_tests = b.addTest(.{ .root_module = charts_mod, .use_llvm = true });
+        linkLinuxLibraries(charts_tests, linux_backend);
+        if (!skip_shader_compile) charts_tests.step.dependOn(compile_shaders_step);
+        const run_charts_tests = b.addRunArtifact(charts_tests);
+
         const watcher_tests = b.addTest(.{
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/runtime/watcher.zig"),
@@ -1182,6 +1192,7 @@ pub fn build(b: *std.Build) void {
         const test_step = b.step("test", "Run tests");
         test_step.dependOn(&run_mod_tests.step);
         test_step.dependOn(&run_components_tests.step);
+        test_step.dependOn(&run_charts_tests.step);
         test_step.dependOn(&run_watcher_tests.step);
         test_step.dependOn(&run_genui_tests.step);
         addGoldens(b, target, optimize, .{
@@ -1315,6 +1326,13 @@ fn addWindowsBuilds(
     });
     components_mod.addImport("gooey", mod);
 
+    const charts_mod = b.addModule("gooey-charts", .{
+        .root_source_file = b.path("charts/src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    charts_mod.addImport("gooey", mod);
+
     const examples = [_]struct { name: []const u8, source: []const u8 }{
         .{ .name = "showcase", .source = "src/examples/showcase.zig" },
         .{ .name = "layout", .source = "src/examples/layout.zig" },
@@ -1329,9 +1347,19 @@ fn addWindowsBuilds(
         .{ .name = "actions", .source = "src/examples/actions.zig" },
         .{ .name = "nested-overlay", .source = "src/examples/nested_overlay.zig" },
         .{ .name = "accessible-form", .source = "src/examples/accessible_form.zig" },
+        .{ .name = "dashboard", .source = "src/examples/dashboard.zig" },
     };
     for (examples) |example| {
-        addWindowsExample(b, mod, components_mod, target, optimize, example.name, example.source);
+        addWindowsExample(
+            b,
+            mod,
+            components_mod,
+            charts_mod,
+            target,
+            optimize,
+            example.name,
+            example.source,
+        );
     }
 
     // Two binaries, as on macOS and Linux: the shared tests run against the
@@ -1356,6 +1384,7 @@ fn addWindowsExample(
     b: *std.Build,
     gooey_module: *std.Build.Module,
     components_module: *std.Build.Module,
+    charts_module: *std.Build.Module,
     target: std.Build.ResolvedTarget,
     optimize: std.lang.Optimize,
     name: []const u8,
@@ -1373,6 +1402,7 @@ fn addWindowsExample(
             .imports = &.{
                 .{ .name = "gooey", .module = gooey_module },
                 .{ .name = "gooey-components", .module = components_module },
+                .{ .name = "gooey-charts", .module = charts_module },
             },
         }),
     });
@@ -1534,6 +1564,12 @@ fn addMacosCoreExampleTypecheck(
         .optimize = .debug,
     });
     components_mod.addImport("gooey", gooey_mod);
+    const charts_mod = b.createModule(.{
+        .root_source_file = b.path("charts/src/root.zig"),
+        .target = target,
+        .optimize = .debug,
+    });
+    charts_mod.addImport("gooey", gooey_mod);
     const examples = [_][]const u8{
         "counter",
         "todo",
@@ -1542,6 +1578,7 @@ fn addMacosCoreExampleTypecheck(
         "nested_overlay",
         "virtual_list_example",
         "data_table_example",
+        "dashboard",
     };
     for (examples) |name| {
         const exe = b.addExecutable(.{
@@ -1553,6 +1590,7 @@ fn addMacosCoreExampleTypecheck(
                 .imports = &.{
                     .{ .name = "gooey", .module = gooey_mod },
                     .{ .name = "gooey-components", .module = components_mod },
+                    .{ .name = "gooey-charts", .module = charts_mod },
                 },
             }),
         });
@@ -1607,6 +1645,7 @@ fn addNativeExample(
     b: *std.Build,
     gooey_module: *std.Build.Module,
     components_module: *std.Build.Module,
+    charts_module: *std.Build.Module,
     objc_module: *std.Build.Module,
     target: std.Build.ResolvedTarget,
     optimize: std.lang.Optimize,
@@ -1623,6 +1662,7 @@ fn addNativeExample(
             .imports = &.{
                 .{ .name = "gooey", .module = gooey_module },
                 .{ .name = "gooey-components", .module = components_module },
+                .{ .name = "gooey-charts", .module = charts_module },
                 .{ .name = "objc", .module = objc_module },
             },
         }),
@@ -1873,42 +1913,6 @@ fn add_geometry_overflow_checks(
         run.addCheck(.{ .expect_term = .{ .signal = .ABRT } });
         test_step.dependOn(&run.step);
     }
-}
-
-/// Helper to add a charts example with both gooey and gooey-charts modules.
-fn addChartsExample(
-    b: *std.Build,
-    gooey_module: *std.Build.Module,
-    charts_module: *std.Build.Module,
-    objc_module: *std.Build.Module,
-    target: std.Build.ResolvedTarget,
-    optimize: std.lang.Optimize,
-    name: []const u8,
-    source: []const u8,
-) void {
-    const exe = b.addExecutable(.{
-        .name = name,
-        .root_module = b.createModule(.{
-            .root_source_file = b.path(source),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "gooey", .module = gooey_module },
-                .{ .name = "gooey-charts", .module = charts_module },
-                .{ .name = "objc", .module = objc_module },
-            },
-        }),
-    });
-
-    b.installArtifact(exe);
-
-    const step_name = b.fmt("run-{s}", .{name});
-    const step_desc = b.fmt("Run the {s} example", .{name});
-    const step = b.step(step_name, step_desc);
-
-    const run_cmd = b.addRunArtifact(exe);
-    step.dependOn(&run_cmd.step);
-    run_cmd.step.dependOn(b.getInstallStep());
 }
 
 // =============================================================================
@@ -2190,6 +2194,7 @@ fn addLinuxExample(
     b: *std.Build,
     gooey_module: *std.Build.Module,
     components_module: *std.Build.Module,
+    charts_module: *std.Build.Module,
     target: std.Build.ResolvedTarget,
     optimize: std.lang.Optimize,
     compile_shaders_step: *std.Build.Step,
@@ -2207,6 +2212,7 @@ fn addLinuxExample(
             .imports = &.{
                 .{ .name = "gooey", .module = gooey_module },
                 .{ .name = "gooey-components", .module = components_module },
+                .{ .name = "gooey-charts", .module = charts_module },
             },
         }),
     });
@@ -2411,11 +2417,27 @@ fn addGoldens(
         .optimize = optimize,
         .imports = example_imports,
     });
+    const charts_mod = b.createModule(.{
+        .root_source_file = b.path("charts/src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "gooey", .module = gooey_mod }},
+    });
+    const dashboard_mod = b.createModule(.{
+        .root_source_file = b.path("src/examples/dashboard.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "gooey", .module = gooey_mod },
+            .{ .name = "gooey-charts", .module = charts_mod },
+        },
+    });
     const goldens_imports: []const std.Build.Module.Import = &.{
         .{ .name = "accessible_form_example", .module = accessible_form_mod },
         .{ .name = "actions_example", .module = actions_mod },
         .{ .name = "code_editor_example", .module = code_editor_mod },
         .{ .name = "data_table_example", .module = data_table_mod },
+        .{ .name = "dashboard_example", .module = dashboard_mod },
         .{ .name = "gooey", .module = gooey_mod },
         .{ .name = "gooey-components", .module = components_mod },
         .{ .name = "counter_example", .module = counter_mod },

@@ -4,7 +4,9 @@ A GPU-accelerated charting library for Gooey.
 
 ## Overview
 
-Gooey Charts provides declarative, high-performance chart components that integrate seamlessly with Gooey's UI system. Charts render directly to the GPU via Gooey's canvas API, with zero dynamic allocation during render.
+Gooey Charts provides declarative, high-performance chart components for Gooey's core UI.
+Charts draw through the `Painter` of a `ui.paint` element, with zero dynamic allocation
+during render.
 
 ## Features
 
@@ -15,39 +17,49 @@ Gooey Charts provides declarative, high-performance chart components that integr
 
 ## Quick Start
 
-Charts draw inside a `ui.canvas` paint callback. Series hold fixed-capacity arrays, so keep
-chart data in static storage (a stack copy is too large for the WASM stack) and fill it once
-at startup. This is the pattern `src/examples/dashboard.zig` uses.
+Charts draw inside a `ui.paint` element, in window coordinates offset by the
+element's `painter.bounds`. Series hold fixed-capacity arrays (a `Series` is about
+300 KiB), so keep chart data in app state and fill it in place from `on_init`. This
+is the pattern `src/examples/dashboard.zig` uses.
 
 ```zig
 const gooey = @import("gooey");
 const charts = @import("gooey-charts");
-const ui = gooey.ui;
+const core = gooey.core;
+const ui = core.ui;
 
-var sales_data: [1]charts.CategorySeries = undefined;
+const State = struct { sales: [1]charts.CategorySeries = undefined };
 
-fn initSales(_: *gooey.Cx) void {
-    sales_data[0] = charts.CategorySeries.init("Sales", charts.Color.hex(0x4285f4));
-    sales_data[0].addPoint(charts.CategoryPoint.init("Q1", 30));
-    sales_data[0].addPoint(charts.CategoryPoint.init("Q2", 45));
-    sales_data[0].addPoint(charts.CategoryPoint.init("Q3", 28));
-    sales_data[0].addPoint(charts.CategoryPoint.init("Q4", 55));
+fn initSales(state: *State, _: *core.Effects) void {
+    const sales = &state.sales[0];
+    sales.* = charts.CategorySeries.init("Sales", charts.Color.hex(0x4285f4));
+    sales.addPoint(charts.CategoryPoint.init("Q1", 30));
+    sales.addPoint(charts.CategoryPoint.init("Q2", 45));
+    sales.addPoint(charts.CategoryPoint.init("Q3", 28));
+    sales.addPoint(charts.CategoryPoint.init("Q4", 55));
 }
 
-fn paintSales(ctx: *ui.DrawContext) void {
-    var chart = charts.BarChart.init(&sales_data);
-    chart.width = ctx.width();
-    chart.height = ctx.height();
-    chart.render(ctx);
+fn paintSales(state: *const State, painter: *ui.Painter) void {
+    var chart = charts.BarChart.init(&state.sales);
+    chart.width = painter.bounds.width;
+    chart.height = painter.bounds.height;
+    chart.render(painter);
 }
 
-fn render(cx: *gooey.Cx) void {
-    cx.render(ui.box(.{}, .{
-        ui.canvas(400, 300, paintSales),
+fn render(cx: *core.Cx) void {
+    cx.render(ui.paint(State, cx.state(State), paintSales, .{
+        .width = .{ .fixed = 400 },
+        .height = .{ .fixed = 300 },
     }));
 }
 
-// Pass `.on_init = initSales` in the `gooey.App` config.
+pub const App = core.App(State, render, .{
+    .title = "Sales",
+    .width = 440,
+    .height = 340,
+    .limits = .standard,
+    .on_init = initSales,
+});
 ```
 
 ## Design Principles
