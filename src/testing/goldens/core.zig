@@ -167,5 +167,5 @@ pub fn captureTodo(allocator: std.mem.Allocator, io: std.Io, out: *TextBuffer) !
 }
 
 pub fn captureActions(allocator: std.mem.Allocator, io: std.Io, out: *TextBuffer) !void {
-    try capture(allocator, io, actions.App, &traces.actions, out);
+    try capture(allocator, io, actions.AppWith(.cmd), &traces.actions, out);
 }

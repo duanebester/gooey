@@ -1556,7 +1556,7 @@ test "keymapClaims answers from the rendered focus path" {
     // Methodology: cmd-s is bound only in the editor's context, so it is
     // claimed only once the editor input is focused; an unbound key never
     // is, and a global binding always is.
-    const Driver = core_driver.CoreDriver(actions.App);
+    const Driver = core_driver.CoreDriver(actions.AppWith(.cmd));
     const driver = try testing.allocator.create(Driver);
     defer testing.allocator.destroy(driver);
     try driver.initInPlace(testing.allocator, testing.io, &traces.actions);
