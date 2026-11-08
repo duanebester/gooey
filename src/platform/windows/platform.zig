@@ -245,18 +245,7 @@ pub const WindowsPlatform = struct {
     /// `WM_QUIT` arrives, which ends the loop.
     fn dispatchMessages(self: *Self) bool {
         assert(self.running);
-        var message: win32.MSG = undefined;
-        var dispatched: u32 = 0;
-        while (dispatched < message_batch_max) : (dispatched += 1) {
-            if (win32.PeekMessageW(&message, null, 0, 0, win32.PM_REMOVE) == win32.FALSE) break;
-            if (message.message == win32.WM_QUIT) return false;
-            // Produces `WM_CHAR` from key messages; the result says only
-            // whether a character message was posted.
-            _ = win32.TranslateMessage(&message);
-            _ = win32.DispatchMessageW(&message);
-        }
-        assert(dispatched <= message_batch_max);
-        return true;
+        return dispatchMessageBatch();
     }
 
     /// Block until a message arrives or `timeout_ns` passes. Returns false if
@@ -440,10 +429,28 @@ pub const WindowsPlatform = struct {
     }
 };
 
+/// Dispatch up to `message_batch_max` queued messages of this thread.
+/// Returns false when `WM_QUIT` arrives. Shared by `run` and the core host's
+/// loop.
+pub fn dispatchMessageBatch() bool {
+    var message: win32.MSG = undefined;
+    var dispatched: u32 = 0;
+    while (dispatched < message_batch_max) : (dispatched += 1) {
+        if (win32.PeekMessageW(&message, null, 0, 0, win32.PM_REMOVE) == win32.FALSE) break;
+        if (message.message == win32.WM_QUIT) return false;
+        // Produces `WM_CHAR` from key messages; the result says only whether
+        // a character message was posted.
+        _ = win32.TranslateMessage(&message);
+        _ = win32.DispatchMessageW(&message);
+    }
+    assert(dispatched <= message_batch_max);
+    return true;
+}
+
 /// Create the loop's waitable timer, high resolution where the system has
 /// it (Windows 10 1803 and later). The regular fallback still works but
 /// expires on the system tick, so frames below 60 Hz may pace coarsely.
-fn createFrameTimer() !win32.HANDLE {
+pub fn createFrameTimer() !win32.HANDLE {
     comptime assert(win32.CREATE_WAITABLE_TIMER_HIGH_RESOLUTION == 0x2);
     comptime assert(win32.TIMER_ALL_ACCESS == 0x001F_0003);
     const access = win32.TIMER_ALL_ACCESS;
@@ -464,7 +471,7 @@ fn createFrameTimer() !win32.HANDLE {
     };
 }
 
-fn closeFrameTimer(timer: win32.HANDLE) void {
+pub fn closeFrameTimer(timer: win32.HANDLE) void {
     assert(@intFromPtr(timer) != 0);
     if (win32.CloseHandle(timer) == win32.FALSE) {
         std.log.warn("windows: CloseHandle(frame timer) failed (error {d})", .{
