@@ -43,11 +43,11 @@ const SpringMotionConfig = motion_mod.SpringMotionConfig;
 
 /// Zero-sized namespace marker. Lives as the `animations` field on
 /// `Cx` and recovers the parent context via `@fieldParentPtr` from
-/// each method. See `lists.zig` for the rationale (CLAUDE.md §10 —
+/// each method. See `focus.zig` for the rationale (CLAUDE.md §10 —
 /// don't take aliases).
 pub const Animations = struct {
     /// Force this ZST to inherit `Cx`'s alignment via a zero-byte
-    /// `[0]usize` filler — see the matching note in `cx/lists.zig`
+    /// `[0]usize` filler — see the matching note in `cx/focus.zig`
     /// for the rationale. Without this, the namespace field would
     /// limit `Cx`'s overall alignment to 1 and `@fieldParentPtr`
     /// would fail to compile with "increases pointer alignment".

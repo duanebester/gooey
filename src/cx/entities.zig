@@ -4,7 +4,7 @@
 //! are accessed through the
 //! `cx.entities.<name>(...)` sub-namespace, which is implemented as a
 //! zero-sized field on `Cx` whose methods recover `*Cx` via
-//! `@fieldParentPtr`. See `lists.zig` for the rationale.
+//! `@fieldParentPtr`. See `focus.zig` for the rationale.
 //!
 //! ## Naming inside the namespace
 //!
@@ -30,11 +30,11 @@ const EntityContext = entity_mod.EntityContext;
 
 /// Zero-sized namespace marker. Lives as the `entities` field on `Cx`
 /// and recovers the parent context via `@fieldParentPtr` from each
-/// method. See `lists.zig` for the rationale (CLAUDE.md §10 — don't
+/// method. See `focus.zig` for the rationale (CLAUDE.md §10 — don't
 /// take aliases).
 pub const Entities = struct {
     /// Force this ZST to inherit `Cx`'s alignment via a zero-byte
-    /// `[0]usize` filler — see the matching note in `cx/lists.zig`
+    /// `[0]usize` filler — see the matching note in `cx/focus.zig`
     /// for the rationale. Without this, the namespace field would
     /// limit `Cx`'s overall alignment to 1 and `@fieldParentPtr`
     /// would fail to compile with "increases pointer alignment".

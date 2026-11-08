@@ -1169,10 +1169,6 @@ pub const Builder = struct {
         return self.active_scroll_drag_id;
     }
 
-    // The Uniform List, Virtual List, and Data Table builder helpers live in
-    // their respective `src/widgets/*.zig` files (to avoid a `ui → widgets`
-    // edge). They take `*Builder` and append to `b.pending_scrolls` directly.
-
     /// Register scroll container regions and update state
     pub fn registerPendingScrollRegions(self: *Self) void {
         for (self.pending_scrolls.items) |pending| {

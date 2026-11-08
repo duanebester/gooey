@@ -14,7 +14,7 @@
 //! `*Cx` via `@fieldParentPtr`, giving a `cx.element_states.with(...)`
 //! call shape with no extra storage and no aliasing. Widgets that want a
 //! retained-state pointer use this public `cx.*` surface — the same
-//! shape callers use for `cx.entities.*`, `cx.focus.*`, `cx.lists.*` —
+//! shape callers use for `cx.entities.*`, `cx.focus.*` —
 //! instead of threading the framework-private `_window` through every
 //! helper.
 //!
@@ -68,11 +68,11 @@ const LayoutId = layout_mod.LayoutId;
 
 /// Zero-sized namespace marker. Lives as the `element_states` field
 /// on `Cx` and recovers the parent context via `@fieldParentPtr`
-/// from each method. See `lists.zig` for the rationale (CLAUDE.md
+/// from each method. See `focus.zig` for the rationale (CLAUDE.md
 /// §10 — don't take aliases).
 pub const ElementStates = struct {
     /// Force this ZST to inherit `Cx`'s alignment via a zero-byte
-    /// `[0]usize` filler — see the matching note in `cx/lists.zig`
+    /// `[0]usize` filler — see the matching note in `cx/focus.zig`
     /// for the rationale. Without this, the namespace field would
     /// limit `Cx`'s overall alignment to 1 and `@fieldParentPtr`
     /// would fail to compile with "increases pointer alignment".

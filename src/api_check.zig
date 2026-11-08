@@ -265,18 +265,13 @@ fn pinTier1NamespacedUi() void {
     }
 }
 
-/// `gooey.widgets` — stateful widget engines. Each is reached for by
-/// list / table / scroll examples to size the state struct
-/// explicitly. The helper enum `ScrollStrategy` sits alongside the
-/// engine because
-/// examples spell them out at call sites.
+/// `gooey.widgets` — stateful widget engines, reached for by text and
+/// scroll examples to size the state struct explicitly.
 fn pinTier1NamespacedWidgets() void {
     comptime {
         _ = gooey.widgets.TextInputState;
         _ = gooey.widgets.TextAreaState;
         _ = gooey.widgets.ScrollContainer;
-        _ = gooey.widgets.UniformListState;
-        _ = gooey.widgets.ScrollStrategy;
     }
 }
 
@@ -319,9 +314,9 @@ fn pinTier1NamespacedApp() void {
 // Cx sub-namespaces
 // =============================================================================
 
-/// `Cx` carries five sub-namespaces as struct fields: `lists`, `animations`,
+/// `Cx` carries four sub-namespaces as struct fields: `animations`,
 /// `focus`, `entities`, `element_states`. Examples reach into them
-/// as `cx.lists.uniformList(...)` / `cx.animations.tween(...)` /
+/// as `cx.animations.tween(...)` /
 /// `cx.focus.request(...)` / `cx.entities.create(...)` /
 /// `cx.element_states.get(T, id)`. The promise here is that the
 /// **field name** stays — not the inner API surface, which is
@@ -333,7 +328,6 @@ fn pinTier1NamespacedApp() void {
 /// at comptime.
 fn pinCxSubNamespaces() void {
     comptime {
-        _ = @FieldType(gooey.Cx, "lists");
         _ = @FieldType(gooey.Cx, "animations");
         _ = @FieldType(gooey.Cx, "focus");
         _ = @FieldType(gooey.Cx, "entities");

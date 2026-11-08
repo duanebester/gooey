@@ -939,6 +939,10 @@ pub const AtlasLimits = struct {
 /// Elements the layout engine stores per frame (`layout/engine.zig`).
 pub const MAX_LAYOUT_ENGINE_ELEMENTS: u32 = 16_384;
 
+/// Elements an app's render may build: the layout engine's capacity less
+/// the window root the core opens around it.
+pub const MAX_APP_ELEMENTS: u32 = MAX_LAYOUT_ENGINE_ELEMENTS - 1;
+
 /// Most handlers one element can register (click, click-outside, key).
 pub const handler_count_element_max: u32 = 3;
 
@@ -983,16 +987,16 @@ pub const BuildLimits = struct {
         .layer_count_frame_max = 32,
     };
     pub const large: BuildLimits = .{
-        .element_count_frame_max = 16_384,
+        .element_count_frame_max = MAX_APP_ELEMENTS,
         .component_depth_max = 64,
-        .key_count_frame_max = 16_384,
+        .key_count_frame_max = MAX_APP_ELEMENTS,
         .text_bytes_frame_max = 1024 * 1024,
         .layer_count_frame_max = 64,
     };
     pub const ceiling: BuildLimits = .{
-        .element_count_frame_max = MAX_LAYOUT_ENGINE_ELEMENTS,
+        .element_count_frame_max = MAX_APP_ELEMENTS,
         .component_depth_max = MAX_COMPONENT_DEPTH,
-        .key_count_frame_max = MAX_LAYOUT_ENGINE_ELEMENTS,
+        .key_count_frame_max = MAX_APP_ELEMENTS,
         .text_bytes_frame_max = 4 * 1024 * 1024,
         .layer_count_frame_max = layer_count_ceiling,
     };
@@ -1024,13 +1028,13 @@ pub const RecordLimits = struct {
     };
     pub const large: RecordLimits = .{
         .paint_record_count_frame_max = 65_536,
-        .hit_record_count_frame_max = 16_384,
+        .hit_record_count_frame_max = MAX_APP_ELEMENTS,
         .handler_count_frame_max = 16_384,
     };
     pub const ceiling: RecordLimits = .{
         .paint_record_count_frame_max = 262_144,
-        .hit_record_count_frame_max = MAX_LAYOUT_ENGINE_ELEMENTS,
-        .handler_count_frame_max = MAX_LAYOUT_ENGINE_ELEMENTS * handler_count_element_max,
+        .hit_record_count_frame_max = MAX_APP_ELEMENTS,
+        .handler_count_frame_max = MAX_APP_ELEMENTS * handler_count_element_max,
     };
 };
 
