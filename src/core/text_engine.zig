@@ -28,6 +28,7 @@ const input = @import("../input/mod.zig");
 const Cx = @import("cx.zig").Cx;
 const Color = @import("../geometry/geometry.zig").Color;
 const Point = @import("router.zig").Point;
+const wheelOffset = @import("window.zig").wheelOffset;
 const text_mod = @import("../text/mod.zig");
 
 const assert = std.debug.assert;
@@ -44,9 +45,6 @@ pub const preedit_bytes_max: u32 = 256;
 /// error; typed, pasted, and committed text is operating input, so an edit
 /// keeps only what fits, as it does for `bytes_max`.
 pub const line_codepoint_count_max: u32 = text_mod.run_codepoint_count_max;
-
-/// Pixels an area scrolls per wheel unit, as in 0.3.1.
-pub const wheel_step: f32 = 20;
 
 /// The caret's on and off phases, as in 0.3.1.
 pub const blink_interval_ms: u32 = 530;
@@ -570,8 +568,8 @@ pub fn Engine(comptime kind: Kind) type {
                 .scroll => |scroll| {
                     if (kind == .input) return false;
                     assert(std.math.isFinite(scroll.delta.y));
-                    // 0.3.1's 20 px per wheel unit; `follow` clamps at build.
-                    self.scroll_y -= @as(f32, @floatCast(scroll.delta.y)) * wheel_step;
+                    // As a scroll box moves; `follow` clamps at build.
+                    self.scroll_y += wheelOffset(@floatCast(scroll.delta.y));
                 },
                 else => return false,
             }
@@ -1250,6 +1248,30 @@ test "an area scrolls to keep the caret's line in view" {
     engine.backspace();
     engine.follow(10, 30);
     try std.testing.expectEqual(@as(f32, 0), engine.scroll_y);
+}
+
+test "the wheel scrolls an area the way it scrolls a scroll box" {
+    // Goal: one notch toward the end of the text moves the area 15 px toward
+    // its end on Linux and Windows, and the other way on macOS, as
+    // `ScrollState.wheel` does. Method: a +15 px delta (one notch down on
+    // Linux and Windows) from an offset of 100 px. 0.3.1's formula,
+    // `-= delta * 20`, moves 300 px the other way and lands at -200.
+    var t: TestOf(.area) = undefined;
+    t.init();
+    const engine = &t.engine;
+    engine.scroll_y = 100;
+    const event = input.InputEvent{ .scroll = .{
+        .position = .{ .x = 0, .y = 0 },
+        .delta = .{ .x = 0, .y = 15 },
+        .modifiers = .{},
+    } };
+    try std.testing.expect(engine.apply(&event, &t.clipboard));
+    const expected: f32 = if (builtin.os.tag == .macos) 85 else 115;
+    try std.testing.expectEqual(expected, engine.scroll_y);
+    // A single-line input leaves the wheel to its ancestors.
+    var line: TestOf(.input) = undefined;
+    line.init();
+    try std.testing.expect(!line.engine.apply(&event, &line.clipboard));
 }
 
 test "a click finds the nearest codepoint boundary" {

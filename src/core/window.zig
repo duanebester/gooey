@@ -47,6 +47,16 @@ pub const Scene = scene_mod.Scene;
 
 pub const Phase = enum { idle, drain, build, layout, emit, pack, draw };
 
+/// How far a wheel delta moves a scroll offset, for every scrolling element
+/// (scroll boxes and text engines alike): the platform's delta in logical
+/// pixels, inverted on macOS (natural scrolling). Linux and Windows report a
+/// positive delta, 15 px per notch, toward the end of the content.
+pub fn wheelOffset(delta: f32) f32 {
+    assert(std.math.isFinite(delta));
+    const direction: f32 = if (builtin.os.tag == .macos) -1 else 1;
+    return delta * direction;
+}
+
 /// Deepest box nesting the build tracks. The 0.3.1 layout engine stops at
 /// `MAX_OPEN_DEPTH` (64), so the core cannot nest deeper until phase 4.
 pub const box_depth_max: u32 = layout_mod.engine.MAX_OPEN_DEPTH;
@@ -224,11 +234,10 @@ pub const ScrollState = struct {
     pub fn wheel(self: *ScrollState, delta_x: f32, delta_y: f32) bool {
         assert(std.math.isFinite(delta_x));
         assert(std.math.isFinite(delta_y));
-        const direction: f32 = if (builtin.os.tag == .macos) -1 else 1;
         const before_x = self.offset_x;
         const before_y = self.offset_y;
-        if (self.maxX() > 0) self.offset_x += delta_x * direction;
-        if (self.maxY() > 0) self.offset_y += delta_y * direction;
+        if (self.maxX() > 0) self.offset_x += wheelOffset(delta_x);
+        if (self.maxY() > 0) self.offset_y += wheelOffset(delta_y);
         _ = self.clamp();
         return self.offset_x != before_x or self.offset_y != before_y;
     }
