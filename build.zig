@@ -464,7 +464,7 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run_scene_bench_tests.step);
 
         _ = addOverflowChecks(b, mod, target, optimize, test_step);
-        _ = addFailFastChecks(b, mod, target, optimize, test_step);
+        _ = addFailFastChecks(b, mod, components_mod, target, optimize, test_step);
 
         // =====================================================================
         // Animation Benchmarks (per-frame spring physics + store dispatch)
@@ -812,8 +812,16 @@ pub fn build(b: *std.Build) void {
                 .source = "src/examples/accessible_form.zig",
                 .core = true,
             },
-            .{ .name = "virtual-list", .source = "src/examples/virtual_list_example.zig" },
-            .{ .name = "data-table", .source = "src/examples/data_table_example.zig" },
+            .{
+                .name = "virtual-list",
+                .source = "src/examples/virtual_list_example.zig",
+                .core = true,
+            },
+            .{
+                .name = "data-table",
+                .source = "src/examples/data_table_example.zig",
+                .core = true,
+            },
             .{ .name = "disktree", .source = "src/examples/disktree.zig" },
         };
         for (linux_examples) |example| {
@@ -1192,7 +1200,14 @@ pub fn build(b: *std.Build) void {
         if (!skip_shader_compile) {
             overflow_exe.step.dependOn(compile_shaders_step);
         }
-        const fail_fast_exe = addFailFastChecks(b, mod, target, optimize, test_step);
+        const fail_fast_exe = addFailFastChecks(
+            b,
+            mod,
+            components_mod,
+            target,
+            optimize,
+            test_step,
+        );
         linkLinuxLibraries(fail_fast_exe, linux_backend);
         if (!skip_shader_compile) {
             fail_fast_exe.step.dependOn(compile_shaders_step);
@@ -1504,6 +1519,8 @@ fn addMacosCoreExampleTypecheck(
         "actions",
         "core_file_dialog",
         "nested_overlay",
+        "virtual_list_example",
+        "data_table_example",
     };
     for (examples) |name| {
         const exe = b.addExecutable(.{
@@ -1727,6 +1744,7 @@ fn addOverflowChecks(
 fn addFailFastChecks(
     b: *std.Build,
     gooey_module: *std.Build.Module,
+    components_module: *std.Build.Module,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     test_step: *std.Build.Step,
@@ -1737,7 +1755,10 @@ fn addFailFastChecks(
             .root_source_file = b.path("src/testing/fail_fast_check.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{.{ .name = "gooey", .module = gooey_module }},
+            .imports = &.{
+                .{ .name = "gooey", .module = gooey_module },
+                .{ .name = "gooey-components", .module = components_module },
+            },
         }),
     });
 
@@ -1782,6 +1803,8 @@ fn addFailFastChecks(
             "(scene.glyph_count_frame_max), 1000 in use, 25 requested" },
         .{ .mode = "core-deinit-running", .stderr = "App.deinit on a running app: " ++
             "call App.stop first, before any teardown frees" },
+        .{ .mode = "core-list-count", .stderr = "List \"rows\" of 65 rows: capacity 64. " ++
+            "Raise fail_fast_check.CoreApp.TallRow.count_max." },
     };
     for (checks) |check| {
         const run = b.addRunArtifact(exe);
@@ -2353,15 +2376,29 @@ fn addGoldens(
         .optimize = optimize,
         .imports = example_imports,
     });
+    const virtual_list_mod = b.createModule(.{
+        .root_source_file = b.path("src/examples/virtual_list_example.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = example_imports,
+    });
+    const data_table_mod = b.createModule(.{
+        .root_source_file = b.path("src/examples/data_table_example.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = example_imports,
+    });
     const goldens_imports: []const std.Build.Module.Import = &.{
         .{ .name = "accessible_form_example", .module = accessible_form_mod },
         .{ .name = "actions_example", .module = actions_mod },
         .{ .name = "code_editor_example", .module = code_editor_mod },
+        .{ .name = "data_table_example", .module = data_table_mod },
         .{ .name = "gooey", .module = gooey_mod },
         .{ .name = "gooey-components", .module = components_mod },
         .{ .name = "counter_example", .module = counter_mod },
         .{ .name = "nested_overlay_example", .module = nested_overlay_mod },
         .{ .name = "todo_example", .module = todo_mod },
+        .{ .name = "virtual_list_example", .module = virtual_list_mod },
     };
 
     const tests = b.addTest(.{

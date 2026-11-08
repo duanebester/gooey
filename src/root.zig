@@ -166,7 +166,7 @@ pub const text = @import("text/mod.zig");
 /// Declarative UI builder + theme + style types.
 pub const ui = @import("ui/mod.zig");
 
-/// Stateful widget engines: virtual / uniform / tree lists, data table,
+/// Stateful widget engines: the uniform list, text engines, and the
 /// scroll container.
 pub const widgets = @import("widgets/mod.zig");
 
@@ -290,8 +290,6 @@ test {
 
         // Widgets.
         _ = wid.UniformListState;
-        _ = wid.VirtualListState;
-        _ = wid.DataTableState;
 
         // UI styles.
         _ = u.Builder;
@@ -343,9 +341,7 @@ test {
         @import("animation/store.zig"),
 
         // Widget engines imported directly by `cx.zig`.
-        @import("widgets/data_table.zig"),
         @import("widgets/uniform_list.zig"),
-        @import("widgets/virtual_list.zig"),
         @import("widgets/text_input_state.zig"),
         @import("widgets/text_area_state.zig"),
         @import("widgets/scroll_container.zig"),

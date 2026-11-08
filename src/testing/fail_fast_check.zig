@@ -30,9 +30,11 @@
 //!   the same bound stops first.
 //! - `core-wrap-frame`: wraps two texts into one line past the frame's glyph budget.
 //! - `core-deinit-running`: frees a running app without stopping it first.
+//! - `core-list-count`: a `List` of per-row heights one row past its `count_max`.
 
 const std = @import("std");
 const gooey = @import("gooey");
+const components = @import("gooey-components");
 
 const Mode = enum {
     @"deferred-queue",
@@ -54,6 +56,7 @@ const Mode = enum {
     @"core-wrap-words",
     @"core-wrap-frame",
     @"core-deinit-running",
+    @"core-list-count",
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -85,6 +88,7 @@ pub fn main(init: std.process.Init) !void {
         .@"core-wrap-words" => coreTick(init.gpa, init.io, CoreApp.wrapWords),
         .@"core-wrap-frame" => coreTick(init.gpa, init.io, CoreApp.wrapFrame),
         .@"core-deinit-running" => coreDeinitRunning(init.gpa, init.io),
+        .@"core-list-count" => coreTick(init.gpa, init.io, CoreApp.longList),
     }
     std.debug.print("unreachable: {s} did not panic\n", .{@tagName(mode)});
 }
@@ -353,6 +357,23 @@ const CoreApp = struct {
             core.ui.text(&second, .{ .wrap = .newlines }),
         }));
     }
+
+    /// One row more than the row type's `count_max`.
+    fn longList(cx: *core.Cx) void {
+        cx.render(components.core.List(TallRow){ .key = "rows", .count = TallRow.count_max + 1 });
+    }
+
+    const TallRow = struct {
+        index: u32,
+
+        pub const count_max: u32 = 64;
+
+        pub fn height(_: *core.Cx, _: u32) f32 {
+            return 10;
+        }
+
+        pub fn render(_: TallRow, _: *core.Cx) void {}
+    };
 
     fn newlinesThenM(comptime count: u32) [count + 1]u8 {
         var bytes: [count + 1]u8 = undefined;

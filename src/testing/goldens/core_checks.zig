@@ -12,6 +12,8 @@ const actions = @import("actions_example");
 const accessible_form = @import("accessible_form_example");
 const code_editor = @import("code_editor_example");
 const nested_overlay = @import("nested_overlay_example");
+const virtual_list = @import("virtual_list_example");
+const data_table = @import("data_table_example");
 const components = @import("gooey-components");
 const core_driver = @import("core.zig");
 const trace_mod = @import("trace.zig");
@@ -1914,5 +1916,303 @@ test "code_editor lists a folder in a List and opens its files on the core" {
     editorClickRow(app, &now, "line1024.txt");
     try testing.expectEqual(code_editor.FileStatus.displaying_code, app.state.status);
     try testing.expectEqual(@as(usize, 2 + 2 * 1024 + 1), app.state.source.len);
+    try testing.expectEqual(core.internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
+}
+
+/// Chat rows of 0.3.1's virtual_list_example: its five message heights in
+/// its ten-row pattern, read from the app's state as a real app's would be.
+const ChatState = struct {
+    heights: [10]f32 = .{ 48, 48, 48, 72, 72, 120, 180, 48, 48, 32 },
+};
+
+const ChatRow = struct {
+    index: u32,
+
+    pub const count_max: u32 = 1000;
+
+    pub fn height(cx: *Cx, index: u32) f32 {
+        return cx.state(ChatState).heights[index % 10];
+    }
+
+    pub fn render(self: ChatRow, cx: *Cx) void {
+        var label: [16]u8 = undefined;
+        cx.render(ui.box(.{
+            .style = .{ .width = .{ .grow = 1 }, .height = .{ .grow = 1 } },
+            .a11y = .{ .role = .listitem, .label = listRowLabel(&label, self.index) },
+        }, .{}));
+    }
+};
+
+/// Uniform rows of 30 px, with the same gap and padding as the chat list.
+const PlainRow = struct {
+    index: u32,
+
+    pub const row_height: f32 = 30;
+
+    pub fn render(self: PlainRow, cx: *Cx) void {
+        var label: [16]u8 = undefined;
+        cx.render(ui.box(.{
+            .style = .{ .width = .{ .grow = 1 }, .height = .{ .grow = 1 } },
+            .a11y = .{ .role = .listitem, .label = listRowLabel(&label, self.index) },
+        }, .{}));
+    }
+};
+
+fn listRowLabel(buffer: *[16]u8, index: u32) []const u8 {
+    return std.fmt.bufPrint(buffer, "row {d}", .{index}) catch unreachable;
+}
+
+fn ListApp(comptime Row: type) type {
+    const render = struct {
+        fn render(cx: *Cx) void {
+            cx.render(components.core.List(Row){
+                .key = "rows",
+                .count = 1000,
+                .gap = 8,
+                .style = .{ .padding = .all(8), .background = .{ .surface = {} } },
+            });
+        }
+    }.render;
+    return core.App(ChatState, render, .{
+        .title = "List",
+        .width = 300,
+        .height = 300,
+        .limits = core.ResourceLimits.small,
+    });
+}
+
+/// The rows built this frame, and the a11y bounds of row `index` if built.
+fn listRows(window: *core.internals.window.Window, index: u32) struct {
+    count: u32,
+    row: ?core.internals.records.Rect,
+} {
+    var label: [16]u8 = undefined;
+    const name = listRowLabel(&label, index);
+    const frame = window.rendered();
+    var count: u32 = 0;
+    var row: ?core.internals.records.Rect = null;
+    for (frame.a11y[0..frame.a11y_count]) |*node| {
+        if (node.role != .listitem) continue;
+        count += 1;
+        if (std.mem.eql(u8, frame.text(node.name) orelse "", name)) row = node.bounds;
+    }
+    return .{ .count = count, .row = row };
+}
+
+/// Wheel the list down by `down` px at its centre and settle the render the
+/// emit requests once it measures the new rows.
+fn listWheel(app: anytype, now: *u64, down: f32) void {
+    const direction: f32 = if (@import("builtin").os.tag == .macos) -1 else 1;
+    app.window.queue.push(.{ .input = .{ .scroll = .{
+        .position = .{ .x = 150, .y = 150 },
+        .delta = .{ .x = 0, .y = down * direction },
+        .modifiers = .{},
+    } } });
+    now.* += 1;
+    app.tick(now.*);
+    now.* += 1;
+    app.tick(now.*);
+}
+
+fn listOffset(window: *core.internals.window.Window) *const core.internals.window.ScrollState {
+    const frame = window.rendered();
+    for (frame.hits[0..frame.hit_count]) |*record| {
+        const State = core.internals.window.ScrollState;
+        if (window.retained.find(State, record.id)) |state| return state;
+    }
+    unreachable;
+}
+
+test "a List of per-row heights builds the rows in view, spaced by its gap and padding" {
+    // Goal: variable row heights, as 0.3.1's virtual list, with the
+    // lifecycle guard proving no allocation after init. Methodology: 1,000
+    // rows, exactly the type's count_max, of the 0.3.1 chat heights (a ten-
+    // row cycle of 796 px with 8 px gaps) in a 300 px list padded by 8. Row
+    // tops are worked out by hand from that cycle, not from the List, at the
+    // start, 500 px down, and at the end.
+    const App = ListApp(ChatRow);
+    const app = try testing.allocator.create(App);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    now += 1;
+    app.tick(now);
+    // Rows 0-4 start at 0, 56, 112, 168, 248 (+8 padding); row 5 at 328 is
+    // past the 292 px the padding leaves in view.
+    var rows = listRows(&app.window, 3);
+    try testing.expectEqual(@as(u32, 5), rows.count);
+    try testing.expectEqual(@as(f32, 176), rows.row.?.y);
+    try testing.expectEqual(@as(f32, 72), rows.row.?.height);
+    try testing.expect(listRows(&app.window, 5).row == null);
+
+    // 500 px down the view spans content 492-792: row 6 (456-636) through
+    // row 9 (756-788); row 10 starts at 796.
+    listWheel(app, &now, 500);
+    try testing.expectEqual(@as(f32, 500), listOffset(&app.window).offset_y);
+    rows = listRows(&app.window, 7);
+    try testing.expectEqual(@as(u32, 4), rows.count);
+    try testing.expectEqual(@as(f32, 8 + 644 - 500), rows.row.?.y);
+    try testing.expectEqual(@as(f32, 48), rows.row.?.height);
+    try testing.expect(listRows(&app.window, 5).row == null);
+    try testing.expect(listRows(&app.window, 10).row == null);
+
+    // 100 cycles less the last gap, plus padding: 79,608 px of content, so
+    // the end is 79,308 down, where row 999 (32 px) ends at the padding.
+    listWheel(app, &now, 100_000);
+    const state = listOffset(&app.window);
+    try testing.expectEqual(@as(f32, 79_608), state.content_height);
+    try testing.expectEqual(@as(f32, 79_308), state.offset_y);
+    rows = listRows(&app.window, 999);
+    try testing.expectEqual(@as(f32, 300 - 8), rows.row.?.y + rows.row.?.height);
+    try testing.expect(listRows(&app.window, 0).row == null);
+    try testing.expectEqual(core.internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
+}
+
+test "a List of one row height takes its gap and padding into the rows in view" {
+    // Goal: the constant-time range of uniform rows with a gap. Methodology:
+    // 30 px rows 8 px apart pitch at 38 px. At the start, rows 0-7 start
+    // before 292 px (row 7 at 266). 500 px down the view spans content
+    // 492-792: the pitch puts row 12 (456-486) first, an extra row above
+    // the view, row 13 (494) first in it, and row 20 (760) last.
+    const App = ListApp(PlainRow);
+    const app = try testing.allocator.create(App);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    now += 1;
+    app.tick(now);
+    var rows = listRows(&app.window, 7);
+    try testing.expectEqual(@as(f32, 8 + 266), rows.row.?.y);
+    try testing.expectEqual(@as(f32, 30), rows.row.?.height);
+    try testing.expect(listRows(&app.window, 0).row != null);
+
+    listWheel(app, &now, 500);
+    rows = listRows(&app.window, 13);
+    try testing.expectEqual(@as(f32, 8 + 494 - 500), rows.row.?.y);
+    try testing.expect(listRows(&app.window, 20).row != null);
+    try testing.expect(listRows(&app.window, 11).row == null);
+    try testing.expect(listRows(&app.window, 22).row == null);
+    // 1,000 rows less the last gap, plus padding.
+    listWheel(app, &now, 100_000);
+    try testing.expectEqual(@as(f32, 1000 * 38 - 8 + 16), listOffset(&app.window).content_height);
+}
+
+/// The list's scroll record and the hit records of its rows. Its spacers
+/// have no width, so they are not counted.
+fn listChildren(window: *core.internals.window.Window, rows: []core.internals.records.Rect) struct {
+    list: core.internals.records.Rect,
+    count: u32,
+} {
+    const frame = window.rendered();
+    var list_index: ?u32 = null;
+    for (frame.hits[0..frame.hit_count], 0..) |*record, index| {
+        if (record.scroll) list_index = @intCast(index);
+    }
+    var count: u32 = 0;
+    for (frame.hits[0..frame.hit_count]) |*record| {
+        if (record.parent != list_index.?) continue;
+        if (record.bounds.width == 0) continue;
+        rows[count] = record.bounds;
+        count += 1;
+    }
+    return .{ .list = frame.hits[list_index.?].bounds, .count = count };
+}
+
+test "virtual_list builds the chat messages in view at their heights, to the last" {
+    // Goal: the virtual_list port end to end, with the lifecycle guard
+    // proving no allocation after init. Methodology: each row built must be
+    // its message's height plus the 8 px gap, the first at the list's top
+    // padding; wheeled to the end, the last row must end at the padding.
+    const App = virtual_list.App;
+    const app = try testing.allocator.create(App);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    now += 1;
+    app.tick(now);
+    var rows: [64]core.internals.records.Rect = undefined;
+    var children = listChildren(&app.window, &rows);
+    try testing.expect(children.count >= 5);
+    try testing.expect(children.count < 20);
+    try testing.expectEqual(children.list.y + 8, rows[0].y);
+    // Hit bounds are clipped to the list, so the partial last row is shorter.
+    for (rows[0 .. children.count - 1], 0..) |row, index| {
+        try testing.expectEqual(virtual_list.messages[index].height() + 8, row.height);
+    }
+    // Rows past the view's bottom are not built.
+    const last = rows[children.count - 1];
+    try testing.expect(last.y < children.list.y + children.list.height);
+
+    listWheel(app, &now, 100_000);
+    children = listChildren(&app.window, &rows);
+    const end = rows[children.count - 1];
+    try testing.expectEqual(virtual_list.messages[999].height(), end.height);
+    try testing.expectEqual(children.list.y + children.list.height - 8, end.y + end.height);
+    try testing.expectEqual(core.internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
+}
+
+fn tableHeader(app: *data_table.App, now: *u64, label: []const u8) void {
+    const header = nodeNamed(&app.window, .button, label).?.bounds;
+    clickAt(app, now, header.x + 4, header.y + 4);
+}
+
+fn tableSorted(state: *const data_table.State, up: bool) bool {
+    var index: u32 = 1;
+    while (index < data_table.row_count) : (index += 1) {
+        const previous = state.rows[state.order[index - 1]].size_bytes;
+        const current = state.rows[state.order[index]].size_bytes;
+        if (up and previous > current) return false;
+        if (!up and previous < current) return false;
+    }
+    return true;
+}
+
+test "data_table sorts 10,000 rows from its headers and builds only the rows in view" {
+    // Goal: the data_table port end to end, with the lifecycle guard
+    // proving no allocation after init. Methodology: click the Size header
+    // three times; the order must be ascending, then descending (checked
+    // against every adjacent pair of rows), then the generated order, and
+    // the header's name must carry the arrow. Only rows in view are built.
+    const App = data_table.App;
+    const app = try testing.allocator.create(App);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    now += 1;
+    app.tick(now);
+    var rows: [64]core.internals.records.Rect = undefined;
+    const children = listChildren(&app.window, &rows);
+    try testing.expect(children.count >= 10);
+    try testing.expect(children.count < 30);
+    try testing.expectEqual(@as(f32, 32), rows[0].height);
+    try testing.expectEqual(@as(u32, 3), app.state.order[3]);
+
+    tableHeader(app, &now, "Size");
+    try testing.expect(tableSorted(&app.state, true));
+    try testing.expectEqual(data_table.Column.size, app.state.sort_column.?);
+    try testing.expect(nodeNamed(&app.window, .button, "Size ▲") != null);
+    tableHeader(app, &now, "Size ▲");
+    try testing.expect(tableSorted(&app.state, false));
+    try testing.expect(!tableSorted(&app.state, true));
+    tableHeader(app, &now, "Size ▼");
+    try testing.expect(app.state.sort_column == null);
+    for (app.state.order, 0..) |order, index| {
+        try testing.expectEqual(@as(u32, @intCast(index)), order);
+    }
+    try testing.expect(nodeNamed(&app.window, .button, "Size") != null);
+    // Another column starts ascending.
+    tableHeader(app, &now, "Size");
+    tableHeader(app, &now, "ID");
+    try testing.expectEqual(data_table.Column.id, app.state.sort_column.?);
+    try testing.expectEqual(data_table.SortDirection.ascending, app.state.sort_direction);
+    try testing.expectEqual(@as(u32, 0), app.state.order[0]);
     try testing.expectEqual(core.internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
 }
