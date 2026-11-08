@@ -1321,7 +1321,6 @@ fn addWindowsBuilds(
         .{ .name = "animation", .source = "src/examples/animation.zig" },
         .{ .name = "lucide-demo", .source = "src/examples/lucide_demo.zig" },
         .{ .name = "images", .source = "src/examples/images.zig" },
-        .{ .name = "data-table", .source = "src/examples/data_table_example.zig" },
         .{ .name = "clipboard", .source = "src/examples/clipboard.zig" },
         .{ .name = "file-dialog", .source = "src/examples/file_dialog.zig" },
     };
