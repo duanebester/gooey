@@ -32,6 +32,7 @@
 //! - `core-deinit-running`: frees a running app without stopping it first.
 //! - `core-list-count`: a `List` of per-row heights one row past its `count_max`.
 //! - `core-mesh-points`: a polyline one point past `nano`'s polyline point limit.
+//! - `core-image-requests`: one more image path than `nano`'s image request entries.
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -59,6 +60,7 @@ const Mode = enum {
     @"core-deinit-running",
     @"core-list-count",
     @"core-mesh-points",
+    @"core-image-requests",
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -92,6 +94,7 @@ pub fn main(init: std.process.Init) !void {
         .@"core-deinit-running" => coreDeinitRunning(init.gpa, init.io),
         .@"core-list-count" => coreTick(init.gpa, init.io, CoreApp.longList),
         .@"core-mesh-points" => coreTick(init.gpa, init.io, CoreApp.longPolyline),
+        .@"core-image-requests" => coreTick(init.gpa, init.io, CoreApp.manyImages),
     }
     std.debug.print("unreachable: {s} did not panic\n", .{@tagName(mode)});
 }
@@ -392,6 +395,24 @@ const CoreApp = struct {
             break :blk result;
         };
         painter.polyline(&points, 1, core.ui.Color.rgb(1, 1, 1));
+    }
+
+    /// One distinct image path more than `nano`'s request entries, in one
+    /// frame; the files do not exist, so none is decoded before the panic.
+    fn manyImages(cx: *core.Cx) void {
+        const nothing: u8 = 0;
+        cx.render(core.ui.paint(u8, &nothing, paintManyImages, .{
+            .width = .{ .fixed = 10 },
+            .height = .{ .fixed = 10 },
+        }));
+    }
+
+    fn paintManyImages(_: *const u8, painter: *core.ui.Painter) void {
+        const count = core.ResourceLimits.nano.atlas.image_request_count_max + 1;
+        inline for (0..count) |index| {
+            const path = std.fmt.comptimePrint("assets/missing-{d}.png", .{index});
+            painter.image(path, painter.bounds, .{ .fit = .contain });
+        }
     }
 
     fn newlinesThenM(comptime count: u32) [count + 1]u8 {

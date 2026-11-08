@@ -129,7 +129,16 @@ pub const MAX_GLYPH_SIZE: u32 = 256;
 /// atlas plus two 4096² RGBA atlases spread over three frames.
 pub const MAX_ATLAS_UPLOAD_BYTES_PER_FRAME: u32 = 48 * 1024 * 1024;
 
+/// Most images any atlas budget may have waiting for the decode worker or
+/// remembered as failed at once (`AtlasLimits.image_request_count_max`).
+pub const MAX_IMAGE_REQUESTS: u32 = 256;
+
+/// Most bytes of decode staging any atlas budget may reserve: a 4096² RGBA
+/// image (64 MiB) plus its compressed file and the decoder's row table.
+pub const MAX_IMAGE_DECODE_BYTES: u32 = 96 * 1024 * 1024;
+
 comptime {
+    assert(MAX_IMAGE_DECODE_BYTES > MAX_ATLAS_SIZE * MAX_ATLAS_SIZE * 4);
     assert(MAX_ATLAS_UPLOAD_BYTES_PER_FRAME * 3 == MAX_ATLAS_SIZE * MAX_ATLAS_SIZE * 9);
 }
 
@@ -754,6 +763,16 @@ pub const AtlasLimits = struct {
     /// sizes the software rasterizer's scratch (Linux and Windows). An icon
     /// that needs more fails fast naming this field.
     svg_path_vertex_count_max: u32,
+    /// Images that may wait for the decode worker or stay remembered as
+    /// failed at once (`core/images.zig`). One more fails fast naming this.
+    image_request_count_max: u32,
+    /// Bytes the decode worker reserves at init for one image: its file
+    /// followed by its decoded RGBA pixels. A larger image fails fast naming
+    /// this field. Fresh pages, so only what a decode writes is resident.
+    /// Each profile holds one image as wide as its image atlas, `image_size²`
+    /// RGBA, plus a file of up to half that again: the images example's
+    /// 512² logo is a 1 MiB decode from a small file.
+    image_decode_bytes_max: u32,
 
     /// Counter-class apps: counter's glyphs hold 144 of 512 text-atlas rows at
     /// 1x and 280 at 2x (measured with shelf packing), and no nano example draws
@@ -768,6 +787,8 @@ pub const AtlasLimits = struct {
         .svg_icon_size_max = 64,
         .svg_path_bytes_max = 2 * 1024,
         .svg_path_vertex_count_max = 4 * 1024,
+        .image_request_count_max = 4,
+        .image_decode_bytes_max = 512 * 1024,
     };
 
     /// Forms and lists: todo holds 48 of 1024 text rows at 1x and 120 at 2x.
@@ -780,6 +801,8 @@ pub const AtlasLimits = struct {
         .svg_icon_size_max = 128,
         .svg_path_bytes_max = 4 * 1024,
         .svg_path_vertex_count_max = 8 * 1024,
+        .image_request_count_max = 8,
+        .image_decode_bytes_max = 2 * 1024 * 1024,
     };
 
     /// The glyph atlas is 2048² for Retina display text: a frame of 70 distinct
@@ -795,6 +818,8 @@ pub const AtlasLimits = struct {
         .svg_icon_size_max = 256,
         .svg_path_bytes_max = 8 * 1024,
         .svg_path_vertex_count_max = 16 * 1024,
+        .image_request_count_max = 16,
+        .image_decode_bytes_max = 8 * 1024 * 1024,
     };
 
     /// lucide-demo's visible icons hold 520 of 2048 SVG rows at 2x, and the
@@ -809,6 +834,8 @@ pub const AtlasLimits = struct {
         .svg_icon_size_max = 256,
         .svg_path_bytes_max = 16 * 1024,
         .svg_path_vertex_count_max = 16 * 1024,
+        .image_request_count_max = 64,
+        .image_decode_bytes_max = 24 * 1024 * 1024,
     };
 
     /// The framework ceilings themselves. Textures: 16 + 64 + 64 MiB.
@@ -820,6 +847,8 @@ pub const AtlasLimits = struct {
         .svg_icon_size_max = MAX_SVG_ICON_SIZE,
         .svg_path_bytes_max = MAX_SVG_PATH_BYTES,
         .svg_path_vertex_count_max = MAX_SVG_PATH_VERTEX_COUNT,
+        .image_request_count_max = MAX_IMAGE_REQUESTS,
+        .image_decode_bytes_max = MAX_IMAGE_DECODE_BYTES,
     };
 
     /// First violated rule, or null. Every field must be in `1..=ceiling`;

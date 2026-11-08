@@ -20,6 +20,7 @@ const id_mod = @import("id.zig");
 const records = @import("records.zig");
 const handler_mod = @import("handler.zig");
 const events = @import("events.zig");
+const images_mod = @import("images.zig");
 const retained_mod = @import("retained.zig");
 const text_engine = @import("text_engine.zig");
 const clipboard_mod = @import("clipboard.zig");
@@ -473,6 +474,8 @@ pub const Window = struct {
     built_index: u1,
     queue: events.EventQueue,
     completions: events.CompletionRing,
+    /// The image decode worker and its requests (`Painter.image`).
+    images: images_mod.Loader,
     retained: retained_mod.Retained,
     inputs: text_engine.InputPool,
     /// Reserved only when `limits.text.area.count_max > 0`; retaining an
@@ -810,6 +813,8 @@ fn initRuntimeStorage(self: *Window, gpa: std.mem.Allocator, limits: *const Reso
         std.math.ceilPowerOfTwoAssert(u32, limits.events.completion_count_max),
     );
     errdefer self.completions.deinit(gpa);
+    try self.images.initInPlace(gpa, self.resources.io, &self.completions, &limits.atlas);
+    errdefer self.images.deinit(gpa);
     try self.retained.initInPlace(gpa, &.{
         .slot_counts = .{
             limits.retained.slot_count_64,
@@ -897,6 +902,8 @@ fn deinitRuntimeStorage(self: *Window, gpa: std.mem.Allocator) void {
     if (self.areas_reserved) self.areas.deinit(gpa);
     self.inputs.deinit(gpa);
     self.retained.deinit(gpa);
+    // The worker pushes onto the completion ring until it is joined.
+    self.images.deinit(gpa);
     self.completions.deinit(gpa);
     self.queue.deinit(gpa);
 }

@@ -185,7 +185,9 @@ fn applyFont(window: *Window) void {
 /// Route every queued event. Returns whether a file dialog ran.
 fn drain(window: *Window) bool {
     window.setPhase(.idle, .drain);
-    window.completions.drainInto(&window.queue);
+    window.completions.drainInto(&window.queue, &window.images.landed);
+    // A landed decode is uploaded and drawn by the next build's emit.
+    if (window.images.landed != null) window.render_requested = true;
     const pending = window.queue.pending();
     for (pending) |*event| router.route(window, event);
     window.queue.clear();

@@ -1323,7 +1323,6 @@ fn addWindowsBuilds(
         .{ .name = "showcase", .source = "src/examples/showcase.zig" },
         .{ .name = "layout", .source = "src/examples/layout.zig" },
         .{ .name = "animation", .source = "src/examples/animation.zig" },
-        .{ .name = "images", .source = "src/examples/images.zig" },
         .{ .name = "clipboard", .source = "src/examples/clipboard.zig" },
         .{ .name = "file-dialog", .source = "src/examples/file_dialog.zig" },
         // 0.4.0 core apps, on `platform/windows/core_host.zig`.
@@ -1544,6 +1543,7 @@ fn addMacosCoreExampleTypecheck(
         "virtual_list_example",
         "data_table_example",
         "lucide_demo",
+        "images",
     };
     for (examples) |name| {
         const exe = b.addExecutable(.{
@@ -1830,6 +1830,9 @@ fn addFailFastChecks(
             "Raise fail_fast_check.CoreApp.TallRow.count_max." },
         .{ .mode = "core-mesh-points", .stderr = "mesh points exhausted: capacity 1024 " ++
             "(scene.polyline_point_count_frame_max), 0 in use, 1025 requested, frame 1." },
+        .{ .mode = "core-image-requests", .stderr = "image loader pool 'requests' exhausted: " ++
+            "capacity 4 images waiting or failed, 1 requested (\"assets/missing-4.png\") in " ++
+            "frame 1. Raise ResourceLimits.atlas.image_request_count_max." },
     };
     for (checks) |check| {
         const run = b.addRunArtifact(exe);
@@ -2419,6 +2422,12 @@ fn addGoldens(
         .optimize = optimize,
         .imports = example_imports,
     });
+    const images_mod = b.createModule(.{
+        .root_source_file = b.path("src/examples/images.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = example_imports,
+    });
     const goldens_imports: []const std.Build.Module.Import = &.{
         .{ .name = "accessible_form_example", .module = accessible_form_mod },
         .{ .name = "actions_example", .module = actions_mod },
@@ -2427,6 +2436,7 @@ fn addGoldens(
         .{ .name = "gooey", .module = gooey_mod },
         .{ .name = "gooey-components", .module = components_mod },
         .{ .name = "counter_example", .module = counter_mod },
+        .{ .name = "images_example", .module = images_mod },
         .{ .name = "lucide_example", .module = lucide_mod },
         .{ .name = "nested_overlay_example", .module = nested_overlay_mod },
         .{ .name = "todo_example", .module = todo_mod },
@@ -2455,7 +2465,10 @@ fn addGoldens(
         tests.step.dependOn(dependency);
         capture.step.dependOn(dependency);
     }
-    test_step.dependOn(&b.addRunArtifact(tests).step);
+    const run_tests = b.addRunArtifact(tests);
+    // The images check decodes `assets/` files relative to the project root.
+    run_tests.setCwd(b.path("."));
+    test_step.dependOn(&run_tests.step);
 
     const run_capture = b.addRunArtifact(capture);
     run_capture.setCwd(b.path("."));
