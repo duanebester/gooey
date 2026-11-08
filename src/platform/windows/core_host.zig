@@ -790,7 +790,9 @@ test "the next present waits for a vertical blank at least half a refresh away" 
 }
 
 test "QPC ticks convert to nanoseconds without overflow" {
-    try std.testing.expectEqual(@as(u64, 16_666_666), ticksToNs(166_666, 10_000_000));
+    // One tick of a 60 Hz counter is a 60 Hz refresh, rounded down.
+    try std.testing.expectEqual(@as(u64, 16_666_666), ticksToNs(1, 60));
+    try std.testing.expectEqual(@as(u64, 16_666_600), ticksToNs(166_666, 10_000_000));
     try std.testing.expectEqual(@as(u64, std.time.ns_per_s), ticksToNs(3, 3));
     const day_ticks: u64 = 24 * 3600 * 10_000_000;
     try std.testing.expectEqual(24 * 3600 * std.time.ns_per_s, ticksToNs(day_ticks, 10_000_000));
