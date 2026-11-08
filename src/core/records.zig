@@ -110,15 +110,27 @@ pub const Sprite = struct {
     opacity: f32,
 };
 
-/// A range in the mesh pool. Milestone 1 emits no meshes; `pack` rejects one
-/// until the mesh pool moves behind the pack stage (phase 5).
+/// Points of the frame's mesh pool, `Frame.mesh_points[first..][0..count]`.
 pub const MeshRange = struct { first: u32, count: u32 };
 
+/// A mesh's points in window coordinates, laid out for the GPU so `pack`
+/// hands polyline and point ranges to the renderer without copying.
+pub const MeshPoint = geometry.GpuPoint;
+
+/// Points the frame's mesh pool holds: drawn triangles, polylines, and
+/// point clouds together. Painting checks each kind against its scene limit.
 pub const Mesh = struct {
     range: MeshRange,
-    topology: enum { triangles, strip_expanded, point_instanced },
+    /// `triangles`: a triangle list, three points each. `strip_expanded`: a
+    /// polyline the GPU widens. `point_instanced`: circle centres.
+    topology: Topology,
+    /// Solid fills only: the contract's gradient fills have no user among the
+    /// kept examples (decision 10).
     fill: Color,
+    /// The polyline's width or the points' radius; unused for triangles.
     width: f32,
+
+    pub const Topology = enum { triangles, strip_expanded, point_instanced };
 };
 
 /// Sentinel for "no handler" and "no parent" indexes.
@@ -242,6 +254,7 @@ pub const FrameCapacity = struct {
     handler_count_max: u32,
     a11y_node_count_max: u32,
     text_bytes_max: u32,
+    mesh_point_count_max: u32,
 };
 
 /// One tick's records. Storage is borrowed from the window's reservation.
@@ -260,6 +273,12 @@ pub const Frame = struct {
     announcements: Announcements,
     text_bytes: []u8,
     text_len: u32,
+    mesh_points: []MeshPoint,
+    mesh_point_count: u32,
+    /// Points claimed per `Mesh.Topology`, checked against each kind's limit.
+    mesh_point_counts: [3]u32,
+    /// Triangle mesh records, each one 0.3.1 frame path mesh when packed.
+    triangle_mesh_count: u32,
     ime: ?Ime,
     /// The first hit record of the last modal fragment, or 0 with none open.
     /// A modal blocks hit testing of earlier fragments (contract §6), and
@@ -285,6 +304,8 @@ pub const Frame = struct {
         self.a11y = try gpa.alloc(A11yNode, capacity.a11y_node_count_max);
         errdefer gpa.free(self.a11y);
         self.text_bytes = try gpa.alloc(u8, capacity.text_bytes_max);
+        errdefer gpa.free(self.text_bytes);
+        self.mesh_points = try gpa.alloc(MeshPoint, capacity.mesh_point_count_max);
         self.frame_number = 0;
         self.reset(0, .{ .width = 0, .height = 0, .scale_factor = 1 });
         assert(self.paint_count == 0);
@@ -292,6 +313,7 @@ pub const Frame = struct {
 
     pub fn deinit(self: *Frame, gpa: std.mem.Allocator) void {
         assert(self.paint_count <= self.paint.len);
+        gpa.free(self.mesh_points);
         gpa.free(self.text_bytes);
         gpa.free(self.a11y);
         gpa.free(self.action_ids);
@@ -314,6 +336,9 @@ pub const Frame = struct {
         self.a11y_count = 0;
         self.announcements.clear();
         self.text_len = 0;
+        self.mesh_point_count = 0;
+        self.mesh_point_counts = @splat(0);
+        self.triangle_mesh_count = 0;
         self.ime = null;
         self.modal_hit_start = 0;
         self.frame_number = frame_number;
@@ -396,6 +421,31 @@ pub const Frame = struct {
         return range;
     }
 
+    /// Claim `count` points of the mesh pool for one mesh record to fill.
+    pub fn claimMeshPoints(self: *Frame, count: u32) MeshRange {
+        assert(count > 0);
+        assert(self.mesh_point_count <= self.mesh_points.len);
+        if (count > self.mesh_points.len - self.mesh_point_count) {
+            std.debug.panic("record frame pool 'mesh points' exhausted: capacity {d}, " ++
+                "{d} in use, {d} requested, frame {d}. Raise the app's ResourceLimits.scene " ++
+                "geometry counts.", .{
+                self.mesh_points.len,
+                self.mesh_point_count,
+                count,
+                self.frame_number,
+            });
+        }
+        const range = MeshRange{ .first = self.mesh_point_count, .count = count };
+        self.mesh_point_count += count;
+        return range;
+    }
+
+    pub fn meshPoints(self: *const Frame, range: MeshRange) []MeshPoint {
+        assert(range.count > 0);
+        assert(range.first + range.count <= self.mesh_point_count);
+        return self.mesh_points[range.first..][0..range.count];
+    }
+
     pub fn text(self: *const Frame, range: TextRange) ?[]const u8 {
         if (range.len == 0) return null;
         assert(range.offset + range.len <= self.text_len);
@@ -429,6 +479,7 @@ test "Frame copies text and bounds every pool" {
         .handler_count_max = 2,
         .a11y_node_count_max = 2,
         .text_bytes_max = 8,
+        .mesh_point_count_max = 0,
     });
     defer frame.deinit(std.testing.allocator);
     var source = "label".*;

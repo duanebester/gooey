@@ -1782,6 +1782,8 @@ fn addFailFastChecks(
             "(scene.glyph_count_frame_max), 1000 in use, 25 requested" },
         .{ .mode = "core-deinit-running", .stderr = "App.deinit on a running app: " ++
             "call App.stop first, before any teardown frees" },
+        .{ .mode = "core-mesh-points", .stderr = "mesh points exhausted: capacity 1024 " ++
+            "(scene.polyline_point_count_frame_max), 0 in use, 1025 requested, frame 1." },
     };
     for (checks) |check| {
         const run = b.addRunArtifact(exe);
