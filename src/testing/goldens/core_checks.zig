@@ -324,16 +324,19 @@ test "a TextArea takes lines, follows the caret, and places it where clicked" {
     try testing.expectApproxEqAbs(inset + 5 * 8, caret.x, 0.001);
 
     // The wheel over the area scrolls it, clamped at both ends; over the
-    // window outside it, nothing scrolls. One unit is 20 px, past one line.
-    const wheel_events = [_]struct { x: f32, y: f32, delta: f64, caret_y: f32 }{
-        .{ .x = inset + 1, .y = inset + 1, .delta = 1, .caret_y = inset + 2 * line_height },
-        .{ .x = inset + 1, .y = 150, .delta = -10, .caret_y = inset + 2 * line_height },
-        .{ .x = inset + 1, .y = inset + 1, .delta = -10, .caret_y = inset + line_height },
+    // window outside it, nothing scrolls. `down` is pixels toward the end,
+    // and 20 px is past one line; the delta is inverted on macOS, as
+    // `ScrollState.wheel` reads it.
+    const direction: f32 = if (@import("builtin").os.tag == .macos) -1 else 1;
+    const wheel_events = [_]struct { x: f32, y: f32, down: f32, caret_y: f32 }{
+        .{ .x = inset + 1, .y = inset + 1, .down = -20, .caret_y = inset + 2 * line_height },
+        .{ .x = inset + 1, .y = 150, .down = 200, .caret_y = inset + 2 * line_height },
+        .{ .x = inset + 1, .y = inset + 1, .down = 200, .caret_y = inset + line_height },
     };
     for (wheel_events) |step| {
         app.window.queue.push(.{ .input = .{ .scroll = .{
             .position = .{ .x = step.x, .y = step.y },
-            .delta = .{ .x = 0, .y = step.delta },
+            .delta = .{ .x = 0, .y = step.down * direction },
             .modifiers = .{},
         } } });
         now += 1;
@@ -426,10 +429,12 @@ test "a CodeEditor indents with Tab, selects a line from its gutter, and scrolls
     try testing.expectEqual(@as(u32, 12), selected.offset);
     try testing.expectEqual(@as(u32, 5), selected.len);
 
-    // The wheel reaches the editor, so line 2 moves down a row.
+    // The wheel reaches the editor: 20 px toward the start, past one line
+    // and inverted on macOS, so line 2 moves down a row.
+    const direction: f32 = if (@import("builtin").os.tag == .macos) -1 else 1;
     app.window.queue.push(.{ .input = .{ .scroll = .{
         .position = .{ .x = text_x + 1, .y = text_y + 1 },
-        .delta = .{ .x = 0, .y = 1 },
+        .delta = .{ .x = 0, .y = -20 * direction },
         .modifiers = .{},
     } } });
     now += 1;
