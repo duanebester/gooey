@@ -17,7 +17,6 @@ const FocusHandle = focus_mod.FocusHandle;
 const handler_mod = @import("../context/handler.zig");
 const entity_mod = @import("../context/entity.zig");
 const window_mod = @import("../context/window.zig");
-const drag_mod = @import("../context/drag.zig");
 pub const Handler = handler_mod.Handler;
 pub const EntityId = entity_mod.EntityId;
 pub const Window = window_mod.Window;
@@ -708,30 +707,12 @@ pub const Builder = struct {
             self.hover_cursor = props.cursor;
         }
 
-        // Check if this is a valid drag-over target
-        const is_drag_over = if (self.window) |g| blk: {
-            if (g.active_drag) |drag| {
-                if (props.drop_target) |drop| {
-                    // Type must match AND cursor must be over this element
-                    if (drag.type_id == drop.type_id and g.isDragOverTarget(layout_id.id)) {
-                        break :blk true;
-                    }
-                }
-            }
-            break :blk false;
-        } else false;
-
-        // Resolve background with drag-over priority
-        const resolved_background = if (is_drag_over and props.drag_over_background != null)
-            props.drag_over_background.?
-        else if (is_hovered and props.hover_background != null)
+        const resolved_background = if (is_hovered and props.hover_background != null)
             props.hover_background.?
         else
             props.background;
 
-        const resolved_border_color = if (is_drag_over and props.drag_over_border_color != null)
-            props.drag_over_border_color.?
-        else if (is_hovered and props.hover_border_color != null)
+        const resolved_border_color = if (is_hovered and props.hover_border_color != null)
             props.hover_border_color.?
         else
             props.border_color;
@@ -882,28 +863,6 @@ pub const Builder = struct {
         // Register click-outside handlers (for dropdowns, modals, etc.)
         if (props.on_click_outside) |handler| {
             self.dispatch.onClickOutside(handler);
-        }
-
-        // Register drag source
-        if (props.draggable) |drag| {
-            const node_id = self.dispatch.currentNode();
-            if (self.dispatch.getNode(node_id)) |node| {
-                node.drag_source = .{
-                    .value_ptr = drag.value_ptr,
-                    .type_id = drag.type_id,
-                };
-            }
-        }
-
-        // Register drop target
-        if (props.drop_target) |drop| {
-            const node_id = self.dispatch.currentNode();
-            if (self.dispatch.getNode(node_id)) |node| {
-                node.drop_target = .{
-                    .type_id = drop.type_id,
-                    .handler = drop.handler,
-                };
-            }
         }
 
         // Set pointer events mode

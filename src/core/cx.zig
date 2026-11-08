@@ -30,6 +30,18 @@ pub const Window = window_mod.Window;
 const Node = window_mod.Node;
 const index_none = records.index_none;
 
+/// What `Cx.drag` reports about a drag in progress.
+pub fn Drag(comptime T: type) type {
+    return struct {
+        payload: T,
+        /// The accepting drop target under the pointer, or `.root`.
+        over: ElementId,
+        /// The pointer, in window coordinates.
+        x: f32,
+        y: f32,
+    };
+}
+
 pub const Cx = struct {
     window: *Window,
 
@@ -76,6 +88,22 @@ pub const Cx = struct {
     /// changes with the clock alone (0.3.1 `notifyAfter`). Call it each build
     /// while the view depends on the clock: the window keeps the earliest
     /// request of the last build, and a build that asks for none clears it.
+    /// The drag in progress, once past its threshold, if its payload is a
+    /// `T`: for dimming its source, restyling the target it is `over`, and
+    /// placing a preview at `x`, `y` on a `.drag` layer.
+    pub fn drag(self: *const Cx, comptime T: type) ?Drag(T) {
+        const active = &self.window.drag;
+        if (active.phase != .active) return null;
+        assert(active.type_id != 0);
+        if (active.type_id != handler_mod.typeId(T)) return null;
+        return .{
+            .payload = handler_mod.unpackArg(T, active.payload),
+            .over = active.over,
+            .x = active.x,
+            .y = active.y,
+        };
+    }
+
     pub fn requestRenderAfter(self: *Cx, delay_ms: u32) void {
         const window = self.window;
         window.assertPhase(.build);
@@ -214,7 +242,7 @@ pub const Cx = struct {
 
     fn buildBox(self: *Cx, box: *const element.Box, children: anytype) void {
         const window = self.window;
-        checkMilestoneOne(box);
+        checkLayer(box);
         const parent_index = window.open_stack[window.open_depth - 1];
         const box_id = resolveId(window, parent_index, box.key);
         const scroll = retainScroll(window, box, box_id);
@@ -240,9 +268,23 @@ pub const Cx = struct {
         for (box.actions) |binding| _ = frame.appendAction(binding.action, binding.handler);
         node.actions_len = @intCast(box.actions.len);
         node.cursor = box.style.cursor;
+        if (box.draggable) |source| {
+            assert(source.type_id != 0);
+            node.drag_type = source.type_id;
+            node.drag_payload = source.payload;
+        }
+        if (box.drop_target) |target| {
+            assert(target.type_id != 0);
+            node.drop_type = target.type_id;
+            node.on_drop = frame.appendHandler(target.on_drop);
+        }
         node.hit = box.key != null or scroll != null or box.focusable or box.on_click != null or
             box.on_click_outside != null or box.on_key != null or
-            box.key_context != null or box.actions.len > 0 or box.style.cursor != null;
+            box.key_context != null or box.actions.len > 0 or box.style.cursor != null or
+            box.draggable != null or box.drop_target != null;
+        // As 0.3.1's `pointer_events_none`: the box is transparent to the
+        // pointer, while its children keep their own records.
+        if (box.style.pointer_events == .none) node.hit = false;
         if (box.a11y) |a11y| node.a11y = .{
             .role = a11y.role,
             .label = frame.copyText(a11y.label orelse ""),
@@ -368,18 +410,14 @@ fn noteDepth(window: *Window) void {
     }
 }
 
-fn checkMilestoneOne(box: *const element.Box) void {
-    const phase_four = "is not supported until phase 4 of 0.4.0";
-    if (box.layer) |layer| {
-        switch (layer.kind) {
-            .popover, .modal => {},
-            .tooltip, .drag => std.debug.panic("Box.layer .{t}: only .popover and .modal " ++
-                "layers are implemented (contract decision 13)", .{layer.kind}),
-        }
+/// Tooltip layers keep failing fast until a port needs them (decision 13).
+fn checkLayer(box: *const element.Box) void {
+    const layer = box.layer orelse return;
+    switch (layer.kind) {
+        .popover, .modal, .drag => {},
+        .tooltip => std.debug.panic("Box.layer .tooltip: only .popover, .modal, and " ++
+            ".drag layers are implemented (contract decision 13)", .{}),
     }
-    if (box.draggable != null) std.debug.panic("Box.draggable {s}", .{phase_four});
-    if (box.drop_target != null) std.debug.panic("Box.drop_target {s}", .{phase_four});
-    if (box.style.opacity != 1) std.debug.panic("Style.opacity {s}", .{phase_four});
 }
 
 fn resolveId(window: *Window, parent_index: u32, key: ?Key) ElementId {
@@ -441,6 +479,11 @@ fn addNode(window: *Window, kind: window_mod.NodeKind, node_id: ElementId) u32 {
         .corners = .zero,
         .shadow = null,
         .shadow_color = records.Color.transparent,
+        .opacity = 1,
+        .drag_type = 0,
+        .drag_payload = 0,
+        .drop_type = 0,
+        .on_drop = index_none,
         .text = .empty,
         .text_color = records.Color.transparent,
         .font_size = 0,
@@ -574,6 +617,9 @@ fn resolveAppearance(window: *Window, node: *Node, style: *const element.Style) 
         node.border = .{ .width = border.width, .color = border.color.resolve(theme) };
     }
     node.corners = style.corner_radius;
+    assert(style.opacity >= 0);
+    assert(style.opacity <= 1);
+    node.opacity = style.opacity;
     if (style.shadow) |shadow| {
         node.shadow = shadow;
         node.shadow_color = shadow.color.resolve(theme);

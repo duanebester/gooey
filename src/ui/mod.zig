@@ -125,13 +125,6 @@ pub const ShadowConfig = styles.ShadowConfig;
 pub const CornerRadius = styles.CornerRadius;
 
 // =============================================================================
-// Drag & Drop
-// =============================================================================
-
-pub const Draggable = styles.Draggable;
-pub const DropTarget = styles.DropTarget;
-
-// =============================================================================
 // Floating Positioning
 // =============================================================================
 

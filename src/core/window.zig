@@ -125,6 +125,13 @@ pub const Node = struct {
     corners: records.Corners,
     shadow: ?element.Shadow,
     shadow_color: records.Color,
+    /// `Style.opacity`; emit multiplies it into the subtree's paint alpha.
+    opacity: f32,
+    /// `Box.draggable` and `Box.drop_target`; a type of 0 means none.
+    drag_type: usize,
+    drag_payload: u64,
+    drop_type: usize,
+    on_drop: u32,
     // Text.
     text: records.TextRange,
     text_color: records.Color,
@@ -137,9 +144,39 @@ pub const Node = struct {
     // Clip and scroll (`Style.clip`, `Style.scroll`).
     clip: bool,
     scroll: ?retained_mod.Handle(ScrollState),
-    /// A `.popover` or `.modal` box opens a fragment that emit paints after
-    /// the fragment that opened it.
+    /// A layer box opens a fragment that emit paints after the fragment
+    /// that opened it.
     layer: ?element.Layer,
+};
+
+/// A drag is armed by a press on a draggable and starts once the pointer has
+/// moved past `threshold_px`, as 0.3.1's did. `over` is the innermost drop
+/// target under the pointer that accepts the payload's type, or `.root`.
+pub const Drag = struct {
+    phase: enum { idle, armed, active },
+    source: ElementId,
+    type_id: usize,
+    payload: u64,
+    start_x: f32,
+    start_y: f32,
+    x: f32,
+    y: f32,
+    over: ElementId,
+
+    /// 0.3.1's `DRAG_THRESHOLD`: a press that moves no further is a click.
+    pub const threshold_px: f32 = 2;
+
+    pub const idle: Drag = .{
+        .phase = .idle,
+        .source = .root,
+        .type_id = 0,
+        .payload = 0,
+        .start_x = 0,
+        .start_y = 0,
+        .x = 0,
+        .y = 0,
+        .over = .root,
+    };
 };
 
 /// A scroll box's offset, retained by its key (contract §1), and what the
@@ -511,6 +548,11 @@ pub const Window = struct {
     /// lives in its `ScrollState` until the release.
     scroll_drag: ElementId,
     pointer: ?struct { x: f32, y: f32 },
+    /// The pointer drag of a `Box.draggable` (contract §5), one per window.
+    drag: Drag,
+    /// The product of `Style.opacity` over the node being emitted and its
+    /// ancestors; 1 outside emit.
+    paint_opacity: f32,
     // Tick state.
     phase: Phase,
     /// Set by the main thread when a built frame is complete and cleared by
@@ -706,6 +748,8 @@ pub noinline fn initInPlace(self: *Window, gpa: std.mem.Allocator, options: *con
     self.press_len = 0;
     self.scroll_drag = .root;
     self.pointer = null;
+    self.paint_opacity = 1;
+    self.drag = Drag.idle;
     self.phase = .idle;
     self.frame_in_flight = .init(false);
     self.awaiting_flip = false;

@@ -28,6 +28,7 @@ const assert = std.debug.assert;
 const Window = window_mod.Window;
 const ElementId = records.ElementId;
 const index_none = records.index_none;
+const Drag = window_mod.Drag;
 
 pub const Point = struct { x: f32, y: f32 };
 
@@ -116,19 +117,35 @@ fn routeInput(window: *Window, event: *const input.InputEvent) void {
             const point = pointOf(mouse.position);
             window.pointer = .{ .x = point.x, .y = point.y };
             if (window.scroll_drag != .root) endScrollDrag(window);
-            release(window, event, point);
+            if (window.drag.phase == .active) {
+                drop(window, event, point);
+            } else {
+                window.drag = Drag.idle;
+                release(window, event, point);
+            }
         },
         .mouse_moved, .mouse_dragged => |mouse| {
             const point = pointOf(mouse.position);
             window.pointer = .{ .x = point.x, .y = point.y };
             if (window.scroll_drag != .root) dragScrollbar(window, point);
+            if (window.drag.phase != .idle) moveDrag(window, point);
             updateHover(window);
         },
         .mouse_exited => {
             window.pointer = null;
             updateHover(window);
         },
-        .key_down, .key_up, .text_input, .composition => keyToFocus(window, event),
+        .key_down => |key| {
+            if (key.key == .escape and window.drag.phase != .idle) {
+                // Escape cancels a drag and goes no further, as in 0.3.1.
+                if (window.drag.phase == .active) window.render_requested = true;
+                window.drag = Drag.idle;
+                window.press_len = 0;
+            } else {
+                keyToFocus(window, event);
+            }
+        },
+        .key_up, .text_input, .composition => keyToFocus(window, event),
         .scroll => |scroll| wheel(window, event, pointOf(scroll.position)),
         else => {},
     }
@@ -148,6 +165,7 @@ fn press(window: *Window, event: *const input.InputEvent, point: Point) void {
     const target = hitIndex(frame, point);
     if (pressScrollbar(window, target, point)) return;
     window.press_len = pathOf(frame, target, &window.press_path);
+    armDrag(window, frame, target, point);
     clickOutside(window, event, target);
     var focus_id: ElementId = .root;
     var index = target;
@@ -184,6 +202,83 @@ fn release(window: *Window, event: *const input.InputEvent, point: Point) void {
         }
         index = record.parent;
     }
+}
+
+/// A press arms a drag of the nearest draggable on its path.
+fn armDrag(window: *Window, frame: *const records.Frame, target: u32, point: Point) void {
+    assert(window.drag.phase == .idle);
+    var index = target;
+    var depth: u32 = 0;
+    while (index != index_none) : (depth += 1) {
+        assert(depth <= window_mod.box_depth_max);
+        const record = &frame.hits[index];
+        if (record.drag_type != 0) {
+            window.drag = .{
+                .phase = .armed,
+                .source = record.id,
+                .type_id = record.drag_type,
+                .payload = record.drag_payload,
+                .start_x = point.x,
+                .start_y = point.y,
+                .x = point.x,
+                .y = point.y,
+                .over = .root,
+            };
+            return;
+        }
+        index = record.parent;
+    }
+}
+
+/// An armed drag starts past the threshold; a started one follows the
+/// pointer, re-rendering so its preview and drop target can restyle. A
+/// started drag clicks nothing on release.
+fn moveDrag(window: *Window, point: Point) void {
+    const drag = &window.drag;
+    assert(drag.phase != .idle);
+    if (drag.phase == .armed) {
+        const dx = point.x - drag.start_x;
+        const dy = point.y - drag.start_y;
+        if (dx * dx + dy * dy <= Drag.threshold_px * Drag.threshold_px) return;
+        drag.phase = .active;
+        window.press_len = 0;
+    }
+    drag.x = point.x;
+    drag.y = point.y;
+    const target = dropTargetAt(window.rendered(), point, drag.type_id);
+    drag.over = if (target == index_none) .root else window.rendered().hits[target].id;
+    window.render_requested = true;
+    assert(drag.phase == .active);
+}
+
+/// The innermost record under `point` that accepts drops of `type_id`.
+fn dropTargetAt(frame: *const records.Frame, point: Point, type_id: usize) u32 {
+    assert(type_id != 0);
+    var index = hitIndex(frame, point);
+    var depth: u32 = 0;
+    while (index != index_none) : (depth += 1) {
+        assert(depth <= window_mod.box_depth_max);
+        if (frame.hits[index].drop_type == type_id) return index;
+        index = frame.hits[index].parent;
+    }
+    return index_none;
+}
+
+/// A release ends a started drag: over an accepting target it delivers the
+/// payload to `on_drop`; anywhere else it cancels. Either way, no click.
+fn drop(window: *Window, event: *const input.InputEvent, point: Point) void {
+    const drag = window.drag;
+    assert(drag.phase == .active);
+    window.drag = Drag.idle;
+    window.press_len = 0;
+    window.render_requested = true;
+    const frame = window.rendered();
+    const target = dropTargetAt(frame, point, drag.type_id);
+    if (target == index_none) return;
+    const record = &frame.hits[target];
+    var effects = handler_mod.Effects.init(event, record.id);
+    effects.drop = .{ .type_id = drag.type_id, .payload = drag.payload };
+    _ = invokeWith(window, frame.handlerAt(record.on_drop).?, &effects);
 }
 
 /// A press on a scroll box's scrollbar drags its thumb or jumps along its
@@ -452,8 +547,13 @@ fn invoke(
 ) bool {
     var effects = handler_mod.Effects.init(event, current);
     effects.completion = completion;
+    return invokeWith(window, handler, &effects);
+}
+
+/// Call a handler and apply its requests.
+fn invokeWith(window: *Window, handler: handler_mod.Handler, effects: *handler_mod.Effects) bool {
     effects.clipboard = &window.clipboard;
-    handler.call(window.store, &effects);
+    handler.call(window.store, effects);
     if (effects.render_requested) window.render_requested = true;
     if (effects.quit_requested) window.quit_requested = true;
     switch (effects.focus_request) {

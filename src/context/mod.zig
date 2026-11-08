@@ -156,18 +156,6 @@ pub const GlobalTypeId = global.TypeId;
 pub const globalTypeId = global.typeId;
 
 // =============================================================================
-// Drag & Drop
-// =============================================================================
-
-pub const drag = @import("drag.zig");
-
-pub const DragState = drag.DragState;
-pub const PendingDrag = drag.PendingDrag;
-pub const DragTypeId = drag.DragTypeId;
-pub const dragTypeId = drag.dragTypeId;
-pub const DRAG_THRESHOLD = drag.DRAG_THRESHOLD;
-
-// =============================================================================
 // Entity System
 // =============================================================================
 

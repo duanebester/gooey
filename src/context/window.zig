@@ -138,10 +138,6 @@ const FocusEvent = focus_mod.FocusEvent;
 const handler_mod = @import("handler.zig");
 const Handler = handler_mod.Handler;
 
-// Drag & Drop
-const drag_mod = @import("drag.zig");
-pub const DragState = drag_mod.DragState;
-
 // Geometry
 const geometry = @import("../geometry/geometry.zig");
 const Point = geometry.Point;
@@ -280,14 +276,6 @@ pub const Window = struct {
     /// internal callers reach in via `window.hover.*` to avoid a forwarder
     /// layer.
     hover: HoverState = .{},
-
-    // Drag & Drop state
-    /// Pending drag (mouse down, threshold not yet exceeded)
-    pending_drag: ?drag_mod.PendingDrag = null,
-    /// Active drag (threshold exceeded, drag in progress)
-    active_drag: ?drag_mod.DragState = null,
-    /// Layout ID of current drop target (for drag-over styling)
-    drag_over_target: ?u32 = null,
 
     // `debugger` lives in `globals`; access via `window.debugger()`. The
     // accessor reads from the type-keyed store — one indirection vs. a
@@ -654,11 +642,6 @@ pub const Window = struct {
         self.needs_render = false;
         // `debugger` registered into `globals` below.
 
-        // Pending/active drag state (re-init explicitly — `self` was raw memory)
-        self.pending_drag = null;
-        self.active_drag = null;
-        self.drag_over_target = null;
-
         // Root state slots
         self.root_state_ptr = null;
         self.root_state_type_id = 0;
@@ -803,11 +786,6 @@ pub const Window = struct {
         self.frame_count = 0;
         self.needs_render = false;
         // `debugger` registered into `globals` below.
-
-        // Pending/active drag state
-        self.pending_drag = null;
-        self.active_drag = null;
-        self.drag_over_target = null;
 
         // Root state slots
         self.root_state_ptr = null;
@@ -1021,9 +999,6 @@ pub const Window = struct {
         // Hover: clear hover_changed latch so a downstream observer
         // that didn't react in the previous frame won't see a stale `true`.
         self.hover.beginFrame();
-
-        // Clear drag-over target (recalculated each frame during drag)
-        self.drag_over_target = null;
 
         // Accessibility: periodic screen reader poll + tree begin
         // (a11y subsystem owns the counter and the enabled latch).
@@ -1352,65 +1327,6 @@ pub const Window = struct {
     /// pointer, which is the property cross-window observation needs.
     pub fn getEntities(self: *Self) *EntityMap {
         return &self.app.entities;
-    }
-
-    // =========================================================================
-    // Drag & Drop
-    // =========================================================================
-
-    /// Start a pending drag (called on mouse_down over draggable element)
-    /// Drag activates when cursor moves > DRAG_THRESHOLD pixels
-    pub fn startPendingDrag(
-        self: *Self,
-        comptime T: type,
-        value: *T,
-        start_pos: Point(f32),
-        source_id: ?u32,
-    ) void {
-        std.debug.assert(self.active_drag == null); // One drag at a time
-        self.pending_drag = .{
-            .value_ptr = value,
-            .type_id = drag_mod.dragTypeId(T),
-            .start_position = start_pos,
-            .source_layout_id = source_id,
-        };
-    }
-
-    /// Check if there's an active drag of the given type
-    pub fn hasDragOfType(self: *const Self, comptime T: type) bool {
-        if (self.active_drag) |drag| {
-            return drag.type_id == drag_mod.dragTypeId(T);
-        }
-        return false;
-    }
-
-    /// Get active drag state (if any)
-    pub fn getActiveDrag(self: *const Self) ?*const drag_mod.DragState {
-        if (self.active_drag) |*drag| return drag;
-        return null;
-    }
-
-    /// Cancel any active or pending drag
-    pub fn cancelDrag(self: *Self) void {
-        self.active_drag = null;
-        self.pending_drag = null;
-        self.drag_over_target = null;
-    }
-
-    /// Check if a layout ID is the current drag-over target
-    pub fn isDragOverTarget(self: *const Self, layout_id: u32) bool {
-        if (self.drag_over_target) |target| {
-            return target == layout_id;
-        }
-        return false;
-    }
-
-    /// Check if element is being dragged (for source styling)
-    pub fn isDragSource(self: *const Self, layout_id: u32) bool {
-        if (self.active_drag) |drag| {
-            if (drag.source_layout_id) |src| return src == layout_id;
-        }
-        return false;
     }
 
     // =========================================================================
