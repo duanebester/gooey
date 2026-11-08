@@ -422,7 +422,9 @@ fn drawLegend(
     }, items, options);
 }
 
-/// A progress ring of the conversion rate out of 10%, with a centre marker.
+/// A progress ring of the conversion rate out of 10%, with a marker at its
+/// centre. 0.3.1 placed the marker at the card's centre, 20 px low, but never
+/// showed it: the ring's triangles used up its 256 frame meshes first.
 fn paintConversion(state: *const State, painter: *Painter) void {
     paintCard(state, painter);
     const conversion_percent: f32 = 3.24;
@@ -439,9 +441,10 @@ fn paintConversion(state: *const State, painter: *Painter) void {
     chart.start_angle = -std.math.pi / 2.0;
     chart.render(painter);
 
+    // The ring's centre: the chart is 40 px shorter than its card.
     const center = [2]f32{
-        painter.bounds.x + painter.bounds.width / 2,
-        painter.bounds.y + painter.bounds.height / 2,
+        painter.bounds.x + chart.width / 2,
+        painter.bounds.y + chart.height / 2,
     };
     painter.circle(center, 14, Palette.success.withAlpha(0.15));
     painter.circle(center, 10, Palette.success.withAlpha(0.3));
