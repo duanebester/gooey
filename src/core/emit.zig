@@ -108,6 +108,76 @@ pub const Painter = struct {
         emitSvg(self.window, path, bounds, options);
     }
 
+    /// Fill a triangle list, three points per triangle, in window
+    /// coordinates. A fill directly after another of the same colour joins
+    /// its mesh, so a pie of many slivers packs as one path.
+    pub fn triangles(self: *Painter, points: []const [2]f32, color: Color) void {
+        assert(points.len > 0);
+        assert(points.len % 3 == 0);
+        emitTriangles(self.window, points, color);
+    }
+
+    /// A line `width` wide: an axis-aligned line is a quad, any other two
+    /// triangles, as 0.3.1's canvas drew them.
+    pub fn line(self: *Painter, from: [2]f32, to: [2]f32, width: f32, color: Color) void {
+        assert(width > 0);
+        assert(!std.math.isNan(from[0]) and !std.math.isNan(to[0]));
+        const dx = to[0] - from[0];
+        const dy = to[1] - from[1];
+        if (@abs(dy) < 0.001) {
+            const left = @min(from[0], to[0]);
+            const top = from[1] - width * 0.5;
+            self.fill(.{ .x = left, .y = top, .width = @abs(dx), .height = width }, color);
+            return;
+        }
+        if (@abs(dx) < 0.001) {
+            const top = @min(from[1], to[1]);
+            const left = from[0] - width * 0.5;
+            self.fill(.{ .x = left, .y = top, .width = width, .height = @abs(dy) }, color);
+            return;
+        }
+        const length = @sqrt(dx * dx + dy * dy);
+        const px = -dy / length * width * 0.5;
+        const py = dx / length * width * 0.5;
+        const c0 = [2]f32{ from[0] + px, from[1] + py };
+        const c1 = [2]f32{ to[0] + px, to[1] + py };
+        const c2 = [2]f32{ to[0] - px, to[1] - py };
+        const c3 = [2]f32{ from[0] - px, from[1] - py };
+        self.triangles(&.{ c0, c1, c2, c0, c2, c3 }, color);
+    }
+
+    /// A filled circle of as many sides as its size on screen needs, as
+    /// 0.3.1's `fillCircleAdaptive`: 4 below 2 px of radius, up to 32.
+    pub fn circle(self: *Painter, center: [2]f32, radius: f32, color: Color) void {
+        assert(radius >= 0);
+        assert(!std.math.isNan(center[0]) and !std.math.isNan(center[1]));
+        var points: [3 * (circle_sides_max - 2)][2]f32 = undefined;
+        const count = circlePoints(&points, center, radius, self.window.scale_factor);
+        self.triangles(points[0..count], color);
+    }
+
+    /// A polyline the GPU widens to `width`, one draw for every segment.
+    pub fn polyline(self: *Painter, points: []const [2]f32, width: f32, color: Color) void {
+        assert(points.len >= 2);
+        assert(width > 0);
+        emitPointMesh(self.window, points, .{
+            .topology = .strip_expanded,
+            .width = width,
+            .color = color,
+        });
+    }
+
+    /// Circles of one radius and colour at `centers`, drawn as instances.
+    pub fn pointCloud(self: *Painter, centers: []const [2]f32, radius: f32, color: Color) void {
+        assert(centers.len >= 1);
+        assert(radius > 0);
+        emitPointMesh(self.window, centers, .{
+            .topology = .point_instanced,
+            .width = radius,
+            .color = color,
+        });
+    }
+
     /// Answer the platform's IME questions for this frame (`Query`).
     pub fn imeCursor(self: *Painter, ime: records.Ime) void {
         assert(ime.owner.isKeyed());
@@ -705,6 +775,166 @@ fn emitSvg(window: *Window, path: []const u8, bounds: Rect, options: SvgStyle) v
         .grayscale = 0,
         .opacity = 1,
     } });
+}
+
+/// The most sides a circle gets, as 0.3.1's `Path.circleAdaptive`.
+const circle_sides_max: u32 = 32;
+
+/// Fan the circle's polygon from its first corner; returns the points used.
+fn circlePoints(
+    points: *[3 * (circle_sides_max - 2)][2]f32,
+    center: [2]f32,
+    radius: f32,
+    scale: f32,
+) usize {
+    assert(scale > 0);
+    const sides = circleSides(radius * scale);
+    const delta = std.math.tau / @as(f32, @floatFromInt(sides));
+    var corner: u32 = 1;
+    var count: usize = 0;
+    while (corner + 1 < sides) : (corner += 1) {
+        points[count] = .{ center[0] + radius, center[1] };
+        points[count + 1] = circleCorner(center, radius, delta, corner);
+        points[count + 2] = circleCorner(center, radius, delta, corner + 1);
+        count += 3;
+    }
+    assert(count == 3 * (sides - 2));
+    return count;
+}
+
+/// 0.3.1's thresholds: tiny circles are squares, then hexagons, then 12,
+/// 24, and 32 sides as the radius on screen passes 8, 32, and 128 px.
+fn circleSides(screen_radius: f32) u32 {
+    assert(screen_radius >= 0);
+    const radius_below = [_]f32{ 2, 8, 32, 128 };
+    const sides = [_]u32{ 4, 6, 12, 24 };
+    for (radius_below, sides) |limit, count| {
+        if (screen_radius < limit) return count;
+    }
+    return circle_sides_max;
+}
+
+fn circleCorner(center: [2]f32, radius: f32, delta: f32, corner: u32) [2]f32 {
+    const angle = delta * @as(f32, @floatFromInt(corner));
+    return .{ center[0] + radius * @cos(angle), center[1] + radius * @sin(angle) };
+}
+
+/// The most points one triangle mesh holds: the 0.3.1 path mesh `pack`
+/// copies it into, rounded down to whole triangles.
+pub const triangle_points_max: u32 = scene_mod.MAX_MESH_VERTICES / 3 * 3;
+
+fn emitTriangles(window: *Window, points: []const [2]f32, color: Color) void {
+    if (points.len > triangle_points_max) {
+        std.debug.panic("Painter.triangles of {d} points: capacity {d} per mesh, frame {d}. " ++
+            "Split the fill.", .{ points.len, triangle_points_max, window.frame_number });
+    }
+    const frame = window.built();
+    const count: u32 = @intCast(points.len);
+    checkMeshPoints(window, .triangles, count);
+    // Join the previous record when it is a triangle mesh of this colour
+    // that ends where the pool ends and has room for these points.
+    if (frame.paint_count > 0) {
+        const last = &frame.paint[frame.paint_count - 1];
+        if (last.* == .mesh) {
+            const mesh = &last.mesh;
+            const joins = mesh.topology == .triangles and colorEql(mesh.fill, color) and
+                mesh.range.first + mesh.range.count == frame.mesh_point_count and
+                mesh.range.count + count <= triangle_points_max;
+            if (joins) {
+                const range = frame.claimMeshPoints(count);
+                copyMeshPoints(frame.meshPoints(range), points);
+                mesh.range.count += count;
+                return;
+            }
+        }
+    }
+    const mesh_max = @min(window.limits.scene.path_count_frame_max, scene_mod.MAX_FRAME_MESHES);
+    if (frame.triangle_mesh_count == mesh_max) {
+        std.debug.panic("triangle meshes exhausted: capacity {d} (scene.path_count_frame_max, " ++
+            "at most {d}), {d} in use, 1 requested, frame {d}", .{
+            mesh_max, scene_mod.MAX_FRAME_MESHES, mesh_max, window.frame_number,
+        });
+    }
+    frame.triangle_mesh_count += 1;
+    const range = frame.claimMeshPoints(count);
+    copyMeshPoints(frame.meshPoints(range), points);
+    frame.appendPaint(.{ .mesh = .{
+        .range = range,
+        .topology = .triangles,
+        .fill = color,
+        .width = 0,
+    } });
+}
+
+const PointMesh = struct { topology: records.Mesh.Topology, width: f32, color: Color };
+
+fn emitPointMesh(window: *Window, points: []const [2]f32, mesh: PointMesh) void {
+    assert(mesh.topology != .triangles);
+    const count: u32 = @intCast(points.len);
+    // The 0.3.1 scene's per-draw ceilings, checked here with the counts.
+    const draw_max: u32, const width_max: f32 = switch (mesh.topology) {
+        .strip_expanded => .{ scene_mod.MAX_POLYLINE_POINTS, scene_mod.MAX_LINE_WIDTH },
+        .point_instanced => .{ scene_mod.MAX_POINTS_PER_CLOUD, scene_mod.MAX_POINT_RADIUS },
+        .triangles => unreachable,
+    };
+    if (count > draw_max or mesh.width > width_max) {
+        std.debug.panic("Painter.{t} of {d} points, width {d}: capacity {d} points, " ++
+            "width {d}, frame {d}", .{
+            mesh.topology,
+            count,
+            mesh.width,
+            draw_max,
+            width_max,
+            window.frame_number,
+        });
+    }
+    checkMeshPoints(window, mesh.topology, count);
+    const frame = window.built();
+    const range = frame.claimMeshPoints(count);
+    copyMeshPoints(frame.meshPoints(range), points);
+    frame.appendPaint(.{ .mesh = .{
+        .range = range,
+        .topology = mesh.topology,
+        .fill = mesh.color,
+        .width = mesh.width,
+    } });
+}
+
+/// The frame's points of one kind stay within that kind's scene limit, so
+/// the renderer's geometry budget holds; one pool serves all three kinds.
+fn checkMeshPoints(window: *Window, topology: records.Mesh.Topology, count: u32) void {
+    const scene_limits = &window.limits.scene;
+    const capacity = switch (topology) {
+        .triangles => scene_limits.path_vertex_count_frame_max,
+        .strip_expanded => scene_limits.polyline_point_count_frame_max,
+        .point_instanced => scene_limits.point_count_frame_max,
+    };
+    const name = switch (topology) {
+        .triangles => "path_vertex_count_frame_max",
+        .strip_expanded => "polyline_point_count_frame_max",
+        .point_instanced => "point_count_frame_max",
+    };
+    const used = &window.built().mesh_point_counts[@backingInt(topology)];
+    assert(used.* <= capacity);
+    if (count > capacity - used.*) {
+        std.debug.panic("mesh points exhausted: capacity {d} (scene.{s}), {d} in use, " ++
+            "{d} requested, frame {d}. Raise the app's ResourceLimits.scene.{s}.", .{
+            capacity, name, used.*, count, window.frame_number, name,
+        });
+    }
+    used.* += count;
+}
+
+fn copyMeshPoints(target: []records.MeshPoint, source: []const [2]f32) void {
+    assert(target.len == source.len);
+    for (target, source) |*point, value| {
+        assert(!std.math.isNan(value[0]) and !std.math.isNan(value[1]));
+        point.* = .{ .x = value[0], .y = value[1] };
+    }
+}
+
+fn colorEql(a: Color, b: Color) bool {
+    return a.r == b.r and a.g == b.g and a.b == b.b and a.a == b.a;
 }
 
 comptime {

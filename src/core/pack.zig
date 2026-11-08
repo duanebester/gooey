@@ -24,7 +24,7 @@ pub fn pack(frame: *const records.Frame, scene: *Scene) void {
         switch (record.*) {
             .quad => |*quad| packQuad(scene, quad),
             .sprite => |*sprite| packSprite(scene, sprite),
-            .mesh => std.debug.panic("mesh records are packed from phase 5", .{}),
+            .mesh => |*mesh| packMesh(scene, frame, mesh),
             .clip_push => |bounds| {
                 clip_depth += 1;
                 scene.pushClip(.{
@@ -127,6 +127,54 @@ fn packSprite(scene: *Scene, sprite: *const records.Sprite) void {
             sprite.atlas,
         }),
     }
+}
+
+/// A triangle mesh becomes one 0.3.1 path; polylines and point clouds point
+/// the scene at the frame's points, which stay put until this frame is drawn.
+fn packMesh(scene: *Scene, frame: *const records.Frame, mesh: *const records.Mesh) void {
+    const points = frame.meshPoints(mesh.range);
+    const color = Hsla.fromColor(mesh.fill);
+    switch (mesh.topology) {
+        .triangles => {
+            var path = scene_mod.PathMesh.init();
+            fillPathMesh(&path, points);
+            scene.insertPathWithMesh(path, 0, 0, color) catch |err| packFailed(frame, err);
+        },
+        .strip_expanded => {
+            const line = scene_mod.Polyline.init(points, mesh.width, color);
+            scene.insertPolylineClipped(line) catch |err| packFailed(frame, err);
+        },
+        .point_instanced => {
+            const cloud = scene_mod.PointCloud.init(points, mesh.width, color);
+            scene.insertPointCloudClipped(cloud) catch |err| packFailed(frame, err);
+        },
+    }
+}
+
+/// One vertex per point and one index per vertex, with UVs across the bounds
+/// as the 0.3.1 triangle inserts set them.
+fn fillPathMesh(path: *scene_mod.PathMesh, points: []const records.MeshPoint) void {
+    assert(points.len % 3 == 0);
+    assert(points.len <= scene_mod.MAX_MESH_VERTICES);
+    var min_x = points[0].x;
+    var min_y = points[0].y;
+    var max_x = points[0].x;
+    var max_y = points[0].y;
+    for (points) |point| {
+        min_x = @min(min_x, point.x);
+        min_y = @min(min_y, point.y);
+        max_x = @max(max_x, point.x);
+        max_y = @max(max_y, point.y);
+    }
+    const width = if (max_x > min_x) max_x - min_x else 1;
+    const height = if (max_y > min_y) max_y - min_y else 1;
+    for (points, 0..) |point, index| {
+        const u = (point.x - min_x) / width;
+        const v = (point.y - min_y) / height;
+        path.vertices.appendAssumeCapacity(scene_mod.PathVertex.withUV(point.x, point.y, u, v));
+        path.indices.appendAssumeCapacity(@intCast(index));
+    }
+    path.bounds = scene_mod.Bounds.init(min_x, min_y, width, height);
 }
 
 fn packFailed(frame: *const records.Frame, err: anyerror) noreturn {

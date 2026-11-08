@@ -80,6 +80,7 @@ pub const PathInstance = path_instance.PathInstance;
 pub const polyline = @import("polyline.zig");
 pub const Polyline = polyline.Polyline;
 pub const MAX_POLYLINE_POINTS = polyline.MAX_POLYLINE_POINTS;
+pub const MAX_LINE_WIDTH = polyline.MAX_LINE_WIDTH;
 
 // =============================================================================
 // Point Cloud (instanced circles for scatter plots/markers)
@@ -88,6 +89,7 @@ pub const MAX_POLYLINE_POINTS = polyline.MAX_POLYLINE_POINTS;
 pub const point_cloud = @import("point_cloud.zig");
 pub const PointCloud = point_cloud.PointCloud;
 pub const MAX_POINTS_PER_CLOUD = point_cloud.MAX_POINTS_PER_CLOUD;
+pub const MAX_POINT_RADIUS = point_cloud.MAX_POINT_RADIUS;
 
 // =============================================================================
 // Colored Point Cloud (instanced circles with per-point colors)

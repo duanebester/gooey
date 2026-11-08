@@ -30,6 +30,7 @@
 //!   the same bound stops first.
 //! - `core-wrap-frame`: wraps two texts into one line past the frame's glyph budget.
 //! - `core-deinit-running`: frees a running app without stopping it first.
+//! - `core-mesh-points`: a polyline one point past `nano`'s polyline point limit.
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -54,6 +55,7 @@ const Mode = enum {
     @"core-wrap-words",
     @"core-wrap-frame",
     @"core-deinit-running",
+    @"core-mesh-points",
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -85,6 +87,7 @@ pub fn main(init: std.process.Init) !void {
         .@"core-wrap-words" => coreTick(init.gpa, init.io, CoreApp.wrapWords),
         .@"core-wrap-frame" => coreTick(init.gpa, init.io, CoreApp.wrapFrame),
         .@"core-deinit-running" => coreDeinitRunning(init.gpa, init.io),
+        .@"core-mesh-points" => coreTick(init.gpa, init.io, CoreApp.longPolyline),
     }
     std.debug.print("unreachable: {s} did not panic\n", .{@tagName(mode)});
 }
@@ -352,6 +355,23 @@ const CoreApp = struct {
             core.ui.text(&first, .{ .wrap = .newlines }),
             core.ui.text(&second, .{ .wrap = .newlines }),
         }));
+    }
+
+    /// One point more than `nano` allows polylines in a frame.
+    fn longPolyline(cx: *core.Cx) void {
+        const nothing: u8 = 0;
+        cx.render(core.ui.paint(u8, &nothing, paintLongPolyline, .{}));
+    }
+
+    fn paintLongPolyline(_: *const u8, painter: *core.ui.Painter) void {
+        const count = core.ResourceLimits.nano.scene.polyline_point_count_frame_max + 1;
+        const points = comptime blk: {
+            @setEvalBranchQuota(4 * count);
+            var result: [count][2]f32 = undefined;
+            for (&result, 0..) |*point, index| point.* = .{ @floatFromInt(index), 0 };
+            break :blk result;
+        };
+        painter.polyline(&points, 1, core.ui.Color.rgb(1, 1, 1));
     }
 
     fn newlinesThenM(comptime count: u32) [count + 1]u8 {

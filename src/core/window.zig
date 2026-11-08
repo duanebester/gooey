@@ -780,6 +780,8 @@ fn initBuildStorage(self: *Window, gpa: std.mem.Allocator, limits: *const Resour
         .handler_count_max = limits.records.handler_count_frame_max,
         .a11y_node_count_max = element_count,
         .text_bytes_max = limits.build.text_bytes_frame_max,
+        .mesh_point_count_max = limits.scene.path_vertex_count_frame_max +
+            limits.scene.polyline_point_count_frame_max + limits.scene.point_count_frame_max,
     };
     try self.frames[0].initInPlace(gpa, &capacity);
     errdefer self.frames[0].deinit(gpa);
@@ -858,6 +860,12 @@ fn initRuntimeStorage(self: *Window, gpa: std.mem.Allocator, limits: *const Reso
     errdefer gpa.destroy(self.scene);
     self.scene.* = try Scene.initCapacity(gpa, &limits.scene);
     errdefer self.scene.deinit();
+    // Triangle meshes pack into the scene's frame meshes, which 0.3.1 would
+    // allocate at first use; reserve one per path the profile allows.
+    if (limits.scene.path_count_frame_max > 0) {
+        const mesh_count = @min(limits.scene.path_count_frame_max, scene_mod.MAX_FRAME_MESHES);
+        try self.scene.mesh_pool.reserveFrame(mesh_count);
+    }
     self.text_scratch = try gpa.alloc(u8, text_scratch_bytes);
     errdefer gpa.free(self.text_scratch);
     self.text_scratch_allocator = std.heap.FixedBufferAllocator.init(self.text_scratch);
