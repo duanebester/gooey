@@ -81,6 +81,9 @@ pub const CoreBinding = struct {
     /// One host loop turn from inside a modal move or resize loop, which
     /// holds the thread in `DefWindowProcW` below the host's own loop.
     modal_turn: *const fn (context: *anyopaque) void,
+    /// A UI Automation client asked for the root provider for the first
+    /// time: the host polls for a screen reader at its next rendered frame.
+    screen_reader_requested: *const fn (context: *anyopaque) void,
 };
 
 /// The loop's clock for `Window.waitTimeoutNs`, named because two fields
@@ -1327,17 +1330,24 @@ pub const Window = struct {
     }
 
     /// Answer a UI Automation client's request for the root provider, and
-    /// render for one poll interval so the accessibility system notices the
-    /// client even when nothing else would draw. Other object requests (MSAA)
+    /// make sure the accessibility system notices the client even when
+    /// nothing else would draw: a 0.3.1 app renders for one poll interval, and
+    /// a core app's host polls at its next frame. Other object requests (MSAA)
     /// go to `DefWindowProcW`.
     fn handleGetObject(self: *Self, wparam: win32.WPARAM, lparam: win32.LPARAM) ?win32.LRESULT {
         assert(self.hwnd != null);
         const object_id: i32 = @truncate(lparam);
         if (object_id != uia.UiaRootObjectId) return null;
         const root = self.uia_host.root orelse return null;
+        const first_request = !self.uia_host.client_requested;
         self.uia_host.client_requested = true;
-        self.uia_activation_frames = uia.activation_frame_count;
-        self.requestRender();
+        if (self.core) |binding| {
+            if (first_request) binding.screen_reader_requested(binding.context);
+        } else {
+            self.uia_activation_frames = uia.activation_frame_count;
+            self.requestRender();
+        }
+        assert(self.uia_host.client_requested);
         return uia.UiaReturnRawElementProvider(self.hwnd.?, wparam, lparam, root);
     }
 

@@ -1324,13 +1324,14 @@ fn addWindowsBuilds(
         .{ .name = "layout", .source = "src/examples/layout.zig" },
         .{ .name = "animation", .source = "src/examples/animation.zig" },
         .{ .name = "images", .source = "src/examples/images.zig" },
-        .{ .name = "clipboard", .source = "src/examples/clipboard.zig" },
-        .{ .name = "file-dialog", .source = "src/examples/file_dialog.zig" },
         // 0.4.0 core apps, on `platform/windows/core_host.zig`.
         .{ .name = "counter", .source = "src/examples/counter.zig" },
         .{ .name = "todo", .source = "src/examples/todo.zig" },
+        .{ .name = "core-file-dialog", .source = "src/examples/core_file_dialog.zig" },
+        .{ .name = "code-editor", .source = "src/examples/code_editor.zig" },
         .{ .name = "actions", .source = "src/examples/actions.zig" },
         .{ .name = "nested-overlay", .source = "src/examples/nested_overlay.zig" },
+        .{ .name = "accessible-form", .source = "src/examples/accessible_form.zig" },
     };
     for (examples) |example| {
         addWindowsExample(b, mod, components_mod, target, optimize, example.name, example.source);
@@ -1464,7 +1465,8 @@ fn addWindowsTypecheck(b: *std.Build) void {
         }),
     });
 
-    // The 0.4.0 core host: window binding, render thread, IME, clipboard.
+    // The 0.4.0 core host: window binding, render thread, IME, clipboard,
+    // file dialogs, and UI Automation.
     const core_app = b.addExecutable(.{
         .name = "typecheck-windows-todo",
         .root_module = b.createModule(.{

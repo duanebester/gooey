@@ -8,13 +8,13 @@ Automation accessibility, and the shared Vulkan renderer. Verified on an Intel U
 150% scale. The [checklist](#win32-checklist) has what remains.
 
 0.4.0 core apps (`gooey.core.App`) run on the [core host](#core-host): counter, todo,
-actions, and nested-overlay so far.
+core-file-dialog, code-editor, actions, nested-overlay, and accessible-form, the core
+examples Linux builds.
 
 ```sh
-zig build run-todo           # a 0.4.0 core app (core examples listed in addWindowsBuilds)
-zig build run-showcase       # a gooey.App example (others listed in addWindowsBuilds)
-zig build run-clipboard      # copy and paste through TextInput and TextArea
-zig build run-file-dialog    # open, multi-select, folder, and save dialogs
+zig build run-todo           # a 0.4.0 core app; copy and paste through its TextInput
+zig build run-showcase       # a 0.3.1 gooey.App example (all listed in addWindowsBuilds)
+zig build run-core-file-dialog # open, multi-select, folder, and save dialogs
 zig build run-accessible-form # UI Automation: Narrator, NVDA, or Inspect
 zig build run-windows-demo   # the platform-layer demo, no text
 zig build test-windows       # shared root.zig tests, then the Windows backend tests
@@ -237,7 +237,13 @@ do (contract rule 1). `gooey.core.App.main` selects it with one `.windows` arm i
 - **Teardown.** The render thread may be inside a present when the window closes, and a
   present may send the window's thread a message and wait for the reply, so `deinit`
   waits for it while handling sent messages only.
-- **Not yet.** File dialogs, UI Automation, and the remaining core examples.
+- **File dialogs.** Opened by the drain on the main thread, between handlers; the Common
+  Item Dialog runs its own modal loop with the window disabled, so no tick runs until it
+  closes. Cancel and failure both complete as `cancelled`, as on macOS and Linux.
+- **UI Automation.** The core publishes each rendered frame's nodes to the bridge on the
+  main thread, where clients' calls also arrive, through the window's `uia_host`. A
+  client's first root request makes the host poll for a screen reader and render at the
+  next tick, instead of up to a second later.
 
 ### Clipboard
 
@@ -271,10 +277,9 @@ widgets select it with one `.windows` arm.
   navigation still use `cmd`, the macOS mapping.
 - **Tests.** The `test-windows` clipboard tests use the real system clipboard and replace
   its contents.
-- **Example.** `zig build run-clipboard` (`src/examples/clipboard.zig`, Windows build only)
-  shows a `TextInput` and a `TextArea` with byte, LF, and CR counts. Verified by hand:
-  copying between the two widgets works and the pasted text holds no CR. Not yet checked
-  by hand: CR LF text from Notepad, copying back into Notepad, and emoji.
+- **Examples.** todo's `TextInput` and code-editor's editor copy and paste through the core
+  host (`readText`, `setText`). The 0.3.1 `run-clipboard` example was removed with the
+  move to the core; it was the last Windows user of the 0.3.1 `TextInput` and `TextArea`.
 
 ### IME
 
@@ -322,9 +327,8 @@ selects it with one `.windows` arm. The COM bindings are in `src/platform/window
 with every called slot pinned as in the WIC bindings.
 
 - **Modality.** The dialog is owned by `GetActiveWindow()`. Its modal loop dispatches
-  `WM_PAINT`, so Gooey windows keep drawing, but the platform loop does not turn. Open it
-  from `cx.deferCommand`, which runs after input handling (`on_post_input`), not from
-  inside a click handler; `src/examples/file_dialog.zig` now does this on every platform.
+  `WM_PAINT`, but neither the platform loop nor the core host's loop turns. A core app
+  opens it with `effects.openFileDialog`, which the drain runs after every handler.
 - **Options.** `message` is the title, `prompt` the OK button label, and
   `allowed_extensions` one filter (`*.zig;*.txt`) that is also the save dialog's default
   extension. `directories` picks folders only, as on Linux. `can_create_directories` is
@@ -343,8 +347,7 @@ with every called slot pinned as in the WIC bindings.
   services redesign, like the clipboard.
 - **Tests.** `test-windows` configures real dialogs with every option without showing
   them, reads the options back, and round-trips the working directory through an
-  `IShellItem`. Showing a dialog needs a person: `zig build run-file-dialog`. Not yet
-  checked by hand.
+  `IShellItem`. Showing a dialog needs a person: `zig build run-core-file-dialog`.
 
 ### Accessibility (UI Automation)
 
@@ -359,9 +362,10 @@ checked against Zig's bundled `uiautomationcore.h`.
   fingerprint, read only the snapshot, and report `UIA_E_ELEMENTNOTAVAILABLE` once their
   element is gone. The runtime id is the fingerprint.
 - **Window.** `Window.uia_host` holds the root provider; `WM_GETOBJECT` with
-  `UiaRootObjectId` returns it and makes the window render for one screen reader poll
-  interval (60 frames), so an idle app activates promptly. The bridge is active once any
-  client asked for the root or while `UiaClientsAreListening` is true.
+  `UiaRootObjectId` returns it. A 0.3.1 window then renders for one screen reader poll
+  interval (60 frames), and a core app's host polls at its next frame, so an idle app
+  activates promptly. The bridge is active once any client asked for the root or while
+  `UiaClientsAreListening` is true.
 - **Exposed.** Control types per role (`Role.toUiaControlType`), name, help text, focus,
   enabled, required, live setting, heading level, set position and size, ARIA role,
   bounds in physical screen pixels, hit testing, and focus. Patterns by role: Value, Range
@@ -420,8 +424,8 @@ checked against Zig's bundled `uiautomationcore.h`.
   another COM thread releasing the last reference in between would leave UI Automation
   calling a reclaimed slot. Unreachable in the single-threaded apartment the bridge uses.
 - **Old values.** Property-changed events carry the new value and `VT_EMPTY` as the old.
-- **Render thread.** The snapshot lock already covers a frame built off the window's
-  thread; `uia.Host.client_requested` would then need to become atomic.
+- **Render thread.** The core host syncs the tree on the window's thread, not its render
+  thread, so `uia.Host.client_requested` needs no atomic.
 
 ### Text (DirectWrite)
 
@@ -620,9 +624,8 @@ the event loop.
 - [x] IME (`WM_IME_*` inline composition, candidate placement from the caret rect).
 - [ ] IME: composition caret and clause attributes, which need shared `CompositionEvent`
       fields.
-- [x] Clipboard (`CF_UNICODETEXT`, Ctrl edit shortcuts in the text widgets,
-      `run-clipboard`).
-- [x] File dialogs (Common Item Dialog, `run-file-dialog`).
+- [x] Clipboard (`CF_UNICODETEXT`, Ctrl edit shortcuts in the text widgets and engines).
+- [x] File dialogs (Common Item Dialog, `run-core-file-dialog`).
 - [x] Accessibility through UI Automation (read-only; see the section above).
 - [x] Window budget, `min_size`/`max_size` at creation, work-area clamping, frames during
       move and resize, focus-loss release, scale changes reaching the atlases.
