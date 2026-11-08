@@ -27,6 +27,11 @@
 //! is focused and placing the candidate list at the caret the core's `Query`
 //! answers.
 //!
+//! Services: file dialogs open on the main thread after the drain, and run
+//! their own modal loop there. UI Automation is served from the window's
+//! `uia_host`; the core publishes each rendered frame's nodes to it on the
+//! main thread, where clients' calls also arrive.
+//!
 //! Resource sketch: one thread whose stack the OS maps at init, three events,
 //! one waitable timer (the main loop borrows the platform's), and one frame
 //! in flight. Per turn the main thread runs at most one tick and dispatches
@@ -40,17 +45,21 @@ const win32 = @import("win32.zig");
 const platform_mod = @import("platform.zig");
 const window_mod = @import("window.zig");
 const clipboard = @import("clipboard.zig");
+const file_dialog = @import("file_dialog.zig");
 const scene_mod = @import("../../scene/mod.zig");
 const core_window = @import("../../core/window.zig");
 const core_element = @import("../../core/element.zig");
 const core_tick = @import("../../core/tick.zig");
 const core_router = @import("../../core/router.zig");
+const core_events = @import("../../core/events.zig");
+const core_handler = @import("../../core/handler.zig");
 const records = @import("../../core/records.zig");
 
 const assert = std.debug.assert;
 
 const WindowsPlatform = platform_mod.WindowsPlatform;
 const PlatformWindow = window_mod.Window;
+const Outcome = core_events.Completion.Outcome;
 
 /// The pacing period when DWM reports no usable timing: 0.3.1's 60 Hz cap.
 const refresh_period_ns_fallback: u64 = platform_mod.frame_period_ns_min;
@@ -156,6 +165,8 @@ pub const Host = struct {
     cursor: core_element.CursorShape,
     /// The viewport last pushed to the core; zero before the first push.
     viewport_sent: Viewport,
+    /// A UI Automation client asked for the root since the last tick.
+    screen_reader_requested: bool,
 
     // Render thread only.
     /// When the next present may start, on `nowNs`.
@@ -177,8 +188,8 @@ pub const Host = struct {
         io: std.Io,
     };
 
-    /// Bind the window, the presenter, and the clipboard service, then start
-    /// the render thread. The host must stay at this address.
+    /// Bind the window, the presenter, and the services, then start the
+    /// render thread. The host must stay at this address.
     pub fn initInPlace(self: *Host, options: Options) !void {
         assert(options.core.presenter == null);
         assert(options.window.core == null);
@@ -200,6 +211,7 @@ pub const Host = struct {
         self.ime_enabled = false;
         self.cursor = .default;
         self.viewport_sent = .{ .width = 0, .height = 0, .scale_factor = 0 };
+        self.screen_reader_requested = false;
         self.present_due_ns = 0;
         self.surface_width = @intFromFloat(@ceil(options.window.size.width));
         self.surface_height = @intFromFloat(@ceil(options.window.size.height));
@@ -245,10 +257,12 @@ pub const Host = struct {
             .context = self,
             .schedule_tick = scheduleTickErased,
             .modal_turn = modalTurnErased,
+            .screen_reader_requested = screenReaderRequestedErased,
         });
         self.window.setUserData(self);
         self.window.setCloseCallback(onClose);
         self.core.presenter = .{ .context = self, .draw = draw };
+        self.core.file_dialog = .{ .context = self, .open = openDialog };
         self.core.clipboard.service = .{
             .context = self,
             .read = clipboardRead,
@@ -256,6 +270,7 @@ pub const Host = struct {
         };
         // `syncIme` alone attaches the input context, while a field is focused.
         self.window.setImeEnabled(false);
+        self.core.bindScreenReader(&self.window.uia_host, null);
         assert(self.window.core != null);
     }
 
@@ -282,7 +297,10 @@ pub const Host = struct {
         assert(self.core.atlas_consumer_key == @intFromPtr(self.window));
         self.core.resources.unregisterAtlasConsumer(self.core.atlas_consumer_key);
         self.core.presenter = null;
+        self.core.file_dialog = null;
         self.core.clipboard.service = null;
+        // Withdraws the UI Automation root before the window is destroyed.
+        self.core.unbindScreenReader();
     }
 
     /// Wait for the render thread's last present. A Vulkan present or
@@ -328,6 +346,12 @@ pub const Host = struct {
     fn modalTurnErased(context: *anyopaque) void {
         const self: *Host = @ptrCast(@alignCast(context));
         self.modalTurn();
+    }
+
+    fn screenReaderRequestedErased(context: *anyopaque) void {
+        const self: *Host = @ptrCast(@alignCast(context));
+        self.screen_reader_requested = true;
+        self.scheduleTick();
     }
 
     fn nowNs(self: *const Host) u64 {
@@ -377,6 +401,7 @@ pub const Host = struct {
     fn mainTick(self: *Host) void {
         assert(self.core.phase == .idle);
         self.syncViewport();
+        if (self.screen_reader_requested) self.activateScreenReader();
         self.tick_main(self.app, self.nowNs());
         assert(self.core.phase == .idle);
         self.applyCursor();
@@ -416,6 +441,18 @@ pub const Host = struct {
             .scale_factor = viewport.scale_factor,
         } } });
         self.viewport_sent = viewport;
+    }
+
+    /// A UI Automation client's first root request. The core asks the bridge
+    /// whether a screen reader runs at most once a second, on rendered
+    /// frames, so an idle app could leave the client with no tree: poll at
+    /// the next rendered frame, and render one.
+    fn activateScreenReader(self: *Host) void {
+        assert(self.core.phase == .idle);
+        assert(self.window.uia_host.client_requested);
+        self.screen_reader_requested = false;
+        self.core.screen_reader_poll = .{};
+        self.core.render_requested = true;
     }
 
     /// Wait for a message, a scheduled tick, or the last build's render
@@ -617,6 +654,36 @@ fn onClose(window: *PlatformWindow) bool {
     assert(host.window == window);
     host.quit = true;
     return true;
+}
+
+// =============================================================================
+// File dialogs
+// =============================================================================
+
+/// The core's file dialog service, on the main thread after the drain. The
+/// Common Item Dialog runs its own modal loop with the window disabled; it
+/// reports cancel and failure alike as no selection (failures are logged),
+/// so both arrive as `cancelled`, as on macOS and Linux.
+fn openDialog(
+    context: *anyopaque,
+    scratch: std.mem.Allocator,
+    request: core_handler.FileDialogRequest,
+) Outcome {
+    const host: *Host = @ptrCast(@alignCast(context));
+    assert(host.core.phase == .drain);
+    const paths = switch (request.kind) {
+        .open => |options| paths: {
+            const result = file_dialog.promptForPaths(scratch, options) orelse return .cancelled;
+            if (result.paths.len == 0) return .cancelled;
+            if (!options.multiple) assert(result.paths.len == 1);
+            break :paths core_events.Paths.join(scratch, result.paths);
+        },
+        .save => |options| paths: {
+            const path = file_dialog.promptForNewPath(scratch, options) orelse return .cancelled;
+            break :paths core_events.Paths.join(scratch, &.{path});
+        },
+    };
+    return .{ .file_selected = paths catch |err| return .{ .failed = err } };
 }
 
 // =============================================================================
