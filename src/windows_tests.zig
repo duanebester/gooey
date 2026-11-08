@@ -17,6 +17,7 @@
 
 test {
     _ = @import("platform/windows/clipboard.zig");
+    _ = @import("platform/windows/core_host.zig");
     _ = @import("platform/windows/file_dialog.zig");
     _ = @import("platform/windows/shell.zig");
     _ = @import("platform/windows/ime.zig");

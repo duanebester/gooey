@@ -1,7 +1,8 @@
 //! Windows clipboard: text through `CF_UNICODETEXT`.
 //!
 //! The API matches `linux/clipboard.zig`, which the text widgets call:
-//! `getText(allocator)` returns caller-owned UTF-8 or null, and `setText`
+//! `getText(allocator)` returns caller-owned UTF-8 or null, `readText(out)`
+//! decodes into the core text engines' reserved paste buffer, and `setText`
 //! returns whether the system clipboard now holds the text.
 //!
 //! ## Line endings
@@ -150,6 +151,34 @@ pub fn getText(allocator: std.mem.Allocator) ?[]const u8 {
         return null;
     };
     return pasteText(allocator, units);
+}
+
+/// Read the clipboard text into `out`, cut at a codepoint boundary, and
+/// return its length (0 for none or a busy clipboard). Claims no storage
+/// (core hosts). Every output byte consumes at most two units, so at most
+/// `2 * out.len + 1` units are scanned, the extra one completing a CR LF.
+pub fn readText(out: []u8) u32 {
+    assert(out.len > 0);
+    assert(owner_hwnd != null);
+    if (!clipboardOpen()) return 0;
+    defer clipboardClose();
+
+    const block = win32.GetClipboardData(win32.CF_UNICODETEXT) orelse return 0;
+    const pointer = win32.GlobalLock(block) orelse {
+        std.log.warn("windows: clipboard GlobalLock failed (error {d})", .{
+            win32.GetLastError(),
+        });
+        return 0;
+    };
+    defer _ = win32.GlobalUnlock(block); // FALSE is the expected final unlock.
+
+    const unit_capacity = win32.GlobalSize(block) / @sizeOf(u16);
+    const scan_count = @min(unit_capacity, 2 * out.len + 1);
+    const units_scanned = @as([*]const u16, @ptrCast(@alignCast(pointer)))[0..scan_count];
+    const end = std.mem.indexOfScalar(u16, units_scanned, 0) orelse scan_count;
+    const written = pasteDecodePrefix(units_scanned[0..end], out);
+    assert(written <= out.len);
+    return written;
 }
 
 /// Replace the clipboard text. Returns false, leaving the clipboard as it
@@ -392,16 +421,24 @@ fn pasteByteCount(units: []const u16) u32 {
 fn pasteDecode(units: []const u16, target: []u8) u32 {
     assert(units.len <= paste_unit_count_max);
     assert(target.len <= text_bytes_max);
+    const count = pasteDecodePrefix(units, target);
+    assert(count == target.len);
+    return count;
+}
+
+/// Decode the longest prefix of `units` whose UTF-8 fits in `target`, so a
+/// cut never splits a codepoint. Returns the bytes written.
+fn pasteDecodePrefix(units: []const u16, target: []u8) u32 {
     var count: u32 = 0;
     var decoder: PasteDecoder = .{ .units = units };
     while (decoder.next()) |code_point| {
         assert(decoder.index <= units.len);
-        assert(utf8Length(code_point) <= target.len - count);
+        if (utf8Length(code_point) > target.len - count) break;
         // The decoder yields only scalar values: surrogates become U+FFFD.
         const length = std.unicode.utf8Encode(code_point, target[count..]) catch unreachable;
         count += length;
     }
-    assert(count == target.len);
+    assert(count <= target.len);
     return count;
 }
 
@@ -509,6 +546,25 @@ test "paste collapses CR LF, keeps lone CR, and replaces unpaired surrogates" {
         testPaste(&buffer, &ill_formed),
     );
     try testing.expectEqual(@as(usize, 0), testPaste(&buffer, &.{}).len);
+}
+
+test "a paste into a short buffer keeps whole codepoints and collapses CR LF" {
+    // Goal: `readText` fills the core's paste buffer with a prefix that never
+    // ends inside a codepoint. Methodology: buffers one byte short of each
+    // multi-byte sequence, an exact fit, and a CR LF that costs one byte.
+    var buffer: [8]u8 = undefined;
+    const accented = std.unicode.utf8ToUtf16LeStringLiteral("a\u{E9}\u{E9}");
+    try testing.expectEqual(@as(u32, 3), pasteDecodePrefix(accented, buffer[0..4]));
+    try testing.expectEqualStrings("a\u{E9}", buffer[0..3]);
+    try testing.expectEqual(@as(u32, 5), pasteDecodePrefix(accented, buffer[0..5]));
+
+    const emoji = std.unicode.utf8ToUtf16LeStringLiteral("\u{1F389}");
+    try testing.expectEqual(@as(u32, 0), pasteDecodePrefix(emoji, buffer[0..3]));
+    try testing.expectEqual(@as(u32, 4), pasteDecodePrefix(emoji, buffer[0..4]));
+
+    const lines = std.unicode.utf8ToUtf16LeStringLiteral("a\r\nb");
+    try testing.expectEqual(@as(u32, 3), pasteDecodePrefix(lines, buffer[0..3]));
+    try testing.expectEqualStrings("a\nb", buffer[0..3]);
 }
 
 test "paste units stop at the terminator and refuse text past the bound" {

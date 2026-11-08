@@ -109,6 +109,7 @@ test "the bridge is polled on the first frame and then once per interval" {
         .handler_count_max = 1,
         .a11y_node_count_max = 1,
         .text_bytes_max = 1,
+        .mesh_point_count_max = 0,
     });
     defer frame.deinit(std.testing.allocator);
     var poll: Poll = .{};

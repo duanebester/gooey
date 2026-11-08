@@ -127,6 +127,16 @@ pub const MeshPool = struct {
         }
     }
 
+    /// Reserve `count` frame meshes now, so later frames never allocate: the
+    /// 0.4.0 core calls this at init, sized by `ResourceLimits.scene`.
+    pub fn reserveFrame(self: *Self, count: u32) MeshPoolError!void {
+        std.debug.assert(self.frame_meshes == null);
+        std.debug.assert(count > 0 and count <= MAX_FRAME_MESHES);
+        self.frame_meshes = self.allocator.alloc(PathMesh, count) catch {
+            return error.OutOfMemory;
+        };
+    }
+
     /// Ensure frame mesh array is allocated
     fn ensureFrameAllocated(self: *Self) MeshPoolError!void {
         if (self.frame_meshes == null) {
@@ -176,6 +186,9 @@ pub const MeshPool = struct {
 
         if (self.frame_count >= MAX_FRAME_MESHES) {
             return error.FramePoolFull;
+        }
+        if (self.frame_meshes) |meshes| {
+            if (self.frame_count >= meshes.len) return error.FramePoolFull;
         }
 
         // Lazy allocation of frame array

@@ -176,17 +176,17 @@ pub fn App(
         }
 
         /// The generated entry point (contract §7): `pub const main =
-        /// App.main;` in the root file. Runs on macOS and Linux (Wayland). On
-        /// WASM, JavaScript drives the app through the exports below instead,
-        /// so `main` does nothing there. Windows moves onto the core later in
-        /// phase 4.
+        /// App.main;` in the root file. Runs on macOS, Linux (Wayland), and
+        /// Windows. On WASM, JavaScript drives the app through the exports
+        /// below instead, so `main` does nothing there.
         pub fn main(init: std.process.Init) !void {
             if (comptime builtin.cpu.arch.isWasm()) return;
             const host = switch (comptime builtin.os.tag) {
                 .macos => @import("../platform/macos/core_host.zig"),
                 .linux => @import("../platform/linux/core_host.zig"),
-                else => @compileError("gooey.App.main runs on macOS, Linux, and the web; " ++
-                    "Windows moves onto the core later in phase 4"),
+                .windows => @import("../platform/windows/core_host.zig"),
+                else => @compileError("gooey.App.main runs on macOS, Linux, Windows, " ++
+                    "and the web"),
             };
             const self = try init.gpa.create(Self);
             defer init.gpa.destroy(self);
