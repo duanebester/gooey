@@ -1517,6 +1517,29 @@ pub fn xdgSurfaceDestroy(xdg_surface: *XdgSurface) void {
 }
 
 // XDG Toplevel
+
+/// xdg_toplevel request opcodes in protocol declaration order. A request's opcode is its
+/// index in the protocol XML, and xdg-shell declares `set_max_size` before `set_min_size`:
+/// the size helpers once marshaled each other's opcode, so the compositor received the min
+/// size as the max size. Field names match `xdg_toplevel_methods` so a test can check every
+/// opcode against that table.
+const XdgToplevelRequest = enum(u32) {
+    destroy = 0,
+    set_parent = 1,
+    set_title = 2,
+    set_app_id = 3,
+    show_window_menu = 4,
+    move = 5,
+    resize = 6,
+    set_max_size = 7,
+    set_min_size = 8,
+    set_maximized = 9,
+    unset_maximized = 10,
+    set_fullscreen = 11,
+    unset_fullscreen = 12,
+    set_minimized = 13,
+};
+
 pub fn xdgToplevelAddListener(toplevel: *XdgToplevel, listener: *const XdgToplevelListener, data: ?*anyopaque) bool {
     return wl_proxy_add_listener(@ptrCast(toplevel), @ptrCast(listener), data) == 0;
 }
@@ -1524,7 +1547,7 @@ pub fn xdgToplevelAddListener(toplevel: *XdgToplevel, listener: *const XdgToplev
 pub fn xdgToplevelSetTitle(toplevel: *XdgToplevel, title: [*:0]const u8) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(toplevel),
-        2, // XDG_TOPLEVEL_SET_TITLE
+        @backingInt(XdgToplevelRequest.set_title),
         null,
         wl_proxy_get_version(@ptrCast(toplevel)),
         0,
@@ -1535,7 +1558,7 @@ pub fn xdgToplevelSetTitle(toplevel: *XdgToplevel, title: [*:0]const u8) void {
 pub fn xdgToplevelSetAppId(toplevel: *XdgToplevel, app_id: [*:0]const u8) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(toplevel),
-        3, // XDG_TOPLEVEL_SET_APP_ID
+        @backingInt(XdgToplevelRequest.set_app_id),
         null,
         wl_proxy_get_version(@ptrCast(toplevel)),
         0,
@@ -1544,9 +1567,12 @@ pub fn xdgToplevelSetAppId(toplevel: *XdgToplevel, app_id: [*:0]const u8) void {
 }
 
 pub fn xdgToplevelSetMinSize(toplevel: *XdgToplevel, width: i32, height: i32) void {
+    // Zero means unconstrained; the compositor raises the fatal `invalid_size` error below it.
+    std.debug.assert(width >= 0);
+    std.debug.assert(height >= 0);
     _ = wl_proxy_marshal_flags(
         @ptrCast(toplevel),
-        7, // XDG_TOPLEVEL_SET_MIN_SIZE
+        @backingInt(XdgToplevelRequest.set_min_size),
         null,
         wl_proxy_get_version(@ptrCast(toplevel)),
         0,
@@ -1556,9 +1582,12 @@ pub fn xdgToplevelSetMinSize(toplevel: *XdgToplevel, width: i32, height: i32) vo
 }
 
 pub fn xdgToplevelSetMaxSize(toplevel: *XdgToplevel, width: i32, height: i32) void {
+    // Zero means unconstrained; the compositor raises the fatal `invalid_size` error below it.
+    std.debug.assert(width >= 0);
+    std.debug.assert(height >= 0);
     _ = wl_proxy_marshal_flags(
         @ptrCast(toplevel),
-        8, // XDG_TOPLEVEL_SET_MAX_SIZE
+        @backingInt(XdgToplevelRequest.set_max_size),
         null,
         wl_proxy_get_version(@ptrCast(toplevel)),
         0,
@@ -1572,7 +1601,7 @@ pub fn xdgToplevelSetMaxSize(toplevel: *XdgToplevel, width: i32, height: i32) vo
 pub fn xdgToplevelMove(toplevel: *XdgToplevel, seat: *Seat, serial: u32) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(toplevel),
-        5, // XDG_TOPLEVEL_MOVE
+        @backingInt(XdgToplevelRequest.move),
         null,
         wl_proxy_get_version(@ptrCast(toplevel)),
         0,
@@ -1599,7 +1628,7 @@ pub const ResizeEdge = enum(u32) {
 pub fn xdgToplevelResize(toplevel: *XdgToplevel, seat: *Seat, serial: u32, edges: ResizeEdge) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(toplevel),
-        6, // XDG_TOPLEVEL_RESIZE
+        @backingInt(XdgToplevelRequest.resize),
         null,
         wl_proxy_get_version(@ptrCast(toplevel)),
         0,
@@ -1612,11 +1641,29 @@ pub fn xdgToplevelResize(toplevel: *XdgToplevel, seat: *Seat, serial: u32, edges
 pub fn xdgToplevelDestroy(toplevel: *XdgToplevel) void {
     _ = wl_proxy_marshal_flags(
         @ptrCast(toplevel),
-        0, // XDG_TOPLEVEL_DESTROY
+        @backingInt(XdgToplevelRequest.destroy),
         null,
         wl_proxy_get_version(@ptrCast(toplevel)),
         MARSHAL_FLAG_DESTROY,
     );
+}
+
+test "xdg_toplevel request opcodes match the xdg_toplevel request table" {
+    // Goal: catch a helper marshaling the wrong xdg_toplevel request, as when set_min_size and
+    // set_max_size were swapped. Methodology: `xdg_toplevel_methods` is the wire table passed
+    // to libwayland and is indexed by opcode, so each `XdgToplevelRequest` name must equal the
+    // name at its opcode. The size requests are also pinned by name and value.
+    const names = @typeInfo(XdgToplevelRequest).@"enum".field_names;
+    const values = @typeInfo(XdgToplevelRequest).@"enum".field_values;
+    const method_count: usize = @intCast(xdg_toplevel_interface.method_count);
+    try std.testing.expectEqual(xdg_toplevel_methods.len, method_count);
+    try std.testing.expectEqual(method_count, names.len);
+    inline for (names, values) |name, opcode| {
+        try std.testing.expect(opcode < method_count);
+        try std.testing.expectEqualStrings(name, std.mem.span(xdg_toplevel_methods[opcode].name));
+    }
+    try std.testing.expectEqual(7, @backingInt(XdgToplevelRequest.set_max_size));
+    try std.testing.expectEqual(8, @backingInt(XdgToplevelRequest.set_min_size));
 }
 
 // =============================================================================
