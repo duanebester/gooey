@@ -18,8 +18,8 @@
 //!    imports unprefixed.
 //! 2. **Namespace anchors.** `gooey.<ns>` exists and is a struct/file —
 //!    `core`, `scene`, `layout`,
-//!    `animation`, `input`, `platform`, `image`,
-//!    `svg`, `text`, `debug`, `validation`, `accessibility`, `ai`,
+//!    `input`, `platform`, `image`,
+//!    `svg`, `text`, `validation`, `accessibility`, `ai`,
 //!    `file_dialog`. The anchor *promise* is just that the
 //!    namespace stays addressable; the names *inside* are pinned by
 //!    tier 3.
@@ -94,13 +94,11 @@ fn pinNamespaces() void {
         _ = gooey.geometry;
         _ = gooey.input;
         _ = gooey.scene;
-        _ = gooey.animation;
         _ = gooey.layout;
         _ = gooey.text;
         _ = gooey.platform;
         _ = gooey.image;
         _ = gooey.svg;
-        _ = gooey.debug;
         _ = gooey.validation;
         _ = gooey.accessibility;
         _ = gooey.file_dialog;
@@ -153,23 +151,6 @@ fn pinTier1NamespacedScene() void {
         _ = gooey.scene.Shadow;
         _ = gooey.scene.Hsla;
         _ = gooey.scene.GlyphInstance;
-    }
-}
-
-/// `gooey.animation` — public animation surface. `Easing` is
-/// imported by name in animation.zig; `lerp` / `lerpInt` /
-/// `lerpColor` are reached unprefixed in animation interpolation.
-/// `AnimationStore` is the pool composed onto `Window`.
-fn pinTier1NamespacedAnimation() void {
-    comptime {
-        _ = gooey.animation.Easing;
-        _ = gooey.animation.AnimationStore;
-        _ = @TypeOf(gooey.animation.lerp);
-
-        // `Duration` / `AnimationHandle` are the two state types
-        // examples carry across frames.
-        _ = gooey.animation.Duration;
-        _ = gooey.animation.AnimationHandle;
     }
 }
 
@@ -240,7 +221,6 @@ test "tier 1 public API surface compiles" {
         pinTier1NamespacedGeometry();
         pinTier1NamespacedInput();
         pinTier1NamespacedScene();
-        pinTier1NamespacedAnimation();
         pinTier1NamespacedLayout();
         pinTier1NamespacedText();
         pinTier1NamespacedPlatformAndRuntime();

@@ -374,40 +374,6 @@ pub fn build(b: *std.Build) void {
         _ = addFailFastChecks(b, mod, components_mod, target, optimize, test_step);
 
         // =====================================================================
-        // Animation Benchmarks (per-frame spring physics + store dispatch)
-        // =====================================================================
-
-        const animation_bench_exe = b.addExecutable(.{
-            .name = "animation-bench",
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("src/animation/benchmarks.zig"),
-                .target = target,
-                .optimize = .fast,
-                .imports = &.{
-                    .{ .name = "gooey", .module = bench_gooey_mod },
-                    .{ .name = "bench", .module = bench_mod },
-                },
-            }),
-        });
-
-        const animation_bench_step = b.step("bench-animation", "Run animation module benchmarks");
-        const animation_bench_run = b.addRunArtifact(animation_bench_exe);
-        if (bench_json_dir) |dir| {
-            animation_bench_run.addArgs(&.{ "--json-dir", dir });
-        }
-        animation_bench_step.dependOn(&animation_bench_run.step);
-
-        // The animation benchmark's `validate:` tests (spring physics sanity +
-        // the steady-state zero-allocation invariant) run only in Debug, where
-        // assertions are live. Wire them into `test` so the store's zero-alloc
-        // guarantee is a CI-gated fact, mirroring the scene suite above.
-        const animation_bench_tests = b.addTest(.{
-            .root_module = animation_bench_exe.root_module,
-        });
-        const run_animation_bench_tests = b.addRunArtifact(animation_bench_tests);
-        test_step.dependOn(&run_animation_bench_tests.step);
-
-        // =====================================================================
         // Accessibility Benchmarks (per-frame fingerprint + tree diff)
         // =====================================================================
 
@@ -448,7 +414,6 @@ pub fn build(b: *std.Build) void {
         bench_all_step.dependOn(&core_bench_run.step);
         bench_all_step.dependOn(&text_bench_run.step);
         bench_all_step.dependOn(&scene_bench_run.step);
-        bench_all_step.dependOn(&animation_bench_run.step);
         bench_all_step.dependOn(&accessibility_bench_run.step);
 
         // =====================================================================
@@ -757,43 +722,6 @@ pub fn build(b: *std.Build) void {
         const run_scene_bench_tests = b.addRunArtifact(scene_bench_tests);
 
         // =====================================================================
-        // Animation Benchmarks (per-frame spring physics + store dispatch)
-        // =====================================================================
-
-        const animation_bench_exe = b.addExecutable(.{
-            .name = "animation-bench",
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("src/animation/benchmarks.zig"),
-                .target = target,
-                .optimize = .fast,
-                .imports = &.{
-                    .{ .name = "gooey", .module = bench_gooey_mod },
-                    .{ .name = "bench", .module = bench_mod },
-                },
-            }),
-        });
-        linkLinuxLibraries(animation_bench_exe, linux_backend);
-
-        const animation_bench_step = b.step("bench-animation", "Run animation module benchmarks");
-        const animation_bench_run = b.addRunArtifact(animation_bench_exe);
-        if (bench_json_dir) |dir| {
-            animation_bench_run.addArgs(&.{ "--json-dir", dir });
-        }
-        animation_bench_step.dependOn(&animation_bench_run.step);
-
-        // Animation `validate:` tests (physics sanity + steady-state zero-alloc)
-        // run only in Debug. The dependOn is added in the Tests section below.
-        const animation_bench_tests = b.addTest(.{
-            .root_module = animation_bench_exe.root_module,
-            .use_llvm = true,
-        });
-        linkLinuxLibraries(animation_bench_tests, linux_backend);
-        if (!skip_shader_compile) {
-            animation_bench_tests.step.dependOn(compile_shaders_step);
-        }
-        const run_animation_bench_tests = b.addRunArtifact(animation_bench_tests);
-
-        // =====================================================================
         // Accessibility Benchmarks (per-frame fingerprint + tree diff)
         // =====================================================================
 
@@ -839,7 +767,6 @@ pub fn build(b: *std.Build) void {
         bench_all_step.dependOn(&core_bench_run.step);
         bench_all_step.dependOn(&text_bench_run.step);
         bench_all_step.dependOn(&scene_bench_run.step);
-        bench_all_step.dependOn(&animation_bench_run.step);
         bench_all_step.dependOn(&accessibility_bench_run.step);
 
         // =====================================================================
@@ -898,7 +825,6 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run_compare_tests.step);
         test_step.dependOn(&run_bench_tests.step);
         test_step.dependOn(&run_scene_bench_tests.step);
-        test_step.dependOn(&run_animation_bench_tests.step);
         test_step.dependOn(&run_accessibility_bench_tests.step);
         const overflow_exe = addOverflowChecks(b, mod, target, optimize, test_step);
         linkLinuxLibraries(overflow_exe, linux_backend);

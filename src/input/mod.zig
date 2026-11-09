@@ -30,14 +30,6 @@ pub const CompositionEvent = events.CompositionEvent;
 pub const Keystroke = @import("keystroke.zig").Keystroke;
 
 // =============================================================================
-// Event propagation (capture/bubble phases)
-// =============================================================================
-
-pub const event = @import("event.zig");
-pub const EventPhase = event.EventPhase;
-pub const EventResult = event.EventResult;
-
-// =============================================================================
 // Tests
 // =============================================================================
 
