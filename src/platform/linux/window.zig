@@ -637,18 +637,17 @@ pub const Window = struct {
     pub fn bindCore(self: *Self, binding: CoreBinding) void {
         std.debug.assert(self.core == null);
         std.debug.assert(self.wl_surface != null);
+        // The first configure arrived before the core existed; the host
+        // reads `size` once bound and tells the core.
+        if (self.pending_resize) self.applyPendingSize();
         self.core = binding;
-        std.debug.assert(self.core != null);
+        std.debug.assert(!self.pending_resize);
     }
 
-    /// A core app resizes through its queue: the next built frame carries the
-    /// new viewport, and the render thread resizes the swapchain and the
-    /// surface's viewport before it presents that frame, so the new size and
-    /// the buffer drawn for it reach the compositor in one commit.
-    fn resizeCore(self: *Self, binding: CoreBinding) void {
+    fn applyPendingSize(self: *Self) void {
+        std.debug.assert(self.pending_resize);
         std.debug.assert(self.pending_width > 0);
         std.debug.assert(self.pending_height > 0);
-        std.debug.assert(self.scale_factor > 0);
         self.pending_resize = false;
         self.width_px = self.pending_width;
         self.height_px = self.pending_height;
@@ -656,6 +655,15 @@ pub const Window = struct {
             .width = @floatFromInt(self.pending_width),
             .height = @floatFromInt(self.pending_height),
         };
+    }
+
+    /// A core app resizes through its queue: the next built frame carries the
+    /// new viewport, and the render thread resizes the swapchain and the
+    /// surface's viewport before it presents that frame, so the new size and
+    /// the buffer drawn for it reach the compositor in one commit.
+    fn resizeCore(self: *Self, binding: CoreBinding) void {
+        std.debug.assert(self.scale_factor > 0);
+        self.applyPendingSize();
         binding.queue.push(.{ .window = .{ .resized = .{
             .width = @floatFromInt(self.pending_width),
             .height = @floatFromInt(self.pending_height),

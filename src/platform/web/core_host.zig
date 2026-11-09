@@ -161,7 +161,8 @@ pub const Host = struct {
     }
 
     /// Bind the core window: atlases, the presenter, and the IME query. The
-    /// core starts at the canvas's real size, so no resize is pending.
+    /// core starts at the app's configured size, so the canvas's real size
+    /// is queued for the first frame.
     pub fn bind(self: *Host, core: *core_window.Window) void {
         assert(core.presenter == null);
         self.core = core;
@@ -177,8 +178,11 @@ pub const Host = struct {
             .svg_size = core.limits.atlas.svg_size,
             .image_size = core.limits.atlas.image_size,
         });
-        core.width = @floatCast(self.width);
-        core.height = @floatCast(self.height);
+        core.bindViewport(.{
+            .width = @floatCast(self.width),
+            .height = @floatCast(self.height),
+            .scale_factor = @floatCast(self.scale_factor),
+        });
         core.presenter = .{ .context = self, .draw = draw };
         core.bindScreenReader(null, null);
         // Text fields follow the user's OS: Cmd in a browser on macOS or iOS,

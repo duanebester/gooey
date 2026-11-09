@@ -145,11 +145,11 @@ pub const Host = struct {
             .write = clipboardWrite,
         };
         // The window covers the panel, whatever size the app asked for.
-        self.core.queue.push(.{ .window = .{ .resized = .{
+        self.core.bindViewport(.{
             .width = @floatCast(self.window.size.width),
             .height = @floatCast(self.window.size.height),
             .scale_factor = @floatCast(self.window.scale_factor),
-        } } });
+        });
         assert(self.window.on_input != null);
     }
 

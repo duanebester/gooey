@@ -216,6 +216,12 @@ pub const Host = struct {
             .write = clipboardWrite,
         };
         self.core.bindScreenReader(self.window.ns_window, self.window.ns_view);
+        // A resize before `bindCore` only recorded the window's geometry.
+        self.core.bindViewport(.{
+            .width = @floatCast(self.window.size.width),
+            .height = @floatCast(self.window.size.height),
+            .scale_factor = @floatCast(self.window.scale_factor),
+        });
         assert(self.window.core != null);
     }
 
