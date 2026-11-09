@@ -571,7 +571,10 @@ fn firstRectForCharacterRange(
     // for. Ranges count from the start of the marked text, as `markedRange`
     // does. The host calls `invalidateCharacterCoordinates` once the frame
     // with the latest marked text renders, and the next answer moves.
-    const caret_utf16 = if (window.core != null) window.rendered_marked_length_utf16 else window.marked_length_utf16;
+    const caret_utf16 = if (window.core != null)
+        window.rendered_marked_length_utf16
+    else
+        window.marked_length_utf16;
     if (actual_range) |actual| actual.* = .{ .location = caret_utf16, .length = 0 };
 
     // Convert from view coordinates to window coordinates, then to screen coordinates
