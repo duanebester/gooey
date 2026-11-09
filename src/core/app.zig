@@ -160,12 +160,18 @@ pub fn App(
     comptime config: Config(State),
 ) type {
     comptime {
-        if (config.limits.check()) |violation| @compileError(violation.message());
+        if (config.limits.check()) |violation| @compileError(violation.describe());
         // Checked in every build mode, so a budget valid in one is valid in all.
         if (debugger.withHeadroom(&config.limits).check()) |violation| {
-            @compileError("the budget must leave room below the ceiling for the debugger " ++
-                "overlay, which Debug and ReleaseSafe reserve on top of it (contract " ++
-                "decision 16): " ++ violation.describe());
+            @compileError(std.fmt.comptimePrint("the budget must leave the debugger " ++
+                "overlay's headroom ({d} quads, {d} glyphs, {d} paint records) below the " ++
+                "framework ceilings; Debug and ReleaseSafe reserve it on top of the app's " ++
+                "limits (contract decision 16), so `.ceiling` is not an app profile: {s}", .{
+                debugger.overlay_quad_count_max,
+                debugger.overlay_glyph_count_max,
+                debugger.overlay_paint_record_count_max,
+                violation.describe(),
+            }));
         }
         checkEntities(State, config.entities);
         assert(config.width > 0);

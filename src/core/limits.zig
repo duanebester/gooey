@@ -234,11 +234,14 @@ pub const ResourceLimits = struct {
         .entities = EntityLimits.large,
     };
 
-    /// Every capacity at its framework ceiling. For stress tests and benchmarks;
-    /// costs about 16.5 MiB per scene and 25.5 MiB of Metal instance ring. The
-    /// aggregate mesh geometry ceilings are validation bounds, not a renderable
-    /// reservation: GPU renderers reserve geometry per frame in flight (Metal
-    /// about 62 GiB per frame here), so a window that renders must lower them.
+    /// Every capacity at its framework ceiling. For stress tests and benchmarks,
+    /// not an app profile: `gooey.App` rejects it at compile time, since an app
+    /// budget must leave the debugger overlay's headroom below every ceiling
+    /// (contract decision 16). Costs about 16.5 MiB per scene and 25.5 MiB of
+    /// Metal instance ring. The aggregate mesh geometry ceilings are validation
+    /// bounds, not a renderable reservation: GPU renderers reserve geometry per
+    /// frame in flight (Metal about 62 GiB per frame here), so a window that
+    /// renders must lower them.
     pub const ceiling: ResourceLimits = .{
         .scene = SceneLimits.ceiling,
         .window = WindowLimits.ceiling,
