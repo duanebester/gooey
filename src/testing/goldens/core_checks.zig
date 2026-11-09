@@ -12,6 +12,7 @@ const actions = @import("actions_example");
 const accessible_form = @import("accessible_form_example");
 const code_editor = @import("code_editor_example");
 const nested_overlay = @import("nested_overlay_example");
+const images = @import("images_example");
 const virtual_list = @import("virtual_list_example");
 const data_table = @import("data_table_example");
 const lucide = @import("lucide_example");
@@ -2393,4 +2394,143 @@ test "lucide_demo builds the icon rows in view and lights the cell under the poi
     const remainder = lucide.TOTAL_ICONS % 16;
     try testing.expectEqual(if (remainder == 0) 0 else 16 - remainder, (16 - end_count % 16) % 16);
     try testing.expectEqual(core.internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
+}
+
+/// Counts the image worker's wakes, as a host's `scheduleTick` would.
+const WakeCounter = struct {
+    count: std.atomic.Value(u32) = .init(0),
+
+    fn wake(context: *anyopaque) void {
+        const self: *WakeCounter = @ptrCast(@alignCast(context));
+        _ = self.count.fetchAdd(1, .release);
+    }
+};
+
+/// Tick until the image worker's decode lands, waiting 1 ms between ticks;
+/// a decode that takes more than 5 s fails the test.
+fn settleImages(app: anytype, now: *u64) !void {
+    var attempt: u32 = 0;
+    while (attempt < 5_000) : (attempt += 1) {
+        if (app.window.images.landed_count > 0) return;
+        try std.Io.sleep(testing.io, .fromMilliseconds(1), .awake);
+        now.* += 1;
+        app.tick(now.*);
+    }
+    return error.DecodeNeverLanded;
+}
+
+fn imageSprites(
+    frame: *const core.internals.records.Frame,
+    out: []core.internals.records.Sprite,
+) u32 {
+    var count: u32 = 0;
+    for (frame.paint[0..frame.paint_count]) |record| {
+        if (record != .sprite) continue;
+        if (record.sprite.atlas != .image) continue;
+        out[count] = record.sprite;
+        count += 1;
+    }
+    return count;
+}
+
+test "images: one decode lands off the main thread and draws every cell" {
+    // Goal: the async loader's contract. Methodology: the images example
+    // draws one file in 18 cells. The first frame queues one request and
+    // draws no image; the worker decodes off the main thread, wakes the
+    // host, and the next emit lands it, so every cell draws from one atlas
+    // entry with no allocation after init (the lifecycle guard). Expected
+    // bounds come from the logo's 512² source and each cell's box.
+    const app = try testing.allocator.create(images.App);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var wake = WakeCounter{};
+    app.window.images.bindWake(.{ .context = &wake, .wake = WakeCounter.wake });
+    defer app.window.images.bindWake(null);
+    var now: u64 = 0;
+    app.tick(now);
+    var sprites: [32]core.internals.records.Sprite = undefined;
+    try testing.expectEqual(@as(u32, 0), imageSprites(app.window.rendered(), &sprites));
+    var pending: u32 = 0;
+    for (app.window.images.entries) |entry| {
+        if (entry.state == .pending) pending += 1;
+    }
+    try testing.expectEqual(@as(u32, 1), pending);
+
+    try settleImages(app, &now);
+    try testing.expect(wake.count.load(.acquire) >= 1);
+    now += 1;
+    app.tick(now);
+    const count = imageSprites(app.window.rendered(), &sprites);
+    const cell_count = images.sizing.len + images.fit_modes.len + images.corner_radius.len +
+        images.effects.len;
+    try testing.expectEqual(@as(u32, cell_count), count);
+    for (app.window.images.entries) |entry| try testing.expect(entry.state == .free);
+    try testing.expectEqual(@as(u32, 1), app.window.images.landed_count);
+
+    // 200x80 contain: an 80 px square centred, 60 px in.
+    const wide = sprites[3];
+    try testing.expectEqual(@as(f32, 80), wide.bounds.width);
+    try testing.expectEqual(@as(f32, 80), wide.bounds.height);
+    // `none` shows the middle 100 of 512 source px at their own size.
+    const none = sprites[7];
+    try testing.expectEqual(@as(f32, 100), none.bounds.width);
+    const full_uv = sprites[4].uv.width;
+    try testing.expectApproxEqAbs(full_uv * 100.0 / 512.0, none.uv.width, 1e-5);
+    // Effects carry through to the record.
+    const combined = sprites[cell_count - 1];
+    try testing.expectEqual(@as(f32, 0.8), combined.grayscale);
+    try testing.expectEqual(@as(f32, 0.9), combined.opacity);
+    try testing.expectEqual(@as(f32, 40), combined.corners.top_left);
+    try testing.expectEqual(@as(f32, 1), sprites[cell_count - 5].tint.b);
+    try testing.expectEqual(@as(f32, 1), sprites[cell_count - 4].grayscale);
+    try testing.expectEqual(core.internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
+}
+
+fn missingImageRender(cx: *Cx) void {
+    const nothing: u8 = 0;
+    cx.render(ui.paint(u8, &nothing, missingImagePaint, .{
+        .width = .{ .fixed = 50 },
+        .height = .{ .fixed = 50 },
+    }));
+}
+
+fn missingImagePaint(_: *const u8, painter: *ui.Painter) void {
+    painter.image("assets/no-such-image.png", painter.bounds, .{ .fit = .contain });
+}
+
+test "images: a missing file fails once and is not read again" {
+    // Goal: a missing file is an operating error, not a crash, and does not
+    // re-read the disk every frame. Methodology: paint a missing path, let
+    // its failure land, then render again: the entry stays failed, nothing
+    // more is queued, and nothing is drawn.
+    const MissingApp = core.App(struct {}, missingImageRender, .{
+        .title = "Missing",
+        .width = 100,
+        .height = 100,
+        .limits = core.ResourceLimits.nano,
+    });
+    const app = try testing.allocator.create(MissingApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    var attempt: u32 = 0;
+    while (attempt < 5_000) : (attempt += 1) {
+        if (app.window.images.entries[0].state == .failed) break;
+        try std.Io.sleep(testing.io, .fromMilliseconds(1), .awake);
+        now += 1;
+        app.window.render_requested = true;
+        app.tick(now);
+    }
+    try testing.expect(app.window.images.entries[0].state == .failed);
+    const head = app.window.images.request_head.load(.acquire);
+    app.window.render_requested = true;
+    now += 1;
+    app.tick(now);
+    try testing.expectEqual(head, app.window.images.request_head.load(.acquire));
+    var sprites: [4]core.internals.records.Sprite = undefined;
+    try testing.expectEqual(@as(u32, 0), imageSprites(app.window.rendered(), &sprites));
+    try testing.expectEqual(@as(u32, 0), app.window.images.landed_count);
 }

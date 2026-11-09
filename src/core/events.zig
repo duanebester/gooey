@@ -254,6 +254,20 @@ pub const EventQueue = struct {
     }
 };
 
+/// A decode the image worker finished (`images.zig`). Core-internal: the
+/// drain hands it to the image loader, never to an app's handler, so it is
+/// not a `Completion.Outcome` and apps' switches over outcomes stay exact.
+pub const ImageDecoded = struct {
+    /// The loader's request entry the decode answers.
+    entry: u32,
+    width: u32,
+    height: u32,
+    /// Offset of the RGBA pixels, `width * height * 4` bytes, in staging.
+    pixel_offset: u32,
+    /// Null when the pixels are ready.
+    failure: ?anyerror,
+};
+
 /// A bounded single-producer, single-consumer ring for completions produced
 /// on worker threads. `tick` drains it on the main thread. Paths are copied
 /// into each slot's fixed bytes so the worker's buffer can be reused; a
@@ -268,12 +282,14 @@ pub const CompletionRing = struct {
     pub const path_bytes_max: u32 = 1024;
 
     const Slot = struct {
+        kind: enum(u8) { completion, image },
         request_id: u32,
         tag: std.meta.Tag(Completion.Outcome),
         failure: anyerror,
         path_count: u32,
         path_len: u32,
         path: [path_bytes_max]u8,
+        image: ImageDecoded,
     };
 
     pub fn initInPlace(self: *CompletionRing, gpa: std.mem.Allocator, count_max: u32) !void {
@@ -293,16 +309,8 @@ pub const CompletionRing = struct {
     /// Producer side. A full ring is a capacity-planning error.
     pub fn push(self: *CompletionRing, completion: Completion) void {
         const head = self.head.load(.monotonic);
-        const tail = self.tail.load(.acquire);
-        assert(head -% tail <= self.slots.len);
-        if (head -% tail == self.slots.len) {
-            std.debug.panic("completion ring exhausted: capacity {d}, {d} in use, 1 " ++
-                "requested. Raise ResourceLimits.events.completion_count_max.", .{
-                self.slots.len,
-                self.slots.len,
-            });
-        }
-        const slot = &self.slots[head & (@as(u32, @intCast(self.slots.len)) - 1)];
+        const slot = self.claim(head);
+        slot.kind = .completion;
         slot.request_id = completion.request_id;
         slot.tag = completion.outcome;
         slot.path_count = 0;
@@ -325,24 +333,65 @@ pub const CompletionRing = struct {
         self.head.store(head +% 1, .release);
     }
 
-    /// Consumer side: move every completion into `queue`.
-    pub fn drainInto(self: *CompletionRing, queue: *EventQueue) void {
+    /// Producer side, for the image worker. Same capacity rule as `push`.
+    pub fn pushImage(self: *CompletionRing, decoded: ImageDecoded) void {
+        if (decoded.failure == null) {
+            assert(decoded.width > 0);
+            assert(decoded.height > 0);
+        }
+        const head = self.head.load(.monotonic);
+        const slot = self.claim(head);
+        slot.kind = .image;
+        slot.image = decoded;
+        self.head.store(head +% 1, .release);
+    }
+
+    fn claim(self: *CompletionRing, head: u32) *Slot {
+        const tail = self.tail.load(.acquire);
+        assert(head -% tail <= self.slots.len);
+        if (head -% tail == self.slots.len) {
+            std.debug.panic("completion ring exhausted: capacity {d}, {d} in use, 1 " ++
+                "requested. Raise ResourceLimits.events.completion_count_max.", .{
+                self.slots.len,
+                self.slots.len,
+            });
+        }
+        return &self.slots[head & (@as(u32, @intCast(self.slots.len)) - 1)];
+    }
+
+    /// Consumer side: move every completion into `queue`, and the image
+    /// decode, of which the worker has at most one outstanding, into `image`.
+    pub fn drainInto(self: *CompletionRing, queue: *EventQueue, image: *?ImageDecoded) void {
         const head = self.head.load(.acquire);
         var tail = self.tail.load(.monotonic);
         assert(head -% tail <= self.slots.len);
         while (tail != head) : (tail +%= 1) {
             const slot = &self.slots[tail & (@as(u32, @intCast(self.slots.len)) - 1)];
-            const outcome: Completion.Outcome = switch (slot.tag) {
-                .file_selected => .{ .file_selected = .{
-                    .bytes = slot.path[0..slot.path_len],
-                    .count = slot.path_count,
-                } },
-                .cancelled => .cancelled,
-                .failed => .{ .failed = slot.failure },
-            };
-            queue.push(.{ .completion = .{ .request_id = slot.request_id, .outcome = outcome } });
+            switch (slot.kind) {
+                .image => {
+                    assert(image.* == null);
+                    image.* = slot.image;
+                },
+                .completion => queue.push(.{ .completion = .{
+                    .request_id = slot.request_id,
+                    .outcome = slotOutcome(slot),
+                } }),
+            }
         }
         self.tail.store(tail, .release);
+    }
+
+    fn slotOutcome(slot: *const Slot) Completion.Outcome {
+        assert(slot.kind == .completion);
+        assert(slot.path_len <= path_bytes_max);
+        return switch (slot.tag) {
+            .file_selected => .{ .file_selected = .{
+                .bytes = slot.path[0..slot.path_len],
+                .count = slot.path_count,
+            } },
+            .cancelled => .cancelled,
+            .failed => .{ .failed = slot.failure },
+        };
     }
 };
 
@@ -410,7 +459,8 @@ test "platform text past the free text bytes is cut on a codepoint boundary" {
 }
 
 test "completion ring delivers distinct outcomes in order" {
-    // Goal: selection, cancellation, and failure arrive as distinct values.
+    // Goal: selection, cancellation, and failure arrive as distinct values,
+    // and an image decode between them goes to the loader, not the queue.
     var queue: EventQueue = undefined;
     try queue.initInPlace(std.testing.allocator, .{ .event_count_max = 4, .text_bytes_max = 64 });
     defer queue.deinit(std.testing.allocator);
@@ -422,10 +472,14 @@ test "completion ring delivers distinct outcomes in order" {
     const two = try Paths.join(fixed.allocator(), &.{ "/tmp/a.txt", "/tmp/b" });
     ring.push(.{ .request_id = 1, .outcome = .{ .file_selected = two } });
     ring.push(.{ .request_id = 2, .outcome = .cancelled });
+    ring.pushImage(.{ .entry = 7, .width = 2, .height = 3, .pixel_offset = 5, .failure = null });
     ring.push(.{ .request_id = 3, .outcome = .{ .failed = error.AccessDenied } });
-    ring.drainInto(&queue);
+    var image: ?ImageDecoded = null;
+    ring.drainInto(&queue, &image);
     const events = queue.pending();
     try std.testing.expectEqual(@as(usize, 3), events.len);
+    try std.testing.expectEqual(@as(u32, 7), image.?.entry);
+    try std.testing.expectEqual(@as(u32, 3), image.?.height);
     var paths = events[0].completion.outcome.file_selected.iterator();
     try std.testing.expectEqualStrings("/tmp/a.txt", paths.next().?);
     try std.testing.expectEqualStrings("/tmp/b", paths.next().?);
