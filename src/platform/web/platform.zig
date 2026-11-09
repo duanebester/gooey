@@ -32,14 +32,9 @@ pub const WebPlatform = struct {
     /// Platform capabilities for Web/WASM
     pub const capabilities: interface_mod.PlatformCapabilities = .{
         .high_dpi = true,
-        .multi_window = false, // Browser manages windows
         .gpu_accelerated = true,
         .display_link = false, // Uses requestAnimationFrame
         .can_close_window = false, // Can't close browser tabs
-        .glass_effects = false, // CSS backdrop-filter would be separate
-        // `WebRenderer` has no post-process pass, so `has_post_process` stays
-        // at its `false` default rather than being restated here.
-
         // Write-only: `clipboard.setText` forwards to
         // `navigator.clipboard.writeText`, but `clipboard.getText` always
         // returns null because paste arrives as a JS paste event injected as
@@ -92,11 +87,10 @@ pub const WebPlatform = struct {
 
     /// Register a window with the platform and return its ID.
     ///
-    /// The browser owns tab and window management, so `capabilities`
-    /// advertises `multi_window = false`. Enforce that here rather than
-    /// letting a second canvas-less window register and silently never render.
+    /// An app has one window (contract decision 14), and the browser owns tab
+    /// and window management. Enforce that here rather than letting a second
+    /// canvas-less window register and silently never render.
     pub fn registerWindow(self: *Self, window: *anyopaque) !WindowId {
-        comptime std.debug.assert(!capabilities.multi_window);
         std.debug.assert(self.window_registry.count() == 0);
 
         const id = try self.window_registry.register(window);

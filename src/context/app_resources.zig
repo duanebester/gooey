@@ -1,21 +1,13 @@
 //! AppResources — shared, app-lifetime rendering resources.
 //!
 //! Bundles the three "expensive to duplicate per window" subsystems —
-//! `TextSystem`, `SvgAtlas`, `ImageAtlas` — into one struct with a single
-//! `owned: bool` ownership discriminator.
+//! `TextSystem`, `SvgAtlas`, `ImageAtlas` — into one struct.
 //!
 //! ## Ownership & lifetime
 //!
-//! Two shapes:
-//!
-//!   1. **Owning** (`initOwned` / `initOwnedInPlace`, `owned = true`) —
-//!      this struct allocated the three pointees and `deinit` frees them.
-//!      Single-window: `Window` embeds an `AppResources` by value.
-//!   2. **Borrowed** (`borrowed`, `owned = false`) — the pointees are
-//!      owned elsewhere; `deinit` is a no-op. Multi-window:
-//!      `runtime/multi_window_app.zig::App` heap-allocates one owning
-//!      `AppResources` and hands every window a borrowed view of the same
-//!      three pointers.
+//! `initOwned` / `initOwnedInPlace` allocate the three pointees and set
+//! `owned`; `deinit` frees them and clears it. `Window` embeds an
+//! `AppResources` by value.
 //!
 //! The struct is small; the heavy storage lives in the three pointees,
 //! which are heap-allocated for WASM stack reasons (CLAUDE.md §14).
@@ -38,9 +30,8 @@ const AtlasLimits = @import("../core/limits.zig").AtlasLimits;
 const platform = @import("../platform/mod.zig");
 
 /// Font configuration. Duplicated as a small POD struct so
-/// `AppResources.initOwned` avoids a circular import on `window.zig`
-/// (the multi-window `App` builds its resources without ever
-/// instantiating a `Window`). Kept field-for-field identical to
+/// `AppResources.initOwned` avoids a circular import on `window.zig`.
+/// Kept field-for-field identical to
 /// `window.FontConfig`, except `mono`, which only the 0.4.0 core sets; any
 /// other divergence must be added in both places.
 pub const FontConfig = struct {
@@ -60,14 +51,8 @@ pub const FontConfig = struct {
 
 /// Bundle of shared, app-lifetime rendering resources.
 ///
-/// Holds heap-allocated `TextSystem`, `SvgAtlas`, `ImageAtlas`. The
-/// `owned: bool` field discriminates two ownership shapes:
-///
-///   - `owned = true` — this `AppResources` allocated the three pointees
-///     and `deinit` must free them. Set by `initOwned` / `initOwnedInPlace`.
-///   - `owned = false` — the pointees came from elsewhere (multi-window:
-///     the parent `App`'s own `AppResources`); `deinit` is a no-op so the
-///     same backing storage isn't double-freed. Set by `borrowed`.
+/// Holds heap-allocated `TextSystem`, `SvgAtlas`, `ImageAtlas`, and the
+/// upload journal they share.
 pub const AppResources = struct {
     allocator: Allocator,
     io: std.Io,
@@ -78,10 +63,8 @@ pub const AppResources = struct {
     /// Upload journal and frame clock shared by the three atlases.
     atlas_uploads: *AtlasUploads,
 
-    /// True when this struct owns the three pointees (allocated in an
-    /// `initOwned*` path). False when borrowed from a parent
-    /// `AppResources` (multi-window). See struct doc-comment for the
-    /// two ownership shapes.
+    /// True between an `initOwned*` call and `deinit`: the three pointees
+    /// are live and this struct frees them.
     owned: bool,
 
     const Self = @This();
@@ -227,46 +210,10 @@ pub const AppResources = struct {
     }
 
     // =========================================================================
-    // Borrowed init path (multi-window)
-    // =========================================================================
-
-    /// Build a borrowed `AppResources` view over already-initialised
-    /// pointees. `deinit` becomes a no-op for this instance — the
-    /// upstream owner is responsible for tearing the pointees down.
-    ///
-    /// Used by `runtime/multi_window_app.zig::App.openWindow`: the
-    /// `App` keeps one owning `AppResources` on the heap, and every
-    /// window's `Window` embeds a borrowed view of those same three
-    /// pointers.
-    pub fn borrowed(allocator: Allocator, io: std.Io, owner: *const Self) Self {
-        const text_system = owner.text_system;
-        const svg_atlas = owner.svg_atlas;
-        const image_atlas = owner.image_atlas;
-        std.debug.assert(@intFromPtr(text_system) != 0);
-        std.debug.assert(@intFromPtr(svg_atlas) != 0);
-        std.debug.assert(@intFromPtr(image_atlas) != 0);
-        std.debug.assert(@intFromPtr(text_system) != @intFromPtr(svg_atlas));
-        std.debug.assert(@intFromPtr(svg_atlas) != @intFromPtr(image_atlas));
-
-        return .{
-            .allocator = allocator,
-            .io = io,
-            .text_system = text_system,
-            .svg_atlas = svg_atlas,
-            .image_atlas = image_atlas,
-            .atlas_uploads = owner.atlas_uploads,
-            .owned = false,
-        };
-    }
-
-    // =========================================================================
     // Teardown
     // =========================================================================
 
-    /// Tear down the three subsystems if `owned`, otherwise no-op.
-    /// Idempotent only in the borrowed case — calling `deinit` twice
-    /// on an `owned = true` instance is a use-after-free, same as any
-    /// other heap-owning struct.
+    /// Tear down the three subsystems if `owned`; a second call is a no-op.
     pub fn deinit(self: *Self) void {
         if (!self.owned) return;
 
@@ -301,11 +248,8 @@ pub const AppResources = struct {
 // Tests
 // =============================================================================
 //
-// These tests pin the two ownership shapes against `std.testing.allocator`
-// — which would surface a leak or double-free immediately. The
-// `borrowed` path is verified by constructing an `owned = true` parent,
-// borrowing from it, and confirming the borrowed `deinit` is a no-op
-// (no double-free against the parent's allocations).
+// These tests pin the owning init paths against `std.testing.allocator`,
+// which would surface a leak or double-free immediately.
 
 const testing = std.testing;
 
@@ -326,37 +270,6 @@ test "AppResources: initOwned allocates and frees cleanly" {
     try testing.expect(@intFromPtr(resources.text_system) != 0);
     try testing.expect(@intFromPtr(resources.svg_atlas) != 0);
     try testing.expect(@intFromPtr(resources.image_atlas) != 0);
-}
-
-test "AppResources: borrowed deinit is a no-op (no double-free)" {
-    // Parent owns the three subsystems.
-    var owner = try AppResources.initOwned(
-        testing.allocator,
-        testing.io,
-        1.0,
-        test_font_config,
-        &AtlasLimits.standard,
-    );
-    defer owner.deinit();
-
-    // Borrowed view over the same pointers.
-    var view = AppResources.borrowed(testing.allocator, testing.io, &owner);
-
-    try testing.expect(!view.owned);
-    try testing.expectEqual(owner.text_system, view.text_system);
-    try testing.expectEqual(owner.svg_atlas, view.svg_atlas);
-    try testing.expectEqual(owner.image_atlas, view.image_atlas);
-
-    // This must NOT free anything — the parent still owns the
-    // pointees and is going to tear them down via its own `defer`
-    // above. If `deinit` ignored the `owned` flag, the parent's
-    // teardown would double-free and the test allocator would catch
-    // it.
-    view.deinit();
-
-    // `view.deinit` flipped `owned` to false (it was already false)
-    // and undef-ed the pointers. Owner remains intact.
-    try testing.expect(@intFromPtr(owner.text_system) != 0);
 }
 
 test "AppResources: initOwnedInPlace produces an owned instance" {

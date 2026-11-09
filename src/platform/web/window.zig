@@ -37,9 +37,6 @@ pub const WebWindow = struct {
     scale_factor: f64,
 
     background_color: geometry.Color,
-    background_opacity: f64,
-    glass_style: interface.GlassStyle,
-    glass_corner_radius: f64,
 
     /// Requested cursor. There is no JS import that applies it yet, so it is
     /// recorded rather than dropped; see `setCursorShape`.
@@ -100,8 +97,8 @@ pub const WebWindow = struct {
     ) !*Self {
         std.debug.assert(options.width > 0);
         std.debug.assert(options.height > 0);
-        std.debug.assert(options.background_opacity >= 0.0);
-        std.debug.assert(options.background_opacity <= 1.0);
+        std.debug.assert(options.background_color.a >= 0.0);
+        std.debug.assert(options.background_color.a <= 1.0);
 
         const self = try allocator.create(Self);
         errdefer allocator.destroy(self);
@@ -111,9 +108,6 @@ pub const WebWindow = struct {
         self.size = .{ .width = options.width, .height = options.height };
         self.scale_factor = 1.0;
         self.background_color = options.background_color;
-        self.background_opacity = options.background_opacity;
-        self.glass_style = options.glass_style;
-        self.glass_corner_radius = options.glass_corner_radius;
         self.cursor_shape = .default;
         self.dark_appearance = false;
         self.marked_text_len = 0;
@@ -270,40 +264,10 @@ pub const WebWindow = struct {
         std.debug.assert(self.cursor_shape == shape);
     }
 
-    /// Record a glass/blur request.
-    ///
-    /// Web-only extra, typed as the canonical `interface.GlassStyle` so its tag
-    /// order cannot diverge from the other backends and no `@enumFromInt`
-    /// bridge is needed. Web *can*
-    /// express `blur` and `vibrancy` through `backdrop-filter`, so this is
-    /// stored (and reflected by `getClearColor`) rather than discarded, but
-    /// `capabilities.glass_effects` stays `false` until the CSS is applied.
-    pub fn setGlassStyle(
-        self: *Self,
-        style: interface.GlassStyle,
-        opacity: f64,
-        corner_radius: f64,
-    ) void {
-        std.debug.assert(opacity >= 0.0);
-        std.debug.assert(opacity <= 1.0);
-        std.debug.assert(corner_radius >= 0.0);
-
-        self.glass_style = style;
-        self.background_opacity = opacity;
-        self.glass_corner_radius = corner_radius;
-    }
-
-    /// Effective framebuffer clear color.
-    ///
-    /// Derived rather than cached so it cannot disagree with `glass_style`
-    /// after a later `setBackgroundColor` or `setGlassStyle`.
+    /// The framebuffer clear color: the configured background color.
     pub fn getClearColor(self: *const Self) geometry.Color {
-        if (self.glass_style.needsTransparentClear()) {
-            std.debug.assert(self.glass_style != .none);
-            return geometry.Color.transparent;
-        }
-
-        std.debug.assert(self.glass_style == .none);
+        std.debug.assert(self.background_color.a >= 0.0);
+        std.debug.assert(self.background_color.a <= 1.0);
         return self.background_color;
     }
 

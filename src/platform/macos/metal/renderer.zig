@@ -12,10 +12,8 @@ const mtl = @import("api.zig");
 const pipelines = @import("pipelines.zig");
 const render_pass = @import("render_pass.zig");
 const scene_renderer = @import("scene_renderer.zig");
-const post_process = @import("post_process.zig");
 const scissor = @import("scissor.zig");
 const text_pipeline = @import("text.zig");
-const custom_shader = @import("custom_shader.zig");
 const svg_pipeline = @import("svg_pipeline.zig");
 const image_pipeline = @import("image_pipeline.zig");
 const path_pipeline = @import("path_pipeline.zig");
@@ -61,7 +59,6 @@ pub const Renderer = struct {
     size: geometry.Size(f64),
     scale_factor: f64,
 
-    post_process_state: ?custom_shader.PostProcessState,
     allocator: std.mem.Allocator,
 
     const Self = @This();
@@ -115,7 +112,6 @@ pub const Renderer = struct {
             .quad_unit_vertex_buffer = null,
             .size = size,
             .scale_factor = scale_factor,
-            .post_process_state = null,
             .allocator = allocator,
         };
         // Releases the ring and every optional resource created below.
@@ -257,7 +253,6 @@ pub const Renderer = struct {
         if (self.polyline_pipeline_state) |*plp| plp.deinit();
         if (self.point_cloud_pipeline_state) |*pcp| pcp.deinit();
         if (self.colored_point_cloud_pipeline_state) |*cpcp| cpcp.deinit();
-        if (self.post_process_state) |*pp| pp.deinit();
         self.command_queue.release();
         self.device.release();
     }
@@ -280,70 +275,6 @@ pub const Renderer = struct {
 
     pub fn renderSceneSynchronous(self: *Self, scene: *const scene_mod.Scene, clear_color: geometry.Color) !void {
         try self.renderSceneInternal(scene, clear_color, true);
-    }
-
-    pub fn renderSceneWithPostProcess(
-        self: *Self,
-        scene: *const scene_mod.Scene,
-        clear_color: geometry.Color,
-    ) !void {
-        var pp = &(self.post_process_state orelse {
-            try self.renderScene(scene, clear_color);
-            return;
-        });
-
-        if (!pp.hasShaders()) {
-            try self.renderScene(scene, clear_color);
-            return;
-        }
-
-        self.nextFrame();
-
-        const width: u32 = @intFromFloat(self.size.width * self.scale_factor);
-        const height: u32 = @intFromFloat(self.size.height * self.scale_factor);
-        try pp.ensureSize(width, height);
-
-        pp.updateTiming();
-        pp.uploadUniforms();
-
-        // Use the new unified single-command-buffer pipeline
-        try post_process.renderFullPipeline(
-            self.command_queue,
-            self.layer,
-            scene,
-            clear_color,
-            self.quad_unit_vertex_buffer.?,
-            self.unified_pipeline_state,
-            &self.unified_primitive_ring,
-            &self.atlas_textures,
-            if (self.text_pipeline_state) |*tp| tp else null,
-            if (self.svg_pipeline_state) |*sp| sp else null,
-            pp,
-            self.size,
-            self.scale_factor,
-        );
-    }
-
-    pub fn initPostProcess(self: *Self) !void {
-        if (self.post_process_state != null) return;
-        self.post_process_state = try custom_shader.PostProcessState.init(
-            self.allocator,
-            self.device,
-        );
-    }
-
-    pub fn addCustomShader(self: *Self, shader_source: []const u8, name: []const u8) !void {
-        if (self.post_process_state == null) try self.initPostProcess();
-        try self.post_process_state.?.addShader(shader_source, name, mtl.MTLPixelFormat.bgra8unorm, 1);
-    }
-
-    pub fn hasCustomShaders(self: *const Self) bool {
-        if (self.post_process_state) |pp| return pp.hasShaders();
-        return false;
-    }
-
-    pub fn getPostProcess(self: *Self) ?*custom_shader.PostProcessState {
-        return if (self.post_process_state) |*pp| pp else null;
     }
 
     pub fn resize(self: *Self, size: geometry.Size(f64), scale_factor: f64) void {

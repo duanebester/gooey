@@ -97,7 +97,6 @@ pub const TestBackend = struct {
 
     pub const WindowOptions = interface.WindowOptions;
     pub const CursorShape = interface.CursorShape;
-    pub const GlassStyle = interface.GlassStyle;
 };
 
 // Pin the backend to the compile-time contract. Kept at file scope rather than
@@ -488,14 +487,12 @@ pub const TestPlatform = struct {
 
     pub const capabilities = PlatformCapabilities{
         .high_dpi = true,
-        .multi_window = true,
         // Nothing here touches a GPU, a display link, or a clipboard, and
         // claiming otherwise would let a capability-gated code path go
         // untested on the one backend that could test it cheaply.
         .gpu_accelerated = false,
         .display_link = false,
         .can_close_window = true,
-        .glass_effects = false,
         .clipboard = false,
         .file_dialogs = false,
         .ime = true,
@@ -1127,7 +1124,7 @@ pub const TestWindow = struct {
         self.size = .{ .width = options.width, .height = options.height };
         self.scale_factor = 1.0;
         self.background_color = options.background_color;
-        self.clear_color = options.clearColor();
+        self.clear_color = options.background_color;
         self.dark_appearance = false;
         self.cursor_shape = .default;
 
@@ -1652,7 +1649,7 @@ pub const NullRenderer = struct {
 
     pub fn capabilities(self: *const Self) core_backend.Capabilities {
         assert(self.lifecycle == .running);
-        return .{ .post_process = false, .custom_shaders = false, .meshes = true };
+        return .{ .meshes = true };
     }
 
     pub fn deinit(self: *Self) void {
@@ -1721,7 +1718,7 @@ test "isRunning is false before run, true during, and false after quit" {
 ///
 /// `LoopTurnCallback` is a bare function pointer with no context parameter, by
 /// design: the production owner recovers itself by field offset from the
-/// `*Platform` it is handed (`multi_window_app.loopTurn`). A test has no such
+/// `*Platform` it is handed (the macOS core host's `onLoopTurn`). A test has no such
 /// enclosing struct, so it observes effects through module state instead — the
 /// same shape `pending_failure_plan` already uses here.
 const LoopTurnProbe = struct {
@@ -2347,19 +2344,19 @@ test "window state getters report what was actually set" {
     defer plat.deinit();
 
     const options = WindowOptions{
-        .title = "glassy",
+        .title = "plain",
         .width = 100,
         .height = 50,
-        .glass_style = .blur,
+        .background_color = .rgba(0.1, 0.2, 0.3, 0.5),
         .limits = .nano,
     };
     const win = try TestWindow.init(testing.allocator, &plat, &options);
     defer win.deinit();
 
-    // A glass style demands a transparent clear; the backend must not report
-    // the opaque background color instead.
-    try testing.expectEqual(@as(f32, 0.0), win.getClearColor().a);
-    try testing.expectEqualStrings("glassy", win.title());
+    // The clear color is the configured background color, alpha included.
+    try testing.expectEqual(@as(f32, 0.5), win.getClearColor().a);
+    try testing.expectEqual(@as(f32, 0.3), win.getClearColor().b);
+    try testing.expectEqualStrings("plain", win.title());
 
     try testing.expect(!win.isClosed());
     win.close();

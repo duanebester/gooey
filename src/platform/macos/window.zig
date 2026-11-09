@@ -9,19 +9,16 @@ const Mutex = @import("../mutex.zig").Mutex;
 const objc = @import("objc");
 const geometry = @import("../../geometry/geometry.zig");
 const scene_mod = @import("../../scene/mod.zig");
-const shader_mod = @import("../../core/shader.zig");
 const text_mod = @import("../../text/mod.zig");
 const Atlas = text_mod.Atlas;
 const platform = @import("platform.zig");
 const metal = @import("metal/metal.zig");
-const custom_shader = metal.custom_shader;
 const input_view = @import("input_view.zig");
 const input = @import("../../input/events.zig");
 const display_link = @import("display_link.zig");
 const appkit = @import("appkit.zig");
 const interface_mod = @import("../interface.zig");
 const WindowId = interface_mod.WindowId;
-const GlassStyle = interface_mod.GlassStyle;
 const WindowOptions = interface_mod.WindowOptions;
 const core_events = @import("../../core/events.zig");
 const core_router = @import("../../core/router.zig");
@@ -52,11 +49,6 @@ pub const title_bytes_max: usize = 255;
 const NSRect = appkit.NSRect;
 const NSSize = appkit.NSSize;
 const DisplayLink = display_link.DisplayLink;
-
-/// Hard ceiling on application-supplied Metal shaders per window. Each one
-/// costs a pipeline state object and a `custom_{d}` name slot, so the count
-/// is bounded rather than taken on trust from the caller's slice.
-const custom_shader_count_max: usize = 64;
 
 pub const Window = struct {
     allocator: std.mem.Allocator,
@@ -109,14 +101,6 @@ pub const Window = struct {
     /// user going through the AppKit delegate. Hosts poll this to drop their
     /// reference without racing the delegate callback.
     closed: bool = false,
-    // Custom shader animation flag
-    custom_shader_animation: bool,
-    // Glass effect support (macOS 26.0+ / fallback blur).
-    /// Owned +1 from `alloc`/`init`; the superview also retains it while installed.
-    glass_effect_view: ?objc.Object = null,
-    glass_style: GlassStyle = .none,
-    background_opacity: f64 = 1.0,
-    glass_corner_radius: f64 = 16.0,
 
     /// Mutex protecting all render-related state accessed from DisplayLink thread.
     /// This includes: scene, text_atlas, background_color, size, scale_factor, renderer.
@@ -195,17 +179,9 @@ pub const Window = struct {
     // Convenience accessors (so user code doesn't need to convert)
     // =========================================================================
 
-    /// Get the effective clear color for rendering.
-    /// When glass effects are active, returns transparent so the glass shows through.
-    /// Otherwise returns the configured background color.
+    /// The color each frame clears to: the configured background color.
     pub fn getClearColor(self: *const Self) geometry.Color {
-        return switch (self.glass_style) {
-            // `vibrancy` is a web-only style. macOS degrades it to `blur`
-            // when applying it to AppKit, and either way the framebuffer must
-            // clear transparent for the host backdrop to show through.
-            .blur, .glass_regular, .glass_clear, .vibrancy => geometry.Color.transparent,
-            .none => self.background_color,
-        };
+        return self.background_color;
     }
 
     pub fn setSvgAtlas(self: *Self, atlas: *const Atlas) void {
@@ -286,15 +262,6 @@ pub const Window = struct {
         self.delegate = try window_delegate.create(self);
         self.ns_window.msgSend(void, "setDelegate:", .{self.delegate.?.value});
 
-        // Setup glass/transparency effect if requested
-        if (options.background_opacity < 1.0) {
-            try self.setupGlassEffect(
-                options.glass_style,
-                options.background_opacity,
-                options.glass_corner_radius,
-            );
-        }
-
         // Enable mouse tracking for mouseMoved events
         try self.setupTrackingArea();
 
@@ -311,8 +278,6 @@ pub const Window = struct {
             self.scale_factor,
             &options.limits,
         );
-
-        self.loadCustomShaders(options.custom_shaders);
 
         if (options.use_display_link) try self.startDisplayLink();
 
@@ -367,10 +332,6 @@ pub const Window = struct {
             .background_color = options.background_color,
             .needs_render = std.atomic.Value(bool).init(true),
             .scene = null,
-            .custom_shader_animation = false,
-            .glass_style = options.glass_style,
-            .background_opacity = options.background_opacity,
-            .glass_corner_radius = options.glass_corner_radius,
         };
 
         assert(self.window_id == .invalid);
@@ -416,17 +377,6 @@ pub const Window = struct {
         self.ns_window.msgSend(void, "setReleasedWhenClosed:", .{false});
         assert(!self.ns_window.msgSend(bool, "isReleasedWhenClosed", .{}));
 
-        if (options.titlebar_transparent) {
-            self.ns_window.msgSend(void, "setTitlebarAppearsTransparent:", .{true});
-        }
-
-        // Extend content under the titlebar for a full-bleed effect.
-        if (options.full_size_content) {
-            const current_mask = self.ns_window.msgSend(u64, "styleMask", .{});
-            const full_size_content_mask: u64 = 1 << 15; // NSWindowStyleMaskFullSizeContentView
-            self.ns_window.msgSend(void, "setStyleMask:", .{current_mask | full_size_content_mask});
-        }
-
         self.setTitle(options.title);
 
         if (options.min_size) |min| {
@@ -449,33 +399,6 @@ pub const Window = struct {
         self.ns_view = try input_view.create(view_frame, self);
         self.ns_window.msgSend(void, "setContentView:", .{self.ns_view.value});
         assert(self.ns_view.value != null);
-    }
-
-    /// Compile the application's Metal shaders into the renderer.
-    ///
-    /// A shader that fails to build is logged and skipped: losing one custom
-    /// effect degrades the visuals, whereas failing window creation would take
-    /// the whole application down for a cosmetic problem.
-    fn loadCustomShaders(self: *Self, shaders: []const shader_mod.CustomShader) void {
-        assert(shaders.len <= custom_shader_count_max);
-        if (shaders.len == 0) return;
-
-        for (shaders, 0..) |shader, i| {
-            assert(i < custom_shader_count_max);
-            const msl_source = shader.msl orelse {
-                std.debug.print("Custom shader {d} has no MSL source, skipping\n", .{i});
-                continue;
-            };
-            var name_buf: [32]u8 = undefined;
-            const name = std.fmt.bufPrint(&name_buf, "custom_{d}", .{i}) catch "custom";
-            self.renderer.addCustomShader(msl_source, name) catch |err| {
-                std.debug.print("Failed to load custom shader {d}: {}\n", .{ i, err });
-            };
-        }
-
-        // Custom shaders read `iTime`, so the frame clock must keep advancing
-        // even when no input or scene change would otherwise request a render.
-        self.custom_shader_animation = true;
     }
 
     /// Start the CVDisplayLink that paces rendering to vsync.
@@ -810,11 +733,6 @@ pub const Window = struct {
             d.release();
             self.delegate = null;
         }
-        if (self.glass_effect_view) |glass_view| {
-            glass_view.msgSend(void, "removeFromSuperview", .{});
-            glass_view.release();
-            self.glass_effect_view = null;
-        }
         if (self.tracking_area) |area| {
             self.ns_view.msgSend(void, "removeTrackingArea:", .{area.value});
             area.release();
@@ -1122,68 +1040,6 @@ pub const Window = struct {
         self.cursor_shape = shape;
     }
 
-    /// Change the glass effect style at runtime.
-    pub fn setGlassStyle(self: *Self, style: GlassStyle, opacity: f64, corner_radius: f64) void {
-        assert(self.ns_window.value != null);
-        assert(opacity >= 0.0 and opacity <= 1.0);
-        assert(corner_radius >= 0.0);
-
-        // Remove existing glass effect if any; the superview drops its retain,
-        // this drops ours.
-        if (self.glass_effect_view) |glass_view| {
-            glass_view.msgSend(void, "removeFromSuperview", .{});
-            glass_view.release();
-            self.glass_effect_view = null;
-        }
-
-        // Update stored values
-        self.glass_style = style;
-        self.background_opacity = opacity;
-        self.glass_corner_radius = corner_radius;
-
-        if (style == .none) {
-            // Restore opaque window
-            self.ns_window.msgSend(void, "setOpaque:", .{true});
-            const NSColor = objc.getClass("NSColor") orelse return;
-            const bg = NSColor.msgSend(objc.Object, "colorWithRed:green:blue:alpha:", .{
-                @as(f64, self.background_color.r),
-                @as(f64, self.background_color.g),
-                @as(f64, self.background_color.b),
-                @as(f64, 1.0),
-            });
-            self.ns_window.msgSend(void, "setBackgroundColor:", .{bg.value});
-        } else {
-            // Make window non-opaque
-            self.ns_window.msgSend(void, "setOpaque:", .{false});
-
-            // Set transparent background
-            const NSColor = objc.getClass("NSColor") orelse return;
-            const transparent_bg = NSColor.msgSend(objc.Object, "colorWithRed:green:blue:alpha:", .{
-                @as(f64, 1.0),
-                @as(f64, 1.0),
-                @as(f64, 1.0),
-                @as(f64, 0.001),
-            });
-            self.ns_window.msgSend(void, "setBackgroundColor:", .{transparent_bg.value});
-
-            // Apply new glass effect.
-            switch (style) {
-                .glass_regular, .glass_clear => {
-                    if (!self.setupLiquidGlass(style, corner_radius)) {
-                        self.setupTraditionalBlur();
-                    }
-                },
-                // `vibrancy` names the browser's `backdrop-filter`, which has
-                // no AppKit equivalent. CGS background blur is the closest
-                // native effect, so degrade to it rather than render opaque.
-                .blur, .vibrancy => self.setupTraditionalBlur(),
-                .none => unreachable,
-            }
-        }
-
-        self.requestRender();
-    }
-
     // =========================================================================
     // Private Helpers
     // =========================================================================
@@ -1237,141 +1093,6 @@ pub const Window = struct {
         self.metal_layer.msgSend(void, "setDrawableSize:", .{drawable_size});
     }
 
-    fn setupGlassEffect(self: *Self, style: GlassStyle, opacity: f64, corner_radius: f64) !void {
-        _ = opacity; // Opacity is handled by the glass tint, not window background
-        assert(self.ns_window.value != null);
-        assert(corner_radius >= 0.0);
-        if (style == .none) return;
-
-        // Make the window non-opaque for transparency
-        self.ns_window.msgSend(void, "setOpaque:", .{false});
-
-        // Set window background to nearly transparent
-        // The glass effect provides the actual visual background
-        const NSColor = objc.getClass("NSColor") orelse return error.ClassNotFound;
-        const transparent_bg = NSColor.msgSend(objc.Object, "colorWithRed:green:blue:alpha:", .{
-            @as(f64, 1.0),
-            @as(f64, 1.0),
-            @as(f64, 1.0),
-            @as(f64, 0.001), // Nearly invisible - glass shows through
-        });
-        self.ns_window.msgSend(void, "setBackgroundColor:", .{transparent_bg.value});
-
-        // Try to setup liquid glass (macOS 26.0+) or fallback to blur
-        switch (style) {
-            .glass_regular, .glass_clear => {
-                if (!self.setupLiquidGlass(style, corner_radius)) {
-                    // Fallback to traditional blur if liquid glass unavailable
-                    self.setupTraditionalBlur();
-                }
-            },
-            // `vibrancy` is the web backend's `backdrop-filter` style. AppKit
-            // has no counterpart, so it degrades to the CGS blur that is
-            // visually closest instead of being silently dropped.
-            .blur, .vibrancy => {
-                self.setupTraditionalBlur();
-            },
-            .none => unreachable, // Returned above.
-        }
-    }
-
-    fn setupLiquidGlass(self: *Self, style: GlassStyle, corner_radius: f64) bool {
-        assert(style == .glass_regular or style == .glass_clear);
-        assert(corner_radius >= 0.0);
-
-        // NSGlassEffectView is only available on macOS 26.0+ (Tahoe)
-        const NSGlassEffectView = objc.getClass("NSGlassEffectView") orelse {
-            std.debug.print("NSGlassEffectView not available (requires macOS 26.0+)\n", .{});
-            return false;
-        };
-
-        // Get the content view's superview (the window's content view container)
-        const content_view: objc.Object = self.ns_window.msgSend(objc.Object, "contentView", .{});
-        const superview: objc.Object = content_view.msgSend(objc.Object, "superview", .{});
-        if (superview.value == null) {
-            std.debug.print("Could not get content view superview for glass effect\n", .{});
-            return false;
-        }
-
-        const bounds: NSRect = superview.msgSend(NSRect, "bounds", .{});
-
-        // Create and configure the glass effect view
-        const glass_alloc = NSGlassEffectView.msgSend(objc.Object, "alloc", .{});
-        const glass_view = glass_alloc.msgSend(objc.Object, "initWithFrame:", .{bounds});
-
-        // Set style: 0 = regular, 1 = clear
-        const style_value: i64 = switch (style) {
-            .glass_regular => 0,
-            .glass_clear => 1,
-            else => 0,
-        };
-        glass_view.msgSend(void, "setStyle:", .{style_value});
-
-        // Set corner radius
-        glass_view.msgSend(void, "setCornerRadius:", .{corner_radius});
-
-        // Set tint color based on our background color and opacity
-        // If background_color is fully transparent, use a sensible default
-        const NSColor = objc.getClass("NSColor") orelse return false;
-
-        // Compute effective tint: use background_color RGB with background_opacity as alpha
-        // If the color is fully transparent (default), use a dark gray as fallback
-        const tint_r: f64 = if (self.background_color.a > 0.001) self.background_color.r else 0.1;
-        const tint_g: f64 = if (self.background_color.a > 0.001) self.background_color.g else 0.1;
-        const tint_b: f64 = if (self.background_color.a > 0.001) self.background_color.b else 0.1;
-        const tint_a: f64 = @max(0.001, self.background_opacity); // Ensure some minimum opacity
-
-        const tint_color = NSColor.msgSend(objc.Object, "colorWithRed:green:blue:alpha:", .{
-            tint_r,
-            tint_g,
-            tint_b,
-            tint_a,
-        });
-        glass_view.msgSend(void, "setTintColor:", .{tint_color.value});
-
-        // Enable autoresizing to fill the window
-        // NSViewWidthSizable | NSViewHeightSizable = 2 | 16 = 18
-        glass_view.msgSend(void, "setAutoresizingMask:", .{@as(u64, 18)});
-
-        // Add the glass view BELOW the content view
-        // NSWindowBelow = -1
-        superview.msgSend(void, "addSubview:positioned:relativeTo:", .{
-            glass_view.value,
-            @as(i64, -1), // NSWindowBelow
-            content_view.value,
-        });
-
-        self.glass_effect_view = glass_view;
-        std.debug.print(
-            "Liquid glass enabled (style: {}, tint: rgba({d:.2},{d:.2},{d:.2},{d:.2}))\n",
-            .{ style, tint_r, tint_g, tint_b, tint_a },
-        );
-        return true;
-    }
-
-    fn setupTraditionalBlur(self: *Self) void {
-        // Use the private CGS API for background blur (same as Terminal.app, Ghostty)
-        // This works on older macOS versions
-        const window_number = self.ns_window.msgSend(usize, "windowNumber", .{});
-        const blur_radius: c_int = 20; // Reasonable default blur amount
-
-        const result = CGSSetWindowBackgroundBlurRadius(
-            CGSDefaultConnectionForThread(),
-            window_number,
-            blur_radius,
-        );
-
-        if (result == 0) {
-            std.debug.print("Traditional background blur enabled (radius: {})\n", .{blur_radius});
-        } else {
-            std.debug.print("Failed to enable background blur (error: {})\n", .{result});
-        }
-    }
-
-    // Private CoreGraphics APIs for background blur (used by Terminal.app, Ghostty, etc.)
-    extern "c" fn CGSSetWindowBackgroundBlurRadius(*anyopaque, usize, c_int) i32;
-    extern "c" fn CGSDefaultConnectionForThread() *anyopaque;
-
     // =========================================================================
     // Renderer introspection
     // =========================================================================
@@ -1423,12 +1144,11 @@ fn displayLinkCallback(
         return .success;
     }
 
-    // Always render if custom shader animation is enabled (for iTime)
     const explicit_render = window.needs_render.swap(false, .acq_rel);
     // Atlas records another window (or an async image load) staged must reach
     // this window's textures too, or the shared journal cannot retire them.
     const should_render = window.benchmark_mode or explicit_render or
-        window.custom_shader_animation or window.renderer.hasPendingAtlasUploads();
+        window.renderer.hasPendingAtlasUploads();
 
     // DEBUG. CVDisplayLink callbacks run on a dedicated vsync thread that
     // does not carry a `*Cx`/`Gooey`, so we reach for the single-threaded
@@ -1476,23 +1196,12 @@ fn displayLinkCallback(
 
     // Atlas uploads are encoded by the render itself, ahead of its draws.
 
-    // Use post-process rendering if shaders are active
     if (window.scene) |s| {
         const clear_color = window.getClearColor();
-        if (window.renderer.hasCustomShaders()) {
-            window.renderer.renderSceneWithPostProcess(s, clear_color) catch |err| {
-                std.debug.print("renderSceneWithPostProcess error: {}\n", .{err});
-                // Fall back to normal render
-                window.renderer.renderScene(s, clear_color) catch {
-                    window.renderer.clear(clear_color);
-                };
-            };
-        } else {
-            window.renderer.renderScene(s, clear_color) catch |err| {
-                std.debug.print("renderScene error: {}\n", .{err});
-                window.renderer.clear(clear_color);
-            };
-        }
+        window.renderer.renderScene(s, clear_color) catch |err| {
+            std.debug.print("renderScene error: {}\n", .{err});
+            window.renderer.clear(clear_color);
+        };
     } else {
         window.renderer.clear(window.getClearColor());
     }

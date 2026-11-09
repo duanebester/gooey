@@ -42,7 +42,6 @@ const interface = @import("interface.zig");
 const WindowId = interface.WindowId;
 const WindowOptions = interface.WindowOptions;
 const CursorShape = interface.CursorShape;
-const GlassStyle = interface.GlassStyle;
 const DriveModel = interface.DriveModel;
 const PlatformCapabilities = interface.PlatformCapabilities;
 
@@ -248,11 +247,10 @@ pub fn verifyType(
 /// ## Why fields are pinned, not only methods
 ///
 /// Pinning `getSize` and `getScaleFactor` proves nothing about the calls
-/// shared framework code actually makes: `context/window.zig` and
-/// `runtime/multi_window_app.zig` read `platform_window.size.width`,
-/// `.size.height`, and `.scale_factor` *directly* in roughly a dozen places
-/// and never call the getters. Those reads are a dependency on the boundary
-/// that no method check can see.
+/// shared framework code actually makes: `context/window.zig` reads
+/// `platform_window.size.width`, `.size.height`, and `.scale_factor`
+/// *directly* in roughly a dozen places and never calls the getters. Those
+/// reads are a dependency on the boundary that no method check can see.
 ///
 /// Zig makes the two interact rather than merely coexist: declarations and
 /// fields share one namespace per container, so a method named `width` and a
@@ -319,8 +317,8 @@ fn describe(comptime sig: Sig) []const u8 {
 /// Verify a backend `Platform` type.
 ///
 /// Covers host lifecycle, the bounded window registry, and the comptime
-/// capability declarations. Every call here is made by `runtime/runner.zig`,
-/// `runtime/multi_window_app.zig`, or `app.zig`.
+/// capability declarations. Every call here is made by `runtime/runner.zig`
+/// or `app.zig`.
 pub fn verifyPlatform(comptime Platform: type) void {
     comptime {
         const self_mut: type = *Platform;
@@ -441,7 +439,6 @@ pub fn verifyPlatformWindow(comptime Platform: type, comptime Window: type) void
         verifyWindowGeometry(Window);
         verifyWindowProperties(Window);
         verifyWindowHostControl(Window);
-        verifyGlassStyleControl(Platform, Window);
         verifyFrameHandoff(Window);
         verifyImeBridge(Window);
         verifyCallbacks(Window);
@@ -542,34 +539,6 @@ fn verifyWindowHostControl(comptime Window: type) void {
         verifyFn(Window, "focus", .{ .params = &.{*Window}, .returns = void });
         verifyFn(Window, "close", .{ .params = &.{*Window}, .returns = void });
         verifyFn(Window, "isClosed", .{ .params = &.{*const Window}, .returns = bool });
-    }
-}
-
-/// Verify the glass-style control that a `glass_effects` backend owes callers.
-///
-/// `capabilities.glass_effects` advertises that the host can composite a
-/// translucent backdrop; `setGlassStyle` is how a caller selects which one.
-/// `src/cx.zig` and `src/examples/glass.zig` each gate on the flag and then
-/// call the method, so setting the flag obliges a backend to declare it.
-/// Checking that obligation here makes a signature drift fail at the boundary
-/// rather than as an error inside an example.
-///
-/// Conditional rather than unconditional because Wayland has no portable blur
-/// protocol: Linux has no style to select and declares no such method, and
-/// demanding one would force a stub that lies. Gating a check on a comptime
-/// backend property is the same shape as the `drive_model`-conditional
-/// `isRunning` check in `verifyBackend`.
-fn verifyGlassStyleControl(comptime Platform: type, comptime Window: type) void {
-    comptime {
-        if (!Platform.capabilities.glass_effects) return;
-
-        // `f64` throughout, matching `WindowOptions.background_opacity` and
-        // `glass_corner_radius`: the values come straight from those fields on
-        // the native path, and an `f32` parameter would silently narrow them.
-        verifyFn(Window, "setGlassStyle", .{
-            .params = &.{ *Window, GlassStyle, f64, f64 },
-            .returns = void,
-        });
     }
 }
 

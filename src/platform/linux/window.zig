@@ -139,14 +139,6 @@ pub const Window = struct {
     renderer: Renderer,
     background_color: geometry.Color = geometry.Color.rgba(0.2, 0.2, 0.25, 1.0),
 
-    /// Translucent-background style requested by the application.
-    ///
-    /// Stored but ignored at render time: Wayland has no portable window-blur
-    /// protocol, which is why `LinuxPlatform.capabilities.glass_effects` is
-    /// false. Only `getClearColor` consults it, so that a compositor which
-    /// does composite behind the surface has something to show through.
-    glass_style: interface_mod.GlassStyle = .none,
-
     /// Last appearance requested via `setAppearance`. Advisory only; see there.
     dark_appearance: bool = false,
 
@@ -285,7 +277,6 @@ pub const Window = struct {
             .size = .{ .width = options.width, .height = options.height },
             .scale_factor = initial_scale,
             .background_color = options.background_color,
-            .glass_style = options.glass_style,
             .renderer = if (use_cpu_renderer) .{} else VulkanRenderer.init(allocator),
         };
 
@@ -458,7 +449,6 @@ pub const Window = struct {
                 &options.limits,
             );
         } else {
-            vk_renderer.warnCustomShadersUnsupported(options.custom_shaders.len, "Linux");
             const wl_display = plat.getDisplay() orelse return error.NoDisplay;
             try self.renderer.initWithNativeSurface(
                 .{ .display = @ptrCast(wl_display), .surface = self.wl_surface.? },
@@ -688,17 +678,9 @@ pub const Window = struct {
     ///
     /// Applied by `renderFrame` through `VulkanRenderer.setClearColor`, which
     /// records it into the next render pass.
-    ///
-    /// A glass style needs a transparent clear so a host-composited backdrop
-    /// shows through. Wayland cannot produce the blur itself (see
-    /// `glass_style`), so on this backend the transparent clear is the whole
-    /// of the effect, and it only shows if the compositor honours the
-    /// surface's alpha.
     pub fn getClearColor(self: *const Self) geometry.Color {
         std.debug.assert(self.background_color.a >= 0.0);
         std.debug.assert(self.background_color.a <= 1.0);
-
-        if (self.glass_style.needsTransparentClear()) return geometry.Color.transparent;
         return self.background_color;
     }
 

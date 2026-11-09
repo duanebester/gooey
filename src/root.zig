@@ -269,8 +269,6 @@ test {
         const sc = scene;
         const inp = input;
         const img = image;
-        const rt = runtime;
-        const co = core;
 
         // Animation leaves.
         _ = anim.SpringConfig;
@@ -301,8 +299,6 @@ test {
         // Platform / runtime / text.
         _ = plat.Platform;
         _ = plat.PlatformWindow;
-        _ = rt.WindowHandle;
-        _ = rt.MultiWindowApp;
         _ = txt.TextSystem;
         _ = txt.FontFace;
 
@@ -319,7 +315,6 @@ test {
         _ = inp.InputEvent;
         _ = inp.KeyEvent;
         _ = img.ImageAtlas;
-        _ = co.CustomShader;
     }
     // Leaf files with file-level `test {}` blocks that no namespace
     // export makes reachable, so we anchor the leaves here to keep

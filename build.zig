@@ -25,7 +25,6 @@ pub const TextBackend = enum {
 const ExampleDefinition = struct {
     name: []const u8,
     source: []const u8,
-    metal_hud: bool = false,
     /// Drives the Wayland event loop directly, so the fbdev backend skips it.
     wayland_only: bool = false,
     /// A 0.4.0 core app: on Linux its host needs the Wayland Vulkan backend.
@@ -202,8 +201,6 @@ pub fn build(b: *std.Build) void {
 
         const native_examples = [_]ExampleDefinition{
             .{ .name = "animation", .source = "src/examples/animation.zig" },
-            .{ .name = "spaceship", .source = "src/examples/spaceship.zig", .metal_hud = true },
-            .{ .name = "glass", .source = "src/examples/glass.zig" },
             .{ .name = "counter", .source = "src/examples/counter.zig" },
             .{ .name = "todo", .source = "src/examples/todo.zig" },
             .{ .name = "core-file-dialog", .source = "src/examples/core_file_dialog.zig" },
@@ -220,7 +217,6 @@ pub fn build(b: *std.Build) void {
             .{ .name = "lucide-demo", .source = "src/examples/lucide_demo.zig" },
             .{ .name = "code-editor", .source = "src/examples/code_editor.zig" },
             .{ .name = "dashboard", .source = "src/examples/dashboard.zig" },
-            .{ .name = "multi-window", .source = "src/examples/multi_window.zig" },
             .{ .name = "ai-canvas-spike", .source = "src/examples/ai_canvas_spike.zig" },
             .{ .name = "ai-canvas", .source = "src/examples/ai_canvas.zig" },
         };
@@ -235,7 +231,6 @@ pub fn build(b: *std.Build) void {
                 optimize,
                 example.name,
                 example.source,
-                example.metal_hud,
             );
         }
         addGenuiNativeExample(b, mod, components_mod, genui_mod, objc_mod, target, optimize);
@@ -804,7 +799,6 @@ pub fn build(b: *std.Build) void {
                 .source = "src/examples/code_editor.zig",
                 .core = true,
             },
-            .{ .name = "spaceship", .source = "src/examples/spaceship.zig" },
             .{ .name = "dynamic-counters", .source = "src/examples/dynamic_counters.zig" },
             .{ .name = "layout", .source = "src/examples/layout.zig" },
             .{ .name = "actions", .source = "src/examples/actions.zig", .core = true },
@@ -1655,7 +1649,6 @@ fn addNativeExample(
     optimize: std.lang.Optimize,
     name: []const u8,
     source: []const u8,
-    metal_hud: bool,
 ) void {
     const exe = b.addExecutable(.{
         .name = name,
@@ -1679,9 +1672,6 @@ fn addNativeExample(
     const step = b.step(step_name, step_desc);
 
     const run_cmd = b.addRunArtifact(exe);
-    if (metal_hud) {
-        run_cmd.setEnvironmentVariable("MTL_HUD_ENABLED", "1");
-    }
     run_cmd.addPassthruArgs();
     step.dependOn(&run_cmd.step);
     run_cmd.step.dependOn(b.getInstallStep());
@@ -1979,13 +1969,10 @@ fn addLinuxTypecheck(b: *std.Build) void {
     // `src/examples/linux_demo.zig` is the Linux entry point and reaches the
     // window/event/render path. The `src/root.zig` test root covers far more
     // code: every `test {}` block in the library, plus the `refAllDecls`
-    // discovery chain. `src/examples/glass.zig` is macOS-only at run time but
-    // is the one example that touches glass styling, so typechecking it for
-    // Linux proves the capability gate actually compiles out.
+    // discovery chain.
     const roots = [_]TypecheckRoot{
         .{ .source = "src/root.zig", .as_test = true },
         .{ .source = "src/examples/linux_demo.zig", .as_test = false },
-        .{ .source = "src/examples/glass.zig", .as_test = false },
         // The 0.4.0 core host: window binding, render thread, and dialogs.
         .{ .source = "src/examples/todo.zig", .as_test = false },
         .{

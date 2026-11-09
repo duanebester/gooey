@@ -18,8 +18,8 @@
 //! ## Late-bound `image_loader`
 //!
 //! The loader needs an `*ImageAtlas` at init time, but the atlas lives on
-//! `AppResources`, which is constructed at a different point relative to
-//! `App.init` in the single- vs. multi-window flows. Rather than thread
+//! `AppResources`, which the `Window` constructs after `App.init`. Rather
+//! than thread
 //! `*ImageAtlas` through `App.init`, the loader uses two-phase init:
 //!
 //!   1. `App.init` / `App.initInPlace` allocates the entity map and leaves
@@ -28,22 +28,15 @@
 //!   2. `App.bindImageLoader(*ImageAtlas)` runs `initInPlace` on the loader
 //!      at the `App`'s final heap address (asserts single-bind). The
 //!      framework caller that has the atlas calls this once before the
-//!      first frame; in multi-window flows later windows hit the
-//!      same-atlas short-circuit.
+//!      first frame.
 //!
 //! ## Lifetime
 //!
-//! Two shapes:
+//! Heap-allocated by `runtime/runner.zig` (`WebApp`'s `g_app` global on
+//! WASM). The runner owns the `App` and tears it down after the
+//! `WindowContext`, so entity cancel groups have a live `EntityMap` to walk.
 //!
-//!   1. Heap-allocated by `runtime/runner.zig` (single-window; `WebApp`'s
-//!      `g_app` global on WASM). The runner owns the `App` and tears it
-//!      down after the `WindowContext`, so entity cancel groups have a live
-//!      `EntityMap` to walk.
-//!   2. Embedded by value inside `runtime/multi_window_app.zig::App`
-//!      (multi-window); `App.deinit` runs after the last window closes.
-//!
-//! `App` is always heap-allocated (or embedded in a heap-allocated
-//! parent), which is why `bindImageLoader` can `initInPlace` the loader's
+//! `App` is always heap-allocated, which is why `bindImageLoader` can `initInPlace` the loader's
 //! embedded `Io.Queue` (whose pointer must reference a stable address)
 //! without a fixup dance.
 
@@ -136,8 +129,7 @@ pub const App = struct {
     // Lifecycle
     // =========================================================================
 
-    /// Construct an `App` by value. Suitable when the caller embeds the
-    /// result in a parent struct (`multi_window_app.zig` does this).
+    /// Construct an `App` by value.
     ///
     /// The `EntityMap` is initialised against `allocator` and `io` (cancel
     /// groups need a live `io` to be cancelled on entity removal — null
@@ -289,8 +281,7 @@ pub const App = struct {
     // Called by `runtime/frame.zig::renderFrameImpl` once per render
     // callback. `beginFrame` drains image-load results then clears stale
     // entity observations; `endFrame` is a thin hook reserved for future
-    // batching. `renderFrameImpl` fires once per window per tick, so
-    // multi-window flows currently call these once per window.
+    // batching.
 
     /// Per-tick app-scoped work. Drains async image-load results into the
     /// shared atlas (idempotent: a second call this tick gets 0 results),
@@ -313,8 +304,6 @@ pub const App = struct {
         }
 
         // Clear stale entity observations from the previous tick.
-        // Idempotent, so the redundant per-window calls in multi-window
-        // flows are harmless.
         self.entities.beginFrame();
     }
 

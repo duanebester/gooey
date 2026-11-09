@@ -12,7 +12,6 @@ const scene_mod = @import("../../scene/mod.zig");
 const GradientUniforms = scene_mod.GradientUniforms;
 const batch_iter = @import("../../scene/batch_iterator.zig");
 const text_mod = @import("../../text/mod.zig");
-const custom_shader = @import("custom_shader.zig");
 const path_mesh_mod = @import("../../scene/path_mesh.zig");
 const path_instance_mod = @import("../../scene/path_instance.zig");
 const mesh_pool_mod = @import("../../scene/mesh_pool.zig");
@@ -22,7 +21,6 @@ const point_cloud_mod = @import("../../scene/point_cloud.zig");
 const Scene = scene_mod.Scene;
 const SvgInstance = scene_mod.SvgInstance;
 const ImageInstance = scene_mod.ImageInstance;
-const PostProcessState = custom_shader.PostProcessState;
 const PathInstance = path_instance_mod.PathInstance;
 const ClipBounds = path_instance_mod.ClipBounds;
 const PathVertex = path_mesh_mod.PathVertex;
@@ -570,9 +568,6 @@ pub const WebRenderer = struct {
     msaa_height: u32 = 0,
     sample_count: u32 = 4,
 
-    // Post-processing state for custom shaders
-    post_process_state: ?PostProcessState = null,
-
     // Batch descriptors for deferred rendering
     batches: [MAX_BATCHES]BatchDesc = undefined,
 
@@ -677,7 +672,6 @@ pub const WebRenderer = struct {
         self.msaa_width = 0;
         self.msaa_height = 0;
         self.sample_count = 4;
-        self.post_process_state = null;
         // Note: primitives, gpu_glyphs, gpu_svgs, gpu_images, batches arrays
         // are left undefined - they get overwritten during rendering anyway
 
@@ -801,9 +795,7 @@ pub const WebRenderer = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        if (self.post_process_state) |*state| {
-            state.deinit();
-        }
+        std.debug.assert(self.sample_count > 0);
     }
 
     /// Ensure MSAA texture is the right size
@@ -822,29 +814,6 @@ pub const WebRenderer = struct {
             self.msaa_width = width;
             self.msaa_height = height;
         }
-    }
-
-    /// Initialize post-processing state (lazy initialization)
-    fn initPostProcess(self: *Self) !void {
-        if (self.post_process_state != null) return;
-        self.post_process_state = PostProcessState.init(self.allocator);
-    }
-
-    /// Add a custom WGSL shader for post-processing
-    pub fn addCustomShader(self: *Self, shader_source: []const u8, name: []const u8) !void {
-        try self.initPostProcess();
-        if (self.post_process_state) |*state| {
-            try state.addShader(shader_source, name);
-            imports.log("Added shader, pipeline count: {}", .{state.pipelines.items.len});
-        }
-    }
-
-    /// Check if we have custom shaders enabled
-    pub fn hasCustomShaders(self: *const Self) bool {
-        if (self.post_process_state) |*state| {
-            return state.hasShaders();
-        }
-        return false;
     }
 
     // =========================================================================
@@ -965,67 +934,8 @@ pub const WebRenderer = struct {
             self.ensureMSAATexture(device_width, device_height);
         }
 
-        // Check if we need post-processing
-        const has_post_process = if (self.post_process_state) |*state| state.hasShaders() else false;
-        if (has_post_process) {
-            // Render to offscreen texture first for post-processing
-            const prim_count = unified.convertScene(scene, &self.primitives);
-
-            var glyph_count: u32 = 0;
-            for (scene.getGlyphs()) |g| {
-                if (glyph_count >= MAX_GLYPHS) break;
-                self.gpu_glyphs[glyph_count] = GpuGlyph.fromScene(g);
-                glyph_count += 1;
-            }
-
-            var svg_count: u32 = 0;
-            for (scene.getSvgInstances()) |s| {
-                if (svg_count >= MAX_SVGS) break;
-                self.gpu_svgs[svg_count] = GpuSvgInstance.fromScene(s);
-                svg_count += 1;
-            }
-
-            // Upload all buffers for post-process path
-            if (prim_count > 0) {
-                imports.writeBuffer(
-                    self.primitive_buffer,
-                    0,
-                    std.mem.sliceAsBytes(self.primitives[0..prim_count]).ptr,
-                    @intCast(@sizeOf(unified.Primitive) * prim_count),
-                );
-            }
-            if (glyph_count > 0) {
-                imports.writeBuffer(
-                    self.glyph_buffer,
-                    0,
-                    std.mem.sliceAsBytes(self.gpu_glyphs[0..glyph_count]).ptr,
-                    @intCast(@sizeOf(GpuGlyph) * glyph_count),
-                );
-            }
-            if (svg_count > 0) {
-                imports.writeBuffer(
-                    self.svg_buffer,
-                    0,
-                    std.mem.sliceAsBytes(self.gpu_svgs[0..svg_count]).ptr,
-                    @intCast(@sizeOf(GpuSvgInstance) * svg_count),
-                );
-            }
-
-            self.renderWithPostProcess(
-                prim_count,
-                glyph_count,
-                svg_count,
-                viewport_width,
-                viewport_height,
-                clear_r,
-                clear_g,
-                clear_b,
-                clear_a,
-            );
-        } else {
-            // Render directly to screen using batched rendering for correct z-order
-            self.renderBatched(scene, clear_r, clear_g, clear_b, clear_a);
-        }
+        // Render directly to screen using batched rendering for correct z-order.
+        self.renderBatched(scene, clear_r, clear_g, clear_b, clear_a);
     }
 
     /// Render using batch iteration for correct z-ordering across primitive types.
@@ -2224,100 +2134,6 @@ pub const WebRenderer = struct {
             // Draw indexed triangles
             imports.setIndexBuffer(self.point_cloud_index_buffer, imports.IndexFormat.uint32, 0, @intCast(index_offset * @sizeOf(u32)));
             imports.drawIndexed(index_offset, 1, 0, 0, 0);
-        }
-    }
-
-    /// Render with post-processing shaders
-    fn renderWithPostProcess(
-        self: *Self,
-        prim_count: u32,
-        glyph_count: u32,
-        svg_count: u32,
-        _: f32, // viewport_width - unused, we use device pixels instead
-        _: f32, // viewport_height - unused, we use device pixels instead
-        clear_r: f32,
-        clear_g: f32,
-        clear_b: f32,
-        clear_a: f32,
-    ) void {
-        const state: *PostProcessState = blk: {
-            if (self.post_process_state) |*s| break :blk s;
-            return; // shouldn't happen if hasCustomShaders was true
-        };
-
-        // Ensure textures are the right size (use device pixels for sharp rendering)
-        const device_width = imports.getCanvasPixelWidth();
-        const device_height = imports.getCanvasPixelHeight();
-        state.ensureSize(device_width, device_height) catch return;
-
-        // Ensure MSAA texture matches post-process texture size
-        if (self.sample_count > 1) {
-            self.ensureMSAATexture(device_width, device_height);
-        }
-
-        // Update timing uniforms
-        state.updateTiming();
-        state.uploadUniforms();
-
-        // Step 1: Render scene to front texture (with MSAA if available)
-        if (self.sample_count > 1 and self.msaa_texture != 0) {
-            imports.beginMSAATextureRenderPass(self.msaa_texture, state.front_texture, clear_r, clear_g, clear_b, clear_a);
-        } else {
-            const front_view = state.getFrontTextureView();
-            imports.beginTextureRenderPass(front_view, clear_r, clear_g, clear_b, clear_a);
-        }
-
-        if (prim_count > 0) {
-            imports.setPipeline(self.pipeline);
-            imports.setBindGroup(0, self.bind_group);
-            imports.drawInstanced(6, prim_count);
-        }
-
-        if (glyph_count > 0 and self.text_bind_group != 0) {
-            imports.setPipeline(self.text_pipeline);
-            imports.setBindGroup(0, self.text_bind_group);
-            imports.drawInstanced(6, glyph_count);
-        }
-
-        if (svg_count > 0 and self.svg_bind_group != 0) {
-            imports.setPipeline(self.svg_pipeline);
-            imports.setBindGroup(0, self.svg_bind_group);
-            imports.drawInstanced(6, svg_count);
-        }
-
-        imports.endRenderPass();
-
-        // Step 2: Apply each post-process shader in sequence
-        const num_shaders = state.pipelines.items.len;
-        for (0..num_shaders) |i| {
-            const is_last = (i == num_shaders - 1);
-            const pipeline_entry = state.pipelines.items[i];
-
-            // Update bind group to use current front texture
-            state.updateBindGroup(i);
-            const bind_group = state.bind_groups.items[i];
-
-            if (is_last) {
-                // Final pass: render to screen
-                const screen_view = imports.getCurrentTextureView();
-                imports.beginRenderPass(screen_view, 0, 0, 0, 1);
-                imports.setPipeline(pipeline_entry.pipeline);
-                imports.setBindGroup(0, bind_group);
-                imports.drawInstanced(3, 1); // Fullscreen triangle
-                imports.endRenderPass();
-                imports.releaseTextureView(screen_view);
-            } else {
-                // Intermediate pass: render to back texture
-                const back_view = state.getBackTextureView();
-                imports.beginTextureRenderPass(back_view, 0, 0, 0, 1);
-                imports.setPipeline(pipeline_entry.pipeline);
-                imports.setBindGroup(0, bind_group);
-                imports.drawInstanced(3, 1); // Fullscreen triangle
-                imports.endRenderPass();
-
-                // Swap textures for next pass
-                state.swapTextures();
-            }
         }
     }
 };

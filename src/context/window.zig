@@ -249,10 +249,9 @@ pub const Window = struct {
     /// fixtures keep compiling. See `frame.zig`.
     rendered_frame: Frame = undefined,
 
-    /// Bundled shared rendering resources. Owns or borrows `text_system` /
-    /// `svg_atlas` / `image_atlas` as one unit; `resources.owned`
-    /// discriminates (single-window owns; multi-window borrows from the
-    /// parent `App`). Default `undefined` so test fixtures keep compiling.
+    /// Bundled rendering resources: owns `text_system`, `svg_atlas`, and
+    /// `image_atlas` as one unit. Default `undefined` so test fixtures keep
+    /// compiling.
     /// See `app_resources.zig`.
     resources: AppResources = undefined,
 
@@ -306,14 +305,11 @@ pub const Window = struct {
     /// Default `.none` covers "constructed but never entered a frame".
     current_phase: DrawPhase = .none,
 
-    /// Borrowed `*App` view onto application-lifetime state shared across
-    /// windows: the entity map, and the `*const Theme` slot in
-    /// `app.globals`. The single-window flow heap-allocates an `App` in
-    /// `runtime/runner.zig`; the multi-window flow embeds a `context.App`
-    /// inside `runtime/multi_window_app.zig::App`. Either way the pointee
-    /// outlives every borrowing `Window`: `Window.deinit` does not touch
-    /// this field; the upstream owner tears down the `App` after the last
-    /// `Window.deinit` returns. Default `undefined` so test fixtures
+    /// Borrowed `*App` view onto application-lifetime state: the entity
+    /// map, and the `*const Theme` slot in `app.globals`. The runner
+    /// heap-allocates the `App` in `runtime/runner.zig`, and it outlives the
+    /// `Window`: `Window.deinit` does not touch this field; the runner tears
+    /// down the `App` after `Window.deinit` returns. Default `undefined` so test fixtures
     /// (`testWindow`) keep compiling; every `init*` path assigns it before
     /// the first frame.
     app: *App = undefined,
@@ -345,7 +341,7 @@ pub const Window = struct {
     /// asserts it every frame).
     a11y: A11ySystem = undefined,
 
-    // Per-window root state for handler callbacks (multi-window support)
+    // Per-window root state for handler callbacks
     /// Type-erased pointer to this window's root state
     root_state_ptr: ?*anyopaque = null,
     /// Type ID for runtime type checking of root state
@@ -704,148 +700,6 @@ pub const Window = struct {
         try self.globals.setOwned(allocator, debugger_mod.Debugger, .{});
     }
 
-    /// Initialize Window in-place with shared resources (text system, SVG atlas,
-    /// image atlas). Used by MultiWindowApp to share expensive resources across
-    /// windows; the caller retains ownership of them. Every `Window` built this
-    /// way embeds an `owned = false` borrowed `AppResources` view, so
-    /// `Window.deinit` is a no-op for the shared atlases.
-    ///
-    /// In place for the same reason as `initOwnedPtr`: `a11y.bridge` points into
-    /// `self`. A by-value variant used to copy the struct after `a11y.initInPlace`,
-    /// leaving the bridge pointing into a dead stack frame and crashing the second
-    /// window on Linux. Marked noinline to prevent stack accumulation in WASM builds.
-    pub noinline fn initWithSharedResourcesPtr(
-        self: *Self,
-        allocator: std.mem.Allocator,
-        platform_window: *PlatformWindow,
-        shared_resources: *const AppResources,
-        resource_limits: *const ResourceLimits,
-        io: std.Io,
-    ) !void {
-        assert(resource_limits.check() == null);
-        // Assertions: validate inputs.
-        std.debug.assert(@intFromPtr(shared_resources) != 0);
-        std.debug.assert(@intFromPtr(shared_resources.text_system) != 0);
-        std.debug.assert(@intFromPtr(shared_resources.svg_atlas) != 0);
-        std.debug.assert(@intFromPtr(shared_resources.image_atlas) != 0);
-
-        // Create layout engine (owned)
-        const layout_engine = allocator.create(LayoutEngine) catch return error.OutOfMemory;
-        errdefer allocator.destroy(layout_engine);
-        layout_engine.* = try LayoutEngine.init(allocator);
-        errdefer layout_engine.deinit();
-
-        // Initialise the two-`Frame` double buffer in place. The scene +
-        // dispatch tree are per-window state and remain owned per-window
-        // even in multi-window mode (only `AppResources` is borrowed); both
-        // slots carry their own owning Scene + DispatchTree pair.
-        try self.next_frame.initOwnedInPlace(
-            allocator,
-            &resource_limits.scene,
-            @floatCast(platform_window.size.width),
-            @floatCast(platform_window.size.height),
-        );
-        errdefer self.next_frame.deinit();
-
-        try self.rendered_frame.initOwnedInPlace(
-            allocator,
-            &resource_limits.scene,
-            @floatCast(platform_window.size.width),
-            @floatCast(platform_window.size.height),
-        );
-        errdefer self.rendered_frame.deinit();
-
-        // Set up text measurement callback using shared text system
-        layout_engine.setMeasureTextFn(measureTextCallback, shared_resources.text_system);
-
-        // Field-by-field init avoids stack temp from struct literal
-        self.allocator = allocator;
-        self.io = io;
-        self.layout = layout_engine;
-
-        // Borrowed `AppResources` view; the parent owns the pointees.
-        // By-value init is safe — the struct only carries the three pointers
-        // plus the `owned = false` flag, no internal self-references.
-        // The shared atlases were sized from the app's budget; a window budget
-        // that disagrees would size this window's textures differently.
-        assert(resource_limits.atlas.text_size == shared_resources.text_system.getAtlas().size);
-        assert(resource_limits.atlas.svg_size == shared_resources.svg_atlas.getAtlas().size);
-        assert(resource_limits.atlas.image_size == shared_resources.image_atlas.getAtlas().size);
-        self.resources = AppResources.borrowed(allocator, io, shared_resources);
-
-        self.platform_window = platform_window;
-
-        // `self.app` is left `undefined` here; the caller assigns it
-        // post-init (see `initOwnedPtr`).
-        self.focus = FocusManager.init(allocator);
-        self.animations = AnimationStore.init(allocator, io);
-        self.change_tracker = .{};
-
-        // Element-state pool, per-window even in multi-window mode: the keys
-        // are per-window `LayoutId` hashes, so sharing one pool across windows
-        // would conflate state for unrelated elements. 128 KiB structs never
-        // live on the stack; `initInPlace` writes at the final heap address.
-        self.element_states = allocator.create(ElementStates) catch return error.OutOfMemory;
-        self.element_states.initInPlace(allocator);
-        errdefer {
-            self.element_states.deinit();
-            allocator.destroy(self.element_states);
-        }
-
-        // `globals` and `current_phase` start fresh (`self` is raw memory).
-        self.globals = .{};
-        self.current_phase = .none;
-
-        // Scalar fields
-        self.width = @floatCast(platform_window.size.width);
-        self.height = @floatCast(platform_window.size.height);
-        self.scale_factor = @floatCast(platform_window.scale_factor);
-        self.frame_count = 0;
-        self.needs_render = false;
-        // `debugger` registered into `globals` below.
-
-        // Pending/active drag state
-        self.pending_drag = null;
-        self.active_drag = null;
-        self.drag_over_target = null;
-
-        // Root state slots
-        self.root_state_ptr = null;
-        self.root_state_type_id = 0;
-
-        // Deferred command queue
-        self.deferred_commands = undefined;
-        self.deferred_count = 0;
-
-        // Hover, blur, cancel subsystems (in-place to avoid stack temps)
-        self.hover.initInPlace();
-        self.blur_handlers.initInPlace();
-        self.cancel_registry.initInPlace();
-
-        // Accessibility (initInPlace avoids ~350KB stack temp)
-        const window_obj = switch (builtin.os.tag) {
-            .macos => platform_window.ns_window,
-            .windows => &platform_window.uia_host,
-            else => null,
-        };
-        const view_obj = if (builtin.os.tag == .macos) platform_window.ns_view else null;
-        self.a11y.initInPlace(window_obj, view_obj);
-
-        // `image_loader` is app-scoped: the shared loader on `App` (bound
-        // once by `multi_window_app::App.init` against this same atlas)
-        // handles every window's URL fetches; this function does NOT bind.
-
-        // This window's renderer draws from the shared atlases; its texture
-        // starts empty, so registering condemns every cached atlas item.
-        self.resources.registerAtlasConsumer(@intFromPtr(platform_window));
-        errdefer self.resources.unregisterAtlasConsumer(@intFromPtr(platform_window));
-
-        // Per-window globals hold `Debugger` only (the theme slot is on
-        // `app.globals`). No `errdefer` after this last `try`: the function
-        // returns immediately after.
-        try self.globals.setOwned(allocator, debugger_mod.Debugger, .{});
-    }
-
     pub fn deinit(self: *Self) void {
         // `image_loader` teardown is `App`'s responsibility (closing the
         // result queue and cancelling the fetch group). The upstream owner
@@ -876,9 +730,8 @@ pub const Window = struct {
 
         self.focus.deinit();
         // The borrowed `*App` is owned upstream; the owner calls `App.deinit`
-        // after every `Window.deinit` has run. `Window.deinit` deliberately
-        // does not touch `self.app` — that would be a use-after-free in the
-        // multi-window case where one `App` outlives many `Window`s.
+        // after `Window.deinit` has run, so `Window.deinit` does not touch
+        // `self.app`.
 
         // The renderer stops drawing from the atlases with its window.
         if (self.platform_window != null or self.resources.owned) {
@@ -886,8 +739,8 @@ pub const Window = struct {
         }
 
         // Single teardown call covers text_system + svg_atlas + image_atlas.
-        // `AppResources.deinit` is a no-op when borrowed (multi-window mode),
-        // otherwise frees the three subsystems in image → svg → text order.
+        // `AppResources.deinit` frees the three subsystems in image → svg →
+        // text order.
         self.resources.deinit();
 
         // Teardown covers `Debugger` only (the single per-window owned
@@ -1421,9 +1274,7 @@ pub const Window = struct {
     ///
     /// Stops the host event loop through the platform, which is an
     /// *application*-lifetime operation: it does not close this window, and it
-    /// is not how you close one. Use `WindowHandle.close` (or
-    /// `App.closeWindowById`) to close a single window and leave the rest of a
-    /// multi-window application running.
+    /// is not how you close one.
     ///
     /// Per backend, via `Platform.quit`:
     /// - macOS: clears the loop flag and sends `-[NSApp terminate:]`.
@@ -1466,9 +1317,8 @@ pub const Window = struct {
     /// Change the font at runtime. Clears glyph and shape caches.
     /// Triggers a re-render so the new font takes effect immediately.
     ///
-    /// The reload replaces faces every window's frames read (multi-window
-    /// apps share one text system), and on macOS those frames run on
-    /// CVDisplayLink threads. Holding the platform's render exclusion for the
+    /// The reload replaces faces the window's frames read, and on macOS those
+    /// frames run on CVDisplayLink threads. Holding the platform's render exclusion for the
     /// whole reload means no frame ever sees a partial or empty face set.
     /// Call it from `on_init` or an event handler, not from render.
     pub fn setFont(self: *Self, name: []const u8, size: f32) !void {
@@ -1568,39 +1418,6 @@ pub const Window = struct {
     /// disambiguate from the framework-level `Window` struct.
     pub fn getPlatformWindow(self: *Self) ?*PlatformWindow {
         return self.platform_window;
-    }
-
-    /// Set the accent color uniform for custom shaders.
-    /// The alpha channel can be used as a mode selector.
-    ///
-    /// Gated on the backend's comptime `capabilities.has_post_process`. The
-    /// accent tint is consumed by the post-process pass, so reaching
-    /// `renderer.getPostProcess()` unconditionally would make this method
-    /// uncompilable on Linux (`VulkanRenderer` has no such member) and on web.
-    /// Nothing in-tree calls it, so `zig build typecheck-linux` is what keeps
-    /// the Linux tree honest.
-    ///
-    /// The gate is not `glass_effects`, even though that happens to be true on
-    /// exactly the backend that has the pass. That is a coincidence of the
-    /// current backend set, not a rule: a Wayland blur protocol would flip
-    /// `glass_effects` true on Linux and break this body, which has nothing to
-    /// do with whether the host composites a translucent backdrop.
-    pub fn setAccentColor(self: *Window, r: f32, g: f32, b: f32, a: f32) void {
-        // Checked on every backend, not just the gated one: a NaN reaching a
-        // shader uniform produces silently undefined pixels rather than a
-        // failure, so the caller must be caught where it is wrong.
-        std.debug.assert(!std.math.isNan(r));
-        std.debug.assert(!std.math.isNan(g));
-        std.debug.assert(!std.math.isNan(b));
-        std.debug.assert(!std.math.isNan(a));
-
-        if (comptime !platform.Platform.capabilities.has_post_process) return;
-
-        if (self.platform_window) |w| {
-            if (w.renderer.getPostProcess()) |pp| {
-                pp.uniforms.accent_color = .{ r, g, b, a };
-            }
-        }
     }
 
     // =========================================================================
