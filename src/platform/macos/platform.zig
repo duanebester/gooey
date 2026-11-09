@@ -15,6 +15,7 @@ const WindowId = window_registry.WindowId;
 const WindowRegistry = window_registry.WindowRegistry;
 const mutex_mod = @import("../mutex.zig");
 const MacWindow = @import("window.zig").Window;
+const appkit = @import("appkit.zig");
 
 /// Nonzero when the calling thread is the process's main thread.
 extern "c" fn pthread_main_np() c_int;
@@ -281,13 +282,84 @@ pub const MacPlatform = struct {
         }
     }
 
+    /// Stop the loop so `run` returns and its caller tears down in order.
+    /// `-[NSApp terminate:]` would `exit()` from inside this call and skip
+    /// every deinit; quitting from the Dock or at logout still does.
     pub fn quit(self: *Self) void {
         assert(self.app.value != null);
 
         self.running = false;
         assert(!self.isRunning());
 
-        self.app.msgSend(void, "terminate:", .{@as(?*anyopaque, null)});
+        // `run` checks `running` only after an event, and a quit from a
+        // main-queue tick arrives as none.
+        self.postWakeEvent();
+    }
+
+    /// Wake the event loop: it blocks in `nextEventMatchingMask:` and turns
+    /// only after an event, which a close sent as `performClose:` (from the
+    /// Quit menu item or a script) or a main-queue tick does not produce.
+    pub fn postWakeEvent(self: *Self) void {
+        const NSEvent = objc.getClass("NSEvent") orelse return;
+        const ns_event_type_application_defined: u64 = 15;
+        const event = NSEvent.msgSend(
+            objc.Object,
+            "otherEventWithType:location:modifierFlags:timestamp:windowNumber:context:" ++
+                "subtype:data1:data2:",
+            .{
+                ns_event_type_application_defined,
+                appkit.NSPoint{ .x = 0, .y = 0 },
+                @as(u64, 0),
+                @as(f64, 0),
+                @as(i64, 0),
+                @as(objc.c.id, null),
+                @as(i16, 0),
+                @as(i64, 0),
+                @as(i64, 0),
+            },
+        );
+        assert(event.value != null);
+        self.app.msgSend(void, "postEvent:atStart:", .{ event.value, true });
+    }
+
+    /// Install a main menu whose app menu holds `quit_title` on Cmd+Q. The
+    /// item sends `performClose:` to `ns_window`, so Cmd+Q takes the close
+    /// button's path. The view's `performKeyEquivalent:` runs before the
+    /// menu, so an app keymap that claims Cmd+Q still wins.
+    pub fn installMainMenu(self: *Self, ns_window: objc.Object, quit_title: [:0]const u8) !void {
+        assert(self.app.value != null);
+        assert(ns_window.value != null);
+        const NSMenu = objc.getClass("NSMenu") orelse return error.ClassNotFound;
+        const NSMenuItem = objc.getClass("NSMenuItem") orelse return error.ClassNotFound;
+        const NSString = objc.getClass("NSString") orelse return error.ClassNotFound;
+        // `run` has not pushed its pool yet; the strings below autorelease.
+        const pool = objc.AutoreleasePool.init();
+        defer pool.deinit();
+
+        // Each `alloc`/`init` is ours (+1); the parent retains it, so release.
+        const main_menu = NSMenu.msgSend(objc.Object, "alloc", .{}).msgSend(objc.Object, "init", .{});
+        defer main_menu.release();
+        const app_item = NSMenuItem.msgSend(objc.Object, "alloc", .{}).msgSend(objc.Object, "init", .{});
+        defer app_item.release();
+        const app_menu = NSMenu.msgSend(objc.Object, "alloc", .{}).msgSend(objc.Object, "init", .{});
+        defer app_menu.release();
+        const quit_item = NSMenuItem.msgSend(objc.Object, "alloc", .{}).msgSend(
+            objc.Object,
+            "initWithTitle:action:keyEquivalent:",
+            .{
+                NSString.msgSend(objc.Object, "stringWithUTF8String:", .{quit_title.ptr}),
+                objc.sel("performClose:"),
+                NSString.msgSend(objc.Object, "stringWithUTF8String:", .{"q"}),
+            },
+        );
+        defer quit_item.release();
+
+        quit_item.msgSend(void, "setTarget:", .{ns_window});
+        app_menu.msgSend(void, "addItem:", .{quit_item});
+        app_item.msgSend(void, "setSubmenu:", .{app_menu});
+        main_menu.msgSend(void, "addItem:", .{app_item});
+        self.app.msgSend(void, "setMainMenu:", .{main_menu});
+        assert(self.app.msgSend(objc.c.id, "mainMenu", .{}) == main_menu.value);
     }
 
     /// Whether the host event loop is currently pumping events.
