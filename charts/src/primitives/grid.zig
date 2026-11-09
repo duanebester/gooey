@@ -4,7 +4,6 @@
 //! Grid lines help users read values from the chart.
 
 const std = @import("std");
-const gooey = @import("gooey");
 const constants = @import("../constants.zig");
 const scale_mod = @import("scale.zig");
 
@@ -12,8 +11,10 @@ const LinearScale = scale_mod.LinearScale;
 const BandScale = scale_mod.BandScale;
 const Scale = scale_mod.Scale;
 
-pub const Color = gooey.ui.Color;
-pub const DrawContext = gooey.ui.DrawContext;
+const paint = @import("../paint.zig");
+
+pub const Color = paint.Color;
+pub const Painter = paint.Painter;
 
 const MAX_TICKS = constants.MAX_TICKS;
 
@@ -40,20 +41,20 @@ pub const Grid = struct {
 
     /// Draw grid lines for linear scales on both axes.
     pub fn drawLinear(
-        ctx: *DrawContext,
+        painter: *Painter,
         x_scale: LinearScale,
         y_scale: LinearScale,
         bounds: Bounds,
         tick_count: u32,
         opts: Options,
     ) void {
-        drawLinearXY(ctx, x_scale, y_scale, bounds, tick_count, tick_count, opts);
+        drawLinearXY(painter, x_scale, y_scale, bounds, tick_count, tick_count, opts);
     }
 
     /// Draw grid lines for linear scales with separate X and Y tick counts.
     /// Useful for line charts where X and Y axes may have different tick densities.
     pub fn drawLinearXY(
-        ctx: *DrawContext,
+        painter: *Painter,
         x_scale: LinearScale,
         y_scale: LinearScale,
         bounds: Bounds,
@@ -69,19 +70,19 @@ pub const Grid = struct {
 
         // Draw horizontal grid lines (aligned with Y-axis ticks)
         if (opts.show_horizontal) {
-            drawHorizontalLines(ctx, y_scale, bounds, y_tick_count, opts);
+            drawHorizontalLines(painter, y_scale, bounds, y_tick_count, opts);
         }
 
         // Draw vertical grid lines (aligned with X-axis ticks)
         if (opts.show_vertical) {
-            drawVerticalLinesLinear(ctx, x_scale, bounds, x_tick_count, opts);
+            drawVerticalLinesLinear(painter, x_scale, bounds, x_tick_count, opts);
         }
     }
 
     /// Draw grid lines with band scale on X-axis and linear scale on Y-axis.
     /// Common for bar charts.
     pub fn drawMixed(
-        ctx: *DrawContext,
+        painter: *Painter,
         x_scale: BandScale,
         y_scale: LinearScale,
         bounds: Bounds,
@@ -95,18 +96,18 @@ pub const Grid = struct {
 
         // Draw horizontal grid lines (aligned with Y-axis ticks)
         if (opts.show_horizontal) {
-            drawHorizontalLines(ctx, y_scale, bounds, tick_count, opts);
+            drawHorizontalLines(painter, y_scale, bounds, tick_count, opts);
         }
 
         // Draw vertical grid lines (at band centers)
         if (opts.show_vertical) {
-            drawVerticalLinesBand(ctx, x_scale, bounds, opts);
+            drawVerticalLinesBand(painter, x_scale, bounds, opts);
         }
     }
 
     /// Draw grid with Scale union types.
     pub fn draw(
-        ctx: *DrawContext,
+        painter: *Painter,
         x_scale: Scale,
         y_scale: Scale,
         bounds: Bounds,
@@ -116,19 +117,21 @@ pub const Grid = struct {
         switch (y_scale) {
             .linear => |ys| {
                 switch (x_scale) {
-                    .linear => |xs| drawLinear(ctx, xs, ys, bounds, tick_count, opts),
-                    .band => |xs| drawMixed(ctx, xs, ys, bounds, tick_count, opts),
+                    .linear => |xs| drawLinear(painter, xs, ys, bounds, tick_count, opts),
+                    .band => |xs| drawMixed(painter, xs, ys, bounds, tick_count, opts),
                 }
             },
             .band => {
                 // Band scale on Y-axis is unusual; fall back to simple grid
                 if (opts.show_horizontal) {
-                    drawSimpleHorizontalLines(ctx, bounds, tick_count, opts);
+                    drawSimpleHorizontalLines(painter, bounds, tick_count, opts);
                 }
                 if (opts.show_vertical) {
                     switch (x_scale) {
-                        .linear => |xs| drawVerticalLinesLinear(ctx, xs, bounds, tick_count, opts),
-                        .band => |xs| drawVerticalLinesBand(ctx, xs, bounds, opts),
+                        .linear => |xs| {
+                            drawVerticalLinesLinear(painter, xs, bounds, tick_count, opts);
+                        },
+                        .band => |xs| drawVerticalLinesBand(painter, xs, bounds, opts),
                     }
                 }
             },
@@ -142,7 +145,7 @@ pub const Grid = struct {
 
 /// Draw horizontal grid lines aligned with Y-axis tick positions.
 fn drawHorizontalLines(
-    ctx: *DrawContext,
+    painter: *Painter,
     y_scale: LinearScale,
     bounds: Grid.Bounds,
     tick_count: u32,
@@ -162,13 +165,13 @@ fn drawHorizontalLines(
         // Skip if outside bounds
         if (y_pos < bounds.y or y_pos > bounds.y + bounds.height) continue;
 
-        ctx.strokeLine(x1, y_pos, x2, y_pos, opts.line_width, opts.color);
+        painter.line(.{ x1, y_pos }, .{ x2, y_pos }, opts.line_width, opts.color);
     }
 }
 
 /// Draw vertical grid lines aligned with X-axis tick positions (linear scale).
 fn drawVerticalLinesLinear(
-    ctx: *DrawContext,
+    painter: *Painter,
     x_scale: LinearScale,
     bounds: Grid.Bounds,
     tick_count: u32,
@@ -188,13 +191,13 @@ fn drawVerticalLinesLinear(
         // Skip if outside bounds
         if (x_pos < bounds.x or x_pos > bounds.x + bounds.width) continue;
 
-        ctx.strokeLine(x_pos, y1, x_pos, y2, opts.line_width, opts.color);
+        painter.line(.{ x_pos, y1 }, .{ x_pos, y2 }, opts.line_width, opts.color);
     }
 }
 
 /// Draw vertical grid lines at band centers (for categorical X-axis).
 fn drawVerticalLinesBand(
-    ctx: *DrawContext,
+    painter: *Painter,
     x_scale: BandScale,
     bounds: Grid.Bounds,
     opts: Grid.Options,
@@ -209,13 +212,13 @@ fn drawVerticalLinesBand(
         // Skip if outside bounds
         if (x_pos < bounds.x or x_pos > bounds.x + bounds.width) continue;
 
-        ctx.strokeLine(x_pos, y1, x_pos, y2, opts.line_width, opts.color);
+        painter.line(.{ x_pos, y1 }, .{ x_pos, y2 }, opts.line_width, opts.color);
     }
 }
 
 /// Draw simple evenly-spaced horizontal lines (fallback).
 fn drawSimpleHorizontalLines(
-    ctx: *DrawContext,
+    painter: *Painter,
     bounds: Grid.Bounds,
     line_count: u32,
     opts: Grid.Options,
@@ -229,7 +232,7 @@ fn drawSimpleHorizontalLines(
     var i: u32 = 1;
     while (i < line_count) : (i += 1) {
         const y_pos = bounds.y + step * @as(f32, @floatFromInt(i));
-        ctx.strokeLine(x1, y_pos, x2, y_pos, opts.line_width, opts.color);
+        painter.line(.{ x1, y_pos }, .{ x2, y_pos }, opts.line_width, opts.color);
     }
 }
 

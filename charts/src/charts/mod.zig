@@ -21,9 +21,8 @@ pub const bar_palette = bar_chart.default_palette;
 pub const line_palette = line_chart.default_palette;
 pub const pie_palette = pie_chart.default_palette;
 
-// Re-export Color and DrawContext
 pub const Color = bar_chart.Color;
-pub const DrawContext = bar_chart.DrawContext;
+pub const Painter = bar_chart.Painter;
 
 // =============================================================================
 // Tests

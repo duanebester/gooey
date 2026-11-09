@@ -7,7 +7,7 @@ const std = @import("std");
 const gooey = @import("gooey");
 const constants = @import("constants.zig");
 
-pub const Color = gooey.ui.Color;
+pub const Color = gooey.core.ui.Color;
 
 const MAX_DATA_POINTS = constants.MAX_DATA_POINTS;
 const MAX_CATEGORIES = constants.MAX_CATEGORIES;

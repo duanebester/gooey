@@ -9,7 +9,9 @@
 const std = @import("std");
 const constants = @import("../constants.zig");
 const util = @import("../util.zig");
+const types = @import("../types.zig");
 
+const MAX_DATA_POINTS = constants.MAX_DATA_POINTS;
 const MAX_TICKS = constants.MAX_TICKS;
 const MAX_CATEGORIES = constants.MAX_CATEGORIES;
 const MAX_LABEL_LENGTH = constants.MAX_LABEL_LENGTH;
@@ -312,6 +314,42 @@ pub const Scale = union(enum) {
         return self == .band;
     }
 };
+
+// =============================================================================
+// Series projection
+// =============================================================================
+
+/// Project `series` to pixel points in `out`, first decimated with LTTB to
+/// `lod_points` when it has more points than that; returns the count.
+pub fn projectSeries(
+    series: *const types.Series,
+    x_scale: LinearScale,
+    y_scale: LinearScale,
+    lod_points: ?u32,
+    out: *[MAX_DATA_POINTS][2]f32,
+) u32 {
+    const len = series.data_len;
+    std.debug.assert(len <= MAX_DATA_POINTS);
+    const target = lod_points orelse len;
+    if (len <= target) {
+        for (series.data[0..len], out[0..len]) |point, *slot| {
+            slot.* = .{ x_scale.scale(point.x), y_scale.scale(point.y) };
+        }
+        return len;
+    }
+    std.debug.assert(target >= 2);
+    var input: [MAX_DATA_POINTS]util.DecimationPoint = undefined;
+    var kept: [MAX_DATA_POINTS]util.DecimationPoint = undefined;
+    for (series.data[0..len], input[0..len]) |point, *slot| {
+        slot.* = .{ .x = point.x, .y = point.y };
+    }
+    const count = util.decimateLTTB(input[0..len], len, &kept, target);
+    std.debug.assert(count <= target);
+    for (kept[0..count], out[0..count]) |point, *slot| {
+        slot.* = .{ x_scale.scale(point.x), y_scale.scale(point.y) };
+    }
+    return count;
+}
 
 // =============================================================================
 // Tests
