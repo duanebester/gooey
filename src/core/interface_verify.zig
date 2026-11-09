@@ -118,18 +118,6 @@ pub fn verifyImageLoaderModule(comptime M: type) void {
     }
 }
 
-/// Verify a type implements the Clipboard interface
-///
-/// Required methods:
-///   - getText(*Self, Allocator) ?[]const u8
-///   - setText(*Self, []const u8) bool
-pub fn verifyClipboardInterface(comptime T: type) void {
-    comptime {
-        assertHasDecl(T, "getText", "Clipboard");
-        assertHasDecl(T, "setText", "Clipboard");
-    }
-}
-
 /// Verify a type implements the FileDialog interface
 ///
 /// Required methods:
@@ -186,22 +174,6 @@ test "verifyRendererInterface with web-style mock (no resize)" {
     // Should not cause compile error - resize is optional for web
     comptime {
         verifyRendererInterface(MockWebRenderer);
-    }
-}
-
-test "verifyClipboardInterface with mock" {
-    const MockClipboard = struct {
-        pub fn getText(_: *@This(), _: std.mem.Allocator) ?[]const u8 {
-            return null;
-        }
-        pub fn setText(_: *@This(), _: []const u8) bool {
-            return false;
-        }
-    };
-
-    // Should not cause compile error
-    comptime {
-        verifyClipboardInterface(MockClipboard);
     }
 }
 
