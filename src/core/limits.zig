@@ -440,12 +440,14 @@ pub const SceneLimits = struct {
     };
 
     /// Heavy apps: lucide-demo (780 quads, 480 SVGs), the images example, and the
-    /// mesh stress fixtures. 16x `standard` for geometry and the glyph ceiling for
-    /// full-screen text. Scene storage: about 11.6 MiB per scene.
+    /// mesh stress fixtures. 16x `standard` for geometry and, for full-screen
+    /// text, the glyph ceiling less the 300 glyphs a safe build reserves for the
+    /// debugger overlay (contract decision 16), which an app budget must leave
+    /// below every ceiling. Scene storage: about 11.6 MiB per scene.
     pub const large: SceneLimits = .{
         .quad_count_frame_max = 32_768,
         .shadow_count_frame_max = 2_048,
-        .glyph_count_frame_max = 65_536,
+        .glyph_count_frame_max = 65_236,
         .svg_count_frame_max = 4_096,
         .image_count_frame_max = 1_024,
         .path_count_frame_max = 4_096,

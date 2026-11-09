@@ -181,7 +181,7 @@ pub const MeshCapacity = struct {
 ///   for its two frames.
 /// - `.standard`: 4,608×128 + 8,192×64 + 1,024×80 + 256×96 + 16 = 1,220,624 B,
 ///   so 3.49 MiB for three frames.
-/// - `.large`: 9,076,752 B per frame, 25.97 MiB for three frames.
+/// - `.large`: 9,057,552 B per frame, 25.91 MiB for three frames.
 /// - `.ceiling`: 14,155,792 B per frame, 40.50 MiB for three frames.
 /// The host pool adds `hostPoolAllocationCount × host_pool_alignment_slack_bytes`
 /// (40 KiB for two frames, 60 KiB for three) of alignment headroom on top.
@@ -543,7 +543,7 @@ test "InstanceCapacity mirrors the scene budget and sizes the host pool from it"
     try testing.expectEqual(@as(u64, 414_736), small.frameBytes());
 
     const large = InstanceCapacity.fromSceneLimits(&SceneLimits.large);
-    try testing.expectEqual(@as(u64, 9_076_752), large.frameBytes());
+    try testing.expectEqual(@as(u64, 9_057_552), large.frameBytes());
 
     const ceiling = InstanceCapacity.fromSceneLimits(&SceneLimits.ceiling);
     try testing.expectEqual(@as(u64, 14_155_792), ceiling.frameBytes());

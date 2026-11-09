@@ -8,6 +8,7 @@
 const std = @import("std");
 const records = @import("records.zig");
 const scene_mod = @import("../scene/mod.zig");
+const debugger = @import("debugger.zig");
 
 const assert = std.debug.assert;
 
@@ -19,8 +20,21 @@ pub fn pack(frame: *const records.Frame, scene: *Scene) void {
     scene.clear();
     scene.viewport_width = frame.viewport_width;
     scene.viewport_height = frame.viewport_height;
+    // A safe build reserves the debugger overlay's headroom in the scene;
+    // the app's own records are checked against its declared limits first.
+    const app_paint_count = debugger.appPaintCount(frame);
+    packRecords(scene, frame, frame.paint[0..app_paint_count]);
+    debugger.checkAppPacked(scene, frame.frame_number);
+    packRecords(scene, frame, frame.paint[app_paint_count..frame.paint_count]);
+    scene.finish();
+}
+
+/// One scene insert per record. Every fragment, and the overlay, pops each
+/// clip it pushes, so a run of records leaves the clip stack as it found it.
+fn packRecords(scene: *Scene, frame: *const records.Frame, paint: []const records.Record) void {
+    assert(paint.len <= frame.paint_count);
     var clip_depth: u32 = 0;
-    for (frame.paint[0..frame.paint_count]) |*record| {
+    for (paint) |*record| {
         switch (record.*) {
             .quad => |*quad| packQuad(scene, quad),
             .sprite => |*sprite| packSprite(scene, sprite),
@@ -42,7 +56,6 @@ pub fn pack(frame: *const records.Frame, scene: *Scene) void {
         }
     }
     assert(clip_depth == 0);
-    scene.finish();
 }
 
 fn packQuad(scene: *Scene, quad: *const records.Quad) void {

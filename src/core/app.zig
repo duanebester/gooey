@@ -16,6 +16,7 @@ const handler_mod = @import("handler.zig");
 const element = @import("element.zig");
 const window_mod = @import("window.zig");
 const tick_mod = @import("tick.zig");
+const debugger = @import("debugger.zig");
 const lifecycle = @import("lifecycle.zig");
 const cx_mod = @import("cx.zig");
 const keymap_mod = @import("keymap.zig");
@@ -160,6 +161,12 @@ pub fn App(
 ) type {
     comptime {
         if (config.limits.check()) |violation| @compileError(violation.message());
+        // Checked in every build mode, so a budget valid in one is valid in all.
+        if (debugger.withHeadroom(&config.limits).check()) |violation| {
+            @compileError("the budget must leave room below the ceiling for the debugger " ++
+                "overlay, which Debug and ReleaseSafe reserve on top of it (contract " ++
+                "decision 16): " ++ violation.describe());
+        }
         checkEntities(State, config.entities);
         assert(config.width > 0);
         assert(config.height > 0);
@@ -183,6 +190,9 @@ pub fn App(
         }
 
         pub const limits = config.limits;
+        /// What a host reserves renderer storage for: `limits` plus the
+        /// debugger overlay's headroom in Debug and ReleaseSafe.
+        pub const limits_reserved = debugger.reservedLimits(&config.limits);
         pub const title = config.title;
         pub const theme = config.theme;
         pub const width = config.width;
