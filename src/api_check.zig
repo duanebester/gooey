@@ -13,12 +13,12 @@
 //! ## Three pin tiers
 //!
 //! 1. **Curated core (7).** Flat top-level names re-exported from
-//!    `root.zig` ([`Window`, `Color`, `log`,
+//!    `root.zig` ([`Color`, `log`,
 //!    `std_options`]). These are the names every example's header
 //!    imports unprefixed.
 //! 2. **Namespace anchors.** `gooey.<ns>` exists and is a struct/file —
 //!    `core`, `scene`, `layout`,
-//!    `animation`, `context`, `input`, `platform`, `image`,
+//!    `animation`, `input`, `platform`, `image`,
 //!    `svg`, `text`, `debug`, `validation`, `accessibility`, `ai`,
 //!    `file_dialog`. The anchor *promise* is just that the
 //!    namespace stays addressable; the names *inside* are pinned by
@@ -54,12 +54,12 @@ const gooey = @import("root.zig");
 // Tier 1 — curated core (flat names at `gooey.X`)
 // =============================================================================
 
-/// `gooey.Window`, `gooey.Color`, `gooey.log`,
+/// `gooey.Color`, `gooey.log`,
 /// `gooey.std_options` — the flat names guaranteed to live directly on
 /// `root.zig`. Removing any of these is a breaking
 /// change that downstream apps see at every `gooey.<name>` call site.
 ///
-/// `Window`, `Color` are types; `log` is a
+/// `Color` is a type; `log` is a
 /// namespace module; `std_options` is a runtime value (the
 /// `std.Options` looked up by name on the root source file — keep the
 /// exact name to satisfy the Zig std-options contract).
@@ -68,7 +68,6 @@ fn pinCuratedCore() void {
         // Types: reference the type itself so a future rename of the
         // underlying struct (e.g. `Cx` → `RenderContext`) is caught
         // even if a re-export shim keeps the old name addressable.
-        _ = gooey.Window;
         _ = gooey.Color;
 
         // Namespace module and runtime value. `log` is a `@import`
@@ -95,7 +94,6 @@ fn pinNamespaces() void {
         _ = gooey.geometry;
         _ = gooey.input;
         _ = gooey.scene;
-        _ = gooey.context;
         _ = gooey.animation;
         _ = gooey.layout;
         _ = gooey.text;
@@ -155,19 +153,6 @@ fn pinTier1NamespacedScene() void {
         _ = gooey.scene.Shadow;
         _ = gooey.scene.Hsla;
         _ = gooey.scene.GlyphInstance;
-    }
-}
-
-/// `gooey.context` — framework subsystems reached for when an
-/// example needs to drive focus / entity lookup / accessibility
-/// directly (dynamic_counters).
-fn pinTier1NamespacedContext() void {
-    comptime {
-        _ = gooey.context.Window;
-        _ = gooey.context.Entity;
-        _ = gooey.context.Handler;
-        _ = gooey.context.FocusManager;
-        _ = gooey.context.FontConfig;
     }
 }
 
@@ -255,7 +240,6 @@ test "tier 1 public API surface compiles" {
         pinTier1NamespacedGeometry();
         pinTier1NamespacedInput();
         pinTier1NamespacedScene();
-        pinTier1NamespacedContext();
         pinTier1NamespacedAnimation();
         pinTier1NamespacedLayout();
         pinTier1NamespacedText();

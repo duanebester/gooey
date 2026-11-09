@@ -62,11 +62,6 @@ pub const ResourceLimits = @import("core/limits.zig").ResourceLimits;
 /// `ceiling` (all 14).
 pub const FontLimits = @import("core/limits.zig").FontLimits;
 
-/// Framework-level window wrapper. Holds
-/// per-window subsystems \u2014 focus, hover, animations, change tracker,
-/// element-state pool, \u2026 \u2014 and the OS-level `PlatformWindow` handle.
-pub const Window = @import("context/mod.zig").Window;
-
 /// Literal-friendly color value used inside render fns (`Color.rgb(\u2026)`).
 /// `Rect` / `Size` / `Bounds` live under `gooey.geometry` since they are
 /// almost always layout return values, never typed explicitly.
@@ -119,10 +114,6 @@ pub const input = @import("input/mod.zig");
 /// Scene primitives for GPU rendering (`Quad`, `Shadow`, `Hsla`,
 /// `GlyphInstance`, `render_bridge`).
 pub const scene = @import("scene/mod.zig");
-
-/// Application context: focus manager, dispatch, entity system,
-/// handler types, `Window` (also re-exported in the curated core).
-pub const context = @import("context/mod.zig");
 
 /// Animation system: time-based interpolation, springs, motions,
 /// staggers, the `AnimationStore` pool composed onto `Window`.
@@ -218,7 +209,6 @@ test {
         const lay = layout;
         const plat = platform;
         const txt = text;
-        const ctx = context;
         const sc = scene;
         const inp = input;
         const img = image;
@@ -248,12 +238,6 @@ test {
         _ = plat.PlatformWindow;
         _ = txt.TextSystem;
         _ = txt.FontFace;
-
-        // Context.
-        _ = ctx.Entity;
-        _ = ctx.Handler;
-        _ = ctx.FocusManager;
-        _ = ctx.FontConfig;
 
         // Scene / input / image / core leaves.
         _ = sc.Scene;
@@ -323,13 +307,7 @@ test {
         @import("image/atlas.zig"),
         @import("image/loader.zig"),
 
-        // Context / accessibility leaves.
-        @import("context/element_states.zig"),
-        @import("context/global.zig"),
-        @import("context/dispatch.zig"),
-        @import("context/change_tracker.zig"),
-        @import("context/handler.zig"),
-        @import("context/entity.zig"),
+        // Accessibility leaves.
         @import("accessibility/integration_test.zig"),
         @import("accessibility/tree.zig"),
 
@@ -361,21 +339,4 @@ test {
         // Only the reservation-limit test: the rest of the file calls Vulkan.
         _ = @import("platform/linux/vk_buffers.zig");
     }
-}
-
-test {
-    // Method *bodies* on `Window`, which the block above cannot
-    // reach. `refAllDecls(@This())` references the `Window` alias,
-    // which forces struct-level analysis only: field types and decl
-    // signatures. A `pub fn` body is analyzed lazily, on first call. The
-    // type has no in-tree callers for every method, so without this block a
-    // body can go uncompiled on every target and rot unnoticed, for example
-    // by naming a field that does not exist or by reaching a macOS-only
-    // renderer member from shared code.
-    //
-    // `refAllDecls` takes a pointer to each decl, so naming the type
-    // explicitly makes every method body a hard compile error at test time,
-    // on every target the test root is built for — including the
-    // `typecheck-linux` step's Linux analysis.
-    std.testing.refAllDecls(Window);
 }

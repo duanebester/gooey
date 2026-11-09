@@ -4,13 +4,9 @@
 //! pool, capacity, and counts. A panic cannot be caught inside a test, so the `test`
 //! build step runs this program once per mode and asserts that it aborts with the
 //! documented message (see `addFailFastChecks` in `build.zig`). Capacity modes fill the
-//! pool exactly and claim one more; allocation modes use an allocator that fails at
-//! the first request made after setup. No mode may reach the end of `main`.
+//! pool exactly and claim one more. No mode may reach the end of `main`.
 //!
 //! Modes (first argument):
-//! - `deferred-queue`: fills `Window.deferred_commands` and defers one more command.
-//! - `dispatch-nodes`: pushes a dispatch node when the node pool cannot grow.
-//! - `focus-order`: registers a focusable when the tab-order list cannot grow.
 //! - `font-variant`: measures text in a font variant the face set did not load.
 //! - `atlas-item`: inserts one item larger than its fixed atlas.
 //! - `atlas-live-set`: fills an atlas with items used this frame and inserts one more.
@@ -36,9 +32,6 @@ const gooey = @import("gooey");
 const components = @import("gooey-components");
 
 const Mode = enum {
-    @"deferred-queue",
-    @"dispatch-nodes",
-    @"focus-order",
     @"font-variant",
     @"atlas-item",
     @"atlas-live-set",
@@ -63,13 +56,7 @@ pub fn main(init: std.process.Init) !void {
 
     const mode = std.meta.stringToEnum(Mode, std.mem.span(args[1])) orelse
         return error.UnknownMode;
-    // Every allocation made after setup fails; setup itself uses `init.gpa`.
-    var failing = std.testing.FailingAllocator.init(init.gpa, .{ .fail_index = 0 });
-    const oom = failing.allocator();
     switch (mode) {
-        .@"deferred-queue" => deferredQueue(),
-        .@"dispatch-nodes" => dispatchNodes(oom),
-        .@"focus-order" => focusOrder(oom),
         .@"font-variant" => fontVariant(init.gpa, init.io),
         .@"atlas-item" => atlasItem(init.gpa, init.io),
         .@"atlas-live-set" => atlasLiveSet(init.gpa, init.io),
@@ -88,36 +75,6 @@ pub fn main(init: std.process.Init) !void {
         .@"core-image-requests" => coreTick(init.gpa, init.io, CoreApp.manyImages),
     }
     std.debug.print("unreachable: {s} did not panic\n", .{@tagName(mode)});
-}
-
-const Noop = struct {
-    fn deferred(_: *Noop, _: *gooey.Window) void {}
-};
-
-fn deferredQueue() void {
-    // `deferCommand` reads only the root state, for its safety check, and the
-    // queue fields, so the rest of the `Window` stays undefined.
-    var window: gooey.Window = undefined;
-    var state: Noop = .{};
-    window.setRootState(Noop, &state);
-    window.deferred_count = 0;
-    const capacity: u32 = 32;
-    var index: u32 = 0;
-    while (index < capacity) : (index += 1) {
-        window.deferCommand(Noop.deferred, .{});
-    }
-    std.debug.assert(window.deferred_count == capacity);
-    window.deferCommand(Noop.deferred, .{});
-}
-
-fn dispatchNodes(oom: std.mem.Allocator) void {
-    var tree = gooey.context.DispatchTree.init(oom);
-    _ = tree.pushNode();
-}
-
-fn focusOrder(oom: std.mem.Allocator) void {
-    var focus = gooey.context.FocusManager.init(oom);
-    focus.register(gooey.context.FocusHandle.init("field"));
 }
 
 fn fontVariant(gpa: std.mem.Allocator, io: std.Io) void {
