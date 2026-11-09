@@ -1,4 +1,7 @@
-//! Runs a 0.4.0 core app in a Wayland window (phase 4).
+//! Runs a 0.4.0 core app in a Wayland window (phase 4), drawn by Vulkan
+//! (`wayland_vulkan`) or by the CPU renderer into `wl_shm` buffers
+//! (`wayland_cpu`, contract decision 17). The loop, pacing, input, IME, and
+//! dialogs are the same for both; only the presenter and atlas binding differ.
 //!
 //! Two threads, one owner each (contract rule 1), as on macOS:
 //! - The main thread runs the Wayland event loop (`runLoop`). The window
@@ -24,6 +27,12 @@
 //! eventfds that wake each loop. Both threads wait on the display fd with
 //! libwayland's prepare/read protocol, so either can read events for the
 //! other's queue.
+//!
+//! CPU renderer: it samples the core's atlases in place while it draws. The
+//! tick never builds while a frame is in flight, so the atlases have one
+//! writer at a time and no upload journal is consumed. Its buffer releases
+//! arrive on the render queue, so only the render thread touches its slots;
+//! a frame waits for a released slot as Vulkan's present waits for an image.
 //!
 //! IME: text-input-v3 has no synchronous rect query; the client pushes the
 //! rect. The main loop compares the rendered frame's IME record with what it
@@ -78,13 +87,17 @@ const prepare_read_rounds_max: u32 = 1024;
 
 const frame_callback_listener = wayland.CallbackListener{ .done = frameCallbackDone };
 
+/// The window draws with the CPU renderer (`wayland_cpu`) rather than Vulkan.
+const cpu_renderer = linux_backend.uses_cpu_renderer;
+
+comptime {
+    // The fbdev backend has no Wayland; its host is `platform/fbdev/core_host.zig`.
+    if (linux_backend.selected == .fbdev) @compileError("fbdev runs core apps on its own host");
+}
+
 /// Run `App` until its window closes. Everything is reserved before
 /// `finishInit`; the core's guard owns every allocation, the platform's too.
 pub fn run(comptime App: type, app: *App, backing: std.mem.Allocator, io: std.Io) !void {
-    if (comptime linux_backend.selected != .wayland_vulkan) {
-        @compileError("core apps run on Linux with the wayland_vulkan backend; " ++
-            "the wayland_cpu and fbdev backends move onto the core in phase 5");
-    }
     app.beginInit(backing);
     const gpa = app.guard.allocator();
 
@@ -244,11 +257,7 @@ pub const Host = struct {
     }
 
     fn bindWindow(self: *Host) void {
-        const resources = self.core.resources;
-        const key = @intFromPtr(self.window);
-        resources.registerAtlasConsumer(key);
-        self.core.atlas_consumer_key = key;
-        self.window.renderer.bindAtlasUploads(resources.atlas_uploads, key);
+        self.bindAtlases();
         self.window.bindCore(.{
             .queue = &self.core.queue,
             .query = &self.query,
@@ -273,6 +282,26 @@ pub const Host = struct {
         assert(self.window.core != null);
     }
 
+    /// Vulkan consumes the upload journal as this window. The CPU renderer
+    /// samples the atlases in place, so it registers no consumer; its buffer
+    /// releases move to the render queue before the first frame.
+    fn bindAtlases(self: *Host) void {
+        const resources = self.core.resources;
+        if (cpu_renderer) {
+            self.window.renderer.setAtlases(
+                resources.text_system.getAtlas(),
+                &resources.svg_atlas.atlas,
+                &resources.image_atlas.atlas,
+            );
+            self.window.renderer.setEventQueue(self.render_queue);
+        } else {
+            const key = @intFromPtr(self.window);
+            resources.registerAtlasConsumer(key);
+            self.core.atlas_consumer_key = key;
+            self.window.renderer.bindAtlasUploads(resources.atlas_uploads, key);
+        }
+    }
+
     /// Stop the render thread and wait for it, then unbind what `bindWindow`
     /// bound and release the Wayland objects the thread used. No draw can
     /// start afterwards.
@@ -293,8 +322,13 @@ pub const Host = struct {
     /// before it is freed.
     fn unbindWindow(self: *Host) void {
         assert(self.thread == null);
-        assert(self.core.atlas_consumer_key == @intFromPtr(self.window));
-        self.core.resources.unregisterAtlasConsumer(self.core.atlas_consumer_key);
+        if (cpu_renderer) {
+            // The render queue is destroyed next; the buffers outlive it.
+            self.window.renderer.setEventQueue(null);
+        } else {
+            assert(self.core.atlas_consumer_key == @intFromPtr(self.window));
+            self.core.resources.unregisterAtlasConsumer(self.core.atlas_consumer_key);
+        }
         self.core.presenter = null;
         self.core.file_dialog = null;
         self.core.images.bindWake(null);
@@ -451,9 +485,11 @@ pub const Host = struct {
     // =========================================================================
 
     /// A frame is in flight, the compositor is ready for it, and the last
-    /// present is at least `present_interval_ns` old.
+    /// present is at least `present_interval_ns` old. The CPU renderer also
+    /// needs a buffer the compositor has released.
     fn presentDue(self: *const Host) bool {
         if (!self.core.frame_in_flight.load(.acquire)) return false;
+        if (cpu_renderer and !self.window.renderer.hasFreeSlot()) return false;
         const now_ns = self.nowNs();
         if (now_ns < self.pacedNs()) return false;
         if (self.frame_callback == null) return true;
@@ -483,7 +519,7 @@ pub const Host = struct {
         const now_ns = self.nowNs();
         self.frame_callback_deadline_ns = now_ns + timeout_ns;
         self.presented_ns = now_ns;
-        // Vulkan's present commits the surface, and the callback with it.
+        // The present commits the surface, and the callback with it.
         core_tick.presentBuilt(self.core);
         assert(!self.core.frame_in_flight.load(.acquire));
         self.scheduleTick();
@@ -530,9 +566,11 @@ pub const Host = struct {
 
     /// While a frame waits, sleep until it may present: the pacing time,
     /// or the callback deadline when a callback is outstanding (its arrival
-    /// wakes the poll sooner). Without a frame, sleep until woken.
+    /// wakes the poll sooner). Without a frame, or without a released CPU
+    /// buffer, whose release event wakes it, sleep until woken.
     fn renderTimeoutMs(self: *const Host) i32 {
         if (!self.core.frame_in_flight.load(.acquire)) return -1;
+        if (cpu_renderer and !self.window.renderer.hasFreeSlot()) return -1;
         var wake_ns = self.pacedNs();
         if (self.frame_callback != null) wake_ns = @max(wake_ns, self.frame_callback_deadline_ns);
         const now_ns = self.nowNs();
@@ -620,10 +658,16 @@ fn draw(
     host.applyViewport(frame);
     const renderer = &host.window.renderer;
     renderer.setClearColor(clear);
-    renderer.render(scene);
-    // An out-of-date swapchain skips the frame and is recreated by the next
-    // render; draw this frame again rather than leave a stale one on screen.
-    if (renderer.swapchain_needs_recreate) renderer.render(scene);
+    if (cpu_renderer) {
+        // `presentDue` waited for a released buffer; only this thread takes one.
+        const drawn = renderer.render(scene);
+        assert(drawn);
+    } else {
+        renderer.render(scene);
+        // An out-of-date swapchain skips the frame and is recreated by the
+        // next render; draw this frame again rather than leave a stale one.
+        if (renderer.swapchain_needs_recreate) renderer.render(scene);
+    }
     assert(host.core.render_phase == .draw);
 }
 

@@ -25,8 +25,6 @@ pub const TextBackend = enum {
 const ExampleDefinition = struct {
     name: []const u8,
     source: []const u8,
-    /// A 0.4.0 core app: on Linux its host needs the Wayland Vulkan backend.
-    core: bool = false,
 };
 
 pub fn build(b: *std.Build) void {
@@ -667,58 +665,25 @@ pub fn build(b: *std.Build) void {
         // =========================================================================
 
         const linux_examples = [_]ExampleDefinition{
-            .{
-                .name = "lucide-demo",
-                .source = "src/examples/lucide_demo.zig",
-                .core = true,
-            },
-            .{ .name = "animation", .source = "src/examples/animation.zig", .core = true },
-            .{ .name = "counter", .source = "src/examples/counter.zig", .core = true },
-            .{ .name = "todo", .source = "src/examples/todo.zig", .core = true },
-            .{
-                .name = "core-file-dialog",
-                .source = "src/examples/core_file_dialog.zig",
-                .core = true,
-            },
-            .{
-                .name = "code-editor",
-                .source = "src/examples/code_editor.zig",
-                .core = true,
-            },
-            .{
-                .name = "dynamic-counters",
-                .source = "src/examples/dynamic_counters.zig",
-                .core = true,
-            },
-            .{ .name = "layout", .source = "src/examples/layout.zig", .core = true },
-            .{ .name = "actions", .source = "src/examples/actions.zig", .core = true },
-            .{
-                .name = "nested-overlay",
-                .source = "src/examples/nested_overlay.zig",
-                .core = true,
-            },
-            .{ .name = "images", .source = "src/examples/images.zig", .core = true },
-            .{
-                .name = "accessible-form",
-                .source = "src/examples/accessible_form.zig",
-                .core = true,
-            },
-            .{
-                .name = "virtual-list",
-                .source = "src/examples/virtual_list_example.zig",
-                .core = true,
-            },
-            .{
-                .name = "data-table",
-                .source = "src/examples/data_table_example.zig",
-                .core = true,
-            },
-            .{ .name = "dashboard", .source = "src/examples/dashboard.zig", .core = true },
+            .{ .name = "lucide-demo", .source = "src/examples/lucide_demo.zig" },
+            .{ .name = "animation", .source = "src/examples/animation.zig" },
+            .{ .name = "counter", .source = "src/examples/counter.zig" },
+            .{ .name = "todo", .source = "src/examples/todo.zig" },
+            .{ .name = "core-file-dialog", .source = "src/examples/core_file_dialog.zig" },
+            .{ .name = "code-editor", .source = "src/examples/code_editor.zig" },
+            .{ .name = "dynamic-counters", .source = "src/examples/dynamic_counters.zig" },
+            .{ .name = "layout", .source = "src/examples/layout.zig" },
+            .{ .name = "actions", .source = "src/examples/actions.zig" },
+            .{ .name = "nested-overlay", .source = "src/examples/nested_overlay.zig" },
+            .{ .name = "images", .source = "src/examples/images.zig" },
+            .{ .name = "accessible-form", .source = "src/examples/accessible_form.zig" },
+            .{ .name = "virtual-list", .source = "src/examples/virtual_list_example.zig" },
+            .{ .name = "data-table", .source = "src/examples/data_table_example.zig" },
+            .{ .name = "dashboard", .source = "src/examples/dashboard.zig" },
         };
         // `zig build run` runs todo, the default example (contract decision 15).
         var todo_install: ?*std.Build.Step.InstallArtifact = null;
         for (linux_examples) |example| {
-            if (example.core and linux_backend != .wayland_vulkan) continue;
             const install = addLinuxExample(
                 b,
                 mod,
@@ -734,7 +699,7 @@ pub fn build(b: *std.Build) void {
             );
             if (std.mem.eql(u8, example.name, "todo")) todo_install = install;
         }
-        addLinuxDefaultSteps(b, todo_install);
+        addLinuxDefaultSteps(b, todo_install.?);
 
         // =====================================================================
         // Layout Benchmarks
@@ -1750,16 +1715,26 @@ fn addLinuxTypecheck(b: *std.Build) void {
         "Semantically analyze the Linux backend from any host",
     );
 
-    // `src/examples/todo.zig` reaches the 0.4.0 core host: window binding,
-    // render thread, IME, and dialogs. The `src/root.zig` test root covers far
-    // more code: every `test {}` block in the library, plus the `refAllDecls`
-    // discovery chain. The core host runs only on `wayland_vulkan`, and no
-    // 0.3.1 `gooey.App` is left, so the CPU backends have no app root until
-    // they get the core host (contract decision 17).
+    // `src/examples/todo.zig` reaches each backend's 0.4.0 core host: the
+    // Wayland host with Vulkan and with the CPU renderer (window binding,
+    // render thread, IME, dialogs), and the fbdev host (contract decision
+    // 17). The `src/root.zig` test roots cover far more code: every `test {}`
+    // block in the library, plus the `refAllDecls` discovery chain.
     const roots = [_]TypecheckRoot{
         .{ .source = "src/root.zig", .as_test = true },
         .{ .source = "src/examples/todo.zig", .as_test = false },
+        .{
+            .source = "src/examples/todo.zig",
+            .as_test = false,
+            .linux_backend = .wayland_cpu,
+        },
         .{ .source = "src/root.zig", .as_test = true, .linux_backend = .fbdev },
+        .{
+            .source = "src/examples/todo.zig",
+            .as_test = false,
+            .linux_backend = .fbdev,
+            .cpu_arch = .aarch64,
+        },
     };
     comptime std.debug.assert(roots.len <= typecheck_linux_root_count_max);
 
@@ -1986,19 +1961,10 @@ fn addLinuxExample(
 }
 
 /// `zig build run` runs the todo example, and `zig build todo` installs only
-/// its binary so previews stay focused. Todo is a core app, which runs on
-/// Linux only with the Wayland Vulkan backend; the CPU backends fail both
-/// steps with the alternative.
-fn addLinuxDefaultSteps(b: *std.Build, todo_install: ?*std.Build.Step.InstallArtifact) void {
+/// its binary so previews stay focused. Every Linux backend builds it.
+fn addLinuxDefaultSteps(b: *std.Build, install: *std.Build.Step.InstallArtifact) void {
     const run_step = b.step("run", "Run the todo example");
     const todo_step = b.step("todo", "Build only the todo example");
-    const install = todo_install orelse {
-        const fail = b.addFail("todo is a 0.4.0 core app and needs " ++
-            "-Dlinux-backend=wayland_vulkan; on this backend, try zig build run-layout");
-        run_step.dependOn(&fail.step);
-        todo_step.dependOn(&fail.step);
-        return;
-    };
     todo_step.dependOn(&install.step);
     const run_cmd = b.addRunArtifact(install.artifact);
     run_cmd.setCwd(b.path(".")); // Run from the project root so assets/ can be found.

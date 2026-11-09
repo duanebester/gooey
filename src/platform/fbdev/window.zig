@@ -191,9 +191,17 @@ pub const Window = struct {
         self.render_deadline_ms = null;
         if (self.on_render) |callback| callback(self);
         if (self.closed) return;
+        self.presentScene(self.scene, self.getClearColor());
+    }
 
+    /// Rasterize `scene` (or only `clear` without one) into the back buffer,
+    /// draw the cursor over it, and copy the frame to the panel. The core
+    /// host calls it as its presenter, and again when only the cursor moved.
+    pub fn presentScene(self: *Self, scene: ?*const scene_mod.Scene, clear: geometry.Color) void {
+        assert(!self.closed);
+        assert(clear.a >= 0);
         const target = self.frameTarget();
-        if (self.scene) |scene| {
+        if (scene) |frame_scene| {
             self.renderer.bindAtlases(.{
                 .text = self.text_atlas,
                 .svg = self.svg_atlas,
@@ -201,12 +209,12 @@ pub const Window = struct {
             });
             self.last_stats = self.renderer.draw(
                 target,
-                scene,
+                frame_scene,
                 .{ .scale_factor = @floatCast(self.scale_factor) },
-                self.getClearColor(),
+                clear,
             );
         } else {
-            cpu.raster.clear(target, self.getClearColor());
+            cpu.raster.clear(target, clear);
         }
         if (self.cursor_visible) drawCursor(target, self.mouse_x, self.mouse_y, self.scale_factor);
         self.platform.framebuffer.present(target);
