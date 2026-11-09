@@ -245,15 +245,39 @@ fn scrollWheel(self: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c)
     const window_loc: NSPoint = event.msgSend(NSPoint, "locationInWindow", .{});
     const view_loc: NSPoint = view.msgSend(NSPoint, "convertPoint:fromView:", .{ window_loc, @as(objc.c.id, @ptrFromInt(0)) });
 
-    const delta_x = event.msgSend(f64, "scrollingDeltaX", .{});
-    const delta_y = event.msgSend(f64, "scrollingDeltaY", .{});
+    const delta = scrollDelta(
+        event.msgSend(f64, "scrollingDeltaX", .{}),
+        event.msgSend(f64, "scrollingDeltaY", .{}),
+        event.msgSend(bool, "hasPreciseScrollingDeltas", .{}),
+    );
     const modifier_flags = event.msgSend(c_ulong, "modifierFlags", .{});
 
     _ = window.handleInput(.{ .scroll = .{
         .position = geometry.Point(f64).init(view_loc.x, view_loc.y),
-        .delta = geometry.Point(f64).init(delta_x, delta_y),
+        .delta = delta,
         .modifiers = parseModifiers(modifier_flags),
     } });
+}
+
+/// Points one wheel line scrolls. A mouse wheel reports `scrollingDelta`
+/// in lines, not points (`hasPreciseScrollingDeltas` is false), and AppKit
+/// says to multiply by a line height. 10 is `NSScrollView`'s default
+/// `verticalLineScroll` and `horizontalLineScroll`, as read on macOS 26.
+const wheel_line_points: f64 = 10;
+
+/// Scroll delta in points. Trackpads and Magic Mouse report points already.
+fn scrollDelta(delta_x: f64, delta_y: f64, precise: bool) geometry.Point(f64) {
+    const scale: f64 = if (precise) 1 else wheel_line_points;
+    return geometry.Point(f64).init(delta_x * scale, delta_y * scale);
+}
+
+test "scrollDelta scales wheel lines to points and passes precise deltas through" {
+    const wheel = scrollDelta(-3, 1.5, false);
+    try std.testing.expectEqual(@as(f64, -30), wheel.x);
+    try std.testing.expectEqual(@as(f64, 15), wheel.y);
+    const precise = scrollDelta(-3, 1.5, true);
+    try std.testing.expectEqual(@as(f64, -3), precise.x);
+    try std.testing.expectEqual(@as(f64, 1.5), precise.y);
 }
 
 // =============================================================================
@@ -449,13 +473,6 @@ fn setMarkedText(
     // NSString and NSAttributedString both answer `length` in UTF-16 units.
     const length_utf16 = objc.Object.fromId(text_id).msgSend(c_ulong, "length", .{});
 
-    std.debug.print("setMarkedText: \"{s}\" selected {d}+{d} of {d}\n", .{
-        str,
-        selected.location,
-        selected.length,
-        length_utf16,
-    });
-
     window.setMarkedText(str);
     window.marked_length_utf16 = length_utf16;
     window.marked_selection = clampRange(selected, length_utf16);
@@ -528,8 +545,6 @@ fn insertText(
     const window = getWindow(self) orelse return;
     const str = extractString(text_id) orelse return;
 
-    std.debug.print("insertText: \"{s}\"\n", .{str});
-
     // `str` lives until this call returns, and `handleInput` is done with it
     // by then: the core queue copies it (cutting it at a codepoint boundary
     // past its text budget), and 0.3.1's widgets insert it. No window buffer
@@ -588,9 +603,7 @@ fn coreImeRect(binding: CoreBinding) NSRect {
     };
 }
 
-fn doCommandBySelector(self: objc.c.id, _: objc.c.SEL, selector: objc.c.SEL) callconv(.c) void {
-    std.debug.print("doCommandBySelector called: {*}\n", .{selector});
-
+fn doCommandBySelector(self: objc.c.id, _: objc.c.SEL, _: objc.c.SEL) callconv(.c) void {
     const window = getWindow(self) orelse return;
     // A core app already queued this key from `keyDown:`.
     if (window.core != null) return;

@@ -92,6 +92,7 @@ pub fn run(comptime App: type, app: *App, backing: std.mem.Allocator, io: std.Io
         .limits = App.limits_reserved,
     });
     defer window.deinit();
+    try platform.installMainMenu(window.ns_window, std.fmt.comptimePrint("Quit {s}", .{App.title}));
 
     try app.initCore(io, @floatCast(window.scale_factor));
     defer app.deinit();
@@ -302,34 +303,8 @@ fn onClose(window: *PlatformWindow) bool {
     const host = active_host.load(.acquire) orelse return true;
     assert(host.window == window);
     host.stop();
-    postWakeEvent(host.platform);
+    host.platform.postWakeEvent();
     return true;
-}
-
-/// Wake the event loop so `onLoopTurn` runs even when the close did not
-/// arrive as an event (`performClose:` from a script or a menu item): the
-/// loop blocks in `nextEventMatchingMask:` and turns only after an event.
-fn postWakeEvent(platform: *MacPlatform) void {
-    const NSEvent = objc.getClass("NSEvent") orelse return;
-    const ns_event_type_application_defined: u64 = 15;
-    const event = NSEvent.msgSend(
-        objc.Object,
-        "otherEventWithType:location:modifierFlags:timestamp:windowNumber:context:" ++
-            "subtype:data1:data2:",
-        .{
-            ns_event_type_application_defined,
-            appkit.NSPoint{ .x = 0, .y = 0 },
-            @as(u64, 0),
-            @as(f64, 0),
-            @as(i64, 0),
-            @as(objc.c.id, null),
-            @as(i16, 0),
-            @as(i64, 0),
-            @as(i64, 0),
-        },
-    );
-    assert(event.value != null);
-    platform.app.msgSend(void, "postEvent:atStart:", .{ event.value, true });
 }
 
 /// After AppKit has unwound a titlebar close, quit: the app has one window.

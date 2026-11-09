@@ -446,6 +446,9 @@ const ExperienceSection = struct {
                 .selected = self.experience_level,
                 .open = self.experience_open,
                 .placeholder = "Select your experience level",
+                // The default 200 is narrower than this placeholder (~202 pt
+                // of text) plus padding and the chevron.
+                .width = 260,
                 .accessible_name = "Experience level",
                 .accessible_description = "Select how experienced you are with our products",
             },
