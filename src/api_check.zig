@@ -18,9 +18,9 @@
 //!    imports unprefixed.
 //! 2. **Namespace anchors.** `gooey.<ns>` exists and is a struct/file —
 //!    `core`, `ui`, `widgets`, `scene`, `layout`,
-//!    `animation`, `context`, `input`, `runtime`, `platform`, `image`,
+//!    `animation`, `context`, `input`, `platform`, `image`,
 //!    `svg`, `text`, `debug`, `validation`, `accessibility`, `ai`,
-//!    `file_dialog`, `app`. The anchor *promise* is just that the
+//!    `file_dialog`. The anchor *promise* is just that the
 //!    namespace stays addressable; the names *inside* are pinned by
 //!    tier 3.
 //! 3. **Tier-1 namespaced names.** Concrete decls inside each
@@ -54,25 +54,17 @@ const gooey = @import("root.zig");
 // Tier 1 — curated core (flat names at `gooey.X`)
 // =============================================================================
 
-/// `gooey.run`, `gooey.App`, `gooey.Cx`, `gooey.Window`, `gooey.Color`,
-/// `gooey.log`, `gooey.std_options` — the 7 flat names guaranteed to
-/// live directly on `root.zig`. Removing any of these is a breaking
+/// `gooey.Cx`, `gooey.Window`, `gooey.Color`, `gooey.log`,
+/// `gooey.std_options` — the flat names guaranteed to live directly on
+/// `root.zig`. Removing any of these is a breaking
 /// change that downstream apps see at every `gooey.<name>` call site.
 ///
-/// `run` and `App` are compile-time functions (App returns a `type`,
-/// run returns `!void`); `Cx`, `Window`, `Color` are types; `log` is a
+/// `Cx`, `Window`, `Color` are types; `log` is a
 /// namespace module; `std_options` is a runtime value (the
 /// `std.Options` looked up by name on the root source file — keep the
 /// exact name to satisfy the Zig std-options contract).
 fn pinCuratedCore() void {
     comptime {
-        // Functions: assert callable shape via `@TypeOf`. The function
-        // identity itself is not a value we can `_ = ` directly here
-        // because both `run` and `App` are generic — referencing them
-        // by `@TypeOf` is enough to force the decl to exist.
-        _ = @TypeOf(gooey.run);
-        _ = @TypeOf(gooey.App);
-
         // Types: reference the type itself so a future rename of the
         // underlying struct (e.g. `Cx` → `RenderContext`) is caught
         // even if a re-export shim keeps the old name addressable.
@@ -111,14 +103,12 @@ fn pinNamespaces() void {
         _ = gooey.ui;
         _ = gooey.widgets;
         _ = gooey.platform;
-        _ = gooey.runtime;
         _ = gooey.image;
         _ = gooey.svg;
         _ = gooey.debug;
         _ = gooey.validation;
         _ = gooey.accessibility;
         _ = gooey.file_dialog;
-        _ = gooey.app;
     }
 }
 
@@ -286,18 +276,6 @@ fn pinTier1NamespacedAssets() void {
     }
 }
 
-/// `gooey.app` — entry-point sub-namespace. `runCx` is the
-/// curated-core `run` after re-export; `App` is similarly
-/// re-exported above. Pin the `CxConfig` config type that
-/// long-form examples reach for (e.g. when configuring a non-
-/// default window).
-fn pinTier1NamespacedApp() void {
-    comptime {
-        _ = @TypeOf(gooey.app.runCx);
-        _ = gooey.app.CxConfig;
-    }
-}
-
 // =============================================================================
 // Cx sub-namespaces
 // =============================================================================
@@ -366,7 +344,6 @@ test "tier 1 public API surface compiles" {
         pinTier1NamespacedWidgets();
         pinTier1NamespacedPlatformAndRuntime();
         pinTier1NamespacedAssets();
-        pinTier1NamespacedApp();
 
         pinCxSubNamespaces();
     }

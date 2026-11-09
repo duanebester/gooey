@@ -11,7 +11,6 @@
 //! - `deferred-queue`: fills `Window.deferred_commands` and defers one more command.
 //! - `dispatch-nodes`: pushes a dispatch node when the node pool cannot grow.
 //! - `focus-order`: registers a focusable when the tab-order list cannot grow.
-//! - `text-edit`: rejects an over-limit edit silently, then fails on a buffer OOM.
 //! - `builder-canvas`: registers one canvas past `Builder.MAX_PENDING_CANVAS`.
 //! - `builder-layout`: renders text when the layout text arena cannot allocate.
 //! - `font-variant`: measures text in a font variant the face set did not load.
@@ -42,7 +41,6 @@ const Mode = enum {
     @"deferred-queue",
     @"dispatch-nodes",
     @"focus-order",
-    @"text-edit",
     @"builder-canvas",
     @"builder-layout",
     @"font-variant",
@@ -76,7 +74,6 @@ pub fn main(init: std.process.Init) !void {
         .@"deferred-queue" => deferredQueue(),
         .@"dispatch-nodes" => dispatchNodes(oom),
         .@"focus-order" => focusOrder(oom),
-        .@"text-edit" => textEdit(oom),
         .@"builder-canvas" => builderCanvas(init.gpa),
         .@"builder-layout" => builderLayout(init.gpa, oom),
         .@"font-variant" => fontVariant(init.gpa, init.io),
@@ -128,20 +125,6 @@ fn dispatchNodes(oom: std.mem.Allocator) void {
 fn focusOrder(oom: std.mem.Allocator) void {
     var focus = gooey.context.FocusManager.init(oom);
     focus.register(gooey.context.FocusHandle.init("field"));
-}
-
-fn textEdit(oom: std.mem.Allocator) void {
-    const textEditFailed = gooey.runtime.input.textEditFailed;
-    // An edit past `max_bytes` is an operating error: it must return, not panic.
-    textEditFailed("TextInput.insertText", error.TextLimitExceeded);
-
-    var input = gooey.widgets.TextInputState.init(oom, .{
-        .x = 0,
-        .y = 0,
-        .width = 100,
-        .height = 20,
-    });
-    input.insertText("x") catch |err| textEditFailed("TextInput.insertText", err);
 }
 
 fn builderCanvas(gpa: std.mem.Allocator) void {

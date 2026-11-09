@@ -210,7 +210,7 @@ pub fn build(b: *std.Build) void {
 
         const watcher_tests = b.addTest(.{
             .root_module = b.createModule(.{
-                .root_source_file = b.path("src/runtime/watcher.zig"),
+                .root_source_file = b.path("src/tools/watcher.zig"),
                 .target = target,
                 .optimize = optimize,
                 .link_libc = true,
@@ -516,7 +516,7 @@ pub fn build(b: *std.Build) void {
         const watcher_exe = b.addExecutable(.{
             .name = "gooey-hot",
             .root_module = b.createModule(.{
-                .root_source_file = b.path("src/runtime/watcher.zig"),
+                .root_source_file = b.path("src/tools/watcher.zig"),
                 .target = target,
                 .optimize = .debug,
             }),
@@ -999,7 +999,7 @@ pub fn build(b: *std.Build) void {
 
         const watcher_tests = b.addTest(.{
             .root_module = b.createModule(.{
-                .root_source_file = b.path("src/runtime/watcher.zig"),
+                .root_source_file = b.path("src/tools/watcher.zig"),
                 .target = target,
                 .optimize = optimize,
                 .link_libc = true,
@@ -1573,8 +1573,6 @@ fn addFailFastChecks(
             "capacity 0, 0 in use, 1 requested (OutOfMemory during render)" },
         .{ .mode = "focus-order", .stderr = "FocusManager pool 'focus_order' could not grow: " ++
             "capacity 0, 0 in use, 1 requested (OutOfMemory during render)" },
-        .{ .mode = "text-edit", .stderr = "TextInput.insertText: text buffer could not grow " ++
-            "(OutOfMemory); the edit was not applied" },
         .{ .mode = "builder-canvas", .stderr = "Builder pool 'pending_canvas' exhausted: " ++
             "capacity 64, 64 in use, 1 requested (per-frame limit)." },
         .{ .mode = "builder-layout", .stderr = "Builder pool 'layout.elements' exhausted: " ++

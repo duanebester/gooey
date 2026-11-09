@@ -14,33 +14,27 @@
 //!
 //! ## Quick start
 //!
-//! `gooey.App(...)` is the canonical entry point: it builds a type whose
-//! `main` runs natively *and* generates the WASM exports on freestanding
-//! targets, so the same source ships to desktop and web unchanged. (Reach for
-//! `gooey.run(...)` only when you want a native-only one-liner — see its doc.)
+//! `gooey.core.App(...)` is the entry point: it builds a type whose `main` runs
+//! natively and whose declarations generate the WASM exports on freestanding
+//! targets, so the same source ships to desktop and web unchanged.
 //!
 //! ```zig
-//! const std = @import("std");
 //! const gooey = @import("gooey");
+//! const core = gooey.core;
 //!
-//! pub const std_options = gooey.std_options;
+//! const State = struct { count: i32 = 0 };
 //!
-//! const AppState = struct { count: i32 = 0 };
-//! var state: AppState = .{};
-//!
-//! const App = gooey.App(AppState, &state, render, .{
+//! pub const App = core.App(State, render, .{
 //!     .title = "Counter",
+//!     .width = 400,
+//!     .height = 300,
 //!     .limits = .nano, // Resource and font budget; see `ResourceLimits`.
 //! });
 //!
-//! pub fn main(init: std.process.Init) !void {
-//!     try App.main(init);
-//! }
+//! pub const main = App.main;
 //!
-//! fn render(cx: *gooey.Cx) void {
-//!     cx.render(gooey.ui.vstack(.{ .gap = 16 }, .{
-//!         gooey.ui.text("Hello", .{}),
-//!     }));
+//! fn render(cx: *core.Cx) void {
+//!     cx.render(core.ui.text("Hello", .{}));
 //! }
 //! ```
 
@@ -50,22 +44,6 @@ const builtin = @import("builtin");
 // =============================================================================
 // Curated core (7)
 // =============================================================================
-
-/// Native-only one-liner: run an app with the unified `Cx` context directly
-/// from `main`, without generating a wrapper type. Convenient for desktop-only
-/// programs and quick experiments, but it does **not** emit the WASM exports,
-/// so it can't ship to web. For cross-platform code prefer `App` (below),
-/// which is the canonical entry point; `run` is the native shortcut.
-pub const run = @import("app.zig").runCx;
-
-/// Canonical, cross-platform app entry point. Generates a type whose
-/// `pub fn main(init: std.process.Init)` runs the native event loop, and on
-/// freestanding (WASM) targets instead emits the browser `init`/`frame`/
-/// `resize` exports — so one `App` definition ships to both desktop and web.
-/// Application `main` bodies just forward to it: `pub fn main(init) { try
-/// App.main(init); }`. `App` is a strict superset of `run`; reach for `run`
-/// only when you explicitly want the native-only shortcut.
-pub const App = @import("app.zig").App;
 
 /// The application's resource budget, declared once at `App` (`.limits = ...`)
 /// and validated at comptime. There is no default; pick one of five rungs,
@@ -84,11 +62,9 @@ pub const ResourceLimits = @import("core/limits.zig").ResourceLimits;
 /// `ceiling` (all 14).
 pub const FontLimits = @import("core/limits.zig").FontLimits;
 
-/// The unified rendering context handed to every `render` callback.
-/// Holds the state pointer, layout builder, animation pools, and the
-/// `cx.animations` / `cx.focus` / `cx.entities` /
-/// `cx.element_states` sub-namespaces.
-pub const Cx = @import("app.zig").Cx;
+/// The 0.3.1 rendering context, deleted with `ui/` in phase 6. Core apps use
+/// `gooey.core.Cx`.
+pub const Cx = @import("cx.zig").Cx;
 
 /// Framework-level window wrapper. Holds
 /// per-window subsystems \u2014 focus, hover, animations, change tracker,
@@ -174,9 +150,6 @@ pub const widgets = @import("widgets/mod.zig");
 /// `web.image_loader` async WASM image-decode shim.
 pub const platform = @import("platform/mod.zig");
 
-/// Event loop, frame rendering, multi-window app generator.
-pub const runtime = @import("runtime/mod.zig");
-
 /// Image loading and atlas caching (native async loader + WASM
 /// `platform.web.image_loader` callbacks).
 pub const image = @import("image/mod.zig");
@@ -196,11 +169,6 @@ pub const accessibility = @import("accessibility/mod.zig");
 /// Cross-platform file dialogs (open/save). Async on WASM via
 /// `platform.web.file_dialog`.
 pub const file_dialog = @import("file_dialog.zig");
-
-/// App entry-point types (`Cx`, `App`, `WebApp`, `CxConfig`, \u2026). The
-/// curated-core `run` / `App` / `Cx` are re-exported above; reach for
-/// the rest through this namespace.
-pub const app = @import("app.zig");
 
 /// Testing utilities and mock implementations. Compiled for tests and for the
 /// synthetic-text build the goldens tools use, so production builds carry none.
