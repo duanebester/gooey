@@ -685,7 +685,11 @@ pub fn build(b: *std.Build) void {
                 .source = "src/examples/code_editor.zig",
                 .core = true,
             },
-            .{ .name = "dynamic-counters", .source = "src/examples/dynamic_counters.zig" },
+            .{
+                .name = "dynamic-counters",
+                .source = "src/examples/dynamic_counters.zig",
+                .core = true,
+            },
             .{ .name = "layout", .source = "src/examples/layout.zig" },
             .{ .name = "actions", .source = "src/examples/actions.zig", .core = true },
             .{
@@ -1196,6 +1200,7 @@ fn addWindowsBuilds(
         .{ .name = "images", .source = "src/examples/images.zig" },
         .{ .name = "dashboard", .source = "src/examples/dashboard.zig" },
         .{ .name = "animation", .source = "src/examples/animation.zig" },
+        .{ .name = "dynamic-counters", .source = "src/examples/dynamic_counters.zig" },
     };
     for (examples) |example| {
         addWindowsExample(
@@ -2234,6 +2239,12 @@ fn addGoldens(
         .optimize = optimize,
         .imports = example_imports,
     });
+    const dynamic_counters_mod = b.createModule(.{
+        .root_source_file = b.path("src/examples/dynamic_counters.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = example_imports,
+    });
     const goldens_imports: []const std.Build.Module.Import = &.{
         .{ .name = "accessible_form_example", .module = accessible_form_mod },
         .{ .name = "actions_example", .module = actions_mod },
@@ -2241,6 +2252,7 @@ fn addGoldens(
         .{ .name = "code_editor_example", .module = code_editor_mod },
         .{ .name = "data_table_example", .module = data_table_mod },
         .{ .name = "dashboard_example", .module = dashboard_mod },
+        .{ .name = "dynamic_counters_example", .module = dynamic_counters_mod },
         .{ .name = "gooey", .module = gooey_mod },
         .{ .name = "gooey-components", .module = components_mod },
         .{ .name = "counter_example", .module = counter_mod },

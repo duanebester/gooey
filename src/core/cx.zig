@@ -138,6 +138,10 @@ pub const Cx = struct {
         if (T == text_engine.EditorEngine) {
             return window.editorPool().retain(target, lifetime, window.frame_number, init);
         }
+        if (window.store.findPool(handler_mod.typeId(T)) != null) std.debug.panic(
+            "cx.retain: {s} is an entity type; create it with effects.create",
+            .{@typeName(T)},
+        );
         return window.retained.retain(T, target, lifetime, init, window.frame_number);
     }
 
@@ -147,6 +151,13 @@ pub const Cx = struct {
         if (T == text_engine.InputEngine) return window.inputs.get(handle);
         if (T == text_engine.AreaEngine) return window.areaPool().get(handle);
         if (T == text_engine.EditorEngine) return window.editorPool().get(handle);
+        // An entity from `Config.entities` (decision 17): checked in every
+        // build mode, since handles outlive the frame they were read in.
+        if (window.store.findPool(handler_mod.typeId(T))) |pool| {
+            assert(pool.app_pool != null);
+            const value = pool.checkedValue(handle.slot, handle.generation, "cx.get");
+            return @ptrCast(@alignCast(value));
+        }
         return window.retained.get(T, handle);
     }
 
@@ -192,7 +203,9 @@ pub const Cx = struct {
             .null => {},
             .array => for (child) |item| self.renderChild(item),
             .pointer => |pointer| {
-                if (pointer.child == u8 or isByteArray(pointer.child)) {
+                // `comptime`: a call result is runtime-known otherwise, so the
+                // error below would fire for every slice of components.
+                if (comptime pointer.child == u8 or isByteArray(pointer.child)) {
                     @compileError("a string is not a child; wrap it in ui.text(\"...\", .{})");
                 }
                 if (pointer.size != .slice) @compileError(nonChildMessage(T));
