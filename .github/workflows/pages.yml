@@ -1,8 +1,9 @@
 # =============================================================================
 # Gooey site (GitHub Pages)
 # =============================================================================
-# Builds the browser showcase (`zig build wasm`) into a Pages artifact and
-# reports its size. See docs/v0.4.0-showcase.md, section 4.
+# Builds the todo example for the browser (`zig build wasm`) into a Pages
+# artifact and reports its size. The showcase tutorial that was to take this
+# role is deferred (contract decision 15); see docs/v0.4.0-showcase.md.
 #
 # Deployment is off until the repository owner opts in:
 #   1. Settings -> Pages -> Source: GitHub Actions.
@@ -19,7 +20,7 @@ on:
     paths:
       - "web/**"
       - "src/platform/web/**"
-      - "src/examples/showcase.zig"
+      - "src/examples/todo.zig"
       - "assets/**"
       - "build.zig"
       - ".github/workflows/pages.yml"
@@ -62,7 +63,7 @@ jobs:
           restore-keys: |
             zig-cache-pages-
 
-      - name: Build browser showcase
+      - name: Build browser todo
         run: zig build wasm -Dskip-shader-compile=true
 
       - name: Report site size
