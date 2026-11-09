@@ -123,21 +123,29 @@ pub fn writeHits(frame: *const records.Frame, out: *TextBuffer) void {
 }
 
 pub fn writeA11y(frame: *const records.Frame, out: *TextBuffer) void {
-    for (frame.a11y[0..frame.a11y_count]) |*node| {
-        testing.legacy_harness.writeA11yElement(out, node.depth, .{
-            .role = node.role,
-            .name = frame.text(node.name),
-            .value = frame.text(node.value),
-            .state = node.state,
-            .heading_level = node.heading_level,
-            .live = node.live,
-            .href = frame.text(node.href),
-            .bounds = dumpRect(node.bounds),
-        });
-    }
+    for (frame.a11y[0..frame.a11y_count]) |*node| writeA11yNode(frame, node, out);
     for (frame.announcements.slice()) |item| {
         out.print("  announce {t} \"{s}\"\n", .{ item.live, frame.announcements.text(item) });
     }
+}
+
+/// One accessibility node, indented by its depth, in the line format the
+/// 0.3.1 goldens (`legacy_*.txt`) were captured in.
+fn writeA11yNode(frame: *const records.Frame, node: *const records.A11yNode, out: *TextBuffer) void {
+    assert(node.depth < 64);
+    var indent: u32 = 0;
+    while (indent < node.depth + 1) : (indent += 1) out.print("  ", .{});
+    out.print("{s} {f}", .{ @tagName(node.role), dumpRect(node.bounds) });
+    if (frame.text(node.name)) |name| out.print(" name=\"{s}\"", .{name});
+    if (frame.text(node.value)) |value| out.print(" value=\"{s}\"", .{value});
+    if (node.state.focused) out.print(" focused", .{});
+    if (node.state.checked) out.print(" checked", .{});
+    if (node.state.selected) out.print(" selected", .{});
+    if (node.state.disabled) out.print(" disabled", .{});
+    if (node.heading_level != .none) out.print(" {t}", .{node.heading_level});
+    if (node.live != .off) out.print(" live={t}", .{node.live});
+    if (frame.text(node.href)) |href| out.print(" href=\"{s}\"", .{href});
+    out.print("\n", .{});
 }
 
 fn dumpRect(rect: records.Rect) testing.record_dump.Rect {
