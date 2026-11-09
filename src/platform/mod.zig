@@ -165,40 +165,8 @@ pub const linux = if (is_linux) struct {
     pub const VulkanRenderer = vk_renderer.VulkanRenderer;
 } else struct {};
 
-// `image_loader` lives in `platform.web` with a single conditional stub.
-// That puts the platform-conditional logic next to the rest of the `web`
-// namespace (`platform`, `window`, `imports`, `file_dialog`) and lets
-// non-WASM callers resolve through the same path without each call site
-// rolling its own stub.
 pub const web = if (is_wasm) struct {
     pub const platform = @import("web/platform.zig");
     pub const window = @import("web/window.zig");
     pub const imports = @import("web/imports.zig");
-    pub const file_dialog = @import("web/file_dialog.zig");
-    pub const image_loader = @import("web/image_loader.zig");
-} else struct {
-    // Stub mirroring `web/image_loader.zig`'s public surface so non-WASM
-    // call sites compile against the same names. All entry points are
-    // no-ops on native — runtime image loading on native goes through
-    // `image.ImageLoader` instead (the native-only async loader; the WASM
-    // async path is separate because browser `createImageBitmap` requires
-    // a JS round-trip).
-    pub const image_loader = struct {
-        pub const DecodedImage = struct {
-            width: u32,
-            height: u32,
-            pixels: []u8,
-            owned: bool,
-            pub fn deinit(_: *@This(), _: std.mem.Allocator) void {}
-        };
-        pub const DecodeCallback = *const fn (u32, ?DecodedImage) void;
-        pub fn init(_: std.mem.Allocator) void {}
-        pub fn deinit() void {}
-        pub fn loadFromUrlAsync(_: []const u8, _: DecodeCallback) ?u32 {
-            return null;
-        }
-        pub fn loadFromMemoryAsync(_: []const u8, _: DecodeCallback) ?u32 {
-            return null;
-        }
-    };
-};
+} else struct {};

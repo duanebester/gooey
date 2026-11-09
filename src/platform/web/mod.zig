@@ -4,7 +4,7 @@
 //!
 //! `Platform` and `PlatformWindow` are the declarations `platform/mod.zig`
 //! binds to; the `Web*` names below are kept because the web-only modules
-//! (renderer, file dialog, event bridges) refer to them.
+//! (renderer, event bridges) refer to them.
 
 pub const imports = @import("imports.zig");
 pub const io = @import("io.zig");
@@ -16,8 +16,6 @@ pub const scroll_events = @import("scroll_events.zig");
 pub const key_events = @import("key_events.zig");
 pub const text_buffer = @import("text_buffer.zig");
 pub const composition_buffer = @import("composition_buffer.zig");
-pub const image_loader = @import("image_loader.zig");
-pub const file_dialog = @import("file_dialog.zig");
 
 pub const WebPlatform = platform.WebPlatform;
 pub const WebWindow = window.WebWindow;

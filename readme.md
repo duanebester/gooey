@@ -1392,7 +1392,7 @@ if (file_dialog.promptForNewPath(allocator, .{
 
 - **macOS**: NSOpenPanel / NSSavePanel (blocking)
 - **Linux**: XDG Desktop Portal via D-Bus (blocking)
-- **WASM**: Returns `null` — use `gooey.platform.web.file_dialog` for the async callback API
+- **WASM**: Returns `null`; there is no browser file dialog yet
 
 Use `file_dialog.supported` (comptime bool) for feature detection. File dialogs block the thread, so call them from a [deferred command](#deferred-commands) to avoid deadlocks during event handling.
 

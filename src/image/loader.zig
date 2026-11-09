@@ -6,9 +6,8 @@
 //! - WIC (Windows) - Windows Imaging Component
 //! - null (other platforms) - Returns UnsupportedSource
 //!
-//! Note: WASM image loading is async and handled separately in
-//! `platform/web/image_loader.zig`. The sync API here returns
-//! UnsupportedSource on WASM.
+//! WASM has no image loader yet: the sync API here returns UnsupportedSource
+//! there.
 
 const std = @import("std");
 const builtin = @import("builtin");

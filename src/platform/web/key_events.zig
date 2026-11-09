@@ -129,17 +129,3 @@ pub fn toInputEvent(raw: RawKeyEvent) InputEvent {
         .key_up => .{ .key_up = key_event },
     };
 }
-
-/// Process all pending key events
-/// Returns number of events processed
-pub fn processEvents(handler: *const fn (InputEvent) bool) u32 {
-    var processed: u32 = 0;
-
-    while (@as(*volatile KeyEventRing, &g_key_ring).pop()) |raw| {
-        const event = toInputEvent(raw);
-        _ = handler(event);
-        processed += 1;
-    }
-
-    return processed;
-}

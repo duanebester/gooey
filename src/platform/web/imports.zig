@@ -135,15 +135,6 @@ pub extern "env" fn getFrameTime() f64;
 pub extern "env" fn getTimestampMillis() f64;
 
 // =============================================================================
-// Input Events (polled from JS)
-// =============================================================================
-
-pub extern "env" fn getMouseX() f32;
-pub extern "env" fn getMouseY() f32;
-pub extern "env" fn getMouseButtons() u32; // bitmask: 1=left, 2=right, 4=middle
-pub extern "env" fn isMouseInCanvas() bool;
-
-// =============================================================================
 // Text / Font
 // =============================================================================
 
@@ -325,51 +316,8 @@ pub extern "env" fn clipboardWriteText(ptr: [*]const u8, len: u32) void;
 pub extern "env" fn isApplePlatform() bool;
 
 // =============================================================================
-// File Dialog (Async)
+// Images
 // =============================================================================
-
-/// Request file open dialog - async, JS calls back with results.
-/// accept_ptr/len: file type filter (e.g., ".txt,.md" or "image/*")
-/// multiple: allow selecting multiple files
-/// directories: allow directory selection (Chrome only)
-pub extern "env" fn requestFileDialog(
-    request_id: u32,
-    accept_ptr: [*]const u8,
-    accept_len: u32,
-    multiple: bool,
-    directories: bool,
-) void;
-
-/// Trigger a file download (web "save" dialog).
-/// Creates a Blob and triggers download - fire-and-forget.
-pub extern "env" fn promptSaveFile(
-    name_ptr: [*]const u8,
-    name_len: u32,
-    data_ptr: [*]const u8,
-    data_len: u32,
-) void;
-
-// =============================================================================
-// Image Loading (Async)
-// =============================================================================
-
-/// Request async image decode - JS will decode using createImageBitmap
-/// and call back via onImageDecoded export when complete.
-/// request_id is used to correlate the callback with the original request.
-pub extern "env" fn requestImageDecode(
-    data_ptr: [*]const u8,
-    data_len: u32,
-    request_id: u32,
-) void;
-
-/// Request async image fetch from URL - JS will fetch and decode using fetch + createImageBitmap
-/// and call back via onImageDecoded export when complete.
-/// request_id is used to correlate the callback with the original request.
-pub extern "env" fn requestUrlFetch(
-    url_ptr: [*]const u8,
-    url_len: u32,
-    request_id: u32,
-) void;
 
 /// Create bind group for image pipeline (RGBA texture, same pattern as SVG)
 pub extern "env" fn createImageBindGroup(

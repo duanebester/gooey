@@ -4,8 +4,6 @@
 //! This is a simple append buffer for text input from JavaScript.
 //! Supports emoji, CJK, dead keys, IME composition - any valid UTF-8.
 
-const input = @import("../../input/events.zig");
-
 pub const BUFFER_SIZE = 256; // Handles most input; long paste can chunk
 
 /// Simple append buffer for text input
@@ -55,27 +53,4 @@ fn getTextBufferPtr() callconv(.c) [*]u8 {
 
 comptime {
     @export(&getTextBufferPtr, .{ .name = "getTextBufferPtr" });
-}
-
-// =========================================================
-// Text Input Processing
-// =========================================================
-
-const InputEvent = input.InputEvent;
-
-/// Process pending text input
-/// Returns true if text was processed
-pub fn processTextInput(handler: *const fn (InputEvent) bool) bool {
-    const buf = @as(*volatile TextInputBuffer, &g_text_buffer);
-    if (!buf.hasText()) return false;
-
-    const text = buf.getText();
-    const event = InputEvent{
-        .text_input = .{ .text = text },
-    };
-
-    _ = handler(event);
-    buf.clear();
-
-    return true;
 }

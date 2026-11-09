@@ -135,12 +135,10 @@ pub const layout = @import("layout/layout.zig");
 /// `FontFace`, `TextMeasurement`).
 pub const text = @import("text/mod.zig");
 
-/// Platform abstraction (macOS/Metal, Linux/Vulkan, Web/WGPU) and the
-/// `web.image_loader` async WASM image-decode shim.
+/// Platform abstraction (macOS/Metal, Linux/Vulkan, Windows/Vulkan, Web/WGPU).
 pub const platform = @import("platform/mod.zig");
 
-/// Image loading and atlas caching (native async loader + WASM
-/// `platform.web.image_loader` callbacks).
+/// Image loading and atlas caching (native only; WASM has no loader yet).
 pub const image = @import("image/mod.zig");
 
 /// SVG parsing, rasterization, and atlas caching.
@@ -155,8 +153,7 @@ pub const validation = @import("validation.zig");
 /// Accessibility (A11Y): screen reader and assistive technology support.
 pub const accessibility = @import("accessibility/mod.zig");
 
-/// Cross-platform file dialogs (open/save). Async on WASM via
-/// `platform.web.file_dialog`.
+/// Cross-platform file dialogs (open/save). None on WASM yet.
 pub const file_dialog = @import("file_dialog.zig");
 
 /// Testing utilities and mock implementations. Compiled for tests and for the
@@ -277,9 +274,6 @@ test {
         @import("animation/motion.zig"),
         @import("animation/animation.zig"),
         @import("animation/store.zig"),
-
-        // Platform-independent web input buffer logic.
-        @import("platform/web/composition_buffer.zig"),
 
         // Render-thread mutex and the render exclusion `Window.setFont` holds.
         @import("platform/mutex.zig"),

@@ -144,17 +144,3 @@ pub fn toInputEvent(raw: RawMouseEvent) InputEvent {
         .mouse_exited => .{ .mouse_exited = mouse_event },
     };
 }
-
-/// Process all pending mouse events
-/// Returns number of events processed
-pub fn processEvents(handler: *const fn (InputEvent) bool) u32 {
-    var processed: u32 = 0;
-
-    while (@as(*volatile MouseEventRing, &g_mouse_ring).pop()) |raw| {
-        const event = toInputEvent(raw);
-        _ = handler(event);
-        processed += 1;
-    }
-
-    return processed;
-}
