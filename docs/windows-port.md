@@ -16,7 +16,6 @@ zig build run-todo           # a 0.4.0 core app; copy and paste through its Text
 zig build run-showcase       # a 0.3.1 gooey.App example (all listed in addWindowsBuilds)
 zig build run-core-file-dialog # open, multi-select, folder, and save dialogs
 zig build run-accessible-form # UI Automation: Narrator, NVDA, or Inspect
-zig build run-windows-demo   # the platform-layer demo, no text
 zig build test-windows       # shared root.zig tests, then the Windows backend tests
 zig build typecheck-windows  # analyze the backend, showcase, and tests for x86_64-windows
 ```
@@ -78,7 +77,7 @@ file dialogs, cursors, accessibility (UI Automation), and frame pacing on a rend
 
   Everything else is new and Windows-only: `src/platform/windows/`,
   `text/backends/directwrite/`, `image/backends/wic/`, `accessibility/windows_*.zig`,
-  `examples/windows_demo.zig`, `examples/clipboard.zig`, and `src/windows_tests.zig`.
+  `examples/clipboard.zig`, and `src/windows_tests.zig`.
 - **Boundary.** The Windows `mod.zig` pins `contract.verifyBackend(@This())`, so every
   contract change in 0.4.0 is a compile error naming the declaration.
 - **Separate PRs.** Moving the Vulkan renderer out of `src/platform/linux/` and renaming
@@ -126,7 +125,6 @@ the bindings. Validation layers ship with the SDK, so without it Debug builds lo
 | `src/platform/windows/window.zig` | `Window` and `windowProc`: `HWND`, renderer, contract |
 | `src/platform/windows/mod.zig` | Backend namespace; `contract.verifyBackend`, 64-bit check |
 | `src/windows_tests.zig` | Test root (in `src/` so it can import across subsystems) |
-| `src/examples/windows_demo.zig` | Platform-layer demo: quads, animation, input logging |
 
 - **Loop turn.** Each turn of `run` does bounded work: the owner's hook, at most
   `message_batch_max` (256) messages, timed-redraw deadlines, then at most one frame per

@@ -1281,9 +1281,9 @@ pub fn build(b: *std.Build) void {
 // =============================================================================
 
 /// Adds the Windows targets: the `gooey` and `gooey-components` modules, the
-/// `windows-demo` platform example, the `gooey.App` examples that run on
-/// Windows, and `test-windows` for the shared `root.zig` tests plus the backend,
-/// DirectWrite, and WIC tests. See `docs/windows-port.md`.
+/// examples that run on Windows, and `test-windows` for the shared `root.zig`
+/// tests plus the backend, DirectWrite, and WIC tests. See
+/// `docs/windows-port.md`.
 fn addWindowsBuilds(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
@@ -1300,22 +1300,6 @@ fn addWindowsBuilds(
     });
     mod.addObjectFile(vulkan_import_library);
     mod.addImport("gooey_build_options", gooeyBuildOptionsModule(b, .{}));
-
-    const exe = b.addExecutable(.{
-        .name = "windows-demo",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/examples/windows_demo.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{.{ .name = "gooey", .module = mod }},
-        }),
-    });
-    b.installArtifact(exe);
-
-    const run_cmd = b.addRunArtifact(exe);
-    run_cmd.addPassthruArgs();
-    run_cmd.step.dependOn(b.getInstallStep());
-    b.step("run-windows-demo", "Run the Windows platform demo").dependOn(&run_cmd.step);
 
     const components_mod = b.addModule("gooey-components", .{
         .root_source_file = b.path("components/src/root.zig"),
@@ -1450,15 +1434,6 @@ fn addWindowsTypecheck(b: *std.Build) void {
         .optimize = .debug,
     });
     gooey_mod.addImport("gooey_build_options", gooeyBuildOptionsModule(b, .{}));
-    const demo = b.addExecutable(.{
-        .name = "typecheck-windows-demo",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/examples/windows_demo.zig"),
-            .target = windows_target,
-            .optimize = .debug,
-            .imports = &.{.{ .name = "gooey", .module = gooey_mod }},
-        }),
-    });
     const tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/windows_tests.zig"),
@@ -1470,8 +1445,7 @@ fn addWindowsTypecheck(b: *std.Build) void {
     // same coverage `typecheck-linux` gets from its `root.zig` test root.
     const shared_tests = b.addTest(.{ .root_module = gooey_mod });
 
-    // A `gooey.App` example reaches the runtime, text, and component layers
-    // that the platform demo does not.
+    // A `gooey.App` example reaches the runtime, text, and component layers.
     const components_mod = b.createModule(.{
         .root_source_file = b.path("components/src/root.zig"),
         .target = windows_target,
@@ -1507,7 +1481,6 @@ fn addWindowsTypecheck(b: *std.Build) void {
     });
 
     // Depend on the compile steps only; see `addLinuxTypecheckRoot`.
-    step.dependOn(&demo.step);
     step.dependOn(&tests.step);
     step.dependOn(&shared_tests.step);
     step.dependOn(&app.step);
