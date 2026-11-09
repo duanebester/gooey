@@ -3104,3 +3104,92 @@ test "the debugger opens over an app filled to exactly its limits" {
     try testing.expect(profiled.quads >= app_counts.quads + 4);
     try testing.expect(scene.glyphs.items.len > scene_limits.glyph_count_frame_max);
 }
+
+/// The bounds of the first button named `name`, or null when none is built.
+fn todoButton(app: *todo.App, name: []const u8) ?core.ui.Rect {
+    const node = nodeNamed(&app.window, .button, name) orelse return null;
+    return node.bounds;
+}
+
+/// The checkbox rows the list built, and the first one's top.
+fn todoRowCount(app: *todo.App, first_y: *f32) u32 {
+    const frame = app.window.rendered();
+    var count: u32 = 0;
+    for (frame.a11y[0..frame.a11y_count]) |*node| {
+        if (node.role != .checkbox) continue;
+        if (count == 0) first_y.* = node.bounds.y;
+        count += 1;
+    }
+    return count;
+}
+
+fn todoResize(app: *todo.App, now: *u64, width: f32, height: f32) void {
+    app.window.queue.push(.{ .window = .{ .resized = .{
+        .width = width,
+        .height = height,
+        .scale_factor = 1,
+    } } });
+    now.* += 1;
+    app.tick(now.*);
+}
+
+test "todo keeps its header, footer, and Add in view at 20 items and narrow widths" {
+    // Goal: the default example holds its layout past a screenful (SER9 saw
+    // rows overlap the header from 8 items) and down to narrow windows (Add
+    // went off screen at 350 px). Methodology: add 20 todos at 480x560; Add,
+    // the filters, and Clear completed must keep their places inside the
+    // padding, and a wheel over the list must move the rows up while the
+    // header stays. Then narrow the window to 360 px and check Add ends at
+    // the right padding with a row's Delete inside it.
+    const app = try testing.allocator.create(todo.App);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    const add_before = todoButton(app, "Add").?;
+    const clear_before = todoButton(app, "Clear completed").?;
+    for (0..20) |_| {
+        app.state.draft = "a todo that needs doing";
+        app.state.addTodo();
+    }
+    app.window.render_requested = true;
+    now += 1;
+    app.tick(now);
+    try testing.expectEqual(@as(u32, 20), app.state.count);
+    try testing.expectEqual(add_before, todoButton(app, "Add").?);
+    // "20 left" is wider than "0 left", so only Clear completed's row holds.
+    try testing.expectApproxEqAbs(clear_before.y, todoButton(app, "Clear completed").?.y, 0.01);
+    try testing.expect(add_before.x + add_before.width <= 480 - 24);
+    try testing.expect(clear_before.y + clear_before.height <= 560 - 24);
+
+    var first_top: f32 = 0;
+    _ = todoRowCount(app, &first_top);
+    const all = todoButton(app, "All").?;
+    try testing.expect(first_top > all.y + all.height);
+    // Offsets follow the delta, inverted on macOS (`ScrollState.wheel`).
+    const direction: f32 = if (@import("builtin").os.tag == .macos) -1 else 1;
+    app.window.queue.push(.{ .input = .{ .scroll = .{
+        .position = .{ .x = 100, .y = 300 },
+        .delta = .{ .x = 0, .y = 200 * direction },
+        .modifiers = .{},
+    } } });
+    now += 1;
+    app.tick(now);
+    var scrolled_top: f32 = 0;
+    _ = todoRowCount(app, &scrolled_top);
+    try testing.expect(scrolled_top < first_top);
+    try testing.expectEqual(all, todoButton(app, "All").?);
+    try testing.expectApproxEqAbs(clear_before.y, todoButton(app, "Clear completed").?.y, 0.01);
+
+    todoResize(app, &now, 360, 560);
+    const add_narrow = todoButton(app, "Add").?;
+    try testing.expectApproxEqAbs(@as(f32, 360 - 24), add_narrow.x + add_narrow.width, 0.01);
+    const input = nodeNamed(&app.window, .textbox, "What needs doing?").?.bounds;
+    try testing.expect(input.width > 100);
+    try testing.expect(input.x + input.width < add_narrow.x);
+    // Rows fill the list, so Delete ends inside it.
+    const delete = todoButton(app, "Delete").?;
+    try testing.expect(delete.x + delete.width <= 360 - 24);
+    try testing.expectEqual(core.internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
+}

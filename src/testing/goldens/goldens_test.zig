@@ -136,13 +136,135 @@ test "the core todo draws, hits, and announces what 0.3.1 does" {
     try std.testing.expectEqual(@as(u32, 0), unexplained);
 }
 
-const todo_known_differences = [_]compare.KnownDifference{.{
-    .step = 18,
-    .legacy_line = "fill (83.70 507.20 124.80 28.80) #839496ff 8.00,8.00,8.00,8.00",
-    .core_line = "fill (83.70 507.20 124.80 28.80) #839496d9 8.00,8.00,8.00,8.00",
-    .reason = "the pointer rests on Clear completed after clicking it; the core keeps " ++
-        "the button hovered, 0.3.1 drops its hover once the click empties the list",
-}};
+const todo_known_differences = [_]compare.KnownDifference{
+    .{
+        .step = 18,
+        .legacy_line = "fill (83.70 507.20 124.80 28.80) #839496ff 8.00,8.00,8.00,8.00",
+        .core_line = "fill (83.70 507.20 124.80 28.80) #839496d9 8.00,8.00,8.00,8.00",
+        .reason = "the pointer rests on Clear completed after clicking it; the core keeps " ++
+            "the button hovered, 0.3.1 drops its hover once the click empties the list",
+    },
+    todoInputRow(
+        "border (24.00 74.60 360.00 37.20) 1.00,1.00,1.00,1.00 #1e66f5ff 8.00,8.00,8.00,8.00",
+        "border (24.00 74.60 349.60 37.20) 1.00,1.00,1.00,1.00 #1e66f5ff 8.00,8.00,8.00,8.00",
+    ),
+    todoInputRow(
+        "border (24.00 74.60 360.00 37.20) 1.00,1.00,1.00,1.00 #9b9eb14d 8.00,8.00,8.00,8.00",
+        "border (24.00 74.60 349.60 37.20) 1.00,1.00,1.00,1.00 #9b9eb14d 8.00,8.00,8.00,8.00",
+    ),
+    todoInputRow(
+        "button (392.00 73.60 74.40 39.20) name=\"Add\"",
+        "button (381.60 73.60 74.40 39.20) name=\"Add\"",
+    ),
+    todoInputRow(
+        "fill (24.00 74.60 360.00 37.20) #e6e9eeff 8.00,8.00,8.00,8.00",
+        "fill (24.00 74.60 349.60 37.20) #e6e9eeff 8.00,8.00,8.00,8.00",
+    ),
+    todoInputRow(
+        "fill (392.00 73.60 74.40 39.20) #1e66f5d9 8.00,8.00,8.00,8.00",
+        "fill (381.60 73.60 74.40 39.20) #1e66f5d9 8.00,8.00,8.00,8.00",
+    ),
+    todoInputRow(
+        "fill (392.00 73.60 74.40 39.20) #1e66f5ff 8.00,8.00,8.00,8.00",
+        "fill (381.60 73.60 74.40 39.20) #1e66f5ff 8.00,8.00,8.00,8.00",
+    ),
+    todoInputRow(
+        "glyphs n=3 (416.00 84.50 24.50 11.50) color=#ffffffff hash=8973649f",
+        "glyphs n=3 (405.50 84.50 25.00 11.50) color=#ffffffff hash=05494605",
+    ),
+    todoInputRow("hit (24.00 74.60 360.00 37.20) focus", "hit (24.00 74.60 349.60 37.20) focus"),
+    todoInputRow("hit (392.00 73.60 74.40 39.20) click", "hit (381.60 73.60 74.40 39.20) click"),
+    todoInputRow(
+        "textbox (24.00 74.60 360.00 37.20) name=\"What needs doing?\"",
+        "textbox (24.00 74.60 349.60 37.20) name=\"What needs doing?\"",
+    ),
+    todoInputRow(
+        "textbox (24.00 74.60 360.00 37.20) name=\"What needs doing?\" focused",
+        "textbox (24.00 74.60 349.60 37.20) name=\"What needs doing?\" focused",
+    ),
+    todoInputRow(
+        "textbox (24.00 74.60 360.00 37.20) name=\"What needs doing?\" value=\"buy mil\" focused",
+        "textbox (24.00 74.60 349.60 37.20) name=\"What needs doing?\" value=\"buy mil\" focused",
+    ),
+    todoInputRow(
+        "textbox (24.00 74.60 360.00 37.20) name=\"What needs doing?\" value=\"buy milk\" focused",
+        "textbox (24.00 74.60 349.60 37.20) name=\"What needs doing?\" value=\"buy milk\" focused",
+    ),
+    todoInputRow(
+        "textbox (24.00 74.60 360.00 37.20) name=\"What needs doing?\" value=\"café\" focused",
+        "textbox (24.00 74.60 349.60 37.20) name=\"What needs doing?\" value=\"café\" focused",
+    ),
+    todoListRow(
+        "button (123.20 183.60 64.60 28.80) name=\"Delete\"",
+        "button (381.40 183.60 64.60 28.80) name=\"Delete\"",
+    ),
+    todoListRow(
+        "button (123.20 240.40 64.60 28.80) name=\"Delete\"",
+        "button (381.40 240.40 64.60 28.80) name=\"Delete\"",
+    ),
+    todoListRow("button (144.80 183.60 64.60 28.80) name=\"Delete\"", ""),
+    todoListRow(
+        "fill (123.20 240.40 64.60 28.80) #d13d3dd9 8.00,8.00,8.00,8.00",
+        "fill (381.40 240.40 64.60 28.80) #d13d3dd9 8.00,8.00,8.00,8.00",
+    ),
+    todoListRow(
+        "fill (123.20 183.60 64.60 28.80) #d13d3dff 8.00,8.00,8.00,8.00",
+        "fill (381.40 183.60 64.60 28.80) #d13d3dff 8.00,8.00,8.00,8.00",
+    ),
+    todoListRow(
+        "fill (123.20 240.40 64.60 28.80) #d13d3dff 8.00,8.00,8.00,8.00",
+        "fill (381.40 240.40 64.60 28.80) #d13d3dff 8.00,8.00,8.00,8.00",
+    ),
+    todoListRow("fill (144.80 183.60 64.60 28.80) #d13d3dff 8.00,8.00,8.00,8.00", ""),
+    todoListRow(
+        "glyphs n=6 (135.00 190.50 39.50 10.00) color=#ffffffff hash=feb88217",
+        "glyphs n=6 (393.00 190.50 39.50 10.00) color=#ffffffff hash=e3b374fc",
+    ),
+    todoListRow(
+        "glyphs n=6 (135.00 247.50 39.50 10.00) color=#ffffffff hash=2d5160b3",
+        "glyphs n=6 (393.00 190.50 40.00 10.00) color=#ffffffff hash=c25c3fef",
+    ),
+    todoListRow(
+        "glyphs n=6 (156.50 190.50 39.50 10.00) color=#ffffffff hash=52f33640",
+        "glyphs n=6 (393.00 247.50 40.00 10.00) color=#ffffffff hash=5ced9b97",
+    ),
+    todoListRow("hit (123.20 183.60 64.60 28.80) click", "hit (381.40 183.60 64.60 28.80) click"),
+    todoListRow("hit (123.20 240.40 64.60 28.80) click", "hit (381.40 240.40 64.60 28.80) click"),
+    todoListRow("hit (144.80 183.60 64.60 28.80) click", ""),
+    todoListRow(
+        "fill (24.00 173.60 173.80 48.80) #ffffffff 8.00,8.00,8.00,8.00",
+        "fill (24.00 173.60 432.00 48.80) #ffffffff 8.00,8.00,8.00,8.00",
+    ),
+    todoListRow(
+        "fill (24.00 173.60 195.40 48.80) #ffffffff 8.00,8.00,8.00,8.00",
+        "fill (24.00 230.40 432.00 48.80) #ffffffff 8.00,8.00,8.00,8.00",
+    ),
+    todoListRow("fill (24.00 230.40 173.80 48.80) #ffffffff 8.00,8.00,8.00,8.00", ""),
+};
+
+/// 0.3.1's todo input is a fixed 360 px, which pushes Add 10.4 px past the
+/// window's 24 px padding at 480 wide and off screen in narrower windows.
+/// The core's input fills the row beside Add, so Add ends at the padding.
+fn todoInputRow(legacy_line: []const u8, core_line: []const u8) compare.KnownDifference {
+    return .{
+        .step = null,
+        .legacy_line = legacy_line,
+        .core_line = core_line,
+        .reason = "the todo input fills its row instead of a fixed 360 px",
+    };
+}
+
+/// 0.3.1's todo rows fit their content, so Delete follows the text and a
+/// long todo pushes it past a narrow window. The core's rows fill the list,
+/// so Delete sits at each row's right end.
+fn todoListRow(legacy_line: []const u8, core_line: []const u8) compare.KnownDifference {
+    return .{
+        .step = null,
+        .legacy_line = legacy_line,
+        .core_line = core_line,
+        .reason = "the todo rows fill the list instead of fitting their content",
+    };
+}
 
 test "a replayed trace is byte-identical" {
     // Goal: goldens are stable. Methodology: run the same trace twice in one
