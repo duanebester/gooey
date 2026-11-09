@@ -23,7 +23,7 @@
 
 const std = @import("std");
 const gooey = @import("gooey");
-const Color = gooey.ui.Color;
+const Color = gooey.Color;
 const Theme = gooey.core.Theme;
 
 // =============================================================================

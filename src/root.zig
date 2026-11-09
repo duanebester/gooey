@@ -62,10 +62,6 @@ pub const ResourceLimits = @import("core/limits.zig").ResourceLimits;
 /// `ceiling` (all 14).
 pub const FontLimits = @import("core/limits.zig").FontLimits;
 
-/// The 0.3.1 rendering context, deleted with `ui/` in phase 6. Core apps use
-/// `gooey.core.Cx`.
-pub const Cx = @import("cx.zig").Cx;
-
 /// Framework-level window wrapper. Holds
 /// per-window subsystems \u2014 focus, hover, animations, change tracker,
 /// element-state pool, \u2026 \u2014 and the OS-level `PlatformWindow` handle.
@@ -138,9 +134,6 @@ pub const layout = @import("layout/layout.zig");
 /// Text rendering system with backend abstraction (`TextSystem`,
 /// `FontFace`, `TextMeasurement`).
 pub const text = @import("text/mod.zig");
-
-/// Declarative UI builder + theme + style types.
-pub const ui = @import("ui/mod.zig");
 
 /// Stateful widget engines: the text engines and the
 /// scroll container.
@@ -226,7 +219,6 @@ test {
     comptime {
         // Borrow the top-level namespace aliases without shadowing them.
         const anim = animation;
-        const u = ui;
         const lay = layout;
         const plat = platform;
         const txt = text;
@@ -249,12 +241,6 @@ test {
         _ = anim.AnimationStore;
         _ = anim.Easing;
         _ = anim.Duration;
-
-        // UI styles.
-        _ = u.Builder;
-        _ = u.Theme;
-        _ = u.Box;
-        _ = u.StackStyle;
 
         // Layout.
         _ = lay.LayoutEngine;
@@ -296,7 +282,7 @@ test {
         @import("animation/animation.zig"),
         @import("animation/store.zig"),
 
-        // Widget engines imported directly by `cx.zig`.
+        // Widget engines (0.3.1, deleted with `widgets/`).
         @import("widgets/text_input_state.zig"),
         @import("widgets/text_area_state.zig"),
         @import("widgets/scroll_container.zig"),
@@ -359,7 +345,6 @@ test {
         @import("accessibility/tree.zig"),
 
         // UI / core leaves.
-        @import("ui/primitives.zig"),
         @import("geometry/triangulator.zig"),
         @import("validation.zig"),
 
@@ -390,19 +375,18 @@ test {
 }
 
 test {
-    // Method *bodies* on `Cx` and `Window`, which the block above cannot
-    // reach. `refAllDecls(@This())` references the `Cx` / `Window` aliases,
+    // Method *bodies* on `Window`, which the block above cannot
+    // reach. `refAllDecls(@This())` references the `Window` alias,
     // which forces struct-level analysis only: field types and decl
-    // signatures. A `pub fn` body is analyzed lazily, on first call. Neither
-    // type has in-tree callers for every method, so without this block a
+    // signatures. A `pub fn` body is analyzed lazily, on first call. The
+    // type has no in-tree callers for every method, so without this block a
     // body can go uncompiled on every target and rot unnoticed, for example
     // by naming a field that does not exist or by reaching a macOS-only
     // renderer member from shared code.
     //
-    // `refAllDecls` takes a pointer to each decl, so naming these two types
+    // `refAllDecls` takes a pointer to each decl, so naming the type
     // explicitly makes every method body a hard compile error at test time,
     // on every target the test root is built for — including the
     // `typecheck-linux` step's Linux analysis.
-    std.testing.refAllDecls(Cx);
     std.testing.refAllDecls(Window);
 }
