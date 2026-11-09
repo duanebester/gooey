@@ -123,7 +123,26 @@ fn packSprite(scene: *Scene, sprite: *const records.Sprite) void {
                 @errorName(err),
             });
         },
-        .glyph_color, .image => std.debug.panic("{t} sprites are packed from phase 4", .{
+        .image => {
+            const c = sprite.corners;
+            const instance = scene_mod.ImageInstance.init(
+                b.x,
+                b.y,
+                b.width,
+                b.height,
+                uv.x,
+                uv.y,
+                uv.x + uv.width,
+                uv.y + uv.height,
+            ).withTint(Hsla.fromColor(sprite.tint))
+                .withOpacity(sprite.opacity)
+                .withGrayscale(sprite.grayscale)
+                .withCornerRadii(c.top_left, c.top_right, c.bottom_right, c.bottom_left);
+            scene.insertImageClipped(instance) catch |err| std.debug.panic("pack: {s}", .{
+                @errorName(err),
+            });
+        },
+        .glyph_color => std.debug.panic("{t} sprites are packed from phase 4", .{
             sprite.atlas,
         }),
     }

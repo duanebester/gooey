@@ -70,6 +70,8 @@ pub const ui = struct {
     pub const Painter = emit.Painter;
     pub const PaintText = emit.TextStyle;
     pub const PaintSvg = emit.SvgStyle;
+    pub const PaintImage = emit.ImageStyle;
+    pub const ObjectFit = @import("../image/mod.zig").ObjectFit;
     pub const Rect = records.Rect;
 };
 
@@ -88,4 +90,5 @@ test {
     _ = @import("keymap.zig");
     _ = @import("clipboard.zig");
     _ = @import("text_history.zig");
+    _ = @import("images.zig");
 }

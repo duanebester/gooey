@@ -26,6 +26,8 @@ const text_render = @import("../text/render.zig");
 const scene_mod = @import("../scene/mod.zig");
 const a11y_types = @import("../accessibility/types.zig");
 const layout_mod = @import("../layout/layout.zig");
+const image_mod = @import("../image/mod.zig");
+const images_mod = @import("images.zig");
 
 const assert = std.debug.assert;
 
@@ -36,6 +38,8 @@ const Color = records.Color;
 const index_none = records.index_none;
 const TextData = layout_mod.engine.TextData;
 const TextAlignment = layout_mod.TextConfig.TextAlignment;
+const ObjectFit = image_mod.ObjectFit;
+const ImageAtlas = image_mod.ImageAtlas;
 
 /// Drawing access for `ui.paint` functions, valid during emit only.
 pub const Painter = struct {
@@ -178,6 +182,14 @@ pub const Painter = struct {
         });
     }
 
+    /// Draw the image file at `path` into `bounds`, placed by `options.fit`.
+    /// The first frame that draws a path queues its decode on the image
+    /// worker and draws nothing, so the box's own background shows; the
+    /// decoded image lands a few frames later and requests a render.
+    pub fn image(self: *Painter, path: []const u8, bounds: Rect, options: ImageStyle) void {
+        emitImage(self.window, path, bounds, options);
+    }
+
     /// Answer the platform's IME questions for this frame (`Query`).
     pub fn imeCursor(self: *Painter, ime: records.Ime) void {
         assert(ime.owner.isKeyed());
@@ -200,6 +212,16 @@ pub const SvgStyle = struct {
     viewbox: f32 = 24,
 };
 
+pub const ImageStyle = struct {
+    fit: ObjectFit,
+    corners: records.Corners = .zero,
+    /// Multiplied with every pixel; null draws the image's own colours.
+    tint: ?Color = null,
+    /// 0 keeps colour, 1 is fully gray.
+    grayscale: f32 = 0,
+    opacity: f32 = 1,
+};
+
 /// The scene's clip stack ceiling; `limits.scene.clip_depth_max` bounds box
 /// clips and paint-function clips together below it.
 const clip_depth_max: u32 = limits_mod.MAX_CLIP_STACK_DEPTH;
@@ -207,6 +229,10 @@ const clip_depth_max: u32 = limits_mod.MAX_CLIP_STACK_DEPTH;
 pub fn emit(window: *Window) void {
     window.assertPhase(.emit);
     window.resources.svg_atlas.resetFrameBudget();
+    // A decode that this frame's upload staging cannot take lands next frame.
+    if (window.images.land(window.resources.image_atlas) == .deferred) {
+        window.render_requested = true;
+    }
     assert(window.layout.elements.items().len == window.node_count);
     emitAccessibility(window);
     var layers_open = LayerQueue{ .roots = undefined, .len = 0, .opened = 0 };
@@ -935,6 +961,53 @@ fn copyMeshPoints(target: []records.MeshPoint, source: []const [2]f32) void {
 
 fn colorEql(a: Color, b: Color) bool {
     return a.r == b.r and a.g == b.g and a.b == b.b and a.a == b.a;
+}
+
+/// Draw a cached image, or queue its decode and draw nothing. Placement
+/// matches 0.3.1: fit inside `bounds`, then snap to the device pixel grid.
+fn emitImage(window: *Window, path: []const u8, bounds: Rect, options: ImageStyle) void {
+    assert(options.grayscale >= 0);
+    assert(options.grayscale <= 1);
+    assert(options.opacity >= 0);
+    assert(options.opacity <= 1);
+    if (bounds.width <= 0 or bounds.height <= 0) return;
+    const key = images_mod.keyFor(path);
+    const cached = window.resources.image_atlas.get(key) orelse {
+        window.images.request(path, key, window.frame_number);
+        return;
+    };
+    assert(cached.region.width > 0);
+    const fit = ImageAtlas.calculateFitResult(
+        @floatFromInt(cached.source_width),
+        @floatFromInt(cached.source_height),
+        bounds.width,
+        bounds.height,
+        options.fit,
+    );
+    const base = cached.uv();
+    const uv_width = base.u1 - base.u0;
+    const uv_height = base.v1 - base.v0;
+    const scale = window.scale_factor;
+    window.built().appendPaint(.{ .sprite = .{
+        .bounds = .{
+            .x = @floor((bounds.x + fit.offset_x) * scale) / scale,
+            .y = @floor((bounds.y + fit.offset_y) * scale) / scale,
+            .width = fit.width,
+            .height = fit.height,
+        },
+        .atlas = .image,
+        .uv = .{
+            .x = base.u0 + fit.uv_left * uv_width,
+            .y = base.v0 + fit.uv_top * uv_height,
+            .width = (fit.uv_right - fit.uv_left) * uv_width,
+            .height = (fit.uv_bottom - fit.uv_top) * uv_height,
+        },
+        .tint = options.tint orelse Color.white,
+        .secondary = Color.transparent,
+        .corners = options.corners,
+        .grayscale = options.grayscale,
+        .opacity = options.opacity,
+    } });
 }
 
 comptime {

@@ -508,7 +508,6 @@ test "toggle collection pattern" {
 // tests fail at compile time rather than at the call site of every
 // downstream caller.
 
-const lists_ns = @import("cx/lists.zig");
 const animations_ns = @import("cx/animations.zig");
 const entities_ns = @import("cx/entities.zig");
 const focus_ns = @import("cx/focus.zig");
@@ -520,7 +519,6 @@ test "sub-namespace fields are zero-sized (no Cx layout growth)" {
     // take aliases). If any of these grows, every `Cx` instance pays
     // for it — fail loudly here instead of silently bloating the
     // hot context struct.
-    try std.testing.expectEqual(@as(usize, 0), @sizeOf(lists_ns.Lists));
     try std.testing.expectEqual(@as(usize, 0), @sizeOf(animations_ns.Animations));
     try std.testing.expectEqual(@as(usize, 0), @sizeOf(entities_ns.Entities));
     try std.testing.expectEqual(@as(usize, 0), @sizeOf(focus_ns.Focus));
@@ -534,8 +532,6 @@ test "sub-namespace methods are reachable as decls" {
     // Pin the *existence* of each namespace decl. If a refactor
     // renames one, this test fails compilation before any downstream
     // caller does.
-    _ = lists_ns.Lists.uniform;
-
     _ = focus_ns.Focus.next;
     _ = focus_ns.Focus.prev;
     _ = focus_ns.Focus.blurAll;
