@@ -1,21 +1,63 @@
-//! Animation Demo — Springs, Motion Containers, and Stagger
+//! Animation: tweens, spring motion, and a staggered list on the core.
 //!
-//! Showcases the full animation toolkit:
-//! - `cx.animations.tween` / `cx.animations.tweenOn` — basic tween animations
-//! - `cx.animations.springMotionComptime` — interruptible enter/exit with spring physics
-//! - `cx.animations.staggerComptime` — cascading list entry animations
+//! - `animation.tween` fades the window in and staggers the list rows.
+//! - `animation.tweenOn` pulses the counter each time its value changes.
+//! - `animation.motion` springs the panel and the list in and out, keeping
+//!   the spring's velocity when a toggle interrupts it.
+//!
+//! The layout, colours, and timings match the 0.3.1 demo. Each helper asks
+//! for the next frame only while it moves, so the window goes idle once
+//! everything settles.
+
 const std = @import("std");
 const gooey = @import("gooey");
 const components = @import("gooey-components");
-const ui = gooey.ui;
-const Cx = gooey.Cx;
-const Color = ui.Color;
-const Easing = gooey.animation.Easing;
-const Button = components.Button;
 
-// =============================================================================
-// App State
-// =============================================================================
+const core = gooey.core;
+const animation = core.animation;
+const ui = core.ui;
+const Cx = core.Cx;
+const Color = ui.Color;
+const Button = components.core.Button;
+
+const assert = std.debug.assert;
+
+pub const State = struct {
+    count: i32 = 0,
+    show_panel: bool = true,
+    show_list: bool = false,
+
+    pub fn increment(self: *State) void {
+        self.count += 1;
+    }
+
+    pub fn decrement(self: *State) void {
+        self.count -= 1;
+    }
+
+    pub fn togglePanel(self: *State) void {
+        self.show_panel = !self.show_panel;
+    }
+
+    pub fn toggleList(self: *State) void {
+        self.show_list = !self.show_list;
+    }
+};
+
+pub const App = core.App(State, render, .{
+    .title = "Animation Demo",
+    .width = 550,
+    .height = 550,
+    .limits = .nano,
+});
+
+/// The generated entry point (contract §7).
+pub const main = App.main;
+
+const ListItem = struct {
+    name: []const u8,
+    color: Color,
+};
 
 const list_items = [_]ListItem{
     .{ .name = "Apples", .color = Color.rgb(0.85, 0.25, 0.25) },
@@ -26,332 +68,183 @@ const list_items = [_]ListItem{
     .{ .name = "Figs", .color = Color.rgb(0.50, 0.35, 0.55) },
 };
 
-const ListItem = struct {
-    name: []const u8,
-    color: Color,
-};
+/// 0.3.1's `StaggerConfig.list`: each row starts 50 ms after the one above.
+const stagger_ms: u32 = 50;
+const row_tween: animation.Tween = .{ .duration_ms = 200, .easing = animation.Easing.easeOutCubic };
 
-const AppState = struct {
-    count: i32 = 0,
-    show_panel: bool = true,
-    show_list: bool = false,
-
-    pub fn increment(self: *AppState) void {
-        self.count += 1;
-    }
-
-    pub fn decrement(self: *AppState) void {
-        self.count -= 1;
-    }
-
-    pub fn togglePanel(self: *AppState) void {
-        self.show_panel = !self.show_panel;
-    }
-
-    pub fn toggleList(self: *AppState) void {
-        self.show_list = !self.show_list;
-    }
-};
-
-// =============================================================================
-// Root Render
-// =============================================================================
-
-fn render(cx: *Cx) void {
-    const s = cx.state(AppState);
-    const size = cx.windowSize();
-
-    std.debug.assert(size.width > 0);
-    std.debug.assert(size.height > 0);
-
-    const fade_in = cx.animations.tween("main-fade", .{ .duration_ms = 500 });
-
-    cx.render(ui.box(.{
-        .width = size.width,
-        .height = size.height,
-        .padding = .{ .all = 32 },
-        .direction = .column,
+pub fn render(cx: *Cx) void {
+    const s = cx.state(State);
+    const fade_in = animation.tween(cx, .{ .name = "main-fade" }, .{ .duration_ms = 500 });
+    assert(fade_in >= 0);
+    assert(fade_in <= 1);
+    cx.render(ui.box(.{ .style = .{
+        .width = .{ .grow = 1 },
+        .height = .{ .grow = 1 },
+        .padding = .all(32),
         .gap = 24,
-        .background = Color.rgb(0.95, 0.95, 0.95).withAlpha(fade_in.progress),
-    }, .{
+        .background = .{ .rgba = Color.rgb(0.95, 0.95, 0.95).withAlpha(fade_in) },
+    } }, .{
         ui.text("Animation Demo", .{
             .size = 28,
-            .color = Color.rgb(0.2, 0.2, 0.2).withAlpha(fade_in.progress),
+            .color = .{ .rgba = Color.rgb(0.2, 0.2, 0.2).withAlpha(fade_in) },
         }),
-
         CounterDisplay{ .count = s.count },
         ControlButtons{},
-
-        // Spring motion panel — interruptible, no manual lifecycle
         PanelSection{ .show = s.show_panel },
-
-        // Staggered list — cascading entry animations
-        StaggeredListSection{ .show = s.show_list },
+        ListSection{ .show = s.show_list },
     }));
 }
 
-// =============================================================================
-// Control Buttons
-// =============================================================================
-
 const ControlButtons = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        const s = cx.state(AppState);
-
-        std.debug.assert(@TypeOf(s) == *AppState);
-        std.debug.assert(@sizeOf(AppState) > 0);
-
-        cx.render(ui.hstack(.{ .gap = 12, .alignment = .{ .cross = .center } }, .{
-            Button{
-                .label = "-",
-                .size_preset = .large,
-                .on_click = cx.on(AppState.decrement, .{}),
-            },
-            Button{
-                .label = "+",
-                .size_preset = .large,
-                .on_click = cx.on(AppState.increment, .{}),
-            },
+    pub fn render(_: ControlButtons, cx: *Cx) void {
+        const s = cx.state(State);
+        cx.render(ui.box(.{
+            .style = .{ .direction = .row, .gap = 12, .alignment = .center_cross },
+        }, .{
+            Button{ .label = "-", .size = .large, .on_click = cx.on(State.decrement, .{}) },
+            Button{ .label = "+", .size = .large, .on_click = cx.on(State.increment, .{}) },
             Button{
                 .label = if (s.show_panel) "Hide Panel" else "Show Panel",
-                .on_click = cx.on(AppState.togglePanel, .{}),
+                .key = "panel",
+                .on_click = cx.on(State.togglePanel, .{}),
             },
             Button{
                 .label = if (s.show_list) "Hide List" else "Show List",
-                .on_click = cx.on(AppState.toggleList, .{}),
+                .key = "list",
+                .on_click = cx.on(State.toggleList, .{}),
             },
         }));
     }
 };
 
-// =============================================================================
-// Counter Display (animateOn — pulse on value change)
-// =============================================================================
-
+/// The count, pulsing larger for 200 ms each time it changes.
 const CounterDisplay = struct {
     count: i32,
 
-    pub fn render(self: @This(), cx: *Cx) void {
-        // Restarts each time count changes — velocity not preserved (tween)
-        const pulse = cx.animations.tweenOn("count-pulse", self.count, .{
+    pub fn render(self: CounterDisplay, cx: *Cx) void {
+        const trigger: u32 = @bitCast(self.count);
+        const pulse = animation.tweenOn(cx, .{ .name = "count-pulse" }, trigger, .{
             .duration_ms = 200,
-            .easing = Easing.easeOutBack,
+            .easing = animation.Easing.easeOutBack,
         });
-
-        std.debug.assert(pulse.progress >= 0.0);
-        std.debug.assert(pulse.progress <= 1.5); // easeOutBack overshoots
-
-        const scale = 1.0 + (1.0 - pulse.progress) * 0.15;
-
-        cx.render(ui.box(.{
-            .width = 120 * scale,
-            .height = 80 * scale,
-            .background = Color.white,
-            .corner_radius = 12,
-            .alignment = .{ .main = .center, .cross = .center },
-        }, .{
-            ui.textFmt("{d}", .{self.count}, .{
-                .size = 48,
-                .color = if (self.count >= 0)
-                    Color.rgb(0.2, 0.5, 0.8)
-                else
-                    Color.rgb(0.8, 0.3, 0.3),
-            }),
-        }));
+        assert(pulse >= 0);
+        assert(pulse <= 1.5); // easeOutBack overshoots.
+        const scale = 1.0 + (1.0 - pulse) * 0.15;
+        var digits: [16]u8 = undefined;
+        const label = std.fmt.bufPrint(&digits, "{d}", .{self.count}) catch unreachable;
+        const color = if (self.count >= 0) Color.rgb(0.2, 0.5, 0.8) else Color.rgb(0.8, 0.3, 0.3);
+        cx.render(ui.box(.{ .style = .{
+            .width = .{ .fixed = 120 * scale },
+            .height = .{ .fixed = 80 * scale },
+            .background = .{ .rgba = Color.white },
+            .corner_radius = .all(12),
+            .alignment = .center,
+        } }, .{ui.text(label, .{ .size = 48, .color = .{ .rgba = color } })}));
     }
 };
 
-// =============================================================================
-// Panel Section (spring motion — interruptible enter/exit)
-// =============================================================================
-
+/// A panel that springs open and closed; a toggle mid-flight reverses it
+/// without a snap.
 const PanelSection = struct {
     show: bool,
 
-    pub fn render(self: @This(), cx: *Cx) void {
-        // Spring motion: velocity is preserved on rapid toggle.
-        // No manual progress reversal, no manual "keep rendering during exit".
-        const m = cx.animations.springMotionComptime("panel-spring", self.show, .snappy);
-
-        std.debug.assert(m.progress >= 0.0);
-        std.debug.assert(m.progress <= 1.0 or m.phase == .entering);
-
-        if (m.visible) {
-            cx.render(ui.box(.{
-                .width = 300,
-                .height = 100.0 * m.progress,
-                .padding = .{ .all = 16 },
-                .background = Color.rgba(0.2, 0.5, 1.0, m.progress),
-                .corner_radius = 8,
-                .alignment = .{ .main = .center, .cross = .center },
-            }, .{
-                ui.text("Spring Panel!", .{
-                    .size = 18,
-                    .color = Color.white.withAlpha(m.progress),
-                }),
-            }));
-        }
+    pub fn render(self: PanelSection, cx: *Cx) void {
+        const m = animation.motion(cx, .{ .name = "panel-spring" }, self.show, .snappy);
+        assert(m.progress >= 0);
+        assert(m.progress <= 1);
+        if (!m.visible) return;
+        cx.render(ui.box(.{ .style = .{
+            .width = .{ .fixed = 300 },
+            .height = .{ .fixed = 100 * m.progress },
+            .padding = .all(16),
+            .background = .{ .rgba = Color.rgba(0.2, 0.5, 1.0, m.progress) },
+            .corner_radius = .all(8),
+            .alignment = .center,
+        } }, .{ui.text("Spring Panel!", .{
+            .size = 18,
+            .color = .{ .rgba = Color.white.withAlpha(m.progress) },
+        })}));
     }
 };
 
-// =============================================================================
-// Staggered List Section (cascading entry animation)
-// =============================================================================
-
-const StaggeredListSection = struct {
+const ListSection = struct {
     show: bool,
 
-    pub fn render(self: @This(), cx: *Cx) void {
-        const m = cx.animations.springMotionComptime("list-container", self.show, .snappy);
-
-        std.debug.assert(m.progress >= 0.0);
-        std.debug.assert(list_items.len <= 512); // MAX_STAGGER_ITEMS
-
+    pub fn render(self: ListSection, cx: *Cx) void {
+        const m = animation.motion(cx, .{ .name = "list-container" }, self.show, .snappy);
+        assert(m.progress >= 0);
+        assert(m.progress <= 1);
         if (!m.visible) return;
-
-        cx.render(ui.box(.{
-            .direction = .column,
-            .gap = 8,
-        }, .{
+        // Keyed, so the rows' tweens keep their ids when the panel above
+        // comes and goes.
+        cx.render(ui.box(.{ .key = .{ .name = "list" }, .style = .{ .gap = 8 } }, .{
             ui.text("Staggered List", .{
                 .size = 18,
-                .color = Color.rgb(0.3, 0.3, 0.3).withAlpha(m.progress),
+                .color = .{ .rgba = Color.rgb(0.3, 0.3, 0.3).withAlpha(m.progress) },
             }),
-            StaggeredItems{ .container_progress = m.progress, .container_exiting = (m.phase == .exiting) },
+            ListRows{ .container_progress = m.progress, .exiting = m.phase == .exiting },
         }));
     }
 };
 
-const StaggeredItems = struct {
+const ListRows = struct {
     container_progress: f32,
-    container_exiting: bool,
+    exiting: bool,
 
-    pub fn render(self: @This(), cx: *Cx) void {
-        const count: u32 = @intCast(list_items.len);
-
-        std.debug.assert(count > 0);
-        std.debug.assert(count <= 512);
-
-        var items: [list_items.len]StaggeredRow = undefined;
-        for (&items, 0..) |*slot, i| {
-            slot.* = StaggeredRow{
-                .index = @intCast(i),
-                .total = count,
+    pub fn render(self: ListRows, cx: *Cx) void {
+        var rows: [list_items.len]ListRow = undefined;
+        for (&rows, 0..) |*row, index| {
+            row.* = .{
+                .index = @intCast(index),
                 .container_progress = self.container_progress,
-                .container_exiting = self.container_exiting,
+                .exiting = self.exiting,
             };
         }
-        cx.render(ui.box(.{ .direction = .column, .gap = 6 }, items));
+        cx.render(ui.box(.{ .style = .{ .gap = 6 } }, rows));
     }
 };
 
-/// Compute per-item alpha for a reverse-cascade exit.
-/// Last item fades first, first item fades last.
-/// `spread` controls how much of the exit is staggered (0 = all at once, 1 = fully sequential).
-fn reverseStaggerAlpha(index: u32, total: u32, container_progress: f32) f32 {
-    std.debug.assert(total > 0);
-    if (total <= 1) return container_progress;
-
-    const spread: f32 = 0.5;
-    const total_f = @as(f32, @floatFromInt(total - 1));
-    const reverse_index = @as(f32, @floatFromInt(total - 1 - index));
-    const step = spread / total_f;
-    const window = 1.0 - spread;
-    const fade_start = 1.0 - reverse_index * step - window;
-
-    return std.math.clamp((container_progress - fade_start) / window, 0.0, 1.0);
-}
-
-const StaggeredRow = struct {
+const ListRow = struct {
     index: u32,
-    total: u32,
     container_progress: f32,
-    container_exiting: bool,
+    exiting: bool,
 
-    pub fn render(self: @This(), cx: *Cx) void {
-        const anim = cx.animations.staggerComptime("list-enter", self.index, self.total, .list);
-        const item = list_items[self.index];
-
-        std.debug.assert(anim.progress >= 0.0);
-        std.debug.assert(anim.progress <= 1.5); // easeOutBack can overshoot
-
-        // Phase-aware alpha:
-        // - Entering: stagger cascade in, capped by container visibility
-        // - Exiting:  reverse cascade out (last item fades first)
-        const alpha = if (self.container_exiting)
-            reverseStaggerAlpha(self.index, self.total, self.container_progress)
+    pub fn render(self: ListRow, cx: *Cx) void {
+        assert(self.index < list_items.len);
+        var options = row_tween;
+        options.delay_ms = self.index * stagger_ms;
+        const enter = animation.tween(cx, .{ .index = self.index }, options);
+        assert(enter >= 0);
+        assert(enter <= 1);
+        // Rows cascade in, capped by the container, and fade out in reverse.
+        const alpha = if (self.exiting)
+            exitAlpha(self.index, self.container_progress)
         else
-            @min(anim.progress, self.container_progress);
-
-        cx.render(ui.box(.{
-            .width = 260,
-            .height = 36,
-            .padding = .{ .symmetric = .{ .x = 12, .y = 0 } },
-            .background = item.color.withAlpha(alpha * 0.85),
-            .corner_radius = 6,
-            .alignment = .{ .main = .center, .cross = .center },
-        }, .{
-            ui.text(item.name, .{
-                .size = 14,
-                .color = Color.white.withAlpha(alpha),
-            }),
-        }));
+            @min(enter, self.container_progress);
+        const item = list_items[self.index];
+        cx.render(ui.box(.{ .style = .{
+            .width = .{ .fixed = 260 },
+            .height = .{ .fixed = 36 },
+            .padding = .symmetric(12, 0),
+            .background = .{ .rgba = item.color.withAlpha(alpha * 0.85) },
+            .corner_radius = .all(6),
+            .alignment = .center,
+        } }, .{ui.text(item.name, .{
+            .size = 14,
+            .color = .{ .rgba = Color.white.withAlpha(alpha) },
+        })}));
     }
 };
 
-// =============================================================================
-// Loading Spinner (continuous ping-pong tween)
-// =============================================================================
-
-const LoadingSpinner = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        const pulse = cx.animations.tween("spinner", .{
-            .duration_ms = 1000,
-            .easing = Easing.easeInOut,
-            .mode = .ping_pong,
-        });
-
-        std.debug.assert(pulse.progress >= 0.0);
-        std.debug.assert(pulse.progress <= 1.0);
-
-        cx.render(ui.hstack(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
-            ui.text("Loading:", .{ .size = 14, .color = Color.rgb(0.5, 0.5, 0.5) }),
-            SpinnerBall{ .progress = pulse.progress },
-        }));
-    }
-};
-
-const SpinnerBall = struct {
-    progress: f32,
-
-    pub fn render(self: @This(), cx: *Cx) void {
-        std.debug.assert(self.progress >= 0.0);
-        std.debug.assert(self.progress <= 1.0);
-
-        const spinner_size = gooey.animation.lerp(30.0, 40.0, self.progress);
-        const opacity = gooey.animation.lerp(0.4, 1.0, self.progress);
-
-        cx.render(ui.box(.{
-            .width = spinner_size,
-            .height = spinner_size,
-            .background = Color.rgba(0.3, 0.6, 1.0, opacity),
-            .corner_radius = spinner_size / 2,
-        }, .{}));
-    }
-};
-
-// =============================================================================
-// Entry Point
-// =============================================================================
-
-var state = AppState{};
-
-pub fn main(init: std.process.Init) !void {
-    try gooey.run(AppState, &state, render, .{
-        .limits = .nano,
-        .font_limits = .nano,
-        .title = "Animation Demo",
-        .width = 550,
-        .height = 550,
-    }, init);
+/// A row's alpha while the list exits: the last row fades first and the
+/// first last, staggered over half the exit.
+fn exitAlpha(index: u32, container_progress: f32) f32 {
+    const last: u32 = list_items.len - 1;
+    assert(index <= last);
+    assert(container_progress >= 0);
+    const spread: f32 = 0.5;
+    const window = 1.0 - spread;
+    const step = spread / @as(f32, @floatFromInt(last));
+    const fade_start = 1.0 - @as(f32, @floatFromInt(last - index)) * step - window;
+    return std.math.clamp((container_progress - fade_start) / window, 0, 1);
 }
