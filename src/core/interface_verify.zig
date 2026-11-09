@@ -2,7 +2,7 @@
 //!
 //! Duck-typed `@hasDecl` checks for the subsystem shapes that have no single
 //! authoritative contract: renderers, clipboards, SVG rasterizers, image
-//! loaders, file dialogs, and focusable widgets. These verify that a
+//! loaders, and file dialogs. These verify that a
 //! declaration exists, not that its type matches, because the backends
 //! legitimately differ in signature (see `verifyRendererInterface`).
 //!
@@ -139,27 +139,6 @@ pub fn verifyFileDialogInterface(comptime T: type) void {
     comptime {
         assertHasDecl(T, "promptForPaths", "FileDialog");
         assertHasDecl(T, "promptForNewPath", "FileDialog");
-    }
-}
-
-/// Verify a widget type implements the `Focusable` trait shape so it can
-/// register a `context.focus.Focusable` vtable with the `FocusManager`.
-///
-/// Required instance methods:
-///   - `focus(*Self) void`          — set the widget's focused flag
-///   - `blur(*Self) void`           — clear the focused flag and IME state
-///   - `isFocused(...) bool`        — read the focused flag
-///   - `focusable(*Self) Focusable` — bundle pointer + vtable for the trait
-///
-/// The compile-time pin (per CLAUDE.md §3): instantiate from `widgets/mod.zig`
-/// so a widget dropping a method fails the build rather than becoming a silent
-/// runtime no-op.
-pub fn verifyFocusableInterface(comptime T: type) void {
-    comptime {
-        assertHasDecl(T, "focus", "Focusable");
-        assertHasDecl(T, "blur", "Focusable");
-        assertHasDecl(T, "isFocused", "Focusable");
-        assertHasDecl(T, "focusable", "Focusable");
     }
 }
 

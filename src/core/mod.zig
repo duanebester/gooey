@@ -72,7 +72,6 @@ pub const verifyImageLoaderInterface = interface_verify.verifyImageLoaderInterfa
 pub const verifyImageLoaderModule = interface_verify.verifyImageLoaderModule;
 
 pub const verifyFileDialogInterface = interface_verify.verifyFileDialogInterface;
-pub const verifyFocusableInterface = interface_verify.verifyFocusableInterface;
 
 // =============================================================================
 // Tests
