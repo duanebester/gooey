@@ -5,7 +5,7 @@
 //!      satisfy ~all uses across `src/examples/*.zig` and are the
 //!      only names guaranteed to live at `gooey.X`.
 //!   2. Everything else lives under a namespace
-//!      (`gooey.geometry.Rect`, `gooey.animation.lerp`, \u2026). A namespace is the
+//!      (`gooey.geometry.Rect`, `gooey.text.TextSystem`, \u2026). A namespace is the
 //!      source-of-truth home; the curated-core flat names are
 //!      re-exports for ergonomics only.
 //!
@@ -96,7 +96,7 @@ else
 // =============================================================================
 //
 // Each namespace below is the canonical home for the types underneath
-// it. Examples reach for `gooey.geometry.Rect`, `gooey.animation.lerp`, etc.
+// it. Examples reach for `gooey.geometry.Rect`, `gooey.text.TextSystem`, etc.
 // Their types are not duplicated as flat aliases (`gooey.Button`,
 // `gooey.Rect`, \u2026) next to these namespaces.
 
@@ -115,10 +115,6 @@ pub const input = @import("input/mod.zig");
 /// `GlyphInstance`, `render_bridge`).
 pub const scene = @import("scene/mod.zig");
 
-/// Animation system: time-based interpolation, springs, motions,
-/// staggers, the `AnimationStore` pool composed onto `Window`.
-pub const animation = @import("animation/mod.zig");
-
 /// Clay-inspired layout engine. Layout primitives and the engine itself.
 pub const layout = @import("layout/layout.zig");
 
@@ -134,9 +130,6 @@ pub const image = @import("image/mod.zig");
 
 /// SVG parsing, rasterization, and atlas caching.
 pub const svg = @import("svg/mod.zig");
-
-/// Debug tools: inspector, profiler, render stats.
-pub const debug = @import("debug/mod.zig");
 
 /// Form validation utilities (pure functions).
 pub const validation = @import("validation.zig");
@@ -202,28 +195,12 @@ test {
     // corresponding line here.
     comptime {
         // Borrow the top-level namespace aliases without shadowing them.
-        const anim = animation;
         const lay = layout;
         const plat = platform;
         const txt = text;
         const sc = scene;
         const inp = input;
         const img = image;
-
-        // Animation leaves.
-        _ = anim.SpringConfig;
-        _ = anim.SpringHandle;
-        _ = anim.StaggerConfig;
-        _ = anim.StaggerDirection;
-        _ = anim.MotionConfig;
-        _ = anim.MotionHandle;
-        _ = anim.MotionPhase;
-        _ = anim.SpringMotionConfig;
-        _ = anim.Animation;
-        _ = anim.AnimationHandle;
-        _ = anim.AnimationStore;
-        _ = anim.Easing;
-        _ = anim.Duration;
 
         // Layout.
         _ = lay.LayoutEngine;
@@ -252,13 +229,6 @@ test {
     // part of the test binary once the file is reachable, which the
     // `@import` call below guarantees.
     inline for (.{
-        // Animation leaves.
-        @import("animation/spring.zig"),
-        @import("animation/stagger.zig"),
-        @import("animation/motion.zig"),
-        @import("animation/animation.zig"),
-        @import("animation/store.zig"),
-
         // Vulkan instance-buffer budget math. Pure Zig (no Vulkan headers), so
         // its capacity tests run on every OS, not only where the renderer builds.
         @import("platform/linux/vk_types.zig"),

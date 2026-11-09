@@ -44,7 +44,7 @@ zig build bench-all -Dbench-json-dir=docs/benchmarks
 ```
 
 Individual suites (`bench`, `bench-core`, `bench-text`, `bench-scene`,
-`bench-animation`, `bench-accessibility`) accept the same `-Dbench-json-dir=` flag — useful when
+`bench-accessibility`) accept the same `-Dbench-json-dir=` flag — useful when
 iterating on a single module.
 
 All benchmarks build at `ReleaseFast`. Adaptive iteration counts target
