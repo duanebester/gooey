@@ -24,9 +24,6 @@ pub const interface = @import("interface.zig");
 /// Exact compile-time verification of backend signatures.
 pub const contract = @import("contract.zig");
 
-/// Render-thread mutex and the exclusion set that locks every window's.
-pub const mutex = @import("mutex.zig");
-
 // `platform.PlatformWindow` and the framework-level `Window` are distinct
 // names because they are very different things — `PlatformWindow` is the
 // OS-level handle (NSWindow on macOS, wl_surface on Linux, canvas on web);
@@ -131,12 +128,6 @@ pub const Platform = backend.Platform;
 /// Named `PlatformWindow` so the framework wrapper can own the name `Window`
 /// without a `platform.Window` collision.
 pub const PlatformWindow = backend.PlatformWindow;
-
-/// DisplayLink for vsync (macOS only)
-pub const DisplayLink = if (is_macos)
-    backend.DisplayLink
-else
-    void; // Web, Linux, and Windows pace frames in their own loops.
 
 // =============================================================================
 // Platform-specific modules (for advanced usage)

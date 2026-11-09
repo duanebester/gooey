@@ -122,9 +122,6 @@ pub const WindowOptions = struct {
     /// Background color.
     background_color: geometry.Color = geometry.Color.rgba(0.2, 0.2, 0.25, 1.0),
 
-    /// Enable vsync via display link (recommended).
-    use_display_link: bool = true,
-
     /// Minimum window size.
     min_size: ?geometry.Size(f64) = null,
 

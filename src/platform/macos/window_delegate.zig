@@ -1,5 +1,5 @@
-//! NSWindowDelegate implementation for handling window events
-//! This is the most performant approach - zero overhead when not resizing.
+//! NSWindowDelegate: forwards resize, backing-scale and close requests to
+//! the Zig `Window`.
 
 const objc = @import("objc");
 
@@ -30,21 +30,6 @@ pub fn registerClass() !void {
         return error.MethodAddFailed;
     }
     if (!cls.addMethod("windowDidChangeBackingProperties:", windowDidChangeBackingProperties)) {
-        return error.MethodAddFailed;
-    }
-    if (!cls.addMethod("windowWillClose:", windowWillClose)) {
-        return error.MethodAddFailed;
-    }
-    if (!cls.addMethod("windowDidBecomeKey:", windowDidBecomeKey)) {
-        return error.MethodAddFailed;
-    }
-    if (!cls.addMethod("windowDidResignKey:", windowDidResignKey)) {
-        return error.MethodAddFailed;
-    }
-    if (!cls.addMethod("windowWillStartLiveResize:", windowWillStartLiveResize)) {
-        return error.MethodAddFailed;
-    }
-    if (!cls.addMethod("windowDidEndLiveResize:", windowDidEndLiveResize)) {
         return error.MethodAddFailed;
     }
 
@@ -95,39 +80,4 @@ fn windowDidChangeBackingProperties(self: objc.c.id, _: objc.c.SEL, _: objc.c.id
 fn windowShouldClose(self: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) bool {
     const window = getWindow(self) orelse return true;
     return window.handleClose();
-}
-
-fn windowWillClose(_: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) void {
-    // Deliberately empty. Cleanup does not happen in `handleClose` via
-    // `windowShouldClose` either: `handleClose` only runs the veto callback
-    // and stops the display link.
-    //
-    // Teardown cannot happen here either. AppKit calls this from inside
-    // `-close`, with the NSWindow still live on the stack and the window's
-    // `WindowContext` still owning the `Cx` that any in-flight callback is
-    // using. Destroying either would be a use-after-free.
-    //
-    // Instead the window records `closed = true`, and the owning `App`
-    // reclaims it at its next drain point (`App.drainClosedWindows`), when the
-    // host is provably not inside this window's dispatch.
-}
-
-fn windowDidBecomeKey(self: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) void {
-    const window = getWindow(self) orelse return;
-    window.handleFocusChange(true);
-}
-
-fn windowDidResignKey(self: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) void {
-    const window = getWindow(self) orelse return;
-    window.handleFocusChange(false);
-}
-
-fn windowWillStartLiveResize(self: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) void {
-    const window = getWindow(self) orelse return;
-    window.handleLiveResizeStart();
-}
-
-fn windowDidEndLiveResize(self: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) void {
-    const window = getWindow(self) orelse return;
-    window.handleLiveResizeEnd();
 }

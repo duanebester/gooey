@@ -298,10 +298,6 @@ fn keyDown(self: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) voi
         }
     }
 
-    // Store the current event for doCommandBySelector fallback
-    window.pending_key_event = event_id;
-    defer window.pending_key_event = null;
-
     // Route through interpretKeyEvents for IME support
     const NSArray = objc.getClass("NSArray") orelse return;
     const event_array = NSArray.msgSend(objc.Object, "arrayWithObject:", .{event_id});
@@ -444,14 +440,12 @@ fn performKeyEquivalent(self: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) cal
             .is_repeat = false,
         };
 
-        // A core window queues a key here only when the keymap claims it.
-        // Any other key equivalent comes back as `keyDown:` once this
-        // returns NO, which queues it then; queueing it here too would
-        // deliver it twice (paste or undo twice in a text engine).
-        if (window.core) |binding| {
-            if (!binding.query.keymapClaims(key_event)) return false;
-        }
-        // Send to our input handler - if it returns true, we handled it
+        // A key is queued here only when the keymap claims it. Any other
+        // key equivalent comes back as `keyDown:` once this returns NO, which
+        // queues it then; queueing it here too would deliver it twice (paste
+        // or undo twice in a text engine).
+        const binding = window.core orelse return false;
+        if (!binding.query.keymapClaims(key_event)) return false;
         if (window.handleInput(.{ .key_down = key_event })) {
             return true;
         }
@@ -578,18 +572,18 @@ fn firstRectForCharacterRange(
     }
     const ns_window = objc.Object.fromId(ns_window_id);
 
-    // A core app answers from its rendered frame (contract §5 `Query`);
-    // the 0.3.1 runtime sets the rect from the focused TextInput.
-    const view_rect = if (window.core) |binding| coreImeRect(binding) else window.ime_cursor_rect;
+    // The rect comes from the core's rendered frame (contract §5 `Query`).
+    // Before the core binds there is no caret to place the IME against.
+    const binding = window.core orelse {
+        return .{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = 0, .height = 0 } };
+    };
+    const view_rect = coreImeRect(binding);
     // The rect is the caret after the marked text the rendered frame shows,
     // so it covers only the empty range there, whatever range was asked
     // for. Ranges count from the start of the marked text, as `markedRange`
     // does. The host calls `invalidateCharacterCoordinates` once the frame
     // with the latest marked text renders, and the next answer moves.
-    const caret_utf16 = if (window.core != null)
-        window.rendered_marked_length_utf16
-    else
-        window.marked_length_utf16;
+    const caret_utf16 = window.rendered_marked_length_utf16;
     if (actual_range) |actual| actual.* = .{ .location = caret_utf16, .length = 0 };
 
     // Convert from view coordinates to window coordinates, then to screen coordinates
@@ -613,17 +607,9 @@ fn coreImeRect(binding: CoreBinding) NSRect {
     };
 }
 
-fn doCommandBySelector(self: objc.c.id, _: objc.c.SEL, _: objc.c.SEL) callconv(.c) void {
-    const window = getWindow(self) orelse return;
-    // A core app already queued this key from `keyDown:`.
-    if (window.core != null) return;
-
-    if (window.pending_key_event) |event_id| {
-        if (parseKeyEvent(event_id)) |key_event| {
-            _ = window.handleInput(.{ .key_down = key_event });
-        }
-    }
-}
+/// Registered so AppKit does not beep for commands `interpretKeyEvents:`
+/// maps a key to: the core already queued that key from `keyDown:`.
+fn doCommandBySelector(_: objc.c.id, _: objc.c.SEL, _: objc.c.SEL) callconv(.c) void {}
 
 fn testNoTick(_: *anyopaque) void {}
 

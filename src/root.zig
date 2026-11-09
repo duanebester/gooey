@@ -259,9 +259,6 @@ test {
         @import("animation/animation.zig"),
         @import("animation/store.zig"),
 
-        // Render-thread mutex and the render exclusion `Window.setFont` holds.
-        @import("platform/mutex.zig"),
-
         // Vulkan instance-buffer budget math. Pure Zig (no Vulkan headers), so
         // its capacity tests run on every OS, not only where the renderer builds.
         @import("platform/linux/vk_types.zig"),
