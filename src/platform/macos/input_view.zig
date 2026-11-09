@@ -547,7 +547,7 @@ fn firstRectForCharacterRange(
     self: objc.c.id,
     _: objc.c.SEL,
     _: NSRange, // range
-    _: *NSRange, // actual_range
+    actual_range: ?*NSRange,
 ) callconv(.c) NSRect {
     const view = objc.Object.fromId(self);
     const window = getWindow(self) orelse {
@@ -566,6 +566,13 @@ fn firstRectForCharacterRange(
     // A core app answers from its rendered frame (contract §5 `Query`);
     // the 0.3.1 runtime sets the rect from the focused TextInput.
     const view_rect = if (window.core) |binding| coreImeRect(binding) else window.ime_cursor_rect;
+    // The rect is the caret after the marked text the rendered frame shows,
+    // so it covers only the empty range there, whatever range was asked
+    // for. Ranges count from the start of the marked text, as `markedRange`
+    // does. The host calls `invalidateCharacterCoordinates` once the frame
+    // with the latest marked text renders, and the next answer moves.
+    const caret_utf16 = if (window.core != null) window.rendered_marked_length_utf16 else window.marked_length_utf16;
+    if (actual_range) |actual| actual.* = .{ .location = caret_utf16, .length = 0 };
 
     // Convert from view coordinates to window coordinates, then to screen coordinates
     const window_rect = view.msgSend(NSRect, "convertRect:toView:", .{ view_rect, @as(objc.c.id, @ptrFromInt(0)) });
