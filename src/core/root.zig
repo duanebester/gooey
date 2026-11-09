@@ -1,8 +1,8 @@
 //! The 0.4.0 core's public surface (contract "Shape"): `App`, `Cx`, `ui`,
 //! `Handler`, `ElementId`, and `ResourceLimits`.
 //!
-//! The core runs beside the 0.3.1 middle until phase 6 deletes the middle;
-//! until then it is reached as `gooey.core`.
+//! `src/root.zig` re-exports these names as the `gooey` root, and the
+//! modules as `gooey.internals`.
 
 const std = @import("std");
 
@@ -54,6 +54,8 @@ pub const ui = struct {
     pub const box = element.box;
     pub const text = element.text;
     pub const paint = element.paint;
+    /// The type `ui.paint` returns for a state type, for helpers that build one.
+    pub const Paint = element.Paint;
     pub const when = element.when;
     pub const action = element.action;
     pub const Box = element.Box;

@@ -106,3 +106,6 @@ pub const Role = types.Role;
 
 /// Common state flags
 pub const State = types.State;
+
+/// Live-region politeness: the type of `ui.A11y.live`.
+pub const Live = types.Live;

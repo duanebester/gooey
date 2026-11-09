@@ -147,13 +147,11 @@ fn atlasLiveSet(gpa: std.mem.Allocator, io: std.Io) void {
 // 0.4.0 core
 // =============================================================================
 
-const core = gooey.core;
-
 const CoreState = struct {
     fn picked(_: *CoreState) void {}
 };
 
-const core_config: core.Config(CoreState) = .{
+const core_config: gooey.Config(CoreState) = .{
     .title = "fail-fast",
     .width = 100,
     .height = 100,
@@ -161,59 +159,59 @@ const core_config: core.Config(CoreState) = .{
 };
 
 const CoreApp = struct {
-    fn empty(cx: *core.Cx) void {
-        cx.render(core.ui.box(.{}, .{}));
+    fn empty(cx: *gooey.Cx) void {
+        cx.render(gooey.ui.box(.{}, .{}));
     }
 
-    fn duplicateKey(cx: *core.Cx) void {
+    fn duplicateKey(cx: *gooey.Cx) void {
         cx.render(.{
-            core.ui.box(.{ .key = .{ .name = "twin" } }, .{}),
-            core.ui.box(.{ .key = .{ .name = "twin" } }, .{}),
+            gooey.ui.box(.{ .key = .{ .name = "twin" } }, .{}),
+            gooey.ui.box(.{ .key = .{ .name = "twin" } }, .{}),
         });
     }
 
     /// Each level renders the next through `cx.render`, so the depth grows
     /// by one per level until the budget stops it.
     const Nest = struct {
-        pub fn render(self: Nest, cx: *core.Cx) void {
+        pub fn render(self: Nest, cx: *gooey.Cx) void {
             cx.render(self);
         }
     };
 
-    fn nested(cx: *core.Cx) void {
+    fn nested(cx: *gooey.Cx) void {
         cx.render(Nest{});
     }
 
     /// A window-sized box whose click requests a dialog completing on a
     /// state type that is not the root state.
-    fn dialogButton(cx: *core.Cx) void {
-        cx.render(core.ui.box(.{
+    fn dialogButton(cx: *gooey.Cx) void {
+        cx.render(gooey.ui.box(.{
             .key = .{ .name = "open" },
             .on_click = cx.on(requestDialog, .{}),
             .style = .{ .width = .{ .grow = 1 }, .height = .{ .grow = 1 } },
         }, .{}));
     }
 
-    fn requestDialog(_: *CoreState, effects: *core.Effects) void {
+    fn requestDialog(_: *CoreState, effects: *gooey.Effects) void {
         const on_complete = effects.handler(Stranger.picked);
         effects.openFileDialog(.{ .kind = .{ .open = open_many }, .on_complete = on_complete });
     }
 
     /// A window-sized box whose click requests a multiple selection.
-    fn manyButton(cx: *core.Cx) void {
-        cx.render(core.ui.box(.{
+    fn manyButton(cx: *gooey.Cx) void {
+        cx.render(gooey.ui.box(.{
             .key = .{ .name = "open" },
             .on_click = cx.on(requestMany, .{}),
             .style = .{ .width = .{ .grow = 1 }, .height = .{ .grow = 1 } },
         }, .{}));
     }
 
-    fn requestMany(_: *CoreState, effects: *core.Effects) void {
+    fn requestMany(_: *CoreState, effects: *gooey.Effects) void {
         const on_complete = effects.handler(CoreState.picked);
         effects.openFileDialog(.{ .kind = .{ .open = open_many }, .on_complete = on_complete });
     }
 
-    const open_many: core.PathPromptOptions = .{
+    const open_many: gooey.PathPromptOptions = .{
         .files = true,
         .directories = false,
         .multiple = true,
@@ -223,39 +221,39 @@ const CoreApp = struct {
         fn picked(_: *Stranger) void {}
     };
 
-    fn monoText(cx: *core.Cx) void {
-        cx.render(core.ui.text("code", .{ .family = .mono }));
+    fn monoText(cx: *gooey.Cx) void {
+        cx.render(gooey.ui.text("code", .{ .family = .mono }));
     }
 
     /// One empty line per newline, then "m": one more line than the pool
     /// holds, in 1,025 bytes, which every shaper measures.
-    fn wrapLines(cx: *core.Cx) void {
-        const lines = comptime newlinesThenM(gooey.layout.engine.MAX_LINES_PER_TEXT);
-        cx.render(core.ui.text(&lines, .{ .wrap = .newlines }));
+    fn wrapLines(cx: *gooey.Cx) void {
+        const lines = comptime newlinesThenM(gooey.internals.layout.engine.MAX_LINES_PER_TEXT);
+        cx.render(gooey.ui.text(&lines, .{ .wrap = .newlines }));
     }
 
     /// One empty word per newline, then "m": one more word than the pool
     /// holds. Words are scanned before lines are packed, so the word pool is
     /// the one exhausted.
-    fn wrapWords(cx: *core.Cx) void {
-        const words = comptime newlinesThenM(gooey.layout.engine.MAX_WORDS_PER_TEXT);
-        cx.render(core.ui.text(&words, .{ .wrap = .words }));
+    fn wrapWords(cx: *gooey.Cx) void {
+        const words = comptime newlinesThenM(gooey.internals.layout.engine.MAX_WORDS_PER_TEXT);
+        cx.render(gooey.ui.text(&words, .{ .wrap = .words }));
     }
 
     /// `nano` draws at most 1,024 glyphs, so the frame holds 1,024 wrapped
     /// lines: the first text claims 1,000 and the second asks for 25.
-    fn wrapFrame(cx: *core.Cx) void {
+    fn wrapFrame(cx: *gooey.Cx) void {
         const first = comptime newlinesThenM(999);
         const second = comptime newlinesThenM(24);
-        cx.render(core.ui.box(.{}, .{
-            core.ui.text(&first, .{ .wrap = .newlines }),
-            core.ui.text(&second, .{ .wrap = .newlines }),
+        cx.render(gooey.ui.box(.{}, .{
+            gooey.ui.text(&first, .{ .wrap = .newlines }),
+            gooey.ui.text(&second, .{ .wrap = .newlines }),
         }));
     }
 
     /// One row more than the row type's `count_max`.
-    fn longList(cx: *core.Cx) void {
-        cx.render(components.core.List(TallRow){ .key = "rows", .count = TallRow.count_max + 1 });
+    fn longList(cx: *gooey.Cx) void {
+        cx.render(components.List(TallRow){ .key = "rows", .count = TallRow.count_max + 1 });
     }
 
     const TallRow = struct {
@@ -263,41 +261,41 @@ const CoreApp = struct {
 
         pub const count_max: u32 = 64;
 
-        pub fn height(_: *core.Cx, _: u32) f32 {
+        pub fn height(_: *gooey.Cx, _: u32) f32 {
             return 10;
         }
 
-        pub fn render(_: TallRow, _: *core.Cx) void {}
+        pub fn render(_: TallRow, _: *gooey.Cx) void {}
     };
     /// One point more than `nano` allows polylines in a frame.
-    fn longPolyline(cx: *core.Cx) void {
+    fn longPolyline(cx: *gooey.Cx) void {
         const nothing: u8 = 0;
-        cx.render(core.ui.paint(u8, &nothing, paintLongPolyline, .{}));
+        cx.render(gooey.ui.paint(u8, &nothing, paintLongPolyline, .{}));
     }
 
-    fn paintLongPolyline(_: *const u8, painter: *core.ui.Painter) void {
-        const count = core.ResourceLimits.nano.scene.polyline_point_count_frame_max + 1;
+    fn paintLongPolyline(_: *const u8, painter: *gooey.ui.Painter) void {
+        const count = gooey.ResourceLimits.nano.scene.polyline_point_count_frame_max + 1;
         const points = comptime blk: {
             @setEvalBranchQuota(4 * count);
             var result: [count][2]f32 = undefined;
             for (&result, 0..) |*point, index| point.* = .{ @floatFromInt(index), 0 };
             break :blk result;
         };
-        painter.polyline(&points, 1, core.ui.Color.rgb(1, 1, 1));
+        painter.polyline(&points, 1, gooey.ui.Color.rgb(1, 1, 1));
     }
 
     /// One distinct image path more than `nano`'s request entries, in one
     /// frame; the files do not exist, so none is decoded before the panic.
-    fn manyImages(cx: *core.Cx) void {
+    fn manyImages(cx: *gooey.Cx) void {
         const nothing: u8 = 0;
-        cx.render(core.ui.paint(u8, &nothing, paintManyImages, .{
+        cx.render(gooey.ui.paint(u8, &nothing, paintManyImages, .{
             .width = .{ .fixed = 10 },
             .height = .{ .fixed = 10 },
         }));
     }
 
-    fn paintManyImages(_: *const u8, painter: *core.ui.Painter) void {
-        const count = core.ResourceLimits.nano.atlas.image_request_count_max + 1;
+    fn paintManyImages(_: *const u8, painter: *gooey.ui.Painter) void {
+        const count = gooey.ResourceLimits.nano.atlas.image_request_count_max + 1;
         inline for (0..count) |index| {
             const path = std.fmt.comptimePrint("assets/missing-{d}.png", .{index});
             painter.image(path, painter.bounds, .{ .fit = .contain });
@@ -323,18 +321,18 @@ fn initCoreApp(comptime App: type, gpa: std.mem.Allocator, io: std.Io) *App {
 }
 
 fn coreAllocation(gpa: std.mem.Allocator, io: std.Io) void {
-    const app = initCoreApp(core.App(CoreState, CoreApp.empty, core_config), gpa, io);
+    const app = initCoreApp(gooey.App(CoreState, CoreApp.empty, core_config), gpa, io);
     const bytes = app.guard.allocator().alloc(u8, 16) catch return;
     _ = bytes;
 }
 
 fn coreDialogTarget(gpa: std.mem.Allocator, io: std.Io) void {
-    const app = initCoreApp(core.App(CoreState, CoreApp.dialogButton, core_config), gpa, io);
+    const app = initCoreApp(gooey.App(CoreState, CoreApp.dialogButton, core_config), gpa, io);
     clickCenter(app);
 }
 
 fn coreDialogPaths(gpa: std.mem.Allocator, io: std.Io) void {
-    const app = initCoreApp(core.App(CoreState, CoreApp.manyButton, core_config), gpa, io);
+    const app = initCoreApp(gooey.App(CoreState, CoreApp.manyButton, core_config), gpa, io);
     var context: u8 = 0;
     app.window.file_dialog = .{ .context = &context, .open = TooManyPaths.open };
     clickCenter(app);
@@ -342,7 +340,7 @@ fn coreDialogPaths(gpa: std.mem.Allocator, io: std.Io) void {
 
 /// A dialog service that selects one path more than `nano` allows.
 const TooManyPaths = struct {
-    const count = core.ResourceLimits.nano.events.dialog_path_count_max + 1;
+    const count = gooey.ResourceLimits.nano.events.dialog_path_count_max + 1;
     const bytes: []const u8 = &joined: {
         var paths: [3 * count - 1]u8 = undefined;
         for (0..count) |index| {
@@ -357,8 +355,8 @@ const TooManyPaths = struct {
     fn open(
         _: *anyopaque,
         _: std.mem.Allocator,
-        _: core.internals.handler.FileDialogRequest,
-    ) core.internals.events.Completion.Outcome {
+        _: gooey.internals.handler.FileDialogRequest,
+    ) gooey.internals.events.Completion.Outcome {
         return .{ .file_selected = .{ .bytes = bytes, .count = count } };
     }
 };
@@ -378,12 +376,12 @@ fn clickCenter(app: anytype) void {
 }
 
 fn coreDeinitRunning(gpa: std.mem.Allocator, io: std.Io) void {
-    const app = initCoreApp(core.App(CoreState, CoreApp.empty, core_config), gpa, io);
+    const app = initCoreApp(gooey.App(CoreState, CoreApp.empty, core_config), gpa, io);
     app.tick(1);
     app.deinit();
 }
 
-fn coreTick(gpa: std.mem.Allocator, io: std.Io, comptime render: fn (*core.Cx) void) void {
-    const app = initCoreApp(core.App(CoreState, render, core_config), gpa, io);
+fn coreTick(gpa: std.mem.Allocator, io: std.Io, comptime render: fn (*gooey.Cx) void) void {
+    const app = initCoreApp(gooey.App(CoreState, render, core_config), gpa, io);
     app.tick(1);
 }

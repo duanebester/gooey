@@ -10,12 +10,11 @@ const std = @import("std");
 const gooey = @import("gooey");
 const components = @import("gooey-components");
 
-const core = gooey.core;
-const ui = core.ui;
-const Cx = core.Cx;
-const Key = core.Key;
+const ui = gooey.ui;
+const Cx = gooey.Cx;
+const Key = gooey.Key;
 const Color = ui.Color;
-const Button = components.core.Button;
+const Button = components.Button;
 
 const assert = std.debug.assert;
 
@@ -34,7 +33,7 @@ pub const State = struct {
     }
 };
 
-pub const App = core.App(State, render, .{
+pub const App = gooey.App(State, render, .{
     .title = "Floating Dropdown Test",
     .width = 600,
     .height = 400,

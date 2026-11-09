@@ -16,12 +16,11 @@ const std = @import("std");
 const gooey = @import("gooey");
 const components = @import("gooey-components");
 
-const core = gooey.core;
-const ui = core.ui;
-const Cx = core.Cx;
-const Effects = core.Effects;
+const ui = gooey.ui;
+const Cx = gooey.Cx;
+const Effects = gooey.Effects;
 const Color = ui.Color;
-const List = components.core.List;
+const List = components.List;
 
 const assert = std.debug.assert;
 
@@ -181,7 +180,7 @@ fn compare(a: *const RowData, b: *const RowData, column: Column) std.math.Order 
     };
 }
 
-pub const App = core.App(State, render, .{
+pub const App = gooey.App(State, render, .{
     .title = "DataTable Example - 10,000 Rows",
     .width = 900,
     .height = 600,

@@ -10,13 +10,12 @@ const std = @import("std");
 const gooey = @import("gooey");
 const components = @import("gooey-components");
 
-const core = gooey.core;
-const ui = core.ui;
-const Cx = core.Cx;
-const Effects = core.Effects;
-const Entity = core.Entity;
+const ui = gooey.ui;
+const Cx = gooey.Cx;
+const Effects = gooey.Effects;
+const Entity = gooey.Entity;
 const Color = ui.Color;
-const Button = components.core.Button;
+const Button = components.Button;
 
 const assert = std.debug.assert;
 
@@ -70,7 +69,7 @@ pub const State = struct {
     }
 };
 
-pub const App = core.App(State, render, .{
+pub const App = gooey.App(State, render, .{
     .title = "Dynamic Counters",
     .width = 600,
     .height = 400,

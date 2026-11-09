@@ -10,9 +10,8 @@ const std = @import("std");
 const gooey = @import("gooey");
 const charts = @import("gooey-charts");
 
-const core = gooey.core;
-const ui = core.ui;
-const Cx = core.Cx;
+const ui = gooey.ui;
+const Cx = gooey.Cx;
 const Color = ui.Color;
 const Painter = ui.Painter;
 
@@ -71,7 +70,7 @@ pub const State = struct {
     }
 };
 
-pub const App = core.App(State, render, .{
+pub const App = gooey.App(State, render, .{
     .title = "Analytics Dashboard",
     .width = 1200,
     .height = 800,
@@ -98,7 +97,7 @@ const casual_points = [_][2]f32{
 };
 
 /// Fill the chart data in place: a `Series` is about 300 KiB.
-fn fillData(state: *State, _: *core.Effects) void {
+fn fillData(state: *State, _: *gooey.Effects) void {
     state.revenue[0].initInPlace("Revenue", Palette.primary);
     state.revenue[1].initInPlace("Target", Palette.neutral_light);
     for (revenue_points, target_points, 1..) |revenue, target, month| {
@@ -242,7 +241,7 @@ fn paintBox(
     comptime paint_fn: fn (state: *const State, painter: *Painter) void,
     width: f32,
     height: f32,
-) core.internals.element.Paint(State) {
+) ui.Paint(State) {
     return ui.paint(State, state, paint_fn, .{
         .width = .{ .fixed = width },
         .height = .{ .fixed = height },

@@ -78,7 +78,7 @@ const charts = @import("gooey-charts");
 const std = @import("std");
 const gooey = @import("gooey");
 const charts = @import("gooey-charts");
-const ui = gooey.core.ui;
+const ui = gooey.ui;
 const State = struct {};
 
 // Data stored in static memory (survives paint callback)
@@ -141,7 +141,7 @@ fn paintLineChart(_: *const State, painter: *ui.Painter) void {
 Charts draw inside core paint elements:
 
 ```gooey/docs/charts.md#L124-132
-fn render(cx: *gooey.core.Cx) void {
+fn render(cx: *gooey.Cx) void {
     const state = cx.state(State);
     cx.render(ui.box(.{ .style = .{ .padding = .all(20) } }, .{
         // Bar chart at 400x300 pixels
@@ -1014,7 +1014,7 @@ pub fn announceSelection(label: []const u8, value: f32, position: u32, total: u3
 ### Usage Example
 
 ```gooey/docs/charts.md#L1004-1027
-fn renderAccessibleChart(cx: *gooey.core.Cx) void {
+fn renderAccessibleChart(cx: *gooey.Cx) void {
     const state = cx.state(State);
     // `state.description` was written once by `chart.describe` in `on_init`:
     // accessibility text must outlive the frame.
@@ -1168,8 +1168,8 @@ pub const ChartTheme = @import("theme.zig").ChartTheme;
 pub const accessibility = @import("accessibility.zig");
 
 // Re-exports from gooey for convenience
-pub const Color = gooey.core.ui.Color;
-pub const Painter = gooey.core.Painter;
+pub const Color = gooey.ui.Color;
+pub const Painter = gooey.Painter;
 ```
 
 ---

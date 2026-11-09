@@ -15,15 +15,14 @@ const std = @import("std");
 const gooey = @import("gooey");
 const components = @import("gooey-components");
 
-const core = gooey.core;
-const ui = core.ui;
-const Cx = core.Cx;
-const Effects = core.Effects;
-const Handler = core.Handler;
-const Button = components.core.Button;
-const Checkbox = components.core.Checkbox;
-const TextInput = components.core.TextInput;
-const Select = components.core.Select;
+const ui = gooey.ui;
+const Cx = gooey.Cx;
+const Effects = gooey.Effects;
+const Handler = gooey.Handler;
+const Button = components.Button;
+const Checkbox = components.Checkbox;
+const TextInput = components.TextInput;
+const Select = components.Select;
 
 // =============================================================================
 // Form State
@@ -133,7 +132,7 @@ const assert = std.debug.assert;
 // Entry Point
 // =============================================================================
 
-pub const App = core.App(State, render, .{
+pub const App = gooey.App(State, render, .{
     .title = "Accessible Form Example",
     .width = 600,
     .height = 800,

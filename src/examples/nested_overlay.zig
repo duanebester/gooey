@@ -9,12 +9,11 @@ const std = @import("std");
 const gooey = @import("gooey");
 const components = @import("gooey-components");
 
-const core = gooey.core;
-const ui = core.ui;
-const Cx = core.Cx;
-const Handler = core.Handler;
-const Modal = components.core.Modal;
-const Select = components.core.Select;
+const ui = gooey.ui;
+const Cx = gooey.Cx;
+const Handler = gooey.Handler;
+const Modal = components.Modal;
+const Select = components.Select;
 
 const assert = std.debug.assert;
 
@@ -41,7 +40,7 @@ pub const State = struct {
     }
 };
 
-pub const App = core.App(State, render, .{
+pub const App = gooey.App(State, render, .{
     .title = "Nested Overlay Z-Index Repro",
     .width = 700,
     .height = 500,

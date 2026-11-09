@@ -48,15 +48,14 @@ const time = struct {
     };
 };
 
-const core = gooey.core;
-const geometry = gooey.geometry;
+const geometry = gooey.internals.geometry;
 const Vec2 = geometry.Vec2;
 const IndexSlice = geometry.IndexSlice;
 const Triangulator = geometry.Triangulator;
-const FixedArray = core.FixedArray;
+const FixedArray = gooey.internals.fixed_array.FixedArray;
 const RectF = geometry.RectF;
 const PointF = geometry.PointF;
-const limits = core.limits;
+const limits = gooey.internals.limits;
 
 const stroke_mod = geometry.stroke;
 const LineCap = stroke_mod.LineCap;

@@ -8,11 +8,10 @@ const std = @import("std");
 const gooey = @import("gooey");
 const components = @import("gooey-components");
 
-const core = gooey.core;
-const ui = core.ui;
-const Cx = core.Cx;
-const Effects = core.Effects;
-const Button = components.core.Button;
+const ui = gooey.ui;
+const Cx = gooey.Cx;
+const Effects = gooey.Effects;
+const Button = components.Button;
 
 pub const State = struct {
     count: i32 = 0,
@@ -44,7 +43,7 @@ pub const State = struct {
     }
 };
 
-pub const App = core.App(State, render, .{
+pub const App = gooey.App(State, render, .{
     .title = "Counter",
     .width = 500,
     .height = 350,

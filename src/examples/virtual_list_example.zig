@@ -14,11 +14,10 @@ const std = @import("std");
 const gooey = @import("gooey");
 const components = @import("gooey-components");
 
-const core = gooey.core;
-const ui = core.ui;
-const Cx = core.Cx;
+const ui = gooey.ui;
+const Cx = gooey.Cx;
 const Color = ui.Color;
-const List = components.core.List;
+const List = components.List;
 
 const assert = std.debug.assert;
 
@@ -85,7 +84,7 @@ fn generateMessages() [message_count]Message {
 
 pub const State = struct {};
 
-pub const App = core.App(State, render, .{
+pub const App = gooey.App(State, render, .{
     .title = "VirtualList Example - Variable Height Items",
     .width = 800,
     .height = 600,

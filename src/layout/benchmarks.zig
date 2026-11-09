@@ -42,7 +42,7 @@ const time = struct {
         }
     };
 };
-const layout = gooey.layout;
+const layout = gooey.internals.layout;
 
 const LayoutEngine = layout.LayoutEngine;
 const Sizing = layout.Sizing;
