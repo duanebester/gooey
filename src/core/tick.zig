@@ -193,6 +193,8 @@ fn drain(window: *Window) bool {
     window.queue.clear();
     // Copy and cut reach the platform after the drain, outside any handler.
     window.clipboard.flush();
+    // Entities removed by this drain's handlers leave before the build.
+    window.store.freeRemoved();
     const dialog_ran = window.pending_dialog != null;
     if (window.pending_dialog) |request| {
         window.pending_dialog = null;

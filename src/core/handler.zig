@@ -19,6 +19,7 @@ const platform_interface = @import("../platform/interface.zig");
 const Theme = @import("../ui/theme.zig").Theme;
 const Live = @import("../accessibility/types.zig").Live;
 const Clipboard = @import("clipboard.zig").Clipboard;
+const entities = @import("entities.zig");
 
 const assert = std.debug.assert;
 
@@ -86,6 +87,34 @@ pub const EntityPool = struct {
     base: [*]u8,
     stride: u32,
     generations: []const u32,
+    /// An app pool from `Config.entities`, which `Effects.create` and
+    /// `remove` manage; null for a text-engine pool, whose slab claims slots.
+    app_pool: ?*entities.Pool = null,
+
+    /// The value a handle names, after checking it in every build mode:
+    /// `operation` names the caller in the panic.
+    pub fn checkedValue(
+        self: *const EntityPool,
+        slot: u32,
+        generation: u32,
+        operation: []const u8,
+    ) [*]u8 {
+        const app_pool = self.app_pool.?;
+        if (app_pool.check(slot, generation)) |problem| std.debug.panic(
+            "{s}: {t} handle into entity pool '{s}': slot {d} of {d}, " ++
+                "generation {d}, slot generation {d}",
+            .{
+                operation,
+                problem,
+                self.name,
+                slot,
+                app_pool.capacity(),
+                generation,
+                if (slot < app_pool.capacity()) app_pool.generations[slot] else 0,
+            },
+        );
+        return app_pool.valueBytes(slot).ptr;
+    }
 };
 
 /// Most entity pools one store holds: the framework's text-engine pools plus
@@ -124,6 +153,28 @@ pub const Store = struct {
         return null;
     }
 
+    /// The app pool for `T`, a type from `Config.entities`.
+    pub fn appPool(self: *const Store, comptime T: type) *const EntityPool {
+        const pool = self.findPool(typeId(T)) orelse std.debug.panic(
+            "{s} is not in Config.entities",
+            .{@typeName(T)},
+        );
+        if (pool.app_pool == null) std.debug.panic(
+            "{s} is a framework pool, not an entity in Config.entities",
+            .{@typeName(T)},
+        );
+        return pool;
+    }
+
+    /// Free every app-pool slot removed during the drain. The tick calls it
+    /// after the drain's last handler and before the build.
+    pub fn freeRemoved(self: *Store) void {
+        assert(self.pool_count <= entity_pool_count_max);
+        for (self.pools[0..self.pool_count]) |*pool| {
+            if (pool.app_pool) |app_pool| app_pool.freeRemoved();
+        }
+    }
+
     /// The state a target names. A stale generation or wrong type is a
     /// programmer error: handlers are rebuilt every frame from live state.
     pub fn resolve(self: *const Store, comptime State: type, target: Target) *State {
@@ -136,6 +187,10 @@ pub const Store = struct {
             "handler targets {s}, which is not a registered entity type",
             .{@typeName(State)},
         );
+        if (pool.app_pool != null) {
+            const value = pool.checkedValue(target.slot, target.generation, "handler");
+            return @ptrCast(@alignCast(value));
+        }
         assert(target.slot < pool.generations.len);
         assert(pool.generations[target.slot] == target.generation);
         const address = pool.base + @as(usize, target.slot) * pool.stride;
@@ -174,6 +229,9 @@ pub const Effects = struct {
     /// The text engines' clipboard, set by the router. Not an app API
     /// (decision 10): only `text_engine.zig` reads it.
     clipboard: ?*Clipboard,
+    /// The entity pools `create` and `remove` reach, set by the router and
+    /// by `App` for `on_init`.
+    store: ?*Store,
     /// The element the router is delivering to, for `focusSelf`.
     current: ElementId,
 
@@ -198,6 +256,7 @@ pub const Effects = struct {
             .theme_request = null,
             .announcement = null,
             .clipboard = null,
+            .store = null,
             .current = current,
         };
     }
@@ -274,6 +333,40 @@ pub const Effects = struct {
         assert(politeness != .off);
         assert(self.announcement == null);
         self.announcement = .{ .text = text, .politeness = politeness };
+    }
+
+    /// Create an entity of `T`, a type from `Config.entities` (decision 17).
+    /// The slot is claimed at once, so the handler can keep the handle; a
+    /// full pool panics with its name and capacity.
+    pub fn create(self: *Effects, comptime T: type, value: T) Entity(T) {
+        comptime assert(@typeInfo(T) == .@"struct");
+        const pool = self.store.?.appPool(T);
+        const app_pool = pool.app_pool.?;
+        const slot = app_pool.claim() orelse std.debug.panic(
+            "effects.create: entity pool '{s}' exhausted: capacity {d}, requested 1",
+            .{ pool.name, app_pool.capacity() },
+        );
+        const handle = Entity(T){ .slot = slot, .generation = app_pool.generations[slot] };
+        const target: *T = @ptrCast(@alignCast(pool.checkedValue(
+            handle.slot,
+            handle.generation,
+            "effects.create",
+        )));
+        target.* = value;
+        return handle;
+    }
+
+    /// Remove an entity of `T`. The tick frees it after the drain, so
+    /// handlers later in this drain still reach it; removing it twice in
+    /// one drain, or through a stale handle, panics. The app releases any
+    /// `.owned` handles kept in the entity first.
+    pub fn remove(self: *Effects, comptime T: type, handle: Entity(T)) void {
+        const pool = self.store.?.appPool(T);
+        _ = pool.checkedValue(handle.slot, handle.generation, "effects.remove");
+        if (!pool.app_pool.?.markRemoved(handle.slot)) std.debug.panic(
+            "effects.remove: entity pool '{s}' slot {d} removed twice in one drain",
+            .{ pool.name, handle.slot },
+        );
     }
 
     /// A handler for `method` on the root state, for a request's completion

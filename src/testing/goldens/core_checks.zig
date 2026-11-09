@@ -14,6 +14,7 @@ const accessible_form = @import("accessible_form_example");
 const code_editor = @import("code_editor_example");
 const nested_overlay = @import("nested_overlay_example");
 const dashboard = @import("dashboard_example");
+const dynamic_counters = @import("dynamic_counters_example");
 const images = @import("images_example");
 const virtual_list = @import("virtual_list_example");
 const data_table = @import("data_table_example");
@@ -2845,4 +2846,94 @@ fn rootFill(window: *core.internals.window.Window) ui.Color {
         }
     }
     unreachable;
+}
+
+test "dynamic_counters creates, removes within a drain, and reuses entity slots" {
+    // Goal: entities through the real router and tick (decision 17). Method:
+    // add three counters and bump the third; in one drain, remove it and
+    // click its "+" (the frame still names it, so the handler must reach
+    // it); after the tick its slot must be free, zeroed, and one generation
+    // on, and the next add must reuse it fresh. Then fill to the example's
+    // cap of ten, under the `.nano` pool's 16, with no allocation after init.
+    const App = dynamic_counters.App;
+    const app = try testing.allocator.create(App);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+
+    for (0..3) |_| countersClick(app, &now, "+ Add Counter", 0);
+    try testing.expectEqual(@as(u32, 3), app.state.counter_count);
+    countersClick(app, &now, "+", 2);
+    countersClick(app, &now, "+", 2);
+    countersClick(app, &now, "-", 0);
+    try testing.expectEqual(@as(i32, -1), countersValue(app, 0).count);
+    try testing.expectEqual(@as(i32, 2), countersValue(app, 2).count);
+
+    // Remove, then "+" on the removed card, in one drain.
+    const remove = nodeNamed(&app.window, .button, "- Remove Counter").?.bounds;
+    const plus = countersButton(app, "+", 2).bounds;
+    for ([_]core.ui.Rect{ remove, plus }) |bounds| {
+        const x = bounds.x + bounds.width / 2;
+        const y = bounds.y + bounds.height / 2;
+        app.window.queue.push(.{ .input = .{ .mouse_down = mouse(x, y) } });
+        app.window.queue.push(.{ .input = .{ .mouse_up = mouse(x, y) } });
+    }
+    now += 1;
+    app.tick(now);
+    const pool = &app.entity_pools[0];
+    try testing.expectEqual(@as(u32, 2), app.state.counter_count);
+    try testing.expectEqual(@as(u32, 1), pool.generations[2]);
+    for (pool.valueBytes(2)) |byte| try testing.expectEqual(@as(u8, 0), byte);
+    try testing.expect(countersButtonIndex(app, "+", 2) == null);
+
+    countersClick(app, &now, "+ Add Counter", 0);
+    const reused = app.state.counters[2];
+    try testing.expectEqual(@as(u32, 2), reused.slot);
+    try testing.expectEqual(@as(u32, 1), reused.generation);
+    try testing.expectEqual(@as(i32, 0), countersValue(app, 2).count);
+    try testing.expectEqualStrings("Counter C", countersValue(app, 2).label);
+
+    for (0..8) |_| countersClick(app, &now, "+ Add Counter", 0);
+    try testing.expectEqual(@as(u32, dynamic_counters.counter_count_max), app.state.counter_count);
+    try testing.expectEqual(@as(u32, 16 - 10), pool.free_count);
+    try testing.expect(countersButton(app, "+", 9).bounds.width > 0);
+    try testing.expectEqual(core.internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
+}
+
+fn countersValue(app: *dynamic_counters.App, index: u32) *const dynamic_counters.Counter {
+    const handle = app.state.counters[index];
+    const bytes = app.entity_pools[0].valueBytes(handle.slot);
+    return @ptrCast(@alignCast(bytes.ptr));
+}
+
+/// The `nth` button named `name`, in tree order.
+fn countersButtonIndex(
+    app: *dynamic_counters.App,
+    name: []const u8,
+    nth: u32,
+) ?*const core.internals.records.A11yNode {
+    const frame = app.window.rendered();
+    var seen: u32 = 0;
+    for (frame.a11y[0..frame.a11y_count]) |*node| {
+        if (node.role != .button) continue;
+        if (!std.mem.eql(u8, frame.text(node.name) orelse "", name)) continue;
+        if (seen == nth) return node;
+        seen += 1;
+    }
+    return null;
+}
+
+fn countersButton(
+    app: *dynamic_counters.App,
+    name: []const u8,
+    nth: u32,
+) *const core.internals.records.A11yNode {
+    return countersButtonIndex(app, name, nth).?;
+}
+
+fn countersClick(app: *dynamic_counters.App, now: *u64, name: []const u8, nth: u32) void {
+    const bounds = countersButton(app, name, nth).bounds;
+    clickAt(app, now, bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
 }

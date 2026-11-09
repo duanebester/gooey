@@ -22,6 +22,8 @@ const keymap_mod = @import("keymap.zig");
 const app_resources = @import("../context/app_resources.zig");
 const text_mod = @import("../text/mod.zig");
 const web_host = @import("../platform/web/core_host.zig");
+const entities_mod = @import("entities.zig");
+const text_engine = @import("text_engine.zig");
 
 const assert = std.debug.assert;
 
@@ -117,6 +119,40 @@ fn checkFonts(comptime State: type, comptime config: Config(State)) void {
     }
 }
 
+/// Pools the framework registers beside the app's: the input, area, and
+/// editor engines.
+const engine_pool_count_max: u32 = 3;
+
+/// Reject an entity list that cannot work (decision 17), naming the type.
+fn checkEntities(comptime State: type, comptime types: []const type) void {
+    comptime {
+        if (types.len + engine_pool_count_max > handler_mod.entity_pool_count_max) {
+            @compileError("gooey.App: more entity types than entity_pool_count_max " ++
+                "allows beside the text-engine pools");
+        }
+        for (types, 0..) |T, index| {
+            const name = @typeName(T);
+            if (@typeInfo(T) != .@"struct") {
+                @compileError("gooey.App: entity type " ++ name ++ " is not a struct");
+            }
+            if (T == State) @compileError("gooey.App: the root State cannot be an entity");
+            if (T == text_engine.InputEngine or T == text_engine.AreaEngine or
+                T == text_engine.EditorEngine)
+            {
+                @compileError("gooey.App: " ++ name ++ " is a text engine, not an entity");
+            }
+            if (@alignOf(T) > entities_mod.value_alignment) {
+                @compileError("gooey.App: entity type " ++ name ++ " needs alignment above 16");
+            }
+            for (types[0..index]) |Earlier| {
+                if (Earlier == T) {
+                    @compileError("gooey.App: entity type " ++ name ++ " is listed twice");
+                }
+            }
+        }
+    }
+}
+
 pub fn App(
     comptime State: type,
     comptime render_fn: fn (cx: *Cx) void,
@@ -124,7 +160,7 @@ pub fn App(
 ) type {
     comptime {
         if (config.limits.check()) |violation| @compileError(violation.message());
-        if (config.entities.len > 0) @compileError("gooey.App: entities arrive in phase 4");
+        checkEntities(State, config.entities);
         assert(config.width > 0);
         assert(config.height > 0);
         checkFonts(State, config);
@@ -133,6 +169,8 @@ pub fn App(
         guard: lifecycle.LifecycleGuard,
         state: State,
         store: handler_mod.Store,
+        /// One pool per `config.entities` type, in list order.
+        entity_pools: [config.entities.len]entities_mod.Pool,
         resources: app_resources.AppResources,
         window: Window,
 
@@ -208,6 +246,8 @@ pub fn App(
             const gpa = self.guard.allocator();
             self.state = .{};
             self.store = handler_mod.Store.init(State, &self.state);
+            try self.initEntityPools(gpa);
+            errdefer self.deinitEntityPools(gpa);
             try self.resources.initOwnedInPlace(gpa, io, scale_factor, .{
                 .font_name = config.fonts.name,
                 .font_size = fontSize(State, config),
@@ -233,8 +273,11 @@ pub fn App(
             assert(self.guard.lifecycle == .initializing);
             if (config.on_init) |on_init| {
                 var effects = Effects.init(null, .root);
+                effects.store = &self.store;
                 on_init(&self.state, &effects);
                 assert(effects.file_dialog == null);
+                // Entities on_init removed leave before the first build.
+                self.store.freeRemoved();
             }
             self.guard.enterRunning();
             assert(self.guard.lifecycle == .running);
@@ -268,6 +311,33 @@ pub fn App(
             assert(self.guard.lifecycle == .deinitializing);
             window_mod.deinit(&self.window);
             self.resources.deinit();
+            self.deinitEntityPools(self.guard.allocator());
+        }
+
+        /// Reserve and register one pool per `config.entities` type,
+        /// `limits.entities.count_per_type_max` slots each (decision 17).
+        fn initEntityPools(self: *Self, gpa: std.mem.Allocator) !void {
+            const count = config.limits.entities.count_per_type_max;
+            comptime assert(count > 0);
+            inline for (config.entities, 0..) |T, index| {
+                const pool = &self.entity_pools[index];
+                errdefer for (self.entity_pools[0..index]) |*done| done.deinit(gpa);
+                const stride: u32 = @sizeOf(T);
+                try pool.initInPlace(gpa, @typeName(T), stride, count);
+                self.store.registerPool(.{
+                    .type_id = handler_mod.typeId(T),
+                    .name = pool.name,
+                    .base = pool.bytes.ptr,
+                    .stride = stride,
+                    .generations = pool.generations,
+                    .app_pool = pool,
+                });
+            }
+            assert(self.store.pool_count == config.entities.len);
+        }
+
+        fn deinitEntityPools(self: *Self, gpa: std.mem.Allocator) void {
+            for (&self.entity_pools) |*pool| pool.deinit(gpa);
         }
 
         pub fn tick(self: *Self, now_ns: u64) void {

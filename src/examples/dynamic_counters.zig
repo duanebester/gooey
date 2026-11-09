@@ -1,32 +1,29 @@
-//! Dynamic Counters Example (Cx API)
+//! Dynamic counters: entities on the core (contract §7, decision 17).
 //!
-//! Demonstrates:
-//! - Pure entity methods bound with cx.on(method, .{ .entity = counter })
-//! - Methods that take *Window when entity ops are needed
-//! - Dynamic entity creation and deletion
-//! - Auto-cleanup when entities are removed
+//! - Each counter is an entity in the `Counter` pool. Its buttons bind the
+//!   pure `Counter.increment` and `decrement` to it with `.entity`.
+//! - `addCounter` and `removeCounter` create and remove entities through
+//!   `Effects`; a removed counter's slot is freed after the drain.
+//! - The layout, colours, and limits match the 0.3.1 example.
 
 const std = @import("std");
-
 const gooey = @import("gooey");
 const components = @import("gooey-components");
-const platform = gooey.platform;
 
-/// WASM-compatible logging - redirect std.log to console.log via JS imports
-pub const std_options = gooey.std_options;
-const ui = gooey.ui;
-const Cx = gooey.Cx;
-const Button = components.Button;
+const core = gooey.core;
+const ui = core.ui;
+const Cx = core.Cx;
+const Effects = core.Effects;
+const Entity = core.Entity;
+const Color = ui.Color;
+const Button = components.core.Button;
 
-// =============================================================================
-// Models
-// =============================================================================
+const assert = std.debug.assert;
 
-const Counter = struct {
+pub const Counter = struct {
     count: i32 = 0,
     label: []const u8 = "Counter",
 
-    // Pure methods - no cx, no notify!
     pub fn increment(self: *Counter) void {
         self.count += 1;
     }
@@ -40,238 +37,166 @@ const Counter = struct {
     }
 };
 
-// =============================================================================
-// Application State
-// =============================================================================
+/// Most counters at once, as in 0.3.1; the `.nano` pool holds 16.
+pub const counter_count_max = 10;
 
-const MaxCounters = 10;
+const labels = [counter_count_max][]const u8{
+    "Counter A", "Counter B", "Counter C", "Counter D", "Counter E",
+    "Counter F", "Counter G", "Counter H", "Counter I", "Counter J",
+};
 
-const AppState = struct {
-    counters: [MaxCounters]gooey.context.Entity(Counter) = @splat(gooey.context.Entity(Counter).nil()),
-    counter_count: usize = 0,
-    next_label: u8 = 'A',
+pub const State = struct {
+    counters: [counter_count_max]Entity(Counter) = undefined,
+    counter_count: u32 = 0,
 
-    // =========================================================================
-    // Methods that take *Window (they create and remove entities)
-    // =========================================================================
-
-    pub fn addCounter(self: *AppState, g: *gooey.Window) void {
-        if (self.counter_count >= 10) return;
-
-        const label: []const u8 = switch (self.next_label) {
-            'A' => "Counter A",
-            'B' => "Counter B",
-            'C' => "Counter C",
-            'D' => "Counter D",
-            'E' => "Counter E",
-            'F' => "Counter F",
-            'G' => "Counter G",
-            'H' => "Counter H",
-            'I' => "Counter I",
-            'J' => "Counter J",
-            else => "Counter",
-        };
-
-        const counter = g.createEntity(Counter, .{ .count = 0, .label = label }) catch return;
-        self.counters[self.counter_count] = counter;
+    pub fn addCounter(self: *State, effects: *Effects) void {
+        assert(self.counter_count <= counter_count_max);
+        if (self.counter_count == counter_count_max) return;
+        const label = labels[self.counter_count];
+        self.counters[self.counter_count] = effects.create(Counter, .{ .label = label });
         self.counter_count += 1;
-        self.next_label += 1;
     }
 
-    pub fn removeCounter(self: *AppState, g: *gooey.Window) void {
+    pub fn removeCounter(self: *State, effects: *Effects) void {
+        assert(self.counter_count <= counter_count_max);
         if (self.counter_count == 0) return;
-
         self.counter_count -= 1;
-        const entity = self.counters[self.counter_count];
-        g.getEntities().remove(entity.id);
-        self.next_label -= 1;
+        effects.remove(Counter, self.counters[self.counter_count]);
     }
 
-    // =========================================================================
-    // Helper methods (no context needed)
-    // =========================================================================
-
-    fn countersSlice(self: *const AppState) []const gooey.context.Entity(Counter) {
+    pub fn live(self: *const State) []const Entity(Counter) {
+        assert(self.counter_count <= counter_count_max);
         return self.counters[0..self.counter_count];
     }
 };
 
-// =============================================================================
-// Components - Receive *Cx directly
-// =============================================================================
-
-/// Individual counter card - binds pure methods to its entity with `.entity`
-const CounterCard = struct {
-    counter: gooey.context.Entity(Counter),
-
-    pub fn render(self: @This(), cx: *Cx) void {
-        const g = cx.window();
-        const data = g.readEntity(Counter, self.counter) orelse return;
-
-        cx.render(ui.box(.{
-            .padding = .{ .all = 16 },
-            .gap = 8,
-            .background = ui.Color.white,
-            .corner_radius = 8,
-            .direction = .column,
-            .min_width = 120,
-            .shadow = .{ .blur_radius = 8, .color = ui.Color.rgba(0, 0, 0, 0.1) },
-        }, .{
-            ui.text(data.label, .{ .size = 12, .color = ui.Color.rgb(0.5, 0.5, 0.5) }),
-            ui.textFmt("{}", .{data.count}, .{ .size = 32 }),
-            CounterButtons{ .counter = self.counter },
-        }));
-    }
-};
-
-const CounterButtons = struct {
-    counter: gooey.context.Entity(Counter),
-
-    pub fn render(self: @This(), cx: *Cx) void {
-        var dec_id_buf: [32]u8 = undefined;
-        var inc_id_buf: [32]u8 = undefined;
-        const dec_id = std.fmt.bufPrint(&dec_id_buf, "dec_{d}", .{self.counter.id.id}) catch "-";
-        const inc_id = std.fmt.bufPrint(&inc_id_buf, "inc_{d}", .{self.counter.id.id}) catch "+";
-
-        cx.render(ui.hstack(.{ .gap = 8 }, .{
-            Button{
-                .id = dec_id,
-                .label = "-",
-                .size_preset = .small,
-                .on_click = cx.on(Counter.decrement, .{ .entity = self.counter }),
-            },
-            Button{
-                .id = inc_id,
-                .label = "+",
-                .size_preset = .small,
-                .on_click = cx.on(Counter.increment, .{ .entity = self.counter }),
-            },
-        }));
-    }
-};
-
-/// Shows total of all counters
-const TotalDisplay = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        const s = cx.stateConst(AppState);
-        const g = cx.window();
-
-        var total: i32 = 0;
-        for (s.countersSlice()) |counter_entity| {
-            if (g.readEntity(Counter, counter_entity)) |counter| {
-                total += counter.count;
-            }
-        }
-
-        cx.render(ui.box(.{
-            .padding = .{ .all = 16 },
-            .background = ui.Color.rgb(0.2, 0.6, 0.9),
-            .corner_radius = 8,
-        }, .{
-            ui.textFmt("Total: {}", .{total}, .{ .size = 24, .color = ui.Color.white }),
-        }));
-    }
-};
-
-/// Control buttons - addCounter takes *Window because it creates entities
-const ControlPanel = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        const s = cx.stateConst(AppState);
-
-        cx.render(ui.hstack(.{ .gap = 12, .alignment = .{ .cross = .center } }, .{
-            // These take *Window because they create/remove entities
-            Button{ .label = "+ Add Counter", .on_click = cx.on(AppState.addCounter, .{}) },
-            Button{
-                .label = "- Remove Counter",
-                .variant = .secondary,
-                .on_click = cx.on(AppState.removeCounter, .{}),
-            },
-            ui.textFmt("({}/10)", .{s.countersSlice().len}, .{ .size = 14, .color = ui.Color.rgb(0.5, 0.5, 0.5) }),
-        }));
-    }
-};
-
-/// Grid of counter cards
-const CounterGrid = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        cx.render(ui.hstack(.{ .gap = 12 }, .{
-            CounterItems{},
-        }));
-    }
-};
-
-const CounterItems = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        const s = cx.stateConst(AppState);
-
-        for (s.countersSlice()) |counter_entity| {
-            cx.render(ui.box(.{}, .{
-                CounterCard{ .counter = counter_entity },
-            }));
-        }
-    }
-};
-
-// =============================================================================
-// Entry Point
-// =============================================================================
-
-var app_state = AppState{};
-
-const App = gooey.App(AppState, &app_state, render, .{
-    .limits = .nano,
+pub const App = core.App(State, render, .{
     .title = "Dynamic Counters",
     .width = 600,
     .height = 400,
+    .limits = .nano,
+    .entities = &.{Counter},
 });
 
-// Force type analysis - triggers @export on WASM
-comptime {
-    _ = App;
-}
+/// The generated entry point (contract §7).
+pub const main = App.main;
 
-// Native entry point
-pub fn main(init: std.process.Init) !void {
-    if (platform.is_wasm) unreachable;
-    return App.main(init);
-}
+const muted: Color = .rgb(0.5, 0.5, 0.5);
 
-fn render(cx: *Cx) void {
-    const size = cx.windowSize();
-
-    cx.render(ui.box(.{
-        .width = size.width,
-        .height = size.height,
-        .background = ui.Color.rgb(0.95, 0.95, 0.95),
-        .padding = .{ .all = 24 },
+pub fn render(cx: *Cx) void {
+    cx.render(ui.box(.{ .style = .{
+        .width = .{ .grow = 1 },
+        .height = .{ .grow = 1 },
+        .background = .{ .rgba = .rgb(0.95, 0.95, 0.95) },
+        .padding = .all(24),
         .gap = 24,
-        .direction = .column,
-    }, .{
+    } }, .{
         ui.text("Dynamic Counters", .{ .size = 24 }),
         ui.text("Pure state: Counter.increment/decrement bind to their entity with .entity", .{
             .size = 14,
-            .color = ui.Color.rgb(0.5, 0.5, 0.5),
+            .color = .{ .rgba = muted },
         }),
-
         ControlPanel{},
         CounterGrid{},
         TotalDisplay{},
     }));
 }
 
-// =============================================================================
-// Tests - Counter is pure and testable!
-// =============================================================================
+const ControlPanel = struct {
+    pub fn render(_: ControlPanel, cx: *Cx) void {
+        const s = cx.state(State);
+        var buffer: [8]u8 = undefined;
+        const count = std.fmt.bufPrint(&buffer, "({d}/10)", .{s.counter_count}) catch unreachable;
+        cx.render(ui.box(.{ .style = .{
+            .direction = .row,
+            .gap = 12,
+            .alignment = .{ .cross = .center },
+        } }, .{
+            Button{ .label = "+ Add Counter", .on_click = cx.on(State.addCounter, .{}) },
+            Button{
+                .label = "- Remove Counter",
+                .variant = .secondary,
+                .on_click = cx.on(State.removeCounter, .{}),
+            },
+            ui.text(count, .{ .size = 14, .color = .{ .rgba = muted } }),
+        }));
+    }
+};
 
-test "Counter increment/decrement" {
-    var c = Counter{};
-    c.increment();
-    c.increment();
-    try std.testing.expectEqual(@as(i32, 2), c.count);
+const CounterGrid = struct {
+    pub fn render(_: CounterGrid, cx: *Cx) void {
+        const s = cx.state(State);
+        var cards: [counter_count_max]CounterCard = undefined;
+        for (s.live(), 0..) |counter, index| cards[index] = .{ .counter = counter };
+        const live: []const CounterCard = cards[0..s.counter_count];
+        cx.render(ui.box(.{ .style = .{ .direction = .row, .gap = 12 } }, live));
+    }
+};
 
-    c.decrement();
-    try std.testing.expectEqual(@as(i32, 1), c.count);
+const CounterCard = struct {
+    counter: Entity(Counter),
 
-    c.reset();
-    try std.testing.expectEqual(@as(i32, 0), c.count);
+    pub fn render(self: CounterCard, cx: *Cx) void {
+        const data = cx.get(Counter, self.counter);
+        var buffer: [12]u8 = undefined;
+        const count = std.fmt.bufPrint(&buffer, "{d}", .{data.count}) catch unreachable;
+        // Keyed by slot and generation, so a reused slot starts fresh
+        // (decision 17).
+        const key: u64 = (@as(u64, self.counter.generation) << 32) | self.counter.slot;
+        cx.render(ui.box(.{
+            .key = .{ .index = key },
+            .style = .{
+                .padding = .all(16),
+                .gap = 8,
+                .background = .{ .rgba = .white },
+                .corner_radius = .all(8),
+                .width_min = 120,
+                // 0.3.1's shadow defaulted to a 4 px drop.
+                .shadow = .{ .blur = 8, .offset_y = 4, .color = .{ .rgba = .rgba(0, 0, 0, 0.1) } },
+            },
+        }, .{
+            ui.text(data.label, .{ .size = 12, .color = .{ .rgba = muted } }),
+            ui.text(count, .{ .size = 32 }),
+            ui.box(.{ .style = .{ .direction = .row, .gap = 8 } }, .{
+                Button{
+                    .label = "-",
+                    .size = .small,
+                    .on_click = cx.on(Counter.decrement, .{ .entity = self.counter }),
+                },
+                Button{
+                    .label = "+",
+                    .size = .small,
+                    .on_click = cx.on(Counter.increment, .{ .entity = self.counter }),
+                },
+            }),
+        }));
+    }
+};
+
+const TotalDisplay = struct {
+    pub fn render(_: TotalDisplay, cx: *Cx) void {
+        const s = cx.state(State);
+        var total: i32 = 0;
+        for (s.live()) |counter| total += cx.get(Counter, counter).count;
+        var buffer: [24]u8 = undefined;
+        const text = std.fmt.bufPrint(&buffer, "Total: {d}", .{total}) catch unreachable;
+        cx.render(ui.box(.{ .style = .{
+            .padding = .all(16),
+            .background = .{ .rgba = .rgb(0.2, 0.6, 0.9) },
+            .corner_radius = .all(8),
+        } }, .{
+            ui.text(text, .{ .size = 24, .color = .{ .rgba = .white } }),
+        }));
+    }
+};
+
+test "Counter increments, decrements, and resets" {
+    var counter = Counter{};
+    counter.increment();
+    counter.increment();
+    try std.testing.expectEqual(@as(i32, 2), counter.count);
+    counter.decrement();
+    try std.testing.expectEqual(@as(i32, 1), counter.count);
+    counter.reset();
+    try std.testing.expectEqual(@as(i32, 0), counter.count);
 }
