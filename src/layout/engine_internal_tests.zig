@@ -1,7 +1,6 @@
 //! Tests for engine internal data structures and low-level helpers.
 //!
 //! Covers:
-//!   - `SourceLoc` source-location capture
 //!   - `FixedCapacityArray` fixed-capacity collection
 //!   - `open_element_stack` / `floating_roots` fixed-capacity invariants
 //!   - UTF-8 text wrapping
@@ -25,7 +24,6 @@ const LayoutEngine = engine_mod.LayoutEngine;
 const ElementDeclaration = engine_mod.ElementDeclaration;
 const FixedCapacityArray = engine_mod.FixedCapacityArray;
 const WordInfo = engine_mod.WordInfo;
-const SourceLoc = engine_mod.SourceLoc;
 const TextMeasurement = engine_mod.TextMeasurement;
 const MAX_ELEMENTS_PER_FRAME = engine_mod.MAX_ELEMENTS_PER_FRAME;
 const MAX_OPEN_DEPTH = engine_mod.MAX_OPEN_DEPTH;
@@ -44,81 +42,6 @@ const Color = types.Color;
 const CornerRadius = types.CornerRadius;
 const TextConfig = types.TextConfig;
 const Offset2D = types.Offset2D;
-
-// =============================================================================
-// SourceLoc Tests
-// =============================================================================
-
-test "SourceLoc.none is invalid" {
-    const loc = SourceLoc.none;
-    try std.testing.expect(!loc.isValid());
-    try std.testing.expectEqual(@as(?[*:0]const u8, null), loc.file);
-    try std.testing.expectEqual(@as(u32, 0), loc.line);
-}
-
-test "SourceLoc.from captures builtin source location" {
-    const src = @src();
-    const loc = SourceLoc.from(src);
-
-    try std.testing.expect(loc.isValid());
-    try std.testing.expect(loc.line > 0);
-    try std.testing.expect(loc.file != null);
-}
-
-test "SourceLoc.getFile returns file name" {
-    const src = @src();
-    const loc = SourceLoc.from(src);
-
-    const file = loc.getFile();
-    try std.testing.expect(file != null);
-    try std.testing.expect(file.?.len > 0);
-}
-
-test "SourceLoc.getBasename extracts filename" {
-    const src = @src();
-    const loc = SourceLoc.from(src);
-
-    const basename = loc.getBasename();
-    try std.testing.expect(basename != null);
-    // The basename should be this test file itself.
-    try std.testing.expectEqualStrings("engine_internal_tests.zig", basename.?);
-}
-
-test "SourceLoc stored in ElementDeclaration" {
-    const src = @src();
-    const loc = SourceLoc.from(src);
-
-    const decl = ElementDeclaration{
-        .source_location = loc,
-    };
-
-    try std.testing.expect(decl.source_location.isValid());
-    try std.testing.expectEqual(loc.line, decl.source_location.line);
-}
-
-test "SourceLoc propagates through createElement" {
-    var engine = try LayoutEngine.init(std.testing.allocator);
-    defer engine.deinit();
-
-    engine.beginFrame(800, 600);
-
-    const src = @src();
-    const loc = SourceLoc.from(src);
-
-    try engine.openElement(.{
-        .id = LayoutId.init("test-element"),
-        .layout = .{ .sizing = Sizing.fixed(100, 100) },
-        .source_location = loc,
-    });
-    engine.closeElement();
-
-    _ = try engine.endFrame();
-
-    // Verify the element stored the source location
-    const elem = engine.elements.getConst(0);
-    try std.testing.expect(elem.config.source_location.isValid());
-    try std.testing.expectEqual(loc.line, elem.config.source_location.line);
-}
 
 // =============================================================================
 // Fixed Capacity Arrays, UTF-8, Capacity Limits

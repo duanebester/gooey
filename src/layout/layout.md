@@ -331,7 +331,6 @@ fn buildLoginUI(engine: *LayoutEngine) !void {
 | `floating`         | `?FloatingConfig` | `null`  | Floating positioning (see FloatingConfig)    |
 | `user_data`        | `?*anyopaque`     | `null`  | Custom data pointer                          |
 | `opacity`          | `f32`             | `1.0`   | Subtree opacity (0.0 transparent–1.0 opaque) |
-| `source_location`  | `SourceLoc`       | `{}`    | Debug source location                        |
 | `is_canvas`        | `bool`            | `false` | Whether this is a canvas element             |
 
 ### LayoutConfig

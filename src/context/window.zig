@@ -61,7 +61,6 @@ else
             _ = args;
         }
     };
-const debugger_mod = @import("../debug/debugger.zig");
 const render_stats = @import("../debug/render_stats.zig");
 
 // Accessibility (re-exported types only — owning subsystem lives in
@@ -177,14 +176,6 @@ const Frame = frame_mod.Frame;
 const draw_phase_mod = @import("draw_phase.zig");
 pub const DrawPhase = draw_phase_mod.DrawPhase;
 
-// Type-keyed singleton storage for cross-cutting per-window state. Only
-// `Debugger` lives here (its overlay quads, frame timing, and selected
-// layout id are per-window — sharing one across windows would mix
-// metrics from unrelated frames); app-scoped globals live on
-// `App.globals` instead.
-const global_mod = @import("global.zig");
-const Globals = global_mod.Globals;
-
 // Unified `(id_hash, type_id) -> *S` keyed pool for element-attached state.
 // Heap-allocated (`*ElementStates`) because the entry table is 128 KiB, too
 // large for the WASM stack budget. See `element_states.zig`.
@@ -287,16 +278,6 @@ pub const Window = struct {
     active_drag: ?drag_mod.DragState = null,
     /// Layout ID of current drop target (for drag-over styling)
     drag_over_target: ?u32 = null,
-
-    // `debugger` lives in `globals`; access via `window.debugger()`. The
-    // accessor reads from the type-keyed store — one indirection vs. a
-    // direct field, but it keeps singletons off the struct surface.
-
-    /// Type-keyed singleton store (see `global.zig`). Owns `Debugger` only;
-    /// the `*const Theme` slot is app-scoped on `App.globals`.
-    /// Default-constructed; populated post-init by every `init*` path via
-    /// `setOwned`.
-    globals: Globals = .{},
 
     /// Current frame phase (see `draw_phase.zig`). Advances monotonically
     /// through `none → prepaint → paint → focus → none` across the frame
@@ -626,8 +607,8 @@ pub const Window = struct {
         // Heap-allocate the element-state pool and initialise it in place at
         // its final address: the WASM `*Ptr` paths exist precisely so
         // 128 KiB structs never live on the stack. `errdefer` pairs the
-        // `allocator.create` so a later `try self.globals.setOwned(...)`
-        // failure unwinds without leaking the pool.
+        // `allocator.create` so a later failure unwinds without leaking the
+        // pool.
         self.element_states = allocator.create(ElementStates) catch return error.OutOfMemory;
         self.element_states.initInPlace(allocator);
         errdefer {
@@ -635,11 +616,9 @@ pub const Window = struct {
             allocator.destroy(self.element_states);
         }
 
-        // `globals` and `current_phase` start fresh. `self` is raw memory
-        // here (caller did `allocator.create` without zeroing), so explicit
-        // assignment is required — even default-valued fields would
-        // otherwise retain garbage.
-        self.globals = .{};
+        // `current_phase` starts fresh. `self` is raw memory here (caller did
+        // `allocator.create` without zeroing), so explicit assignment is
+        // required — even default-valued fields would otherwise retain garbage.
         self.current_phase = .none;
 
         // Scalar fields
@@ -648,7 +627,6 @@ pub const Window = struct {
         self.scale_factor = metrics.scale_factor;
         self.frame_count = 0;
         self.needs_render = false;
-        // `debugger` registered into `globals` below.
 
         // Pending/active drag state (re-init explicitly — `self` was raw memory)
         self.pending_drag = null;
@@ -692,12 +670,6 @@ pub const Window = struct {
         // This window's renderer draws from the atlases from its first frame.
         self.resources.registerAtlasConsumer(self.atlasConsumerKey());
         errdefer self.resources.unregisterAtlasConsumer(self.atlasConsumerKey());
-
-        // Per-window globals hold `Debugger` only (the theme slot is on
-        // `App.globals`). `self` is at its final heap address, so `setOwned`
-        // writes its bookkeeping directly. No `errdefer` after this last
-        // `try`: the function returns immediately after.
-        try self.globals.setOwned(allocator, debugger_mod.Debugger, .{});
     }
 
     pub fn deinit(self: *Self) void {
@@ -743,12 +715,6 @@ pub const Window = struct {
         // text order.
         self.resources.deinit();
 
-        // Teardown covers `Debugger` only (the single per-window owned
-        // global). The thunk built
-        // at `setOwned` time picks the right shape per type so each global
-        // teardown matches its declared `deinit`.
-        self.globals.deinit(self.allocator);
-
         // Tear down the two-`Frame` double buffer. Each `Frame.deinit` frees
         // its Scene + DispatchTree pair; both slots carry `owned = true`
         // regardless of how many `mem.swap` calls have run (the swap is a
@@ -781,14 +747,6 @@ pub const Window = struct {
     /// Read-only accessor for diagnostics / tests.
     pub fn drawPhase(self: *const Self) DrawPhase {
         return self.current_phase;
-    }
-
-    /// Typed accessor for the debugger global. Panics if the window was
-    /// never `init*`'d (a framework bug).
-    pub fn debugger(self: *Self) *debugger_mod.Debugger {
-        return self.globals.get(debugger_mod.Debugger) orelse {
-            std.debug.panic("Window.debugger(): no Debugger registered in globals (init* did not run?)", .{});
-        };
     }
 
     /// Cache the platform window's size and scale for this frame. When the
@@ -824,9 +782,6 @@ pub const Window = struct {
         // `beginFrame` calls without an intervening `finalizeFrame` fail
         // loudly here rather than corrupting the next frame's state.
         self.advancePhase(.prepaint);
-
-        // Start profiler frame timing
-        self.debugger().beginFrame(self.io);
 
         self.frame_count += 1;
         // `change_tracker` carries no per-frame state to reset (the diff is
@@ -905,10 +860,8 @@ pub const Window = struct {
             self.requestRender();
         }
 
-        // End layout and get render commands — time only the actual layout compute
-        self.debugger().beginLayout(self.io);
+        // End layout and get render commands
         const commands = try self.layout.endFrame();
-        self.debugger().endLayout(self.io);
 
         // Accessibility: finalize tree, sync bounds, push to platform
         // (zero cost when disabled — the subsystem early-outs).
@@ -929,7 +882,6 @@ pub const Window = struct {
         // even with no work scheduled there because `assertAdvance` requires
         // monotone progression: `paint → none` is not a legal direct edge.
         self.advancePhase(.focus);
-        self.debugger().endFrame(self.io, &render_stats.frame_stats);
         self.advancePhase(.none);
     }
 

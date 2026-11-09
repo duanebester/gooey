@@ -18,7 +18,6 @@ const window_mod = @import("../context/window.zig");
 const drag_mod = @import("../context/drag.zig");
 const input_mod = @import("../input/events.zig");
 const dispatch_mod = @import("../context/dispatch.zig");
-const debugger_mod = @import("../debug/debugger.zig");
 const cx_mod = @import("../cx.zig");
 const ui_mod = @import("../ui/mod.zig");
 
@@ -331,7 +330,7 @@ fn updateDragOverTarget(window: *Window, x: f32, y: f32, drag_type_id: drag_mod.
 // =============================================================================
 
 /// Handle mouse down events
-/// Priority order: scrollbar clicks > text areas > dispatch tree > debugger
+/// Priority order: scrollbar clicks > text areas > dispatch tree
 fn handleMouseDownEvent(
     cx: *Cx,
     window: *Window,
@@ -374,12 +373,6 @@ fn handleMouseDownEvent(
     // 7. Dispatch click to hit target
     if (hit_target) |target| {
         if (handleDispatchClick(cx, window, target)) return true;
-    }
-
-    // 8. Debugger: handle click to select element for inspection
-    if (window.debugger().isActive()) {
-        window.debugger().handleClick(window.hover.hovered_layout_id);
-        cx.notify();
     }
 
     return false;
@@ -583,13 +576,6 @@ fn handleKeyDownEvent(cx: *Cx, window: *Window, k: input_mod.KeyEvent) bool {
             cx.notify();
             return true;
         }
-    }
-
-    // Debugger toggle: Cmd+Shift+I (macOS) or Ctrl+Shift+I
-    if (debugger_mod.Debugger.isToggleShortcut(k.key, k.modifiers)) {
-        window.debugger().toggle();
-        cx.notify();
-        return true;
     }
 
     // Tab navigation. A focused widget can opt out of focus traversal via

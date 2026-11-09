@@ -36,6 +36,7 @@ const cx_mod = @import("cx.zig");
 const keymap_mod = @import("keymap.zig");
 const A11ySystem = @import("../context/a11y_system.zig").A11ySystem;
 const screen_reader_mod = @import("screen_reader.zig");
+const debugger_mod = @import("debugger.zig");
 
 const assert = std.debug.assert;
 
@@ -151,6 +152,8 @@ pub const Node = struct {
     /// A `.popover` or `.modal` box opens a fragment that emit paints after
     /// the fragment that opened it.
     layer: ?element.Layer,
+    /// `Style.source`, for the debugger; no storage in release builds.
+    source: debugger_mod.NodeSource,
 };
 
 /// A scroll box's offset, retained by its key (contract §1), and what the
@@ -558,6 +561,8 @@ pub const Window = struct {
     /// The platform's screen-reader bridge and the tree it diffs.
     screen_reader: *A11ySystem,
     screen_reader_poll: screen_reader_mod.Poll,
+    /// The inspector and profiler (Cmd/Ctrl+Shift+I); `void` in release builds.
+    debugger: debugger_mod.State,
     dialog_handlers: [dialog_count_max]?handler_mod.Handler,
     dialogs_opened: u32,
     now_ns: u64,
@@ -745,7 +750,17 @@ pub noinline fn initInPlace(self: *Window, gpa: std.mem.Allocator, options: *con
     self.depth_base_address = 0;
     self.depth_peak_base_address = 0;
     self.depth_peak_address = 0;
+    debugger_mod.initState(&self.debugger);
     assert(self.built_index == 0);
+}
+
+comptime {
+    // ReleaseFast and ReleaseSmall reserve nothing for the debugger (contract
+    // decision 16): neither the window's state nor a node's source.
+    if (!debugger_mod.enabled) {
+        assert(@sizeOf(@FieldType(Window, "debugger")) == 0);
+        assert(@sizeOf(@FieldType(Node, "source")) == 0);
+    }
 }
 
 /// The layout arena holds the frame's text copies (at most the text budget,

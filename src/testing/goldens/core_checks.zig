@@ -594,7 +594,7 @@ test "a scroll box clips its content, clamps its offset, and passes the wheel on
     try testing.expectEqual(@as(f32, 30), view.inner_offset);
 }
 
-fn scrollMouse(app: *ScrollApp, now: *u64, event: gooey.input.InputEvent) void {
+fn scrollMouse(app: anytype, now: *u64, event: gooey.input.InputEvent) void {
     app.window.queue.push(.{ .input = event });
     now.* += 1;
     app.tick(now.*);
@@ -2936,4 +2936,63 @@ fn countersButton(
 fn countersClick(app: *dynamic_counters.App, now: *u64, name: []const u8, nth: u32) void {
     const bounds = countersButton(app, name, nth).bounds;
     clickAt(app, now, bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+}
+
+/// A box built with a source location beside one without, for the inspector
+/// check.
+const InspectApp = core.App(struct {}, inspectRender, .{
+    .title = "Inspect",
+    .width = 400,
+    .height = 300,
+    .limits = core.ResourceLimits.small,
+});
+
+fn inspectSource() std.builtin.SourceLocation {
+    return @src();
+}
+
+fn inspectRender(cx: *Cx) void {
+    cx.render(ui.box(.{ .style = .{ .direction = .row } }, .{
+        ui.box(.{ .style = .{
+            .width = .{ .fixed = 200 },
+            .height = .{ .fixed = 100 },
+            .source = inspectSource(),
+        } }, .{}),
+        ui.box(.{ .style = .{ .width = .{ .fixed = 100 }, .height = .{ .fixed = 100 } } }, .{}),
+    }));
+}
+
+test "the inspector selects the element under a press and shows its source" {
+    // Goal: `Style.source` reaches the inspector's selection in a safe build
+    // (contract decision 16). Methodology: open the inspector with
+    // Cmd+Shift+I, press inside the annotated box, then inside its sibling,
+    // which has no source; cycling through the profiler closes it again.
+    if (!core.internals.debugger.enabled) return error.SkipZigTest;
+    const app = try testing.allocator.create(InspectApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    const toggle = gooey.input.InputEvent{ .key_down = chord(.i, .{ .cmd = true, .shift = true }) };
+    scrollMouse(app, &now, toggle);
+    try testing.expectEqual(.inspector, app.window.debugger.mode);
+    try testing.expect(app.window.debugger.info == null);
+
+    clickAt(app, &now, 50, 50);
+    const annotated = app.window.debugger.info.?;
+    try testing.expectEqual(@as(f32, 200), annotated.bounds.width);
+    try testing.expectEqual(inspectSource().line, annotated.source.?.line);
+    try testing.expectEqualStrings("core_checks.zig", annotated.source.?.basename());
+
+    clickAt(app, &now, 250, 50);
+    const plain = app.window.debugger.info.?;
+    try testing.expectEqual(@as(f32, 100), plain.bounds.width);
+    try testing.expect(plain.source == null);
+
+    scrollMouse(app, &now, toggle);
+    try testing.expectEqual(.profiler, app.window.debugger.mode);
+    scrollMouse(app, &now, toggle);
+    try testing.expectEqual(.disabled, app.window.debugger.mode);
+    try testing.expect(app.window.debugger.info == null);
 }

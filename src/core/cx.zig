@@ -18,6 +18,7 @@ const element = @import("element.zig");
 const retained = @import("retained.zig");
 const text_engine = @import("text_engine.zig");
 const window_mod = @import("window.zig");
+const debugger = @import("debugger.zig");
 const layout_mod = @import("../layout/layout.zig");
 const text_mod = @import("../text/mod.zig");
 
@@ -464,6 +465,7 @@ fn addNode(window: *Window, kind: window_mod.NodeKind, node_id: ElementId) u32 {
         .clip = false,
         .scroll = null,
         .layer = null,
+        .source = debugger.node_source_none,
     };
     window.node_count += 1;
     return index;
@@ -496,6 +498,7 @@ fn openNodeWith(
 ) u32 {
     if (style.scroll != null) assert(options.scroll != null);
     const index = addNode(window, kind, node_id);
+    window.nodes[index].source = debugger.nodeSource(style.source);
     var decl = declaration(style);
     if (style.scroll) |axes| decl.scroll = .{
         .horizontal = axes.x,

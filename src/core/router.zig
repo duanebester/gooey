@@ -22,6 +22,7 @@ const window_mod = @import("window.zig");
 const input = @import("../input/mod.zig");
 const keymap = @import("keymap.zig");
 const text_engine = @import("text_engine.zig");
+const debugger = @import("debugger.zig");
 
 const assert = std.debug.assert;
 
@@ -61,6 +62,7 @@ pub const Query = struct {
     /// focus path handles, so the drain will consume `key` (contract §5).
     pub fn keymapClaims(self: *const Query, key: input.KeyEvent) bool {
         assert(self.window.phase != .build);
+        if (debugger.isToggle(&key)) return true;
         return findAction(self.window, &key) != null;
     }
 };
@@ -110,6 +112,7 @@ fn routeInput(window: *Window, event: *const input.InputEvent) void {
         .mouse_down => |mouse| {
             const point = pointOf(mouse.position);
             window.pointer = .{ .x = point.x, .y = point.y };
+            debugger.press(window, point.x, point.y);
             press(window, event, point);
         },
         .mouse_up => |mouse| {
@@ -123,10 +126,12 @@ fn routeInput(window: *Window, event: *const input.InputEvent) void {
             window.pointer = .{ .x = point.x, .y = point.y };
             if (window.scroll_drag != .root) dragScrollbar(window, point);
             updateHover(window);
+            debugger.pointerMoved(window);
         },
         .mouse_exited => {
             window.pointer = null;
             updateHover(window);
+            debugger.pointerMoved(window);
         },
         .key_down, .key_up, .text_input, .composition => keyToFocus(window, event),
         .scroll => |scroll| wheel(window, event, pointOf(scroll.position)),
@@ -330,6 +335,7 @@ fn scrollBox(window: *Window, id: ElementId, scroll: *const input.ScrollEvent) b
 }
 
 fn keyToFocus(window: *Window, event: *const input.InputEvent) void {
+    if (debugger.routeKey(window, event)) return;
     if (event.* == .key_down) {
         if (findAction(window, &event.key_down)) |found| {
             // A handled action consumes the key, whether or not it stops

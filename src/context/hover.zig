@@ -207,16 +207,6 @@ pub const HoverState = struct {
         return false;
     }
 
-    /// Borrowed view of the hovered ancestor chain. Slice is valid
-    /// until the next `update` / `clear` / `initInPlace`. Used by the
-    /// debug overlay generator (`Debugger.generateOverlays`) which
-    /// renders an outline around every ancestor of the hovered
-    /// element.
-    pub fn ancestors(self: *const Self) []const u32 {
-        std.debug.assert(self.hovered_ancestor_count <= MAX_HOVERED_ANCESTORS);
-        return self.hovered_ancestors[0..self.hovered_ancestor_count];
-    }
-
     // -------------------------------------------------------------------------
     // Mutation (non-update)
     // -------------------------------------------------------------------------
@@ -307,11 +297,6 @@ test "HoverState: isHoveredOrDescendant matches cached ancestors only" {
     try testing.expect(h.isHoveredOrDescendant(50));
     try testing.expect(h.isHoveredOrDescendant(1));
     try testing.expect(!h.isHoveredOrDescendant(999));
-
-    // Slice view should match the populated prefix exactly.
-    const view = h.ancestors();
-    try testing.expectEqual(@as(usize, 3), view.len);
-    try testing.expectEqual(@as(u32, 100), view[0]);
 }
 
 test "HoverState: update() reports an icon-wrapping button as hovered via its inner icon" {
