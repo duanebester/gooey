@@ -33,6 +33,12 @@ pub const banned_paths = [_][]const u8{
     "src/input/event.zig",
     "src/core/mod.zig",
     "src/testing/legacy_harness.zig",
+    "src/testing/mock_clipboard.zig",
+    "src/platform/mutex.zig",
+    "src/platform/macos/display_link.zig",
+    "src/platform/web/file_dialog.zig",
+    "src/platform/web/image_loader.zig",
+    "src/platform/linux/tests/",
     "components/src/core/",
 };
 
