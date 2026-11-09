@@ -17,7 +17,7 @@
 //!    `std_options`]). These are the names every example's header
 //!    imports unprefixed.
 //! 2. **Namespace anchors.** `gooey.<ns>` exists and is a struct/file —
-//!    `core`, `widgets`, `scene`, `layout`,
+//!    `core`, `scene`, `layout`,
 //!    `animation`, `context`, `input`, `platform`, `image`,
 //!    `svg`, `text`, `debug`, `validation`, `accessibility`, `ai`,
 //!    `file_dialog`. The anchor *promise* is just that the
@@ -99,7 +99,6 @@ fn pinNamespaces() void {
         _ = gooey.animation;
         _ = gooey.layout;
         _ = gooey.text;
-        _ = gooey.widgets;
         _ = gooey.platform;
         _ = gooey.image;
         _ = gooey.svg;
@@ -215,16 +214,6 @@ fn pinTier1NamespacedText() void {
     }
 }
 
-/// `gooey.widgets` — stateful widget engines, reached for by text and
-/// scroll examples to size the state struct explicitly.
-fn pinTier1NamespacedWidgets() void {
-    comptime {
-        _ = gooey.widgets.TextInputState;
-        _ = gooey.widgets.TextAreaState;
-        _ = gooey.widgets.ScrollContainer;
-    }
-}
-
 /// `gooey.platform` — the OS-window types reached for by examples
 /// that want a `*PlatformWindow` handle (native renderer probes).
 fn pinTier1NamespacedPlatformAndRuntime() void {
@@ -270,7 +259,6 @@ test "tier 1 public API surface compiles" {
         pinTier1NamespacedAnimation();
         pinTier1NamespacedLayout();
         pinTier1NamespacedText();
-        pinTier1NamespacedWidgets();
         pinTier1NamespacedPlatformAndRuntime();
         pinTier1NamespacedAssets();
     }

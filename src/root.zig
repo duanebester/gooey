@@ -135,10 +135,6 @@ pub const layout = @import("layout/layout.zig");
 /// `FontFace`, `TextMeasurement`).
 pub const text = @import("text/mod.zig");
 
-/// Stateful widget engines: the text engines and the
-/// scroll container.
-pub const widgets = @import("widgets/mod.zig");
-
 /// Platform abstraction (macOS/Metal, Linux/Vulkan, Web/WGPU) and the
 /// `web.image_loader` async WASM image-decode shim.
 pub const platform = @import("platform/mod.zig");
@@ -281,13 +277,6 @@ test {
         @import("animation/motion.zig"),
         @import("animation/animation.zig"),
         @import("animation/store.zig"),
-
-        // Widget engines (0.3.1, deleted with `widgets/`).
-        @import("widgets/text_input_state.zig"),
-        @import("widgets/text_area_state.zig"),
-        @import("widgets/scroll_container.zig"),
-        @import("widgets/edit_history.zig"),
-        @import("widgets/text_common.zig"),
 
         // Platform-independent web input buffer logic.
         @import("platform/web/composition_buffer.zig"),
