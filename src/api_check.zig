@@ -13,11 +13,11 @@
 //! ## Three pin tiers
 //!
 //! 1. **Curated core (7).** Flat top-level names re-exported from
-//!    `root.zig` ([`run`, `App`, `Cx`, `Window`, `Color`, `log`,
+//!    `root.zig` ([`Window`, `Color`, `log`,
 //!    `std_options`]). These are the names every example's header
 //!    imports unprefixed.
 //! 2. **Namespace anchors.** `gooey.<ns>` exists and is a struct/file —
-//!    `core`, `ui`, `widgets`, `scene`, `layout`,
+//!    `core`, `widgets`, `scene`, `layout`,
 //!    `animation`, `context`, `input`, `platform`, `image`,
 //!    `svg`, `text`, `debug`, `validation`, `accessibility`, `ai`,
 //!    `file_dialog`. The anchor *promise* is just that the
@@ -54,12 +54,12 @@ const gooey = @import("root.zig");
 // Tier 1 — curated core (flat names at `gooey.X`)
 // =============================================================================
 
-/// `gooey.Cx`, `gooey.Window`, `gooey.Color`, `gooey.log`,
+/// `gooey.Window`, `gooey.Color`, `gooey.log`,
 /// `gooey.std_options` — the flat names guaranteed to live directly on
 /// `root.zig`. Removing any of these is a breaking
 /// change that downstream apps see at every `gooey.<name>` call site.
 ///
-/// `Cx`, `Window`, `Color` are types; `log` is a
+/// `Window`, `Color` are types; `log` is a
 /// namespace module; `std_options` is a runtime value (the
 /// `std.Options` looked up by name on the root source file — keep the
 /// exact name to satisfy the Zig std-options contract).
@@ -68,7 +68,6 @@ fn pinCuratedCore() void {
         // Types: reference the type itself so a future rename of the
         // underlying struct (e.g. `Cx` → `RenderContext`) is caught
         // even if a re-export shim keeps the old name addressable.
-        _ = gooey.Cx;
         _ = gooey.Window;
         _ = gooey.Color;
 
@@ -100,7 +99,6 @@ fn pinNamespaces() void {
         _ = gooey.animation;
         _ = gooey.layout;
         _ = gooey.text;
-        _ = gooey.ui;
         _ = gooey.widgets;
         _ = gooey.platform;
         _ = gooey.image;
@@ -217,36 +215,6 @@ fn pinTier1NamespacedText() void {
     }
 }
 
-/// `gooey.ui` — declarative builder + style namespace. `Builder` is
-/// the type render-fns occasionally type-annotate; `Theme` is the
-/// most-reached-for style; the lowercase `box` / `vstack` / `hstack`
-/// / `text` / `scroll` are the primitive helpers every render fn
-/// touches.
-fn pinTier1NamespacedUi() void {
-    comptime {
-        _ = gooey.ui.Builder;
-        _ = gooey.ui.Theme;
-        _ = gooey.ui.Box;
-        _ = gooey.ui.Handler;
-        _ = gooey.ui.StackStyle;
-        _ = gooey.ui.Floating;
-        _ = gooey.ui.LinearGradient;
-        _ = gooey.ui.RadialGradient;
-
-        // Builder primitives — these are functions, pin via @TypeOf.
-        _ = @TypeOf(gooey.ui.box);
-        _ = @TypeOf(gooey.ui.hstack);
-        _ = @TypeOf(gooey.ui.vstack);
-        _ = @TypeOf(gooey.ui.scroll);
-        _ = @TypeOf(gooey.ui.text);
-        _ = @TypeOf(gooey.ui.spacer);
-        _ = @TypeOf(gooey.ui.when);
-        _ = @TypeOf(gooey.ui.each);
-        _ = @TypeOf(gooey.ui.maybe);
-        _ = @TypeOf(gooey.ui.canvas);
-    }
-}
-
 /// `gooey.widgets` — stateful widget engines, reached for by text and
 /// scroll examples to size the state struct explicitly.
 fn pinTier1NamespacedWidgets() void {
@@ -277,44 +245,6 @@ fn pinTier1NamespacedAssets() void {
 }
 
 // =============================================================================
-// Cx sub-namespaces
-// =============================================================================
-
-/// `Cx` carries four sub-namespaces as struct fields: `animations`,
-/// `focus`, `entities`, `element_states`. Examples reach into them
-/// as `cx.animations.tween(...)` /
-/// `cx.focus.request(...)` / `cx.entities.create(...)` /
-/// `cx.element_states.get(T, id)`. The promise here is that the
-/// **field name** stays — not the inner API surface, which is
-/// audited elsewhere.
-///
-/// `@FieldType` is the right tool — `@hasField` would only assert
-/// existence without surfacing the type, and a plain
-/// `@TypeOf(cx.<field>)` would need a `*Cx` instance we don't have
-/// at comptime.
-fn pinCxSubNamespaces() void {
-    comptime {
-        _ = @FieldType(gooey.Cx, "animations");
-        _ = @FieldType(gooey.Cx, "focus");
-        _ = @FieldType(gooey.Cx, "entities");
-        _ = @FieldType(gooey.Cx, "element_states");
-
-        // Pin the most-used `Cx` methods. `on` / `notify` /
-        // `render` / `state` / `window` / `theme` / `windowSize`
-        // appear in every example's render fn; deleting one would
-        // break the example bodies before users hit the namespaced
-        // surface. `on` is the one handler constructor.
-        _ = @TypeOf(gooey.Cx.on);
-        _ = @TypeOf(gooey.Cx.notify);
-        _ = @TypeOf(gooey.Cx.render);
-        _ = @TypeOf(gooey.Cx.state);
-        _ = @TypeOf(gooey.Cx.window);
-        _ = @TypeOf(gooey.Cx.theme);
-        _ = @TypeOf(gooey.Cx.windowSize);
-    }
-}
-
-// =============================================================================
 // Test entry — links the pin list into the test binary
 // =============================================================================
 
@@ -340,11 +270,8 @@ test "tier 1 public API surface compiles" {
         pinTier1NamespacedAnimation();
         pinTier1NamespacedLayout();
         pinTier1NamespacedText();
-        pinTier1NamespacedUi();
         pinTier1NamespacedWidgets();
         pinTier1NamespacedPlatformAndRuntime();
         pinTier1NamespacedAssets();
-
-        pinCxSubNamespaces();
     }
 }

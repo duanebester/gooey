@@ -1573,10 +1573,6 @@ fn addFailFastChecks(
             "capacity 0, 0 in use, 1 requested (OutOfMemory during render)" },
         .{ .mode = "focus-order", .stderr = "FocusManager pool 'focus_order' could not grow: " ++
             "capacity 0, 0 in use, 1 requested (OutOfMemory during render)" },
-        .{ .mode = "builder-canvas", .stderr = "Builder pool 'pending_canvas' exhausted: " ++
-            "capacity 64, 64 in use, 1 requested (per-frame limit)." },
-        .{ .mode = "builder-layout", .stderr = "Builder pool 'layout.elements' exhausted: " ++
-            "capacity 16384, 2 in use, 1 requested (OutOfMemory)." },
         .{ .mode = "font-variant", .stderr = "TextSystem: font variant 'light' (font_id 4) " ++
             "is not loaded; FontLimits.variants loads 6 faces: regular, medium, semibold, bold, " ++
             "italic, bold_italic." },

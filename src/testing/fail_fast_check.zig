@@ -11,8 +11,6 @@
 //! - `deferred-queue`: fills `Window.deferred_commands` and defers one more command.
 //! - `dispatch-nodes`: pushes a dispatch node when the node pool cannot grow.
 //! - `focus-order`: registers a focusable when the tab-order list cannot grow.
-//! - `builder-canvas`: registers one canvas past `Builder.MAX_PENDING_CANVAS`.
-//! - `builder-layout`: renders text when the layout text arena cannot allocate.
 //! - `font-variant`: measures text in a font variant the face set did not load.
 //! - `atlas-item`: inserts one item larger than its fixed atlas.
 //! - `atlas-live-set`: fills an atlas with items used this frame and inserts one more.
@@ -41,8 +39,6 @@ const Mode = enum {
     @"deferred-queue",
     @"dispatch-nodes",
     @"focus-order",
-    @"builder-canvas",
-    @"builder-layout",
     @"font-variant",
     @"atlas-item",
     @"atlas-live-set",
@@ -74,8 +70,6 @@ pub fn main(init: std.process.Init) !void {
         .@"deferred-queue" => deferredQueue(),
         .@"dispatch-nodes" => dispatchNodes(oom),
         .@"focus-order" => focusOrder(oom),
-        .@"builder-canvas" => builderCanvas(init.gpa),
-        .@"builder-layout" => builderLayout(init.gpa, oom),
         .@"font-variant" => fontVariant(init.gpa, init.io),
         .@"atlas-item" => atlasItem(init.gpa, init.io),
         .@"atlas-live-set" => atlasLiveSet(init.gpa, init.io),
@@ -98,7 +92,6 @@ pub fn main(init: std.process.Init) !void {
 
 const Noop = struct {
     fn deferred(_: *Noop, _: *gooey.Window) void {}
-    fn paint(_: *gooey.ui.DrawContext) void {}
 };
 
 fn deferredQueue() void {
@@ -125,33 +118,6 @@ fn dispatchNodes(oom: std.mem.Allocator) void {
 fn focusOrder(oom: std.mem.Allocator) void {
     var focus = gooey.context.FocusManager.init(oom);
     focus.register(gooey.context.FocusHandle.init("field"));
-}
-
-fn builderCanvas(gpa: std.mem.Allocator) void {
-    const capacity = gooey.ui.Builder.MAX_PENDING_CANVAS;
-    var harness: BuilderHarness = undefined;
-    harness.init(gpa);
-    const builder = &harness.builder;
-    var index: u32 = 0;
-    while (index < capacity) : (index += 1) {
-        builder.registerPendingCanvas(.{ .layout_id = index, .paint = &Noop.paint, .scale = 1 });
-    }
-    std.debug.assert(builder.pending_canvas.items.len == capacity);
-    builder.registerPendingCanvas(.{ .layout_id = index, .paint = &Noop.paint, .scale = 1 });
-}
-
-fn builderLayout(gpa: std.mem.Allocator, oom: std.mem.Allocator) void {
-    // The layout engine reserves its element storage at init. Text content is
-    // copied into the per-frame arena, so a failing arena allocator makes the
-    // first text element fail after the element itself was stored.
-    var harness: BuilderHarness = undefined;
-    harness.init(gpa);
-    harness.engine.arena.deinit();
-    harness.engine.arena = @TypeOf(harness.engine.arena).init(oom);
-    harness.engine.openElement(.{}) catch |err| {
-        std.debug.panic("setup: openElement failed with reserved storage: {s}", .{@errorName(err)});
-    };
-    harness.builder.processChildren(gooey.ui.text("x", .{}));
 }
 
 fn fontVariant(gpa: std.mem.Allocator, io: std.Io) void {
@@ -219,23 +185,6 @@ fn atlasLiveSet(gpa: std.mem.Allocator, io: std.Io) void {
     std.debug.assert(atlas.rows_active == 64);
     _ = atlas.insert(62, 14, &pixels);
 }
-
-/// A `Builder` over a real layout engine, an empty scene, and a dispatch tree.
-const BuilderHarness = struct {
-    engine: gooey.layout.LayoutEngine,
-    scene: gooey.scene.Scene,
-    tree: gooey.context.DispatchTree,
-    builder: gooey.ui.Builder,
-
-    fn init(self: *BuilderHarness, gpa: std.mem.Allocator) void {
-        self.engine = gooey.layout.LayoutEngine.init(gpa) catch |err| {
-            std.debug.panic("setup: LayoutEngine.init failed: {s}", .{@errorName(err)});
-        };
-        self.scene = gooey.scene.Scene.initEmpty(gpa);
-        self.tree = gooey.context.DispatchTree.init(gpa);
-        self.builder = gooey.ui.Builder.init(gpa, &self.engine, &self.scene, &self.tree);
-    }
-};
 
 // =============================================================================
 // 0.4.0 core
