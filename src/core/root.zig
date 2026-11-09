@@ -22,6 +22,7 @@ pub const pack = @import("pack.zig");
 pub const window = @import("window.zig");
 pub const lifecycle = @import("lifecycle.zig");
 pub const text_engine = @import("text_engine.zig");
+pub const animation = @import("animation.zig");
 
 pub const App = app.App;
 pub const Config = app.Config;
@@ -84,6 +85,7 @@ test {
     _ = element;
     _ = retained;
     _ = text_engine;
+    _ = animation;
     _ = lifecycle;
     _ = layers;
     _ = @import("screen_reader.zig");

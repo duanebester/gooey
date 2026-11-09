@@ -9,6 +9,7 @@ const gooey = @import("gooey");
 const counter = @import("counter_example");
 const todo = @import("todo_example");
 const actions = @import("actions_example");
+const animation = @import("animation_example");
 const accessible_form = @import("accessible_form_example");
 const code_editor = @import("code_editor_example");
 const nested_overlay = @import("nested_overlay_example");
@@ -1636,6 +1637,210 @@ test "cx.requestRenderAfter renders once at the earliest deadline of the last bu
     try testing.expectEqual(@as(?u64, null), app.window.renderDeadlineNs());
     app.tick(10_000 * ms);
     try testing.expectEqual(@as(u32, 3), state.builds);
+}
+
+/// Which helper `motionRender` builds, so each check sees only its own
+/// render requests.
+const MotionPart = enum { tween, tween_on, row, motion };
+
+const MotionState = struct {
+    part: MotionPart = .tween,
+    show: bool = true,
+    trigger: u64 = 0,
+    value: f32 = -1,
+    motion: core.animation.Motion = core.animation.Motion.hidden,
+};
+
+const MotionApp = core.App(MotionState, motionRender, .{
+    .title = "Motion",
+    .width = 100,
+    .height = 100,
+    .limits = .nano,
+});
+
+fn motionRender(cx: *Cx) void {
+    const s = cx.state(MotionState);
+    const linear: core.animation.Tween = .{
+        .duration_ms = 100,
+        .easing = core.animation.Easing.linear,
+    };
+    switch (s.part) {
+        .tween => s.value = core.animation.tween(cx, .{ .name = "fade" }, linear),
+        .tween_on => s.value = core.animation.tweenOn(cx, .{ .name = "pulse" }, s.trigger, linear),
+        .row => if (s.show) {
+            var delayed = linear;
+            delayed.delay_ms = 50;
+            s.value = core.animation.tween(cx, .{ .index = 3 }, delayed);
+        },
+        .motion => s.motion = core.animation.motion(cx, .{ .name = "panel" }, s.show, .snappy),
+    }
+    cx.render(ui.box(.{ .style = .{ .width = .{ .grow = 1 } } }, .{}));
+}
+
+/// Change the state as a handler would, then build at `now_ms`.
+fn motionBuild(app: *MotionApp, now_ms: u64) void {
+    app.window.render_requested = true;
+    app.tick(now_ms * std.time.ns_per_ms);
+}
+
+fn motionIdle(app: *MotionApp) bool {
+    return app.window.renderDeadlineNs() == null and !app.window.render_requested;
+}
+
+test "tweens follow the clock, wait out their delay, replay on return, and then go idle" {
+    // Goal: `animation.tween` and `tweenOn` against the window clock, with
+    // render requests only while they move. Method: build a 100 ms linear
+    // tween at 0, 50, and 100 ms; a 50 ms delayed one must ask for its first
+    // frame at the delay's end, not sooner; a finished one hidden for a build
+    // plays again; a trigger tween starts at 1 and replays from 0 on change.
+    const ms = std.time.ns_per_ms;
+    const app = try testing.allocator.create(MotionApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    const s = &app.state;
+    app.tick(1_000 * ms);
+    try testing.expectEqual(@as(f32, 0), s.value);
+    try testing.expectEqual(@as(?u64, 1_000 * ms), app.window.renderDeadlineNs());
+    app.tick(1_050 * ms);
+    try testing.expectApproxEqAbs(@as(f32, 0.5), s.value, 1e-6);
+    app.tick(1_100 * ms);
+    try testing.expectEqual(@as(f32, 1), s.value);
+    try testing.expect(motionIdle(app));
+
+    s.part = .row;
+    motionBuild(app, 2_000);
+    try testing.expectEqual(@as(f32, 0), s.value);
+    try testing.expectEqual(@as(?u64, 2_050 * ms), app.window.renderDeadlineNs());
+    app.tick(2_049 * ms);
+    try testing.expectEqual(@as(?u64, 2_050 * ms), app.window.renderDeadlineNs());
+    app.tick(2_100 * ms);
+    try testing.expectApproxEqAbs(@as(f32, 0.5), s.value, 1e-6);
+    app.tick(2_150 * ms);
+    try testing.expectEqual(@as(f32, 1), s.value);
+    // Built again without leaving: it stays finished.
+    motionBuild(app, 2_200);
+    try testing.expectEqual(@as(f32, 1), s.value);
+    try testing.expect(motionIdle(app));
+    s.show = false;
+    motionBuild(app, 2_300);
+    s.show = true;
+    motionBuild(app, 2_400);
+    try testing.expectEqual(@as(f32, 0), s.value);
+    app.tick(2_500 * ms);
+    try testing.expectApproxEqAbs(@as(f32, 0.5), s.value, 1e-6);
+
+    s.part = .tween_on;
+    motionBuild(app, 3_000);
+    try testing.expectEqual(@as(f32, 1), s.value);
+    try testing.expect(motionIdle(app));
+    s.trigger = 7;
+    motionBuild(app, 3_100);
+    try testing.expectEqual(@as(f32, 0), s.value);
+    app.tick(3_125 * ms);
+    try testing.expectApproxEqAbs(@as(f32, 0.25), s.value, 1e-6);
+    app.tick(3_200 * ms);
+    try testing.expectEqual(@as(f32, 1), s.value);
+    try testing.expect(motionIdle(app));
+    try testing.expectEqual(core.internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
+}
+
+test "a motion springs in, reverses mid-flight without a snap, and settles hidden" {
+    // Goal: `animation.motion`'s enter and exit, and that a toggle keeps the
+    // spring's velocity (0.3.1's springMotion). Method: show at 1 s and step
+    // at 60 Hz for 100 ms; hide, and the next frame must still be further in
+    // (the spring was moving out) and report `.exiting`. Step to rest: the
+    // motion ends hidden with nothing left to draw.
+    const ms = std.time.ns_per_ms;
+    const app = try testing.allocator.create(MotionApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    const s = &app.state;
+    s.part = .motion;
+    var now: u64 = 1_000 * ms;
+    app.tick(now);
+    try testing.expectEqual(core.animation.Phase.entering, s.motion.phase);
+    try testing.expectEqual(@as(f32, 0), s.motion.progress);
+    for (0..6) |_| {
+        now += 16 * ms;
+        app.tick(now);
+    }
+    const before = s.motion.progress;
+    try testing.expect(before > 0.2);
+    try testing.expect(before < 0.95);
+    s.show = false;
+    now += 16 * ms;
+    motionBuild(app, now / ms);
+    try testing.expectEqual(core.animation.Phase.exiting, s.motion.phase);
+    try testing.expect(s.motion.visible);
+    try testing.expect(s.motion.progress > before);
+    var frames: u32 = 0;
+    while (!motionIdle(app)) : (frames += 1) {
+        try testing.expect(frames < 120);
+        now += 16 * ms;
+        app.tick(now);
+    }
+    try testing.expectEqual(core.animation.Motion.hidden, s.motion);
+    const built = app.window.frame_number;
+    app.tick(now + 10_000 * ms);
+    try testing.expectEqual(built, app.window.frame_number);
+}
+
+/// Tick at 60 Hz until the window has nothing left to draw; returns the
+/// frames built on the way.
+fn animationSettle(app: *animation.App, now: *u64) u32 {
+    const built = app.window.frame_number;
+    var ticks: u32 = 0;
+    while (app.window.renderDeadlineNs() != null or app.window.render_requested) : (ticks += 1) {
+        assert(ticks < 240); // Four seconds: every animation here is shorter.
+        now.* += 16 * std.time.ns_per_ms;
+        app.tick(now.*);
+    }
+    return @intCast(app.window.frame_number - built);
+}
+
+fn animationClick(app: *animation.App, now: *u64, label: []const u8) void {
+    const bounds = nodeNamed(&app.window, .button, label).?.bounds;
+    clickAt(app, now, bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+}
+
+test "animation plays its entrances, toggles, and stagger, then goes idle" {
+    // Goal: the animation example on the core: every animation ends and the
+    // window then draws nothing, with no allocation after init (the
+    // lifecycle guard panics on one). Method: settle the launch fade and
+    // panel spring; show the list and count its rows; interrupt the panel's
+    // exit with a show; pulse the counter; hide the list. Each must settle
+    // within the bound and leave no render pending.
+    const app = try testing.allocator.create(animation.App);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = std.time.ns_per_s;
+    app.tick(now);
+    // The 500 ms fade alone needs about 31 frames at 60 Hz.
+    try testing.expect(animationSettle(app, &now) >= 30);
+    try testing.expect(nodeNamed(&app.window, .button, "Hide Panel") != null);
+
+    animationClick(app, &now, "Show List");
+    try testing.expect(animationSettle(app, &now) > 10);
+    try testing.expect(nodeNamed(&app.window, .button, "Hide List") != null);
+
+    animationClick(app, &now, "Hide Panel");
+    now += 100 * std.time.ns_per_ms;
+    app.tick(now);
+    animationClick(app, &now, "Show Panel");
+    try testing.expect(animationSettle(app, &now) > 0);
+
+    animationClick(app, &now, "+");
+    try testing.expectEqual(@as(i32, 1), app.state.count);
+    try testing.expect(animationSettle(app, &now) > 5);
+    animationClick(app, &now, "Hide List");
+    try testing.expect(animationSettle(app, &now) > 5);
+    const built = app.window.frame_number;
+    app.tick(now + 10 * std.time.ns_per_s);
+    try testing.expectEqual(built, app.window.frame_number);
+    try testing.expectEqual(core.internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
 }
 
 /// The rendered accessibility node named `name`, by role.

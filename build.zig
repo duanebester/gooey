@@ -791,7 +791,7 @@ pub fn build(b: *std.Build) void {
                 .source = "src/examples/lucide_demo.zig",
                 .core = true,
             },
-            .{ .name = "animation", .source = "src/examples/animation.zig" },
+            .{ .name = "animation", .source = "src/examples/animation.zig", .core = true },
             .{ .name = "counter", .source = "src/examples/counter.zig", .core = true },
             .{ .name = "todo", .source = "src/examples/todo.zig", .core = true },
             .{
@@ -813,7 +813,7 @@ pub fn build(b: *std.Build) void {
                 .source = "src/examples/nested_overlay.zig",
                 .core = true,
             },
-            .{ .name = "images", .source = "src/examples/images.zig" },
+            .{ .name = "images", .source = "src/examples/images.zig", .core = true },
             .{
                 .name = "accessible-form",
                 .source = "src/examples/accessible_form.zig",
@@ -1340,7 +1340,6 @@ fn addWindowsBuilds(
     const examples = [_]struct { name: []const u8, source: []const u8 }{
         .{ .name = "showcase", .source = "src/examples/showcase.zig" },
         .{ .name = "layout", .source = "src/examples/layout.zig" },
-        .{ .name = "animation", .source = "src/examples/animation.zig" },
         // 0.4.0 core apps, on `platform/windows/core_host.zig`.
         .{ .name = "counter", .source = "src/examples/counter.zig" },
         .{ .name = "todo", .source = "src/examples/todo.zig" },
@@ -1586,6 +1585,7 @@ fn addMacosCoreExampleTypecheck(
         "dashboard",
         "lucide_demo",
         "images",
+        "animation",
     };
     for (examples) |name| {
         const exe = b.addExecutable(.{
@@ -2454,9 +2454,16 @@ fn addGoldens(
         .optimize = optimize,
         .imports = example_imports,
     });
+    const animation_mod = b.createModule(.{
+        .root_source_file = b.path("src/examples/animation.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = example_imports,
+    });
     const goldens_imports: []const std.Build.Module.Import = &.{
         .{ .name = "accessible_form_example", .module = accessible_form_mod },
         .{ .name = "actions_example", .module = actions_mod },
+        .{ .name = "animation_example", .module = animation_mod },
         .{ .name = "code_editor_example", .module = code_editor_mod },
         .{ .name = "data_table_example", .module = data_table_mod },
         .{ .name = "dashboard_example", .module = dashboard_mod },
