@@ -15,14 +15,13 @@ const std = @import("std");
 const gooey = @import("gooey");
 const components = @import("gooey-components");
 
-const core = gooey.core;
-const ui = core.ui;
-const Cx = core.Cx;
-const Effects = core.Effects;
+const ui = gooey.ui;
+const Cx = gooey.Cx;
+const Effects = gooey.Effects;
 const Color = ui.Color;
-const Button = components.core.Button;
-const CodeEditor = components.core.CodeEditor;
-const List = components.core.List;
+const Button = components.Button;
+const CodeEditor = components.CodeEditor;
+const List = components.List;
 const Lucide = components.Lucide;
 
 const assert = std.debug.assert;
@@ -54,7 +53,7 @@ comptime {
 /// The `small` profile with one editor: profiles reserve none, since a
 /// 256 KiB editor slot (and its undo copy) is too large to reserve unasked.
 pub const limits = blk: {
-    var value = core.ResourceLimits.small;
+    var value = gooey.ResourceLimits.small;
     value.text.editor = .{ .count_max = 1, .bytes_max = file_bytes_max, .undo_depth_max = 128 };
     break :blk value;
 };
@@ -288,13 +287,13 @@ const text_muted = Color.rgba(1, 1, 1, 0.6);
 const selected_background = Color.rgba(0.3, 0.5, 1.0, 0.4);
 const hover_background = Color.rgba(1, 1, 1, 0.1);
 
-pub const App = core.App(State, render, .{
+pub const App = gooey.App(State, render, .{
     .title = "Code Editor",
     .width = window_width,
     .height = window_height,
     .limits = limits,
-    .theme = &core.Theme.dark,
-    .fonts = .{ .limits = core.FontLimits.small },
+    .theme = &gooey.Theme.dark,
+    .fonts = .{ .limits = gooey.FontLimits.small },
 });
 
 /// The generated entry point (contract §7).
@@ -356,7 +355,7 @@ const FileRow = struct {
     pub fn render(self: FileRow, cx: *Cx) void {
         const s = cx.state(State);
         assert(self.index < s.file_count);
-        const key = core.Key{ .name = "file" };
+        const key = gooey.Key{ .name = "file" };
         const selected = s.selected == self.index;
         const hovered = cx.hovered(cx.id(key));
         const name = s.files[self.index].text();

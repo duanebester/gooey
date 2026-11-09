@@ -62,7 +62,7 @@ const Tree = a11y.Tree;
 const fingerprint = a11y.fingerprint;
 const Fingerprint = fingerprint.Fingerprint;
 const constants = a11y.constants;
-const LayoutId = gooey.layout.LayoutId;
+const LayoutId = gooey.internals.layout.LayoutId;
 
 const MAX_ELEMENTS = constants.MAX_ELEMENTS;
 

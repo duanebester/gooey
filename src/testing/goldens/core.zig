@@ -1,4 +1,4 @@
-//! Trace driver for the 0.4.0 core (`gooey.core`), the port's side of the
+//! Trace driver for the 0.4.0 core (`gooey`), the port's side of the
 //! goldens.
 //!
 //! Input goes through the window's event queue, exactly as a platform pushes
@@ -16,13 +16,12 @@ const traces = @import("traces.zig");
 
 const assert = std.debug.assert;
 
-const core = gooey.core;
 const testing = gooey.testing;
 const TextBuffer = testing.record_dump.TextBuffer;
 const NullRenderer = testing.NullRenderer;
-const core_backend = core.backend;
-const records = core.internals.records;
-const Window = core.internals.window.Window;
+const core_backend = gooey.internals.backend;
+const records = gooey.internals.records;
+const Window = gooey.internals.window.Window;
 
 /// One frame per 60 Hz refresh, so ticks see a moving clock.
 const frame_interval_ns: u64 = 16_666_667;

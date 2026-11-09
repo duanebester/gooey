@@ -25,12 +25,11 @@ is the pattern `src/examples/dashboard.zig` uses.
 ```zig
 const gooey = @import("gooey");
 const charts = @import("gooey-charts");
-const core = gooey.core;
-const ui = core.ui;
+const ui = gooey.ui;
 
 const State = struct { sales: [1]charts.CategorySeries = undefined };
 
-fn initSales(state: *State, _: *core.Effects) void {
+fn initSales(state: *State, _: *gooey.Effects) void {
     const sales = &state.sales[0];
     sales.* = charts.CategorySeries.init("Sales", charts.Color.hex(0x4285f4));
     sales.addPoint(charts.CategoryPoint.init("Q1", 30));
@@ -46,14 +45,14 @@ fn paintSales(state: *const State, painter: *ui.Painter) void {
     chart.render(painter);
 }
 
-fn render(cx: *core.Cx) void {
+fn render(cx: *gooey.Cx) void {
     cx.render(ui.paint(State, cx.state(State), paintSales, .{
         .width = .{ .fixed = 400 },
         .height = .{ .fixed = 300 },
     }));
 }
 
-pub const App = core.App(State, render, .{
+pub const App = gooey.App(State, render, .{
     .title = "Sales",
     .width = 440,
     .height = 340,

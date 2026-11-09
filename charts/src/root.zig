@@ -9,7 +9,7 @@
 //! ```zig
 //! const gooey = @import("gooey");
 //! const charts = @import("gooey-charts");
-//! const ui = gooey.core.ui;
+//! const ui = gooey.ui;
 //!
 //! const State = struct { sales: [1]charts.CategorySeries = undefined };
 //!
@@ -20,7 +20,7 @@
 //!     chart.render(painter);
 //! }
 //!
-//! fn render(cx: *gooey.core.Cx) void {
+//! fn render(cx: *gooey.Cx) void {
 //!     const state = cx.state(State);
 //!     cx.render(ui.paint(State, state, paintSales, .{
 //!         .width = .{ .fixed = 400 },

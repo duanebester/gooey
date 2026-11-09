@@ -12,12 +12,11 @@ const std = @import("std");
 const gooey = @import("gooey");
 const components = @import("gooey-components");
 
-const core = gooey.core;
-const ui = core.ui;
-const Cx = core.Cx;
-const Button = components.core.Button;
-const Checkbox = components.core.Checkbox;
-const TextInput = components.core.TextInput;
+const ui = gooey.ui;
+const Cx = gooey.Cx;
+const Button = components.Button;
+const Checkbox = components.Checkbox;
+const TextInput = components.TextInput;
 
 const todo_count_max = 64;
 const todo_bytes_max = 128;
@@ -103,7 +102,7 @@ pub const State = struct {
     }
 };
 
-pub const App = core.App(State, render, .{
+pub const App = gooey.App(State, render, .{
     .title = "Todos",
     .width = 480,
     .height = 560,

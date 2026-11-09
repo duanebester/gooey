@@ -24,9 +24,9 @@ const gooey = @import("gooey");
 
 // The fuzz module compiles standalone (separate root from `src/root.zig`)
 // so it can't peer-import `engine.zig`; types must come through the public
-// `gooey.layout.*` surface. This also pins us to the supported public API —
+// `gooey.internals.layout.*` surface. This also pins us to the supported public API —
 // if a name disappears the fuzzer is forced to stay in sync.
-const layout = gooey.layout;
+const layout = gooey.internals.layout;
 const engine_mod = layout.engine;
 const types = layout.types;
 const layout_id_mod = layout.layout_id;

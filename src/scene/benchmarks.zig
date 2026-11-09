@@ -63,7 +63,7 @@ const time = struct {
     };
 };
 
-const scene_mod = gooey.scene;
+const scene_mod = gooey.internals.scene;
 const Scene = scene_mod.Scene;
 /// Benchmarks exercise up to the framework ceilings (16k quads, large dashboards).
 const bench_limits = scene_mod.SceneLimits.ceiling;

@@ -333,32 +333,30 @@ test "handle missing glyph" {
 Floating-point comparisons with tolerance (0.001):
 
 ```zig
-const core = gooey.core;
-
 test "color calculation" {
     const actual = compute_color();
-    const expected = core.Color.rgb(1.0, 0.5, 0.0);
+    const expected = gooey.Color.rgb(1.0, 0.5, 0.0);
 
     try testing.expectColorEqual(expected, actual);
 }
 
 test "layout bounds" {
     const actual = element.getBounds();
-    const expected = core.BoundsF.init(10.0, 20.0, 100.0, 200.0);
+    const expected = gooey.BoundsF.init(10.0, 20.0, 100.0, 200.0);
 
     try testing.expectBoundsEqual(expected, actual);
 }
 
 test "position" {
     const actual = widget.getPosition();
-    const expected = core.PointF{ .x = 50.0, .y = 75.0 };
+    const expected = gooey.PointF{ .x = 50.0, .y = 75.0 };
 
     try testing.expectPointEqual(expected, actual);
 }
 
 test "size" {
     const actual = widget.getSize();
-    const expected = core.SizeF{ .width = 100.0, .height = 50.0 };
+    const expected = gooey.SizeF{ .width = 100.0, .height = 50.0 };
 
     try testing.expectSizeEqual(expected, actual);
 }

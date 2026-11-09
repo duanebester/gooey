@@ -14,11 +14,10 @@ const builtin = @import("builtin");
 const gooey = @import("gooey");
 const components = @import("gooey-components");
 
-const core = gooey.core;
-const ui = core.ui;
-const Cx = core.Cx;
-const Button = components.core.Button;
-const TextInput = components.core.TextInput;
+const ui = gooey.ui;
+const Cx = gooey.Cx;
+const Button = components.Button;
+const TextInput = components.TextInput;
 
 const Undo = struct {};
 const Redo = struct {};
@@ -58,7 +57,7 @@ pub const main = App.main;
 
 pub fn AppWith(comptime modifier: Modifier) type {
     const m = @tagName(modifier);
-    return core.App(State, Demo(modifier).render, .{
+    return gooey.App(State, Demo(modifier).render, .{
         .title = "Actions Demo",
         .width = 800,
         .height = 600,

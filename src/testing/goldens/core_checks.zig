@@ -24,10 +24,10 @@ const core_driver = @import("core.zig");
 const trace_mod = @import("trace.zig");
 const traces = @import("traces.zig");
 
-const core = gooey.core;
-const ui = core.ui;
-const Cx = core.Cx;
-const Effects = core.Effects;
+const internals = gooey.internals;
+const ui = gooey.ui;
+const Cx = gooey.Cx;
+const Effects = gooey.Effects;
 const TextBuffer = gooey.testing.record_dump.TextBuffer;
 
 const testing = std.testing;
@@ -55,10 +55,10 @@ test "the IME rect query is answered synchronously from the rendered frame" {
     defer testing.allocator.destroy(driver);
     try driver.initInPlace(testing.allocator, testing.io, &traces.todo);
     defer driver.deinit();
-    const query = core.Query{ .window = &driver.app.window };
+    const query = gooey.Query{ .window = &driver.app.window };
 
     driver.frame();
-    try testing.expectEqual(@as(?core.internals.records.Rect, null), query.imeCursorRect());
+    try testing.expectEqual(@as(?internals.records.Rect, null), query.imeCursorRect());
     driver.deliver(.{ .mouse_down = mouse(204, 93) });
     driver.frame();
     const empty = query.imeCursorRect().?;
@@ -93,7 +93,7 @@ test "the IME rect query is answered synchronously from the rendered frame" {
 /// A two-row TextArea, for the area check.
 const AreaState = struct { notes: []const u8 = "" };
 
-const AreaApp = core.App(AreaState, areaRender, .{
+const AreaApp = gooey.App(AreaState, areaRender, .{
     .title = "Area",
     .width = 300,
     .height = 200,
@@ -103,7 +103,7 @@ const AreaApp = core.App(AreaState, areaRender, .{
 fn areaRender(cx: *Cx) void {
     const state = cx.state(AreaState);
     cx.render(ui.box(.{ .style = .{ .width = .{ .grow = 1 }, .height = .{ .grow = 1 } } }, .{
-        components.core.TextArea{ .key = "notes", .bind = &state.notes, .rows = 2 },
+        components.TextArea{ .key = "notes", .bind = &state.notes, .rows = 2 },
     }));
 }
 
@@ -149,7 +149,7 @@ const LongRunState = struct {
     const long_run: [129]u8 = @splat('a');
 };
 
-const LongRunApp = core.App(LongRunState, longRunRender, .{
+const LongRunApp = gooey.App(LongRunState, longRunRender, .{
     .title = "Long run",
     .width = 1400,
     .height = 200,
@@ -159,7 +159,7 @@ const LongRunApp = core.App(LongRunState, longRunRender, .{
 fn longRunRender(cx: *Cx) void {
     const state = cx.state(LongRunState);
     cx.render(ui.box(.{ .style = .{ .width = .{ .grow = 1 }, .height = .{ .grow = 1 } } }, .{
-        if (state.area) components.core.TextArea{
+        if (state.area) components.TextArea{
             .key = "notes",
             .bind = &state.notes,
             .rows = 1,
@@ -169,7 +169,7 @@ fn longRunRender(cx: *Cx) void {
     }));
 }
 
-fn spriteCount(frame: *const gooey.core.internals.records.Frame) u32 {
+fn spriteCount(frame: *const internals.records.Frame) u32 {
     var count: u32 = 0;
     for (frame.paint[0..frame.paint_count]) |record| {
         if (record == .sprite) count += 1;
@@ -237,7 +237,7 @@ test "a TextArea refuses a line's 1025th character and keeps running" {
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
     defer app.deinitHeadless();
-    const full: [core.internals.text_engine.line_codepoint_count_max]u8 = @splat('c');
+    const full: [internals.text_engine.line_codepoint_count_max]u8 = @splat('c');
     app.state.area = true;
     app.state.notes = &full;
     var now: u64 = 0;
@@ -293,7 +293,7 @@ test "a TextArea refuses a line's 1025th character and keeps running" {
     const both = full[0..1021] ++ "\u{6771}\u{4eac}!\n" ++ pasted[0..1024];
     try testing.expectEqualStrings(both, app.state.notes);
     try testing.expectEqual(@as(u32, 0), writes);
-    try testing.expectEqual(core.internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
+    try testing.expectEqual(internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
 }
 
 test "a TextArea takes lines, follows the caret, and places it where clicked" {
@@ -307,7 +307,7 @@ test "a TextArea takes lines, follows the caret, and places it where clicked" {
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
     defer app.deinitHeadless();
-    const query = core.Query{ .window = &app.window };
+    const query = gooey.Query{ .window = &app.window };
     var now: u64 = 0;
     app.tick(now);
     const inset: f32 = 9; // The default padding and border.
@@ -373,12 +373,12 @@ test "a TextArea takes lines, follows the caret, and places it where clicked" {
 const EditorState = struct { source: []const u8 = "" };
 
 const editor_limits = limits: {
-    var limits = core.ResourceLimits.small;
+    var limits = gooey.ResourceLimits.small;
     limits.text.editor.count_max = 1;
     break :limits limits;
 };
 
-const EditorApp = core.App(EditorState, editorRender, .{
+const EditorApp = gooey.App(EditorState, editorRender, .{
     .title = "Editor",
     .width = 400,
     .height = 200,
@@ -388,7 +388,7 @@ const EditorApp = core.App(EditorState, editorRender, .{
 fn editorRender(cx: *Cx) void {
     const state = cx.state(EditorState);
     cx.render(ui.box(.{ .style = .{ .width = .{ .grow = 1 }, .height = .{ .grow = 1 } } }, .{
-        components.core.CodeEditor{ .key = "source", .bind = &state.source, .rows = 1 },
+        components.CodeEditor{ .key = "source", .bind = &state.source, .rows = 1 },
     }));
 }
 
@@ -402,7 +402,7 @@ test "a CodeEditor indents with Tab, selects a line from its gutter, and scrolls
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
     defer app.deinitHeadless();
-    const query = core.Query{ .window = &app.window };
+    const query = gooey.Query{ .window = &app.window };
     const text_x: f32 = 1 + 50 + 1 + 8;
     const text_y: f32 = 1 + 8;
     var now: u64 = 0;
@@ -451,11 +451,11 @@ test "a CodeEditor indents with Tab, selects a line from its gutter, and scrolls
 
 /// A scroll box holding a shorter scroll box and a filler, for the scroll
 /// check. The inner box shows 60 of its 90 px; the outer shows 150 of 260.
-const ScrollApp = core.App(struct {}, scrollRender, .{
+const ScrollApp = gooey.App(struct {}, scrollRender, .{
     .title = "Scroll",
     .width = 300,
     .height = 300,
-    .limits = core.ResourceLimits.small,
+    .limits = gooey.ResourceLimits.small,
 });
 
 const scroll_row_height: f32 = 30;
@@ -493,26 +493,26 @@ const ScrollRows = struct {
 
 /// The rendered frame's two scroll boxes and their retained offsets.
 const ScrollView = struct {
-    outer: *const core.internals.records.HitRecord,
-    inner: *const core.internals.records.HitRecord,
+    outer: *const internals.records.HitRecord,
+    inner: *const internals.records.HitRecord,
     inner_index: u32,
     outer_offset: f32,
     inner_offset: f32,
 
-    fn read(window: *core.internals.window.Window) ScrollView {
+    fn read(window: *internals.window.Window) ScrollView {
         const frame = window.rendered();
-        var outer: ?*const core.internals.records.HitRecord = null;
-        var inner_index: u32 = core.internals.records.index_none;
+        var outer: ?*const internals.records.HitRecord = null;
+        var inner_index: u32 = internals.records.index_none;
         for (frame.hits[0..frame.hit_count], 0..) |*record, index| {
             if (!record.scroll) continue;
-            if (record.parent == core.internals.records.index_none) {
+            if (record.parent == internals.records.index_none) {
                 outer = record;
             } else {
                 inner_index = @intCast(index);
             }
         }
         const inner = &frame.hits[inner_index];
-        const State = core.internals.window.ScrollState;
+        const State = internals.window.ScrollState;
         return .{
             .outer = outer.?,
             .inner = inner,
@@ -649,7 +649,7 @@ test "a scroll box's thumb drags and its track jumps, as 0.3.1's did" {
     scrollMouse(app, &now, .{ .mouse_up = mouse(bar_x, quarter) });
     try testing.expectApproxEqAbs(@as(f32, 27.5), ScrollView.read(&app.window).outer_offset, 0.01);
     try testing.expect(!thumbDragged(app));
-    try testing.expectEqual(core.ElementId.root, app.window.scroll_drag);
+    try testing.expectEqual(gooey.ElementId.root, app.window.scroll_drag);
 }
 
 /// A Select in a clipped panel above a button, for the popover check. The
@@ -679,22 +679,22 @@ const SelectState = struct {
     }
 };
 
-const SelectApp = core.App(SelectState, selectRender, .{
+const SelectApp = gooey.App(SelectState, selectRender, .{
     .title = "Select",
     .width = 400,
     .height = 300,
-    .limits = core.ResourceLimits.small,
+    .limits = gooey.ResourceLimits.small,
 });
 
 fn selectRender(cx: *Cx) void {
     const state = cx.state(SelectState);
-    var on_select: [SelectState.options.len]core.Handler = undefined;
+    var on_select: [SelectState.options.len]gooey.Handler = undefined;
     for (&on_select, 0..) |*handler, index| {
         handler.* = cx.on(SelectState.choose, .{ .arg = @as(u32, @intCast(index)) });
     }
     cx.render(ui.box(.{ .style = .{ .padding = .all(10), .gap = 8 } }, .{
         ui.box(.{ .style = .{ .height = .{ .fixed = 50 }, .clip = .clip } }, .{
-            components.core.Select{
+            components.Select{
                 .key = "level",
                 .options = &SelectState.options,
                 .on_select = &on_select,
@@ -706,7 +706,7 @@ fn selectRender(cx: *Cx) void {
                 .accessible_description = "How far along you are",
             },
         }),
-        components.core.Button{ .label = "Below", .on_click = cx.on(SelectState.below, .{}) },
+        components.Button{ .label = "Below", .on_click = cx.on(SelectState.below, .{}) },
     }));
 }
 
@@ -747,11 +747,11 @@ test "a Select's menu opens on a popover above content and outside its clip" {
     try testing.expect(app.state.open);
     try testing.expect(comboboxState(app).expanded);
     const frame = app.window.rendered();
-    var button: ?gooey.core.internals.records.Rect = null;
-    var options: [3]gooey.core.internals.records.Rect = undefined;
+    var button: ?internals.records.Rect = null;
+    var options: [3]internals.records.Rect = undefined;
     var option_count: u32 = 0;
     for (frame.hits[0..frame.hit_count]) |*record| {
-        if (record.on_click == gooey.core.internals.records.index_none) continue;
+        if (record.on_click == internals.records.index_none) continue;
         if (record.fragment == 1) {
             options[option_count] = record.bounds;
             option_count += 1;
@@ -798,7 +798,7 @@ const BlockState = struct {
     }
 };
 
-const BlockApp = core.App(BlockState, blockRender, .{
+const BlockApp = gooey.App(BlockState, blockRender, .{
     .title = "Block",
     .width = 400,
     .height = 300,
@@ -808,7 +808,7 @@ const BlockApp = core.App(BlockState, blockRender, .{
 fn blockRender(cx: *Cx) void {
     const state = cx.state(BlockState);
     cx.render(ui.box(.{ .style = .{ .padding = .all(10) } }, .{
-        components.core.Button{ .label = "Below", .on_click = cx.on(BlockState.below, .{}) },
+        components.Button{ .label = "Below", .on_click = cx.on(BlockState.below, .{}) },
         if (state.modal_open) ui.box(.{
             .layer = .{
                 .kind = .modal,
@@ -817,7 +817,7 @@ fn blockRender(cx: *Cx) void {
             },
             .style = .{ .width = .{ .fixed = 120 }, .height = .{ .fixed = 80 } },
         }, .{
-            components.core.Button{ .label = "Inside", .on_click = cx.on(BlockState.inside, .{}) },
+            components.Button{ .label = "Inside", .on_click = cx.on(BlockState.inside, .{}) },
         }) else null,
     }));
 }
@@ -833,19 +833,19 @@ test "a modal blocks the pointer on every fragment opened before it" {
     defer app.deinitHeadless();
     var now: u64 = 0;
     app.tick(now);
-    const query = core.Query{ .window = &app.window };
+    const query = gooey.Query{ .window = &app.window };
     const frame = app.window.rendered();
     try testing.expect(frame.modal_hit_start > 0);
     const below = frame.hits[0..frame.modal_hit_start];
-    var button: ?gooey.core.internals.records.Rect = null;
+    var button: ?internals.records.Rect = null;
     for (below) |*record| {
-        if (record.on_click != gooey.core.internals.records.index_none) button = record.bounds;
+        if (record.on_click != internals.records.index_none) button = record.bounds;
     }
     const target = button.?;
     try testing.expect(target.x + target.width < 200);
     const x = target.x + target.width / 2;
     const y = target.y + target.height / 2;
-    try testing.expectEqual(@as(?core.ElementId, null), query.hitTest(.{ .x = x, .y = y }));
+    try testing.expectEqual(@as(?gooey.ElementId, null), query.hitTest(.{ .x = x, .y = y }));
     clickAt(app, &now, x, y);
     try testing.expectEqual(@as(u32, 0), app.state.below_clicks);
 
@@ -874,15 +874,15 @@ test "nested_overlay: a Select's menu inside a modal sits above the modal" {
     const modal_start = frame.modal_hit_start;
     const modal_fragment = frame.hits[modal_start].fragment;
     try testing.expect(modal_fragment > 0);
-    var area: ?gooey.core.internals.records.Rect = null;
-    var options: [nested_overlay.options.len]gooey.core.internals.records.Rect = undefined;
+    var area: ?internals.records.Rect = null;
+    var options: [nested_overlay.options.len]internals.records.Rect = undefined;
     var option_count: u32 = 0;
     for (frame.hits[modal_start..frame.hit_count]) |*record| {
         if (record.fragment == modal_fragment) {
             if (record.bounds.height == 120) area = record.bounds;
         } else {
             try testing.expect(record.fragment > modal_fragment);
-            if (record.on_click == gooey.core.internals.records.index_none) continue;
+            if (record.on_click == internals.records.index_none) continue;
             options[option_count] = record.bounds;
             option_count += 1;
         }
@@ -900,7 +900,7 @@ test "nested_overlay: a Select's menu inside a modal sits above the modal" {
     try testing.expect(!app.state.select_open);
 }
 
-fn dialogCount(frame: *const gooey.core.internals.records.Frame) u32 {
+fn dialogCount(frame: *const internals.records.Frame) u32 {
     var count: u32 = 0;
     for (frame.a11y[0..frame.a11y_count]) |*node| {
         if (node.role == .dialog) count += 1;
@@ -934,7 +934,7 @@ const DialogState = struct {
     }
 };
 
-const DialogApp = core.App(DialogState, dialogRender, .{
+const DialogApp = gooey.App(DialogState, dialogRender, .{
     .title = "Dialog",
     .width = 200,
     .height = 100,
@@ -943,7 +943,7 @@ const DialogApp = core.App(DialogState, dialogRender, .{
 
 fn dialogRender(cx: *Cx) void {
     cx.render(ui.box(.{ .style = .{ .width = .{ .grow = 1 }, .height = .{ .grow = 1 } } }, .{
-        components.core.Button{ .label = "Open", .on_click = cx.on(openDialog, .{}) },
+        components.Button{ .label = "Open", .on_click = cx.on(openDialog, .{}) },
     }));
 }
 
@@ -966,11 +966,11 @@ fn openDialog(self: *DialogState, effects: *Effects) void {
 
 /// A dialog service that records where it ran and answers from a script.
 const ScriptedDialog = struct {
-    window: *const core.internals.window.Window,
+    window: *const internals.window.Window,
     main_thread: std.Thread.Id,
     opened_on_main: u32 = 0,
     opened_in_drain: u32 = 0,
-    answers: []const core.internals.events.Completion.Outcome,
+    answers: []const internals.events.Completion.Outcome,
     next: u32 = 0,
     saved_name: [16]u8 = undefined,
     saved_name_len: u32 = 0,
@@ -978,8 +978,8 @@ const ScriptedDialog = struct {
     fn open(
         context: *anyopaque,
         scratch: std.mem.Allocator,
-        request: core.internals.handler.FileDialogRequest,
-    ) core.internals.events.Completion.Outcome {
+        request: internals.handler.FileDialogRequest,
+    ) internals.events.Completion.Outcome {
         const self: *ScriptedDialog = @ptrCast(@alignCast(context));
         _ = scratch;
         switch (request.kind) {
@@ -1077,7 +1077,7 @@ test "counter and todo run their traces with no allocation after init" {
         trace_mod.run(driver, case[2], &out);
         const window = &driver.app.window;
         try testing.expectEqual(
-            core.internals.lifecycle.Lifecycle.running,
+            internals.lifecycle.Lifecycle.running,
             driver.app.guard.lifecycle,
         );
         try testing.expect(window.component_depth_peak >= 3);
@@ -1104,7 +1104,7 @@ test "a frame in flight defers the next build while input keeps draining" {
     defer testing.allocator.destroy(driver);
     try driver.initInPlace(testing.allocator, testing.io, &traces.counter);
     defer driver.deinit();
-    const tick = core.internals.tick;
+    const tick = internals.tick;
     const window = &driver.app.window;
     driver.frame();
     const first = window.rendered().frame_number;
@@ -1172,14 +1172,14 @@ const CursorState = struct {
     }
 };
 
-const CursorApp = core.App(CursorState, cursorRender, .{
+const CursorApp = gooey.App(CursorState, cursorRender, .{
     .title = "Cursor",
     .width = 300,
     .height = 200,
     .limits = .nano,
 });
 
-const CursorShape = @FieldType(core.internals.window.Window, "cursor");
+const CursorShape = @FieldType(internals.window.Window, "cursor");
 
 fn cursorRender(cx: *Cx) void {
     const state = cx.state(CursorState);
@@ -1189,10 +1189,10 @@ fn cursorRender(cx: *Cx) void {
     flip.cursor = if (state.text) .text else .pointer;
     cx.render(ui.box(.{ .style = .{ .width = .{ .grow = 1 } } }, .{
         ui.box(.{ .style = row }, .{
-            components.core.Button{ .label = "Go", .on_click = cx.on(CursorState.toggle, .{}) },
+            components.Button{ .label = "Go", .on_click = cx.on(CursorState.toggle, .{}) },
         }),
         ui.box(.{ .style = row }, .{
-            components.core.TextInput{ .key = "draft", .bind = &state.draft },
+            components.TextInput{ .key = "draft", .bind = &state.draft },
         }),
         ui.box(.{ .style = row }, .{
             ui.box(.{ .style = .{ .padding = .all(5), .cursor = .pointer } }, .{
@@ -1286,7 +1286,7 @@ const FontState = struct {
 
 /// Two families (decision 8): the app family and a synthetic `.monospace`
 /// second family, whose glyphs all advance by 0.6 em.
-const FontApp = core.App(FontState, fontRender, .{
+const FontApp = gooey.App(FontState, fontRender, .{
     .title = "Fonts",
     .width = 300,
     .height = 100,
@@ -1309,7 +1309,7 @@ fn fontRender(cx: *Cx) void {
 }
 
 /// The x of every glyph sprite in the rendered frame, in paint order.
-fn spriteXs(window: *const core.internals.window.Window, out: []f32) u32 {
+fn spriteXs(window: *const internals.window.Window, out: []f32) u32 {
     const frame = window.rendered();
     var count: u32 = 0;
     for (frame.paint[0..frame.paint_count]) |record| {
@@ -1352,7 +1352,7 @@ test "effects.setFont reloads the app family once no frame is in flight" {
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
     defer app.deinitHeadless();
-    const tick = core.internals.tick;
+    const tick = internals.tick;
     const window = &app.window;
     const text_system = app.resources.text_system;
     app.tick(1); // A rendered frame for the click to hit.
@@ -1376,7 +1376,7 @@ test "effects.setFont reloads the app family once no frame is in flight" {
 
 const WrapState = struct {};
 
-const WrapApp = core.App(WrapState, wrapRender, .{
+const WrapApp = gooey.App(WrapState, wrapRender, .{
     .title = "Wrap",
     .width = 300,
     .height = 200,
@@ -1400,7 +1400,7 @@ fn wrapRender(cx: *Cx) void {
 }
 
 /// The first sprite of each run of glyphs that share a top edge.
-fn lineStarts(window: *const core.internals.window.Window, out: []core.internals.records.Rect) u32 {
+fn lineStarts(window: *const internals.window.Window, out: []internals.records.Rect) u32 {
     const frame = window.rendered();
     var count: u32 = 0;
     for (frame.paint[0..frame.paint_count]) |record| {
@@ -1433,7 +1433,7 @@ test "wrapped text draws one run per line, pitched and aligned like its layout b
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
     defer app.deinitHeadless();
     app.tick(1);
-    var starts: [8]core.internals.records.Rect = undefined;
+    var starts: [8]internals.records.Rect = undefined;
     try testing.expectEqual(@as(u32, 5), lineStarts(&app.window, &starts));
     const reference = starts[4];
     const expected_x = [_]f32{ 23, 76, 42, -1.75 };
@@ -1474,12 +1474,12 @@ test "a host's teardown frees through the guard after stop and leaves no atlas c
 
 const ThemeState = struct {
     pub fn goDark(_: *ThemeState, effects: *Effects) void {
-        effects.setTheme(&core.Theme.dark);
+        effects.setTheme(&gooey.Theme.dark);
         effects.announce("Dark theme", .polite);
     }
 };
 
-const ThemeApp = core.App(ThemeState, themeRender, .{
+const ThemeApp = gooey.App(ThemeState, themeRender, .{
     .title = "Theme",
     .width = 200,
     .height = 100,
@@ -1500,7 +1500,7 @@ fn themeRender(cx: *Cx) void {
     }));
 }
 
-fn firstFill(frame: *const core.internals.records.Frame) core.internals.records.Color {
+fn firstFill(frame: *const internals.records.Frame) internals.records.Color {
     for (frame.paint[0..frame.paint_count]) |record| {
         switch (record) {
             .quad => |quad| return quad.fill,
@@ -1520,10 +1520,10 @@ test "setTheme reaches the next build and announcements ride exactly one frame" 
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
     defer app.deinitHeadless();
-    const tick = core.internals.tick;
+    const tick = internals.tick;
     const window = &app.window;
-    const light = &core.Theme.light;
-    const dark = &core.Theme.dark;
+    const light = &gooey.Theme.light;
+    const dark = &gooey.Theme.dark;
     app.tick(1);
     const first = window.rendered();
     try testing.expectEqual(@as(u32, 2), first.a11y_count);
@@ -1568,7 +1568,7 @@ test "keymapClaims answers from the rendered focus path" {
     defer testing.allocator.destroy(driver);
     try driver.initInPlace(testing.allocator, testing.io, &traces.actions);
     defer driver.deinit();
-    const query = core.Query{ .window = &driver.app.window };
+    const query = gooey.Query{ .window = &driver.app.window };
     const save = chord(.s, .{ .cmd = true });
     driver.frame();
     try testing.expect(!query.keymapClaims(save));
@@ -1598,7 +1598,7 @@ const ClockState = struct {
     builds: u32 = 0,
 };
 
-const ClockApp = core.App(ClockState, clockRender, .{
+const ClockApp = gooey.App(ClockState, clockRender, .{
     .title = "Clock",
     .width = 100,
     .height = 100,
@@ -1649,10 +1649,10 @@ const MotionState = struct {
     show: bool = true,
     trigger: u64 = 0,
     value: f32 = -1,
-    motion: core.animation.Motion = core.animation.Motion.hidden,
+    motion: gooey.animation.Motion = gooey.animation.Motion.hidden,
 };
 
-const MotionApp = core.App(MotionState, motionRender, .{
+const MotionApp = gooey.App(MotionState, motionRender, .{
     .title = "Motion",
     .width = 100,
     .height = 100,
@@ -1661,19 +1661,19 @@ const MotionApp = core.App(MotionState, motionRender, .{
 
 fn motionRender(cx: *Cx) void {
     const s = cx.state(MotionState);
-    const linear: core.animation.Tween = .{
+    const linear: gooey.animation.Tween = .{
         .duration_ms = 100,
-        .easing = core.animation.Easing.linear,
+        .easing = gooey.animation.Easing.linear,
     };
     switch (s.part) {
-        .tween => s.value = core.animation.tween(cx, .{ .name = "fade" }, linear),
-        .tween_on => s.value = core.animation.tweenOn(cx, .{ .name = "pulse" }, s.trigger, linear),
+        .tween => s.value = gooey.animation.tween(cx, .{ .name = "fade" }, linear),
+        .tween_on => s.value = gooey.animation.tweenOn(cx, .{ .name = "pulse" }, s.trigger, linear),
         .row => if (s.show) {
             var delayed = linear;
             delayed.delay_ms = 50;
-            s.value = core.animation.tween(cx, .{ .index = 3 }, delayed);
+            s.value = gooey.animation.tween(cx, .{ .index = 3 }, delayed);
         },
-        .motion => s.motion = core.animation.motion(cx, .{ .name = "panel" }, s.show, .snappy),
+        .motion => s.motion = gooey.animation.motion(cx, .{ .name = "panel" }, s.show, .snappy),
     }
     cx.render(ui.box(.{ .style = .{ .width = .{ .grow = 1 } } }, .{}));
 }
@@ -1743,7 +1743,7 @@ test "tweens follow the clock, wait out their delay, replay on return, and then 
     app.tick(3_200 * ms);
     try testing.expectEqual(@as(f32, 1), s.value);
     try testing.expect(motionIdle(app));
-    try testing.expectEqual(core.internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
+    try testing.expectEqual(internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
 }
 
 test "a motion springs in, reverses mid-flight without a snap, and settles hidden" {
@@ -1761,7 +1761,7 @@ test "a motion springs in, reverses mid-flight without a snap, and settles hidde
     s.part = .motion;
     var now: u64 = 1_000 * ms;
     app.tick(now);
-    try testing.expectEqual(core.animation.Phase.entering, s.motion.phase);
+    try testing.expectEqual(gooey.animation.Phase.entering, s.motion.phase);
     try testing.expectEqual(@as(f32, 0), s.motion.progress);
     for (0..6) |_| {
         now += 16 * ms;
@@ -1773,7 +1773,7 @@ test "a motion springs in, reverses mid-flight without a snap, and settles hidde
     s.show = false;
     now += 16 * ms;
     motionBuild(app, now / ms);
-    try testing.expectEqual(core.animation.Phase.exiting, s.motion.phase);
+    try testing.expectEqual(gooey.animation.Phase.exiting, s.motion.phase);
     try testing.expect(s.motion.visible);
     try testing.expect(s.motion.progress > before);
     var frames: u32 = 0;
@@ -1782,7 +1782,7 @@ test "a motion springs in, reverses mid-flight without a snap, and settles hidde
         now += 16 * ms;
         app.tick(now);
     }
-    try testing.expectEqual(core.animation.Motion.hidden, s.motion);
+    try testing.expectEqual(gooey.animation.Motion.hidden, s.motion);
     const built = app.window.frame_number;
     app.tick(now + 10_000 * ms);
     try testing.expectEqual(built, app.window.frame_number);
@@ -1841,15 +1841,15 @@ test "animation plays its entrances, toggles, and stagger, then goes idle" {
     const built = app.window.frame_number;
     app.tick(now + 10 * std.time.ns_per_s);
     try testing.expectEqual(built, app.window.frame_number);
-    try testing.expectEqual(core.internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
+    try testing.expectEqual(internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
 }
 
 /// The rendered accessibility node named `name`, by role.
 fn formNode(
     app: *accessible_form.App,
-    role: core.ui.Role,
+    role: gooey.ui.Role,
     name: []const u8,
-) ?*const core.internals.records.A11yNode {
+) ?*const internals.records.A11yNode {
     const frame = app.window.rendered();
     for (frame.a11y[0..frame.a11y_count]) |*node| {
         if (node.role != role) continue;
@@ -1862,9 +1862,9 @@ fn formNode(
 fn formReveal(
     app: *accessible_form.App,
     now: *u64,
-    role: core.ui.Role,
+    role: gooey.ui.Role,
     name: []const u8,
-) core.internals.records.Rect {
+) internals.records.Rect {
     var node = formNode(app, role, name).?;
     var steps: u32 = 0;
     while (node.bounds.y < 10 or node.bounds.y + node.bounds.height > 790) : (steps += 1) {
@@ -1884,7 +1884,7 @@ fn formReveal(
 }
 
 /// Click the centre of a node, scrolling the form first so it is visible.
-fn formClick(app: *accessible_form.App, now: *u64, role: core.ui.Role, name: []const u8) void {
+fn formClick(app: *accessible_form.App, now: *u64, role: gooey.ui.Role, name: []const u8) void {
     const bounds = formReveal(app, now, role, name);
     clickAt(app, now, bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
 }
@@ -1949,7 +1949,7 @@ test "accessible_form validates, announces, and submits on the core" {
     try testing.expectEqualStrings("Ada Lovelace", app.state.name);
     const success = "Registration successful! Thank you for signing up.";
     try testing.expect(formNode(app, .alert, success) != null);
-    try testing.expectEqual(core.internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
+    try testing.expectEqual(internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
 }
 
 /// A folder dialog that answers with one path, as the platform's would.
@@ -1960,8 +1960,8 @@ const FolderDialog = struct {
     fn open(
         context: *anyopaque,
         scratch: std.mem.Allocator,
-        request: core.internals.handler.FileDialogRequest,
-    ) core.internals.events.Completion.Outcome {
+        request: internals.handler.FileDialogRequest,
+    ) internals.events.Completion.Outcome {
         const self: *FolderDialog = @ptrCast(@alignCast(context));
         _ = scratch;
         assert(request.kind.open.directories);
@@ -1973,10 +1973,10 @@ const FolderDialog = struct {
 
 /// The rendered accessibility node named `name`, by role, in any app.
 fn nodeNamed(
-    window: *core.internals.window.Window,
-    role: core.ui.Role,
+    window: *internals.window.Window,
+    role: gooey.ui.Role,
     name: []const u8,
-) ?*const core.internals.records.A11yNode {
+) ?*const internals.records.A11yNode {
     const frame = window.rendered();
     for (frame.a11y[0..frame.a11y_count]) |*node| {
         if (node.role != role) continue;
@@ -2092,7 +2092,7 @@ test "code_editor's editor fills its panel at any window height" {
         try testing.expect(app.window.renderDeadlineNs() == null);
         try testing.expect(!app.window.render_requested);
     }
-    try testing.expectEqual(core.internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
+    try testing.expectEqual(internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
 }
 
 test "code_editor lists a folder in a List and opens its files on the core" {
@@ -2163,7 +2163,7 @@ test "code_editor lists a folder in a List and opens its files on the core" {
     editorClickRow(app, &now, "line1024.txt");
     try testing.expectEqual(code_editor.FileStatus.displaying_code, app.state.status);
     try testing.expectEqual(@as(usize, 2 + 2 * 1024 + 1), app.state.source.len);
-    try testing.expectEqual(core.internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
+    try testing.expectEqual(internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
 }
 
 /// Chat rows of 0.3.1's virtual_list_example: its five message heights in
@@ -2212,7 +2212,7 @@ fn listRowLabel(buffer: *[16]u8, index: u32) []const u8 {
 fn ListApp(comptime Row: type) type {
     const render = struct {
         fn render(cx: *Cx) void {
-            cx.render(components.core.List(Row){
+            cx.render(components.List(Row){
                 .key = "rows",
                 .count = 1000,
                 .gap = 8,
@@ -2220,24 +2220,24 @@ fn ListApp(comptime Row: type) type {
             });
         }
     }.render;
-    return core.App(ChatState, render, .{
+    return gooey.App(ChatState, render, .{
         .title = "List",
         .width = 300,
         .height = 300,
-        .limits = core.ResourceLimits.small,
+        .limits = gooey.ResourceLimits.small,
     });
 }
 
 /// The rows built this frame, and the a11y bounds of row `index` if built.
-fn listRows(window: *core.internals.window.Window, index: u32) struct {
+fn listRows(window: *internals.window.Window, index: u32) struct {
     count: u32,
-    row: ?core.internals.records.Rect,
+    row: ?internals.records.Rect,
 } {
     var label: [16]u8 = undefined;
     const name = listRowLabel(&label, index);
     const frame = window.rendered();
     var count: u32 = 0;
-    var row: ?core.internals.records.Rect = null;
+    var row: ?internals.records.Rect = null;
     for (frame.a11y[0..frame.a11y_count]) |*node| {
         if (node.role != .listitem) continue;
         count += 1;
@@ -2261,10 +2261,10 @@ fn listWheel(app: anytype, now: *u64, down: f32) void {
     app.tick(now.*);
 }
 
-fn listOffset(window: *core.internals.window.Window) *const core.internals.window.ScrollState {
+fn listOffset(window: *internals.window.Window) *const internals.window.ScrollState {
     const frame = window.rendered();
     for (frame.hits[0..frame.hit_count]) |*record| {
-        const State = core.internals.window.ScrollState;
+        const State = internals.window.ScrollState;
         if (window.retained.find(State, record.id)) |state| return state;
     }
     unreachable;
@@ -2314,7 +2314,7 @@ test "a List of per-row heights builds the rows in view, spaced by its gap and p
     rows = listRows(&app.window, 999);
     try testing.expectEqual(@as(f32, 300 - 8), rows.row.?.y + rows.row.?.height);
     try testing.expect(listRows(&app.window, 0).row == null);
-    try testing.expectEqual(core.internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
+    try testing.expectEqual(internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
 }
 
 test "a List of one row height takes its gap and padding into the rows in view" {
@@ -2350,8 +2350,8 @@ test "a List of one row height takes its gap and padding into the rows in view" 
 
 /// The list's scroll record and the hit records of its rows. Its spacers
 /// have no width, so they are not counted.
-fn listChildren(window: *core.internals.window.Window, rows: []core.internals.records.Rect) struct {
-    list: core.internals.records.Rect,
+fn listChildren(window: *internals.window.Window, rows: []internals.records.Rect) struct {
+    list: internals.records.Rect,
     count: u32,
 } {
     const frame = window.rendered();
@@ -2383,7 +2383,7 @@ test "virtual_list builds the chat messages in view at their heights, to the las
     app.tick(now);
     now += 1;
     app.tick(now);
-    var rows: [64]core.internals.records.Rect = undefined;
+    var rows: [64]internals.records.Rect = undefined;
     var children = listChildren(&app.window, &rows);
     try testing.expect(children.count >= 5);
     try testing.expect(children.count < 20);
@@ -2401,7 +2401,7 @@ test "virtual_list builds the chat messages in view at their heights, to the las
     const end = rows[children.count - 1];
     try testing.expectEqual(virtual_list.messages[999].height(), end.height);
     try testing.expectEqual(children.list.y + children.list.height - 8, end.y + end.height);
-    try testing.expectEqual(core.internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
+    try testing.expectEqual(internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
 }
 
 fn tableHeader(app: *data_table.App, now: *u64, label: []const u8) void {
@@ -2435,7 +2435,7 @@ test "data_table sorts 10,000 rows from its headers and builds only the rows in 
     app.tick(now);
     now += 1;
     app.tick(now);
-    var rows: [64]core.internals.records.Rect = undefined;
+    var rows: [64]internals.records.Rect = undefined;
     const children = listChildren(&app.window, &rows);
     try testing.expect(children.count >= 10);
     try testing.expect(children.count < 30);
@@ -2463,11 +2463,11 @@ test "data_table sorts 10,000 rows from its headers and builds only the rows in 
     try testing.expectEqual(@as(u32, 0), app.state.order[0]);
 }
 
-const MeshApp = core.App(struct {}, meshRender, .{
+const MeshApp = gooey.App(struct {}, meshRender, .{
     .title = "Meshes",
     .width = 300,
     .height = 300,
-    .limits = core.ResourceLimits.small,
+    .limits = gooey.ResourceLimits.small,
 });
 
 const mesh_red = ui.Color.rgb(1, 0, 0);
@@ -2506,7 +2506,7 @@ test "Painter meshes pack into the scene's paths, polylines, and point clouds" {
     defer app.deinitHeadless();
     app.tick(0);
     const frame = app.window.rendered();
-    var meshes: [8]core.internals.records.Mesh = undefined;
+    var meshes: [8]internals.records.Mesh = undefined;
     var mesh_count: usize = 0;
     var quads: u32 = 0;
     for (frame.paint[0..frame.paint_count]) |record| {
@@ -2525,7 +2525,7 @@ test "Painter meshes pack into the scene's paths, polylines, and point clouds" {
     }
     try testing.expectEqual(@as(u32, 1), quads);
     try testing.expectEqual(@as(usize, 5), mesh_count);
-    const Topology = core.internals.records.Mesh.Topology;
+    const Topology = internals.records.Mesh.Topology;
     try testing.expectEqual(Topology.triangles, meshes[0].topology);
     try testing.expectEqual(@as(u32, 6), meshes[0].range.count);
     try testing.expectEqual(@as(u32, 30), meshes[1].range.count);
@@ -2548,11 +2548,11 @@ test "Painter meshes pack into the scene's paths, polylines, and point clouds" {
     try testing.expectEqual(@as(usize, 1), scene.polylineCount());
     try testing.expectEqual(@as(usize, 1), scene.pointCloudCount());
     try testing.expectEqual(@as(u32, 3), scene.getPolylines()[0].point_count);
-    try testing.expectEqual(core.internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
+    try testing.expectEqual(internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
 }
 
 /// The 32 px icon cells built this frame, in tree order.
-fn lucideCells(window: *core.internals.window.Window, cells: []core.internals.records.Rect) u32 {
+fn lucideCells(window: *internals.window.Window, cells: []internals.records.Rect) u32 {
     const frame = window.rendered();
     var count: u32 = 0;
     for (frame.hits[0..frame.hit_count]) |*record| {
@@ -2565,8 +2565,8 @@ fn lucideCells(window: *core.internals.window.Window, cells: []core.internals.re
 }
 
 fn lucideCellQuad(
-    window: *core.internals.window.Window,
-    cell: core.internals.records.Rect,
+    window: *internals.window.Window,
+    cell: internals.records.Rect,
 ) ?ui.Color {
     const frame = window.rendered();
     for (frame.paint[0..frame.paint_count]) |record| {
@@ -2598,7 +2598,7 @@ test "lucide_demo builds the icon rows in view and lights the cell under the poi
         if (!app.window.render_requested) break;
     }
     try testing.expect(!app.window.render_requested);
-    var cells: [1024]core.internals.records.Rect = undefined;
+    var cells: [1024]internals.records.Rect = undefined;
     const count = lucideCells(&app.window, &cells);
     try testing.expectEqual(@as(u32, 0), count % 16);
     try testing.expect(count >= 16 * 15);
@@ -2633,7 +2633,7 @@ test "lucide_demo builds the icon rows in view and lights the cell under the poi
     const end_count = lucideCells(&app.window, &cells);
     const remainder = lucide.TOTAL_ICONS % 16;
     try testing.expectEqual(if (remainder == 0) 0 else 16 - remainder, (16 - end_count % 16) % 16);
-    try testing.expectEqual(core.internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
+    try testing.expectEqual(internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
 }
 
 /// Counts the image worker's wakes, as a host's `scheduleTick` would.
@@ -2660,8 +2660,8 @@ fn settleImages(app: anytype, now: *u64) !void {
 }
 
 fn imageSprites(
-    frame: *const core.internals.records.Frame,
-    out: []core.internals.records.Sprite,
+    frame: *const internals.records.Frame,
+    out: []internals.records.Sprite,
 ) u32 {
     var count: u32 = 0;
     for (frame.paint[0..frame.paint_count]) |record| {
@@ -2689,7 +2689,7 @@ test "images: one decode lands off the main thread and draws every cell" {
     defer app.window.images.bindWake(null);
     var now: u64 = 0;
     app.tick(now);
-    var sprites: [32]core.internals.records.Sprite = undefined;
+    var sprites: [32]internals.records.Sprite = undefined;
     try testing.expectEqual(@as(u32, 0), imageSprites(app.window.rendered(), &sprites));
     var pending: u32 = 0;
     for (app.window.images.entries) |entry| {
@@ -2724,7 +2724,7 @@ test "images: one decode lands off the main thread and draws every cell" {
     try testing.expectEqual(@as(f32, 40), combined.corners.top_left);
     try testing.expectEqual(@as(f32, 1), sprites[cell_count - 5].tint.b);
     try testing.expectEqual(@as(f32, 1), sprites[cell_count - 4].grayscale);
-    try testing.expectEqual(core.internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
+    try testing.expectEqual(internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
 }
 
 fn missingImageRender(cx: *Cx) void {
@@ -2744,11 +2744,11 @@ test "images: a missing file fails once and is not read again" {
     // re-read the disk every frame. Methodology: paint a missing path, let
     // its failure land, then render again: the entry stays failed, nothing
     // more is queued, and nothing is drawn.
-    const MissingApp = core.App(struct {}, missingImageRender, .{
+    const MissingApp = gooey.App(struct {}, missingImageRender, .{
         .title = "Missing",
         .width = 100,
         .height = 100,
-        .limits = core.ResourceLimits.nano,
+        .limits = gooey.ResourceLimits.nano,
     });
     const app = try testing.allocator.create(MissingApp);
     defer testing.allocator.destroy(app);
@@ -2770,7 +2770,7 @@ test "images: a missing file fails once and is not read again" {
     now += 1;
     app.tick(now);
     try testing.expectEqual(head, app.window.images.request_head.load(.acquire));
-    var sprites: [4]core.internals.records.Sprite = undefined;
+    var sprites: [4]internals.records.Sprite = undefined;
     try testing.expectEqual(@as(u32, 0), imageSprites(app.window.rendered(), &sprites));
     try testing.expectEqual(@as(u32, 0), app.window.images.landed_count);
 }
@@ -2832,11 +2832,11 @@ test "dashboard draws every chart within .standard and t switches its theme" {
     app.tick(1);
     try testing.expect(!app.state.is_dark_theme);
     try testing.expectEqual(ui.Color.hex(0xf1f5f9), rootFill(&app.window));
-    try testing.expectEqual(core.internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
+    try testing.expectEqual(internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
 }
 
 /// The fill of the frame's window-sized quad: the root box's background.
-fn rootFill(window: *core.internals.window.Window) ui.Color {
+fn rootFill(window: *internals.window.Window) ui.Color {
     const frame = window.rendered();
     for (frame.paint[0..frame.paint_count]) |record| {
         if (record != .quad) continue;
@@ -2874,7 +2874,7 @@ test "dynamic_counters creates, removes within a drain, and reuses entity slots"
     // Remove, then "+" on the removed card, in one drain.
     const remove = nodeNamed(&app.window, .button, "- Remove Counter").?.bounds;
     const plus = countersButton(app, "+", 2).bounds;
-    for ([_]core.ui.Rect{ remove, plus }) |bounds| {
+    for ([_]gooey.ui.Rect{ remove, plus }) |bounds| {
         const x = bounds.x + bounds.width / 2;
         const y = bounds.y + bounds.height / 2;
         app.window.queue.push(.{ .input = .{ .mouse_down = mouse(x, y) } });
@@ -2899,7 +2899,7 @@ test "dynamic_counters creates, removes within a drain, and reuses entity slots"
     try testing.expectEqual(@as(u32, dynamic_counters.counter_count_max), app.state.counter_count);
     try testing.expectEqual(@as(u32, 16 - 10), pool.free_count);
     try testing.expect(countersButton(app, "+", 9).bounds.width > 0);
-    try testing.expectEqual(core.internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
+    try testing.expectEqual(internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
 }
 
 fn countersValue(app: *dynamic_counters.App, index: u32) *const dynamic_counters.Counter {
@@ -2913,7 +2913,7 @@ fn countersButtonIndex(
     app: *dynamic_counters.App,
     name: []const u8,
     nth: u32,
-) ?*const core.internals.records.A11yNode {
+) ?*const internals.records.A11yNode {
     const frame = app.window.rendered();
     var seen: u32 = 0;
     for (frame.a11y[0..frame.a11y_count]) |*node| {
@@ -2929,7 +2929,7 @@ fn countersButton(
     app: *dynamic_counters.App,
     name: []const u8,
     nth: u32,
-) *const core.internals.records.A11yNode {
+) *const internals.records.A11yNode {
     return countersButtonIndex(app, name, nth).?;
 }
 
@@ -2940,11 +2940,11 @@ fn countersClick(app: *dynamic_counters.App, now: *u64, name: []const u8, nth: u
 
 /// A box built with a source location beside one without, for the inspector
 /// check.
-const InspectApp = core.App(struct {}, inspectRender, .{
+const InspectApp = gooey.App(struct {}, inspectRender, .{
     .title = "Inspect",
     .width = 400,
     .height = 300,
-    .limits = core.ResourceLimits.small,
+    .limits = gooey.ResourceLimits.small,
 });
 
 fn inspectSource() std.builtin.SourceLocation {
@@ -2967,7 +2967,7 @@ test "the inspector selects the element under a press and shows its source" {
     // (contract decision 16). Methodology: open the inspector with
     // Cmd+Shift+I, press inside the annotated box, then inside its sibling,
     // which has no source; cycling through the profiler closes it again.
-    if (!core.internals.debugger.enabled) return error.SkipZigTest;
+    if (!internals.debugger.enabled) return error.SkipZigTest;
     const app = try testing.allocator.create(InspectApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -3000,12 +3000,12 @@ test "the inspector selects the element under a press and shows its source" {
 /// `.nano` with records cut to what `fullPaint` fills: every quad, glyph, and
 /// paint record the app declares.
 const full_limits = blk: {
-    var limits = core.ResourceLimits.nano;
+    var limits = gooey.ResourceLimits.nano;
     limits.records.paint_record_count_frame_max = 4_096;
     break :blk limits;
 };
 
-const FullApp = core.App(struct {}, fullRender, .{
+const FullApp = gooey.App(struct {}, fullRender, .{
     .title = "Full",
     .width = 800,
     .height = 600,
@@ -3022,7 +3022,7 @@ fn fullRender(cx: *Cx) void {
 
 const PaintCounts = struct { records: u32, quads: u32, glyphs: u32 };
 
-fn paintCounts(frame: *const core.internals.records.Frame) PaintCounts {
+fn paintCounts(frame: *const internals.records.Frame) PaintCounts {
     var counts = PaintCounts{ .records = frame.paint_count, .quads = 0, .glyphs = 0 };
     for (frame.paint[0..frame.paint_count]) |record| {
         switch (record) {
@@ -3071,7 +3071,7 @@ test "the debugger opens over an app filled to exactly its limits" {
     // records exactly; open the inspector, hover and select its element, then
     // the profiler, and check each frame and scene holds the app's full
     // budget plus the overlay.
-    if (!core.internals.debugger.enabled) return error.SkipZigTest;
+    if (!internals.debugger.enabled) return error.SkipZigTest;
     const app = try testing.allocator.create(FullApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -3106,7 +3106,7 @@ test "the debugger opens over an app filled to exactly its limits" {
 }
 
 /// The bounds of the first button named `name`, or null when none is built.
-fn todoButton(app: *todo.App, name: []const u8) ?core.ui.Rect {
+fn todoButton(app: *todo.App, name: []const u8) ?gooey.ui.Rect {
     const node = nodeNamed(&app.window, .button, name) orelse return null;
     return node.bounds;
 }
@@ -3218,5 +3218,5 @@ test "todo keeps its header, footer, and Add in view at 20 items and narrow widt
     // Rows fill the list, so Delete ends inside it.
     const delete = todoButton(app, "Delete").?;
     try testing.expect(delete.x + delete.width <= 360 - 24);
-    try testing.expectEqual(core.internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
+    try testing.expectEqual(internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
 }

@@ -1,15 +1,15 @@
 # Gooey Components
 
-Controls on the Gooey core (`components.core`) and the Lucide icon set
-(`components.Lucide`).
+Library controls (`components.Button`, `components.TextInput`, ...) and the
+Lucide icon set (`components.Lucide`).
 
 ```zig
 const gooey = @import("gooey");
 const components = @import("gooey-components");
 
-const Button = components.core.Button;
+const Button = components.Button;
 
-fn render(cx: *gooey.core.Cx) void {
+fn render(cx: *gooey.Cx) void {
     cx.render(Button{
         .label = "Save",
         .on_click = cx.on(State.save, .{}),

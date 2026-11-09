@@ -13,11 +13,11 @@ const gooey = @import("gooey");
 
 const assert = std.debug.assert;
 
-pub const Painter = gooey.core.Painter;
-pub const Color = gooey.core.ui.Color;
+pub const Painter = gooey.Painter;
+pub const Color = gooey.ui.Color;
 
 /// A filled rectangle, with rounded corners when `radius` is positive.
-pub fn rect(painter: *Painter, bounds: gooey.core.ui.Rect, radius: f32, color: Color) void {
+pub fn rect(painter: *Painter, bounds: gooey.ui.Rect, radius: f32, color: Color) void {
     assert(bounds.width >= 0);
     assert(bounds.height >= 0);
     assert(radius >= 0);
@@ -60,7 +60,7 @@ pub fn measure(painter: *const Painter, content: []const u8) f32 {
     return painter.measureText(content, .{ .size = loaded, .color = Color.black });
 }
 
-fn style(color: Color, size: f32) gooey.core.ui.PaintText {
+fn style(color: Color, size: f32) gooey.ui.PaintText {
     assert(size >= 1);
     assert(size <= std.math.maxInt(u16));
     return .{ .size = @intFromFloat(@round(size)), .color = color };

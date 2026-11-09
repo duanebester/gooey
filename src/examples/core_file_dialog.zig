@@ -12,11 +12,10 @@ const std = @import("std");
 const gooey = @import("gooey");
 const components = @import("gooey-components");
 
-const core = gooey.core;
-const ui = core.ui;
-const Cx = core.Cx;
-const Effects = core.Effects;
-const Button = components.core.Button;
+const ui = gooey.ui;
+const Cx = gooey.Cx;
+const Effects = gooey.Effects;
+const Button = components.Button;
 
 /// Longest path the state keeps; longer paths are cut at a UTF-8 boundary.
 const path_bytes_max = 512;
@@ -67,7 +66,7 @@ pub const State = struct {
         }
     }
 
-    fn open(effects: *Effects, options: core.PathPromptOptions) void {
+    fn open(effects: *Effects, options: gooey.PathPromptOptions) void {
         effects.openFileDialog(.{
             .kind = .{ .open = options },
             .on_complete = effects.handler(State.completed),
@@ -99,7 +98,7 @@ fn keptLength(value: []const u8) usize {
     return end;
 }
 
-pub const App = core.App(State, render, .{
+pub const App = gooey.App(State, render, .{
     .title = "File dialog",
     .width = 680,
     .height = 220,

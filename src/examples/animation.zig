@@ -13,12 +13,11 @@ const std = @import("std");
 const gooey = @import("gooey");
 const components = @import("gooey-components");
 
-const core = gooey.core;
-const animation = core.animation;
-const ui = core.ui;
-const Cx = core.Cx;
+const animation = gooey.animation;
+const ui = gooey.ui;
+const Cx = gooey.Cx;
 const Color = ui.Color;
-const Button = components.core.Button;
+const Button = components.Button;
 
 const assert = std.debug.assert;
 
@@ -44,7 +43,7 @@ pub const State = struct {
     }
 };
 
-pub const App = core.App(State, render, .{
+pub const App = gooey.App(State, render, .{
     .title = "Animation Demo",
     .width = 550,
     .height = 550,

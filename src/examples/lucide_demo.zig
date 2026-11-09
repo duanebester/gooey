@@ -8,11 +8,10 @@ const std = @import("std");
 const gooey = @import("gooey");
 const components = @import("gooey-components");
 
-const core = gooey.core;
-const ui = core.ui;
-const Cx = core.Cx;
+const ui = gooey.ui;
+const Cx = gooey.Cx;
 const Color = ui.Color;
-const List = components.core.List;
+const List = components.List;
 const Lucide = components.Lucide;
 
 const assert = std.debug.assert;
@@ -72,7 +71,7 @@ comptime {
 
 pub const State = struct {};
 
-pub const App = core.App(State, render, .{
+pub const App = gooey.App(State, render, .{
     .title = "Lucide Icons — All " ++ std.fmt.comptimePrint("{d}", .{TOTAL_ICONS}) ++ " Icons",
     .width = 700,
     .height = 850,
@@ -142,7 +141,7 @@ const IconCells = struct {
         var index = self.start;
         while (index < self.end) : (index += 1) {
             // Keyed by position in the row, so hover follows the cell.
-            const key = core.Key{ .index = index - self.start };
+            const key = gooey.Key{ .index = index - self.start };
             const hovered = cx.hovered(cx.id(key));
             cx.render(ui.box(.{ .key = key, .style = .{
                 .width = .{ .fixed = CELL_SIZE },

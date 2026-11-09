@@ -7,7 +7,7 @@ software SVG rasterizer, the system clipboard, native file dialogs, IME composit
 Automation accessibility, and the shared Vulkan renderer. Verified on an Intel UHD 620 at
 150% scale. The [checklist](#win32-checklist) has what remains.
 
-0.4.0 core apps (`gooey.core.App`) run on the [core host](#core-host): counter, todo,
+0.4.0 core apps (`gooey.App`) run on the [core host](#core-host): counter, todo,
 core-file-dialog, code-editor, actions, nested-overlay, and accessible-form, the core
 examples Linux builds.
 
@@ -198,7 +198,7 @@ the bindings. Validation layers ship with the SDK, so without it Debug builds lo
 ### Core host
 
 `src/platform/windows/core_host.zig` runs a 0.4.0 core app, as the macOS and Linux hosts
-do (contract rule 1). `gooey.core.App.main` selects it with one `.windows` arm in
+do (contract rule 1). `gooey.App.main` selects it with one `.windows` arm in
 `core/app.zig`.
 
 - **Threads.** The main thread created the window, so it receives its messages, and runs
