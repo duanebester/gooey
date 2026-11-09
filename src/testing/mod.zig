@@ -6,7 +6,6 @@
 //! ## Available Mocks
 //!
 //! - `MockRenderer` - Tracks render calls without GPU operations
-//! - `MockClipboard` - In-memory clipboard for copy/paste testing
 //! - `MockSvgRasterizer` - Simulates SVG rasterization
 //! - `MockFontFace` - Configurable font face for text testing
 //!
@@ -35,7 +34,6 @@ const std = @import("std");
 // =============================================================================
 
 pub const MockRenderer = @import("mock_renderer.zig").MockRenderer;
-pub const MockClipboard = @import("mock_clipboard.zig").MockClipboard;
 pub const MockFontFace = @import("mock_font_face.zig").MockFontFace;
 
 /// Mock SVG rasterizer module

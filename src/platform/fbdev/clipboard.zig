@@ -4,7 +4,7 @@
 //! processes, so copy and paste work within the application only. The text
 //! lives in static storage of `text_bytes_max` bytes; longer copies are
 //! refused rather than truncated, so a paste never yields a silently cut
-//! string. The API matches `linux/clipboard.zig`, which the text widgets call.
+//! string. The API matches `linux/clipboard.zig`'s `readText` and `setText`.
 
 const std = @import("std");
 const core_clipboard = @import("../../core/clipboard.zig");
@@ -15,16 +15,6 @@ pub const text_bytes_max: usize = 64 * 1024;
 
 var storage: [text_bytes_max]u8 = undefined;
 var stored_len: usize = 0;
-
-/// Copy of the clipboard text owned by the caller, or null when empty or the
-/// copy cannot be allocated.
-pub fn getText(allocator: std.mem.Allocator) ?[]const u8 {
-    assert(stored_len <= text_bytes_max);
-    if (stored_len == 0) return null;
-    const copy = allocator.dupe(u8, storage[0..stored_len]) catch return null;
-    assert(copy.len == stored_len);
-    return copy;
-}
 
 /// Copy the clipboard text into `out`, cut at a codepoint boundary, and
 /// return its length (0 for none): the core host's read, which claims no
@@ -52,7 +42,7 @@ test "clipboard round-trips text and refuses oversized copies intact" {
     try std.testing.expect(setText("hello"));
     const oversized: [text_bytes_max + 1]u8 = @splat('x');
     try std.testing.expect(!setText(&oversized));
-    const text = getText(std.testing.allocator) orelse return error.TestExpectedText;
-    defer std.testing.allocator.free(text);
-    try std.testing.expectEqualStrings("hello", text);
+    var out: [16]u8 = undefined;
+    const len = readText(&out);
+    try std.testing.expectEqualStrings("hello", out[0..len]);
 }

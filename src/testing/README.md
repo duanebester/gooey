@@ -22,7 +22,6 @@ const testing = gooey.testing;
 | Mock                | Purpose                         | Platform Dependency Replaced       |
 | ------------------- | ------------------------------- | ---------------------------------- |
 | `MockRenderer`      | Track render calls              | Metal, Vulkan, WebGPU              |
-| `MockClipboard`     | In-memory clipboard             | NSPasteboard, Wayland, Browser     |
 | `MockSvgRasterizer` | Simulate SVG rasterization      | CoreGraphics, Cairo, Canvas        |
 | `MockFontFace`      | Configurable font metrics       | CoreText, FreeType, Browser fonts  |
 
@@ -75,65 +74,6 @@ test "handle render failure" {
 | `resize_count`              | Number of `resize` calls               |
 | `last_width`, `last_height` | Last dimensions passed                 |
 | `last_scale`                | Last scale factor passed               |
-
----
-
-## MockClipboard
-
-In-memory clipboard for testing copy/paste operations.
-
-### Basic Usage
-
-```zig
-test "copy paste" {
-    var clipboard = testing.MockClipboard.init(testing.allocator);
-    defer clipboard.deinit();
-
-    // Copy
-    try std.testing.expect(clipboard.setText("Hello, World!"));
-
-    // Paste
-    const text = clipboard.getText(testing.allocator);
-    defer if (text) |t| testing.allocator.free(t);
-
-    try std.testing.expectEqualStrings("Hello, World!", text.?);
-}
-```
-
-### Direct Access (Test Setup)
-
-Use direct methods to set up test state without affecting call counters:
-
-```zig
-test "preset clipboard content" {
-    var clipboard = testing.MockClipboard.init(testing.allocator);
-    defer clipboard.deinit();
-
-    // Set up (doesn't increment set_count)
-    try clipboard.setContentDirect("preset");
-
-    // Now test your code
-    my_paste_handler(&clipboard);
-
-    // Verify only your code's calls
-    try std.testing.expectEqual(@as(u32, 1), clipboard.get_count);
-}
-```
-
-### Simulating Failures
-
-```zig
-test "handle clipboard unavailable" {
-    var clipboard = testing.MockClipboard.init(testing.allocator);
-    defer clipboard.deinit();
-
-    clipboard.should_fail_get = true;
-
-    // Your code should handle null gracefully
-    const text = clipboard.getText(testing.allocator);
-    try std.testing.expect(text == null);
-}
-```
 
 ---
 
@@ -406,23 +346,6 @@ test "proper frame lifecycle" {
 }
 ```
 
-### Testing Error Paths
-
-```zig
-test "graceful degradation" {
-    var clipboard = testing.MockClipboard.init(testing.allocator);
-    defer clipboard.deinit();
-
-    // Simulate system clipboard unavailable
-    clipboard.should_fail_get = true;
-    clipboard.should_fail_set = true;
-
-    // Your code should not crash
-    const result = my_paste_function(&clipboard);
-    try std.testing.expect(result == .no_content);
-}
-```
-
 ---
 
 ## Interface Verification
@@ -434,11 +357,6 @@ the real implementation signatures:
 // In mock_renderer.zig
 comptime {
     interface_verify.verifyRendererInterface(@This());
-}
-
-// In mock_clipboard.zig
-comptime {
-    interface_verify.verifyClipboardInterface(@This());
 }
 
 // In mock_svg_rasterizer.zig

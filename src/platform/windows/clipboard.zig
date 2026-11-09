@@ -1,15 +1,14 @@
 //! Windows clipboard: text through `CF_UNICODETEXT`.
 //!
-//! The API matches `linux/clipboard.zig`, which the text widgets call:
-//! `getText(allocator)` returns caller-owned UTF-8 or null, `readText(out)`
-//! decodes into the core text engines' reserved paste buffer, and `setText`
-//! returns whether the system clipboard now holds the text.
+//! The API matches `linux/clipboard.zig`: `readText(out)` decodes into the
+//! core text engines' reserved paste buffer, and `setText` returns whether
+//! the system clipboard now holds the text.
 //!
 //! ## Line endings
 //!
 //! Windows text uses CR LF. Copy expands every LF not already preceded by CR
 //! into CR LF, and paste collapses CR LF into LF, so other applications see
-//! the line breaks a `TextArea` holds and a paste never inserts CR into a
+//! the line breaks a text area holds and a paste never inserts CR into a
 //! buffer. A lone CR passes through unchanged in both directions.
 //!
 //! ## Ownership
@@ -28,17 +27,17 @@
 //! storage reserved at init. Copy therefore makes one `GlobalAlloc` of at most
 //! `copy_block_bytes_max` per call, owned by the system once
 //! `SetClipboardData` succeeds and freed here on every failure path. Paste
-//! allocates its result from the caller's allocator because the shared
-//! `getText` contract returns caller-owned text, as on every other backend.
+//! decodes into the caller's buffer and allocates nothing.
 //!
 //! ## Bounds
 //!
-//! - Text: `text_bytes_max` (64 KiB) of UTF-8 in each direction, as on Linux
-//!   and fbdev. Longer text is refused with a warning, never truncated.
+//! - Text: `text_bytes_max` (64 KiB) of UTF-8 copied, as on Linux and fbdev.
+//!   A longer copy is refused with a warning, never truncated. A paste is cut
+//!   at a codepoint boundary to the caller's buffer.
 //! - Copy block: at most `copy_block_bytes_max` (256 KiB + 2 B), reached when
 //!   every byte is a lone LF.
-//! - Paste scan: at most `paste_unit_count_max + 1` units are examined, so a
-//!   huge or unterminated clipboard block costs bounded work.
+//! - Paste scan: at most `2 * out.len + 1` units are examined, so a huge or
+//!   unterminated clipboard block costs bounded work.
 //! - Contention: another process holding the clipboard makes `OpenClipboard`
 //!   fail. At most `open_attempt_count_max` attempts, `open_retry_delay_ms`
 //!   apart, so a busy clipboard stalls the UI thread for at most 20 ms.
@@ -59,10 +58,6 @@ const copy_unit_count_max: u32 = 2 * text_bytes_max;
 /// Copy block size: the units plus the terminating zero.
 const copy_block_bytes_max: u32 = (copy_unit_count_max + 1) * @sizeOf(u16);
 
-/// Paste turns at most two units into one byte (CR LF into LF), so a string
-/// of more units than this decodes to more than `text_bytes_max` bytes.
-const paste_unit_count_max: u32 = 2 * text_bytes_max;
-
 const open_attempt_count_max: u32 = 5;
 const open_retry_delay_ms: u32 = 5;
 
@@ -79,7 +74,6 @@ comptime {
     // `CF_UNICODETEXT` is UTF-16LE, read and written here as native `u16`.
     assert(builtin.cpu.arch.endian() == .little);
     assert(copy_block_bytes_max == 4 * text_bytes_max + 2);
-    assert(paste_unit_count_max < std.math.maxInt(u32) / 4);
 }
 
 /// Create the owner window. Part of `WindowsPlatform` initialization.
@@ -120,37 +114,6 @@ pub fn deinit() void {
     }
     owner_hwnd = null;
     assert(owner_hwnd == null);
-}
-
-/// Copy of the clipboard text owned by the caller, or null when the clipboard
-/// holds no text, is busy, holds more than `text_bytes_max`, or the copy
-/// cannot be allocated.
-pub fn getText(allocator: std.mem.Allocator) ?[]const u8 {
-    assert(owner_hwnd != null);
-    if (!clipboardOpen()) return null;
-    defer clipboardClose();
-
-    // No text on the clipboard is the common case, not an error.
-    const block = win32.GetClipboardData(win32.CF_UNICODETEXT) orelse return null;
-    const pointer = win32.GlobalLock(block) orelse {
-        std.log.warn("windows: clipboard GlobalLock failed (error {d})", .{
-            win32.GetLastError(),
-        });
-        return null;
-    };
-    // `GlobalUnlock` returns FALSE once the lock count reaches zero, which is
-    // the expected outcome of a balanced lock, so its result carries nothing.
-    defer _ = win32.GlobalUnlock(block);
-
-    const unit_capacity = win32.GlobalSize(block) / @sizeOf(u16);
-    const units_available = @as([*]const u16, @ptrCast(@alignCast(pointer)))[0..unit_capacity];
-    const units = pasteUnits(units_available) orelse {
-        std.log.warn("windows: clipboard text exceeds {d} units; paste refused", .{
-            paste_unit_count_max,
-        });
-        return null;
-    };
-    return pasteText(allocator, units);
 }
 
 /// Read the clipboard text into `out`, cut at a codepoint boundary, and
@@ -239,7 +202,7 @@ fn copyBlockCreate(text: []const u8) ?win32.HGLOBAL {
     const written = copyEncode(text, units[0..unit_count]);
     assert(written == unit_count);
     assert(units[unit_count] == 0); // Zero-initialized terminator.
-    _ = win32.GlobalUnlock(block); // FALSE is the expected final unlock; see `getText`.
+    _ = win32.GlobalUnlock(block); // FALSE is the expected final unlock; see `readText`.
     return block;
 }
 
@@ -364,68 +327,6 @@ fn utf16Length(code_point: u21) u32 {
 // Paste: UTF-16 with CR LF into UTF-8 with LF
 // =============================================================================
 
-/// The text in a clipboard block: the units before the first zero. A block
-/// without a terminator is taken whole, as other readers do. Returns null when
-/// the text has more than `paste_unit_count_max` units, which cannot decode to
-/// `text_bytes_max` bytes or fewer.
-fn pasteUnits(units_available: []const u16) ?[]const u16 {
-    const scan_count: usize = @min(units_available.len, paste_unit_count_max + 1);
-    for (units_available[0..scan_count], 0..) |unit, index| {
-        if (unit == 0) {
-            assert(index <= paste_unit_count_max);
-            return units_available[0..index];
-        }
-    }
-    if (units_available.len <= paste_unit_count_max) return units_available;
-    return null;
-}
-
-/// Decode `units` into a caller-owned UTF-8 copy, or null when it is longer
-/// than `text_bytes_max` or cannot be allocated.
-fn pasteText(allocator: std.mem.Allocator, units: []const u16) ?[]const u8 {
-    assert(units.len <= paste_unit_count_max);
-    const byte_count = pasteByteCount(units);
-    if (byte_count > text_bytes_max) {
-        std.log.warn("windows: paste of {d} bytes exceeds {d}; refused", .{
-            byte_count,
-            text_bytes_max,
-        });
-        return null;
-    }
-
-    const text = allocator.alloc(u8, byte_count) catch {
-        std.log.warn("windows: paste allocation of {d} bytes failed", .{byte_count});
-        return null;
-    };
-    const written = pasteDecode(units, text);
-    assert(written == byte_count);
-    assert(std.unicode.utf8ValidateSlice(text));
-    return text;
-}
-
-/// UTF-8 bytes `pasteDecode` writes for `units`.
-fn pasteByteCount(units: []const u16) u32 {
-    assert(units.len <= paste_unit_count_max);
-    var count: u32 = 0;
-    var decoder: PasteDecoder = .{ .units = units };
-    while (decoder.next()) |code_point| {
-        assert(decoder.index <= units.len);
-        count += utf8Length(code_point);
-    }
-    assert(count <= 3 * units.len);
-    return count;
-}
-
-/// Decode `units` into `target`, which holds exactly `pasteByteCount(units)`
-/// bytes. Returns the bytes written.
-fn pasteDecode(units: []const u16, target: []u8) u32 {
-    assert(units.len <= paste_unit_count_max);
-    assert(target.len <= text_bytes_max);
-    const count = pasteDecodePrefix(units, target);
-    assert(count == target.len);
-    return count;
-}
-
 /// Decode the longest prefix of `units` whose UTF-8 fits in `target`, so a
 /// cut never splits a codepoint. Returns the bytes written.
 fn pasteDecodePrefix(units: []const u16, target: []u8) u32 {
@@ -503,10 +404,11 @@ fn testCopy(buffer: []u16, text: []const u8) []const u16 {
     return buffer[0..written];
 }
 
-/// Decode `units` the way `getText` does, into a test-owned buffer.
+/// Decode `units` the way `readText` does, into a test-owned buffer large
+/// enough for all of them.
 fn testPaste(buffer: []u8, units: []const u16) []const u8 {
-    const byte_count = pasteByteCount(units);
-    const written = pasteDecode(units, buffer[0..byte_count]);
+    assert(buffer.len >= 3 * units.len);
+    const written = pasteDecodePrefix(units, buffer);
     return buffer[0..written];
 }
 
@@ -567,38 +469,6 @@ test "a paste into a short buffer keeps whole codepoints and collapses CR LF" {
     try testing.expectEqualStrings("a\nb", buffer[0..3]);
 }
 
-test "paste units stop at the terminator and refuse text past the bound" {
-    const terminated = [_]u16{ 'a', 'b', 0, 'c' };
-    try testing.expectEqual(@as(usize, 2), pasteUnits(&terminated).?.len);
-    try testing.expectEqual(@as(usize, 0), pasteUnits(&.{0}).?.len);
-
-    // Unterminated blocks: exactly at the bound is taken whole, one past it
-    // is refused, and a terminator at the bound still ends the text.
-    const units = try testing.allocator.alloc(u16, paste_unit_count_max + 2);
-    defer testing.allocator.free(units);
-    @memset(units, 'a');
-    try testing.expectEqual(
-        @as(usize, paste_unit_count_max),
-        pasteUnits(units[0..paste_unit_count_max]).?.len,
-    );
-    try testing.expect(pasteUnits(units[0 .. paste_unit_count_max + 1]) == null);
-    units[paste_unit_count_max] = 0;
-    try testing.expectEqual(@as(usize, paste_unit_count_max), pasteUnits(units).?.len);
-}
-
-test "paste refuses text that decodes past text_bytes_max" {
-    // Goal: the byte bound, not the unit bound, decides. One U+00E9 is one
-    // unit and two bytes, so half the byte bound fits and one more does not.
-    const fits = try testing.allocator.alloc(u16, text_bytes_max / 2 + 1);
-    defer testing.allocator.free(fits);
-    @memset(fits, 0xE9);
-
-    const text = pasteText(testing.allocator, fits[0 .. text_bytes_max / 2]).?;
-    defer testing.allocator.free(text);
-    try testing.expectEqual(@as(usize, text_bytes_max), text.len);
-    try testing.expect(pasteText(testing.allocator, fits) == null);
-}
-
 /// Owner window for the system clipboard tests. These tests replace the
 /// developer's clipboard contents, as the macOS clipboard test does.
 fn testOwnerInit() !void {
@@ -611,15 +481,13 @@ test "system clipboard round-trips text and line endings" {
     defer deinit();
 
     const text = "Gooey \u{1F389} clipboard\nsecond line\r\nthird";
+    var out: [64]u8 = undefined;
     try testing.expect(setText(text));
-    const pasted = getText(testing.allocator) orelse return error.TestExpectedText;
-    defer testing.allocator.free(pasted);
+    const pasted = out[0..readText(&out)];
     try testing.expectEqualStrings("Gooey \u{1F389} clipboard\nsecond line\nthird", pasted);
 
     try testing.expect(setText(""));
-    const empty = getText(testing.allocator) orelse return error.TestExpectedText;
-    defer testing.allocator.free(empty);
-    try testing.expectEqual(@as(usize, 0), empty.len);
+    try testing.expectEqual(@as(u32, 0), readText(&out));
 }
 
 test "system clipboard fills to text_bytes_max and refuses one byte more intact" {
@@ -637,7 +505,8 @@ test "system clipboard fills to text_bytes_max and refuses one byte more intact"
     try testing.expect(!setText(text));
     try testing.expect(!setText("\xFF")); // Invalid UTF-8.
 
-    const pasted = getText(testing.allocator) orelse return error.TestExpectedText;
-    defer testing.allocator.free(pasted);
-    try testing.expectEqualSlices(u8, text[0..text_bytes_max], pasted);
+    const out = try testing.allocator.alloc(u8, text_bytes_max);
+    defer testing.allocator.free(out);
+    try testing.expectEqual(text_bytes_max, readText(out));
+    try testing.expectEqualSlices(u8, text[0..text_bytes_max], out);
 }

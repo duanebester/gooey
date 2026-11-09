@@ -5,14 +5,13 @@
 //!
 //! The Wayland clipboard model:
 //! - Copy (setText): Create wl_data_source, offer MIME types, set as selection
-//! - Paste (getText): Receive wl_data_offer, request data, read from fd
+//! - Paste (readText): Receive wl_data_offer, request data, read from fd
 //!
 //! MIME type used: "text/plain;charset=utf-8"
 
 const std = @import("std");
 const builtin = @import("builtin");
 const wayland = @import("wayland.zig");
-const interface_verify = @import("../../core/interface_verify.zig");
 const core_clipboard = @import("../../core/clipboard.zig");
 const assert = std.debug.assert;
 
@@ -294,11 +293,6 @@ const MAX_MIME_TYPES = 16;
 
 /// Clipboard state - managed by the platform
 pub const ClipboardState = struct {
-    // Compile-time interface verification
-    comptime {
-        interface_verify.verifyClipboardInterface(@This());
-    }
-
     // Wayland objects
     data_device_manager: ?*WlDataDeviceManager = null,
     data_device: ?*WlDataDevice = null,
@@ -414,17 +408,6 @@ pub const ClipboardState = struct {
         {
             self.pending_has_text = true;
         }
-    }
-
-    /// Read text from clipboard
-    pub fn getText(self: *Self, allocator: std.mem.Allocator) ?[]const u8 {
-        const buffer = allocator.alloc(u8, MAX_CLIPBOARD_SIZE) catch return null;
-        const len = self.readText(buffer);
-        if (len == 0) {
-            allocator.free(buffer);
-            return null;
-        }
-        return allocator.realloc(buffer, len) catch buffer[0..len];
     }
 
     /// Read the clipboard text into `out`, cut at a codepoint boundary, and
@@ -722,12 +705,6 @@ pub fn getState() *ClipboardState {
 // =============================================================================
 // Public API (matching mac/clipboard.zig interface)
 // =============================================================================
-
-/// Read text from the system clipboard.
-/// Returns owned slice that caller must free, or null if no text available.
-pub fn getText(allocator: std.mem.Allocator) ?[]const u8 {
-    return global_state.getText(allocator);
-}
 
 /// Write text to the system clipboard.
 /// Returns true on success.

@@ -21,11 +21,3 @@ pub const selected: LinuxBackend = build_options.linux_backend;
 
 /// True when frames are rasterized on the CPU rather than by Vulkan.
 pub const uses_cpu_renderer = selected != .wayland_vulkan;
-
-/// The selected backend's clipboard. Wayland shares text with other clients
-/// through the compositor; fbdev keeps it inside the process. Both expose
-/// `getText(allocator) ?[]const u8` and `setText([]const u8) bool`.
-pub const clipboard = switch (selected) {
-    .wayland_vulkan, .wayland_cpu => @import("linux/clipboard.zig"),
-    .fbdev => @import("fbdev/clipboard.zig"),
-};

@@ -10,30 +10,6 @@ const core_clipboard = @import("../../core/clipboard.zig");
 // AppKit constant for string pasteboard type
 extern "c" var NSPasteboardTypeString: objc.c.id;
 
-/// Read text from the system clipboard.
-/// Returns owned slice that caller must free, or null if no text available.
-pub fn getText(allocator: std.mem.Allocator) ?[]const u8 {
-    const NSPasteboard = objc.getClass("NSPasteboard") orelse return null;
-    const pasteboard = NSPasteboard.msgSend(objc.Object, "generalPasteboard", .{});
-
-    // stringForType: returns NSString* or nil
-    const ns_string_id: objc.c.id = pasteboard.msgSend(
-        objc.c.id,
-        "stringForType:",
-        .{NSPasteboardTypeString},
-    );
-    if (ns_string_id == null) return null;
-
-    const ns_string = objc.Object.fromId(ns_string_id);
-
-    // Get UTF-8 C string
-    const cstr: ?[*:0]const u8 = ns_string.msgSend(?[*:0]const u8, "UTF8String", .{});
-    if (cstr == null) return null;
-
-    // Copy to owned slice (NSString's UTF8String is autoreleased)
-    return allocator.dupe(u8, std.mem.span(cstr.?)) catch null;
-}
-
 /// Read the clipboard text into `out`, cut at a codepoint boundary, and
 /// return its length (0 for none). Claims no storage (core hosts).
 pub fn readText(out: []u8) u32 {
@@ -97,8 +73,6 @@ pub fn setText(text: []const u8) bool {
 // =============================================================================
 
 test "clipboard round-trip" {
-    const allocator = std.testing.allocator;
-
     const test_text = "Hello from Gooey clipboard test! 🎉";
 
     // Write to clipboard
@@ -108,12 +82,7 @@ test "clipboard round-trip" {
         return;
     }
 
-    // Read back
-    const read_text = getText(allocator) orelse {
-        try std.testing.expect(false); // Should have read something
-        return;
-    };
-    defer allocator.free(read_text);
-
-    try std.testing.expectEqualStrings(test_text, read_text);
+    var out: [64]u8 = undefined;
+    const len = readText(&out);
+    try std.testing.expectEqualStrings(test_text, out[0..len]);
 }
