@@ -64,7 +64,8 @@ pub fn CoreDriver(comptime App: type) type {
             assert(trace.height == @as(f32, @floatFromInt(App.height)));
             try self.app.initHeadless(allocator, io, .{ .scale_factor = trace.scale_factor });
             errdefer self.app.deinitHeadless();
-            const render_limits = core_backend.RenderLimits.fromResourceLimits(&App.limits);
+            const RenderLimits = core_backend.RenderLimits;
+            const render_limits = RenderLimits.fromResourceLimits(&App.limits_reserved);
             const surface = core_backend.Surface{
                 .native = null,
                 .size_px = .{

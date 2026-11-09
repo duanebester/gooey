@@ -594,7 +594,7 @@ test "a scroll box clips its content, clamps its offset, and passes the wheel on
     try testing.expectEqual(@as(f32, 30), view.inner_offset);
 }
 
-fn scrollMouse(app: *ScrollApp, now: *u64, event: gooey.input.InputEvent) void {
+fn scrollMouse(app: anytype, now: *u64, event: gooey.input.InputEvent) void {
     app.window.queue.push(.{ .input = event });
     now.* += 1;
     app.tick(now.*);
@@ -2936,4 +2936,171 @@ fn countersButton(
 fn countersClick(app: *dynamic_counters.App, now: *u64, name: []const u8, nth: u32) void {
     const bounds = countersButton(app, name, nth).bounds;
     clickAt(app, now, bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+}
+
+/// A box built with a source location beside one without, for the inspector
+/// check.
+const InspectApp = core.App(struct {}, inspectRender, .{
+    .title = "Inspect",
+    .width = 400,
+    .height = 300,
+    .limits = core.ResourceLimits.small,
+});
+
+fn inspectSource() std.builtin.SourceLocation {
+    return @src();
+}
+
+fn inspectRender(cx: *Cx) void {
+    cx.render(ui.box(.{ .style = .{ .direction = .row } }, .{
+        ui.box(.{ .style = .{
+            .width = .{ .fixed = 200 },
+            .height = .{ .fixed = 100 },
+            .source = inspectSource(),
+        } }, .{}),
+        ui.box(.{ .style = .{ .width = .{ .fixed = 100 }, .height = .{ .fixed = 100 } } }, .{}),
+    }));
+}
+
+test "the inspector selects the element under a press and shows its source" {
+    // Goal: `Style.source` reaches the inspector's selection in a safe build
+    // (contract decision 16). Methodology: open the inspector with
+    // Cmd+Shift+I, press inside the annotated box, then inside its sibling,
+    // which has no source; cycling through the profiler closes it again.
+    if (!core.internals.debugger.enabled) return error.SkipZigTest;
+    const app = try testing.allocator.create(InspectApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    const toggle = gooey.input.InputEvent{ .key_down = chord(.i, .{ .cmd = true, .shift = true }) };
+    scrollMouse(app, &now, toggle);
+    try testing.expectEqual(.inspector, app.window.debugger.mode);
+    try testing.expect(app.window.debugger.info == null);
+
+    clickAt(app, &now, 50, 50);
+    const annotated = app.window.debugger.info.?;
+    try testing.expectEqual(@as(f32, 200), annotated.bounds.width);
+    try testing.expectEqual(inspectSource().line, annotated.source.?.line);
+    try testing.expectEqualStrings("core_checks.zig", annotated.source.?.basename());
+
+    clickAt(app, &now, 250, 50);
+    const plain = app.window.debugger.info.?;
+    try testing.expectEqual(@as(f32, 100), plain.bounds.width);
+    try testing.expect(plain.source == null);
+
+    scrollMouse(app, &now, toggle);
+    try testing.expectEqual(.profiler, app.window.debugger.mode);
+    scrollMouse(app, &now, toggle);
+    try testing.expectEqual(.disabled, app.window.debugger.mode);
+    try testing.expect(app.window.debugger.info == null);
+}
+
+/// `.nano` with records cut to what `fullPaint` fills: every quad, glyph, and
+/// paint record the app declares.
+const full_limits = blk: {
+    var limits = core.ResourceLimits.nano;
+    limits.records.paint_record_count_frame_max = 4_096;
+    break :blk limits;
+};
+
+const FullApp = core.App(struct {}, fullRender, .{
+    .title = "Full",
+    .width = 800,
+    .height = 600,
+    .limits = full_limits,
+});
+
+fn fullRender(cx: *Cx) void {
+    const nothing: u8 = 0;
+    cx.render(ui.paint(u8, &nothing, fullPaint, .{
+        .width = .{ .fixed = 800 },
+        .height = .{ .fixed = 600 },
+    }));
+}
+
+const PaintCounts = struct { records: u32, quads: u32, glyphs: u32 };
+
+fn paintCounts(frame: *const core.internals.records.Frame) PaintCounts {
+    var counts = PaintCounts{ .records = frame.paint_count, .quads = 0, .glyphs = 0 };
+    for (frame.paint[0..frame.paint_count]) |record| {
+        switch (record) {
+            .quad => counts.quads += 1,
+            .sprite => counts.glyphs += 1,
+            else => {},
+        }
+    }
+    return counts;
+}
+
+/// Fill the frame to exactly its declared glyphs, then quads, then records:
+/// lines of 64 glyphs, 2 px quads, and empty clip pairs, all in view so none
+/// is culled when packed.
+fn fullPaint(_: *const u8, painter: *ui.Painter) void {
+    const scene_limits = full_limits.scene;
+    const frame = painter.window.built();
+    const line: [64]u8 = @splat('x');
+    var row: u32 = 0;
+    while (paintCounts(frame).glyphs < scene_limits.glyph_count_frame_max) : (row += 1) {
+        assert(row < 64);
+        const left = scene_limits.glyph_count_frame_max - paintCounts(frame).glyphs;
+        const y: f32 = @floatFromInt(8 + row * 8);
+        _ = painter.text(line[0..@min(left, line.len)], 8, y, .{ .size = 6, .color = .black });
+    }
+    assert(paintCounts(frame).glyphs == scene_limits.glyph_count_frame_max);
+    var quad: u32 = paintCounts(frame).quads;
+    while (quad < scene_limits.quad_count_frame_max) : (quad += 1) {
+        const x: f32 = @floatFromInt(400 + (quad % 64) * 4);
+        const y: f32 = @floatFromInt(8 + (quad / 64) * 4);
+        painter.fill(.{ .x = x, .y = y, .width = 2, .height = 2 }, .black);
+    }
+    const records_left = full_limits.records.paint_record_count_frame_max - frame.paint_count;
+    assert(records_left % 2 == 0);
+    var pair: u32 = 0;
+    while (pair < records_left / 2) : (pair += 1) {
+        painter.pushClip(.{ .x = 0, .y = 0, .width = 800, .height = 600 });
+        painter.popClip();
+    }
+}
+
+test "the debugger opens over an app filled to exactly its limits" {
+    // Goal: the overlay paints into its own headroom, never the app's budget
+    // (contract decision 16), so a correct app cannot crash from opening it.
+    // Methodology: the app fills its declared quads, glyphs, and paint
+    // records exactly; open the inspector, hover and select its element, then
+    // the profiler, and check each frame and scene holds the app's full
+    // budget plus the overlay.
+    if (!core.internals.debugger.enabled) return error.SkipZigTest;
+    const app = try testing.allocator.create(FullApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    const scene = app.window.scene;
+    const scene_limits = full_limits.scene;
+    const app_counts = paintCounts(app.window.rendered());
+    try testing.expectEqual(full_limits.records.paint_record_count_frame_max, app_counts.records);
+    try testing.expectEqual(scene_limits.quad_count_frame_max, app_counts.quads);
+    try testing.expectEqual(scene_limits.quad_count_frame_max, scene.quads.items.len);
+    try testing.expectEqual(scene_limits.glyph_count_frame_max, scene.glyphs.items.len);
+
+    const toggle = gooey.input.InputEvent{ .key_down = chord(.i, .{ .cmd = true, .shift = true }) };
+    scrollMouse(app, &now, toggle);
+    scrollMouse(app, &now, .{ .mouse_moved = mouse(100, 100) });
+    clickAt(app, &now, 100, 100);
+    try testing.expectEqual(.inspector, app.window.debugger.mode);
+    try testing.expect(app.window.debugger.info != null);
+    const inspected = paintCounts(app.window.rendered());
+    try testing.expect(inspected.records > app_counts.records);
+    try testing.expect(scene.quads.items.len > scene_limits.quad_count_frame_max);
+    try testing.expect(scene.glyphs.items.len > scene_limits.glyph_count_frame_max);
+
+    scrollMouse(app, &now, toggle);
+    try testing.expectEqual(.profiler, app.window.debugger.mode);
+    const profiled = paintCounts(app.window.rendered());
+    // The panel, the graph, its target line, and at least one bar.
+    try testing.expect(profiled.quads >= app_counts.quads + 4);
+    try testing.expect(scene.glyphs.items.len > scene_limits.glyph_count_frame_max);
 }

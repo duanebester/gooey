@@ -67,12 +67,6 @@ pub const hstack = primitives.hstack;
 pub const vstack = primitives.vstack;
 pub const scroll = primitives.scroll;
 
-// Tracked variants carry a source location (@src()) for debugging.
-pub const boxTracked = primitives.boxTracked;
-pub const hstackTracked = primitives.hstackTracked;
-pub const vstackTracked = primitives.vstackTracked;
-pub const scrollTracked = primitives.scrollTracked;
-
 // =============================================================================
 // Primitive Types
 // =============================================================================

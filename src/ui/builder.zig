@@ -37,7 +37,6 @@ const FloatingConfig = layout_types.FloatingConfig;
 const layout_mod = @import("../layout/layout.zig");
 const LayoutEngine = layout_mod.LayoutEngine;
 const LayoutId = layout_mod.LayoutId;
-const SourceLoc = layout_mod.SourceLoc;
 const Sizing = layout_mod.Sizing;
 const SizingAxis = layout_mod.SizingAxis;
 const Padding = layout_mod.Padding;
@@ -603,46 +602,40 @@ pub const Builder = struct {
 
     /// Generic box container with children
     pub fn box(self: *Self, props: Box, children: anytype) void {
-        self.boxWithIdTracked(null, props, children, SourceLoc.none);
+        self.boxWithId(null, props, children);
     }
 
     /// Childless box — a visual-only rectangle (divider, spacer, colored block).
     /// Equivalent to `box(props, .{})` without the empty children tuple.
     pub fn rect(self: *Self, props: Box) void {
-        self.boxWithIdTracked(null, props, .{}, SourceLoc.none);
-    }
-
-    /// Box with source location tracking
-    /// Call as: b.boxTracked(props, children, @src())
-    pub fn boxTracked(self: *Self, props: Box, children: anytype, src: std.builtin.SourceLocation) void {
-        self.boxWithIdTracked(null, props, children, SourceLoc.from(src));
+        self.boxWithId(null, props, .{});
     }
 
     /// Box with explicit ID
     pub fn boxWithId(self: *Self, id: ?[]const u8, props: Box, children: anytype) void {
-        self.boxWithIdTracked(id, props, children, SourceLoc.none);
+        const layout_id = if (id) |i| LayoutId.fromString(i) else self.generateId();
+        self.boxWithLayoutIdImpl(layout_id, props, children, false);
     }
 
     /// Box with pre-generated LayoutId (for canvas and other deferred rendering)
     pub fn boxWithLayoutId(self: *Self, layout_id: LayoutId, props: Box, children: anytype) void {
-        self.boxWithLayoutIdImpl(layout_id, props, children, SourceLoc.none, false);
+        self.boxWithLayoutIdImpl(layout_id, props, children, false);
     }
 
     /// Box with pre-generated LayoutId marked as a canvas element for proper z-ordering
     pub fn boxWithLayoutIdCanvas(self: *Self, layout_id: LayoutId, props: Box, children: anytype) void {
-        self.boxWithLayoutIdImpl(layout_id, props, children, SourceLoc.none, true);
-    }
-
-    /// Box with explicit ID and source location tracking
-    /// Call as: b.boxWithIdTracked("my-id", props, children, @src())
-    pub fn boxWithIdTracked(self: *Self, id: ?[]const u8, props: Box, children: anytype, source_loc: SourceLoc) void {
-        const layout_id = if (id) |i| LayoutId.fromString(i) else self.generateId();
-        self.boxWithLayoutIdImpl(layout_id, props, children, source_loc, false);
+        self.boxWithLayoutIdImpl(layout_id, props, children, true);
     }
 
     /// Internal: Box implementation with pre-resolved LayoutId
-    fn boxWithLayoutIdImpl(self: *Self, layout_id: LayoutId, props: Box, children: anytype, source_loc: SourceLoc, is_canvas: bool) void {
-        self.beginBoxImpl(layout_id, props, source_loc, is_canvas);
+    fn boxWithLayoutIdImpl(
+        self: *Self,
+        layout_id: LayoutId,
+        props: Box,
+        children: anytype,
+        is_canvas: bool,
+    ) void {
+        self.beginBoxImpl(layout_id, props, is_canvas);
         self.processChildren(children);
         self.endBoxImpl(props);
     }
@@ -657,7 +650,7 @@ pub const Builder = struct {
         std.debug.assert(layout_id.id != 0);
         std.debug.assert(layout_id.base_id != 0);
         if (self.dynamic_box_count >= MAX_DYNAMIC_BOX_DEPTH) return error.DynamicBoxDepthExceeded;
-        self.beginBoxImpl(layout_id, props, SourceLoc.none, false);
+        self.beginBoxImpl(layout_id, props, false);
 
         self.dynamic_boxes[self.dynamic_box_count] = props;
         self.dynamic_box_count += 1;
@@ -674,7 +667,6 @@ pub const Builder = struct {
         self: *Self,
         layout_id: LayoutId,
         props: Box,
-        source_loc: SourceLoc,
         is_canvas: bool,
     ) void {
         // Reject bad inputs before they propagate through every layout pass.
@@ -860,7 +852,6 @@ pub const Builder = struct {
             .shadow = props.shadow,
             .floating = floating_config,
             .opacity = props.opacity,
-            .source_location = source_loc,
             .is_canvas = is_canvas,
         }) catch |err| self.layoutFailed(err);
 
@@ -920,46 +911,26 @@ pub const Builder = struct {
 
     /// Vertical stack (column)
     pub fn vstack(self: *Self, style: StackStyle, children: anytype) void {
-        self.vstackImpl(style, children, SourceLoc.none);
-    }
-
-    /// Vertical stack with source location tracking
-    /// Call as: b.vstackTracked(style, children, @src())
-    pub fn vstackTracked(self: *Self, style: StackStyle, children: anytype, src: std.builtin.SourceLocation) void {
-        self.vstackImpl(style, children, SourceLoc.from(src));
-    }
-
-    fn vstackImpl(self: *Self, style: StackStyle, children: anytype, loc: SourceLoc) void {
         // A vstack is a box fixed to column direction; alignment and padding
         // pass straight through because they share Box's types.
-        self.boxWithIdTracked(null, .{
+        self.box(.{
             .direction = .column,
             .gap = style.gap,
             .padding = style.padding,
             .alignment = style.alignment,
-        }, children, loc);
+        }, children);
     }
 
     /// Horizontal stack (row)
     pub fn hstack(self: *Self, style: StackStyle, children: anytype) void {
-        self.hstackImpl(style, children, SourceLoc.none);
-    }
-
-    /// Horizontal stack with source location tracking
-    /// Call as: b.hstackTracked(style, children, @src())
-    pub fn hstackTracked(self: *Self, style: StackStyle, children: anytype, src: std.builtin.SourceLocation) void {
-        self.hstackImpl(style, children, SourceLoc.from(src));
-    }
-
-    fn hstackImpl(self: *Self, style: StackStyle, children: anytype, loc: SourceLoc) void {
         // A hstack is a box fixed to row direction; alignment and padding
         // pass straight through because they share Box's types.
-        self.boxWithIdTracked(null, .{
+        self.box(.{
             .direction = .row,
             .gap = style.gap,
             .padding = style.padding,
             .alignment = style.alignment,
-        }, children, loc);
+        }, children);
     }
 
     /// Center children in available space
@@ -1044,7 +1015,7 @@ pub const Builder = struct {
             },
         };
 
-        // Compute viewport sizing (same pattern as boxWithIdTracked)
+        // Compute viewport sizing (same pattern as boxWithId)
         var sizing = Sizing.fitContent();
 
         // Width sizing

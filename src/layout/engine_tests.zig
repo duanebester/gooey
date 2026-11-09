@@ -16,7 +16,6 @@ const LayoutEngine = engine_mod.LayoutEngine;
 const ElementDeclaration = engine_mod.ElementDeclaration;
 const FixedCapacityArray = engine_mod.FixedCapacityArray;
 const WordInfo = engine_mod.WordInfo;
-const SourceLoc = engine_mod.SourceLoc;
 const TextMeasurement = engine_mod.TextMeasurement;
 const MAX_ELEMENTS_PER_FRAME = engine_mod.MAX_ELEMENTS_PER_FRAME;
 const MAX_OPEN_DEPTH = engine_mod.MAX_OPEN_DEPTH;

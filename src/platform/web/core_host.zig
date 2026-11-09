@@ -80,7 +80,7 @@ pub fn Exports(comptime App: type) type {
                 .title = App.title,
                 .width = App.width,
                 .height = App.height,
-                .limits = App.limits,
+                .limits = App.limits_reserved,
             });
             try self.initCore(io_mod.browser, @floatCast(created.window.scale_factor));
             created.bind(&self.window);

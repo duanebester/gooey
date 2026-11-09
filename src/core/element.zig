@@ -134,6 +134,10 @@ pub const Style = struct {
     scroll: ?Scroll = null,
     cursor: ?CursorShape = null,
     pointer_events: PointerEvents = .auto,
+    /// Where the element was built, `.source = @src()`, for the debugger's
+    /// inspector. Debug and ReleaseSafe store it; ReleaseFast and
+    /// ReleaseSmall accept and drop it (contract decision 16).
+    source: ?std.builtin.SourceLocation = null,
 };
 
 /// A comptime-hashed key context name (contract §5): keymap bindings with

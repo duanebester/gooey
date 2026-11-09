@@ -234,11 +234,14 @@ pub const ResourceLimits = struct {
         .entities = EntityLimits.large,
     };
 
-    /// Every capacity at its framework ceiling. For stress tests and benchmarks;
-    /// costs about 16.5 MiB per scene and 25.5 MiB of Metal instance ring. The
-    /// aggregate mesh geometry ceilings are validation bounds, not a renderable
-    /// reservation: GPU renderers reserve geometry per frame in flight (Metal
-    /// about 62 GiB per frame here), so a window that renders must lower them.
+    /// Every capacity at its framework ceiling. For stress tests and benchmarks,
+    /// not an app profile: `gooey.App` rejects it at compile time, since an app
+    /// budget must leave the debugger overlay's headroom below every ceiling
+    /// (contract decision 16). Costs about 16.5 MiB per scene and 25.5 MiB of
+    /// Metal instance ring. The aggregate mesh geometry ceilings are validation
+    /// bounds, not a renderable reservation: GPU renderers reserve geometry per
+    /// frame in flight (Metal about 62 GiB per frame here), so a window that
+    /// renders must lower them.
     pub const ceiling: ResourceLimits = .{
         .scene = SceneLimits.ceiling,
         .window = WindowLimits.ceiling,
@@ -440,12 +443,14 @@ pub const SceneLimits = struct {
     };
 
     /// Heavy apps: lucide-demo (780 quads, 480 SVGs), the images example, and the
-    /// mesh stress fixtures. 16x `standard` for geometry and the glyph ceiling for
-    /// full-screen text. Scene storage: about 11.6 MiB per scene.
+    /// mesh stress fixtures. 16x `standard` for geometry and, for full-screen
+    /// text, the glyph ceiling less the 300 glyphs a safe build reserves for the
+    /// debugger overlay (contract decision 16), which an app budget must leave
+    /// below every ceiling. Scene storage: about 11.6 MiB per scene.
     pub const large: SceneLimits = .{
         .quad_count_frame_max = 32_768,
         .shadow_count_frame_max = 2_048,
-        .glyph_count_frame_max = 65_536,
+        .glyph_count_frame_max = 65_236,
         .svg_count_frame_max = 4_096,
         .image_count_frame_max = 1_024,
         .path_count_frame_max = 4_096,

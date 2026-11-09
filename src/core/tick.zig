@@ -23,6 +23,7 @@ const emit_mod = @import("emit.zig");
 const pack_mod = @import("pack.zig");
 const router = @import("router.zig");
 const screen_reader = @import("screen_reader.zig");
+const debugger = @import("debugger.zig");
 
 const assert = std.debug.assert;
 
@@ -82,11 +83,14 @@ pub fn tickMain(app: anytype, window: *Window, now_ns: u64) bool {
     window.built().announcements = window.announcements;
     window.announcements.clear();
     window.clear_color = window.theme.bg;
+    const build_ns = debugger.stamp(window);
+    debugger.beginBuild();
     cx_mod.beginBuild(window);
     App.render(&window.cx);
     cx_mod.endBuild(window);
 
     window.setPhase(.build, .layout);
+    const layout_ns = debugger.stamp(window);
     _ = window.layout.endFrame() catch |err| std.debug.panic("layout failed in frame {d}: {s}", .{
         window.frame_number,
         @errorName(err),
@@ -94,6 +98,7 @@ pub fn tickMain(app: anytype, window: *Window, now_ns: u64) bool {
     window.noteLayoutArenaUse();
 
     window.setPhase(.layout, .emit);
+    const emit_ns = debugger.stamp(window);
     emit_mod.emit(window);
     router.validateFocus(window);
     _ = window.retained.sweep(window.frame_number, &window.keys);
@@ -102,6 +107,8 @@ pub fn tickMain(app: anytype, window: *Window, now_ns: u64) bool {
         window.limits.retained.sweep_delay_frames,
         &window.keys,
     );
+    // The debugger's overlay paints last, over every layer.
+    debugger.finishBuild(window, .{ .build = build_ns, .layout = layout_ns, .emit = emit_ns });
     window.setPhase(.emit, .idle);
     // An item skipped because this frame's upload staging was full is staged
     // by the next frame (`AtlasLimits.upload_bytes_frame_max`).
@@ -120,11 +127,14 @@ pub fn presentBuilt(window: *Window) void {
     assert(window.render_phase == .idle);
     const frame = &window.frames[window.built_index];
     window.render_phase = .pack;
+    const pack_ns = debugger.stamp(window);
     pack_mod.pack(frame, window.scene);
     window.render_phase = .draw;
+    const draw_ns = debugger.stamp(window);
     if (window.presenter) |presenter| {
         presenter.draw(presenter.context, window.scene, frame, window.clear_color);
     }
+    debugger.notePresent(window, pack_ns, draw_ns);
     window.render_phase = .idle;
     window.frame_in_flight.store(false, .release);
 }

@@ -68,15 +68,6 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     const app = window.app;
     const builder = cx.builder();
 
-    // Report GPU timings from previous frame (GPU work happens after finalizeFrame).
-    // Only available on platforms whose Window struct records GPU timing (Linux/Vulkan).
-    if (window.getPlatformWindow()) |w| {
-        const W = @TypeOf(w.*);
-        if (comptime @hasField(W, "last_gpu_submit_ns")) {
-            window.debugger().reportGpuTimings(w.last_gpu_submit_ns, w.last_atlas_upload_ns);
-        }
-    }
-
     // Sync builder's cached `scene` / `dispatch` pointers to the current
     // `next_frame.*` build target. Builder caches the pointers it was handed
     // at init time, but the previous tick's end-of-frame `mem.swap` rotated
@@ -107,10 +98,8 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     builder.pending_scrolls_by_layout_id.clearRetainingCapacity();
     builder.hover_cursor = null;
 
-    // Call user's render function with Cx — time tree construction separately
-    window.debugger().beginTreeBuild(window.io);
+    // Call user's render function with Cx
     render_fn(cx);
-    window.debugger().endTreeBuild(window.io);
 
     // Assert pending item counts are within limits
     std.debug.assert(builder.pending_inputs.items.len <= Builder.MAX_PENDING_INPUTS);
@@ -139,8 +128,6 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     // the dispatch call sites in `runtime/input.zig`). The double buffer is
     // why no post-loop hover re-run is needed: input never hit-tests against
     // the in-progress build target.
-    window.debugger().beginDispatchSync(window.io);
-
     for (window.next_frame.dispatch.nodes.items) |*node| {
         if (node.layout_id) |layout_id| {
             node.bounds = window.layout.getBoundingBox(layout_id);
@@ -151,8 +138,6 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     // Register hit regions
     builder.registerPendingScrollRegions();
 
-    window.debugger().endDispatchSync(window.io);
-
     // Clear the build-target scene before the command-replay pass populates it.
     window.next_frame.scene.clear();
 
@@ -160,9 +145,6 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
     // software rasterizations are spread across multiple frames instead
     // of stalling a single frame when many uncached icons scroll into view.
     window.resources.svg_atlas.resetFrameBudget();
-
-    // Start render timing for profiler
-    window.debugger().beginRender(window.io);
 
     // Render all commands inline (SVGs, images, scrollbars at their
     // `scissor_end`) so z-ordering is correct. Canvas and scroll are
@@ -189,12 +171,6 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
         updateCursorShape(window, builder);
     }
 
-    // End render timing for profiler
-    window.debugger().endRender(window.io);
-
-    // Render debug overlays (if enabled via Cmd+Shift+I)
-    try renderDebugOverlays(window);
-
     window.next_frame.scene.finish();
 
     // If SVG rasterizations were deferred due to per-frame budget, request
@@ -210,7 +186,7 @@ fn renderFrameImpl(cx: *Cx, render_fn: anytype) !void {
         if (uploads.deferredSince(window.atlas_frame)) window.requestRender();
     }
 
-    // Finalize frame timing for profiler
+    // Close the frame's draw phase.
     window.finalizeFrame();
 
     // =========================================================================
@@ -456,37 +432,4 @@ fn updateCursorShape(window: *Window, builder: *const Builder) void {
         if (pending.layout_id.id == hovered_layout_id) shape = .text;
     }
     if (window.getPlatformWindow()) |platform_window| platform_window.setCursorShape(shape);
-}
-
-/// Render debug overlays if enabled
-fn renderDebugOverlays(window: *Window) !void {
-    if (!window.debugger().isActive()) return;
-
-    window.debugger().generateOverlays(
-        window.hover.hovered_layout_id,
-        window.hover.ancestors(),
-        window.layout,
-    );
-    try window.debugger().renderOverlays(window.next_frame.scene);
-
-    // Render inspector panel
-    if (window.debugger().showInspector()) {
-        try window.debugger().renderInspectorPanel(
-            window.next_frame.scene,
-            window.resources.text_system,
-            window.width,
-            window.height,
-            window.scale_factor,
-        );
-    }
-
-    // Render profiler panel
-    if (window.debugger().showProfiler()) {
-        try window.debugger().renderProfilerPanel(
-            window.next_frame.scene,
-            window.resources.text_system,
-            window.width,
-            window.scale_factor,
-        );
-    }
 }

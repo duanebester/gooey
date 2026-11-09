@@ -23,6 +23,7 @@ pub const window = @import("window.zig");
 pub const lifecycle = @import("lifecycle.zig");
 pub const text_engine = @import("text_engine.zig");
 pub const animation = @import("animation.zig");
+pub const debugger = @import("debugger.zig");
 
 pub const App = app.App;
 pub const Config = app.Config;
@@ -93,4 +94,5 @@ test {
     _ = @import("clipboard.zig");
     _ = @import("text_history.zig");
     _ = @import("images.zig");
+    _ = debugger;
 }

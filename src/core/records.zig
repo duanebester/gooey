@@ -13,6 +13,7 @@ const geometry = @import("../geometry/geometry.zig");
 const handler_mod = @import("handler.zig");
 const a11y_types = @import("../accessibility/types.zig");
 const CursorShape = @import("../platform/interface.zig").CursorShape;
+const debugger = @import("debugger.zig");
 
 const assert = std.debug.assert;
 
@@ -284,6 +285,9 @@ pub const Frame = struct {
     /// A modal blocks hit testing of earlier fragments (contract §6), and
     /// fragments emit in order, so hit tests never look below this index.
     modal_hit_start: u32,
+    /// Where the debugger's overlay starts in `paint`: nothing in release
+    /// builds. Pack holds the app to its declared limits up to here.
+    overlay_start: debugger.PaintMark,
     /// The tick number that built this frame.
     frame_number: u64,
     viewport_width: f32,
@@ -341,6 +345,7 @@ pub const Frame = struct {
         self.triangle_mesh_count = 0;
         self.ime = null;
         self.modal_hit_start = 0;
+        self.overlay_start = debugger.paint_mark_none;
         self.frame_number = frame_number;
         self.viewport_width = viewport.width;
         self.viewport_height = viewport.height;

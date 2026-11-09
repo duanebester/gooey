@@ -36,6 +36,7 @@ const cx_mod = @import("cx.zig");
 const keymap_mod = @import("keymap.zig");
 const A11ySystem = @import("../context/a11y_system.zig").A11ySystem;
 const screen_reader_mod = @import("screen_reader.zig");
+const debugger_mod = @import("debugger.zig");
 
 const assert = std.debug.assert;
 
@@ -151,6 +152,8 @@ pub const Node = struct {
     /// A `.popover` or `.modal` box opens a fragment that emit paints after
     /// the fragment that opened it.
     layer: ?element.Layer,
+    /// `Style.source`, for the debugger; no storage in release builds.
+    source: debugger_mod.NodeSource,
 };
 
 /// A scroll box's offset, retained by its key (contract §1), and what the
@@ -558,6 +561,8 @@ pub const Window = struct {
     /// The platform's screen-reader bridge and the tree it diffs.
     screen_reader: *A11ySystem,
     screen_reader_poll: screen_reader_mod.Poll,
+    /// The inspector and profiler (Cmd/Ctrl+Shift+I); `void` in release builds.
+    debugger: debugger_mod.State,
     dialog_handlers: [dialog_count_max]?handler_mod.Handler,
     dialogs_opened: u32,
     now_ns: u64,
@@ -693,6 +698,7 @@ pub noinline fn initInPlace(self: *Window, gpa: std.mem.Allocator, options: *con
     assert(options.width > 0);
     assert(options.scale_factor > 0);
     assert(options.limits.check() == null);
+    assert(debugger_mod.reservedLimits(options.limits).check() == null);
     const limits = options.limits;
     self.gpa = gpa;
     self.limits = limits.*;
@@ -745,7 +751,18 @@ pub noinline fn initInPlace(self: *Window, gpa: std.mem.Allocator, options: *con
     self.depth_base_address = 0;
     self.depth_peak_base_address = 0;
     self.depth_peak_address = 0;
+    debugger_mod.initState(&self.debugger);
     assert(self.built_index == 0);
+}
+
+comptime {
+    // ReleaseFast and ReleaseSmall reserve nothing for the debugger (contract
+    // decision 16): neither the window's state nor a node's source.
+    if (!debugger_mod.enabled) {
+        assert(@sizeOf(@FieldType(Window, "debugger")) == 0);
+        assert(@sizeOf(@FieldType(Node, "source")) == 0);
+        assert(@sizeOf(@FieldType(records.Frame, "overlay_start")) == 0);
+    }
 }
 
 /// The layout arena holds the frame's text copies (at most the text budget,
@@ -786,8 +803,10 @@ fn initBuildStorage(self: *Window, gpa: std.mem.Allocator, limits: *const Resour
     self.node_count = 0;
     try self.keys.initInPlace(gpa, limits.build.key_count_frame_max);
     errdefer self.keys.deinit(gpa);
+    // The debugger overlay paints into its own headroom (`reservedLimits`).
+    const reserved = debugger_mod.reservedLimits(limits);
     const capacity = records.FrameCapacity{
-        .paint_record_count_max = limits.records.paint_record_count_frame_max,
+        .paint_record_count_max = reserved.records.paint_record_count_frame_max,
         .hit_record_count_max = limits.records.hit_record_count_frame_max,
         .handler_count_max = limits.records.handler_count_frame_max,
         .a11y_node_count_max = element_count,
@@ -870,16 +889,8 @@ fn initRuntimeStorage(self: *Window, gpa: std.mem.Allocator, limits: *const Reso
     self.clipboard = .init(self.clipboard_bytes);
     self.dialog_request_bytes = try gpa.alloc(u8, limits.events.dialog_path_bytes_max);
     errdefer gpa.free(self.dialog_request_bytes);
-    self.scene = try gpa.create(Scene);
-    errdefer gpa.destroy(self.scene);
-    self.scene.* = try Scene.initCapacity(gpa, &limits.scene);
-    errdefer self.scene.deinit();
-    // Triangle meshes pack into the scene's frame meshes, which 0.3.1 would
-    // allocate at first use; reserve one per path the profile allows.
-    if (limits.scene.path_count_frame_max > 0) {
-        const mesh_count = @min(limits.scene.path_count_frame_max, scene_mod.MAX_FRAME_MESHES);
-        try self.scene.mesh_pool.reserveFrame(mesh_count);
-    }
+    self.scene = try initScene(gpa, limits);
+    errdefer deinitScene(gpa, self.scene);
     self.text_scratch = try gpa.alloc(u8, text_scratch_bytes);
     errdefer gpa.free(self.text_scratch);
     self.text_scratch_allocator = std.heap.FixedBufferAllocator.init(self.text_scratch);
@@ -899,12 +910,35 @@ fn clipboardBytes(text: *const limits_mod.TextLimits) u32 {
     return bytes;
 }
 
+/// The scene pack fills: the app's scene budget plus the debugger overlay's
+/// headroom in safe builds (`debugger.reservedLimits`), with its frame meshes.
+fn initScene(gpa: std.mem.Allocator, limits: *const ResourceLimits) !*Scene {
+    const scene = try gpa.create(Scene);
+    errdefer gpa.destroy(scene);
+    const reserved = debugger_mod.reservedLimits(limits);
+    scene.* = try Scene.initCapacity(gpa, &reserved.scene);
+    errdefer scene.deinit();
+    // Triangle meshes pack into the scene's frame meshes, which 0.3.1 would
+    // allocate at first use; reserve one per path the profile allows.
+    if (limits.scene.path_count_frame_max > 0) {
+        const mesh_count = @min(limits.scene.path_count_frame_max, scene_mod.MAX_FRAME_MESHES);
+        try scene.mesh_pool.reserveFrame(mesh_count);
+    }
+    assert(scene.limits.quad_count_frame_max >= limits.scene.quad_count_frame_max);
+    assert(scene.limits.glyph_count_frame_max >= limits.scene.glyph_count_frame_max);
+    return scene;
+}
+
+fn deinitScene(gpa: std.mem.Allocator, scene: *Scene) void {
+    scene.deinit();
+    gpa.destroy(scene);
+}
+
 fn deinitRuntimeStorage(self: *Window, gpa: std.mem.Allocator) void {
     self.screen_reader.deinit();
     gpa.destroy(self.screen_reader);
     gpa.free(self.text_scratch);
-    self.scene.deinit();
-    gpa.destroy(self.scene);
+    deinitScene(gpa, self.scene);
     gpa.free(self.dialog_request_bytes);
     gpa.free(self.clipboard_bytes);
     if (self.editors_reserved) self.editors.deinit(gpa);

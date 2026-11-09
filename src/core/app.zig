@@ -16,6 +16,7 @@ const handler_mod = @import("handler.zig");
 const element = @import("element.zig");
 const window_mod = @import("window.zig");
 const tick_mod = @import("tick.zig");
+const debugger = @import("debugger.zig");
 const lifecycle = @import("lifecycle.zig");
 const cx_mod = @import("cx.zig");
 const keymap_mod = @import("keymap.zig");
@@ -159,7 +160,19 @@ pub fn App(
     comptime config: Config(State),
 ) type {
     comptime {
-        if (config.limits.check()) |violation| @compileError(violation.message());
+        if (config.limits.check()) |violation| @compileError(violation.describe());
+        // Checked in every build mode, so a budget valid in one is valid in all.
+        if (debugger.withHeadroom(&config.limits).check()) |violation| {
+            @compileError(std.fmt.comptimePrint("the budget must leave the debugger " ++
+                "overlay's headroom ({d} quads, {d} glyphs, {d} paint records) below the " ++
+                "framework ceilings; Debug and ReleaseSafe reserve it on top of the app's " ++
+                "limits (contract decision 16), so `.ceiling` is not an app profile: {s}", .{
+                debugger.overlay_quad_count_max,
+                debugger.overlay_glyph_count_max,
+                debugger.overlay_paint_record_count_max,
+                violation.describe(),
+            }));
+        }
         checkEntities(State, config.entities);
         assert(config.width > 0);
         assert(config.height > 0);
@@ -183,6 +196,9 @@ pub fn App(
         }
 
         pub const limits = config.limits;
+        /// What a host reserves renderer storage for: `limits` plus the
+        /// debugger overlay's headroom in Debug and ReleaseSafe.
+        pub const limits_reserved = debugger.reservedLimits(&config.limits);
         pub const title = config.title;
         pub const theme = config.theme;
         pub const width = config.width;

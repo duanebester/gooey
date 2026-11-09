@@ -8,9 +8,7 @@
 //!     gives entities a well-defined owner that outlives any single window
 //!     (e.g. an in-flight async task that survives a window close).
 //!   - `globals` — type-keyed singleton store owning the `*const Theme`
-//!     slot, so one active theme is shared across every window. (`Debugger` stays per-window on
-//!     `Window.globals` — its overlay quads and frame timing are bound to a
-//!     single scene.)
+//!     slot, so one active theme is shared across every window.
 //!   - `image_loader` — async URL fetch + decode + atlas cache. App-scoped
 //!     so two windows requesting the same URL share one in-flight fetch,
 //!     one pending set, and one failed set.
@@ -47,8 +45,7 @@ const entity_mod = @import("entity.zig");
 const EntityMap = entity_mod.EntityMap;
 
 // `Globals` is the type-keyed singleton store (see `global.zig`); on
-// `App` it owns the `*const Theme` slot. `Debugger` stays
-// per-window on `Window.globals`.
+// `App` it owns the `*const Theme` slot.
 const global_mod = @import("global.zig");
 const Globals = global_mod.Globals;
 
@@ -70,7 +67,7 @@ const AtlasUploads = @import("../text/atlas_uploads.zig").AtlasUploads;
 ///     Late-bound against the shared `*ImageAtlas` via `bindImageLoader`
 ///     (see file header for the two-phase init rationale).
 ///
-/// Per-window state (`Debugger`, `focus`, `hover`, `widgets`, `dispatch`,
+/// Per-window state (`focus`, `hover`, `widgets`, `dispatch`,
 /// `scene`, `layout`, ...) stays on `Window`.
 pub const App = struct {
     allocator: Allocator,
@@ -98,8 +95,7 @@ pub const App = struct {
 
     /// Type-keyed singleton store (see `global.zig`). Owns the
     /// `*const Theme` slot (populated lazily by `Builder.setTheme`).
-    /// `Debugger` stays on `Window.globals` because every window has its
-    /// own. Torn down in `App.deinit` via `globals.deinit(allocator)`.
+    /// Torn down in `App.deinit` via `globals.deinit(allocator)`.
     globals: Globals = .{},
 
     /// Async image-load subsystem (URL fetch + decode + atlas cache).

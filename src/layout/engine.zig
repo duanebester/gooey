@@ -132,45 +132,6 @@ pub const ScrollOffset = struct {
     y: f32 = 0,
 };
 
-/// Where an element was created (for debugging). Stores compile-time string
-/// pointers, so it needs no allocation.
-pub const SourceLoc = struct {
-    file: ?[*:0]const u8 = null,
-    line: u32 = 0,
-    column: u32 = 0,
-    fn_name: ?[*:0]const u8 = null,
-
-    pub const none: SourceLoc = .{};
-
-    /// Create from Zig's builtin SourceLocation
-    pub fn from(src: std.builtin.SourceLocation) SourceLoc {
-        return .{
-            .file = src.file.ptr,
-            .line = src.line,
-            .column = src.column,
-            .fn_name = src.fn_name.ptr,
-        };
-    }
-
-    /// Check if this has valid source information
-    pub fn isValid(self: SourceLoc) bool {
-        return self.file != null and self.line > 0;
-    }
-
-    /// Get file name as a slice (for display)
-    pub fn getFile(self: SourceLoc) ?[]const u8 {
-        if (self.file) |f| {
-            return std.mem.span(f);
-        }
-        return null;
-    }
-
-    /// Get just the filename without path (for compact display)
-    pub fn getBasename(self: SourceLoc) ?[]const u8 {
-        return std.fs.path.basename(self.getFile() orelse return null);
-    }
-};
-
 pub const ElementDeclaration = struct {
     id: LayoutId = LayoutId.none,
     layout: LayoutConfig = .{},
@@ -183,8 +144,6 @@ pub const ElementDeclaration = struct {
     user_data: ?*anyopaque = null,
     /// Opacity for the entire element subtree (0.0 = transparent, 1.0 = opaque)
     opacity: f32 = 1.0,
-    /// Source location where this element was created (for debugging)
-    source_location: SourceLoc = .{},
     /// Whether this element is a canvas (for deferred paint callbacks)
     is_canvas: bool = false,
 };

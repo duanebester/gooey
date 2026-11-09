@@ -345,29 +345,24 @@ pub fn Each(comptime ItemsType: type, comptime render_fn: anytype) type {
 // =============================================================================
 
 /// Box element descriptor - returns a struct that can be rendered via cx.render()
-pub fn BoxElement(comptime ChildrenType: type, comptime tracked: bool) type {
+pub fn BoxElement(comptime ChildrenType: type) type {
     return struct {
         style: styles.Box,
         children: ChildrenType,
-        source_loc: if (tracked) std.builtin.SourceLocation else void,
 
         pub const primitive_type: PrimitiveType = .box_element;
 
         const Builder = @import("builder.zig").Builder;
 
         pub fn render(self: @This(), b: *Builder) void {
-            if (tracked) {
-                b.boxTracked(self.style, self.children, self.source_loc);
-            } else {
-                b.box(self.style, self.children);
-            }
+            b.box(self.style, self.children);
         }
     };
 }
 
 /// Create a box element (returns struct for cx.render())
-pub fn box(style: styles.Box, children: anytype) BoxElement(@TypeOf(children), false) {
-    return .{ .style = style, .children = children, .source_loc = {} };
+pub fn box(style: styles.Box, children: anytype) BoxElement(@TypeOf(children)) {
+    return .{ .style = style, .children = children };
 }
 
 /// Box descriptor carrying identity separately from its layout and paint style.
@@ -405,7 +400,7 @@ pub fn box_with_layout_id(
 /// `style` controls appearance and child layout. Explicit sizing is diagnosed
 /// in safety builds and ignored otherwise because it would make the fill-window
 /// contract ambiguous. Use `box` for a deliberately fixed-size root.
-pub fn root(style: styles.Box, children: anytype) BoxElement(@TypeOf(children), false) {
+pub fn root(style: styles.Box, children: anytype) BoxElement(@TypeOf(children)) {
     assertRootStyleHasNoSizing(style);
 
     var root_style = style;
@@ -423,7 +418,7 @@ pub fn root(style: styles.Box, children: anytype) BoxElement(@TypeOf(children), 
     root_style.fill_height = true;
     root_style.width_percent = null;
     root_style.height_percent = null;
-    return .{ .style = root_style, .children = children, .source_loc = {} };
+    return .{ .style = root_style, .children = children };
 }
 
 fn assertRootStyleHasNoSizing(style: styles.Box) void {
@@ -450,95 +445,64 @@ fn assertRootStyleHasNoSizing(style: styles.Box) void {
 /// ui.rect(.{ .grow = true })
 /// ui.rect(.{ .width = 40, .height = 40, .background = color, .corner_radius = 4 })
 /// ```
-pub fn rect(style: styles.Box) BoxElement(@TypeOf(.{}), false) {
-    return .{ .style = style, .children = .{}, .source_loc = {} };
-}
-
-/// Create a box element with source location tracking (returns struct for cx.render())
-/// Usage: ui.boxTracked(.{ ... }, .{ ... }, @src())
-pub fn boxTracked(style: styles.Box, children: anytype, src: std.builtin.SourceLocation) BoxElement(@TypeOf(children), true) {
-    return .{ .style = style, .children = children, .source_loc = src };
+pub fn rect(style: styles.Box) BoxElement(@TypeOf(.{})) {
+    return .{ .style = style, .children = .{} };
 }
 
 /// HStack element descriptor - horizontal stack that returns a struct
-pub fn HStackElement(comptime ChildrenType: type, comptime tracked: bool) type {
+pub fn HStackElement(comptime ChildrenType: type) type {
     return struct {
         style: styles.StackStyle,
         children: ChildrenType,
-        source_loc: if (tracked) std.builtin.SourceLocation else void,
 
         pub const primitive_type: PrimitiveType = .hstack;
 
         const Builder = @import("builder.zig").Builder;
 
         pub fn render(self: @This(), b: *Builder) void {
-            if (tracked) {
-                b.hstackTracked(self.style, self.children, self.source_loc);
-            } else {
-                b.hstack(self.style, self.children);
-            }
+            b.hstack(self.style, self.children);
         }
     };
 }
 
 /// Create an hstack element (returns struct for cx.render())
-pub fn hstack(style: styles.StackStyle, children: anytype) HStackElement(@TypeOf(children), false) {
-    return .{ .style = style, .children = children, .source_loc = {} };
-}
-
-/// Create an hstack element with source location tracking (returns struct for cx.render())
-/// Usage: ui.hstackTracked(.{ ... }, .{ ... }, @src())
-pub fn hstackTracked(style: styles.StackStyle, children: anytype, src: std.builtin.SourceLocation) HStackElement(@TypeOf(children), true) {
-    return .{ .style = style, .children = children, .source_loc = src };
+pub fn hstack(style: styles.StackStyle, children: anytype) HStackElement(@TypeOf(children)) {
+    return .{ .style = style, .children = children };
 }
 
 /// VStack element descriptor - vertical stack that returns a struct
-pub fn VStackElement(comptime ChildrenType: type, comptime tracked: bool) type {
+pub fn VStackElement(comptime ChildrenType: type) type {
     return struct {
         style: styles.StackStyle,
         children: ChildrenType,
-        source_loc: if (tracked) std.builtin.SourceLocation else void,
 
         pub const primitive_type: PrimitiveType = .vstack;
 
         const Builder = @import("builder.zig").Builder;
 
         pub fn render(self: @This(), b: *Builder) void {
-            if (tracked) {
-                b.vstackTracked(self.style, self.children, self.source_loc);
-            } else {
-                b.vstack(self.style, self.children);
-            }
+            b.vstack(self.style, self.children);
         }
     };
 }
 
 /// Create a vstack element (returns struct for cx.render())
-pub fn vstack(style: styles.StackStyle, children: anytype) VStackElement(@TypeOf(children), false) {
-    return .{ .style = style, .children = children, .source_loc = {} };
-}
-
-/// Create a vstack element with source location tracking (returns struct for cx.render())
-/// Usage: ui.vstackTracked(.{ ... }, .{ ... }, @src())
-pub fn vstackTracked(style: styles.StackStyle, children: anytype, src: std.builtin.SourceLocation) VStackElement(@TypeOf(children), true) {
-    return .{ .style = style, .children = children, .source_loc = src };
+pub fn vstack(style: styles.StackStyle, children: anytype) VStackElement(@TypeOf(children)) {
+    return .{ .style = style, .children = children };
 }
 
 /// Scroll element descriptor - scrollable container that returns a struct
-pub fn ScrollElement(comptime ChildrenType: type, comptime tracked: bool) type {
+pub fn ScrollElement(comptime ChildrenType: type) type {
     return struct {
         id: []const u8,
         style: styles.ScrollStyle,
         children: ChildrenType,
-        source_loc: if (tracked) std.builtin.SourceLocation else void,
 
         pub const primitive_type: PrimitiveType = .scroll;
 
         const Builder = @import("builder.zig").Builder;
 
         pub fn render(self: @This(), b: *Builder) void {
-            // scroll always uses ID, no tracked variant in builder
-            _ = self.source_loc;
             b.scroll(self.id, self.style, self.children);
         }
     };
@@ -546,14 +510,12 @@ pub fn ScrollElement(comptime ChildrenType: type, comptime tracked: bool) type {
 
 /// Create a scroll element (returns struct for cx.render())
 /// Usage: ui.scroll("my-scroll", .{ .height = 300, .content_height = 600 }, .{ children })
-pub fn scroll(id: []const u8, style: styles.ScrollStyle, children: anytype) ScrollElement(@TypeOf(children), false) {
-    return .{ .id = id, .style = style, .children = children, .source_loc = {} };
-}
-
-/// Create a scroll element with source location tracking (returns struct for cx.render())
-/// Usage: ui.scrollTracked("my-scroll", .{ ... }, .{ ... }, @src())
-pub fn scrollTracked(id: []const u8, style: styles.ScrollStyle, children: anytype, src: std.builtin.SourceLocation) ScrollElement(@TypeOf(children), true) {
-    return .{ .id = id, .style = style, .children = children, .source_loc = src };
+pub fn scroll(
+    id: []const u8,
+    style: styles.ScrollStyle,
+    children: anytype,
+) ScrollElement(@TypeOf(children)) {
+    return .{ .id = id, .style = style, .children = children };
 }
 
 // =============================================================================
@@ -689,40 +651,6 @@ test "container with conditional children" {
 
     try std.testing.expectEqual(PrimitiveType.vstack, @TypeOf(container).primitive_type);
     try std.testing.expectEqual(@as(usize, 2), container.children.len);
-}
-
-test "boxTracked with source location" {
-    const src = @src();
-    const b = boxTracked(.{ .width = 100 }, .{}, src);
-    try std.testing.expectEqual(PrimitiveType.box_element, @TypeOf(b).primitive_type);
-    try std.testing.expectEqual(@as(?f32, 100), b.style.width);
-    try std.testing.expectEqualStrings("primitives.zig", b.source_loc.file[b.source_loc.file.len - 14 ..]);
-}
-
-test "hstackTracked with source location" {
-    const src = @src();
-    const h = hstackTracked(.{ .gap = 16 }, .{}, src);
-    try std.testing.expectEqual(PrimitiveType.hstack, @TypeOf(h).primitive_type);
-    try std.testing.expectEqual(@as(f32, 16), h.style.gap);
-    try std.testing.expectEqualStrings("primitives.zig", h.source_loc.file[h.source_loc.file.len - 14 ..]);
-}
-
-test "vstackTracked with source location" {
-    const src = @src();
-    const v = vstackTracked(.{ .gap = 24, .alignment = .{ .cross = .end } }, .{}, src);
-    try std.testing.expectEqual(PrimitiveType.vstack, @TypeOf(v).primitive_type);
-    try std.testing.expectEqual(@as(f32, 24), v.style.gap);
-    try std.testing.expectEqual(styles.Box.Alignment{ .cross = .end }, v.style.alignment);
-    try std.testing.expectEqualStrings("primitives.zig", v.source_loc.file[v.source_loc.file.len - 14 ..]);
-}
-
-test "scrollTracked with source location" {
-    const src = @src();
-    const s = scrollTracked("tracked-scroll", .{ .height = 400 }, .{}, src);
-    try std.testing.expectEqual(PrimitiveType.scroll, @TypeOf(s).primitive_type);
-    try std.testing.expectEqualStrings("tracked-scroll", s.id);
-    try std.testing.expectEqual(@as(?f32, 400), s.style.height);
-    try std.testing.expectEqualStrings("primitives.zig", s.source_loc.file[s.source_loc.file.len - 14 ..]);
 }
 
 test "whenFn primitive" {
