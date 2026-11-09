@@ -117,7 +117,6 @@ fn pinNamespaces() void {
         _ = gooey.debug;
         _ = gooey.validation;
         _ = gooey.accessibility;
-        _ = gooey.ai;
         _ = gooey.file_dialog;
         _ = gooey.app;
     }
@@ -174,7 +173,7 @@ fn pinTier1NamespacedScene() void {
 
 /// `gooey.context` — framework subsystems reached for when an
 /// example needs to drive focus / entity lookup / accessibility
-/// directly (dynamic_counters, disktree).
+/// directly (dynamic_counters).
 fn pinTier1NamespacedContext() void {
     comptime {
         _ = gooey.context.Window;
@@ -279,7 +278,7 @@ fn pinTier1NamespacedPlatformAndRuntime() void {
 
 /// `gooey.image` / `gooey.svg` — asset-loader anchors. Both expose
 /// an `*Atlas` and a `Loader` (or rasterizer); pin the public face
-/// so the example showcase keeps compiling against them.
+/// so the examples keep compiling against them.
 fn pinTier1NamespacedAssets() void {
     comptime {
         _ = gooey.image.ImageAtlas;
