@@ -54,8 +54,6 @@ pub const DriveModel = interface.DriveModel;
 pub const CursorShape = interface.CursorShape;
 
 /// Translucent-background style, shared by every backend.
-pub const GlassStyle = interface.GlassStyle;
-
 /// Renderer capabilities
 pub const RendererCapabilities = interface.RendererCapabilities;
 

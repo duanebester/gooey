@@ -77,8 +77,6 @@ pub const RenderLimits = struct {
 /// What a renderer can draw. A feature a renderer lacks is reported here and
 /// gated by the caller; it is never silently dropped.
 pub const Capabilities = struct {
-    post_process: bool,
-    custom_shaders: bool,
     meshes: bool,
 };
 

@@ -1,5 +1,5 @@
 //! Core primitives for Gooey: resource limits, reservations, the fixed-capacity
-//! array, custom shader descriptions, and compile-time interface checks.
+//! array, and compile-time interface checks.
 //!
 //! Geometry value types and path math live in `src/geometry/`.
 
@@ -55,13 +55,6 @@ pub const FontLimits = surface.FontLimits;
 pub const FontSource = surface.FontSource;
 pub const animation = surface.animation;
 pub const internals = surface;
-
-// =============================================================================
-// Custom Shaders
-// =============================================================================
-
-pub const shader = @import("shader.zig");
-pub const CustomShader = shader.CustomShader;
 
 // =============================================================================
 // Interface Verification (compile-time checks)

@@ -136,13 +136,6 @@ fn pinNamespaces() void {
 // and grouped by namespace so a failing build clearly says *which*
 // namespace lost the name.
 
-/// `gooey.core` — custom shader types reached for in shader demos.
-fn pinTier1NamespacedCore() void {
-    comptime {
-        _ = gooey.core.CustomShader;
-    }
-}
-
 /// `gooey.geometry` — value types reached for by layout-aware examples
 /// (sizing in `Corners` / `Edges` / `Size`). `Color` lives on the flat-7
 /// above; do not double-pin it here.
@@ -181,7 +174,7 @@ fn pinTier1NamespacedScene() void {
 
 /// `gooey.context` — framework subsystems reached for when an
 /// example needs to drive focus / entity lookup / accessibility
-/// directly (dynamic_counters, spaceship, disktree).
+/// directly (dynamic_counters, disktree).
 fn pinTier1NamespacedContext() void {
     comptime {
         _ = gooey.context.Window;
@@ -275,16 +268,12 @@ fn pinTier1NamespacedWidgets() void {
     }
 }
 
-/// `gooey.platform` and `gooey.runtime` — multi-window / OS-window
-/// types reached for by examples that drive the multi-window runner
-/// or want a `*PlatformWindow` handle (glass-style demos, native
-/// renderer probes).
+/// `gooey.platform` — the OS-window types reached for by examples
+/// that want a `*PlatformWindow` handle (native renderer probes).
 fn pinTier1NamespacedPlatformAndRuntime() void {
     comptime {
         _ = gooey.platform.Platform;
         _ = gooey.platform.PlatformWindow;
-        _ = gooey.runtime.WindowHandle;
-        _ = gooey.runtime.MultiWindowApp;
     }
 }
 
@@ -367,7 +356,6 @@ test "tier 1 public API surface compiles" {
         pinCuratedCore();
         pinNamespaces();
 
-        pinTier1NamespacedCore();
         pinTier1NamespacedGeometry();
         pinTier1NamespacedInput();
         pinTier1NamespacedScene();

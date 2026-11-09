@@ -134,7 +134,6 @@ pub const Window = struct {
 
     renderer: VulkanRenderer,
     background_color: geometry.Color,
-    glass_style: interface_mod.GlassStyle,
     dark_appearance: bool = false,
     cursor_shape: interface_mod.CursorShape = .default,
 
@@ -237,7 +236,6 @@ pub const Window = struct {
 
         self.adoptWindowDpi(options);
         self.readClientSize();
-        vk_renderer.warnCustomShadersUnsupported(options.custom_shaders.len, "Windows");
         try self.renderer.initWithNativeSurface(
             .{ .hinstance = plat.hinstance, .hwnd = self.hwnd.? },
             self.rendererWidth(),
@@ -269,7 +267,7 @@ pub const Window = struct {
         options: *const WindowOptions,
     ) void {
         // A field added to `Window` must be initialized here too.
-        comptime assert(@typeInfo(Self).@"struct".field_names.len == 51);
+        comptime assert(@typeInfo(Self).@"struct".field_names.len == 50);
         self.allocator = allocator;
         self.platform = plat;
         self.window_id = .invalid;
@@ -289,7 +287,6 @@ pub const Window = struct {
         self.modal_turn_active = false;
         self.renderer = VulkanRenderer.init(allocator);
         self.background_color = options.background_color;
-        self.glass_style = options.glass_style;
         self.dark_appearance = false;
         self.cursor_shape = .default;
         self.needs_redraw = true;
@@ -954,12 +951,9 @@ pub const Window = struct {
         assert(self.cursor_shape == shape);
     }
 
-    /// The surface is opaque, so a glass style has no backdrop to show; it
-    /// still clears transparent to match the other backends' contract.
     pub fn getClearColor(self: *const Self) geometry.Color {
         assert(self.background_color.a >= 0);
         assert(self.background_color.a <= 1);
-        if (self.glass_style.needsTransparentClear()) return geometry.Color.transparent;
         return self.background_color;
     }
 

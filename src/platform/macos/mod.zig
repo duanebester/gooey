@@ -74,7 +74,6 @@ pub const capabilities = MacPlatform.capabilities;
 
 // Re-export shared contract types (from platform interface)
 pub const WindowOptions = interface.WindowOptions;
-pub const GlassStyle = interface.GlassStyle;
 pub const CursorShape = interface.CursorShape;
 pub const PathPromptOptions = interface.PathPromptOptions;
 pub const PathPromptResult = interface.PathPromptResult;

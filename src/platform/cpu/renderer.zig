@@ -67,8 +67,8 @@ pub const Viewport = struct {
 
 /// What this renderer can do beyond the scene's primitive kinds.
 pub const Capabilities = struct {
-    /// Custom post-process shader passes. The CPU has no shader runtime.
-    post_process: bool,
+    /// Triangle meshes (paths, polylines, point clouds), drawn by `mesh.zig`.
+    meshes: bool,
 };
 
 /// The atlases textured primitives sample. A frame whose scene holds glyphs,
@@ -175,7 +175,7 @@ pub const Renderer = struct {
     pub fn capabilities(self: *const Renderer) Capabilities {
         assert(self.width_max > 0);
         assert(self.height_max > 0);
-        return .{ .post_process = false };
+        return .{ .meshes = true };
     }
 
     /// Clear `target` and draw every primitive of `scene` in draw order.

@@ -8,8 +8,7 @@
 //! - `on_resize`: called when window size changes (after resize completes).
 //!
 //! Each window owns a per-window `WindowContext` stored in the window's
-//! user_data pointer (Cx, Window, Builder, callbacks), so the single-window
-//! flow and multi-window flow share one callback model.
+//! user_data pointer (Cx, Window, Builder, callbacks).
 //!
 //! Backend-specific initialization order is the backend's business: each
 //! `Platform.initInPlace` completes its own host wiring, with no follow-up
@@ -117,8 +116,7 @@ pub fn runCx(
 
     win_ctx.setCallbacks(config.on_event, config.on_close, config.on_resize);
 
-    // Set root state on this window's Window instance (not globally)
-    // This enables multi-window support where each window has its own state
+    // Set root state on this window's Window instance (not globally).
     win_ctx.window.setRootState(State, state);
     defer if (owned) win_ctx.window.clearRootState();
 
@@ -209,20 +207,10 @@ fn windowOptions(comptime State: type, config: CxConfig(State)) interface_mod.Wi
         .width = config.width,
         .height = config.height,
         .background_color = bg_color,
-        .custom_shaders = config.custom_shaders,
         // Size constraints
         .min_size = config.min_size,
         .max_size = config.max_size,
         .centered = config.centered,
-        // Glass/transparency options. `glass_style` is passed straight through:
-        // there is one canonical `GlassStyle` shared by every backend, so no
-        // `@enumFromInt(@intFromEnum(...))` bridge between differently ordered
-        // enums is needed.
-        .background_opacity = config.background_opacity,
-        .glass_style = config.glass_style,
-        .glass_corner_radius = config.glass_corner_radius,
-        .titlebar_transparent = config.titlebar_transparent,
-        .full_size_content = config.full_size_content,
         .limits = config.limits,
     };
 }
@@ -230,7 +218,6 @@ fn windowOptions(comptime State: type, config: CxConfig(State)) interface_mod.Wi
 /// Configuration for runCx()
 pub fn CxConfig(comptime State: type) type {
     _ = State; // State type captured for type safety
-    const shader_mod = @import("../core/shader.zig");
 
     return struct {
         title: []const u8 = "Window App",
@@ -278,26 +265,6 @@ pub fn CxConfig(comptime State: type) type {
         /// when omitted there, follows the `.limits` profile name.
         font_limits: FontLimits,
 
-        /// Custom shaders (cross-platform - MSL for macOS, WGSL for web)
-        custom_shaders: []const shader_mod.CustomShader = &.{},
-
-        // Glass/transparency options (macOS only)
-
-        /// Background opacity (0.0 = fully transparent, 1.0 = opaque)
-        background_opacity: f64 = 1.0,
-
-        /// Glass blur style
-        glass_style: interface_mod.GlassStyle = .none,
-
-        /// Corner radius for glass effect
-        glass_corner_radius: f64 = 16.0,
-
-        /// Make titlebar transparent
-        titlebar_transparent: bool = false,
-
-        /// Extend content under titlebar
-        full_size_content: bool = false,
-
         /// Per-window resource budget (CLAUDE.md §2). Every scene pool and the
         /// renderer's instance storage are reserved at exactly these sizes
         /// before the first frame and never grow; exceeding one fails fast.
@@ -337,11 +304,11 @@ test "ownsTeardownAfterRun keeps teardown only for a blocking event loop" {
 
 test "windowOptions carries CxConfig through to the boundary struct" {
     // Goal: pin the two values `runCx` delegates to this helper — the default
-    // background colour and the straight-through `glass_style`.
+    // background colour and the straight-through `centered`.
     const Empty = struct {};
     const defaults = windowOptions(Empty, .{ .limits = .nano, .font_limits = .nano });
     try std.testing.expectEqual(@as(f64, 800), defaults.width);
-    try std.testing.expectEqual(interface_mod.GlassStyle.none, defaults.glass_style);
+    try std.testing.expect(defaults.centered);
     try std.testing.expectEqual(@as(f32, 0.95), defaults.background_color.r);
 
     const custom = windowOptions(Empty, .{
@@ -349,11 +316,9 @@ test "windowOptions carries CxConfig through to the boundary struct" {
         .font_limits = .small,
         .width = 320,
         .height = 240,
-        .glass_style = .blur,
         .centered = false,
     });
     try std.testing.expectEqual(@as(f64, 320), custom.width);
     try std.testing.expectEqual(@as(f64, 240), custom.height);
-    try std.testing.expectEqual(interface_mod.GlassStyle.blur, custom.glass_style);
     try std.testing.expect(!custom.centered);
 }

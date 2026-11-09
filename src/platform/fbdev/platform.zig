@@ -60,11 +60,9 @@ pub const FbdevPlatform = struct {
 
     pub const capabilities = interface_mod.PlatformCapabilities{
         .high_dpi = true,
-        .multi_window = false,
         .gpu_accelerated = false,
         .display_link = false,
         .can_close_window = true,
-        .glass_effects = false,
         .clipboard = true, // In-process only; see `clipboard.zig`.
         .file_dialogs = false,
         .ime = false,

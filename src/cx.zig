@@ -209,35 +209,6 @@ pub const Cx = struct {
         try self._window.setFont(name, size);
     }
 
-    /// Set the glass / blur effect style for the window.
-    ///
-    /// Glass is a platform-specific capability, not part of the common window
-    /// contract, so it is gated on the backend's comptime
-    /// `capabilities.glass_effects`. Backends that cannot composite a
-    /// translucent backdrop (Wayland has no such protocol; the browser path
-    /// needs CSS the host does not yet apply) compile this out entirely.
-    ///
-    /// The call goes through the selected `PlatformWindow` directly, with no
-    /// cast to a backend-concrete window type, and there is one canonical
-    /// `GlassStyle` shared by every backend, so tag values cannot disagree.
-    pub fn setGlassStyle(
-        self: *Self,
-        style: platform_mod.GlassStyle,
-        opacity: f64,
-        corner_radius: f64,
-    ) void {
-        if (comptime !platform_mod.Platform.capabilities.glass_effects) return;
-
-        std.debug.assert(opacity >= 0.0 and opacity <= 1.0);
-        std.debug.assert(corner_radius >= 0.0);
-
-        // Capture name `pw` is disambiguated from the
-        // `pub fn window(self: *Self)` accessor.
-        if (self._window.platform_window) |pw| {
-            pw.setGlassStyle(style, opacity, corner_radius);
-        }
-    }
-
     /// Close the window (and exit the application).
     ///
     /// `close` is part of the common window contract on every backend, so this

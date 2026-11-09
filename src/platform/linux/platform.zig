@@ -293,11 +293,9 @@ pub const LinuxPlatform = struct {
     /// Platform capabilities for Linux/Wayland
     pub const capabilities = interface_mod.PlatformCapabilities{
         .high_dpi = true,
-        .multi_window = true,
         .gpu_accelerated = !linux_backend.uses_cpu_renderer,
         .display_link = false, // Uses frame callbacks
         .can_close_window = true,
-        .glass_effects = false, // Compositor-dependent
         .clipboard = true,
         .file_dialogs = true, // Via XDG Desktop Portal
         .ime = true,

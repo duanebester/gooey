@@ -39,7 +39,6 @@ const runtime_render = @import("runtime/render.zig");
 // Core imports
 const window_mod = @import("context/window.zig");
 const input_mod = @import("input/mod.zig");
-const shader_mod = @import("core/shader.zig");
 const ResourceLimits = @import("core/limits.zig").ResourceLimits;
 const FontLimits = @import("core/limits.zig").FontLimits;
 const cx_mod = @import("cx.zig");
@@ -65,11 +64,6 @@ pub const handleInputCx = runtime.handleInputCx;
 pub const Cx = cx_mod.Cx;
 // The local `PlatformWindow` alias is used everywhere below where the
 // OS-level handle (vs. the framework `Window` wrapper) is meant.
-// `GlassStyle` is one canonical enum shared by every backend
-// (`platform/interface.zig`), so tag values cannot disagree and no
-// `@enumFromInt(@intFromEnum(...))` bridge can silently produce the
-// wrong style.
-pub const GlassStyle = platform.GlassStyle;
 const Platform = platform.Platform;
 const PlatformWindow = platform.PlatformWindow;
 const Window = window_mod.Window;
@@ -123,15 +117,11 @@ pub fn App(
                 };
                 const ConfigType = @TypeOf(config);
                 inline for (@typeInfo(runtime.CxConfig(State)).@"struct".field_names) |field_name| {
-                    // `custom_shaders` (MSL-vs-WGSL coercion), `limits`, and
-                    // `font_limits` (profile names) need special handling; everything else
-                    // is a straight copy when the caller provided it. Unknown
-                    // caller fields were already rejected at comptime.
-                    if (comptime std.mem.eql(u8, field_name, "custom_shaders")) {
-                        if (@hasField(ConfigType, "custom_shaders")) {
-                            cfg.custom_shaders = coerceShaders(config.custom_shaders);
-                        }
-                    } else if (comptime std.mem.eql(u8, field_name, "limits") or
+                    // `limits` and `font_limits` (profile names) need special
+                    // handling; everything else is a straight copy when the
+                    // caller provided it. Unknown caller fields were already
+                    // rejected at comptime.
+                    if (comptime std.mem.eql(u8, field_name, "limits") or
                         std.mem.eql(u8, field_name, "font_limits"))
                     {
                         // Resolved and validated at comptime above (profile names too).
@@ -183,7 +173,7 @@ pub fn WebApp(
     }
 
     // The same `gooey.App` config compiles for native and web, so web accepts
-    // every `CxConfig` field (native-only ones such as `glass_style` have no
+    // every `CxConfig` field (native-only ones such as `min_size` have no
     // effect in a canvas) and rejects anything else, exactly like native.
     comptime validateConfigFields(State, @TypeOf(config));
     const resource_limits = comptime resolveLimits(config);
@@ -349,8 +339,7 @@ pub fn WebApp(
             // Wire up builder to cx
             g_builder.?.cx_ptr = @ptrCast(&g_cx.?);
 
-            // Set root state on this window's Window instance (not globally)
-            // This enables multi-window support where each window has its own state
+            // Set root state on this window's Window instance (not globally).
             g_window.?.setRootState(State, state);
 
             // Initialize GPU renderer
@@ -358,22 +347,6 @@ pub fn WebApp(
             const renderer_ptr = try allocator.create(WebRenderer);
             renderer_ptr.initInPlace(allocator);
             g_renderer = renderer_ptr;
-
-            // Load custom shaders (WGSL for web)
-            const custom_shaders = if (@hasField(@TypeOf(config), "custom_shaders"))
-                coerceShaders(config.custom_shaders)
-            else
-                &[_]shader_mod.CustomShader{};
-
-            for (custom_shaders, 0..) |shader, i| {
-                if (shader.wgsl) |wgsl_source| {
-                    var name_buf: [32]u8 = undefined;
-                    const name = std.fmt.bufPrint(&name_buf, "custom_{d}", .{i}) catch "custom";
-                    g_renderer.?.addCustomShader(wgsl_source, name) catch |err| {
-                        web_imports.err("Failed to load custom shader {d}: {}", .{ i, err });
-                    };
-                }
-            }
 
             // Atlas textures exist once, at the budget sizes; the window
             // registered its platform window as the atlas upload consumer.
@@ -721,22 +694,4 @@ fn copyFields(comptime T: type, comptime budget: []const u8, comptime source: an
         }
         return target;
     }
-}
-
-fn coerceShaders(comptime shaders: anytype) []const shader_mod.CustomShader {
-    const len = shaders.len;
-    if (len == 0) return &.{};
-
-    const result = comptime blk: {
-        var r: [len]shader_mod.CustomShader = undefined;
-        for (0..len) |i| {
-            const s = shaders[i];
-            r[i] = .{
-                .msl = if (@hasField(@TypeOf(s), "msl")) s.msl else null,
-                .wgsl = if (@hasField(@TypeOf(s), "wgsl")) s.wgsl else null,
-            };
-        }
-        break :blk r;
-    };
-    return &result;
 }

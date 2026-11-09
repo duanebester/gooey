@@ -91,11 +91,9 @@ pub const WindowsPlatform = struct {
 
     pub const capabilities = interface_mod.PlatformCapabilities{
         .high_dpi = true,
-        .multi_window = true,
         .gpu_accelerated = true,
         .display_link = false,
         .can_close_window = true,
-        .glass_effects = false,
         .clipboard = true,
         .file_dialogs = true,
         .ime = true,

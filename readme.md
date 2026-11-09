@@ -26,9 +26,7 @@ Example app built with Gooey — [**chat-zig**](https://github.com/duanebester/c
 - **Entity System** - Dynamic entity creation/deletion with auto-cleanup
 - **Retained Widgets** - TextInput, TextArea, Checkbox, Scroll containers
 - **Text Rendering** - CoreText (macOS), FreeType/HarfBuzz (Linux), Canvas (WASM)
-- **Custom Shaders** - Drop in your own Metal/GLSL shaders
 - **Drag & Drop** - Type-safe drag sources and drop targets with `pointer_events` control
-- **Liquid Glass** - macOS 26.0+ Tahoe transparent window effects
 - **Actions & Keybindings** - Contextual action system with keymap
 - **Theming** - Built-in light/dark mode support
 - **Images & SVG** - Load images and render SVG icons with styling
@@ -120,8 +118,6 @@ zig build run              # Showcase demo
 zig build run-counter      # Counter on the 0.4.0 core
 zig build run-todo         # Todo on the 0.4.0 core (TextInput with IME, lists)
 zig build run-animation    # Animation demo
-zig build run-glass        # Liquid glass effect
-zig build run-spaceship    # Space dashboard with shader
 zig build run-genui-demo      # Generated UI composition and native controls
 zig build run-dynamic-counters  # Entity system demo
 zig build run-layout       # Flexbox, shrink, text wrapping
@@ -1471,80 +1467,6 @@ fraction from 0 through 1. Grow wins over fixed sizing, fixed sizing wins over
 percentage and fill, and percentage wins over fill. Min/max constrain grow or
 fixed sizing and select fit sizing when neither is present.
 
-## Custom Shaders
-
-Add custom post-processing shaders for visual effects. Shaders are cross-platform with MSL for macOS and WGSL for web:
-
-> **Advanced/unstable API:** Custom shader descriptors and backend shader
-> interfaces may change while the platform renderers converge. Prefer standard
-> components unless an application owns the backend-specific shader code.
-
-```zig
-// MSL shader (macOS)
-pub const plasma_msl =
-    \\void mainImage(thread float4& fragColor, float2 fragCoord,
-    \\               constant ShaderUniforms& uniforms,
-    \\               texture2d<float> iChannel0,
-    \\               sampler iChannel0Sampler) {
-    \\    float2 uv = fragCoord / uniforms.iResolution.xy;
-    \\    float time = uniforms.iTime;
-    \\    // ... shader code
-    \\    fragColor = float4(color, 1.0);
-    \\}
-;
-
-// WGSL shader (Web)
-pub const plasma_wgsl =
-    \\fn mainImage(
-    \\    fragCoord: vec2<f32>,
-    \\    u: ShaderUniforms,
-    \\    tex: texture_2d<f32>,
-    \\    samp: sampler
-    \\) -> vec4<f32> {
-    \\    let uv = fragCoord / u.iResolution.xy;
-    \\    let time = u.iTime;
-    \\    // ... shader code
-    \\    return vec4<f32>(color, 1.0);
-    \\}
-;
-
-const App = gooey.App(AppState, &state, render, .{
-    .custom_shaders = &.{.{ .msl = plasma_msl, .wgsl = plasma_wgsl }},
-    .limits = .small,
-});
-```
-
-You can also provide only one platform's shader:
-
-```zig
-// macOS only
-.custom_shaders = &.{.{ .msl = plasma_msl }},
-
-// Web only
-.custom_shaders = &.{.{ .wgsl = plasma_wgsl }},
-```
-
-## Glass Effect (macOS 26.0+)
-
-Transparent window with liquid glass effect:
-
-```zig
-const App = gooey.App(AppState, &state, render, .{
-    .title = "Glass Demo",
-    .background_color = gooey.Color.rgba(0.1, 0.1, 0.15, 1.0),
-    .background_opacity = 0.2,
-    .glass_style = .glass_regular,  // .glass_clear, .blur, .none
-    .glass_corner_radius = 10.0,
-    .titlebar_transparent = true,
-    .limits = .small,
-});
-
-// Change glass style at runtime
-pub fn cycleStyle(self: *AppState, g: *gooey.Window) void {
-    g.window.setGlassStyle(.glass_clear, 0.7, 10.0);
-}
-```
-
 ## Actions & Keybindings
 
 Contextual action system with keyboard shortcuts:
@@ -1625,8 +1547,6 @@ For a working reference, see the `Cmd+Q` handler in `src/examples/showcase.zig`,
 | Animation        | `zig build run-animation`        | Animation system with tweenOn         |
 | Dynamic Counters | `zig build run-dynamic-counters` | Entity creation and deletion          |
 | Layout           | `zig build run-layout`           | Flexbox, shrink, text wrapping        |
-| Glass            | `zig build run-glass`            | Liquid glass transparency effect      |
-| Spaceship        | `zig build run-spaceship`        | Sci-fi dashboard with hologram shader |
 | Actions          | `zig build run-actions`          | Keybindings and action system         |
 | Images           | `zig build run-images`           | Image loading and effects             |
 | File Dialog      | `zig build run-file-dialog`      | Native file open/save dialogs         |
@@ -1684,7 +1604,7 @@ Simple brute-force hot reload for development:
 ```bash
 zig build hot                    # Showcase (default)
 zig build hot -- run-counter     # Specific example
-zig build hot -- run-glass
+zig build hot -- run-animation
 ```
 
 ## Architecture
@@ -1853,8 +1773,8 @@ Alt+F4 exits. Environment overrides:
 
 1. **Custom cursors** - Cursor theming via wl_cursor not yet implemented
 2. **Hot reloading** - macOS-only currently (uses FSEvents)
-3. **Glass effects** - macOS-specific (compositor-dependent on Linux)
-4. **Multi-window** - Supported in platform but not fully tested
+3. **One window per app** - Multi-window, liquid glass, and custom shaders
+   were cut in 0.4.0 (contract decision 14)
 
 ## Testing & CI
 

@@ -93,37 +93,6 @@ pub const CursorShape = enum(u8) {
 };
 
 // =============================================================================
-// Glass / blur styling
-// =============================================================================
-
-/// Translucent-background style for a window.
-///
-/// One canonical enum shared by every backend, so tag values cannot disagree.
-/// Per-backend variant lists bridged with `@enumFromInt(@intFromEnum(...))`
-/// would silently produce the wrong style the moment their orderings
-/// diverged. Backends that
-/// cannot honour a given style must degrade visibly (see `glass_effects` in
-/// `PlatformCapabilities`) rather than remap tags.
-pub const GlassStyle = enum(u8) {
-    /// No glass effect; the window background color is used as-is.
-    none = 0,
-    /// Traditional background blur.
-    blur = 1,
-    /// macOS 26+ liquid glass, regular density.
-    glass_regular = 2,
-    /// macOS 26+ liquid glass, clear/lighter density.
-    glass_clear = 3,
-    /// Browser `backdrop-filter` vibrancy. Web only.
-    vibrancy = 4,
-
-    /// Whether this style requires a transparent framebuffer clear so the
-    /// host-composited backdrop shows through.
-    pub fn needsTransparentClear(self: GlassStyle) bool {
-        return self != .none;
-    }
-};
-
-// =============================================================================
 // Capabilities
 // =============================================================================
 
@@ -133,9 +102,6 @@ pub const PlatformCapabilities = struct {
     /// Supports high-DPI (Retina) displays.
     high_dpi: bool = true,
 
-    /// Supports more than one window.
-    multi_window: bool = true,
-
     /// Supports GPU-accelerated rendering.
     gpu_accelerated: bool = true,
 
@@ -144,30 +110,6 @@ pub const PlatformCapabilities = struct {
 
     /// Can programmatically close windows.
     can_close_window: bool = true,
-
-    /// The host can composite a translucent backdrop behind the window
-    /// surface, so a non-`.none` `GlassStyle` is actually visible.
-    ///
-    /// Setting this true obliges the backend to declare
-    /// `PlatformWindow.setGlassStyle`, which is how a caller selects the
-    /// style; `contract.verifyPlatformWindow` checks that conditionally.
-    ///
-    /// This says nothing about the renderer. See `has_post_process` for the
-    /// renderer-side fact; conflating the two would let a caller that needs
-    /// only the latter gate on this one.
-    glass_effects: bool = false,
-
-    /// The backend's `PlatformWindow.renderer` exposes
-    /// `getPostProcess() ?*PostProcessState`, whose `uniforms` shared code
-    /// writes through (`Window.setAccentColor`).
-    ///
-    /// A backend must not set this true until its renderer declares that
-    /// method, because the gated bodies name it directly and a missing member
-    /// is a compile error rather than a degraded effect. Independent of
-    /// `glass_effects`: a host can composite a translucent backdrop with no
-    /// post-process pass at all, and a renderer can own a post-process pass on
-    /// a fully opaque window.
-    has_post_process: bool = false,
 
     /// Supports clipboard access.
     clipboard: bool = true,
@@ -276,84 +218,16 @@ pub const WindowOptions = struct {
     /// Start the window centered on screen.
     centered: bool = true,
 
-    /// Custom shaders (MSL on macOS, WGSL on web). The Vulkan backends on
-    /// Linux and Windows cannot run them and warn once at window init.
-    custom_shaders: []const @import("../core/shader.zig").CustomShader = &.{},
-
-    /// Background opacity (0.0 = fully transparent, 1.0 = opaque).
-    /// Honoured where `PlatformCapabilities.glass_effects` is set.
-    background_opacity: f64 = 1.0,
-
-    /// Translucent-background style.
-    glass_style: GlassStyle = .none,
-
-    /// Corner radius for the glass effect.
-    glass_corner_radius: f64 = 16.0,
-
-    /// Make the titlebar transparent (macOS only).
-    titlebar_transparent: bool = false,
-
-    /// Extend content under the titlebar (macOS only).
-    full_size_content: bool = false,
-
     /// The application's validated per-window budget. Backends size renderer
     /// instance storage from it during `PlatformWindow.init` rather than from
     /// framework ceilings. The runtime always sets it from the app config;
     /// there is no default profile (CLAUDE.md §2).
     limits: ResourceLimits,
-
-    /// Effective clear color for this configuration.
-    ///
-    /// A glass style requires a transparent clear so the host-composited
-    /// backdrop is visible; otherwise the configured background color is used.
-    pub fn clearColor(self: *const WindowOptions) geometry.Color {
-        if (self.glass_style.needsTransparentClear()) return geometry.Color.transparent;
-        return self.background_color;
-    }
 };
 
 // =============================================================================
 // Tests
 // =============================================================================
-
-test "GlassStyle tag values are stable across backends" {
-    // These tag values are load-bearing: they are persisted in `WindowOptions`
-    // literals in application code and read by every backend. Pin them so a
-    // reordering is a test failure rather than a silently wrong window
-    // appearance.
-    try std.testing.expectEqual(@as(u8, 0), @backingInt(GlassStyle.none));
-    try std.testing.expectEqual(@as(u8, 1), @backingInt(GlassStyle.blur));
-    try std.testing.expectEqual(@as(u8, 2), @backingInt(GlassStyle.glass_regular));
-    try std.testing.expectEqual(@as(u8, 3), @backingInt(GlassStyle.glass_clear));
-    try std.testing.expectEqual(@as(u8, 4), @backingInt(GlassStyle.vibrancy));
-}
-
-test "GlassStyle.needsTransparentClear covers every variant" {
-    // Positive and negative space: exactly one variant keeps its own color.
-    try std.testing.expect(!GlassStyle.none.needsTransparentClear());
-
-    var transparent_count: u32 = 0;
-    inline for (comptime std.enums.values(GlassStyle)) |style| {
-        if (style.needsTransparentClear()) transparent_count += 1;
-    }
-    const variant_count = comptime std.enums.values(GlassStyle).len;
-    try std.testing.expectEqual(variant_count - 1, transparent_count);
-}
-
-test "WindowOptions.clearColor follows the glass style" {
-    const opaque_options = WindowOptions{
-        .limits = ResourceLimits.nano,
-        .glass_style = .none,
-        .background_color = geometry.Color.rgba(0.1, 0.2, 0.3, 1.0),
-    };
-    try std.testing.expectEqual(@as(f32, 1.0), opaque_options.clearColor().a);
-
-    const glass_options = WindowOptions{
-        .limits = ResourceLimits.nano,
-        .glass_style = .glass_regular,
-    };
-    try std.testing.expectEqual(@as(f32, 0.0), glass_options.clearColor().a);
-}
 
 test "DriveModel distinguishes native from host-driven backends" {
     try std.testing.expect(DriveModel.blocking_event_loop != DriveModel.host_callback);
