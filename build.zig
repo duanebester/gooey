@@ -800,7 +800,7 @@ pub fn build(b: *std.Build) void {
                 .core = true,
             },
             .{ .name = "dynamic-counters", .source = "src/examples/dynamic_counters.zig" },
-            .{ .name = "layout", .source = "src/examples/layout.zig" },
+            .{ .name = "layout", .source = "src/examples/layout.zig", .core = true },
             .{ .name = "actions", .source = "src/examples/actions.zig", .core = true },
             .{
                 .name = "nested-overlay",
@@ -1333,7 +1333,6 @@ fn addWindowsBuilds(
 
     const examples = [_]struct { name: []const u8, source: []const u8 }{
         .{ .name = "showcase", .source = "src/examples/showcase.zig" },
-        .{ .name = "layout", .source = "src/examples/layout.zig" },
         // 0.4.0 core apps, on `platform/windows/core_host.zig`.
         .{ .name = "counter", .source = "src/examples/counter.zig" },
         .{ .name = "todo", .source = "src/examples/todo.zig" },
@@ -1347,6 +1346,7 @@ fn addWindowsBuilds(
         .{ .name = "images", .source = "src/examples/images.zig" },
         .{ .name = "dashboard", .source = "src/examples/dashboard.zig" },
         .{ .name = "animation", .source = "src/examples/animation.zig" },
+        .{ .name = "layout", .source = "src/examples/layout.zig" },
     };
     for (examples) |example| {
         addWindowsExample(
