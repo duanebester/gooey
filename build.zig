@@ -686,7 +686,7 @@ pub fn build(b: *std.Build) void {
                 .core = true,
             },
             .{ .name = "dynamic-counters", .source = "src/examples/dynamic_counters.zig" },
-            .{ .name = "layout", .source = "src/examples/layout.zig" },
+            .{ .name = "layout", .source = "src/examples/layout.zig", .core = true },
             .{ .name = "actions", .source = "src/examples/actions.zig", .core = true },
             .{
                 .name = "nested-overlay",
@@ -1182,7 +1182,6 @@ fn addWindowsBuilds(
     charts_mod.addImport("gooey", mod);
 
     const examples = [_]struct { name: []const u8, source: []const u8 }{
-        .{ .name = "layout", .source = "src/examples/layout.zig" },
         // 0.4.0 core apps, on `platform/windows/core_host.zig`.
         .{ .name = "counter", .source = "src/examples/counter.zig" },
         .{ .name = "todo", .source = "src/examples/todo.zig" },
@@ -1196,6 +1195,7 @@ fn addWindowsBuilds(
         .{ .name = "images", .source = "src/examples/images.zig" },
         .{ .name = "dashboard", .source = "src/examples/dashboard.zig" },
         .{ .name = "animation", .source = "src/examples/animation.zig" },
+        .{ .name = "layout", .source = "src/examples/layout.zig" },
     };
     for (examples) |example| {
         addWindowsExample(
@@ -1319,8 +1319,8 @@ fn addWindowsTypecheck(b: *std.Build) void {
     // same coverage `typecheck-linux` gets from its `root.zig` test root.
     const shared_tests = b.addTest(.{ .root_module = gooey_mod });
 
-    // A `gooey.App` example reaches the runtime, text, and component layers
-    // that the platform demo does not.
+    // The last 0.3.1 `gooey.App` reaches the runtime, text, and component
+    // layers that the platform demo does not.
     const components_mod = b.createModule(.{
         .root_source_file = b.path("components/src/root.zig"),
         .target = windows_target,
@@ -1328,9 +1328,9 @@ fn addWindowsTypecheck(b: *std.Build) void {
         .imports = &.{.{ .name = "gooey", .module = gooey_mod }},
     });
     const app = b.addExecutable(.{
-        .name = "typecheck-windows-layout",
+        .name = "typecheck-windows-dynamic-counters",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/examples/layout.zig"),
+            .root_source_file = b.path("src/examples/dynamic_counters.zig"),
             .target = windows_target,
             .optimize = .debug,
             .imports = &.{
@@ -1791,19 +1791,19 @@ fn addLinuxTypecheck(b: *std.Build) void {
     // render thread, IME, and dialogs. The `src/root.zig` test root covers far
     // more code: every `test {}` block in the library, plus the `refAllDecls`
     // discovery chain. The core host runs only on `wayland_vulkan`, so the CPU
-    // backends' window and event paths are checked through `layout`, a 0.3.1
-    // `gooey.App`, until they get a core host or are cut.
+    // backends' window and event paths are checked through `dynamic_counters`,
+    // the last 0.3.1 `gooey.App`, until they get a core host or are cut.
     const roots = [_]TypecheckRoot{
         .{ .source = "src/root.zig", .as_test = true },
         .{ .source = "src/examples/todo.zig", .as_test = false },
         .{
-            .source = "src/examples/layout.zig",
+            .source = "src/examples/dynamic_counters.zig",
             .as_test = false,
             .linux_backend = .wayland_cpu,
         },
         .{ .source = "src/root.zig", .as_test = true, .linux_backend = .fbdev },
         .{
-            .source = "src/examples/layout.zig",
+            .source = "src/examples/dynamic_counters.zig",
             .as_test = false,
             .linux_backend = .fbdev,
             .cpu_arch = .aarch64,
