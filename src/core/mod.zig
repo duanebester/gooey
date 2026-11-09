@@ -59,8 +59,8 @@ pub const internals = surface;
 // =============================================================================
 // Interface Verification (compile-time checks)
 //
-// Subsystem shapes only. The platform boundary (`Platform`, `PlatformWindow`)
-// is verified by `src/platform/contract.zig` against complete function types.
+// Subsystem shapes only. The renderer boundary the core draws through is
+// verified by `core/backend.zig` against complete function types.
 // =============================================================================
 
 pub const interface_verify = @import("interface_verify.zig");

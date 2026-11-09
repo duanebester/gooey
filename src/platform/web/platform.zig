@@ -29,26 +29,6 @@ pub const WebPlatform = struct {
     /// Callback invoked once per host frame callback.
     pub const LoopTurnCallback = *const fn (*Self) void;
 
-    /// Platform capabilities for Web/WASM
-    pub const capabilities: interface_mod.PlatformCapabilities = .{
-        .high_dpi = true,
-        .gpu_accelerated = true,
-        .display_link = false, // Uses requestAnimationFrame
-        .can_close_window = false, // Can't close browser tabs
-        // Write-only: `clipboard.setText` forwards to
-        // `navigator.clipboard.writeText`, but `clipboard.getText` always
-        // returns null because paste arrives as a JS paste event injected as
-        // text input rather than through a read API.
-        .clipboard = true,
-        .file_dialogs = true, // Via <input type="file"> and Blob downloads
-        .ime = true, // Via beforeinput/compositionend events
-        .custom_cursors = true, // Via the canvas's CSS `cursor`
-
-        .window_drag_by_content = false,
-        .name = "Web/WASM",
-        .graphics_backend = "WebGPU",
-    };
-
     /// Initialize in place.
     ///
     /// The previous by-value `init`/`initWithAllocator` pair forced the caller
@@ -166,8 +146,8 @@ pub const WebPlatform = struct {
         imports.requestAnimationFrame();
     }
 
-    /// Stop rescheduling frames. The browser tab itself stays open; see
-    /// `capabilities.can_close_window`.
+    /// Stop rescheduling frames. The browser tab itself stays open: a page
+    /// cannot close a tab it did not open.
     pub fn quit(self: *Self) void {
         // Legal before `run`, during a frame, and during teardown; all three
         // are states the browser host can reach. The single-window invariant

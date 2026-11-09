@@ -2,10 +2,10 @@
 //!
 //! Selected with `-Dlinux-backend=fbdev`. The platform owns the framebuffer
 //! device and every evdev input device; its single window covers the whole
-//! panel and is rendered on the CPU. There is no compositor, so the event loop
-//! paces frames itself: it waits in `poll` on the input devices, dispatches
-//! what arrived, and redraws at most once per `frame_period_ns_min` and only
-//! when something requested it.
+//! panel and is rendered on the CPU. There is no compositor, so the core host
+//! (`core_host.zig`) paces frames itself: it waits in `poll` on the input
+//! devices, has `dispatchInput` deliver what arrived, and presents at most once
+//! per `frame_period_ns_min`.
 //!
 //! ## Configuration (environment, read once at initialization)
 //!
@@ -19,7 +19,6 @@
 
 const std = @import("std");
 const posix = std.posix;
-const interface_mod = @import("../interface.zig");
 const window_registry = @import("../window_registry.zig");
 const cpu = @import("../cpu/renderer.zig");
 const input = @import("../../input/events.zig");
@@ -35,15 +34,10 @@ const WindowRegistry = window_registry.WindowRegistry;
 /// without a compositor nothing else limits the redraw rate.
 pub const frame_period_ns_min: u64 = 16_666_667;
 
-/// Poll timeout while nothing is queued. The loop still turns at the frame
-/// rate so the owner's per-turn hook sees asynchronous completions promptly,
-/// matching the Wayland backend's idle cadence.
-const idle_poll_timeout_ms: i32 = 16;
-
 pub const FbdevPlatform = struct {
-    /// The blocking `run()` loop is on the stack; see the contract.
+    /// Cleared only by `quit`, a 0.3.1 call kept while `context/window.zig`
+    /// compiles. The core host's loop ends when the window closes.
     running: bool = false,
-    allocator: std.mem.Allocator,
     window_registry: WindowRegistry,
     framebuffer: framebuffer_mod.Framebuffer = .{},
     devices: evdev.DeviceSet = .{},
@@ -51,31 +45,12 @@ pub const FbdevPlatform = struct {
     scale_factor: f64,
     /// The one window. The panel has no room for a second.
     window: ?*FbdevWindow = null,
-    loop_turn_callback: ?LoopTurnCallback = null,
-    last_frame_ns: ?u64 = null,
 
     const Self = @This();
-
-    pub const LoopTurnCallback = *const fn (*Self) void;
-
-    pub const capabilities = interface_mod.PlatformCapabilities{
-        .high_dpi = true,
-        .gpu_accelerated = false,
-        .display_link = false,
-        .can_close_window = true,
-        .clipboard = true, // In-process only; see `clipboard.zig`.
-        .file_dialogs = false,
-        .ime = false,
-        .custom_cursors = false,
-        .window_drag_by_content = false,
-        .name = "Linux/fbdev",
-        .graphics_backend = "CPU",
-    };
 
     pub fn initInPlace(self: *Self, allocator: std.mem.Allocator) !void {
         assert(@intFromPtr(self) != 0);
         self.* = .{
-            .allocator = allocator,
             .window_registry = WindowRegistry.init(allocator),
             .translator = undefined,
             .scale_factor = scaleFromEnvironment(),
@@ -125,85 +100,14 @@ pub const FbdevPlatform = struct {
     }
 
     // =========================================================================
-    // Event loop
+    // Input
     // =========================================================================
-
-    pub fn run(self: *Self) void {
-        assert(!self.running);
-        assert(self.window_registry.count() <= 1);
-        self.running = true;
-        defer self.running = false;
-
-        // Each turn polls once, dispatches at most `raw_batch_max` events per
-        // device, and renders at most one frame, so every turn is bounded.
-        while (self.running) {
-            if (self.loop_turn_callback) |on_turn| on_turn(self);
-            if (!self.running) break;
-            const window = self.openWindow() orelse break;
-
-            var pollfds: [evdev.device_count_max]posix.pollfd = undefined;
-            const devices = self.devices.slice();
-            for (devices, pollfds[0..devices.len]) |device, *pollfd| {
-                pollfd.* = .{ .fd = device.fd, .events = posix.POLL.IN, .revents = 0 };
-            }
-            // `poll` fails only on a bad descriptor array or a lack of kernel
-            // memory; neither leaves a way to wait for input, so stop.
-            _ = posix.poll(pollfds[0..devices.len], self.pollTimeout(window)) catch |err| {
-                std.log.err("fbdev: poll on {d} input device(s) failed: {t}", .{
-                    devices.len,
-                    err,
-                });
-                break;
-            };
-            self.dispatchInput(pollfds[0..devices.len]);
-
-            if (window.isClosed()) continue;
-            window.fireRenderDeadline(nowMilliseconds());
-            if (window.needs_redraw and self.frameDue()) {
-                window.renderFrame();
-                self.last_frame_ns = nowNanoseconds();
-            }
-        }
-    }
-
-    pub fn quit(self: *Self) void {
-        self.running = false;
-        assert(!self.running);
-    }
-
-    pub fn isRunning(self: *const Self) bool {
-        return self.running;
-    }
 
     fn openWindow(self: *const Self) ?*FbdevWindow {
         const window = self.window orelse return null;
         assert(window.window_id.isValid());
         if (window.isClosed()) return null;
         return window;
-    }
-
-    fn pollTimeout(self: *const Self, window: *const FbdevWindow) i32 {
-        assert(!window.isClosed());
-        assert(idle_poll_timeout_ms > 0);
-        if (!window.needs_redraw) {
-            // Wake no later than an armed timed redraw.
-            const deadline_ms = window.render_deadline_ms orelse return idle_poll_timeout_ms;
-            const wait_ms = deadline_ms - nowMilliseconds();
-            return @intCast(std.math.clamp(wait_ms, 0, idle_poll_timeout_ms));
-        }
-        const last = self.last_frame_ns orelse return 0;
-        const elapsed = nowNanoseconds() -| last;
-        if (elapsed >= frame_period_ns_min) return 0;
-        const remaining_ns = frame_period_ns_min - elapsed;
-        // Ceiling division; `remaining_ns < frame_period_ns_min` keeps it small.
-        const remaining_ms = @divFloor(remaining_ns + std.time.ns_per_ms - 1, std.time.ns_per_ms);
-        assert(remaining_ms <= @divFloor(frame_period_ns_min, std.time.ns_per_ms) + 1);
-        return @intCast(remaining_ms);
-    }
-
-    fn frameDue(self: *const Self) bool {
-        const last = self.last_frame_ns orelse return true;
-        return nowNanoseconds() -| last >= frame_period_ns_min;
     }
 
     /// Deliver what each readable device queued. A device that reports an
@@ -271,25 +175,24 @@ pub const FbdevPlatform = struct {
         assert(!self.window_registry.contains(id));
     }
 
-    pub fn getWindow(self: *const Self, id: WindowId) ?*anyopaque {
-        return self.window_registry.get(id);
-    }
-
-    pub fn getActiveWindowId(self: *const Self) ?WindowId {
-        return self.window_registry.getActiveWindow();
-    }
-
     pub fn setActiveWindowId(self: *Self, id: ?WindowId) void {
         self.window_registry.setActiveWindow(id);
         if (id) |window_id| assert(self.window_registry.contains(window_id));
     }
 
-    pub fn windowCount(self: *const Self) u32 {
-        return self.window_registry.count();
+    // =========================================================================
+    // Calls from the 0.3.1 `context/window.zig`
+    // =========================================================================
+    //
+    // The core never makes these calls. They stay only while that file
+    // compiles, and go when phase 6 deletes it.
+
+    pub fn quit(self: *Self) void {
+        self.running = false;
+        assert(!self.running);
     }
 
-    /// Frames render on the main thread inside `run`, so a main-thread
-    /// caller already excludes every frame; there is no lock.
+    /// Frames render on the main thread, so there is no lock.
     pub fn lockRenderThreads(self: *Self) void {
         assert(self.window_registry.count() <= 1);
     }
@@ -297,13 +200,9 @@ pub const FbdevPlatform = struct {
     pub fn unlockRenderThreads(self: *Self) void {
         assert(self.window_registry.count() <= 1);
     }
-
-    pub fn setLoopTurnCallback(self: *Self, callback: ?LoopTurnCallback) void {
-        self.loop_turn_callback = callback;
-    }
 };
 
-/// Milliseconds on the same clock, for timed-redraw deadlines.
+/// Milliseconds on the same clock, for `Window.requestRenderAfter`.
 pub fn nowMilliseconds() i64 {
     const ms = @divFloor(nowNanoseconds(), std.time.ns_per_ms);
     assert(ms <= std.math.maxInt(i64));
@@ -312,7 +211,7 @@ pub fn nowMilliseconds() i64 {
 
 pub fn nowNanoseconds() u64 {
     // Same process-lifetime single-threaded `Io` the Wayland render path
-    // uses; the event loop carries no `*Cx`.
+    // uses; the callers carry no `Io`.
     const io = std.Io.Threaded.global_single_threaded.io();
     const ns = std.Io.Timestamp.now(io, .awake).toNanoseconds();
     assert(ns >= 0);

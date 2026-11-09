@@ -1,7 +1,7 @@
 //! Backend contracts of the 0.4.0 core (contract §9), verified at comptime.
 //!
 //! The `Renderer` contract is one set of signatures every renderer satisfies,
-//! checked with `contract.verifyFn` exactly like the platform contract, so a
+//! checked with `contract.verifyFn` (complete function types), so a
 //! renderer that drifts fails to compile with the offending declaration's
 //! name instead of silently losing a feature.
 //!

@@ -2,11 +2,9 @@
 //!
 //! Exports for WebAssembly/browser target.
 //!
-//! `Platform`, `PlatformWindow`, and `drive_model` are the three declarations
-//! `platform/mod.zig` binds to; the `Web*` names below are kept because the
-//! web-only modules (renderer, file dialog, event bridges) refer to them.
-
-const interface = @import("../interface.zig");
+//! `Platform` and `PlatformWindow` are the declarations `platform/mod.zig`
+//! binds to; the `Web*` names below are kept because the web-only modules
+//! (renderer, file dialog, event bridges) refer to them.
 
 pub const imports = @import("imports.zig");
 pub const io = @import("io.zig");
@@ -25,14 +23,6 @@ pub const WebPlatform = platform.WebPlatform;
 pub const WebWindow = window.WebWindow;
 pub const WebRenderer = renderer.WebRenderer;
 
-// Canonical backend contract. See `docs/platform_interface_design.md`.
+// The names `platform/mod.zig` aliases as `Platform` and `PlatformWindow`.
 pub const Platform = platform.WebPlatform;
 pub const PlatformWindow = window.WebWindow;
-
-/// `Platform.run` arms `requestAnimationFrame` and returns; the browser owns
-/// the clock and calls back per frame.
-pub const drive_model: interface.DriveModel = .host_callback;
-
-comptime {
-    @import("../contract.zig").verifyBackend(@This());
-}

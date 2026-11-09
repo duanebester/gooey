@@ -1,37 +1,10 @@
-//! Shared platform contract types.
+//! Platform types shared by the core hosts and the backend files.
 //!
-//! Gooey's platform abstraction is compile-time monomorphic: `platform/mod.zig`
-//! selects exactly one backend namespace per target and every call site binds
-//! directly to its concrete types. There is deliberately no runtime vtable —
-//! see `docs/platform_interface_design.md` decision 2. There is no runtime type
-//! erasure either, because it would create a second, drifting contract with no
-//! consumers.
-//!
-//! This module owns the types both sides of the boundary agree on. The exact
-//! signature checks that enforce the agreement live in `contract.zig`.
-//!
-//! ## Usage
-//!
-//! ```zig
-//! const platform = @import("gooey").platform;
-//!
-//! var plat: platform.Platform = undefined;
-//! try plat.initInPlace(allocator);
-//! defer plat.deinit();
-//!
-//! const options = platform.WindowOptions{};
-//! var window = try platform.PlatformWindow.init(allocator, &plat, &options);
-//! defer window.deinit();
-//!
-//! plat.run();
-//! ```
-//!
-//! ## Supported backends
-//!
-//! - macOS: AppKit + Metal
-//! - Linux: Wayland + Vulkan
-//! - Web: canvas + WebGPU
-//! - Tests: `src/testing/test_backend.zig`
+//! Gooey binds to exactly one backend per target at compile time; there is no
+//! runtime vtable (`docs/platform_interface_design.md` decision 2). Each core
+//! host (`<platform>/core_host.zig`) opens its window with `WindowOptions`,
+//! sets `CursorShape`, and runs file dialogs with the prompt types declared
+//! here.
 
 const std = @import("std");
 const geometry = @import("../geometry/geometry.zig");
@@ -61,26 +34,6 @@ pub const WindowRegistry = window_registry.WindowRegistry;
 pub const render_delay_ms_max: u32 = 60_000;
 
 // =============================================================================
-// Host drive model
-// =============================================================================
-
-/// How a backend's host hands control to Gooey.
-///
-/// Native and web genuinely differ here and forcing them into one event-loop
-/// implementation would mean lying in one of them. Exposing the difference as a
-/// comptime backend property keeps it explicit without runtime dispatch: the
-/// untaken branch is never analyzed, so this costs nothing at runtime.
-pub const DriveModel = enum(u8) {
-    /// `Platform.run` blocks, pumping the host event loop until quit.
-    /// macOS (`[NSApp run]`) and Linux (`wl_display_dispatch`) use this.
-    blocking_event_loop,
-
-    /// `Platform.run` arms a host callback and returns immediately. The host
-    /// calls back per frame. Web (`requestAnimationFrame`) uses this.
-    host_callback,
-};
-
-// =============================================================================
 // Cursors
 // =============================================================================
 
@@ -93,45 +46,8 @@ pub const CursorShape = enum(u8) {
 };
 
 // =============================================================================
-// Capabilities
+// Renderer capabilities
 // =============================================================================
-
-/// Capabilities a backend supports. Declared per backend as a comptime
-/// constant so feature checks fold away.
-pub const PlatformCapabilities = struct {
-    /// Supports high-DPI (Retina) displays.
-    high_dpi: bool = true,
-
-    /// Supports GPU-accelerated rendering.
-    gpu_accelerated: bool = true,
-
-    /// Supports vsync via a display link.
-    display_link: bool = true,
-
-    /// Can programmatically close windows.
-    can_close_window: bool = true,
-
-    /// Supports clipboard access.
-    clipboard: bool = true,
-
-    /// Supports native file dialogs.
-    file_dialogs: bool = true,
-
-    /// Supports IME (Input Method Editor).
-    ime: bool = true,
-
-    /// Supports cursor customization.
-    custom_cursors: bool = true,
-
-    /// Supports dragging the window by its content area.
-    window_drag_by_content: bool = false,
-
-    /// Backend name (for debugging).
-    name: []const u8 = "unknown",
-
-    /// Graphics backend name.
-    graphics_backend: []const u8 = "unknown",
-};
 
 /// Renderer capabilities for feature detection.
 pub const RendererCapabilities = struct {
@@ -224,11 +140,3 @@ pub const WindowOptions = struct {
     /// there is no default profile (CLAUDE.md §2).
     limits: ResourceLimits,
 };
-
-// =============================================================================
-// Tests
-// =============================================================================
-
-test "DriveModel distinguishes native from host-driven backends" {
-    try std.testing.expect(DriveModel.blocking_event_loop != DriveModel.host_callback);
-}

@@ -29,8 +29,6 @@
 //! plat.run();
 //! ```
 
-const interface = @import("../interface.zig");
-
 // Core platform types
 pub const platform = @import("platform.zig");
 pub const window = @import("window.zig");
@@ -57,29 +55,16 @@ pub const input = @import("input.zig");
 // Shared GPU primitives (same as web)
 pub const unified = @import("../unified.zig");
 
-// Canonical backend contract. `platform/mod.zig` derives its public aliases
-// from exactly these three names, so the backend cannot invent parallel ones.
+// The names `platform/mod.zig` aliases as `Platform` and `PlatformWindow`.
 pub const Platform = platform.LinuxPlatform;
 pub const PlatformWindow = window.Window;
-
-/// `Platform.run` blocks inside the Wayland poll/dispatch loop until quit.
-pub const drive_model: interface.DriveModel = .blocking_event_loop;
 
 // Type aliases for convenience
 pub const LinuxPlatform = platform.LinuxPlatform;
 pub const Window = window.Window;
 pub const VulkanRenderer = vk_renderer.VulkanRenderer;
 
-// Re-export capabilities
-pub const capabilities = LinuxPlatform.capabilities;
-
 // Re-export file dialog types
 pub const PathPromptOptions = file_dialog.PathPromptOptions;
 pub const PathPromptResult = file_dialog.PathPromptResult;
 pub const SavePromptOptions = file_dialog.SavePromptOptions;
-
-// Fail at compile time, in this file, if the backend drifts from the shared
-// contract — rather than at some distant shared call site.
-comptime {
-    @import("../contract.zig").verifyBackend(@This());
-}

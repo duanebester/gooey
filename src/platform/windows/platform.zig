@@ -89,20 +89,6 @@ pub const WindowsPlatform = struct {
 
     pub const LoopTurnCallback = *const fn (*Self) void;
 
-    pub const capabilities = interface_mod.PlatformCapabilities{
-        .high_dpi = true,
-        .gpu_accelerated = true,
-        .display_link = false,
-        .can_close_window = true,
-        .clipboard = true,
-        .file_dialogs = true,
-        .ime = true,
-        .custom_cursors = true,
-        .window_drag_by_content = false,
-        .name = "Windows",
-        .graphics_backend = "Vulkan",
-    };
-
     pub fn initInPlace(self: *Self, allocator: std.mem.Allocator) !void {
         assert(@intFromPtr(self) != 0);
 

@@ -45,9 +45,8 @@ pub const MockSvgRasterizer = mock_svg_rasterizer.MockSvgRasterizer;
 /// Text dumps of packed frames, hit records, and accessibility trees.
 pub const record_dump = @import("record_dump.zig");
 
-/// Fixed-capacity headless platform backend module
+/// The headless renderer the core draws with in tests.
 pub const test_backend = @import("test_backend.zig");
-pub const TestBackend = test_backend.TestBackend;
 pub const NullRenderer = test_backend.NullRenderer;
 
 // =============================================================================
