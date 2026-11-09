@@ -12,6 +12,7 @@ const actions = @import("actions_example");
 const accessible_form = @import("accessible_form_example");
 const code_editor = @import("code_editor_example");
 const nested_overlay = @import("nested_overlay_example");
+const dashboard = @import("dashboard_example");
 const images = @import("images_example");
 const virtual_list = @import("virtual_list_example");
 const data_table = @import("data_table_example");
@@ -1855,6 +1856,39 @@ fn editorFolder(dir: std.Io.Dir) !void {
     try dir.writeFile(io, .{ .sub_path = "big.txt", .data = big });
 }
 
+test "code_editor's editor fills its panel at any window height" {
+    // Goal: the editor's rows follow the window, as 0.3.1's growing editor
+    // did, so none draws past its border. Method: settle at the 700 px
+    // launch height, then shrink to 635 px (the height the Windows report
+    // used) and grow to 900. At each, the editor's bottom must sit inside
+    // the panel (window less the 16 px outer and 8 px panel padding) and
+    // within one line of it, so it fills without overflowing, and the
+    // window must go idle: the resize's extra render converges.
+    const app = try testing.allocator.create(code_editor.App);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    now += 1;
+    app.tick(now);
+    const line_height = app.window.resources.text_system.getMetrics().?.line_height;
+    for ([_]f32{ 700, 635, 900 }) |height| {
+        if (height != 700) editorResize(app, &now, height);
+        const editor = nodeNamed(&app.window, .textarea, "Enter your code here...").?.bounds;
+        const panel_bottom = height - 16 - 8;
+        try testing.expect(editor.y + editor.height <= panel_bottom);
+        try testing.expect(editor.y + editor.height > panel_bottom - line_height);
+        // Settled: the one render the stale height asked for is spent, and
+        // nothing more is pending, so an idle window draws no more frames.
+        now += 1;
+        app.tick(now);
+        try testing.expect(app.window.renderDeadlineNs() == null);
+        try testing.expect(!app.window.render_requested);
+    }
+    try testing.expectEqual(core.internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
+}
+
 test "code_editor lists a folder in a List and opens its files on the core" {
     // Goal: the code_editor port end to end, with the lifecycle guard
     // proving no allocation after init. Methodology: choose a folder of 47
@@ -2533,4 +2567,77 @@ test "images: a missing file fails once and is not read again" {
     var sprites: [4]core.internals.records.Sprite = undefined;
     try testing.expectEqual(@as(u32, 0), imageSprites(app.window.rendered(), &sprites));
     try testing.expectEqual(@as(u32, 0), app.window.images.landed_count);
+}
+
+test "dashboard draws every chart within .standard and t switches its theme" {
+    // Goal: the charts reach the core's mesh records within the dashboard's
+    // `.standard` limits (an overflow panics), every series draws, and the
+    // keymap's "t" toggles the theme. Methodology: one frame, then the mesh
+    // records by kind: the two line series are one polyline each and one
+    // marker cloud each at radius 4; the three scatter segments are one
+    // cloud each at radius 7 and 0.85 alpha. The root box's fill is the
+    // dark background, then the light one after "t".
+    const App = dashboard.App;
+    const app = try testing.allocator.create(App);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 2 });
+    defer app.deinitHeadless();
+    app.tick(0);
+
+    const Cloud = struct { radius: f32, alpha: f32, blue: f32 };
+    const expected_clouds = [_]Cloud{
+        .{ .radius = 4, .alpha = 1, .blue = ui.Color.hex(0x06b6d4).b },
+        .{ .radius = 4, .alpha = 1, .blue = ui.Color.hex(0x94a3b8).b },
+        .{ .radius = 7, .alpha = 0.85, .blue = ui.Color.hex(0x8b5cf6).b },
+        .{ .radius = 7, .alpha = 0.85, .blue = ui.Color.hex(0x06b6d4).b },
+        .{ .radius = 7, .alpha = 0.85, .blue = ui.Color.hex(0x64748b).b },
+    };
+    var clouds: u32 = 0;
+    var lines: u32 = 0;
+    var triangle_meshes: u32 = 0;
+    const frame = app.window.rendered();
+    for (frame.paint[0..frame.paint_count]) |record| {
+        if (record != .mesh) continue;
+        const mesh = record.mesh;
+        switch (mesh.topology) {
+            .triangles => triangle_meshes += 1,
+            .strip_expanded => {
+                try testing.expectEqual(@as(u32, 12), mesh.range.count);
+                try testing.expectEqual(@as(f32, 2.5), mesh.width);
+                lines += 1;
+            },
+            .point_instanced => {
+                const want = expected_clouds[clouds];
+                try testing.expectEqual(want.radius, mesh.width);
+                try testing.expectApproxEqAbs(want.alpha, mesh.fill.a, 0.001);
+                try testing.expectApproxEqAbs(want.blue, mesh.fill.b, 0.001);
+                clouds += 1;
+            },
+        }
+    }
+    try testing.expectEqual(@as(u32, 2), lines);
+    try testing.expectEqual(@as(u32, expected_clouds.len), clouds);
+    // The accent dot, the legend's three circles, two rings of slices, and
+    // the conversion ring's centre circles: one mesh per run of a colour.
+    try testing.expect(triangle_meshes >= 1 + 3 + 5 + 2 + 3);
+
+    try testing.expectEqual(ui.Color.hex(0x0f172a), rootFill(&app.window));
+    app.window.queue.push(.{ .input = .{ .key_down = chord(.t, .{}) } });
+    app.tick(1);
+    try testing.expect(!app.state.is_dark_theme);
+    try testing.expectEqual(ui.Color.hex(0xf1f5f9), rootFill(&app.window));
+    try testing.expectEqual(core.internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
+}
+
+/// The fill of the frame's window-sized quad: the root box's background.
+fn rootFill(window: *core.internals.window.Window) ui.Color {
+    const frame = window.rendered();
+    for (frame.paint[0..frame.paint_count]) |record| {
+        if (record != .quad) continue;
+        const bounds = record.quad.bounds;
+        if (bounds.width == window.width and bounds.height == window.height) {
+            return record.quad.fill;
+        }
+    }
+    unreachable;
 }

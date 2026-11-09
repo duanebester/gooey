@@ -10,8 +10,7 @@
 //! This avoids embedding large arrays on the stack (per CLAUDE.md).
 
 const std = @import("std");
-const builtin = @import("builtin");
-const gooey = @import("gooey");
+const paint = @import("../paint.zig");
 const constants = @import("../constants.zig");
 const types = @import("../types.zig");
 const theme_mod = @import("../theme.zig");
@@ -20,13 +19,11 @@ const a11y = @import("../accessibility.zig");
 const CategoryPoint = types.CategoryPoint;
 const ChartTheme = theme_mod.ChartTheme;
 
-pub const Color = gooey.ui.Color;
-pub const DrawContext = gooey.ui.DrawContext;
+pub const Color = paint.Color;
+pub const Painter = paint.Painter;
 
 const MAX_CATEGORIES = constants.MAX_CATEGORIES;
 const MAX_SLICES = 64; // Pie charts rarely have more than this
-const ENABLE_PERF_LOGGING = constants.ENABLE_PERF_LOGGING;
-const PERF_WARNING_THRESHOLD_NS = constants.PERF_WARNING_THRESHOLD_NS;
 const ARC_SEGMENTS_PER_FULL_CIRCLE = 64; // Segments for smooth arcs
 
 // =============================================================================
@@ -138,30 +135,19 @@ pub const PieChart = struct {
     // Rendering
     // ==========================================================================
 
-    /// Render the pie chart to a DrawContext.
-    pub fn render(self: *const PieChart, ctx: *DrawContext) void {
-        // Performance timing
-        const start_time = if (ENABLE_PERF_LOGGING) std.time.nanoTimestamp() else 0;
-        defer if (ENABLE_PERF_LOGGING) {
-            const elapsed = std.time.nanoTimestamp() - start_time;
-            if (elapsed > PERF_WARNING_THRESHOLD_NS) {
-                if (builtin.mode == .debug) {
-                    std.log.warn("PieChart render: {d:.2}ms exceeds 8ms budget", .{
-                        @as(f64, @floatFromInt(elapsed)) / 1_000_000.0,
-                    });
-                }
-            }
-        };
-
+    /// Render the pie chart, offset by the paint element's bounds.
+    pub fn render(self: *const PieChart, painter: *Painter) void {
         // Assertions at API boundary (per CLAUDE.md: minimum 2 per function)
         std.debug.assert(self.data.len > 0);
         std.debug.assert(self.width > 0 and self.height > 0);
         std.debug.assert(self.inner_radius_ratio >= 0 and self.inner_radius_ratio < 1);
 
         // Calculate center and radius
-        const cx = self.width / 2.0;
-        const cy = self.height / 2.0;
-        const outer_radius = @min(cx, cy) * 0.85; // Leave margin for labels
+        const half_width = self.width / 2.0;
+        const half_height = self.height / 2.0;
+        const cx = painter.bounds.x + half_width;
+        const cy = painter.bounds.y + half_height;
+        const outer_radius = @min(half_width, half_height) * 0.85; // Leave margin for labels
         const inner_radius = outer_radius * self.inner_radius_ratio;
 
         std.debug.assert(outer_radius > 0);
@@ -171,11 +157,11 @@ pub const PieChart = struct {
         if (total <= 0) return; // Nothing to draw
 
         // Draw slices
-        self.drawSlices(ctx, cx, cy, outer_radius, inner_radius, total);
+        self.drawSlices(painter, cx, cy, outer_radius, inner_radius, total);
 
         // Draw labels if enabled
         if (self.show_labels and self.label_position != .none) {
-            self.drawLabels(ctx, cx, cy, outer_radius, inner_radius, total);
+            self.drawLabels(painter, cx, cy, outer_radius, inner_radius, total);
         }
     }
 
@@ -197,7 +183,7 @@ pub const PieChart = struct {
     /// Draw all pie slices.
     fn drawSlices(
         self: *const PieChart,
-        ctx: *DrawContext,
+        painter: *Painter,
         cx: f32,
         cy: f32,
         outer_radius: f32,
@@ -212,14 +198,17 @@ pub const PieChart = struct {
 
         // For donuts: use parallel edge gaps (different angular offset at inner vs outer)
         // For full pies: use exploded effect (offset slice center along bisector)
-        const half_pad_outer: f32 = if (self.gap_pixels) |gap| gap / (2.0 * outer_radius) else self.pad_angle / 2.0;
+        const half_pad_outer: f32 = if (self.gap_pixels) |gap|
+            gap / (2.0 * outer_radius)
+        else
+            self.pad_angle / 2.0;
         const half_pad_inner: f32 = if (is_donut)
             (if (self.gap_pixels) |gap| gap / (2.0 * inner_radius) else self.pad_angle / 2.0)
         else
             half_pad_outer; // Not used for full pies
 
         // Explode offset for full pies (half the gap on each side = full gap between slices)
-        const explode_offset: f32 = if (!is_donut and self.gap_pixels != null) self.gap_pixels.? else 0;
+        const explode_offset: f32 = if (is_donut) 0 else self.gap_pixels orelse 0;
 
         for (self.data, 0..) |point, idx| {
             if (point.value <= 0) continue;
@@ -235,7 +224,10 @@ pub const PieChart = struct {
 
             // Get color for this slice: point color > theme palette > default palette
             const color = point.color orelse
-                (if (self.chart_theme) |t| t.paletteColor(idx) else default_palette[idx % default_palette.len]);
+                (if (self.chart_theme) |t|
+                    t.paletteColor(idx)
+                else
+                    default_palette[idx % default_palette.len]);
 
             // Calculate exploded center for full pies
             const bisector = current_angle + slice_angle / 2.0;
@@ -244,7 +236,7 @@ pub const PieChart = struct {
 
             // Draw the slice
             self.drawSlice(
-                ctx,
+                painter,
                 slice_cx,
                 slice_cy,
                 outer_radius - explode_offset, // Reduce radius to keep overall size
@@ -260,12 +252,12 @@ pub const PieChart = struct {
         }
     }
 
-    /// Draw a single pie slice using triangle fan (avoids Path tessellation limits).
-    /// Uses direct fillTriangle calls for efficient GPU rendering.
-    /// Supports parallel gap edges via different angular offsets at inner vs outer radius.
+    /// Draw a single slice: a fan from the centre, or for a donut a quad strip
+    /// whose inner and outer arcs are padded separately for parallel gap edges.
+    /// Its triangles share one colour, so the painter joins them into one mesh.
     fn drawSlice(
         self: *const PieChart,
-        ctx: *DrawContext,
+        painter: *Painter,
         cx: f32,
         cy: f32,
         outer_r: f32,
@@ -309,27 +301,12 @@ pub const PieChart = struct {
             while (i < segments) : (i += 1) {
                 const fi = @as(f32, @floatFromInt(i));
                 const fi1 = @as(f32, @floatFromInt(i + 1));
-
-                // Outer edge angles
-                const ao1 = outer_start + fi * outer_step;
-                const ao2 = outer_start + fi1 * outer_step;
-                // Inner edge angles (different progression for parallel gap)
-                const ai1 = inner_start + fi * inner_step;
-                const ai2 = inner_start + fi1 * inner_step;
-
-                // Four corners of quad
-                const outer1_x = cx + outer_r * @cos(ao1);
-                const outer1_y = cy + outer_r * @sin(ao1);
-                const outer2_x = cx + outer_r * @cos(ao2);
-                const outer2_y = cy + outer_r * @sin(ao2);
-                const inner1_x = cx + inner_r * @cos(ai1);
-                const inner1_y = cy + inner_r * @sin(ai1);
-                const inner2_x = cx + inner_r * @cos(ai2);
-                const inner2_y = cy + inner_r * @sin(ai2);
-
-                // Two triangles to form quad
-                ctx.fillTriangle(inner1_x, inner1_y, outer1_x, outer1_y, outer2_x, outer2_y, color);
-                ctx.fillTriangle(inner1_x, inner1_y, outer2_x, outer2_y, inner2_x, inner2_y, color);
+                // The inner arc steps differently, so the gap keeps its width.
+                const outer1 = arcPoint(cx, cy, outer_r, outer_start + fi * outer_step);
+                const outer2 = arcPoint(cx, cy, outer_r, outer_start + fi1 * outer_step);
+                const inner1 = arcPoint(cx, cy, inner_r, inner_start + fi * inner_step);
+                const inner2 = arcPoint(cx, cy, inner_r, inner_start + fi1 * inner_step);
+                painter.triangles(&.{ inner1, outer1, outer2, inner1, outer2, inner2 }, color);
             }
         } else {
             // Full pie slice: triangle fan from center
@@ -340,24 +317,24 @@ pub const PieChart = struct {
             while (i < segments) : (i += 1) {
                 const fi = @as(f32, @floatFromInt(i));
                 const fi1 = @as(f32, @floatFromInt(i + 1));
-
-                const a1 = outer_start + fi * outer_step;
-                const a2 = outer_start + fi1 * outer_step;
-
-                const x1 = cx + outer_r * @cos(a1);
-                const y1 = cy + outer_r * @sin(a1);
-                const x2 = cx + outer_r * @cos(a2);
-                const y2 = cy + outer_r * @sin(a2);
-
-                ctx.fillTriangle(cx, cy, x1, y1, x2, y2, color);
+                const point1 = arcPoint(cx, cy, outer_r, outer_start + fi * outer_step);
+                const point2 = arcPoint(cx, cy, outer_r, outer_start + fi1 * outer_step);
+                painter.triangles(&.{ .{ cx, cy }, point1, point2 }, color);
             }
         }
+    }
+
+    /// The point at `angle` on the circle of `radius` around (cx, cy).
+    fn arcPoint(cx: f32, cy: f32, radius: f32, angle: f32) [2]f32 {
+        std.debug.assert(radius >= 0);
+        std.debug.assert(!std.math.isNan(angle));
+        return .{ cx + radius * @cos(angle), cy + radius * @sin(angle) };
     }
 
     /// Draw labels for pie slices.
     fn drawLabels(
         self: *const PieChart,
-        ctx: *DrawContext,
+        painter: *Painter,
         cx: f32,
         cy: f32,
         outer_radius: f32,
@@ -397,7 +374,7 @@ pub const PieChart = struct {
                 .outside => Color.hex(0x666666),
                 .none => Color.white,
             };
-            ctx.fillCircleAdaptive(label_x, label_y, 3, marker_color);
+            painter.circle(.{ label_x, label_y }, 3, marker_color);
 
             current_angle += slice_angle;
         }

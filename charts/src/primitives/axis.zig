@@ -5,17 +5,19 @@
 //! works with both LinearScale and BandScale.
 
 const std = @import("std");
-const gooey = @import("gooey");
 const constants = @import("../constants.zig");
 const util = @import("../util.zig");
 const scale_mod = @import("scale.zig");
+const ChartTheme = @import("../theme.zig").ChartTheme;
 
 const LinearScale = scale_mod.LinearScale;
 const BandScale = scale_mod.BandScale;
 const Scale = scale_mod.Scale;
 
-pub const Color = gooey.ui.Color;
-pub const DrawContext = gooey.ui.DrawContext;
+const paint = @import("../paint.zig");
+
+pub const Color = paint.Color;
+pub const Painter = paint.Painter;
 
 const MAX_TICKS = constants.MAX_TICKS;
 const MAX_LABEL_LENGTH = constants.MAX_LABEL_LENGTH;
@@ -49,9 +51,25 @@ pub const Axis = struct {
         font_size: f32 = 12.0,
     };
 
+    /// `opts` facing `orientation`, in the theme's axis and tick colours
+    /// when a chart theme is set.
+    pub fn themed(
+        opts: Options,
+        orientation: Orientation,
+        chart_theme: ?*const ChartTheme,
+    ) Options {
+        var result = opts;
+        result.orientation = orientation;
+        if (chart_theme) |theme| {
+            result.color = theme.axis_color;
+            result.label_color = theme.tick_color;
+        }
+        return result;
+    }
+
     /// Draw an axis for a linear scale.
     pub fn drawLinear(
-        ctx: *DrawContext,
+        painter: *Painter,
         s: LinearScale,
         x: f32,
         y: f32,
@@ -63,7 +81,7 @@ pub const Axis = struct {
 
         // Draw axis line
         if (opts.show_line) {
-            drawAxisLine(ctx, s.range_min, s.range_max, x, y, opts);
+            drawAxisLine(painter, s.range_min, s.range_max, x, y, opts);
         }
 
         // Generate and draw ticks
@@ -73,19 +91,19 @@ pub const Axis = struct {
 
             for (tick_values[0..tick_count]) |value| {
                 const pos = s.scale(value);
-                drawTickWithLabel(ctx, pos, value, x, y, opts);
+                drawTickWithLabel(painter, pos, value, x, y, opts);
             }
         }
 
         // Draw axis title if provided
         if (opts.label) |label| {
-            drawAxisTitle(ctx, label, s.range_min, s.range_max, x, y, opts);
+            drawAxisTitle(painter, label, s.range_min, s.range_max, x, y, opts);
         }
     }
 
     /// Draw an axis for a band scale.
     pub fn drawBand(
-        ctx: *DrawContext,
+        painter: *Painter,
         s: BandScale,
         x: f32,
         y: f32,
@@ -97,7 +115,7 @@ pub const Axis = struct {
 
         // Draw axis line
         if (opts.show_line) {
-            drawAxisLine(ctx, s.range_min, s.range_max, x, y, opts);
+            drawAxisLine(painter, s.range_min, s.range_max, x, y, opts);
         }
 
         // Draw tick for each category
@@ -106,21 +124,21 @@ pub const Axis = struct {
             while (i < s.label_count) : (i += 1) {
                 const pos = s.center(i);
                 const label = s.getLabel(i);
-                drawTickWithBandLabel(ctx, pos, label, x, y, opts);
+                drawTickWithBandLabel(painter, pos, label, x, y, opts);
             }
         }
 
         // Draw axis title if provided
         if (opts.label) |label| {
-            drawAxisTitle(ctx, label, s.range_min, s.range_max, x, y, opts);
+            drawAxisTitle(painter, label, s.range_min, s.range_max, x, y, opts);
         }
     }
 
     /// Draw axis for a Scale union type.
-    pub fn draw(ctx: *DrawContext, s: Scale, x: f32, y: f32, opts: Options) void {
+    pub fn draw(painter: *Painter, s: Scale, x: f32, y: f32, opts: Options) void {
         switch (s) {
-            .linear => |ls| drawLinear(ctx, ls, x, y, opts),
-            .band => |bs| drawBand(ctx, bs, x, y, opts),
+            .linear => |ls| drawLinear(painter, ls, x, y, opts),
+            .band => |bs| drawBand(painter, bs, x, y, opts),
         }
     }
 };
@@ -131,7 +149,7 @@ pub const Axis = struct {
 
 /// Draw the main axis line.
 fn drawAxisLine(
-    ctx: *DrawContext,
+    painter: *Painter,
     range_start: f32,
     range_end: f32,
     x: f32,
@@ -145,17 +163,17 @@ fn drawAxisLine(
 
     switch (opts.orientation) {
         .bottom, .top => {
-            ctx.strokeLine(start, y, end, y, opts.line_width, opts.color);
+            painter.line(.{ start, y }, .{ end, y }, opts.line_width, opts.color);
         },
         .left, .right => {
-            ctx.strokeLine(x, start, x, end, opts.line_width, opts.color);
+            painter.line(.{ x, start }, .{ x, end }, opts.line_width, opts.color);
         },
     }
 }
 
 /// Draw a tick mark and numeric label for linear scales.
 fn drawTickWithLabel(
-    ctx: *DrawContext,
+    painter: *Painter,
     pos: f32,
     value: f32,
     x: f32,
@@ -166,20 +184,20 @@ fn drawTickWithLabel(
 
     // Draw tick mark
     if (opts.show_ticks) {
-        drawTickMark(ctx, pos, x, y, opts);
+        drawTickMark(painter, pos, x, y, opts);
     }
 
     // Draw label
     if (opts.show_labels) {
         var buf: [MAX_LABEL_LENGTH]u8 = undefined;
         const label_text = util.formatNumber(value, &buf);
-        drawLabelText(ctx, label_text, pos, x, y, opts);
+        drawLabelText(painter, label_text, pos, x, y, opts);
     }
 }
 
 /// Draw a tick mark and text label for band scales.
 fn drawTickWithBandLabel(
-    ctx: *DrawContext,
+    painter: *Painter,
     pos: f32,
     label: []const u8,
     x: f32,
@@ -190,18 +208,18 @@ fn drawTickWithBandLabel(
 
     // Draw tick mark
     if (opts.show_ticks) {
-        drawTickMark(ctx, pos, x, y, opts);
+        drawTickMark(painter, pos, x, y, opts);
     }
 
     // Draw label
     if (opts.show_labels) {
-        drawLabelText(ctx, label, pos, x, y, opts);
+        drawLabelText(painter, label, pos, x, y, opts);
     }
 }
 
 /// Draw a single tick mark.
 fn drawTickMark(
-    ctx: *DrawContext,
+    painter: *Painter,
     pos: f32,
     x: f32,
     y: f32,
@@ -211,23 +229,23 @@ fn drawTickMark(
 
     switch (opts.orientation) {
         .bottom => {
-            ctx.strokeLine(pos, y, pos, y + size, opts.line_width, opts.color);
+            painter.line(.{ pos, y }, .{ pos, y + size }, opts.line_width, opts.color);
         },
         .top => {
-            ctx.strokeLine(pos, y, pos, y - size, opts.line_width, opts.color);
+            painter.line(.{ pos, y }, .{ pos, y - size }, opts.line_width, opts.color);
         },
         .left => {
-            ctx.strokeLine(x, pos, x - size, pos, opts.line_width, opts.color);
+            painter.line(.{ x, pos }, .{ x - size, pos }, opts.line_width, opts.color);
         },
         .right => {
-            ctx.strokeLine(x, pos, x + size, pos, opts.line_width, opts.color);
+            painter.line(.{ x, pos }, .{ x + size, pos }, opts.line_width, opts.color);
         },
     }
 }
 
 /// Draw label text at the appropriate position.
 fn drawLabelText(
-    ctx: *DrawContext,
+    painter: *Painter,
     text: []const u8,
     pos: f32,
     x: f32,
@@ -264,14 +282,12 @@ fn drawLabelText(
         },
     }
 
-    // Draw text using simple rectangle approximation (actual text rendering
-    // would use ctx.drawText when available)
-    drawTextSimple(ctx, text, label_x, label_y, opts.label_color, opts.font_size);
+    _ = paint.text(painter, text, label_x, label_y, opts.label_color, opts.font_size);
 }
 
 /// Draw axis title.
 fn drawAxisTitle(
-    ctx: *DrawContext,
+    painter: *Painter,
     title: []const u8,
     range_start: f32,
     range_end: f32,
@@ -309,22 +325,7 @@ fn drawAxisTitle(
         },
     }
 
-    drawTextSimple(ctx, title, title_x, title_y, opts.label_color, opts.font_size);
-}
-
-/// Render text using DrawContext.
-/// Uses real text rendering when TextSystem is available, otherwise
-/// falls back to placeholder rectangles for backwards compatibility.
-fn drawTextSimple(
-    ctx: *DrawContext,
-    text: []const u8,
-    x: f32,
-    y: f32,
-    color: Color,
-    font_size: f32,
-) void {
-    // Use DrawContext's drawText which handles TextSystem availability
-    _ = ctx.drawText(text, x, y, color, font_size);
+    _ = paint.text(painter, title, title_x, title_y, opts.label_color, opts.font_size);
 }
 
 // =============================================================================

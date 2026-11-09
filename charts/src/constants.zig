@@ -51,13 +51,6 @@ pub const DEFAULT_GRID_LINE_WIDTH: f32 = 1.0;
 // Performance Tuning
 // =============================================================================
 
-/// Enable render timing debug logs
-/// When true, warns if chart render exceeds 8ms budget
-pub const ENABLE_PERF_LOGGING: bool = false;
-
-/// Performance warning threshold in nanoseconds (8ms = 8_000_000ns)
-pub const PERF_WARNING_THRESHOLD_NS: i128 = 8_000_000;
-
 /// Level-of-detail threshold for large datasets
 /// Charts with more points than this use data decimation (LTTB algorithm)
 pub const LOD_THRESHOLD: u32 = 1000;
@@ -88,7 +81,6 @@ comptime {
     // Performance constants validation
     std.debug.assert(LOD_THRESHOLD > 0);
     std.debug.assert(LOD_THRESHOLD <= MAX_DATA_POINTS);
-    std.debug.assert(PERF_WARNING_THRESHOLD_NS > 0);
     std.debug.assert(MAX_AREA_POLYGON_VERTICES >= 4); // Minimum for a quad
 }
 
@@ -108,6 +100,5 @@ test "constants are valid" {
 
 test "performance constants are valid" {
     try std.testing.expect(LOD_THRESHOLD == 1000);
-    try std.testing.expect(PERF_WARNING_THRESHOLD_NS == 8_000_000);
     try std.testing.expect(MAX_AREA_POLYGON_VERTICES == MAX_DATA_POINTS * 2 + 2);
 }

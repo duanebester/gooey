@@ -23,9 +23,8 @@ pub const Axis = axis.Axis;
 pub const Grid = grid.Grid;
 pub const Legend = legend.Legend;
 
-// Re-export Color and DrawContext from axis (which imports from gooey)
 pub const Color = axis.Color;
-pub const DrawContext = axis.DrawContext;
+pub const Painter = axis.Painter;
 
 // =============================================================================
 // Tests

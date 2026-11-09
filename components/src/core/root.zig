@@ -1039,8 +1039,12 @@ pub const CodeEditor = struct {
     key: []const u8,
     bind: *[]const u8,
     placeholder: []const u8 = "",
-    width: f32 = 500,
-    rows: u16 = 10,
+    /// Null fills the parent's width, as 0.3.1's editor did.
+    width: ?f32 = 500,
+    /// Null fills the parent's height: the rows are what fit in the height
+    /// the editor was laid out at last frame, so a resized window reflows on
+    /// the next frame. Its first frame, before any layout, shows one row.
+    rows: ?u16 = 10,
     padding: f32 = 8,
     border_width: f32 = 1,
     show_line_numbers: bool = true,
@@ -1054,7 +1058,7 @@ pub const CodeEditor = struct {
 
     pub fn render(self: CodeEditor, cx: *Cx) void {
         assert(self.key.len > 0);
-        assert(self.rows > 0);
+        if (self.rows) |rows| assert(rows > 0);
         const theme = cx.theme();
         const key = Key{ .name = self.key };
         const id = cx.id(key);
@@ -1066,7 +1070,10 @@ pub const CodeEditor = struct {
         engine.indent = .{ .size = self.tab_size, .hard_tabs = self.use_hard_tabs };
         const gutter = if (self.show_line_numbers) self.gutter_width else 0;
         const line_height = cx.fontMetrics().line_height;
-        const viewport_height = line_height * @as(f32, @floatFromInt(self.rows));
+        const viewport_height = if (self.rows) |rows|
+            line_height * @as(f32, @floatFromInt(rows))
+        else
+            self.filledViewportHeight(cx, id, line_height);
         // The separator after the gutter is one pixel wide.
         const separator: f32 = if (gutter > 0) 1 else 0;
         engine.resolveClick(cx, .{
@@ -1082,7 +1089,8 @@ pub const CodeEditor = struct {
             .on_key = cx.on(EditorEngine.onKey, .{ .entity = handle }),
             .on_click = cx.on(EditorEngine.onClick, .{ .entity = handle }),
             .style = .{
-                .width = .{ .fixed = self.width },
+                .width = if (self.width) |width| .{ .fixed = width } else .{ .grow = 1 },
+                .height = if (self.rows == null) .{ .grow = 1 } else .fit,
                 .padding = .all(self.border_width),
                 .background = .surface,
                 .border = .{
@@ -1101,7 +1109,10 @@ pub const CodeEditor = struct {
             ui.box(.{ .style = .{
                 .direction = .row,
                 .width = .{ .grow = 1 },
-                .height = .{ .fixed = viewport_height + self.padding * 2 },
+                .height = if (self.rows == null)
+                    .{ .grow = 1 }
+                else
+                    .{ .fixed = viewport_height + self.padding * 2 },
             } }, .{
                 if (gutter > 0) ui.box(.{ .style = .{
                     .width = .{ .fixed = gutter },
@@ -1128,6 +1139,39 @@ pub const CodeEditor = struct {
             if (self.show_status_bar) separatorBox(.horizontal) else null,
             if (self.show_status_bar) StatusBar{ .editor = &self, .engine = engine } else null,
         }));
+    }
+
+    /// The text's height when filling: the editor's laid-out height last
+    /// frame less its border, padding, and status bar, in whole lines so no
+    /// row draws past the border. One line before the first layout.
+    ///
+    /// The box's own size never depends on its rows (it grows), so this
+    /// cannot oscillate. A build after a resize, or before any layout, reads
+    /// a stale height, so it asks for exactly one more render: the next
+    /// build reads the frame laid out at the new size and asks for none.
+    fn filledViewportHeight(
+        self: *const CodeEditor,
+        cx: *Cx,
+        id: core.ElementId,
+        line_height: f32,
+    ) f32 {
+        assert(self.rows == null);
+        assert(line_height > 0);
+        const window = cx.window;
+        const frame = window.rendered();
+        const stale = frame.viewport_width != window.width or
+            frame.viewport_height != window.height;
+        if (stale) cx.requestRenderAfter(0);
+        const bounds = for (frame.hits[0..frame.hit_count]) |*hit| {
+            if (hit.id == id) break hit.bounds;
+        } else {
+            if (!stale) cx.requestRenderAfter(0);
+            return line_height;
+        };
+        var chrome = self.border_width * 2 + self.padding * 2;
+        if (self.show_status_bar) chrome += self.status_bar_height + 1;
+        const lines = @floor(@max(0, bounds.height - chrome) / line_height);
+        return @max(1, lines) * line_height;
     }
 
     fn initEngine(engine: *EditorEngine) void {
