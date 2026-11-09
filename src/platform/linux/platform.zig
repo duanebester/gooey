@@ -290,21 +290,6 @@ pub const LinuxPlatform = struct {
 
     const Self = @This();
 
-    /// Platform capabilities for Linux/Wayland
-    pub const capabilities = interface_mod.PlatformCapabilities{
-        .high_dpi = true,
-        .gpu_accelerated = !linux_backend.uses_cpu_renderer,
-        .display_link = false, // Uses frame callbacks
-        .can_close_window = true,
-        .clipboard = true,
-        .file_dialogs = true, // Via XDG Desktop Portal
-        .ime = true,
-        .custom_cursors = true,
-        .window_drag_by_content = false,
-        .name = "Linux/Wayland",
-        .graphics_backend = if (linux_backend.uses_cpu_renderer) "CPU" else "Vulkan",
-    };
-
     // =========================================================================
     // Window Registry
     // =========================================================================

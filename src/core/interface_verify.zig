@@ -6,11 +6,10 @@
 //! declaration exists, not that its type matches, because the backends
 //! legitimately differ in signature (see `verifyRendererInterface`).
 //!
-//! This module does NOT cover the platform boundary. `Platform` and
-//! `PlatformWindow` are verified by `src/platform/contract.zig`, which checks
-//! complete function types rather than mere presence, and which each backend
-//! pins on itself from its own `mod.zig`. Adding a weaker duck-typed check
-//! beside it would form a second, drifting contract.
+//! This module does NOT cover the renderer the core draws through:
+//! `core/backend.zig` verifies that with complete function types
+//! (`platform/contract.zig`) rather than mere presence. Adding a weaker
+//! duck-typed check beside it would form a second, drifting contract.
 //!
 //! Usage in a backend file:
 //!   const interface_verify = @import("../../core/interface_verify.zig");

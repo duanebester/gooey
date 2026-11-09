@@ -6,10 +6,8 @@
 //! software cursor is drawn on top when a pointing device is attached, and the
 //! result is copied to the framebuffer by `Framebuffer.present`.
 //!
-//! Rendering is on demand, like the macOS backend: input, animations, and
-//! state changes call `requestRender`, views that change with the clock arm
-//! `requestRenderAfter`, and the platform loop presents at most once per
-//! `frame_period_ns_min`.
+//! The core host (`core_host.zig`) owns the loop: it routes input through
+//! `handleInput` and presents each frame it packs with `presentScene`.
 //!
 //! ## Memory (CLAUDE.md §2)
 //!
@@ -24,7 +22,6 @@ const geometry = @import("../../geometry/geometry.zig");
 const scene_mod = @import("../../scene/mod.zig");
 const text_mod = @import("../../text/mod.zig");
 const input = @import("../../input/events.zig");
-const core_clipboard = @import("../../core/clipboard.zig");
 const cpu = @import("../cpu/renderer.zig");
 const fbdev_platform = @import("platform.zig");
 const FbdevPlatform = fbdev_platform.FbdevPlatform;
@@ -39,66 +36,38 @@ pub const Window = struct {
     platform: *FbdevPlatform,
     window_id: WindowId = .invalid,
 
-    /// Logical size; contract-pinned field read directly by shared code.
+    /// Logical size: the panel at `scale_factor`.
     size: geometry.Size(f64),
-    /// Contract-pinned field read directly by shared code.
     scale_factor: f64,
 
     /// One frame in the renderer's pixel format, panel-sized.
     back_buffer: []u32,
 
-    background_color: geometry.Color,
-    dark_appearance: bool = false,
-    cursor_shape: interface_mod.CursorShape = .default,
     /// Draw a cursor: true when a mouse or tablet is attached.
     cursor_visible: bool,
-
-    needs_redraw: bool = true,
     closed: bool = false,
 
     mouse_x: f64 = 0,
     mouse_y: f64 = 0,
-    mouse_inside: bool = false,
 
-    scene: ?*const scene_mod.Scene = null,
     text_atlas: ?*const text_mod.Atlas = null,
     svg_atlas: ?*const text_mod.Atlas = null,
     image_atlas: ?*const text_mod.Atlas = null,
     renderer: cpu.Renderer,
-    /// Primitive counts of the last presented frame.
-    last_stats: cpu.RenderStats = .{},
-    /// Earliest time, on `platform.nowMilliseconds`, at which the loop
-    /// must request a frame. Frame-scoped like the Wayland window's: cleared
-    /// before application code builds a frame, which re-arms what it needs.
-    render_deadline_ms: ?i64 = null,
 
+    // Written only by the section of 0.3.1 calls below.
+    dark_appearance: bool = false,
+    needs_redraw: bool = true,
+    render_deadline_ms: ?i64 = null,
     title_buffer: [title_bytes_max]u8 = undefined,
     title_len: usize = 0,
 
-    // IME state. There is no input method without a display server, but the
-    // contract's composition bridge still stores what callers hand it.
-    marked_text_buffer: [ime_bytes_max]u8 = undefined,
-    marked_text_len: usize = 0,
-    ime_cursor_rect: geometry.RectF = .{
-        .origin = .{ .x = 0, .y = 0 },
-        .size = .{ .width = 1, .height = 20 },
-    },
-
     on_input: ?InputCallback = null,
-    on_render: ?RenderCallback = null,
-    on_close: ?CloseCallback = null,
-    on_resize: ?ResizeCallback = null,
-    on_post_input: ?PostInputCallback = null,
     user_data: ?*anyopaque = null,
 
     pub const InputCallback = *const fn (*Self, input.InputEvent) bool;
-    pub const RenderCallback = *const fn (*Self) void;
-    pub const CloseCallback = *const fn (*Self) bool;
-    pub const ResizeCallback = *const fn (*Self, f64, f64) void;
-    pub const PostInputCallback = *const fn (*Self) void;
 
     pub const title_bytes_max: usize = 255;
-    pub const ime_bytes_max: usize = 256;
 
     const Self = @This();
 
@@ -138,11 +107,9 @@ pub const Window = struct {
             .scale_factor = plat.scale_factor,
             .back_buffer = back_buffer,
             .renderer = undefined,
-            .background_color = options.background_color,
             .cursor_visible = plat.devices.hasPointer(),
             .mouse_x = plat.translator.pointer_x,
             .mouse_y = plat.translator.pointer_y,
-            .mouse_inside = plat.devices.hasPointer(),
         };
         self.setTitle(options.title);
 
@@ -181,19 +148,6 @@ pub const Window = struct {
         };
     }
 
-    /// Build, rasterize, and present one frame. Called by the platform loop.
-    pub fn renderFrame(self: *Self) void {
-        assert(self.needs_redraw);
-        assert(!self.closed);
-        // Cleared before application code runs so a render requested while
-        // building this frame (an animation step) schedules the next one.
-        self.needs_redraw = false;
-        self.render_deadline_ms = null;
-        if (self.on_render) |callback| callback(self);
-        if (self.closed) return;
-        self.presentScene(self.scene, self.getClearColor());
-    }
-
     /// Rasterize `scene` (or only `clear` without one) into the back buffer,
     /// draw the cursor over it, and copy the frame to the panel. The core
     /// host calls it as its presenter, and again when only the cursor moved.
@@ -207,7 +161,7 @@ pub const Window = struct {
                 .svg = self.svg_atlas,
                 .image = self.image_atlas,
             });
-            self.last_stats = self.renderer.draw(
+            _ = self.renderer.draw(
                 target,
                 frame_scene,
                 .{ .scale_factor = @floatCast(self.scale_factor) },
@@ -234,42 +188,30 @@ pub const Window = struct {
             },
             else => {},
         }
-        var handled = false;
-        if (self.on_input) |callback| handled = callback(self, event);
-        if (self.on_post_input) |callback| callback(self);
-        self.requestRender();
-        return handled;
+        const callback = self.on_input orelse return false;
+        return callback(self, event);
+    }
+
+    /// Records the close; the core host's loop ends at its next turn. Reached
+    /// from the platform's Ctrl+Q and Alt+F4 chords.
+    pub fn close(self: *Self) void {
+        if (self.closed) return;
+        self.closed = true;
+        assert(self.isClosed());
+    }
+
+    pub fn isClosed(self: *const Self) bool {
+        return self.closed;
     }
 
     // =========================================================================
-    // Geometry
+    // Calls from the 0.3.1 `context/window.zig` and `cx.zig`
     // =========================================================================
+    //
+    // The core never makes these calls. They stay only while those files
+    // compile, and go when phase 6 deletes them.
 
-    pub fn width(self: *const Self) u32 {
-        assert(self.size.width > 0);
-        return @intFromFloat(self.size.width);
-    }
-
-    pub fn height(self: *const Self) u32 {
-        assert(self.size.height > 0);
-        return @intFromFloat(self.size.height);
-    }
-
-    pub fn getSize(self: *const Self) geometry.Size(f64) {
-        return self.size;
-    }
-
-    pub fn getScaleFactor(self: *const Self) f64 {
-        assert(self.scale_factor > 0);
-        return self.scale_factor;
-    }
-
-    // =========================================================================
-    // Properties
-    // =========================================================================
-
-    /// Stored only: the panel has no title bar. Kept so the value remains
-    /// observable, as on the other backends.
+    /// Stored only: the panel has no title bar.
     pub fn setTitle(self: *Self, title: []const u8) void {
         assert(title.len <= title_bytes_max);
         const len = @min(title.len, title_bytes_max);
@@ -277,41 +219,9 @@ pub const Window = struct {
         self.title_len = len;
     }
 
-    pub fn setBackgroundColor(self: *Self, color: geometry.Color) void {
-        assert(color.a >= 0);
-        assert(color.a <= 1);
-        self.background_color = color;
-        self.requestRender();
-    }
-
     pub fn setAppearance(self: *Self, dark: bool) void {
         self.dark_appearance = dark;
         assert(self.dark_appearance == dark);
-    }
-
-    /// Stored only: the software cursor is always an arrow.
-    pub fn setCursorShape(self: *Self, shape: interface_mod.CursorShape) void {
-        self.cursor_shape = shape;
-        assert(self.cursor_shape == shape);
-    }
-
-    /// The surface is opaque, so a translucent color is drawn over black.
-    pub fn getClearColor(self: *const Self) geometry.Color {
-        assert(self.background_color.a >= 0);
-        assert(self.background_color.a <= 1);
-        return self.background_color;
-    }
-
-    pub fn getMousePosition(self: *const Self) geometry.Point(f64) {
-        return .{ .x = self.mouse_x, .y = self.mouse_y };
-    }
-
-    pub fn isMouseInside(self: *const Self) bool {
-        return self.mouse_inside;
-    }
-
-    pub fn getWindowId(self: *const Self) WindowId {
-        return self.window_id;
     }
 
     pub fn getPlatform(self: *Self) *FbdevPlatform {
@@ -319,18 +229,12 @@ pub const Window = struct {
         return self.platform;
     }
 
-    // =========================================================================
-    // Host control
-    // =========================================================================
-
     pub fn requestRender(self: *Self) void {
         if (self.closed) return;
         self.needs_redraw = true;
     }
 
-    /// Ask for a frame no later than `delay_ms` from now. Only the earliest
-    /// deadline is kept; the frame drawn at it re-arms whatever views still
-    /// depend on the clock (see `render_deadline_ms`).
+    /// Keeps only the earliest deadline.
     pub fn requestRenderAfter(self: *Self, delay_ms: u32) void {
         assert(delay_ms <= interface_mod.render_delay_ms_max);
         if (self.closed) return;
@@ -346,48 +250,9 @@ pub const Window = struct {
         assert(self.render_deadline_ms.? <= deadline_ms);
     }
 
-    /// Request the frame a passed deadline asked for. Called by the platform
-    /// loop once per turn.
-    pub fn fireRenderDeadline(self: *Self, now_ms: i64) void {
-        assert(now_ms >= 0);
-        const deadline_ms = self.render_deadline_ms orelse return;
-        if (now_ms < deadline_ms) return;
-        self.render_deadline_ms = null;
-        self.requestRender();
-        if (!self.closed) assert(self.needs_redraw);
-    }
-
-    /// The only window always has focus.
-    pub fn focus(self: *Self) void {
-        assert(!self.closed);
-        self.requestRender();
-    }
-
-    /// Runs the application's veto, then records the close. The owning `App`
-    /// reclaims the window from its loop-turn hook, and the platform loop
-    /// ends once no open window remains.
-    pub fn close(self: *Self) void {
-        if (self.closed) return;
-        if (self.on_close) |callback| {
-            if (!callback(self)) return;
-        }
-        self.closed = true;
-        self.needs_redraw = false;
-        self.render_deadline_ms = null;
-        assert(self.isClosed());
-    }
-
-    pub fn isClosed(self: *const Self) bool {
-        return self.closed;
-    }
-
     // =========================================================================
-    // Frame handoff
+    // Core host binding
     // =========================================================================
-
-    pub fn setScene(self: *Self, scene: *const scene_mod.Scene) void {
-        self.scene = scene;
-    }
 
     pub fn setTextAtlas(self: *Self, atlas: *const text_mod.Atlas) void {
         assert(atlas.format == .grayscale);
@@ -404,53 +269,8 @@ pub const Window = struct {
         self.image_atlas = atlas;
     }
 
-    // =========================================================================
-    // IME bridge
-    // =========================================================================
-
-    /// A longer composition is cut at a codepoint boundary, never inside a
-    /// UTF-8 sequence.
-    pub fn setMarkedText(self: *Self, text: []const u8) void {
-        const len = core_clipboard.prefixFitting(text, ime_bytes_max);
-        @memcpy(self.marked_text_buffer[0..len], text[0..len]);
-        self.marked_text_len = len;
-    }
-
-    pub fn clearMarkedText(self: *Self) void {
-        self.marked_text_len = 0;
-    }
-
-    pub fn hasMarkedText(self: *const Self) bool {
-        return self.marked_text_len > 0;
-    }
-
-    pub fn setImeCursorRect(self: *Self, x: f32, y: f32, w: f32, h: f32) void {
-        self.ime_cursor_rect = geometry.RectF.init(x, y, w, h);
-    }
-
-    // =========================================================================
-    // Callbacks
-    // =========================================================================
-
     pub fn setInputCallback(self: *Self, callback: ?InputCallback) void {
         self.on_input = callback;
-    }
-
-    pub fn setRenderCallback(self: *Self, callback: ?RenderCallback) void {
-        self.on_render = callback;
-    }
-
-    pub fn setCloseCallback(self: *Self, callback: ?CloseCallback) void {
-        self.on_close = callback;
-    }
-
-    /// Accepted for the contract; the panel never resizes.
-    pub fn setResizeCallback(self: *Self, callback: ?ResizeCallback) void {
-        self.on_resize = callback;
-    }
-
-    pub fn setPostInputCallback(self: *Self, callback: ?PostInputCallback) void {
-        self.on_post_input = callback;
     }
 
     pub fn setUserData(self: *Self, data: ?*anyopaque) void {

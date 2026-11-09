@@ -54,30 +54,6 @@ pub const MacPlatform = struct {
     /// Callback invoked once per iteration of the `run` loop.
     pub const LoopTurnCallback = *const fn (*Self) void;
 
-    /// Platform capabilities for macOS.
-    ///
-    /// The type annotation is stylistic — it names the type at a glance.
-    /// `contract.verifyConst` is satisfied either way; the un-annotated
-    /// `PlatformCapabilities{ ... }` form used by the Linux backend already
-    /// has the same `@TypeOf`.
-    pub const capabilities: interface_mod.PlatformCapabilities = .{
-        .high_dpi = true,
-        .gpu_accelerated = true,
-        .display_link = true,
-        .can_close_window = true,
-        .clipboard = true,
-        .file_dialogs = true,
-        .ime = true,
-        .custom_cursors = true,
-        // AppKit can do this (`-[NSWindow performWindowDragWithEvent:]`,
-        // `movableByWindowBackground`), but no Gooey code requests it and
-        // `PlatformWindow` exposes no drag entry point, so advertising it
-        // would promise a call that does not exist.
-        .window_drag_by_content = false,
-        .name = "macOS",
-        .graphics_backend = "Metal",
-    };
-
     /// Initialize in place at the caller's final address.
     ///
     /// Field-by-field rather than a struct literal: `MacPlatform` embeds the

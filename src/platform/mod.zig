@@ -10,10 +10,6 @@
 //!
 //! // Platform detection
 //! if (platform.is_wasm) { ... }
-//!
-//! // Capabilities
-//! const caps = platform.getCapabilities();
-//! if (caps.can_close_window) { ... }
 //! ```
 
 const std = @import("std");
@@ -25,7 +21,7 @@ const builtin = @import("builtin");
 
 pub const interface = @import("interface.zig");
 
-/// Exact compile-time verification of the platform boundary.
+/// Exact compile-time verification of backend signatures.
 pub const contract = @import("contract.zig");
 
 /// Render-thread mutex and the exclusion set that locks every window's.
@@ -41,14 +37,8 @@ pub const mutex = @import("mutex.zig");
 // split, and `architectural-cleanup-plan.md` §10 for the GPUI mapping where
 // `platform_window: PlatformWindow` is the adopted pattern.
 
-/// Platform capabilities
-pub const PlatformCapabilities = interface.PlatformCapabilities;
-
 /// Window creation options (platform-agnostic)
 pub const WindowOptions = interface.WindowOptions;
-
-/// How the selected backend's host hands control to Gooey.
-pub const DriveModel = interface.DriveModel;
 
 /// Cursor shapes selected by framework widgets.
 pub const CursorShape = interface.CursorShape;
@@ -107,12 +97,8 @@ else switch (builtin.os.tag) {
     else => @compileError("Unsupported platform: " ++ @tagName(builtin.os.tag)),
 };
 
-// Every backend namespace declares `Platform`, `PlatformWindow`, and
-// `drive_model`, and pins itself with `contract.verifyBackend`. Deriving the
-// public aliases from those canonical names — rather than switching on each
-// backend's own spelling (`MacPlatform`, `LinuxPlatform`, `WebPlatform`) —
-// means adding a backend cannot silently skip the contract, and the selection
-// logic does not have to know what any backend calls its own types.
+// Every backend namespace declares `Platform` and `PlatformWindow`, so the
+// aliases below do not have to know what any backend calls its own types.
 
 /// Where atlas pixels live for the selected renderer. The CPU renderer samples
 /// its atlases in place, so they are its textures; GPU renderers keep atlas
@@ -145,26 +131,6 @@ pub const Platform = backend.Platform;
 /// Named `PlatformWindow` so the framework wrapper can own the name `Window`
 /// without a `platform.Window` collision.
 pub const PlatformWindow = backend.PlatformWindow;
-
-/// Host drive model of the selected backend.
-///
-/// `blocking_event_loop` on macOS and Linux, `host_callback` on web. This is a
-/// comptime constant, so reading it costs nothing at runtime.
-///
-/// Its consumer is `runCx` in `src/runtime/runner.zig`, which guards every
-/// teardown `defer` on an ownership flag and, once `plat.run()` has returned,
-/// recomputes that flag from this value via `ownsTeardownAfterRun`:
-/// `blocking_event_loop` returns from `run` only after quit, so the frame tears
-/// everything down; `host_callback` returns immediately with the host still
-/// holding `&plat`, so teardown is suppressed and the host owns the state.
-/// `contract.verifyBackend` pins the type here and additionally requires
-/// `isRunning` on the `host_callback` arm, which is exactly what `runCx`
-/// samples to cross-check the handoff.
-///
-/// The `host_callback` arm keeps `runCx`'s heap state alive; it does not make
-/// `runCx` a usable entry point for a host-driven backend, because `plat` is a
-/// local of that frame. See `docs/platform_interface_design.md`, "Known gaps".
-pub const drive_model: DriveModel = backend.drive_model;
 
 /// DisplayLink for vsync (macOS only)
 pub const DisplayLink = if (is_macos)
@@ -236,12 +202,3 @@ pub const web = if (is_wasm) struct {
         }
     };
 };
-
-// =============================================================================
-// Helpers
-// =============================================================================
-
-/// Get the capabilities of the current platform.
-pub fn getCapabilities() PlatformCapabilities {
-    return Platform.capabilities;
-}
