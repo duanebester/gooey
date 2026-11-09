@@ -592,6 +592,28 @@ pub const Window = struct {
         return if (deadline == deadline_none) null else deadline;
     }
 
+    /// Queue one resize when the platform window's logical size or scale
+    /// differs from the core's. A host calls it once, after binding and
+    /// before the first build: the core starts at the app's configured size,
+    /// and the window may already differ (a tiling compositor's first
+    /// configure, AppKit fitting a window to the screen) with no later
+    /// resize to report it.
+    pub fn bindViewport(self: *Window, viewport: Frame.Viewport) void {
+        assert(self.phase == .idle);
+        assert(self.frame_number == 0);
+        assert(viewport.width > 0);
+        assert(viewport.height > 0);
+        assert(viewport.scale_factor > 0);
+        const same_size = viewport.width == self.width and viewport.height == self.height;
+        if (same_size and viewport.scale_factor == self.scale_factor) return;
+        self.queue.push(.{ .window = .{ .resized = .{
+            .width = viewport.width,
+            .height = viewport.height,
+            .scale_factor = viewport.scale_factor,
+        } } });
+        assert(self.queue.count > 0);
+    }
+
     pub fn rendered(self: *const Window) *const Frame {
         return &self.frames[self.built_index ^ 1];
     }

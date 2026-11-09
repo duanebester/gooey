@@ -276,6 +276,12 @@ pub const Host = struct {
         };
         // `syncIme` alone enables text-input-v3, while a field is focused.
         self.core.bindScreenReader(null, null);
+        // A tiling compositor's first configure may not match the app's size.
+        self.core.bindViewport(.{
+            .width = @floatCast(self.window.size.width),
+            .height = @floatCast(self.window.size.height),
+            .scale_factor = @floatCast(self.window.scale_factor),
+        });
         assert(self.window.core != null);
     }
 

@@ -3133,6 +3133,33 @@ fn todoResize(app: *todo.App, now: *u64, width: f32, height: f32) void {
     app.tick(now.*);
 }
 
+test "the first frame fits a window whose size changed before the host bound it" {
+    // Goal: a window resized before `bindCore` (AppKit fitting it to the
+    // screen, a tiling compositor's first configure) gets a first frame of
+    // its own size, not the app's configured 480x560. Methodology: bind the
+    // configured geometry and expect nothing queued, then a scale change
+    // alone and a size change alone, each queueing one resize; the first
+    // build must carry the window's viewport and lay Add out across it.
+    const app = try testing.allocator.create(todo.App);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    app.window.bindViewport(.{ .width = 480, .height = 560, .scale_factor = 1 });
+    try testing.expectEqual(@as(u32, 0), app.window.queue.count);
+    app.window.bindViewport(.{ .width = 480, .height = 560, .scale_factor = 2 });
+    try testing.expectEqual(@as(u32, 1), app.window.queue.count);
+    app.window.queue.clear();
+    app.window.bindViewport(.{ .width = 700, .height = 420, .scale_factor = 1 });
+    try testing.expectEqual(@as(u32, 1), app.window.queue.count);
+    app.tick(0);
+    const frame = app.window.rendered();
+    try testing.expectEqual(@as(u64, 1), frame.frame_number);
+    try testing.expectEqual(@as(f32, 700), frame.viewport_width);
+    try testing.expectEqual(@as(f32, 420), frame.viewport_height);
+    const add = todoButton(app, "Add").?;
+    try testing.expectApproxEqAbs(@as(f32, 700 - 24), add.x + add.width, 0.01);
+}
+
 test "todo keeps its header, footer, and Add in view at 20 items and narrow widths" {
     // Goal: the default example holds its layout past a screenful (SER9 saw
     // rows overlap the header from 8 items) and down to narrow windows (Add
