@@ -275,9 +275,6 @@ pub const Host = struct {
             .write = clipboardWrite,
         };
         // `syncIme` alone enables text-input-v3, while a field is focused.
-        // A keyboard enter during window creation may have enabled it.
-        self.window.platform.text_input_follows_keyboard = false;
-        self.window.disableIme();
         self.core.bindScreenReader(null, null);
         assert(self.window.core != null);
     }

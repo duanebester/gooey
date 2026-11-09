@@ -21,10 +21,6 @@ pub fn fixedToDouble(f: Fixed) f64 {
     return @as(f64, @floatFromInt(f)) / 256.0;
 }
 
-pub fn doubleToFixed(d: f64) Fixed {
-    return @intFromFloat(d * 256.0);
-}
-
 // =============================================================================
 // Opaque Handle Types
 // =============================================================================
@@ -34,7 +30,6 @@ pub const Registry = opaque {};
 pub const Callback = opaque {};
 pub const Compositor = opaque {};
 pub const Surface = opaque {};
-pub const Region = opaque {};
 pub const Buffer = opaque {};
 pub const ShmPool = opaque {};
 pub const Shm = opaque {};
@@ -43,15 +38,11 @@ pub const Pointer = opaque {};
 pub const Keyboard = opaque {};
 pub const Touch = opaque {};
 pub const Output = opaque {};
-pub const Subcompositor = opaque {};
-pub const Subsurface = opaque {};
 
 // XDG Shell types
 pub const XdgWmBase = opaque {};
 pub const XdgSurface = opaque {};
 pub const XdgToplevel = opaque {};
-pub const XdgPopup = opaque {};
-pub const XdgPositioner = opaque {};
 
 // XDG Decoration types
 pub const ZxdgDecorationManagerV1 = opaque {};
@@ -437,18 +428,6 @@ pub const XdgToplevelListener = extern struct {
     ) callconv(.c) void = null,
 };
 
-pub const XdgToplevelState = enum(u32) {
-    maximized = 1,
-    fullscreen = 2,
-    resizing = 3,
-    activated = 4,
-    tiled_left = 5,
-    tiled_right = 6,
-    tiled_top = 7,
-    tiled_bottom = 8,
-    suspended = 9,
-};
-
 // =============================================================================
 // XDG Decoration Listeners
 // =============================================================================
@@ -470,48 +449,6 @@ pub const ZxdgToplevelDecorationV1Mode = enum(u32) {
 // =============================================================================
 // Text Input V3 Protocol (IME Support)
 // =============================================================================
-
-/// Content hint flags for text input
-pub const ZwpTextInputV3ContentHint = packed struct(u32) {
-    completion: bool = false, // 0x1
-    spellcheck: bool = false, // 0x2
-    auto_capitalization: bool = false, // 0x4
-    lowercase: bool = false, // 0x8
-    uppercase: bool = false, // 0x10
-    titlecase: bool = false, // 0x20
-    hidden_text: bool = false, // 0x40
-    sensitive_data: bool = false, // 0x80
-    latin: bool = false, // 0x100
-    multiline: bool = false, // 0x200
-    _padding: u22 = 0,
-
-    pub const none: ZwpTextInputV3ContentHint = .{};
-    pub const default: ZwpTextInputV3ContentHint = .{ .completion = true, .spellcheck = true, .auto_capitalization = true };
-};
-
-/// Content purpose for text input
-pub const ZwpTextInputV3ContentPurpose = enum(u32) {
-    normal = 0,
-    alpha = 1,
-    digits = 2,
-    number = 3,
-    phone = 4,
-    url = 5,
-    email = 6,
-    name = 7,
-    password = 8,
-    pin = 9,
-    date = 10,
-    time = 11,
-    datetime = 12,
-    terminal = 13,
-};
-
-/// Change cause for text input done event
-pub const ZwpTextInputV3ChangeCause = enum(u32) {
-    input_method = 0,
-    other = 1,
-};
 
 /// Text input V3 listener for IME events
 pub const ZwpTextInputV3Listener = extern struct {
@@ -587,7 +524,6 @@ pub const Message = extern struct {
 // Display
 pub extern "wayland-client" fn wl_display_connect(name: ?[*:0]const u8) ?*Display;
 pub extern "wayland-client" fn wl_display_disconnect(display: *Display) void;
-pub extern "wayland-client" fn wl_display_dispatch(display: *Display) c_int;
 pub extern "wayland-client" fn wl_display_dispatch_pending(display: *Display) c_int;
 pub extern "wayland-client" fn wl_display_roundtrip(display: *Display) c_int;
 pub extern "wayland-client" fn wl_display_flush(display: *Display) c_int;
@@ -643,7 +579,6 @@ pub extern "wayland-client" fn wl_proxy_get_version(proxy: *anyopaque) u32;
 pub extern "wayland-client" var wl_registry_interface: Interface;
 pub extern "wayland-client" var wl_compositor_interface: Interface;
 pub extern "wayland-client" var wl_surface_interface: Interface;
-pub extern "wayland-client" var wl_region_interface: Interface;
 pub extern "wayland-client" var wl_callback_interface: Interface;
 pub extern "wayland-client" var wl_seat_interface: Interface;
 pub extern "wayland-client" var wl_pointer_interface: Interface;
@@ -862,66 +797,9 @@ pub const zwp_text_input_v3_interface: Interface = .{
 
 pub const MARSHAL_FLAG_DESTROY: u32 = 1;
 
-// Display operations
-pub fn displayConnect(name: ?[*:0]const u8) ?*Display {
-    return wl_display_connect(name);
-}
-
-pub fn displayDisconnect(display: *Display) void {
-    wl_display_disconnect(display);
-}
-
-pub fn displayDispatch(display: *Display) c_int {
-    return wl_display_dispatch(display);
-}
-
-pub fn displayDispatchPending(display: *Display) c_int {
-    return wl_display_dispatch_pending(display);
-}
-
-pub fn displayRoundtrip(display: *Display) c_int {
-    return wl_display_roundtrip(display);
-}
-
-pub fn displayFlush(display: *Display) c_int {
-    return wl_display_flush(display);
-}
-
-pub fn displayGetRegistry(display: *Display) ?*Registry {
-    return wl_display_get_registry(display);
-}
-
-pub fn displayGetFd(display: *Display) c_int {
-    return wl_display_get_fd(display);
-}
-
 // Interface accessors (for registryBind)
-pub fn getCompositorInterface() *const Interface {
-    return &wl_compositor_interface;
-}
-
-pub fn getXdgWmBaseInterface() *const Interface {
-    return &xdg_wm_base_interface;
-}
-
-pub fn getSeatInterface() *const Interface {
-    return &wl_seat_interface;
-}
-
 pub fn getOutputInterface() *const Interface {
     return &wl_output_interface;
-}
-
-pub fn getDecorationManagerInterface() *const Interface {
-    return &zxdg_decoration_manager_v1_interface;
-}
-
-pub fn getTextInputManagerV3Interface() *const Interface {
-    return &zwp_text_input_manager_v3_interface;
-}
-
-pub fn getTextInputV3Interface() *const Interface {
-    return &zwp_text_input_v3_interface;
 }
 
 // Registry operations
@@ -953,18 +831,6 @@ pub fn compositorCreateSurface(compositor: *Compositor) ?*Surface {
         @ptrCast(compositor),
         0, // WL_COMPOSITOR_CREATE_SURFACE
         &wl_surface_interface,
-        wl_proxy_get_version(@ptrCast(compositor)),
-        0,
-        @as(?*anyopaque, null),
-    );
-    return @ptrCast(@alignCast(result));
-}
-
-pub fn compositorCreateRegion(compositor: *Compositor) ?*Region {
-    const result = wl_proxy_marshal_flags(
-        @ptrCast(compositor),
-        1, // WL_COMPOSITOR_CREATE_REGION
-        &wl_region_interface,
         wl_proxy_get_version(@ptrCast(compositor)),
         0,
         @as(?*anyopaque, null),
@@ -1032,18 +898,6 @@ pub fn surfaceFrame(surface: *Surface) ?*Callback {
     return @ptrCast(@alignCast(result));
 }
 
-/// A null region marks the whole surface as possibly translucent.
-pub fn surfaceSetOpaqueRegion(surface: *Surface, region: ?*Region) void {
-    _ = wl_proxy_marshal_flags(
-        @ptrCast(surface),
-        @backingInt(SurfaceRequest.set_opaque_region),
-        null,
-        wl_proxy_get_version(@ptrCast(surface)),
-        0,
-        @as(?*anyopaque, @ptrCast(region)),
-    );
-}
-
 pub fn surfaceSetBufferScale(surface: *Surface, scale: i32) void {
     // The compositor raises the fatal `invalid_scale` protocol error for a scale below one.
     std.debug.assert(scale >= 1);
@@ -1099,18 +953,6 @@ pub fn viewporterGetViewport(viewporter: *WpViewporter, surface: *Surface) ?*WpV
     return @ptrCast(@alignCast(result));
 }
 
-/// Destroy viewporter
-pub fn viewporterDestroy(viewporter: *WpViewporter) void {
-    _ = wl_proxy_marshal_flags(
-        @ptrCast(viewporter),
-        0, // WP_VIEWPORTER_DESTROY
-        null,
-        wl_proxy_get_version(@ptrCast(viewporter)),
-        0,
-    );
-    wl_proxy_destroy(@ptrCast(viewporter));
-}
-
 /// Set the destination size of the viewport (in logical pixels)
 /// This is the size the surface will appear on screen
 pub fn viewportSetDestination(viewport: *WpViewport, width: i32, height: i32) void {
@@ -1120,22 +962,6 @@ pub fn viewportSetDestination(viewport: *WpViewport, width: i32, height: i32) vo
         null,
         wl_proxy_get_version(@ptrCast(viewport)),
         0,
-        width,
-        height,
-    );
-}
-
-/// Set the source rectangle of the viewport (in buffer coordinates, as wl_fixed)
-/// Use -1 for all values to use the entire buffer
-pub fn viewportSetSource(viewport: *WpViewport, x: Fixed, y: Fixed, width: Fixed, height: Fixed) void {
-    _ = wl_proxy_marshal_flags(
-        @ptrCast(viewport),
-        1, // WP_VIEWPORT_SET_SOURCE
-        null,
-        wl_proxy_get_version(@ptrCast(viewport)),
-        0,
-        x,
-        y,
         width,
         height,
     );
@@ -1263,31 +1089,6 @@ pub fn surfaceDamageBuffer(surface: *Surface, x: i32, y: i32, width: i32, height
         y,
         width,
         height,
-    );
-}
-
-// Region operations
-pub fn regionAdd(region: *Region, x: i32, y: i32, width: i32, height: i32) void {
-    _ = wl_proxy_marshal_flags(
-        @ptrCast(region),
-        1, // WL_REGION_ADD
-        null,
-        wl_proxy_get_version(@ptrCast(region)),
-        0,
-        x,
-        y,
-        width,
-        height,
-    );
-}
-
-pub fn regionDestroy(region: *Region) void {
-    _ = wl_proxy_marshal_flags(
-        @ptrCast(region),
-        0, // WL_REGION_DESTROY
-        null,
-        wl_proxy_get_version(@ptrCast(region)),
-        MARSHAL_FLAG_DESTROY,
     );
 }
 
@@ -1788,45 +1589,6 @@ pub fn zwpTextInputV3Disable(text_input: *ZwpTextInputV3) void {
         null,
         wl_proxy_get_version(@ptrCast(text_input)),
         0,
-    );
-}
-
-/// Set surrounding text for context
-pub fn zwpTextInputV3SetSurroundingText(text_input: *ZwpTextInputV3, text: [*:0]const u8, cursor: i32, anchor: i32) void {
-    _ = wl_proxy_marshal_flags(
-        @ptrCast(text_input),
-        3, // set_surrounding_text
-        null,
-        wl_proxy_get_version(@ptrCast(text_input)),
-        0,
-        text,
-        cursor,
-        anchor,
-    );
-}
-
-/// Set text change cause
-pub fn zwpTextInputV3SetTextChangeCause(text_input: *ZwpTextInputV3, cause: ZwpTextInputV3ChangeCause) void {
-    _ = wl_proxy_marshal_flags(
-        @ptrCast(text_input),
-        4, // set_text_change_cause
-        null,
-        wl_proxy_get_version(@ptrCast(text_input)),
-        0,
-        @backingInt(cause),
-    );
-}
-
-/// Set content type (hints and purpose)
-pub fn zwpTextInputV3SetContentType(text_input: *ZwpTextInputV3, hint: ZwpTextInputV3ContentHint, purpose: ZwpTextInputV3ContentPurpose) void {
-    _ = wl_proxy_marshal_flags(
-        @ptrCast(text_input),
-        5, // set_content_type
-        null,
-        wl_proxy_get_version(@ptrCast(text_input)),
-        0,
-        @as(u32, @bitCast(hint)),
-        @backingInt(purpose),
     );
 }
 
