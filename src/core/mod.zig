@@ -53,6 +53,7 @@ pub const EditorEngine = surface.EditorEngine;
 pub const ResourceLimits = surface.ResourceLimits;
 pub const FontLimits = surface.FontLimits;
 pub const FontSource = surface.FontSource;
+pub const animation = surface.animation;
 pub const internals = surface;
 
 // =============================================================================
