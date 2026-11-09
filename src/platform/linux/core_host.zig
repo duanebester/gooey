@@ -12,6 +12,11 @@
 //!   callback on a private event queue with each present and presents the
 //!   next frame only once that callback is done, or `frame_callback_timeout_ms`
 //!   has passed (a hidden surface's callback can be withheld indefinitely).
+//!   Presents are also at least `present_interval_ns` apart, three quarters
+//!   of the output's refresh period. SER9 (mutter 46) showed input followed
+//!   by an animation presenting three frames within 9 ms and then skipping
+//!   refreshes: a compositor waking from idle can answer a burst's first
+//!   callbacks early. The first present after idle still goes out at once.
 //!   After each present it schedules a main tick, which makes the frame
 //!   `rendered` and builds the next one if a render is pending.
 //!
@@ -60,6 +65,12 @@ const Outcome = core_events.Completion.Outcome;
 /// The longest the render thread waits for a frame callback before it
 /// presents anyway: the 20 Hz cadence the 0.3.1 loop uses for hidden windows.
 const frame_callback_timeout_ms: u32 = 50;
+
+/// The output refresh rates pacing honours, in millihertz as `wl_output`
+/// reports them; a mode outside is clamped. 20 Hz keeps the interval under
+/// the callback timeout.
+const refresh_rate_mhz_min: i32 = 20_000;
+const refresh_rate_mhz_max: i32 = 1_000_000;
 
 /// Bound on dispatch rounds before a thread may prepare to read. Each round
 /// empties the queue; more arrive only if another thread reads in between.
@@ -138,6 +149,9 @@ pub const Host = struct {
     /// A main tick is scheduled and has not started.
     tick_scheduled: std.atomic.Value(bool),
     stopping: std.atomic.Value(bool),
+    /// The shortest gap between presents, from the output's refresh rate.
+    /// The main thread, which receives `wl_output` modes, refreshes it.
+    present_interval_ns: std.atomic.Value(u64),
 
     // Main thread only.
     quit: bool,
@@ -150,6 +164,8 @@ pub const Host = struct {
     // Render thread only.
     frame_callback: ?*wayland.Callback,
     frame_callback_deadline_ns: u64,
+    /// When the last frame was presented; null before the first.
+    presented_ns: ?u64,
     /// The logical size and scale the swapchain and viewport were last set to.
     surface_width: u32,
     surface_height: u32,
@@ -180,12 +196,14 @@ pub const Host = struct {
         self.thread = null;
         self.tick_scheduled = .init(false);
         self.stopping = .init(false);
+        self.present_interval_ns = .init(presentIntervalNs(options.platform.refresh_rate_mhz));
         self.quit = false;
         self.ime_enabled = false;
         self.ime_rect = null;
         self.cursor = .default;
         self.frame_callback = null;
         self.frame_callback_deadline_ns = 0;
+        self.presented_ns = null;
         self.surface_width = self.window.width_px;
         self.surface_height = self.window.height_px;
         self.surface_scale = @floatCast(self.window.scale_factor);
@@ -330,6 +348,8 @@ pub const Host = struct {
         self.tick_main(self.app, self.nowNs());
         assert(self.core.phase == .idle);
         self.applyCursor();
+        const interval_ns = presentIntervalNs(self.platform.refresh_rate_mhz);
+        self.present_interval_ns.store(interval_ns, .release);
         if (self.core.quit_requested) {
             self.quit = true;
             return;
@@ -430,11 +450,22 @@ pub const Host = struct {
     // Render thread
     // =========================================================================
 
-    /// A frame is in flight and the compositor is ready for it.
+    /// A frame is in flight, the compositor is ready for it, and the last
+    /// present is at least `present_interval_ns` old.
     fn presentDue(self: *const Host) bool {
         if (!self.core.frame_in_flight.load(.acquire)) return false;
+        const now_ns = self.nowNs();
+        if (now_ns < self.pacedNs()) return false;
         if (self.frame_callback == null) return true;
-        return self.nowNs() >= self.frame_callback_deadline_ns;
+        return now_ns >= self.frame_callback_deadline_ns;
+    }
+
+    /// The earliest time the next present may go out.
+    fn pacedNs(self: *const Host) u64 {
+        const presented_ns = self.presented_ns orelse return 0;
+        const interval_ns = self.present_interval_ns.load(.acquire);
+        assert(interval_ns > 0);
+        return presented_ns + interval_ns;
     }
 
     /// Present the frame in flight with a frame callback on the same commit,
@@ -449,7 +480,9 @@ pub const Host = struct {
             _ = wayland.callbackAddListener(callback, &frame_callback_listener, self);
         }
         const timeout_ns = @as(u64, frame_callback_timeout_ms) * std.time.ns_per_ms;
-        self.frame_callback_deadline_ns = self.nowNs() + timeout_ns;
+        const now_ns = self.nowNs();
+        self.frame_callback_deadline_ns = now_ns + timeout_ns;
+        self.presented_ns = now_ns;
         // Vulkan's present commits the surface, and the callback with it.
         core_tick.presentBuilt(self.core);
         assert(!self.core.frame_in_flight.load(.acquire));
@@ -495,15 +528,16 @@ pub const Host = struct {
         return true;
     }
 
-    /// Sleep until the callback deadline while a frame waits on it, else
-    /// until woken.
+    /// While a frame waits, sleep until it may present: the pacing time,
+    /// or the callback deadline when a callback is outstanding (its arrival
+    /// wakes the poll sooner). Without a frame, sleep until woken.
     fn renderTimeoutMs(self: *const Host) i32 {
-        if (self.frame_callback == null) return -1;
         if (!self.core.frame_in_flight.load(.acquire)) return -1;
+        var wake_ns = self.pacedNs();
+        if (self.frame_callback != null) wake_ns = @max(wake_ns, self.frame_callback_deadline_ns);
         const now_ns = self.nowNs();
-        if (now_ns >= self.frame_callback_deadline_ns) return 0;
-        const remaining_ns = self.frame_callback_deadline_ns - now_ns;
-        const remaining_ms = std.math.divCeil(u64, remaining_ns, std.time.ns_per_ms) catch
+        if (now_ns >= wake_ns) return 0;
+        const remaining_ms = std.math.divCeil(u64, wake_ns - now_ns, std.time.ns_per_ms) catch
             unreachable; // The divisor is a non-zero constant.
         assert(remaining_ms <= frame_callback_timeout_ms);
         return @intCast(remaining_ms);
@@ -532,6 +566,20 @@ pub const Host = struct {
         window.renderer.resize(width, height, frame.scale_factor);
     }
 };
+
+/// Three quarters of the refresh period of an output refreshing at
+/// `refresh_rate_mhz`. A compositor that paces callbacks to its refresh
+/// answers each about one period after the last present, so this floor never
+/// delays it; it only spreads callbacks answered early.
+fn presentIntervalNs(refresh_rate_mhz: i32) u64 {
+    assert(refresh_rate_mhz > 0);
+    const rate_mhz = std.math.clamp(refresh_rate_mhz, refresh_rate_mhz_min, refresh_rate_mhz_max);
+    const period_ns = @divFloor(std.time.ns_per_s * 1000, @as(u64, @intCast(rate_mhz)));
+    const interval_ns = @divFloor(period_ns * 3, 4);
+    assert(interval_ns > 0);
+    assert(interval_ns < @as(u64, frame_callback_timeout_ms) * std.time.ns_per_ms);
+    return interval_ns;
+}
 
 fn renderThreadMain(host: *Host) void {
     while (!host.stopping.load(.acquire)) {
