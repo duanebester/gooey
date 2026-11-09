@@ -4,8 +4,6 @@
 //! This buffer stores the composing text that appears with underlines
 //! before the user commits their input (e.g., typing Chinese pinyin).
 
-const input = @import("../../input/events.zig");
-
 pub const BUFFER_SIZE = 256;
 
 /// Composition state from IME
@@ -21,10 +19,6 @@ pub const CompositionBuffer = extern struct {
     data: [BUFFER_SIZE]u8 = undefined,
 
     const Self = @This();
-
-    pub fn isActive(self: *const volatile Self) bool {
-        return self.active != 0;
-    }
 
     pub fn hasText(self: *const volatile Self) bool {
         return self.len > 0;
@@ -61,41 +55,4 @@ fn getCompositionBufferPtr() callconv(.c) [*]u8 {
 
 comptime {
     @export(&getCompositionBufferPtr, .{ .name = "getCompositionBufferPtr" });
-}
-
-const InputEvent = input.InputEvent;
-
-/// Process pending composition events
-pub fn processComposition(handler: *const fn (InputEvent) bool) bool {
-    const buf = @as(*volatile CompositionBuffer, &g_composition_buffer);
-    if (!buf.hasPending()) return false;
-
-    const text = buf.getText();
-    const event = InputEvent{ .composition = .{ .text = text } };
-    _ = handler(event);
-    buf.pending = 0;
-
-    return true;
-}
-
-test "composition end emits one empty event to clear retained preedit" {
-    // Browser cancellation/end is represented by pending + zero bytes. The
-    // event is consumed exactly once so model reconciliation can resume.
-    const Capture = struct {
-        var calls: u32 = 0;
-
-        fn handler(event: InputEvent) bool {
-            calls += 1;
-            return event.composition.text.len == 0;
-        }
-    };
-    const buf = @as(*volatile CompositionBuffer, &g_composition_buffer);
-    buf.clear();
-    defer buf.clear();
-    Capture.calls = 0;
-    buf.pending = 1;
-
-    try @import("std").testing.expect(processComposition(Capture.handler));
-    try @import("std").testing.expectEqual(@as(u32, 1), Capture.calls);
-    try @import("std").testing.expect(!processComposition(Capture.handler));
 }

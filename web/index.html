@@ -162,11 +162,8 @@
       const MOUSE_RING_SIZE = 32;
       let mouseRingPtr = 0;
 
-      // Current mouse state (for polling fallback and drag detection)
-      let mouseX = 0,
-        mouseY = 0,
-        mouseButtons = 0,
-        mouseInCanvas = false;
+      // Pressed buttons, for drag detection
+      let mouseButtons = 0;
 
       // Multi-click detection state
       let lastClickTime = 0;
@@ -243,8 +240,6 @@
         const y = e.clientY - rect.top;
 
         mouseButtons |= 1 << e.button;
-        mouseX = x;
-        mouseY = y;
 
         const count = getClickCount(x, y, performance.now());
         const modifiers = getModifiersFromEvent(e);
@@ -259,8 +254,6 @@
         const y = e.clientY - rect.top;
 
         mouseButtons &= ~(1 << e.button);
-        mouseX = x;
-        mouseY = y;
 
         const modifiers = getModifiersFromEvent(e);
         currentModifiers = modifiers;
@@ -272,9 +265,6 @@
         const rect = canvas.getBoundingClientRect();
         const x = e.clientX - rect.left;
         const y = e.clientY - rect.top;
-
-        mouseX = x;
-        mouseY = y;
 
         const modifiers = getModifiersFromEvent(e);
         currentModifiers = modifiers;
@@ -300,7 +290,6 @@
         const x = e.clientX - rect.left;
         const y = e.clientY - rect.top;
 
-        mouseInCanvas = true;
         const modifiers = getModifiersFromEvent(e);
 
         pushMouseEvent(4, 0, x, y, 0, modifiers); // 4 = mouse_entered
@@ -311,7 +300,6 @@
         const x = e.clientX - rect.left;
         const y = e.clientY - rect.top;
 
-        mouseInCanvas = false;
         mouseButtons = 0; // Clear buttons on leave
 
         const modifiers = getModifiersFromEvent(e);
@@ -1301,11 +1289,6 @@
 
         getFrameTime: () => performance.now(),
 
-        getMouseX: () => mouseX,
-        getMouseY: () => mouseY,
-        getMouseButtons: () => mouseButtons,
-        isMouseInCanvas: () => mouseInCanvas,
-
         getFontMetrics: (
           fontPtr,
           fontLen,
@@ -1666,113 +1649,6 @@
             ],
           });
           return allocHandle(handles.bindGroups, bindGroup);
-        },
-
-        // Request async image decode - JS decodes using createImageBitmap
-        // and calls back via onImageDecoded export when complete
-        requestImageDecode: (dataPtr, dataLen, requestId) => {
-          const memory = wasmInstance.exports.memory;
-          const bytes = new Uint8Array(memory.buffer, dataPtr, dataLen);
-          // Make a copy since memory might change during async operation
-          const bytesCopy = new Uint8Array(bytes);
-          const blob = new Blob([bytesCopy]);
-
-          createImageBitmap(blob)
-            .then((bitmap) => {
-              // Draw to canvas to get RGBA pixels
-              const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-              const ctx = canvas.getContext("2d");
-              ctx.drawImage(bitmap, 0, 0);
-              const imageData = ctx.getImageData(
-                0,
-                0,
-                bitmap.width,
-                bitmap.height,
-              );
-
-              // Allocate WASM memory and copy pixels
-              const pixelsLen = imageData.data.length;
-              const pixelsPtr = wasmInstance.exports.wasmAlloc(pixelsLen);
-              const dest = new Uint8Array(
-                wasmInstance.exports.memory.buffer,
-                pixelsPtr,
-                pixelsLen,
-              );
-              dest.set(imageData.data);
-
-              // Callback into WASM
-              wasmInstance.exports.onImageDecoded(
-                requestId,
-                bitmap.width,
-                bitmap.height,
-                pixelsPtr,
-                pixelsLen,
-              );
-
-              bitmap.close();
-            })
-            .catch((err) => {
-              console.error("[Gooey] Image decode failed:", err);
-              // Signal error with zero dimensions
-              wasmInstance.exports.onImageDecoded(requestId, 0, 0, 0, 0);
-            });
-        },
-
-        // Request async image fetch from URL - fetches and decodes using fetch + createImageBitmap
-        // and calls back via onImageDecoded export when complete
-        requestUrlFetch: (urlPtr, urlLen, requestId) => {
-          const memory = wasmInstance.exports.memory;
-          const urlBytes = new Uint8Array(memory.buffer, urlPtr, urlLen);
-          const url = new TextDecoder().decode(urlBytes);
-
-          fetch(url)
-            .then((response) => {
-              if (!response.ok) {
-                throw new Error(
-                  `HTTP ${response.status}: ${response.statusText}`,
-                );
-              }
-              return response.blob();
-            })
-            .then((blob) => createImageBitmap(blob))
-            .then((bitmap) => {
-              // Draw to canvas to get RGBA pixels
-              const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-              const ctx = canvas.getContext("2d");
-              ctx.drawImage(bitmap, 0, 0);
-              const imageData = ctx.getImageData(
-                0,
-                0,
-                bitmap.width,
-                bitmap.height,
-              );
-
-              // Allocate WASM memory and copy pixels
-              const pixelsLen = imageData.data.length;
-              const pixelsPtr = wasmInstance.exports.wasmAlloc(pixelsLen);
-              const dest = new Uint8Array(
-                wasmInstance.exports.memory.buffer,
-                pixelsPtr,
-                pixelsLen,
-              );
-              dest.set(imageData.data);
-
-              // Callback into WASM
-              wasmInstance.exports.onImageDecoded(
-                requestId,
-                bitmap.width,
-                bitmap.height,
-                pixelsPtr,
-                pixelsLen,
-              );
-
-              bitmap.close();
-            })
-            .catch((err) => {
-              console.error("[Gooey] URL fetch failed:", url, err);
-              // Signal error with zero dimensions
-              wasmInstance.exports.onImageDecoded(requestId, 0, 0, 0, 0);
-            });
         },
 
         // =================================================================
@@ -2165,140 +2041,6 @@
           navigator.clipboard.writeText(text).catch((err) => {
             console.warn("[Gooey] Clipboard write failed:", err);
           });
-        },
-
-        // =====================================================================
-        // File Dialog
-        // =====================================================================
-
-        // Hidden file input element (created on first use)
-        _fileInput: null,
-        _getFileInput() {
-          if (!this._fileInput) {
-            this._fileInput = document.createElement("input");
-            this._fileInput.type = "file";
-            this._fileInput.style.display = "none";
-            document.body.appendChild(this._fileInput);
-          }
-          return this._fileInput;
-        },
-
-        // Request file open dialog
-        requestFileDialog: (
-          requestId,
-          acceptPtr,
-          acceptLen,
-          multiple,
-          directories,
-        ) => {
-          const fileInput = env._getFileInput();
-
-          // Configure the input
-          const accept = acceptLen > 0 ? getString(acceptPtr, acceptLen) : "";
-          fileInput.accept = accept;
-          fileInput.multiple = multiple;
-
-          // Directory selection (Chrome/Edge only)
-          if (directories) {
-            fileInput.webkitdirectory = true;
-          } else {
-            fileInput.webkitdirectory = false;
-          }
-
-          // Handle file selection
-          fileInput.onchange = async () => {
-            const files = Array.from(fileInput.files);
-
-            if (files.length === 0) {
-              // User cancelled or selected nothing
-              wasmInstance.exports.onFileDialogCancelled(requestId);
-              fileInput.value = ""; // Reset for next use
-              return;
-            }
-
-            // Tell WASM how many files to expect
-            wasmInstance.exports.onFileDialogStart(requestId, files.length);
-
-            // Read each file and send to WASM
-            for (const file of files) {
-              try {
-                const arrayBuffer = await file.arrayBuffer();
-                const content = new Uint8Array(arrayBuffer);
-
-                // Allocate WASM memory for filename
-                const nameBytes = new TextEncoder().encode(file.name);
-                const namePtr = wasmInstance.exports.wasmFileAlloc(
-                  nameBytes.length,
-                );
-                if (namePtr === 0) {
-                  console.error(
-                    "[Gooey] Failed to allocate memory for filename",
-                  );
-                  continue;
-                }
-
-                // Allocate WASM memory for content
-                const contentPtr = wasmInstance.exports.wasmFileAlloc(
-                  content.length,
-                );
-                if (contentPtr === 0) {
-                  console.error(
-                    "[Gooey] Failed to allocate memory for file content",
-                  );
-                  continue;
-                }
-
-                // Copy data to WASM memory
-                const memory = new Uint8Array(
-                  wasmInstance.exports.memory.buffer,
-                );
-                memory.set(nameBytes, namePtr);
-                memory.set(content, contentPtr);
-
-                // Send file to WASM
-                wasmInstance.exports.onFileDialogFile(
-                  requestId,
-                  namePtr,
-                  nameBytes.length,
-                  contentPtr,
-                  content.length,
-                );
-              } catch (err) {
-                console.error("[Gooey] Error reading file:", file.name, err);
-              }
-            }
-
-            fileInput.value = ""; // Reset for next use
-          };
-
-          // Handle cancel (user closes dialog without selecting)
-          fileInput.oncancel = () => {
-            wasmInstance.exports.onFileDialogCancelled(requestId);
-            fileInput.value = "";
-          };
-
-          // Trigger the dialog
-          fileInput.click();
-        },
-
-        // Trigger file download (web "save" dialog)
-        promptSaveFile: (namePtr, nameLen, dataPtr, dataLen) => {
-          const filename = getString(namePtr, nameLen);
-          const memory = new Uint8Array(wasmInstance.exports.memory.buffer);
-          const data = memory.slice(dataPtr, dataPtr + dataLen);
-
-          const blob = new Blob([data], { type: "application/octet-stream" });
-          const url = URL.createObjectURL(blob);
-
-          const a = document.createElement("a");
-          a.href = url;
-          a.download = filename;
-          a.style.display = "none";
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-
-          URL.revokeObjectURL(url);
         },
       };
 

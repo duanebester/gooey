@@ -80,16 +80,3 @@ pub fn toInputEvent(raw: RawScrollEvent) InputEvent {
         },
     };
 }
-
-/// Process all pending scroll events
-pub fn processEvents(handler: *const fn (InputEvent) bool) u32 {
-    var processed: u32 = 0;
-
-    while (@as(*volatile ScrollEventRing, &g_scroll_ring).pop()) |raw| {
-        const event = toInputEvent(raw);
-        _ = handler(event);
-        processed += 1;
-    }
-
-    return processed;
-}

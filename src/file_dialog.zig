@@ -7,8 +7,8 @@
 //! - **Linux**: XDG Desktop Portal via D-Bus (blocking/modal)
 //! - **Windows**: Common Item Dialog, `IFileOpenDialog` / `IFileSaveDialog`
 //!   (blocking/modal)
-//! - **WASM**: Returns `null` — browsers cannot show blocking file dialogs.
-//!   Use `gooey.platform.web.file_dialog` for the async callback-based API.
+//! - **WASM**: Returns `null` — browsers cannot show blocking file dialogs,
+//!   and Gooey has no browser file dialog yet.
 //!
 //! ## Usage
 //!
@@ -72,8 +72,7 @@ else
 
 /// Whether the current platform supports synchronous (blocking) file dialogs.
 ///
-/// On WASM, this is `false` — use `gooey.platform.web.file_dialog` for the
-/// async callback-based API instead.
+/// On WASM, this is `false`: Gooey has no browser file dialog yet.
 pub const supported = has_native_backend;
 
 // =============================================================================
@@ -84,9 +83,6 @@ pub const supported = has_native_backend;
 ///
 /// Returns `null` if the user cancels, on error, or on unsupported platforms (WASM).
 /// Caller owns the returned `PathPromptResult` and must call `deinit()`.
-///
-/// **WASM note:** This always returns `null`. Use the async web file dialog API instead:
-/// `gooey.platform.web.file_dialog.openFilesAsync()`
 pub fn promptForPaths(
     allocator: std.mem.Allocator,
     options: PathPromptOptions,
@@ -107,9 +103,6 @@ pub fn promptForPaths(
 ///
 /// Returns `null` if the user cancels, on error, or on unsupported platforms (WASM).
 /// Caller owns the returned path slice and must free it with `allocator`.
-///
-/// **WASM note:** This always returns `null`. Use the web download API instead:
-/// `gooey.platform.web.file_dialog.saveFile(filename, data)`
 pub fn promptForNewPath(
     allocator: std.mem.Allocator,
     options: SavePromptOptions,
