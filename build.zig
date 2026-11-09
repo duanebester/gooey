@@ -1343,6 +1343,9 @@ fn addWindowsBuilds(
         .{ .name = "actions", .source = "src/examples/actions.zig" },
         .{ .name = "nested-overlay", .source = "src/examples/nested_overlay.zig" },
         .{ .name = "accessible-form", .source = "src/examples/accessible_form.zig" },
+        .{ .name = "virtual-list", .source = "src/examples/virtual_list_example.zig" },
+        .{ .name = "data-table", .source = "src/examples/data_table_example.zig" },
+        .{ .name = "images", .source = "src/examples/images.zig" },
         .{ .name = "dashboard", .source = "src/examples/dashboard.zig" },
     };
     for (examples) |example| {
