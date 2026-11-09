@@ -33,9 +33,6 @@ pub const window_delegate = @import("window_delegate.zig");
 // Metal renderer
 pub const metal = @import("metal/metal.zig");
 
-// Display synchronization
-pub const display_link = @import("display_link.zig");
-
 // System services
 pub const clipboard = @import("clipboard.zig");
 pub const file_dialog = @import("file_dialog.zig");
@@ -63,7 +60,6 @@ pub const PlatformWindow = window.Window;
 // Type aliases for convenience
 pub const MacPlatform = platform.MacPlatform;
 pub const Window = window.Window;
-pub const DisplayLink = display_link.DisplayLink;
 pub const Renderer = metal.Renderer;
 
 // Re-export shared contract types (from platform interface)

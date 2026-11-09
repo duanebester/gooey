@@ -1,24 +1,18 @@
-//! macOS Window implementation with vsync-synchronized rendering
-//!
-//! Simplified version without Entity/View system integration.
-//! Uses simple callbacks for rendering and input handling.
+//! macOS window: the NSWindow, its input view and Metal layer, and the
+//! bridge that turns AppKit callbacks into core queue events (see
+//! `CoreBinding`). The core host (`core_host.zig`) draws on its own render
+//! thread.
 
 const std = @import("std");
 const assert = std.debug.assert;
-const Mutex = @import("../mutex.zig").Mutex;
 const objc = @import("objc");
 const geometry = @import("../../geometry/geometry.zig");
-const scene_mod = @import("../../scene/mod.zig");
-const text_mod = @import("../../text/mod.zig");
-const Atlas = text_mod.Atlas;
 const platform = @import("platform.zig");
 const metal = @import("metal/metal.zig");
 const input_view = @import("input_view.zig");
 const input = @import("../../input/events.zig");
-const display_link = @import("display_link.zig");
 const appkit = @import("appkit.zig");
 const interface_mod = @import("../interface.zig");
-const WindowId = interface_mod.WindowId;
 const WindowOptions = interface_mod.WindowOptions;
 const core_events = @import("../../core/events.zig");
 const core_router = @import("../../core/router.zig");
@@ -28,8 +22,7 @@ const core_text_engine = @import("../../core/text_engine.zig");
 /// How a 0.4.0 core app drives this window (contract §9): the window pushes
 /// input and resizes into the core's queue and asks the host for a tick, and
 /// AppKit's synchronous questions (the IME rect, whether a key is claimed)
-/// go to the read-only query. No `on_input` or `on_render` callback and no
-/// CVDisplayLink run; the host's render thread draws.
+/// go to the read-only query. The host's render thread draws.
 pub const CoreBinding = struct {
     queue: *core_events.EventQueue,
     query: *const core_router.Query,
@@ -48,13 +41,11 @@ pub const title_bytes_max: usize = 255;
 
 const NSRect = appkit.NSRect;
 const NSSize = appkit.NSSize;
-const DisplayLink = display_link.DisplayLink;
 
 pub const Window = struct {
     allocator: std.mem.Allocator,
 
-    /// Owning platform. Retained so `deinit` can withdraw this window from the
-    /// registry without the caller having to remember the pairing.
+    /// Owning platform.
     plat: *platform.MacPlatform,
 
     /// Owned +1 from `alloc`/`init`, released once in `deinit`. AppKit's
@@ -67,7 +58,6 @@ pub const Window = struct {
     /// Borrowed: `+[CAMetalLayer layer]` is autoreleased and the view retains it.
     metal_layer: objc.Object,
     renderer: metal.Renderer,
-    display_link: ?DisplayLink,
     size: geometry.Size(f64),
     scale_factor: f64,
     /// NUL-terminated window title storage.
@@ -76,15 +66,9 @@ pub const Window = struct {
     /// so handing it a borrowed slice's `.ptr` would read past the end of any
     /// slice that is not incidentally terminated, and a caller passing a stack
     /// buffer would leave a borrowed field dangling. Owning fixed storage rules
-    /// out both, and matches Linux and the test backend.
+    /// out both, and matches Linux.
     title_buf: [title_bytes_max + 1]u8,
     title_len: u16,
-    background_color: geometry.Color,
-    needs_render: std.atomic.Value(bool),
-    scene: ?*const scene_mod.Scene,
-    text_atlas: ?*const Atlas = null,
-    svg_atlas: ?*const Atlas = null,
-    image_atlas: ?*const Atlas = null,
 
     /// Owned +1 from `window_delegate.create`, released once in `deinit`.
     delegate: ?objc.Object = null,
@@ -92,43 +76,9 @@ pub const Window = struct {
     /// `deinit` removes it from the view and releases this reference.
     tracking_area: ?objc.Object = null,
 
-    /// Unique identifier for this window in the platform's `WindowRegistry`.
-    /// Assigned by `init`; reset to `.invalid` by `deinit` so a second
-    /// teardown cannot unregister an ID that has since been reused.
-    window_id: WindowId = .invalid,
-
-    /// Set once the window has been closed, whether by `close()` or by the
-    /// user going through the AppKit delegate. Hosts poll this to drop their
-    /// reference without racing the delegate callback.
-    closed: bool = false,
-
-    /// Mutex protecting all render-related state accessed from DisplayLink thread.
-    /// This includes: scene, text_atlas, background_color, size, scale_factor, renderer.
-    /// Must be held when:
-    /// - DisplayLink callback reads scene/atlas for rendering
-    /// - Main thread modifies scene/atlas/size
-    render_mutex: Mutex = .{},
-
-    /// Flag indicating we're in a live resize operation.
-    /// During live resize, the main thread handles rendering synchronously,
-    /// and the DisplayLink callback should skip rendering entirely.
-    in_live_resize: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-
-    /// Flag indicating the DisplayLink callback is currently rendering.
-    /// Used to prevent the main thread from modifying state mid-render.
-    render_in_progress: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-
-    benchmark_mode: bool = true,
-
-    /// Current mouse position (updated on every mouse event)
-    mouse_position: geometry.Point(f64) = .{ .x = 0, .y = 0 },
-    /// Whether mouse is inside the window
-    mouse_inside: bool = false,
-    hovered_quad_index: ?usize = null,
-
     /// Last OS-level pointer icon applied via `NSCursor.set()`. Cached so
-    /// the per-frame `setCursorShape` call (see `runtime/frame.zig`) is a
-    /// no-op on the common case where the hovered element didn't change.
+    /// the host's `setCursorShape` call is a no-op when the hovered element
+    /// didn't change.
     cursor_shape: ?interface_mod.CursorShape = null,
 
     // IME (Input Method Editor) state
@@ -141,97 +91,19 @@ pub const Window = struct {
     /// `marked_length_utf16` as the core's rendered frame shows it, which
     /// lags `setMarkedText:` by a frame. The core host sets it.
     rendered_marked_length_utf16: c_ulong = 0,
-    pending_key_event: ?objc.c.id = null,
-    /// IME cursor rect in view coordinates (for candidate window positioning)
-    ime_cursor_rect: appkit.NSRect = .{
-        .origin = .{ .x = 0, .y = 0 },
-        .size = .{ .width = 1, .height = 20 },
-    },
-    /// NSProcessInfo activity token for preventing ProMotion throttling.
-    /// Owned +1 (explicit retain in `beginHighPerformanceActivity`).
-    activity_token: ?objc.Object = null,
-
-    // =========================================================================
-    // Simplified Callbacks
-    // =========================================================================
-
-    /// Called for input events. Return true if handled.
-    on_input: ?InputCallback = null,
-
-    /// Called each frame when rendering is needed.
-    /// Use this to rebuild your UI/scene before the frame is drawn.
-    on_render: ?RenderCallback = null,
 
     /// Called when window is about to close. Return false to prevent close.
     on_close: ?CloseCallback = null,
-
-    /// Called when window size changes.
-    on_resize: ?ResizeCallback = null,
-
-    /// Called after input handling completes and mutex is released.
-    /// Use this for operations that may run nested event loops (e.g., modal dialogs).
-    on_post_input: ?PostInputCallback = null,
-
-    /// User data pointer for callbacks
-    user_data: ?*anyopaque = null,
 
     /// Set when a 0.4.0 core app drives this window; see `CoreBinding`.
     core: ?CoreBinding = null,
 
     // =========================================================================
-    // Convenience accessors (so user code doesn't need to convert)
-    // =========================================================================
-
-    /// The color each frame clears to: the configured background color.
-    pub fn getClearColor(self: *const Self) geometry.Color {
-        return self.background_color;
-    }
-
-    pub fn setSvgAtlas(self: *Self, atlas: *const Atlas) void {
-        if (!self.render_in_progress.load(.acquire)) {
-            self.render_mutex.lock();
-            defer self.render_mutex.unlock();
-        }
-        self.svg_atlas = atlas;
-    }
-
-    pub fn setImageAtlas(self: *Self, atlas: *const Atlas) void {
-        if (!self.render_in_progress.load(.acquire)) {
-            self.render_mutex.lock();
-            defer self.render_mutex.unlock();
-        }
-        self.image_atlas = atlas;
-    }
-
-    /// Window width in logical pixels
-    pub fn width(self: *const Self) u32 {
-        return @intFromFloat(self.size.width);
-    }
-
-    /// Window height in logical pixels
-    pub fn height(self: *const Self) u32 {
-        return @intFromFloat(self.size.height);
-    }
-
-    // =========================================================================
     // Types
     // =========================================================================
 
-    /// Input callback: return true if the event was handled
-    pub const InputCallback = *const fn (*Window, input.InputEvent) bool;
-
-    /// Render callback: called each frame before drawing
-    pub const RenderCallback = *const fn (*Window) void;
-
     /// Close callback: called when window is about to close. Return false to prevent close.
     pub const CloseCallback = *const fn (*Window) bool;
-
-    /// Resize callback: called when window size changes
-    pub const ResizeCallback = *const fn (*Window, f64, f64) void;
-
-    /// Post-input callback: called after input handling with mutex released.
-    /// Safe for operations that run nested event loops (modal dialogs, etc).
-    pub const PostInputCallback = *const fn (*Window) void;
 
     const Self = @This();
 
@@ -248,14 +120,6 @@ pub const Window = struct {
         errdefer allocator.destroy(self);
 
         initFields(self, allocator, plat, options);
-
-        // Register before touching AppKit: the delegate and input view both
-        // capture `self`, and callbacks can fire during `center` below, so the
-        // window must already be addressable by ID at that point.
-        self.window_id = try plat.registerWindow(self);
-        errdefer plat.unregisterWindow(self.window_id);
-        assert(self.window_id.isValid());
-
         try self.createNSWindow(options);
 
         // Set delegate AFTER ns_view is created to prevent crashes from early delegate callbacks
@@ -282,21 +146,10 @@ pub const Window = struct {
             &options.limits,
         );
 
-        if (options.use_display_link) try self.startDisplayLink();
-
-        // Make window key and visible, then mark for initial render.
         self.ns_window.msgSend(void, "makeKeyAndOrderFront:", .{@as(?*anyopaque, null)});
-        self.requestRender();
 
-        // A newly ordered-front window claims focus. Every backend publishes
-        // this explicitly so the policy is one visible line per backend rather
-        // than an implicit "first window wins" buried in `WindowRegistry`, so
-        // every backend agrees about which window `getActiveWindowId` names.
-        plat.setActiveWindowId(self.window_id);
-
-        assert(!self.closed);
-        assert(self.plat.getWindow(self.window_id) != null);
-        assert(self.plat.getActiveWindowId().? == self.window_id);
+        assert(self.core == null);
+        assert(self.delegate != null);
         return self;
     }
 
@@ -324,7 +177,6 @@ pub const Window = struct {
             .ns_view = undefined,
             .metal_layer = undefined,
             .renderer = undefined,
-            .display_link = null,
             .size = geometry.Size(f64).init(options.width, options.height),
             .scale_factor = 1.0,
             // Zeroed rather than seeded from `options.title`: `init` calls
@@ -332,13 +184,10 @@ pub const Window = struct {
             // owns the copy and the NUL termination.
             .title_buf = @splat(0),
             .title_len = 0,
-            .background_color = options.background_color,
-            .needs_render = std.atomic.Value(bool).init(true),
-            .scene = null,
         };
 
-        assert(self.window_id == .invalid);
-        assert(!self.closed);
+        assert(self.core == null);
+        assert(self.on_close == null);
     }
 
     /// Create and configure the `NSWindow` and its content view.
@@ -404,131 +253,11 @@ pub const Window = struct {
         assert(self.ns_view.value != null);
     }
 
-    /// Start the CVDisplayLink that paces rendering to vsync.
-    fn startDisplayLink(self: *Self) !void {
-        assert(self.display_link == null);
-        assert(self.activity_token == null);
-
-        self.display_link = try DisplayLink.init();
-        errdefer {
-            self.display_link.?.deinit();
-            self.display_link = null;
-        }
-
-        try self.display_link.?.setCallback(displayLinkCallback, @ptrCast(self));
-        try self.display_link.?.start();
-
-        const refresh_rate = self.display_link.?.getRefreshRate();
-        std.debug.print("DisplayLink started at {d:.1}Hz\n", .{refresh_rate});
-
-        // macOS throttles ProMotion panels from 120Hz to 60Hz unless the
-        // process declares that it is latency sensitive.
-        self.activity_token = beginHighPerformanceActivity();
-        assert(self.display_link != null);
-    }
-
-    // =========================================================================
-    // Callback Setters
-    // =========================================================================
-
-    /// Set the input callback. `null` clears it.
-    pub fn setInputCallback(self: *Self, callback: ?InputCallback) void {
-        assert(self.window_id.isValid());
-        self.on_input = callback;
-        assert((self.on_input == null) == (callback == null));
-    }
-
-    /// Set the render callback. `null` clears it.
-    pub fn setRenderCallback(self: *Self, callback: ?RenderCallback) void {
-        assert(self.window_id.isValid());
-        self.on_render = callback;
-        assert((self.on_render == null) == (callback == null));
-    }
-
     /// Set the close callback. Return false from callback to prevent window close.
     pub fn setCloseCallback(self: *Self, callback: ?CloseCallback) void {
-        assert(self.window_id.isValid());
+        assert(self.ns_window.value != null);
         self.on_close = callback;
         assert((self.on_close == null) == (callback == null));
-    }
-
-    /// Set the resize callback. `null` clears it.
-    pub fn setResizeCallback(self: *Self, callback: ?ResizeCallback) void {
-        assert(self.window_id.isValid());
-        self.on_resize = callback;
-        assert((self.on_resize == null) == (callback == null));
-    }
-
-    /// Set the post-input callback (called after mutex is released). `null` clears it.
-    pub fn setPostInputCallback(self: *Self, callback: ?PostInputCallback) void {
-        assert(self.window_id.isValid());
-        self.on_post_input = callback;
-        assert((self.on_post_input == null) == (callback == null));
-    }
-
-    /// Set the user data pointer
-    pub fn setUserData(self: *Self, data: ?*anyopaque) void {
-        assert(self.window_id.isValid());
-        self.user_data = data;
-        assert((self.user_data == null) == (data == null));
-    }
-
-    /// Get user data pointer
-    pub fn getUserData(self: *Self, comptime T: type) ?*T {
-        if (self.user_data) |ptr| {
-            return @ptrCast(@alignCast(ptr));
-        }
-        return null;
-    }
-
-    // =========================================================================
-    // Scene Management
-    // =========================================================================
-
-    pub fn getHoveredQuad(self: *const Self) ?*const scene_mod.Quad {
-        const idx = self.hovered_quad_index orelse return null;
-        const s = self.scene orelse return null;
-        if (idx < s.quads.items.len) {
-            return &s.quads.items[idx];
-        }
-        return null;
-    }
-
-    /// Set the text atlas (thread-safe). The renderer consumes the atlases'
-    /// shared upload journal as this window, the key the framework registered.
-    pub fn setTextAtlas(self: *Self, atlas: *const Atlas) void {
-        // Only lock if we're not already in a render (which holds the lock)
-        if (!self.render_in_progress.load(.acquire)) {
-            self.render_mutex.lock();
-            defer self.render_mutex.unlock();
-        }
-        self.text_atlas = atlas;
-        self.renderer.bindAtlasUploads(atlas.uploads, @intFromPtr(self));
-    }
-
-    /// Set the scene (thread-safe)
-    pub fn setScene(self: *Self, s: *const scene_mod.Scene) void {
-        // Only lock if we're not already in a render (which holds the lock)
-        if (!self.render_in_progress.load(.acquire)) {
-            self.render_mutex.lock();
-            defer self.render_mutex.unlock();
-        }
-        self.scene = s;
-        self.requestRender();
-    }
-
-    pub fn getSize(self: *const Self) geometry.Size(f64) {
-        return self.size;
-    }
-
-    /// Backing scale factor of the display this window is on.
-    ///
-    /// `f64` across every backend, so no target narrows it to `f32` and
-    /// silently loses precision for shared callers.
-    pub fn getScaleFactor(self: *const Self) f64 {
-        assert(self.scale_factor > 0.0);
-        assert(self.scale_factor <= 8.0);
-        return self.scale_factor;
     }
 
     // =========================================================================
@@ -560,14 +289,6 @@ pub const Window = struct {
         self.marked_selection = .{ .location = 0, .length = 0 };
     }
 
-    /// Set the IME cursor rect (call from TextInput during render)
-    pub fn setImeCursorRect(self: *Self, x: f32, y: f32, w: f32, h: f32) void {
-        self.ime_cursor_rect = .{
-            .origin = .{ .x = @floatCast(x), .y = @floatCast(y) },
-            .size = .{ .width = @floatCast(w), .height = @floatCast(h) },
-        };
-    }
-
     /// Check if there's active IME composition
     pub fn hasMarkedText(self: *const Self) bool {
         return self.marked_text.len > 0;
@@ -576,42 +297,12 @@ pub const Window = struct {
     // =========================================================================
     // Input Handling
     // =========================================================================
+
+    /// Events that arrive before the core host binds are dropped: `init`
+    /// shows the window before `bindCore`, and nothing can consume them yet.
     pub fn handleInput(self: *Self, event: input.InputEvent) bool {
-        // Track mouse position
-        switch (event) {
-            .mouse_down, .mouse_up, .mouse_moved, .mouse_dragged => |m| {
-                self.mouse_position = m.position;
-            },
-            .mouse_entered => |m| {
-                self.mouse_position = m.position;
-                self.mouse_inside = true;
-            },
-            .mouse_exited => |m| {
-                self.mouse_position = m.position;
-                self.mouse_inside = false;
-            },
-            else => {},
-        }
-        if (self.core) |binding| return pushCoreInput(binding, event, self.hasMarkedText());
-
-        var handled = false;
-        if (self.on_input) |callback| {
-            // Acquire render mutex to safely access layout/scene data.
-            // The input callback may query layout bounds or scene state (e.g., for hit testing).
-            // Without this lock, the DisplayLink thread could be mid-render, mutating
-            // layout/scene data while we read it, causing torn reads or crashes.
-            self.render_mutex.lock();
-            handled = callback(self, event);
-            self.render_mutex.unlock();
-
-            // Call post-input callback AFTER mutex is released.
-            // This is safe for operations that run nested event loops (modal dialogs).
-            if (self.on_post_input) |post_callback| {
-                post_callback(self);
-            }
-        }
-        self.requestRender();
-        return handled;
+        const binding = self.core orelse return false;
+        return pushCoreInput(binding, event, self.hasMarkedText());
     }
 
     /// Queue `event` for the core's next drain. Only a key the keymap claims
@@ -636,82 +327,20 @@ pub const Window = struct {
     /// Bind a core app. Call once, before the host's render thread starts.
     pub fn bindCore(self: *Self, binding: CoreBinding) void {
         assert(self.core == null);
-        assert(self.display_link == null);
-        assert(self.on_input == null);
-        assert(self.on_render == null);
+        assert(self.ns_view.value != null);
         self.core = binding;
-    }
-
-    /// Get current mouse position
-    pub fn getMousePosition(self: *const Self) geometry.Point(f64) {
-        return self.mouse_position;
-    }
-
-    /// Check if mouse is inside window
-    pub fn isMouseInside(self: *const Self) bool {
-        return self.mouse_inside;
-    }
-
-    /// Get the unique identifier for this window.
-    pub fn getWindowId(self: *const Self) WindowId {
-        return self.window_id;
-    }
-
-    /// The platform that owns this window.
-    ///
-    /// Contract-pinned so shared code can reach the host without spelling a
-    /// per-backend field name — this backend stores it as `plat`, the others as
-    /// `platform`. See `contract.verifyWindowLifecycle`.
-    pub fn getPlatform(self: *Self) *platform.MacPlatform {
-        assert(@intFromPtr(self.plat) != 0);
-        return self.plat;
     }
 
     // =========================================================================
     // Window Lifecycle
     // =========================================================================
 
-    /// Tear down the window. Runs once, on the main thread, after the close
-    /// sequence, from the owning app's drain point (never inside this window's
-    /// own dispatch).
-    ///
-    /// Order matters: stop the vsync thread first so nothing can read the
-    /// window while it is dismantled, then free GPU resources, then release the
+    /// Tear down the window. Runs once, on the main thread, after the core
+    /// host's render thread has stopped: free GPU resources, then release the
     /// AppKit objects children-first, then free the Zig allocation.
     pub fn deinit(self: *Self) void {
         assert(self.ns_window.value != null);
         assert(self.ns_view.value != null);
-
-        // Withdraw from the registry first so nothing can look this window up
-        // while its AppKit objects are being torn down. `.invalid` afterwards
-        // makes a second `deinit` a no-op rather than a stale unregister.
-        if (self.window_id.isValid()) {
-            self.plat.unregisterWindow(self.window_id);
-            self.window_id = .invalid;
-        }
-        assert(!self.window_id.isValid());
-
-        self.closed = true;
-
-        // `CVDisplayLinkStop` returns only after an in-flight output callback
-        // has finished, and no callback starts afterwards (measured on macOS 26:
-        // a stop issued 50 ms into a 300 ms callback returned 246 ms later, with
-        // the callback done and none following). The callback holds
-        // `render_mutex` while rendering, so once the link is stopped the mutex
-        // must be free; a caller holding it here would have deadlocked the stop.
-        if (self.display_link) |*dl| {
-            dl.deinit();
-            self.display_link = null;
-        }
-        const render_mutex_free = self.render_mutex.tryLock();
-        assert(render_mutex_free);
-        if (render_mutex_free) self.render_mutex.unlock();
-
-        if (self.activity_token) |token| {
-            endHighPerformanceActivity(token);
-            self.activity_token = null;
-        }
-
         self.renderer.deinit();
         self.releaseAppKitObjects();
         self.allocator.destroy(self);
@@ -726,8 +355,8 @@ pub const Window = struct {
     /// back-pointers are cleared first: a late callback then finds no window
     /// and returns, instead of dereferencing the freed `Window`.
     fn releaseAppKitObjects(self: *Self) void {
-        assert(self.display_link == null); // The vsync thread can no longer reach us.
         assert(self.ns_window.value != null);
+        assert(self.ns_view.value != null);
         const nil: objc.Object = .{ .value = null };
 
         if (self.delegate) |d| {
@@ -757,8 +386,6 @@ pub const Window = struct {
 
     /// Called by delegate when window is resized
     pub fn handleResize(self: *Self) void {
-        const old_width = self.size.width;
-        const old_height = self.size.height;
         const bounds: NSRect = self.ns_view.msgSend(NSRect, "bounds", .{});
 
         const new_width = bounds.size.width;
@@ -777,60 +404,14 @@ pub const Window = struct {
             return;
         }
 
+        const size = geometry.Size(f64).init(new_width, new_height);
         if (self.core) |binding| {
-            self.resizeCore(binding, geometry.Size(f64).init(new_width, new_height), new_scale);
-            return;
-        }
-
-        // Acquire render mutex to safely modify size/scale while DisplayLink might be reading.
-        self.render_mutex.lock();
-        defer self.render_mutex.unlock();
-
-        // Mark rendering as in progress while the lock is held. The synchronous
-        // render below invokes the user's on_render callback, which calls back
-        // into setScene/setTextAtlas/etc. Those setters re-lock render_mutex
-        // unless this flag tells them the lock is already held. Without it the
-        // re-entrant lock attempt aborts an os_unfair_lock (recursive lock).
-        self.render_in_progress.store(true, .release);
-        defer self.render_in_progress.store(false, .release);
-
-        self.size.width = new_width;
-        self.size.height = new_height;
-        self.scale_factor = new_scale;
-
-        self.metal_layer.msgSend(void, "setContentsScale:", .{new_scale});
-
-        self.renderer.resize(geometry.Size(f64).init(
-            new_width,
-            new_height,
-        ), new_scale);
-
-        self.requestRender();
-
-        // Notify user of resize if size actually changed
-        const size_changed = (old_width != new_width or old_height != new_height);
-        if (size_changed) {
-            if (self.on_resize) |callback| {
-                callback(self, new_width, new_height);
-            }
-        }
-
-        // During live resize, render synchronously for smooth visuals
-        if (self.in_live_resize.load(.acquire)) {
-            const pool = objc.AutoreleasePool.init();
-            defer pool.deinit();
-
-            // Call render callback to update scene
-            if (self.on_render) |callback| {
-                callback(self);
-            }
-
-            // Atlas uploads are encoded by the render itself, ahead of its draws.
-            if (self.scene) |s| {
-                self.renderer.renderSceneSynchronous(s, self.getClearColor()) catch {};
-            } else {
-                self.renderer.clearSynchronous(self.getClearColor());
-            }
+            self.resizeCore(binding, size, new_scale);
+        } else {
+            // Before `bindCore`: record the geometry the host reads at bind.
+            self.size = size;
+            self.scale_factor = new_scale;
+            self.metal_layer.msgSend(void, "setContentsScale:", .{new_scale});
         }
     }
 
@@ -854,105 +435,9 @@ pub const Window = struct {
 
     /// Handle window close. Returns true if close should proceed, false to cancel.
     pub fn handleClose(self: *Self) bool {
-        // Call user callback first - they can prevent close by returning false
-        if (self.on_close) |callback| {
-            if (!callback(self)) {
-                return false; // User prevented close
-            }
-        }
-
-        // Proceed with close.
-        if (self.display_link) |*dl| {
-            dl.stop();
-        }
-        self.closed = true;
-        assert(self.isClosed());
+        assert(self.ns_window.value != null);
+        if (self.on_close) |callback| return callback(self);
         return true;
-    }
-
-    pub fn handleFocusChange(self: *Self, focused: bool) void {
-        _ = focused;
-        self.requestRender();
-    }
-
-    pub fn handleLiveResizeStart(self: *Self) void {
-        self.in_live_resize.store(true, .release);
-        // Presenting with a transaction ties presents to the main thread's
-        // commits; a core app presents from its render thread.
-        if (self.core != null) return;
-        self.metal_layer.msgSend(void, "setPresentsWithTransaction:", .{true});
-    }
-
-    pub fn handleLiveResizeEnd(self: *Self) void {
-        self.in_live_resize.store(false, .release);
-        if (self.core != null) return;
-        self.metal_layer.msgSend(void, "setPresentsWithTransaction:", .{false});
-        self.requestRender();
-    }
-
-    pub fn isInLiveResize(self: *const Self) bool {
-        return self.in_live_resize.load(.acquire);
-    }
-
-    // =========================================================================
-    // Window Operations
-    // =========================================================================
-
-    /// Focus this window (bring to front and make key window).
-    ///
-    /// Makes this window the key window and orders it to the front.
-    pub fn focus(self: *Self) void {
-        self.ns_window.msgSend(void, "makeKeyAndOrderFront:", .{@as(?*anyopaque, null)});
-    }
-
-    /// Close this window programmatically.
-    ///
-    /// Triggers the close callback if set, allowing it to cancel.
-    /// If close proceeds, the window is destroyed.
-    pub fn close(self: *Self) void {
-        assert(self.ns_window.value != null);
-        if (self.closed) return;
-
-        // `performClose:` routes through `windowShouldClose:`, so the close
-        // callback still gets to veto; `closed` is set by `handleClose` only
-        // once the veto has been declined.
-        self.ns_window.msgSend(void, "performClose:", .{@as(?*anyopaque, null)});
-    }
-
-    /// Whether this window has completed its close sequence.
-    pub fn isClosed(self: *const Self) bool {
-        assert(self.ns_window.value != null);
-        // A window that has not closed is still registered; unregistration
-        // happens only in `deinit`, which runs after the close sequence.
-        if (!self.closed) assert(self.window_id.isValid());
-        return self.closed;
-    }
-
-    // =========================================================================
-    // Rendering
-    // =========================================================================
-
-    /// Request a render on the next vsync
-    pub fn requestRender(self: *Self) void {
-        self.needs_render.store(true, .release);
-    }
-
-    /// Request a render no later than `delay_ms` from now.
-    ///
-    /// In `benchmark_mode` (the default) the display link presents every
-    /// vsync, so the next frame already meets any deadline and there is
-    /// nothing to arm. Outside it, rendering on the next vsync is early but
-    /// never late, so the request degrades to `requestRender` rather than
-    /// being dropped.
-    pub fn requestRenderAfter(self: *Self, delay_ms: u32) void {
-        std.debug.assert(delay_ms <= interface_mod.render_delay_ms_max);
-
-        if (!self.benchmark_mode) self.requestRender();
-    }
-
-    /// Manual render (for when display link is disabled)
-    pub fn render(self: *Self) void {
-        self.renderer.clear(self.getClearColor());
     }
 
     pub fn setTitle(self: *Self, new_title: []const u8) void {
@@ -985,45 +470,12 @@ pub const Window = struct {
         self.ns_window.msgSend(void, "setTitle:", .{ns_title});
     }
 
-    /// Current window title, borrowed from the window's own storage.
-    pub fn title(self: *const Self) []const u8 {
-        assert(self.title_len <= title_bytes_max);
-        return self.title_buf[0..self.title_len];
-    }
-
-    pub fn setBackgroundColor(self: *Self, color: geometry.Color) void {
-        self.background_color = color;
-        self.requestRender();
-    }
-
-    /// Set the window appearance (light or dark mode)
-    /// This affects the titlebar text color and other system UI elements
-    pub fn setAppearance(self: *Self, dark: bool) void {
-        const NSAppearance = objc.getClass("NSAppearance") orelse return;
-        const NSString = objc.getClass("NSString") orelse return;
-
-        // NSAppearanceNameAqua for light, NSAppearanceNameDarkAqua for dark
-        // Create NSString from null-terminated C string literal
-        const appearance_name: [*:0]const u8 =
-            if (dark) "NSAppearanceNameDarkAqua" else "NSAppearanceNameAqua";
-        const ns_name = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{appearance_name});
-        const appearance_ptr =
-            NSAppearance.msgSend(?*anyopaque, "appearanceNamed:", .{ns_name.value});
-
-        if (appearance_ptr) |ptr| {
-            const appearance = objc.Object.fromId(ptr);
-            self.ns_window.msgSend(void, "setAppearance:", .{appearance.value});
-        }
-    }
-
-    /// Set the OS-level mouse pointer icon (not the text-caret drawn by
-    /// `TextInput`/`TextArea` — see `interface.CursorShape`).
+    /// Set the OS-level mouse pointer icon (not the text caret the text
+    /// engines draw; see `interface.CursorShape`).
     ///
     /// `NSCursor.set()` pushes onto a stack rather than replacing outright,
-    /// but since Gooey calls this once per frame with the fully-resolved
-    /// shape (mirroring the Linux/`wp_cursor_shape_manager_v1` path in
-    /// `runtime/frame.zig::updateCursorShape`), there is never more than
-    /// one Gooey-owned cursor pushed at a time.
+    /// but the core host calls this with the fully resolved shape whenever it
+    /// changes, so there is never more than one Gooey-owned cursor pushed.
     pub fn setCursorShape(self: *Self, shape: interface_mod.CursorShape) void {
         std.debug.assert(self.ns_window.value != null);
         std.debug.assert(self.ns_view.value != null);
@@ -1041,6 +493,49 @@ pub const Window = struct {
 
         cursor.msgSend(void, "set", .{});
         self.cursor_shape = shape;
+    }
+
+    // =========================================================================
+    // Calls from the 0.3.1 `context/window.zig`
+    // =========================================================================
+    //
+    // The core never makes these calls. They stay only while that file
+    // compiles, and go when phase 6 deletes it.
+
+    pub fn getPlatform(self: *Self) *platform.MacPlatform {
+        assert(@intFromPtr(self.plat) != 0);
+        return self.plat;
+    }
+
+    /// Nothing to request: the core host schedules its own ticks and frames.
+    pub fn requestRender(self: *Self) void {
+        assert(self.ns_window.value != null);
+    }
+
+    pub fn requestRenderAfter(self: *Self, delay_ms: u32) void {
+        assert(self.ns_window.value != null);
+        assert(delay_ms <= interface_mod.render_delay_ms_max);
+    }
+
+    /// Set the window appearance (light or dark mode)
+    /// This affects the titlebar text color and other system UI elements
+    pub fn setAppearance(self: *Self, dark: bool) void {
+        assert(self.ns_window.value != null);
+        const NSAppearance = objc.getClass("NSAppearance") orelse return;
+        const NSString = objc.getClass("NSString") orelse return;
+
+        // NSAppearanceNameAqua for light, NSAppearanceNameDarkAqua for dark
+        // Create NSString from null-terminated C string literal
+        const appearance_name: [*:0]const u8 =
+            if (dark) "NSAppearanceNameDarkAqua" else "NSAppearanceNameAqua";
+        const ns_name = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{appearance_name});
+        const appearance_ptr =
+            NSAppearance.msgSend(?*anyopaque, "appearanceNamed:", .{ns_name.value});
+
+        if (appearance_ptr) |ptr| {
+            const appearance = objc.Object.fromId(ptr);
+            self.ns_window.msgSend(void, "setAppearance:", .{appearance.value});
+        }
     }
 
     // =========================================================================
@@ -1095,171 +590,4 @@ pub const Window = struct {
         };
         self.metal_layer.msgSend(void, "setDrawableSize:", .{drawable_size});
     }
-
-    // =========================================================================
-    // Renderer introspection
-    // =========================================================================
-
-    /// Get renderer capabilities.
-    pub fn getRendererCapabilities(self: *const Self) interface_mod.RendererCapabilities {
-        assert(self.renderer.device.value != null);
-        // One sample per pixel; edges are anti-aliased analytically.
-        comptime assert(metal.pipelines.sample_count == 1);
-        return .{
-            .max_texture_size = 4096, // Could query from Metal device
-            .msaa = false,
-            .msaa_sample_count = metal.pipelines.sample_count,
-            .unified_memory = self.renderer.unified_memory,
-            .name = "Metal",
-        };
-    }
 };
-
-// =============================================================================
-// Display Link Callback
-// =============================================================================
-
-/// CVDisplayLink callback - runs on high-priority background thread
-///
-/// THREAD SAFETY: This callback runs on a CVDisplayLink thread, NOT the main thread.
-/// All access to shared Window state must be synchronized via render_mutex.
-///
-/// The render_mutex protects: scene, text_atlas, size, scale_factor, background_color, renderer.
-/// The on_render callback is called WITH the lock held to prevent race conditions.
-fn displayLinkCallback(
-    dl: display_link.CVDisplayLinkRef,
-    in_now: *const display_link.CVTimeStamp,
-    in_output_time: *const display_link.CVTimeStamp,
-    flags_in: u64,
-    flags_out: *u64,
-    user_info: ?*anyopaque,
-) callconv(.c) display_link.CVReturn {
-    _ = dl;
-    _ = in_now;
-    _ = in_output_time;
-    _ = flags_in;
-    _ = flags_out;
-
-    const window: *Window = @ptrCast(@alignCast(user_info orelse return .success));
-
-    // Skip rendering during live resize
-    if (window.in_live_resize.load(.acquire)) {
-        return .success;
-    }
-
-    const explicit_render = window.needs_render.swap(false, .acq_rel);
-    // Atlas records another window (or an async image load) staged must reach
-    // this window's textures too, or the shared journal cannot retire them.
-    const should_render = window.benchmark_mode or explicit_render or
-        window.renderer.hasPendingAtlasUploads();
-
-    // DEBUG. CVDisplayLink callbacks run on a dedicated vsync thread that
-    // does not carry a `*Cx`/`Gooey`, so we reach for the single-threaded
-    // global `Io` here — same escape hatch as the render mutex (Phase 5
-    // option 3 in the migration doc). `std.Io` is a pair of pointers into
-    // a process-lifetime vtable, so there's no allocation or cost.
-    const static = struct {
-        var count: u32 = 0;
-        var last_print_ms: i64 = 0;
-    };
-    static.count += 1;
-    const dl_io = std.Io.Threaded.global_single_threaded.io();
-    const now_ms = std.Io.Timestamp.now(dl_io, .awake).toMilliseconds();
-    if (now_ms - static.last_print_ms > 1000) {
-        // Uncomment to trace callback rate:
-        // std.debug.print(
-        //     "DisplayLink callbacks/sec: {}, should_render: {}, explicit: {}\n",
-        //     .{ static.count, should_render, explicit_render },
-        // );
-        static.count = 0;
-        static.last_print_ms = now_ms;
-    }
-
-    if (!should_render) {
-        return .success;
-    }
-
-    const pool = objc.AutoreleasePool.init();
-    defer pool.deinit();
-
-    // Acquire render mutex for thread-safe access to all render state
-    window.render_mutex.lock();
-    defer window.render_mutex.unlock();
-
-    // Mark that rendering is in progress
-    window.render_in_progress.store(true, .release);
-    defer window.render_in_progress.store(false, .release);
-
-    // Call render callback to let user rebuild scene
-    // NOTE: This is called with the lock held, so the callback must not
-    // call any Window methods that also try to acquire the lock.
-    if (window.on_render) |callback| {
-        callback(window);
-    }
-
-    // Atlas uploads are encoded by the render itself, ahead of its draws.
-
-    if (window.scene) |s| {
-        const clear_color = window.getClearColor();
-        window.renderer.renderScene(s, clear_color) catch |err| {
-            std.debug.print("renderScene error: {}\n", .{err});
-            window.renderer.clear(clear_color);
-        };
-    } else {
-        window.renderer.clear(window.getClearColor());
-    }
-
-    return .success;
-}
-
-// =============================================================================
-// Helpers
-// =============================================================================
-
-// =============================================================================
-// High Performance Activity (prevents ProMotion throttling)
-// =============================================================================
-
-/// Begin a high-performance activity to prevent macOS from throttling
-/// the display refresh rate on ProMotion displays.
-fn beginHighPerformanceActivity() ?objc.Object {
-    const NSProcessInfo = objc.getClass("NSProcessInfo") orelse return null;
-    const process_info = NSProcessInfo.msgSend(objc.Object, "processInfo", .{});
-
-    // NSActivityLatencyCritical (0xFF00000000) | NSActivityUserInitiated (0x00FFFFFF)
-    // This combination tells macOS we need low-latency, high-priority rendering
-    const activity_options: u64 = 0xFF00000000 | 0x00FFFFFF;
-
-    const NSString = objc.getClass("NSString") orelse return null;
-    const reason = NSString.msgSend(
-        objc.Object,
-        "stringWithUTF8String:",
-        .{@as([*:0]const u8, "High frame rate rendering")},
-    );
-
-    const token = process_info.msgSend(
-        objc.Object,
-        "beginActivityWithOptions:reason:",
-        .{ activity_options, reason }, // Pass `reason` directly, not `reason.value`
-    );
-
-    if (token.value == null) {
-        std.debug.print("WARNING: activity token null; ProMotion throttling not prevented\n", .{});
-        return null;
-    }
-
-    // Retain the token since it's returned autoreleased
-    _ = token.msgSend(objc.Object, "retain", .{});
-    std.debug.print("High-performance activity started (ProMotion throttle prevention)\n", .{});
-    return token;
-}
-
-/// End a high-performance activity and release the token's retain from
-/// `beginHighPerformanceActivity`.
-fn endHighPerformanceActivity(token: objc.Object) void {
-    assert(token.value != null);
-    const NSProcessInfo = objc.getClass("NSProcessInfo") orelse return;
-    const process_info = NSProcessInfo.msgSend(objc.Object, "processInfo", .{});
-    process_info.msgSend(void, "endActivity:", .{token.value});
-    token.release();
-}

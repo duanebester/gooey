@@ -88,7 +88,6 @@ pub fn run(comptime App: type, app: *App, backing: std.mem.Allocator, io: std.Io
         .width = @floatFromInt(App.width),
         .height = @floatFromInt(App.height),
         .background_color = App.theme.bg,
-        .use_display_link = false,
         .limits = App.limits_reserved,
     });
     defer window.deinit();
@@ -196,9 +195,7 @@ pub const Host = struct {
         const key = @intFromPtr(self.window);
         resources.registerAtlasConsumer(key);
         self.core.atlas_consumer_key = key;
-        self.window.setTextAtlas(resources.text_system.getAtlas());
-        self.window.setSvgAtlas(resources.svg_atlas.getAtlas());
-        self.window.setImageAtlas(resources.image_atlas.getAtlas());
+        self.window.renderer.bindAtlasUploads(resources.atlas_uploads, key);
         self.window.bindCore(.{
             .queue = &self.core.queue,
             .query = &self.query,

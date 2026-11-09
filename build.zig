@@ -1284,7 +1284,6 @@ pub fn linkSystemDeps(step: *std.Build.Step.Compile) void {
         mod.linkFramework("Metal", .{});
         mod.linkFramework("QuartzCore", .{});
         mod.linkFramework("CoreFoundation", .{});
-        mod.linkFramework("CoreVideo", .{});
         mod.linkFramework("CoreText", .{});
         mod.linkFramework("CoreGraphics", .{});
         mod.link_libc = true;
@@ -1845,7 +1844,6 @@ fn linkMacosFrameworks(mod: *std.Build.Module) void {
     mod.linkFramework("Metal", .{});
     mod.linkFramework("QuartzCore", .{});
     mod.linkFramework("CoreFoundation", .{});
-    mod.linkFramework("CoreVideo", .{});
     mod.linkFramework("CoreText", .{});
     mod.linkFramework("CoreGraphics", .{});
     mod.link_libc = true;
