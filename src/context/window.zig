@@ -61,7 +61,7 @@ else
             _ = args;
         }
     };
-const render_stats = @import("../debug/render_stats.zig");
+const render_stats = @import("../scene/render_stats.zig");
 
 // Accessibility (re-exported types only — owning subsystem lives in
 // `a11y_system.zig`).
@@ -153,12 +153,12 @@ const blur_handlers_mod = @import("blur_handlers.zig");
 const BlurHandlerRegistry = blur_handlers_mod.BlurHandlerRegistry;
 const cancel_registry_mod = @import("cancel_registry.zig");
 const CancelRegistry = cancel_registry_mod.CancelRegistry;
-const a11y_system_mod = @import("a11y_system.zig");
+const a11y_system_mod = @import("../core/a11y_system.zig");
 const A11ySystem = a11y_system_mod.A11ySystem;
 
 // Bundled rendering resources (text + svg + image) behind a single
 // ownership flag. See `app_resources.zig`.
-const app_resources_mod = @import("app_resources.zig");
+const app_resources_mod = @import("../core/app_resources.zig");
 const AppResources = app_resources_mod.AppResources;
 
 // Bundled per-window per-frame rendering state (scene + dispatch tree)

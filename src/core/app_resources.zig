@@ -26,7 +26,7 @@ const image_mod = @import("../image/mod.zig");
 const ImageAtlas = image_mod.ImageAtlas;
 
 const AtlasUploads = text_mod.AtlasUploads;
-const AtlasLimits = @import("../core/limits.zig").AtlasLimits;
+const AtlasLimits = @import("limits.zig").AtlasLimits;
 const platform = @import("../platform/mod.zig");
 
 /// Font configuration. Duplicated as a small POD struct so

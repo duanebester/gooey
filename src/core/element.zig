@@ -12,7 +12,7 @@ const handler_mod = @import("handler.zig");
 const layers = @import("layers.zig");
 const geometry = @import("../geometry/geometry.zig");
 const a11y_types = @import("../accessibility/types.zig");
-const ui_theme = @import("../ui/theme.zig");
+const ui_theme = @import("theme.zig");
 
 const assert = std.debug.assert;
 

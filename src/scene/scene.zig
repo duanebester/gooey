@@ -658,7 +658,7 @@ pub const Scene = struct {
     culling_enabled: bool,
 
     // Stats tracking (optional)
-    stats: ?*@import("../debug/render_stats.zig").RenderStats,
+    stats: ?*@import("render_stats.zig").RenderStats,
 
     const Self = @This();
 
@@ -1692,7 +1692,7 @@ pub const Scene = struct {
     }
 
     /// Attach stats tracker (optional)
-    pub fn setStats(self: *Self, stats: *@import("../debug/render_stats.zig").RenderStats) void {
+    pub fn setStats(self: *Self, stats: *@import("render_stats.zig").RenderStats) void {
         self.stats = stats;
     }
 };

@@ -33,7 +33,7 @@ pub const FontConfig = window.FontConfig;
 // subsystems (`TextSystem`, `SvgAtlas`, `ImageAtlas`) into one struct
 // with a single `owned: bool` discriminator.
 
-pub const app_resources = @import("app_resources.zig");
+pub const app_resources = @import("../core/app_resources.zig");
 pub const AppResources = app_resources.AppResources;
 
 // =============================================================================
@@ -110,7 +110,7 @@ pub const cancel_registry = @import("cancel_registry.zig");
 pub const CancelRegistry = cancel_registry.CancelRegistry;
 pub const MAX_CANCEL_GROUPS = cancel_registry.MAX_CANCEL_GROUPS;
 
-pub const a11y_system = @import("a11y_system.zig");
+pub const a11y_system = @import("../core/a11y_system.zig");
 pub const A11ySystem = a11y_system.A11ySystem;
 
 // Generic fixed-capacity slot map backing `BlurHandlerRegistry`,

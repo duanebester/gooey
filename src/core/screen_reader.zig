@@ -16,7 +16,7 @@
 
 const std = @import("std");
 const records = @import("records.zig");
-const A11ySystem = @import("../context/a11y_system.zig").A11ySystem;
+const A11ySystem = @import("a11y_system.zig").A11ySystem;
 const a11y = @import("../accessibility/accessibility.zig");
 
 const assert = std.debug.assert;
