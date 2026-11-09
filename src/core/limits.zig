@@ -422,8 +422,8 @@ pub const SceneLimits = struct {
     /// budget review); lucide-demo's 780 quads and 480 SVGs are on `large`.
     /// Geometry: dashboard needs 780 path vertices, 804 indices, 24 line points
     /// and 42 colored points, so the 4x cut (decision 3) still leaves at least
-    /// 20x; `platform/linux/tests/mesh_stress.zig` (an 8,192-point line, 4,096
-    /// points of each kind) runs on `large`. About 1.8 MiB per scene.
+    /// 20x; the 0.3.1 mesh stress test (an 8,192-point line, 4,096 points of
+    /// each kind) ran on `large`. About 1.8 MiB per scene.
     pub const standard: SceneLimits = .{
         .quad_count_frame_max = 4_096,
         .shadow_count_frame_max = 512,

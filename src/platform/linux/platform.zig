@@ -1,10 +1,10 @@
 //! LinuxPlatform - Platform implementation for Linux/Wayland
 //!
-//! Provides the main event loop and platform lifecycle for Linux systems
-//! using Wayland as the display server protocol.
+//! Owns the Wayland connection, its globals, and the seat's input devices,
+//! and routes their events to the active window. The core host
+//! (`core_host.zig`) runs the event loop on this connection.
 
 const std = @import("std");
-const posix = std.posix;
 const wayland = @import("wayland.zig");
 const interface_mod = @import("../interface.zig");
 const linux_window = @import("window.zig");
@@ -16,111 +16,6 @@ const linux_input = @import("input.zig");
 const input = @import("../../input/events.zig");
 const clipboard = @import("clipboard.zig");
 const linux_backend = @import("../linux_backend.zig");
-
-const HIDDEN_FRAME_POLL_MS: i32 = 50;
-
-/// Retries allowed for one `wl_display_flush` before the loop gives up for
-/// this iteration. A full write buffer is transient, so the next iteration
-/// retries; the bound exists because an unbounded retry is an unbounded
-/// stall inside a single frame (CLAUDE.md §4).
-const flush_attempts_max: u32 = 8;
-
-fn eventLoopPollTimeout(has_pending_work: bool, waiting_for_frame: bool, refresh_rate_mhz: i32) i32 {
-    std.debug.assert(refresh_rate_mhz > 0);
-    std.debug.assert(refresh_rate_mhz <= 1_000_000);
-    if (waiting_for_frame) return HIDDEN_FRAME_POLL_MS;
-    if (has_pending_work) return 0;
-
-    const frame_time_ms = @divFloor(@as(i32, 1_000_000), refresh_rate_mhz);
-    return @max(frame_time_ms, 1);
-}
-
-/// Shorten a poll timeout so the loop wakes no later than a timed redraw.
-///
-/// Separate from `eventLoopPollTimeout` because it is a pure clamp over that
-/// result: the deadline can only make the wait shorter, never longer, so the
-/// compositor-pacing decisions above stay exactly as they were. A deadline
-/// at or before `now_ms` is due, and the loop must not sleep at all.
-fn pollTimeoutUntilDeadline(timeout_ms: i32, render_deadline_ms: ?i64, now_ms: i64) i32 {
-    std.debug.assert(timeout_ms >= 0);
-    std.debug.assert(now_ms >= 0);
-
-    const deadline_ms = render_deadline_ms orelse return timeout_ms;
-    if (now_ms < deadline_ms) {
-        const wait_ms = deadline_ms - now_ms;
-        std.debug.assert(wait_ms > 0);
-        return @intCast(@min(wait_ms, timeout_ms));
-    } else {
-        return 0;
-    }
-}
-
-/// One window's contribution to the event loop's exit and pacing decision.
-///
-/// Sampled out of the window rather than read through it, so the fold below
-/// stays pure and is exercisable without a compositor connection.
-const WindowLoopState = struct {
-    /// The window has not recorded a close.
-    open: bool,
-    /// A redraw, continuous-render mode, or a pending resize is outstanding.
-    has_queued_work: bool,
-    /// A `wl_callback` is in flight, so the compositor is pacing this window.
-    waiting_for_frame: bool,
-    /// The window's armed timed redraw, on the `awakeTimeMs` clock.
-    render_deadline_ms: ?i64,
-};
-
-/// Aggregate of `WindowLoopState` over every registered window.
-const LoopState = struct {
-    open_count: u32,
-    has_pending_work: bool,
-    all_waiting_for_frame: bool,
-    /// Earliest timed redraw across open windows; the poll must wake by then.
-    render_deadline_ms: ?i64,
-};
-
-/// Fold per-window state into the event loop's exit and pacing decision.
-///
-/// `open_count` counts windows that have not recorded a close, *not* registry
-/// entries. A closed window stays registered until its owner reclaims it
-/// (`App.drainClosedWindows`), so counting entries would keep the loop alive
-/// waiting on a window that will never draw again.
-///
-/// `all_waiting_for_frame` is an AND, not an OR: one window idling on a
-/// `wl_callback` must not stop a sibling with queued work from being serviced
-/// this iteration. Only when every open window is paced by the compositor may
-/// the loop fall back to the timed wait. With a single window this reduces
-/// exactly to the previous `frame_callback != null` test.
-fn foldLoopState(windows: []const WindowLoopState) LoopState {
-    std.debug.assert(windows.len <= WindowRegistry.MAX_WINDOWS);
-
-    var open_count: u32 = 0;
-    var has_pending_work = false;
-    var all_waiting_for_frame = true;
-    var render_deadline_ms: ?i64 = null;
-
-    for (windows) |window| {
-        if (!window.open) continue;
-        open_count += 1;
-        if (window.has_queued_work) has_pending_work = true;
-        if (!window.waiting_for_frame) all_waiting_for_frame = false;
-        if (window.render_deadline_ms) |deadline_ms| {
-            const earliest_ms = render_deadline_ms orelse deadline_ms;
-            render_deadline_ms = @min(earliest_ms, deadline_ms);
-        }
-    }
-
-    std.debug.assert(open_count <= windows.len);
-    if (open_count == 0) std.debug.assert(!has_pending_work);
-    if (open_count == 0) std.debug.assert(render_deadline_ms == null);
-
-    return .{
-        .open_count = open_count,
-        .has_pending_work = has_pending_work,
-        .all_waiting_for_frame = all_waiting_for_frame,
-        .render_deadline_ms = render_deadline_ms,
-    };
-}
 
 // Static listeners - must persist for lifetime of Wayland objects
 const registry_listener = wayland.RegistryListener{
@@ -190,36 +85,14 @@ const text_input_listener = wayland.ZwpTextInputV3Listener{
 };
 
 pub const LinuxPlatform = struct {
-    /// The blocking `run()` loop is on the stack. Nothing else.
-    ///
-    /// Backs `isRunning`, whose meaning `platform/contract.zig` pins: false
-    /// after `initInPlace`, true from entry to `run`, false once `quit`
-    /// returns. Owned exclusively by `run` and `quit`; no other function
-    /// writes it.
+    /// Cleared only by `quit`, a 0.3.1 call kept while `context/window.zig`
+    /// compiles. The core host's loop ends when the window closes.
     running: bool = false,
-
-    /// The compositor connection can still carry traffic.
-    ///
-    /// Distinct from `running` because a caller may hand-roll its own loop out
-    /// of `poll`/`dispatch`/`dispatchWithTimeout` and never call `run` — those
-    /// helpers need "is the socket usable", and answering that with `running`
-    /// would refuse every dispatch to a caller who legitimately never started
-    /// the blocking loop.
-    ///
-    /// Not expressible as `display != null`: a fatal protocol error kills the
-    /// connection while the `wl_display` object is still allocated, and
-    /// `deinit` must have that pointer to destroy the proxies and call
-    /// `wl_display_disconnect`. Nulling `display` at the error site would leak
-    /// the connection, so liveness needs its own bit.
-    connection_alive: bool = false,
 
     display: ?*wayland.Display = null,
 
     /// Registry for tracking all windows by ID
     window_registry: WindowRegistry,
-
-    /// Allocator for platform resources
-    allocator: std.mem.Allocator,
 
     // Global Wayland objects
     registry: ?*wayland.Registry = null,
@@ -231,12 +104,9 @@ pub const LinuxPlatform = struct {
     keyboard: ?*wayland.Keyboard = null,
     touch: ?*wayland.Touch = null,
     text_input_manager: ?*wayland.ZwpTextInputManagerV3 = null,
+    /// Enabled by the core host only while a text field is focused, so keys
+    /// typed with no field focused never start a composition nothing receives.
     text_input: ?*wayland.ZwpTextInputV3 = null,
-    /// Enable text-input-v3 whenever the keyboard enters, as the 0.3.1
-    /// windows need. The core host clears it and enables the IME only while
-    /// a text field is focused, so keys typed with no field focused never
-    /// start a composition that nothing receives.
-    text_input_follows_keyboard: bool = true,
     viewporter: ?*wayland.WpViewporter = null,
     /// Shared-memory allocator for CPU-rendered frames. Bound on every build
     /// because it is a core global, but only `wayland_cpu` windows use it.
@@ -276,9 +146,6 @@ pub const LinuxPlatform = struct {
     // Scale factor from output
     scale_factor: i32 = 1,
 
-    /// Owner hook fired once per `run` iteration; see `setLoopTurnCallback`.
-    loop_turn_callback: ?LoopTurnCallback = null,
-
     // IME state (accumulated during event batch, applied on done). The strings
     // are copies: libwayland frees an event's string arguments when its
     // callback returns, and `textInputDone` arrives in a later callback.
@@ -311,32 +178,13 @@ pub const LinuxPlatform = struct {
         std.debug.assert(!self.window_registry.contains(id));
     }
 
-    /// Get a window by ID.
-    pub fn getWindow(self: *const Self, id: WindowId) ?*anyopaque {
-        return self.window_registry.get(id);
-    }
-
-    /// Wayland frames render on the main thread inside the event loop, so a
-    /// main-thread caller already excludes every frame; there is no lock.
-    pub fn lockRenderThreads(self: *Self) void {
-        std.debug.assert(self.window_registry.count() <= WindowRegistry.MAX_WINDOWS);
-    }
-
-    pub fn unlockRenderThreads(self: *Self) void {
-        std.debug.assert(self.window_registry.count() <= WindowRegistry.MAX_WINDOWS);
-    }
-
-    /// Get the active window ID.
-    pub fn getActiveWindowId(self: *const Self) ?WindowId {
-        return self.window_registry.getActiveWindow();
-    }
-
     /// Set the active window by ID.
     ///
     /// The `WindowId` is the single authority. Wayland pointer, keyboard, and
     /// IME dispatch all need the concrete `*LinuxWindow`, so the pointer is
     /// *derived* here rather than published separately: two setters would let
-    /// `getActiveWindowId()` name one window while every event went to another.
+    /// the registry's active id name one window while every event went to
+    /// another.
     pub fn setActiveWindowId(self: *Self, id: ?WindowId) void {
         self.window_registry.setActiveWindow(id);
         self.active_window = if (id) |window_id|
@@ -382,22 +230,6 @@ pub const LinuxPlatform = struct {
         std.debug.assert(scanned <= self.window_registry.count());
     }
 
-    /// Get the number of registered windows.
-    pub fn windowCount(self: *const Self) u32 {
-        return self.window_registry.count();
-    }
-
-    /// Callback invoked once per iteration of the `run` loop.
-    pub const LoopTurnCallback = *const fn (*Self) void;
-
-    /// Install the per-turn owner hook. `null` clears it.
-    ///
-    /// Contract-pinned; see the `LoopTurnCallback` note in
-    /// `platform/contract.zig` for why the owner needs this point at all.
-    pub fn setLoopTurnCallback(self: *Self, callback: ?LoopTurnCallback) void {
-        self.loop_turn_callback = callback;
-    }
-
     /// Initialize the platform against its final address.
     ///
     /// This cannot be a by-value `init`: `wl_registry_add_listener` and
@@ -411,7 +243,6 @@ pub const LinuxPlatform = struct {
 
         self.* = Self{
             .window_registry = WindowRegistry.init(allocator),
-            .allocator = allocator,
         };
 
         errdefer self.window_registry.deinit();
@@ -419,13 +250,11 @@ pub const LinuxPlatform = struct {
         self.display = wayland.wl_display_connect(null) orelse {
             return error.FailedToConnectToDisplay;
         };
-        self.connection_alive = true;
         errdefer {
             // Disconnecting also reclaims any globals bound during the
             // roundtrips below, so a failed bind needs no separate unwind.
             wayland.wl_display_disconnect(self.display.?);
             self.display = null;
-            self.connection_alive = false;
         }
 
         self.registry = wayland.wl_display_get_registry(self.display.?) orelse {
@@ -440,9 +269,6 @@ pub const LinuxPlatform = struct {
 
         std.debug.assert(self.compositor != null);
         std.debug.assert(self.xdg_wm_base != null);
-        // The contract requires a freshly initialized platform to report that
-        // no host loop has started yet, so `run` is the only thing that can
-        // make `isRunning` true.
         std.debug.assert(!self.running);
     }
 
@@ -481,19 +307,11 @@ pub const LinuxPlatform = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        // Teardown may not run underneath `run`: it frees the registry and the
-        // connection the loop is still reading. `run` clears `running` on
-        // every exit, so a live flag here means the caller reentered.
-        std.debug.assert(!self.running);
-
         // Clean up window registry
         self.window_registry.deinit();
 
         // Don't try to destroy Wayland objects if display is gone
-        if (self.display == null) {
-            self.connection_alive = false;
-            return;
-        }
+        if (self.display == null) return;
 
         // Destroy in reverse order of creation, flushing between major objects
         // Clipboard first (depends on seat and manager)
@@ -565,398 +383,6 @@ pub const LinuxPlatform = struct {
         // Disconnect last
         wayland.wl_display_disconnect(self.display.?);
         self.display = null;
-
-        self.connection_alive = false;
-    }
-
-    /// Run the platform event loop (blocking).
-    ///
-    /// Uses `poll()` rather than `wl_display_dispatch` so frame callbacks can
-    /// drive rendering at vsync rate without blocking on input.
-    ///
-    /// The loop lives while *any* registered window is open, and services
-    /// *every* open window. Rendering, pacing, and exiting from
-    /// `active_window` alone would mean a non-active window never draws and
-    /// closing the active one ends the process.
-    ///
-    /// `running` is raised *after* the display guard, not before it: with no
-    /// connection there is no loop, and a host that samples `isRunning` would
-    /// otherwise be told a loop was live for the rest of the process. The
-    /// `defer` pairs with the raise so every exit — quit, last window closed,
-    /// connection death — leaves `running` false.
-    pub fn run(self: *Self) void {
-        const display = self.display orelse return;
-        const fd = wayland.displayGetFd(display);
-        std.debug.assert(self.window_registry.count() <= WindowRegistry.MAX_WINDOWS);
-        std.debug.assert(!self.running);
-
-        self.running = true;
-        defer self.running = false;
-
-        var pollfds_buf: [8]posix.pollfd = undefined;
-
-        while (self.running) {
-            pollfds_buf[0] = .{ .fd = fd, .events = posix.POLL.IN, .revents = 0 };
-            const pollfds = pollfds_buf[0..1];
-
-            // Give the owner its turn first, while no window callback is on
-            // the stack: `wl_display_dispatch` below is what runs them, and it
-            // has fully unwound by the time control returns here. A window the
-            // compositor or titlebar closed during the previous iteration is
-            // reclaimed now, which is also what lets the `open_count` test
-            // below see the registry shrink instead of counting a corpse.
-            //
-            // Before the exit test, not after: reclaiming the last window is
-            // exactly the case that ends the loop, and the owner may call
-            // `quit` from here.
-            if (self.loop_turn_callback) |on_turn| on_turn(self);
-            if (!self.running) break;
-
-            // With no open window there is no surface to present and no
-            // surface for the compositor to send events to, so no further
-            // iteration could observe a state change. Stopping here is not a
-            // quit policy: `App.checkQuitCondition` still owns that decision,
-            // and `quit()` remains the owner's way to stop the loop early.
-            if (self.collectLoopState().open_count == 0) break;
-
-            self.fireRenderDeadlines(linux_window.awakeTimeMs());
-            self.renderOpenWindows();
-
-            if (!self.flushDisplay(display, pollfds)) break;
-
-            // Dispatch events already in the queue before deciding how long to
-            // wait, so this iteration's pacing sees them.
-            if (wayland.wl_display_dispatch_pending(display) < 0) {
-                self.connection_alive = false;
-                break;
-            }
-
-            const timeout_ms = self.pollTimeout();
-            // A failed `poll` on the display fd leaves no way to learn when
-            // the socket is readable again, so treat it as connection death
-            // rather than retrying blind, exactly as a failed dispatch is.
-            const poll_result = posix.poll(pollfds, timeout_ms) catch {
-                self.connection_alive = false;
-                break;
-            };
-
-            if (poll_result > 0 and (pollfds[0].revents & posix.POLL.IN) != 0) {
-                if (wayland.wl_display_dispatch(display) < 0) {
-                    self.connection_alive = false;
-                    break;
-                }
-            }
-        }
-    }
-
-    /// How long the event loop may sleep in `poll` this iteration.
-    ///
-    /// Never spin while a frame callback is outstanding. Compositors can
-    /// withhold callbacks for hidden windows, so use the same 20Hz fallback
-    /// cadence as other Wayland clients while still waking immediately when a
-    /// visible surface receives its callback.
-    ///
-    /// On demand, an idle window has no callback in flight and nothing
-    /// queued, so the wait is clamped to the earliest timed redraw: the loop
-    /// wakes at its deadline, and the next iteration's `fireRenderDeadlines`
-    /// requests the frame.
-    fn pollTimeout(self: *const Self) i32 {
-        std.debug.assert(self.refresh_rate_mhz > 0);
-
-        const pacing = self.collectLoopState();
-        const timeout_ms = pollTimeoutUntilDeadline(
-            eventLoopPollTimeout(
-                pacing.has_pending_work,
-                pacing.all_waiting_for_frame,
-                self.refresh_rate_mhz,
-            ),
-            pacing.render_deadline_ms,
-            linux_window.awakeTimeMs(),
-        );
-
-        std.debug.assert(timeout_ms >= 0);
-        std.debug.assert(timeout_ms <= HIDDEN_FRAME_POLL_MS or !pacing.all_waiting_for_frame);
-        return timeout_ms;
-    }
-
-    /// Sample every registered window and fold the event loop's decision.
-    ///
-    /// Read-only, so iterating the registry map directly is safe here: nothing
-    /// in this pass can run application code and rehash it.
-    fn collectLoopState(self: *const Self) LoopState {
-        std.debug.assert(self.window_registry.count() <= WindowRegistry.MAX_WINDOWS);
-
-        var samples: [WindowRegistry.MAX_WINDOWS]WindowLoopState = undefined;
-        var found: u32 = 0;
-
-        var ids = self.window_registry.iterator();
-        while (ids.next()) |id| {
-            std.debug.assert(found < WindowRegistry.MAX_WINDOWS);
-            std.debug.assert(id.isValid());
-
-            const window = self.window_registry.getTyped(LinuxWindow, id.*) orelse continue;
-            samples[found] = .{
-                .open = !window.isClosed(),
-                .has_queued_work = window.needs_redraw or window.continuous_render or
-                    window.pending_resize or window.hasPendingAtlasUploads(),
-                .waiting_for_frame = window.frame_callback != null,
-                .render_deadline_ms = window.render_deadline_ms,
-            };
-            found += 1;
-        }
-
-        std.debug.assert(found <= self.window_registry.count());
-        return foldLoopState(samples[0..found]);
-    }
-
-    /// Request a frame for every open window whose timed redraw is due.
-    ///
-    /// `requestRender` runs no application code, so the registry cannot
-    /// rehash under this pass; ids are still snapshotted to match
-    /// `renderOpenWindows` and keep one iteration pattern for both.
-    fn fireRenderDeadlines(self: *Self, now_ms: i64) void {
-        std.debug.assert(now_ms >= 0);
-
-        var ids: [WindowRegistry.MAX_WINDOWS]WindowId = undefined;
-        const found = self.snapshotWindowIds(&ids);
-        std.debug.assert(found <= WindowRegistry.MAX_WINDOWS);
-
-        for (ids[0..found]) |id| {
-            std.debug.assert(id.isValid());
-
-            const window = self.window_registry.getTyped(LinuxWindow, id) orelse continue;
-            window.fireRenderDeadline(now_ms);
-        }
-    }
-
-    /// Present every open window the compositor is not already pacing.
-    ///
-    /// Render eagerly only when no compositor callback is pending: a redraw
-    /// requested during `frameCallback()` must stay queued until that
-    /// newly-scheduled callback fires, otherwise animation frames are
-    /// submitted twice per compositor tick.
-    ///
-    /// The window ids are copied out before any rendering starts. `renderFrame`
-    /// runs the application's render callback, which may open or close windows
-    /// and so rehash the registry's map; holding a live map iterator across
-    /// that would walk freed buckets. Each id is re-resolved immediately before
-    /// use, and `Window.deinit` unregisters before it frees, so a window
-    /// destroyed earlier in this very pass resolves to null instead of a
-    /// dangling pointer.
-    fn renderOpenWindows(self: *Self) void {
-        var ids: [WindowRegistry.MAX_WINDOWS]WindowId = undefined;
-        const found = self.snapshotWindowIds(&ids);
-        std.debug.assert(found <= WindowRegistry.MAX_WINDOWS);
-
-        for (ids[0..found]) |id| {
-            std.debug.assert(id.isValid());
-
-            const window = self.window_registry.getTyped(LinuxWindow, id) orelse continue;
-            if (window.isClosed()) continue;
-
-            // A bufferless surface may not receive its first callback, so
-            // bootstrap with one eager presentation. Every later frame is
-            // paced by the compositor callback already in flight.
-            if (window.frame_callback == null or !window.has_presented_frame) {
-                window.renderFrame();
-            }
-        }
-    }
-
-    /// Copy the ids of every registered window into caller storage.
-    ///
-    /// Returns the number written. Bounded by `MAX_WINDOWS`, which is also the
-    /// registry's own hard cap, so the destination can never overflow.
-    fn snapshotWindowIds(
-        self: *const Self,
-        out: *[WindowRegistry.MAX_WINDOWS]WindowId,
-    ) u32 {
-        std.debug.assert(self.window_registry.count() <= WindowRegistry.MAX_WINDOWS);
-
-        var found: u32 = 0;
-        var ids = self.window_registry.iterator();
-        while (ids.next()) |id| {
-            std.debug.assert(found < WindowRegistry.MAX_WINDOWS);
-            std.debug.assert(id.isValid());
-            out[found] = id.*;
-            found += 1;
-        }
-
-        std.debug.assert(found == self.window_registry.count());
-        return found;
-    }
-
-    /// Drain the outgoing request buffer before polling.
-    ///
-    /// Returns false only when the connection is gone, in which case
-    /// `connection_alive` is already cleared and the caller must leave the
-    /// loop. A full write
-    /// buffer (`EAGAIN`) is waited out up to `flush_attempts_max` times; giving
-    /// up after that returns true so the caller completes this iteration and
-    /// retries, rather than stalling inside one frame indefinitely.
-    fn flushDisplay(self: *Self, display: *wayland.Display, pollfds: []posix.pollfd) bool {
-        std.debug.assert(pollfds.len == 1);
-        std.debug.assert(pollfds[0].events == posix.POLL.IN);
-
-        var attempts: u32 = 0;
-        while (attempts < flush_attempts_max) : (attempts += 1) {
-            if (wayland.wl_display_flush(display) >= 0) return true;
-
-            // EAGAIN means the write buffer is full, so wait for writability
-            // (EAGAIN == EWOULDBLOCK on Linux). Anything else is fatal.
-            const errno_val = std.c._errno().*;
-            if (errno_val != @backingInt(posix.E.AGAIN)) {
-                self.connection_alive = false;
-                return false;
-            }
-
-            pollfds[0].events = posix.POLL.OUT;
-            _ = posix.poll(pollfds, -1) catch {
-                pollfds[0].events = posix.POLL.IN;
-                return true;
-            };
-            pollfds[0].events = posix.POLL.IN;
-        }
-
-        std.debug.assert(attempts == flush_attempts_max);
-        return true;
-    }
-
-    /// Run a single iteration of the event loop (non-blocking)
-    /// Dispatches any pending events already read from the socket.
-    ///
-    /// Gated on connection liveness, not on `running`: this is one of the
-    /// primitives a caller drives its own loop with instead of calling `run`,
-    /// so it must work while `isRunning` is false.
-    pub fn poll(self: *Self) bool {
-        if (!self.connection_alive) return false;
-        const display = self.display orelse return false;
-
-        // Flush outgoing requests
-        _ = wayland.wl_display_flush(display);
-
-        // Dispatch pending events (already in the queue)
-        if (wayland.wl_display_dispatch_pending(display) < 0) {
-            self.connection_alive = false;
-            return false;
-        }
-
-        return true;
-    }
-
-    /// Block and wait for events, then dispatch them.
-    ///
-    /// Returns false once the connection is gone. Like `poll`, independent of
-    /// `running` so a hand-rolled loop can use it without entering `run`.
-    pub fn dispatch(self: *Self) bool {
-        if (!self.connection_alive) return false;
-        const display = self.display orelse return false;
-
-        // This blocks until events are available
-        if (wayland.wl_display_dispatch(display) < 0) {
-            self.connection_alive = false;
-            return false;
-        }
-
-        return true;
-    }
-
-    /// Wait for events with a timeout, then dispatch them.
-    /// This is ideal for continuous rendering - it won't block indefinitely
-    /// like dispatch(), allowing frame callbacks to drive rendering at vsync rate.
-    /// timeout_ms: -1 = block forever, 0 = non-blocking, >0 = wait up to timeout_ms
-    ///
-    /// Returns false once the connection is gone. Like `poll`, independent of
-    /// `running` so a hand-rolled loop can use it without entering `run`.
-    pub fn dispatchWithTimeout(self: *Self, timeout_ms: i32) bool {
-        std.debug.assert(timeout_ms >= -1);
-        if (!self.connection_alive) return false;
-        const display = self.display orelse return false;
-
-        // Flush outgoing requests first
-        while (true) {
-            const flush_result = wayland.wl_display_flush(display);
-            if (flush_result >= 0) break;
-            // EAGAIN means write buffer is full (EAGAIN == EWOULDBLOCK on Linux)
-            const errno_val = std.c._errno().*;
-            if (errno_val == @backingInt(posix.E.AGAIN)) {
-                // Poll for writability
-                var pollfds = [_]posix.pollfd{
-                    .{ .fd = wayland.displayGetFd(display), .events = posix.POLL.OUT, .revents = 0 },
-                };
-                _ = posix.poll(&pollfds, -1) catch {
-                    self.connection_alive = false;
-                    return false;
-                };
-            } else {
-                self.connection_alive = false;
-                return false;
-            }
-        }
-
-        // Dispatch any already-pending events
-        if (wayland.wl_display_dispatch_pending(display) < 0) {
-            self.connection_alive = false;
-            return false;
-        }
-
-        // Poll for new events with timeout
-        var pollfds = [_]posix.pollfd{
-            .{ .fd = wayland.displayGetFd(display), .events = posix.POLL.IN, .revents = 0 },
-        };
-        const poll_result = posix.poll(&pollfds, timeout_ms) catch {
-            self.connection_alive = false;
-            return false;
-        };
-
-        // If events arrived, dispatch them
-        if (poll_result > 0 and (pollfds[0].revents & posix.POLL.IN) != 0) {
-            if (wayland.wl_display_dispatch(display) < 0) {
-                self.connection_alive = false;
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    /// Flush pending requests to the server
-    pub fn flush(self: *Self) void {
-        if (self.display) |display| {
-            _ = wayland.wl_display_flush(display);
-        }
-    }
-
-    /// Signal the platform to quit.
-    ///
-    /// Stops the `run` loop at its next condition test. It does not touch the
-    /// connection: `deinit` owns the disconnect, and a caller driving its own
-    /// loop keeps dispatching afterwards.
-    pub fn quit(self: *Self) void {
-        // `run` only starts with a display, and only `deinit` drops one, so a
-        // loop that is still live must have a connection object to stop on.
-        if (self.running) std.debug.assert(self.display != null);
-
-        self.running = false;
-    }
-
-    /// Whether the blocking `run` loop is currently on the stack.
-    ///
-    /// See the `isRunning` note in `platform/contract.zig` for the three
-    /// transitions this must honour. Not a liveness or usability signal — use
-    /// `isConnected` for that.
-    pub fn isRunning(self: *const Self) bool {
-        return self.running;
-    }
-
-    /// Whether the compositor connection can still carry traffic.
-    ///
-    /// What a caller driving its own loop out of `poll`/`dispatch` should test,
-    /// since `isRunning` is false for the whole of such a loop by contract.
-    pub fn isConnected(self: *const Self) bool {
-        if (self.connection_alive) std.debug.assert(self.display != null);
-
-        return self.connection_alive;
     }
 
     /// Get the Wayland display pointer (for wgpu surface creation)
@@ -1731,9 +1157,6 @@ pub const LinuxPlatform = struct {
         if (self.active_window) |window| {
             window.key_repeat_tracker.reset();
         }
-
-        // Enable text input for IME when keyboard focus enters
-        if (self.text_input_follows_keyboard) self.enableTextInput();
     }
 
     fn keyboardLeave(
@@ -1751,9 +1174,6 @@ pub const LinuxPlatform = struct {
             window.key_repeat_tracker.reset();
             window.click_tracker.reset();
         }
-
-        // Disable text input when keyboard focus leaves
-        if (self.text_input_follows_keyboard) self.disableTextInput();
     }
 
     fn keyboardKeymap(
@@ -2006,9 +1426,8 @@ pub const LinuxPlatform = struct {
 
         // Handle commit string (final text)
         if (self.ime_commit_text.get()) |commit_text| {
-            // Whole, up to the protocol's bound: the core queue copies it
-            // (cutting it at a codepoint boundary past its text budget), and
-            // 0.3.1's widgets insert it before `handleInput` returns.
+            // Whole, up to the protocol's bound: the core queue copies it,
+            // cutting it at a codepoint boundary past its text budget.
             window.clearMarkedText();
             const event = linux_input.textInputEvent(commit_text);
             _ = window.handleInput(event);
@@ -2029,6 +1448,27 @@ pub const LinuxPlatform = struct {
                 _ = window.handleInput(event);
             }
         }
+    }
+
+    // =========================================================================
+    // Calls from the 0.3.1 `context/window.zig`
+    // =========================================================================
+    //
+    // The core never makes these calls. They stay only while that file
+    // compiles, and go when phase 6 deletes it.
+
+    pub fn quit(self: *Self) void {
+        self.running = false;
+        std.debug.assert(!self.running);
+    }
+
+    /// The core's renderer is its host's, so there is nothing to lock here.
+    pub fn lockRenderThreads(self: *Self) void {
+        std.debug.assert(self.window_registry.count() <= WindowRegistry.MAX_WINDOWS);
+    }
+
+    pub fn unlockRenderThreads(self: *Self) void {
+        std.debug.assert(self.window_registry.count() <= WindowRegistry.MAX_WINDOWS);
     }
 
     // =========================================================================
@@ -2058,31 +1498,7 @@ pub const LinuxPlatform = struct {
             wayland.zwpTextInputV3Commit(ti);
         }
     }
-
-    /// Set content type hints for IME
-    pub fn setContentType(self: *Self, hint: wayland.ZwpTextInputV3ContentHint, purpose: wayland.ZwpTextInputV3ContentPurpose) void {
-        if (self.text_input) |ti| {
-            wayland.zwpTextInputV3SetContentType(ti, hint, purpose);
-            wayland.zwpTextInputV3Commit(ti);
-        }
-    }
 };
-
-// A platform in the state `initInPlace` leaves behind, minus the connection.
-//
-// `initInPlace` itself needs a compositor, so the two transitions reachable
-// without one are driven off the field defaults it starts from. The third —
-// `running` becoming true on entry to `run` — cannot be reached headlessly at
-// all: `run` returns at its display guard without a socket, and blocks on
-// `poll` with one. It is held instead by the `defer` that pairs with the raise
-// (so no exit path can skip the clear) and by `deinit`'s `assert(!self.running)`
-// (so a leak would trip on the next teardown).
-fn disconnectedPlatform() LinuxPlatform {
-    return .{
-        .window_registry = WindowRegistry.init(std.testing.allocator),
-        .allocator = std.testing.allocator,
-    };
-}
 
 /// One text-input-v3 string, copied out of libwayland's argument buffer.
 /// Bounded by the Wayland message size, which text-input-v3 states as 4000
@@ -2146,221 +1562,6 @@ fn codepointPrefixLen(text: []const u8, len_max: usize) usize {
     }
     std.debug.assert(len <= len_max);
     return len;
-}
-
-test "isRunning is false before run and stays false across quit" {
-    var plat = disconnectedPlatform();
-    defer plat.window_registry.deinit();
-
-    try std.testing.expect(!plat.isRunning());
-
-    // `quit` before `run` is legal and must not invent a loop to stop.
-    plat.quit();
-    try std.testing.expect(!plat.isRunning());
-}
-
-// Liveness and loop state are separate facts: if one `running` flag answered
-// both "the blocking loop is live" and "the socket works", a caller
-// hand-rolling a loop out of `dispatch` would see every call refused. Pin the
-// state that a single flag cannot represent — connected while not running —
-// since that is what every iteration of such a loop looks like.
-test "connection liveness is independent of loop state" {
-    var plat = disconnectedPlatform();
-    defer plat.window_registry.deinit();
-
-    try std.testing.expect(!plat.isConnected());
-    // Not connected: the dispatch helpers refuse without touching the socket.
-    try std.testing.expect(!plat.poll());
-    try std.testing.expect(!plat.dispatch());
-    try std.testing.expect(!plat.dispatchWithTimeout(0));
-
-    // Stand in for a live connection. Never dereferenced: both predicates read
-    // flags, and the helpers are not called in this state.
-    plat.display = @ptrFromInt(@alignOf(usize));
-    plat.connection_alive = true;
-
-    try std.testing.expect(plat.isConnected());
-    try std.testing.expect(!plat.isRunning());
-}
-
-test "event loop waits instead of spinning for compositor frame" {
-    try std.testing.expectEqual(@as(i32, HIDDEN_FRAME_POLL_MS), eventLoopPollTimeout(true, true, 240_000));
-    try std.testing.expectEqual(@as(i32, 0), eventLoopPollTimeout(true, false, 240_000));
-    try std.testing.expectEqual(@as(i32, 4), eventLoopPollTimeout(false, false, 240_000));
-}
-
-// The deadline clamp may only shorten the compositor-paced wait. Each row
-// sits on one side of a boundary a plausible off-by-one would cross: no
-// deadline, a deadline beyond the wait, one inside it, exactly now, and past.
-test "poll timeout wakes for the earliest timed redraw" {
-    const now_ms: i64 = 10_000;
-
-    try std.testing.expectEqual(@as(i32, 16), pollTimeoutUntilDeadline(16, null, now_ms));
-    try std.testing.expectEqual(@as(i32, 16), pollTimeoutUntilDeadline(16, now_ms + 17, now_ms));
-    try std.testing.expectEqual(@as(i32, 16), pollTimeoutUntilDeadline(16, now_ms + 16, now_ms));
-    try std.testing.expectEqual(@as(i32, 15), pollTimeoutUntilDeadline(16, now_ms + 15, now_ms));
-    try std.testing.expectEqual(@as(i32, 1), pollTimeoutUntilDeadline(16, now_ms + 1, now_ms));
-    try std.testing.expectEqual(@as(i32, 0), pollTimeoutUntilDeadline(16, now_ms, now_ms));
-    try std.testing.expectEqual(@as(i32, 0), pollTimeoutUntilDeadline(16, now_ms - 1, now_ms));
-
-    // A busy loop stays busy: a far deadline cannot lengthen a zero wait.
-    try std.testing.expectEqual(@as(i32, 0), pollTimeoutUntilDeadline(0, now_ms + 500, now_ms));
-}
-
-// The fold keeps the earliest deadline among open windows only. Ordering the
-// later deadline first catches a fold that keeps the first or last seen, and
-// the closed window's earlier deadline catches one that ignores `open`.
-test "loop state folds the earliest open-window deadline" {
-    const later = WindowLoopState{
-        .open = true,
-        .has_queued_work = false,
-        .waiting_for_frame = false,
-        .render_deadline_ms = 900,
-    };
-    const earlier = WindowLoopState{
-        .open = true,
-        .has_queued_work = false,
-        .waiting_for_frame = false,
-        .render_deadline_ms = 400,
-    };
-    const closed_earliest = WindowLoopState{
-        .open = false,
-        .has_queued_work = false,
-        .waiting_for_frame = false,
-        .render_deadline_ms = 100,
-    };
-
-    const state = foldLoopState(&.{ later, closed_earliest, earlier, idleWindowLoopState(true) });
-    try std.testing.expectEqual(@as(?i64, 400), state.render_deadline_ms);
-    try std.testing.expect(!state.has_pending_work);
-
-    // Idle windows and closed windows alone leave nothing armed.
-    const none = foldLoopState(&.{ idleWindowLoopState(true), closed_earliest });
-    try std.testing.expectEqual(@as(?i64, null), none.render_deadline_ms);
-}
-
-// A window with nothing queued and no callback in flight, open or not.
-fn idleWindowLoopState(open: bool) WindowLoopState {
-    return .{
-        .open = open,
-        .has_queued_work = false,
-        .waiting_for_frame = false,
-        .render_deadline_ms = null,
-    };
-}
-
-// The loop must survive the loss of a non-last window: `open_count` is what
-// `run()` tests, so drive it directly with the two-window case where closing
-// one window must not terminate the process.
-test "loop state counts open windows, not registry entries" {
-    const open = idleWindowLoopState(true);
-    const closed = idleWindowLoopState(false);
-
-    try std.testing.expectEqual(@as(u32, 2), foldLoopState(&.{ open, open }).open_count);
-
-    // One of two windows closed: still registered, but the loop keeps running.
-    try std.testing.expectEqual(@as(u32, 1), foldLoopState(&.{ open, closed }).open_count);
-
-    // Both closed and neither reclaimed yet: the loop must still be able to
-    // exit, or a closed-but-pending window would keep it alive forever.
-    try std.testing.expectEqual(@as(u32, 0), foldLoopState(&.{ closed, closed }).open_count);
-    try std.testing.expectEqual(@as(u32, 0), foldLoopState(&.{}).open_count);
-}
-
-// A closed window is invisible to pacing. Its `needs_redraw` and pending
-// `wl_callback` are stale state that its owner has not reclaimed yet, and
-// honouring either would either spin the loop at 0ms or hold it at the
-// fallback cadence on behalf of a window that can no longer draw.
-test "loop state ignores closed windows when pacing" {
-    const closed_busy = WindowLoopState{
-        .open = false,
-        .has_queued_work = true,
-        .waiting_for_frame = true,
-        .render_deadline_ms = null,
-    };
-    const open_idle = WindowLoopState{
-        .open = true,
-        .has_queued_work = false,
-        .waiting_for_frame = false,
-        .render_deadline_ms = null,
-    };
-
-    const state = foldLoopState(&.{ closed_busy, open_idle });
-    try std.testing.expectEqual(@as(u32, 1), state.open_count);
-    try std.testing.expect(!state.has_pending_work);
-    try std.testing.expect(!state.all_waiting_for_frame);
-}
-
-// Pacing is an AND across open windows: a sibling idling on a compositor
-// callback must not push the timeout to the 20Hz fallback while another
-// window has work queued. The single-window rows pin the reduction to the
-// pre-existing behaviour.
-test "loop state pacing across sibling windows" {
-    const waiting = WindowLoopState{
-        .open = true,
-        .has_queued_work = true,
-        .waiting_for_frame = true,
-        .render_deadline_ms = null,
-    };
-    const ready = WindowLoopState{
-        .open = true,
-        .has_queued_work = true,
-        .waiting_for_frame = false,
-        .render_deadline_ms = null,
-    };
-
-    // One window, waiting: unchanged from the single-window behaviour.
-    const one_waiting = foldLoopState(&.{waiting});
-    try std.testing.expect(one_waiting.all_waiting_for_frame);
-    try std.testing.expectEqual(@as(i32, HIDDEN_FRAME_POLL_MS), eventLoopPollTimeout(
-        one_waiting.has_pending_work,
-        one_waiting.all_waiting_for_frame,
-        240_000,
-    ));
-
-    // Two windows, one still needing service: no fallback wait.
-    const mixed = foldLoopState(&.{ waiting, ready });
-    try std.testing.expect(mixed.has_pending_work);
-    try std.testing.expect(!mixed.all_waiting_for_frame);
-    try std.testing.expectEqual(@as(i32, 0), eventLoopPollTimeout(
-        mixed.has_pending_work,
-        mixed.all_waiting_for_frame,
-        240_000,
-    ));
-
-    // Every open window paced by the compositor: fall back to the timed wait.
-    const all_waiting = foldLoopState(&.{ waiting, waiting });
-    try std.testing.expect(all_waiting.all_waiting_for_frame);
-    try std.testing.expectEqual(@as(i32, HIDDEN_FRAME_POLL_MS), eventLoopPollTimeout(
-        all_waiting.has_pending_work,
-        all_waiting.all_waiting_for_frame,
-        240_000,
-    ));
-}
-
-// Capacity boundary: the fold must accept a full registry exactly, since
-// `collectLoopState` sizes its stack sample buffer at `MAX_WINDOWS` and the
-// registry refuses to exceed that (CLAUDE.md §24).
-test "loop state folds a full registry" {
-    var samples: [WindowRegistry.MAX_WINDOWS]WindowLoopState = undefined;
-    for (&samples) |*sample| {
-        sample.* = .{
-            .open = true,
-            .has_queued_work = false,
-            .waiting_for_frame = true,
-            .render_deadline_ms = null,
-        };
-    }
-
-    const full = foldLoopState(&samples);
-    try std.testing.expectEqual(WindowRegistry.MAX_WINDOWS, full.open_count);
-    try std.testing.expect(full.all_waiting_for_frame);
-
-    // One past the last open window: closing the final entry drops the count
-    // without disturbing the rest.
-    samples[WindowRegistry.MAX_WINDOWS - 1].open = false;
-    const one_closed = foldLoopState(&samples);
-    try std.testing.expectEqual(WindowRegistry.MAX_WINDOWS - 1, one_closed.open_count);
 }
 
 test "IME strings survive libwayland freeing the event's argument buffer" {
