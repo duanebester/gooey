@@ -210,7 +210,7 @@ pub const FbdevPlatform = struct {
     /// error or hangup, or fails to read, is closed and forgotten so the loop
     /// does not wake for it again. Walks from the last device because removal
     /// moves the last device into the removed slot.
-    fn dispatchInput(self: *Self, pollfds: []const posix.pollfd) void {
+    pub fn dispatchInput(self: *Self, pollfds: []const posix.pollfd) void {
         assert(pollfds.len == self.devices.count);
         assert(pollfds.len <= evdev.device_count_max);
         const lost_mask = posix.POLL.ERR | posix.POLL.HUP | posix.POLL.NVAL;
@@ -310,7 +310,7 @@ pub fn nowMilliseconds() i64 {
     return @intCast(ms);
 }
 
-fn nowNanoseconds() u64 {
+pub fn nowNanoseconds() u64 {
     // Same process-lifetime single-threaded `Io` the Wayland render path
     // uses; the event loop carries no `*Cx`.
     const io = std.Io.Threaded.global_single_threaded.io();

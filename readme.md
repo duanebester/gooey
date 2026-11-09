@@ -1729,15 +1729,15 @@ renderer is not compiled or linked.
 
 ```cpu-backends.sh
 # Desktop without a GPU driver (e.g. Debian VMs, servers with a compositor)
-zig build run-layout -Dlinux-backend=wayland_cpu
+zig build run -Dlinux-backend=wayland_cpu
 
 # Embedded Linux: a full-screen app on the kernel framebuffer with evdev input
-zig build run-layout -Dlinux-backend=fbdev -Doptimize=ReleaseSafe
+zig build run -Dlinux-backend=fbdev -Doptimize=ReleaseSafe
 ```
 
-The 0.4.0 core apps, including `todo` and so the default `zig build run`, need the
-`wayland_vulkan` backend; on the CPU backends `zig build run` says so and names
-`run-layout`, a 0.3.1 app.
+Every example builds on every backend. On fbdev the app covers the whole panel
+whatever size it asks for, and a file dialog request fails with
+`error.FileDialogUnsupported`, since there is no display server to show one.
 
 The fbdev backend drops Wayland and Vulkan but still links FreeType, HarfBuzz,
 Fontconfig, libpng, and D-Bus. Build on the device, or cross-compile with

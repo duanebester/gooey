@@ -237,6 +237,24 @@ pub const ShmRenderer = struct {
         self.renderer.bindAtlases(.{ .text = text_atlas, .svg = svg_atlas, .image = image_atlas });
     }
 
+    /// Deliver the compositor's buffer releases on `queue` (null: the default
+    /// queue). A thread that draws on its own queue routes them there, so the
+    /// slots it reads are written only on that thread. Slot buffers made
+    /// later inherit the pool's queue; existing ones move with it.
+    pub fn setEventQueue(self: *Self, queue: ?*wayland.EventQueue) void {
+        assert(self.pool != null);
+        wayland.wl_proxy_set_queue(@ptrCast(self.pool.?), queue);
+        for (self.slots) |slot| {
+            if (slot.buffer) |buffer| wayland.wl_proxy_set_queue(@ptrCast(buffer), queue);
+        }
+        assert(self.slots.len == buffer_count);
+    }
+
+    /// A slot the compositor has released, so `render` will draw.
+    pub fn hasFreeSlot(self: *const Self) bool {
+        return self.freeSlotIndex() != null;
+    }
+
     /// Draw `scene` into a free slot and commit it. Returns false when every
     /// slot is still held by the compositor and the frame was not drawn.
     pub fn render(self: *Self, scene: *const scene_mod.Scene) bool {

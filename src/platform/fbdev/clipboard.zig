@@ -7,6 +7,7 @@
 //! string. The API matches `linux/clipboard.zig`, which the text widgets call.
 
 const std = @import("std");
+const core_clipboard = @import("../../core/clipboard.zig");
 
 const assert = std.debug.assert;
 
@@ -23,6 +24,17 @@ pub fn getText(allocator: std.mem.Allocator) ?[]const u8 {
     const copy = allocator.dupe(u8, storage[0..stored_len]) catch return null;
     assert(copy.len == stored_len);
     return copy;
+}
+
+/// Copy the clipboard text into `out`, cut at a codepoint boundary, and
+/// return its length (0 for none): the core host's read, which claims no
+/// storage.
+pub fn readText(out: []u8) u32 {
+    assert(out.len > 0);
+    assert(stored_len <= text_bytes_max);
+    const kept = core_clipboard.prefixFitting(storage[0..stored_len], out.len);
+    @memcpy(out[0..kept], storage[0..kept]);
+    return @intCast(kept);
 }
 
 /// Replace the clipboard text. Returns false when it does not fit.
