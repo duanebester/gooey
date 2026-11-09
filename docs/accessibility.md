@@ -1,751 +1,469 @@
-# Gooey Accessibility (A11Y) Documentation
+# Accessibility
 
-Gooey provides built-in accessibility support for assistive technologies including screen readers (VoiceOver, NVDA) and other assistive tools. This document covers the architecture, API, and best practices for building accessible applications.
+Gooey 0.4.0 describes its UI to screen readers through fields on elements. A box takes an
+optional `a11y` annotation (`ui.A11y`), and a handler asks the screen reader to speak with
+`Effects.announce`. There is no push and pop builder and no separate accessibility id: the
+box's own `ElementId` and laid-out bounds identify the node.
 
-## Table of Contents
+The public names are:
 
-- [Overview](#overview)
-- [Quick Start](#quick-start)
-- [Architecture](#architecture)
-- [Core Concepts](#core-concepts)
-- [Built-in Component Support](#built-in-component-support)
-- [Custom Accessible Elements](#custom-accessible-elements)
-- [Live Regions & Announcements](#live-regions--announcements)
-- [Platform Bridges](#platform-bridges)
-- [Making Custom Components Accessible](#making-custom-components-accessible)
-- [Testing Accessibility](#testing-accessibility)
-- [Performance](#performance)
-- [API Reference](#api-reference)
+- `gooey.ui.A11y`: the annotation struct that `ui.Box.a11y` takes.
+- `gooey.accessibility.Role`, `gooey.accessibility.State`, and `gooey.accessibility.Live`.
+  `gooey.ui.Role` is the same enum as `gooey.accessibility.Role`.
 
----
+`gooey.accessibility` also declares the framework's tree, bridges, and debug helpers. They
+are not pinned by `src/api_check.zig`, and neither is anything in `gooey.internals`, so do
+not build on them.
 
-## Overview
+## Contents
 
-Gooey's accessibility system provides:
+- [How it works](#how-it-works)
+- [Components that are already accessible](#components-that-are-already-accessible)
+- [Making a custom element accessible](#making-a-custom-element-accessible)
+- [Announcements and live regions](#announcements-and-live-regions)
+- [Roles, states, and live values](#roles-states-and-live-values)
+- [Platform bridges](#platform-bridges)
+- [Capacity limits](#capacity-limits)
+- [Testing](#testing)
+- [Known gaps](#known-gaps)
+- [References](#references)
 
-- **Semantic roles** - Describe what an element IS (button, checkbox, heading, etc.)
-- **States** - Track element state (focused, checked, disabled, expanded, etc.)
-- **Names & descriptions** - Human-readable labels for screen readers
-- **Live regions** - Announce dynamic content changes
-- **Platform integration** - Native bridges for macOS (VoiceOver), Windows (UI Automation), and Web (ARIA). Linux has no screen-reader bridge in 0.4.0 (contract decision 12).
+## How it works
 
-### Design Principles
+1. **Build.** When a box with `a11y` is built, its strings are copied into the frame's
+   text bytes, so a label may come from a buffer local to the render function.
+2. **Emit.** Each box with `a11y` becomes one accessibility node with the box's laid-out
+   bounds and its depth among accessible ancestors. `focused` is set when the box holds
+   keyboard focus. Boxes without `a11y` add no node and no nesting level, and `ui.text`
+   adds no node at all: visible text is not read unless a box around it names it.
+3. **Publish.** When a frame is presented, the main thread asks the platform bridge
+   whether a screen reader is running. It asks on the first frame and then at most once
+   per second of the window's clock (`screen_reader.poll_interval_ns`). When none runs,
+   that check is the whole cost. When one runs, the nodes go into a fixed-size tree that
+   diffs against the previous frame and hands the bridge only new, changed, and removed
+   elements, the frame's announcements, and the focus change.
 
-1. **Zero allocation after init** - Static pools for predictable performance
-2. **Fingerprint-based identity** - Elements maintain identity across frames without manual IDs
-3. **Immediate mode compatible** - Works naturally with Gooey's immediate mode rendering
-4. **Built-in by default** - Standard components have accessibility built-in
+The tree matches elements across frames by a fingerprint of role, label, parent, and
+position among siblings. A changed `label` therefore reads as a new element, not as a
+change to the old one. This matters for live regions (see below).
 
----
+## Components that are already accessible
 
-## Quick Start
+The `gooey-components` package sets `a11y` for you. Each component that has an
+`accessible_name` field uses it as the screen-reader name and otherwise falls back to the
+field shown in the table.
 
-### Using Built-in Components
+| Component    | Role       | Name fallback      | Description field        | Other fields set |
+| ------------ | ---------- | ------------------ | ------------------------ | ---------------- |
+| `Button`     | `button`   | `label`            | none                     | `disabled`       |
+| `Checkbox`   | `checkbox` | `label`            | `accessible_description` | `checked`        |
+| `Select`     | `combobox` | `placeholder`      | `accessible_description` | value, expanded  |
+| `TextInput`  | `textbox`  | `placeholder`      | `accessible_description` | value (the text) |
+| `TextArea`   | `textarea` | `placeholder` only | none                     | value (the text) |
+| `CodeEditor` | `textarea` | `placeholder` only | none                     | value (the text) |
+| `Modal`      | `dialog`   | `key`              | `accessible_description` | none             |
 
-All standard Gooey components have built-in accessibility. Simply use the `accessible_name` field to customize what screen readers announce:
+`TextArea` and `CodeEditor` have no `accessible_name`; `CodeEditor` says "Code editor"
+when its placeholder is empty. `Select` also sets `has_popup` and `disabled`, and its value
+is the chosen option, or the placeholder when nothing is chosen. `List`
+adds no node of its own; each row annotates itself. The charts package adds no node
+either: `accessible_title`, `accessible_description`, `describe(buf)`, and
+`summarize(buf)` produce text, and the app puts that text on a box's `a11y`.
 
-```zig
-const components = @import("gooey-components");
-const Button = components.Button;
-const Checkbox = components.Checkbox;
-
-// Button with custom accessible name
-Button{
-    .label = "+",
-    .accessible_name = "Increase counter",  // VoiceOver reads this
-    .on_click = handler,
-}
-
-// Checkbox - label is used by default
-Checkbox{
-    .id = "notifications",
-    .selected = state.notifications_enabled,
-    .label = "Enable notifications",
-    // accessible_name defaults to label
-}
-```
-
-### Adding Accessibility to Custom Elements
-
-For custom UI elements, use `cx.accessible()`:
-
-> **Advanced API:** This is the low-level accessibility-tree builder. Prefer
-> `gooey-components` for standard controls because those components maintain
-> roles, state, and names automatically.
-
-```zig
-fn renderCustomWidget(cx: *ui.Cx) void {
-    // Push accessible element BEFORE the visual element
-    const a11y_pushed = cx.accessible(.{
-        .role = .button,
-        .name = "Custom action",
-        .state = .{ .disabled = is_disabled },
-    });
-    defer if (a11y_pushed) cx.accessibleEnd();
-
-    // Visual rendering
-    cx.render(ui.box(.{ ... }, .{ ... }));
-}
-```
-
-### Announcements
-
-Announce dynamic changes to screen reader users:
+From `src/examples/accessible_form.zig`, a labelled group of buttons:
 
 ```zig
-// Non-urgent update (announced when idle)
-cx.announce("3 items selected", .polite);
-
-// Critical alert (interrupts current speech)
-cx.announce("Error: Connection lost!", .assertive);
-```
-
----
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     Application Code                         │
-│                                                             │
-│   Button{ .label = "+", .accessible_name = "Increase" }     │
-│                           │                                 │
-│   cx.accessible(.{ .role = .button, .name = "Save" })       │
-└───────────────────────────┼─────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    Accessibility Tree                        │
-│                                                             │
-│   • Elements with roles, states, names                      │
-│   • Fingerprint-based identity (stable across frames)       │
-│   • Dirty detection for efficient updates                   │
-│   • Static allocation (MAX_ELEMENTS = 2048)                 │
-└───────────────────────────┼─────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│                     Platform Bridge                          │
-│                                                             │
-│   macOS: NSAccessibility → VoiceOver                        │
-│   Web:   ARIA attributes → Screen readers                   │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### Key Components
-
-| Component     | File                                 | Purpose                                     |
-| ------------- | ------------------------------------ | ------------------------------------------- |
-| `Tree`        | `src/accessibility/tree.zig`         | Maintains accessibility element hierarchy   |
-| `Element`     | `src/accessibility/element.zig`      | Single accessible element with properties   |
-| `Fingerprint` | `src/accessibility/fingerprint.zig`  | Stable identity for cross-frame correlation |
-| `Bridge`      | `src/accessibility/bridge.zig`       | Platform-agnostic bridge interface          |
-| `MacBridge`   | `src/accessibility/mac_bridge.zig`   | macOS VoiceOver integration                 |
-| `WebBridge`   | `src/accessibility/web_bridge.zig`   | Web ARIA integration                        |
-
----
-
-## Core Concepts
-
-### Roles
-
-Roles describe what an element IS semantically. Use the most specific role that applies:
-
-```zig
-const Role = enum {
-    // Interactive widgets
-    button,      // Clickable button
-    checkbox,    // Toggle on/off
-    radio,       // One of many options
-    switch_,     // Toggle switch
-    link,        // Navigation link
-
-    // Text input
-    textbox,     // Single-line input
-    textarea,    // Multi-line input
-    searchbox,   // Search field
-    spinbutton,  // Numeric input
-
-    // Selection
-    combobox,    // Dropdown select
-    listbox,     // List of options
-    option,      // Single option
-    menu,        // Menu container
-    menuitem,    // Menu item
-    menubar,     // Menu bar container
-
-    // Navigation
-    tab,         // Tab button
-    tablist,     // Tab container
-    tabpanel,    // Tab content
-
-    // Disclosure
-    tree,        // Tree container
-    treeitem,    // Tree item
-
-    // Sliders
-    slider,      // Value slider
-    scrollbar,   // Scroll bar
-
-    // Structure
-    group,       // Generic grouping
-    region,      // Landmark region
-    dialog,      // Modal dialog
-    alertdialog, // Alert dialog
-    toolbar,     // Toolbar container
-    tooltip,     // Tooltip
-
-    // Status
-    alert,       // Important message (announced immediately)
-    status,      // Status information
-    progressbar, // Progress indicator
-
-    // Document
-    heading,     // Section heading (use with heading_level)
-    paragraph,   // Paragraph of text
-    list,        // List container
-    listitem,    // List item
-    img,         // Image
-    separator,   // Visual separator
-
-    // Special
-    presentation,// Explicitly NOT accessible
-    none,        // Inherit from context
-};
-```
-
-### States
-
-States track the current condition of an element:
-
-```zig
-const State = packed struct(u16) {
-    focused: bool = false,    // Has keyboard focus
-    selected: bool = false,   // Selected in collection
-    checked: bool = false,    // Checkbox/radio/switch is on
-    pressed: bool = false,    // Toggle button is pressed
-    expanded: bool = false,   // Disclosure is open
-    disabled: bool = false,   // Non-interactive
-    readonly: bool = false,   // Value cannot be changed
-    required: bool = false,   // Form field is required
-    invalid: bool = false,    // Validation failed
-    busy: bool = false,       // Async operation in progress
-    hidden: bool = false,     // Not visible (skip in a11y tree)
-    has_popup: bool = false,  // Element triggers a popup (listbox, menu, dialog, etc.)
-    _reserved: u4 = 0,
-};
-```
-
-### Fingerprints
-
-Fingerprints provide stable identity for elements across frames without manual IDs:
-
-```zig
-// Fingerprint computed from:
-// - Role (8 bits)
-// - Parent contribution (16 bits)
-// - Position in parent (8 bits)
-// - Name hash (32 bits)
-
-const Fingerprint = packed struct(u64) {
-    role: u8,
-    parent_contrib: u16,
-    position: u8,
-    name_hash: u32,
-};
-```
-
-This allows the accessibility system to:
-
-- Detect which elements changed between frames
-- Only sync dirty elements to the platform
-- Maintain focus across re-renders
-
----
-
-## Built-in Component Support
-
-All standard Gooey components have accessibility built-in:
-
-| Component     | Role          | Key States             | Notes                                   |
-| ------------- | ------------- | ---------------------- | --------------------------------------- |
-| `Button`      | `button`      | `disabled`             | Use `accessible_name` to override label |
-| `Checkbox`    | `checkbox`    | `checked`              | Label used as accessible name           |
-| `TextInput`   | `textbox`     | -                      | Placeholder used as fallback name       |
-| `TextArea`    | `textarea`    | -                      | Multi-line text input                   |
-| `Select`      | `combobox`    | `expanded`, `disabled` | Selected value exposed                  |
-| `Tab`         | `tab`         | `selected`             | Includes `pos_in_set`, `set_size`       |
-| `TabBar`      | `tablist`     | -                      | Container for tabs                      |
-| `RadioGroup`  | `radiogroup`  | -                      | Groups radio buttons                    |
-| `ProgressBar` | `progressbar` | -                      | Exposes value, min, max                 |
-| `Modal`       | `dialog`      | -                      | Modal dialog                            |
-| `Tooltip`     | `tooltip`     | -                      | Contextual help                         |
-
-### Example: Accessible Form
-
-```zig
-const components = @import("gooey-components");
-
-fn renderForm(cx: *Cx) void {
-    const s = cx.state(FormState);
-
-    // Scope the heading node to its visual text.
-    {
-        const pushed = cx.accessible(.{
-            .role = .heading,
-            .name = "Contact Form",
-            .heading_level = 1,
-        });
-        defer if (pushed) cx.accessibleEnd();
-        cx.render(ui.text("Contact Form", .{ .size = 24, .weight = .bold }));
-    }
-
-    cx.render(components.TextInput{
-        .id = "name",
-        .placeholder = "Your name",
-        .accessible_name = "Full name",
-        .bind = &s.name,
-    });
-
-    cx.render(components.TextInput{
-        .id = "email",
-        .placeholder = "email@example.com",
-        .accessible_name = "Email address",
-        .bind = &s.email,
-    });
-
-    cx.render(components.Checkbox{
-        .id = "subscribe",
-        .selected = s.subscribe,
-        .label = "Subscribe to newsletter",
-        .on_click = cx.on(FormState.toggleSubscribe, .{}),
-    });
-
-    cx.render(components.Button{
-        .label = "Send",
-        .accessible_name = "Submit contact form",
-        .disabled = !s.isValid(),
-        .on_click = cx.on(FormState.submit, .{}),
-    });
-}
-```
-
----
-
-## Custom Accessible Elements
-
-### Basic Pattern
-
-```zig
-fn renderCustomElement(cx: *ui.Cx) void {
-    // 1. Push accessible element FIRST
-    const a11y_pushed = cx.accessible(.{
-        .role = .button,
-        .name = "Action name",
-    });
-    defer if (a11y_pushed) cx.accessibleEnd();
-
-    // 2. Render visual element
-    cx.render(ui.box(.{ ... }, .{ ... }));
-}
-```
-
-### With Layout ID (for bounds tracking)
-
-```zig
-fn renderTrackedElement(cx: *ui.Cx, id: []const u8) void {
-    const layout_id = cx.idFor(id);
-
-    const a11y_pushed = cx.accessible(.{
-        .layout_id = layout_id,  // Links to visual element bounds
-        .role = .button,
-        .name = "Tracked button",
-    });
-    defer if (a11y_pushed) cx.accessibleEnd();
-
-    cx.render(ui.box_with_layout_id(layout_id, .{ ... }, .{ ... }));
-}
-```
-
-### Complex Widget Example
-
-```zig
-fn renderSlider(cx: *ui.Cx, value: f32, min: f32, max: f32) void {
-    const layout_id = cx.idFor("volume-slider");
-
-    const a11y_pushed = cx.accessible(.{
-        .layout_id = layout_id,
-        .role = .slider,
-        .name = "Volume",
-        .value_min = min,
-        .value_max = max,
-        .value_now = value,
-    });
-    defer if (a11y_pushed) cx.accessibleEnd();
-
-    cx.render(ui.box_with_layout_id(layout_id, .{ ... }, .{ ... }));
-}
-```
-
----
-
-## Live Regions & Announcements
-
-### Types of Live Regions
-
-| Priority     | Use Case           | Behavior                       |
-| ------------ | ------------------ | ------------------------------ |
-| `.off`       | No announcements   | Default for most elements      |
-| `.polite`    | Non-urgent updates | Announced after current speech |
-| `.assertive` | Critical alerts    | Interrupts current speech      |
-
-### Explicit Announcements
-
-```zig
-// Status update (polite)
-cx.announce("File saved successfully", .polite);
-
-// Error alert (assertive)
-cx.announce("Connection lost! Please check your network.", .assertive);
-
-// Progress update
-cx.announce("Upload 75% complete", .polite);
-```
-
-### Live Region Elements
-
-For content that changes regularly:
-
-```zig
-// Status bar that updates automatically
-if (cx.accessible(.{
-    .role = .status,
-    .name = status_message,
-    .live = .polite,  // Announce when content changes
-})) {
-    defer cx.accessibleEnd();
-}
-cx.render(ui.text(status_message, .{ ... }));
-
-// Alert that appears
-if (show_error) {
-    if (cx.accessible(.{
-        .role = .alert,
-        .name = error_message,
-        .live = .assertive,  // Immediate announcement
-    })) {
-        defer cx.accessibleEnd();
-    }
-    cx.render(ui.box(.{ .background = Color.red }, .{
-        ui.text(error_message, .{ ... }),
-    }));
-}
-```
-
----
-
-## Platform Bridges
-
-### macOS (VoiceOver)
-
-The macOS bridge creates `NSAccessibilityElement` objects and posts notifications:
-
-- **Sync**: Dirty elements synced via NSAccessibility API
-- **Announcements**: Posted via `NSAccessibilityAnnouncementRequestedNotification`
-- **Focus**: `NSAccessibilityFocusedUIElementChangedNotification`
-- **Detection**: Checks for VoiceOver via `AXIsVoiceOverRunning()`
-
-**Testing with VoiceOver:**
-
-1. Enable: `Cmd+F5` or System Settings → Accessibility → VoiceOver
-2. Navigate: `Tab` for focus, `VO+arrows` for reading
-3. Actions: `VO+Space` to activate
-
-### Linux
-
-No screen-reader bridge: Linux AT-SPI is shelved past 0.4.0 (contract decision 12), so
-Linux builds no accessibility tree.
-
-### Web (ARIA)
-
-The Web bridge creates a hidden ARIA tree that screen readers can access:
-
-- **Container**: Off-screen container with `aria-hidden="false"`
-- **Elements**: DOM elements with ARIA roles and attributes
-- **Updates**: Batched DOM mutations for performance
-- **Announcements**: Live region elements
-
-**Testing:**
-
-1. Use browser DevTools → Accessibility tab
-2. Test with NVDA (Windows) and VoiceOver (macOS)
-3. Verify with axe-core or Lighthouse
-
----
-
-## Making Custom Components Accessible
-
-### Step-by-Step Guide
-
-1. **Choose the right role** - Pick the most semantically accurate role
-2. **Provide a name** - Concise, descriptive label
-3. **Track state** - Expose relevant states (checked, expanded, etc.)
-4. **Handle focus** - Ensure keyboard navigation works
-5. **Test** - Verify with actual screen readers
-
-### Template
-
-```zig
-pub const MyWidget = struct {
-    id: ?[]const u8 = null,
-    label: []const u8,
-
-    // Widget state
-    is_active: bool = false,
-    enabled: bool = true,
-
-    // Interaction
-    on_click: ?ui.Handler = null,
-
-    // Accessibility overrides
-    accessible_name: ?[]const u8 = null,
-    accessible_description: ?[]const u8 = null,
-
-    pub fn render(self: MyWidget, cx: *Cx) void {
-        // Resolve identity once and reuse it for both the a11y node and the
-        // box below, so they stay in sync. Null id ⇒ parent-scoped auto id.
-        const layout_id = cx.idFor(self.id);
-
-        // Push accessible element
-        const a11y_pushed = cx.accessible(.{
-            .layout_id = layout_id,
-            .role = .button,  // Choose appropriate role
-            .name = self.accessible_name orelse self.label,
-            .description = self.accessible_description,
-            .state = .{
-                .pressed = self.is_active,
-                .disabled = !self.enabled,
-            },
-        });
-        defer if (a11y_pushed) cx.accessibleEnd();
-
-        // Visual rendering
-        cx.render(ui.box_with_layout_id(layout_id, .{
-            .on_click = if (self.enabled) self.on_click else null,
-            // ... styling ...
+const FormActions = struct {
+    pub fn render(_: FormActions, cx: *Cx) void {
+        cx.render(ui.box(.{
+            .style = .{ .direction = .row, .gap = 16 },
+            .a11y = .{ .role = .group, .label = "Form actions" },
         }, .{
-            ui.text(self.label, .{ ... }),
+            Button{
+                .label = "Submit",
+                .accessible_name = "Submit registration form",
+                .size = .large,
+                .on_click = cx.on(State.submit, .{}),
+            },
+            Button{
+                .label = "Reset",
+                .accessible_name = "Reset form to default values",
+                .variant = .secondary,
+                .size = .large,
+                .on_click = cx.on(State.reset, .{}),
+            },
         }));
     }
 };
 ```
 
-### Common Patterns
-
-#### Toggle/Switch
+A text field and a select with names and descriptions, from the same file:
 
 ```zig
-.role = .switch_,
-.state = .{ .checked = is_on },
+TextInput{
+    .key = "name",
+    .bind = &s.name,
+    .placeholder = "Enter your full name",
+    .accessible_name = "Full name, required field",
+    .accessible_description = if (errors.name) "Error: Name is required" else null,
+    .width = 300,
+    .border_color = if (errors.name) error_color else null,
+},
 ```
-
-#### Expandable Section
 
 ```zig
-// Header
-.role = .button,
-.state = .{ .expanded = is_open },
-
-// Content panel
-.role = .region,
-.state = .{ .hidden = !is_open },
+Select{
+    .key = "experience",
+    .options = &State.experience_options,
+    .on_select = &on_select,
+    .on_toggle = cx.on(State.toggleExperience, .{}),
+    .on_close = cx.on(State.closeExperience, .{}),
+    .selected = self.experience_level,
+    .open = self.experience_open,
+    .placeholder = "Select your experience level",
+    // The default 200 is narrower than this placeholder (~202 pt
+    // of text) plus padding and the chevron.
+    .width = 260,
+    .accessible_name = "Experience level",
+    .accessible_description = "Select how experienced you are with our products",
+},
 ```
 
-#### Tab Panel
+## Making a custom element accessible
+
+Set `a11y` on the box that the user interacts with, so the node's bounds match the click
+target. `role` is required; every other field has a default.
+
+| `ui.A11y` field | Type           | Meaning                                            |
+| --------------- | -------------- | -------------------------------------------------- |
+| `role`          | `Role`         | What the element is. Required.                     |
+| `label`         | `?[]const u8`  | The name a screen reader speaks. Part of identity. |
+| `value`         | `?[]const u8`  | Current value, such as a field's text or a choice. |
+| `description`   | `?[]const u8`  | Help text read after the name.                     |
+| `checked`       | `bool`         | A checkbox, radio, or switch is on.                |
+| `disabled`      | `bool`         | The element does not respond to input.             |
+| `expanded`      | `bool`         | A disclosure, such as a combobox, is open.         |
+| `has_popup`     | `bool`         | Activating the element opens a popup.              |
+| `heading_level` | `HeadingLevel` | `.none` (default) or `.h1` to `.h6`.               |
+| `live`          | `Live`         | How changes inside the element are reported.       |
+| `pos_in_set`    | `?u16`         | One-based position among `set_size` siblings.      |
+| `set_size`      | `?u16`         | Number of siblings in the set.                     |
+| `href`          | `?[]const u8`  | A link target. No bridge reads it yet.             |
+
+A heading, from `src/examples/accessible_form.zig`. The label repeats the visible text
+because the `ui.text` child is not read:
 
 ```zig
-// Tab button
-.role = .tab,
-.state = .{ .selected = is_active },
-.pos_in_set = tab_index + 1,  // 1-based
-.set_size = total_tabs,
+const Heading = struct {
+    text: []const u8,
+    level: @FieldType(ui.A11y, "heading_level"),
+    size: u16,
+    weight: @FieldType(ui.Text, "weight"),
+    color: ui.Color,
 
-// Tab container
-.role = .tablist,
-
-// Tab content
-.role = .tabpanel,
+    pub fn render(self: Heading, cx: *Cx) void {
+        cx.render(ui.box(.{
+            .a11y = .{ .role = .heading, .label = self.text, .heading_level = self.level },
+        }, .{
+            ui.text(self.text, .{
+                .size = self.size,
+                .weight = self.weight,
+                .color = .{ .rgba = self.color },
+            }),
+        }));
+    }
+};
 ```
 
-#### Progress/Loading
+A clickable header cell exposed as a button, from `src/examples/data_table_example.zig`:
 
 ```zig
-.role = .progressbar,
-.value_min = 0,
-.value_max = 100,
-.value_now = progress_percent,
-.state = .{ .busy = is_loading },
+cx.render(ui.box(.{
+    .key = .{ .name = name },
+    .on_click = cx.on(State.sortBy, .{ .arg = @as(u32, index) }),
+    .a11y = .{ .role = .button, .label = label },
+    .style = cell_style(width, header_height),
+}, .{ui.text(label, .{ .size = 13, .weight = .semibold, .color = .text })}));
 ```
 
----
-
-## Testing Accessibility
-
-### Manual Testing Checklist
-
-- [ ] All interactive elements are keyboard accessible
-- [ ] Focus order is logical
-- [ ] Screen reader announces element roles correctly
-- [ ] State changes are announced (checked, expanded, etc.)
-- [ ] Error messages are announced immediately
-- [ ] Images have alt text
-- [ ] Headings create logical document structure
-- [ ] Color is not the only indicator of state
-
-### Screen Reader Testing
-
-**macOS VoiceOver:**
-
-```bash
-# Enable/disable VoiceOver
-Cmd+F5
-
-# VoiceOver commands
-VO = Control+Option
-VO+A       # Read all
-VO+Arrows  # Navigate
-VO+Space   # Activate
-VO+U       # Rotor (element lists)
-```
-
-### Debugging Tools
-
-Use the accessibility tree dump for debugging:
+A radio option with its state and set position, from `src/examples/accessible_form.zig`
+(the visual children are elided):
 
 ```zig
-// In debug builds, dump the a11y tree
-if (builtin.mode == .Debug) {
-    const tree = window.a11y.getTree();
-    for (tree.elements[0..tree.element_count]) |elem| {
-        std.debug.print("Role: {s}, Name: {s}\n", .{
-            @tagName(elem.role),
-            elem.name orelse "(none)",
-        });
+cx.render(ui.box(.{
+    .key = .{ .name = self.label },
+    .style = .{ .direction = .row, .gap = 8, .alignment = .center_cross },
+    .on_click = self.on_select,
+    .a11y = .{
+        .role = .radio,
+        .label = self.label,
+        .checked = self.selected,
+        .pos_in_set = self.pos_in_set,
+        .set_size = self.set_size,
+    },
+}, .{
+    // ... the circle and the label text ...
+}));
+```
+
+The enclosing radio group is a box with `.a11y = .{ .role = .group, .label = self.label }`.
+
+Keyboard access is separate from the annotation. Tab moves focus in tree order among boxes
+with `focusable = true`, and nothing turns Enter or Space into `on_click`. A custom control
+that keyboard users must reach needs `focusable = true` and an `on_key` handler of its own.
+
+## Announcements and live regions
+
+### Announcements
+
+A handler that takes `*Effects` can ask the screen reader to speak. From
+`src/examples/accessible_form.zig`, wired with `cx.on(State.submit, .{})`:
+
+```zig
+/// Announces the outcome: errors assertively, success politely.
+pub fn submit(self: *State, effects: *Effects) void {
+    if (self.validate()) {
+        self.form_submitted = true;
+        self.show_success = true;
+        effects.announce("Form submitted successfully!", .polite);
+    } else {
+        effects.announce("Please fix the errors in the form", .assertive);
     }
 }
 ```
 
----
+The rules, all asserted or enforced in `src/core/handler.zig` and `src/core/records.zig`:
 
-## Performance
+- The text must not be empty, and the politeness must be `.polite` or `.assertive`.
+- One announcement per handler call.
+- The text is copied after the handler returns, so point it at a constant or app state,
+  not at a buffer on the handler's stack.
+- The next built frame carries the announcement, and only that frame.
+- Past 16 announcements or 1,024 bytes between two builds the app panics, naming the pool.
 
-### Budget
+`.polite` waits for the screen reader to finish speaking. `.assertive` interrupts it.
 
-| Metric                           | Target  |
-| -------------------------------- | ------- |
-| Tree construction (100 elements) | < 50μs  |
-| Dirty detection (100 elements)   | < 10μs  |
-| Fingerprint computation          | < 100ns |
-| macOS sync (10 dirty)            | < 500μs |
-| Web DOM sync (10 dirty)          | < 1ms   |
-| Memory overhead                  | < 500KB |
+### Live regions
 
-### Limits
+An element is a live region when its `live` is `.polite` or `.assertive`. Roles `.alert`
+and `.status` are live by default (assertive and polite) even with `live = .off`.
 
-```zig
-// src/accessibility/constants.zig
-pub const MAX_ELEMENTS = 2048;        // Max elements per frame
-pub const MAX_DEPTH = 64;             // Max nesting depth
-pub const MAX_ANNOUNCEMENTS = 8;      // Max announcements per frame
-pub const MAX_DIRTY_SYNC_PER_FRAME = 64;  // Max dirty syncs per frame
-```
+The tree announces a live region when an element it already knows changes its value,
+description, or state. It speaks the `value`, or the `label` when there is no value. It
+does not announce an element that has just appeared, and since `label` is part of an
+element's identity, a changed label counts as a new element. So:
 
-### Best Practices
+- Keep a live region's `label` fixed and put the changing text in `value`.
+- For a message that appears, such as a validation error, also call `effects.announce`
+  from the handler that caused it.
 
-1. **Use built-in components** - They're already optimized
-2. **Avoid deep nesting** - Keep tree depth reasonable
-3. **Batch announcements** - Don't spam live regions
-4. **Use fingerprints** - Let the system handle identity
-5. **Check `isA11yEnabled()`** - Skip expensive a11y work when disabled
-
----
-
-## API Reference
-
-### Builder Methods
+`accessible_form` does both. Its error message is an assertive alert:
 
 ```zig
-/// Begin an accessible element
-/// Returns true if a11y is enabled and element was pushed
-pub fn accessible(self: *Builder, config: AccessibleConfig) bool
+/// An assertive live region, so the error is read when it appears.
+const ErrorMessage = struct {
+    message: []const u8,
 
-/// End current accessible element
-pub fn accessibleEnd(self: *Builder) void
-
-/// Announce a message to screen readers
-pub fn announce(self: *Builder, message: []const u8, priority: Live) void
-
-/// Check if accessibility is enabled
-pub fn isA11yEnabled(self: *Builder) bool
-```
-
-### AccessibleConfig
-
-```zig
-pub const AccessibleConfig = struct {
-    // Semantics
-    role: Role, // required - no default
-    name: ?[]const u8 = null,
-    description: ?[]const u8 = null,
-    value: ?[]const u8 = null,
-
-    // State
-    state: State = .{},
-    live: Live = .off,
-    heading_level: HeadingLevel = .none,
-
-    // Range values (for sliders, progress bars)
-    value_min: ?f32 = null,
-    value_max: ?f32 = null,
-    value_now: ?f32 = null,
-
-    // Set position (for tabs, list items)
-    pos_in_set: ?u16 = null,
-    set_size: ?u16 = null,
-
-    // Identity: optional layout_id for bounds correlation (none = no correlation)
-    layout_id: LayoutId = LayoutId.none,
-
-    // Relationships - string IDs resolved to element indices
-    labelled_by_id: ?[]const u8 = null,  // aria-labelledby
-    described_by_id: ?[]const u8 = null, // aria-describedby
-    controls_id: ?[]const u8 = null,     // aria-controls
+    pub fn render(self: ErrorMessage, cx: *Cx) void {
+        assert(self.message.len > 0);
+        cx.render(ui.box(.{
+            .style = .{ .direction = .row, .gap = 4, .alignment = .center_cross },
+            .a11y = .{ .role = .alert, .label = self.message, .live = .assertive },
+        }, .{
+            ui.text("\u{26A0}", .{ .size = 12, .color = .{ .rgba = error_color } }),
+            ui.text(self.message, .{ .size = 12, .color = .{ .rgba = error_color } }),
+        }));
+    }
 };
 ```
 
-### Role Enum
+The alert appears in the same frame as the `submit` announcement above, which is what the
+screen reader speaks.
 
-See [Roles](#roles) section above.
+## Roles, states, and live values
 
-### State Struct
+These lists are copied from `src/accessibility/types.zig`.
 
-See [States](#states) section above.
+`Role`:
 
-### Live Enum
+- Atomic widgets: `button`, `checkbox`, `radio`, `switch_`, `link`.
+- Text input: `textbox` (single line), `textarea` (multi-line), `searchbox`, `spinbutton`.
+- Selection: `combobox`, `listbox`, `option`, `menu`, `menuitem`, `menubar`.
+- Navigation: `tab`, `tablist`, `tabpanel`.
+- Disclosure: `tree`, `treeitem`.
+- Sliders: `slider`, `scrollbar`.
+- Structure: `group`, `region`, `dialog`, `alertdialog`, `toolbar`, `tooltip`.
+- Status: `alert`, `status`, `progressbar`.
+- Document: `heading`, `paragraph`, `list`, `listitem`, `img`, `separator`.
+- Special: `presentation` (explicitly not accessible), `none`.
 
-```zig
-pub const Live = enum(u2) {
-    off = 0,       // No announcements
-    polite = 1,    // Announce when idle
-    assertive = 2, // Interrupt immediately
-};
-```
+Each role maps to a platform role in `Role.toNSRole`, `Role.toUiaControlType`, and
+`Role.toAriaRole`.
 
----
+`State` is a 16-bit packed struct: `focused`, `selected`, `checked`, `pressed`, `expanded`,
+`disabled`, `readonly`, `required`, `invalid`, `busy`, `hidden`, `has_popup`. The core sets
+`focused` from keyboard focus and copies `checked`, `disabled`, `expanded`, and
+`has_popup` from `ui.A11y`. `ui.A11y` has no field for the other six, so they are always
+false in 0.4.0.
+
+`Live`: `off`, `polite`, `assertive`.
+
+`HeadingLevel` (the type of `ui.A11y.heading_level`): `none`, `h1`, `h2`, `h3`, `h4`, `h5`,
+`h6`.
+
+## Platform bridges
+
+All bridges live in `src/accessibility/`.
+
+| Platform | Bridge               | API              | Status                                     |
+| -------- | -------------------- | ---------------- | ------------------------------------------ |
+| macOS    | `mac_bridge.zig`     | NSAccessibility  | Read-only tree and announcements           |
+| Windows  | `windows_bridge.zig` | UI Automation    | Read-only tree and announcements           |
+| Web      | `web_bridge.zig`     | Hidden ARIA DOM  | Partial attributes and announcements       |
+| Linux    | none                 | none             | No screen-reader support (decision 12)     |
+
+**macOS.** The bridge keeps a pool of `NSAccessibilityElement` objects keyed by
+fingerprint. It sets role, label, value (a toggle without a value reports `checked` as 0 or
+1), enabled, focused, screen frame, parent, and children. Text fields also answer the
+selected range, character count, and line and range queries. It posts focus-changed,
+value-changed, and selected-text-changed notifications, and sends announcements with high
+priority for `.assertive` and medium for `.polite`. It does not expose `description`,
+`heading_level`, `expanded`, `has_popup`, or set positions. It runs only while
+`NSWorkspace.isVoiceOverEnabled` is true.
+
+**Windows.** The bridge serves UI Automation providers from a snapshot of the tree. It
+exposes control type, name, help text (`description`), focus, enabled, live setting,
+heading level, set position and size, ARIA role, bounds in screen pixels, and hit testing.
+Patterns by role: Value, Range Value, Toggle, Expand Collapse, and Selection Item.
+Announcements are notification events, which need Windows 10 1709. It runs once a client
+asks for the root or while `UiaClientsAreListening` is true. See `docs/windows-port.md` for
+the full design.
+
+**Web.** The bridge mirrors the tree into a visually hidden DOM under `#gooey-a11y-root`
+with ARIA roles. It sets `aria-label`, the state attributes (`aria-checked`,
+`aria-disabled`, `aria-expanded`, `aria-haspopup`, and the others from `State`), bounds,
+and DOM focus, and speaks announcements through a live region. It does not set the value,
+`description`, heading level, `live`, or set positions. The web host always reports a
+screen reader as present, so the tree is published on every frame.
+
+**Linux.** There is no bridge. The AT-SPI bridge never joined the accessibility bus, so it
+was removed rather than kept as a stub. Frames still record accessibility nodes (the tests
+read them), but nothing is published, and Orca cannot see a Gooey app.
+
+No bridge supports actions. A screen reader cannot press, toggle, set a value, expand, or
+move focus through the accessibility API; users fall back to the keyboard and pointer.
+
+## Capacity limits
+
+| Limit                           | Value                          | Past the limit              |
+| ------------------------------- | ------------------------------ | --------------------------- |
+| `build.element_count_frame_max` | 512 to 16,383 by profile       | Panics: pool "a11y nodes"   |
+| `build.text_bytes_frame_max`    | 16 KiB to 4 MiB by profile     | Panics: pool "text bytes"   |
+| `MAX_ELEMENTS`                  | 2,048 tree elements            | Panics: tree full           |
+| `MAX_DEPTH`                     | 64 nested accessible boxes     | Panics: tree full           |
+| `Announcements.count_max`       | 16 between two builds          | Panics: announcement pool   |
+| `Announcements.bytes_max`       | 1,024 bytes between two builds | Panics: announcement pool   |
+| `MAX_ANNOUNCEMENTS`             | 8 per published frame          | The rest are dropped        |
+| `poll_interval_ns`              | 1 s                            | None: it is the poll period |
+
+Where they are declared:
+
+- `build.*` are fields of the app's `ResourceLimits` (`src/core/limits.zig`). By profile,
+  `nano`, `small`, `standard`, `large`, and `ceiling`: elements 512, 2,048, 4,096, 16,383,
+  and 16,383; text bytes 16 KiB, 64 KiB, 256 KiB, 1 MiB, and 4 MiB. Accessibility nodes
+  share the frame's element capacity, and their strings share its text bytes.
+- `MAX_ELEMENTS`, `MAX_DEPTH`, and `MAX_ANNOUNCEMENTS` are in
+  `src/accessibility/constants.zig`.
+- `Announcements.count_max` and `bytes_max` are in `src/core/records.zig`.
+- `poll_interval_ns` is in `src/core/screen_reader.zig`.
+
+The tree's 2,048 elements are fixed, not a profile field. From `standard` up, a frame may
+hold more elements than the tree, so an app with more than 2,048 accessible boxes in one
+frame panics as soon as a screen reader runs. The tree check applies only while one runs.
+
+The 8 forwarded announcements include those the tree makes for live regions; the
+explicit announcements are queued first.
+
+The Windows bridge adds its own bounds (`windows_snapshot.zig`, `windows_provider.zig`):
+`name_bytes_max` 256, `value_bytes_max` 512, and `description_bytes_max` 256, truncated at
+a code point boundary; `change_count_max` 128 property events per frame, past which it
+invalidates the whole tree; and `provider_count_max` 4,096 providers, past which it
+returns `E_OUTOFMEMORY` to the client and warns once instead of panicking, because the
+demand comes from another process.
+
+## Testing
+
+### Manual checklist
+
+- Every control a pointer user can operate has a role and a spoken name.
+- Visible text that matters is named by an enclosing box's `label`.
+- `checked`, `disabled`, and `expanded` follow the same state that draws the control.
+- Headings use `heading_level`, and groups of related controls use `.group`.
+- Errors and results are announced when they appear.
+- Tab reaches every text field in a sensible order.
+- Color is not the only signal of state or error.
+
+### Screen readers
+
+Run the form with `zig build run-accessible-form` on macOS or Windows.
+
+- **macOS, VoiceOver.** Toggle with Cmd+F5. VO is Control+Option: VO+arrows move, VO+Space
+  activates, VO+U opens the rotor. VoiceOver ignores synthetic key events, so step through
+  by hand.
+- **Windows, Narrator or NVDA.** Start Narrator with Ctrl+Win+Enter. So far the tree has
+  been checked only with the .NET `UIAutomationClient` from PowerShell, not with Narrator
+  or NVDA.
+- **Web.** `zig build wasm` builds the todo example for the browser. Inspect
+  `#gooey-a11y-root` in the browser's accessibility panel, or use VoiceOver or NVDA in the
+  browser.
+- **Linux.** There is nothing to test with Orca.
+
+### In-repo tests
+
+`zig build test` runs these, among others:
+
+- `src/testing/goldens/core_checks.zig`, "accessible_form validates, announces, and
+  submits on the core": drives the form through the router and checks roles, names,
+  descriptions, set positions, `checked` and `expanded`, the assertive announcement, and
+  the success alert.
+- The same file, "setTheme reaches the next build and announcements ride exactly one
+  frame": checks that an announcement is carried by exactly one frame and that
+  `heading_level`, `live`, and `href` reach the rendered frame.
+- The golden files in `src/testing/goldens/` print an `a11y` section after each step with
+  every node's role, bounds, and name. `zig build goldens` rewrites them.
+- `src/accessibility/` has unit and integration tests for the tree, fingerprints, and
+  bridges; `zig build test-windows` covers the Windows snapshot, providers, and bridge.
+- `zig build bench-accessibility` runs the accessibility benchmarks.
+
+These tests read the rendered frame through `gooey.internals`, which is fine for tests in
+this repository but is not API.
+
+## Known gaps
+
+- Tab reaches only boxes with `focusable = true`. Of the components, that is `TextInput`,
+  `TextArea`, and `CodeEditor`; `Button`, `Checkbox`, `Select`, and the radio options in
+  `accessible_form` are reachable only with the pointer.
+- `Select` closes only by choosing an option, clicking the trigger, or clicking outside. It
+  has no key handling, so Esc does not close it, and its options carry no `a11y`.
+- No bridge supports actions (press, toggle, set value, expand, focus).
+- Linux has no screen-reader support (contract decision 12).
+- macOS: VoiceOver reports a 0x0 frame for many elements, including headings and radio
+  buttons. It does not read plain arrow or Option+arrow caret moves in a `TextInput`,
+  because the bridge lacks per-character bounds and text attributes.
+- Windows: not yet tried with Narrator or NVDA. Text fields expose only the Value pattern;
+  relationships and selection containers are not exposed.
+- Web: value, `description`, heading level, and set positions are not exported, and no
+  web build of `accessible_form` exists.
+- `href` reaches the rendered frame but no bridge reads it.
+- `State.selected`, `pressed`, `readonly`, `required`, `invalid`, `busy`, and `hidden` have
+  no `ui.A11y` field, so the core never sets them.
+- There is no public query for whether a screen reader is running (contract C8, deferred).
+- The todo example's row checkbox has no name.
 
 ## References
 
-- [WAI-ARIA 1.2 Specification](https://www.w3.org/TR/wai-aria-1.2/)
+- [WAI-ARIA 1.2](https://www.w3.org/TR/wai-aria-1.2/)
 - [ARIA Authoring Practices Guide](https://www.w3.org/WAI/ARIA/apg/)
-- [Apple Accessibility Programming Guide](https://developer.apple.com/documentation/accessibility)
-- [Web Content Accessibility Guidelines (WCAG)](https://www.w3.org/WAI/standards-guidelines/wcag/)
+- [Apple Accessibility](https://developer.apple.com/documentation/accessibility)
+- [UI Automation](https://learn.microsoft.com/en-us/windows/win32/winauto/entry-uiauto-win32)
+- [WCAG](https://www.w3.org/WAI/standards-guidelines/wcag/)
