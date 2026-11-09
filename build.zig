@@ -288,30 +288,6 @@ pub fn build(b: *std.Build) void {
         bench_step.dependOn(&bench_run.step);
 
         // =====================================================================
-        // Context Benchmarks
-        // =====================================================================
-
-        const context_bench_exe = b.addExecutable(.{
-            .name = "context-bench",
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("src/context/benchmarks.zig"),
-                .target = target,
-                .optimize = .fast,
-                .imports = &.{
-                    .{ .name = "gooey", .module = bench_gooey_mod },
-                    .{ .name = "bench", .module = bench_mod },
-                },
-            }),
-        });
-
-        const context_bench_step = b.step("bench-context", "Run context module benchmarks");
-        const context_bench_run = b.addRunArtifact(context_bench_exe);
-        if (bench_json_dir) |dir| {
-            context_bench_run.addArgs(&.{ "--json-dir", dir });
-        }
-        context_bench_step.dependOn(&context_bench_run.step);
-
-        // =====================================================================
         // Core Benchmarks
         // =====================================================================
 
@@ -432,38 +408,6 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run_animation_bench_tests.step);
 
         // =====================================================================
-        // Element-State Benchmarks (the keyed per-element retained-state pool)
-        // =====================================================================
-
-        const element_states_bench_exe = b.addExecutable(.{
-            .name = "element-states-bench",
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("src/context/element_states_benchmarks.zig"),
-                .target = target,
-                .optimize = .fast,
-                .imports = &.{
-                    .{ .name = "gooey", .module = bench_gooey_mod },
-                    .{ .name = "bench", .module = bench_mod },
-                },
-            }),
-        });
-
-        const element_states_bench_step = b.step("bench-element-states", "Run element-state pool benchmarks");
-        const element_states_bench_run = b.addRunArtifact(element_states_bench_exe);
-        if (bench_json_dir) |dir| {
-            element_states_bench_run.addArgs(&.{ "--json-dir", dir });
-        }
-        element_states_bench_step.dependOn(&element_states_bench_run.step);
-
-        // Element-state `validate:` tests (lookup correctness + the steady-state
-        // zero-allocation invariant) run only in Debug — wire them into `test`.
-        const element_states_bench_tests = b.addTest(.{
-            .root_module = element_states_bench_exe.root_module,
-        });
-        const run_element_states_bench_tests = b.addRunArtifact(element_states_bench_tests);
-        test_step.dependOn(&run_element_states_bench_tests.step);
-
-        // =====================================================================
         // Accessibility Benchmarks (per-frame fingerprint + tree diff)
         // =====================================================================
 
@@ -501,12 +445,10 @@ pub fn build(b: *std.Build) void {
 
         const bench_all_step = b.step("bench-all", "Run all benchmark suites");
         bench_all_step.dependOn(&bench_run.step);
-        bench_all_step.dependOn(&context_bench_run.step);
         bench_all_step.dependOn(&core_bench_run.step);
         bench_all_step.dependOn(&text_bench_run.step);
         bench_all_step.dependOn(&scene_bench_run.step);
         bench_all_step.dependOn(&animation_bench_run.step);
-        bench_all_step.dependOn(&element_states_bench_run.step);
         bench_all_step.dependOn(&accessibility_bench_run.step);
 
         // =====================================================================
@@ -727,31 +669,6 @@ pub fn build(b: *std.Build) void {
         bench_step.dependOn(&bench_run.step);
 
         // =====================================================================
-        // Context Benchmarks
-        // =====================================================================
-
-        const context_bench_exe = b.addExecutable(.{
-            .name = "context-bench",
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("src/context/benchmarks.zig"),
-                .target = target,
-                .optimize = .fast,
-                .imports = &.{
-                    .{ .name = "gooey", .module = bench_gooey_mod },
-                    .{ .name = "bench", .module = bench_mod },
-                },
-            }),
-        });
-        linkLinuxLibraries(context_bench_exe, linux_backend);
-
-        const context_bench_step = b.step("bench-context", "Run context module benchmarks");
-        const context_bench_run = b.addRunArtifact(context_bench_exe);
-        if (bench_json_dir) |dir| {
-            context_bench_run.addArgs(&.{ "--json-dir", dir });
-        }
-        context_bench_step.dependOn(&context_bench_run.step);
-
-        // =====================================================================
         // Core Benchmarks
         // =====================================================================
 
@@ -877,43 +794,6 @@ pub fn build(b: *std.Build) void {
         const run_animation_bench_tests = b.addRunArtifact(animation_bench_tests);
 
         // =====================================================================
-        // Element-State Benchmarks (the keyed per-element retained-state pool)
-        // =====================================================================
-
-        const element_states_bench_exe = b.addExecutable(.{
-            .name = "element-states-bench",
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("src/context/element_states_benchmarks.zig"),
-                .target = target,
-                .optimize = .fast,
-                .imports = &.{
-                    .{ .name = "gooey", .module = bench_gooey_mod },
-                    .{ .name = "bench", .module = bench_mod },
-                },
-            }),
-        });
-        linkLinuxLibraries(element_states_bench_exe, linux_backend);
-
-        const element_states_bench_step = b.step("bench-element-states", "Run element-state pool benchmarks");
-        const element_states_bench_run = b.addRunArtifact(element_states_bench_exe);
-        if (bench_json_dir) |dir| {
-            element_states_bench_run.addArgs(&.{ "--json-dir", dir });
-        }
-        element_states_bench_step.dependOn(&element_states_bench_run.step);
-
-        // Element-state `validate:` tests run only in Debug. The dependOn is
-        // added in the Tests section below.
-        const element_states_bench_tests = b.addTest(.{
-            .root_module = element_states_bench_exe.root_module,
-            .use_llvm = true,
-        });
-        linkLinuxLibraries(element_states_bench_tests, linux_backend);
-        if (!skip_shader_compile) {
-            element_states_bench_tests.step.dependOn(compile_shaders_step);
-        }
-        const run_element_states_bench_tests = b.addRunArtifact(element_states_bench_tests);
-
-        // =====================================================================
         // Accessibility Benchmarks (per-frame fingerprint + tree diff)
         // =====================================================================
 
@@ -956,12 +836,10 @@ pub fn build(b: *std.Build) void {
 
         const bench_all_step = b.step("bench-all", "Run all benchmark suites");
         bench_all_step.dependOn(&bench_run.step);
-        bench_all_step.dependOn(&context_bench_run.step);
         bench_all_step.dependOn(&core_bench_run.step);
         bench_all_step.dependOn(&text_bench_run.step);
         bench_all_step.dependOn(&scene_bench_run.step);
         bench_all_step.dependOn(&animation_bench_run.step);
-        bench_all_step.dependOn(&element_states_bench_run.step);
         bench_all_step.dependOn(&accessibility_bench_run.step);
 
         // =====================================================================
@@ -1021,7 +899,6 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run_bench_tests.step);
         test_step.dependOn(&run_scene_bench_tests.step);
         test_step.dependOn(&run_animation_bench_tests.step);
-        test_step.dependOn(&run_element_states_bench_tests.step);
         test_step.dependOn(&run_accessibility_bench_tests.step);
         const overflow_exe = addOverflowChecks(b, mod, target, optimize, test_step);
         linkLinuxLibraries(overflow_exe, linux_backend);
@@ -1567,12 +1444,6 @@ fn addFailFastChecks(
     });
 
     const checks = [_]struct { mode: []const u8, stderr: []const u8 }{
-        .{ .mode = "deferred-queue", .stderr = "Window pool 'deferred_commands' exhausted: " ++
-            "capacity 32, 32 in use, 1 requested." },
-        .{ .mode = "dispatch-nodes", .stderr = "DispatchTree pool 'nodes' could not grow: " ++
-            "capacity 0, 0 in use, 1 requested (OutOfMemory during render)" },
-        .{ .mode = "focus-order", .stderr = "FocusManager pool 'focus_order' could not grow: " ++
-            "capacity 0, 0 in use, 1 requested (OutOfMemory during render)" },
         .{ .mode = "font-variant", .stderr = "TextSystem: font variant 'light' (font_id 4) " ++
             "is not loaded; FontLimits.variants loads 6 faces: regular, medium, semibold, bold, " ++
             "italic, bold_italic." },
