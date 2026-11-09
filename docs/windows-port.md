@@ -78,8 +78,9 @@ file dialogs, cursors, accessibility (UI Automation), and frame pacing on a rend
   Everything else is new and Windows-only: `src/platform/windows/`,
   `text/backends/directwrite/`, `image/backends/wic/`, `accessibility/windows_*.zig`,
   `examples/clipboard.zig`, and `src/windows_tests.zig`.
-- **Boundary.** The Windows `mod.zig` pins `contract.verifyBackend(@This())`, so every
-  contract change in 0.4.0 is a compile error naming the declaration.
+- **Boundary.** The core host imports the window and platform files directly and calls
+  only what it needs. The 0.3.1 platform contract (`contract.verifyBackend`) was deleted
+  in phase 6.
 - **Separate PRs.** Moving the Vulkan renderer out of `src/platform/linux/` and renaming
   `svg/backends/cairo.zig` are behaviour-neutral moves; keep them out of feature work.
 
@@ -121,40 +122,23 @@ the bindings. Validation layers ship with the SDK, so without it Debug builds lo
 | `src/platform/windows/win32.zig` | Hand-written `kernel32`/`user32` bindings, layouts pinned |
 | `src/platform/windows/input.zig` | `Translator.translate`: one `WM_*` → one Gooey event |
 | `src/platform/windows/ime.zig` | IMM32 bindings, composition decoding, candidate placement |
-| `src/platform/windows/platform.zig` | `WindowsPlatform`: window class, cursors, message loop |
-| `src/platform/windows/window.zig` | `Window` and `windowProc`: `HWND`, renderer, contract |
-| `src/platform/windows/mod.zig` | Backend namespace; `contract.verifyBackend`, 64-bit check |
+| `src/platform/windows/platform.zig` | `WindowsPlatform`: window class, cursors, frame timer |
+| `src/platform/windows/window.zig` | `Window` and `windowProc`: `HWND`, renderer, core binding |
+| `src/platform/windows/mod.zig` | Backend namespace, 64-bit check |
 | `src/windows_tests.zig` | Test root (in `src/` so it can import across subsystems) |
 
-- **Loop turn.** Each turn of `run` does bounded work: the owner's hook, at most
-  `message_batch_max` (256) messages, timed-redraw deadlines, then at most one frame per
-  open window. It sleeps in `MsgWaitForMultipleObjectsEx` until the next message, due
-  frame, or deadline, 16 ms at most. The wake mask is `QS_ALLINPUT` including
-  `QS_TOUCH | QS_POINTER` (0x1CFF), so touch and pen input wake the loop too.
-- **Pacing.** The swapchain prefers mailbox presentation, which never blocks, so a 60 Hz
-  cap (`frame_period_ns_min`) keeps an animating window from saturating the GPU.
-  Rendering is otherwise on demand. The wait ends on a waitable timer armed each turn
-  for the exact deadline, created with `CREATE_WAITABLE_TIMER_HIGH_RESOLUTION`
-  (Windows 10 1803+). A millisecond timeout alone expires on the 15.6 ms system tick,
-  which turned a 16.7 ms frame wait into 31 ms. Older systems fall back, with a warning,
-  to a regular timer on the tick. `timeBeginPeriod` is avoided: it changes the tick for
-  the whole system. Frames are paced on a slot grid (`frameSlotNs`): a frame that
-  finishes late within its period keeps its slot, so render time and wake-up latency
-  do not stretch the period; a stall restarts the grid instead of bursting. Measured
-  on the UHD 620, maximized at 1920x974 device pixels and 150%, continuously animating
-  `showcase` in ReleaseFast: 57 fps before the slot grid, 60.0 fps after, the panel's
-  maximum (1920x1080 at 60 Hz).
-- **Presentable.** A window renders only while open, not minimized, and with a nonzero
-  client area; a zero-area client is treated like a minimized one. The shared renderer's
-  `resize` swallows swapchain errors, so the window checks the swapchain's framebuffers
-  afterwards and, on failure, logs once and retries the rebuild once per frame period
-  instead of drawing into it.
+- **0.3.1 loop.** The platform's own message loop, its 60 Hz slot-grid pacing, and
+  drawing on the main thread (`WM_PAINT` included) were deleted in phase 6. The core
+  host's loop and render thread replace them; see "Core host" below.
+- **Presentable.** A window takes frames only while open, not minimized, and with a
+  nonzero client area (`isPresentable`); a zero-area client is treated like a minimized
+  one. The shared renderer's `resize` swallows swapchain errors, so the host checks the
+  swapchain's framebuffers afterwards and, on failure, logs once and skips the frame.
 - **Live move and resize.** Dragging the title bar or an edge runs a modal loop inside
-  `DefWindowProcW`, with the platform loop blocked in `DispatchMessageW` below it.
+  `DefWindowProcW`, with the host's loop blocked in `DispatchMessageW` below it.
   `WM_ENTERSIZEMOVE` starts a 10 ms window timer and `WM_EXITSIZEMOVE` kills it; each
-  `WM_TIMER` runs `WindowsPlatform.runModalTurn` (the owner's hook, timed redraws, and
-  every requested frame), so animations and async completions continue during the drag.
-  A window closed mid-drag stops its timer before the hook can reclaim it.
+  `WM_TIMER` runs one host turn, so animations and async completions continue during the
+  drag. A window closed mid-drag stops its timer instead.
 - **Window size budget.** A Win32 surface's swapchain extent is always the client size,
   so the budget is enforced on the window: `WM_GETMINMAXINFO` caps the track and
   maximized sizes at `ResourceLimits.window` (framebuffer maximum at the current DPI),
@@ -168,16 +152,16 @@ the bindings. Validation layers ship with the SDK, so without it Debug builds lo
   the real releases go to the window that took focus.
 - **DPI.** Per-monitor v2. `size` is the client area in device pixels divided by
   `dpi / 96`. `WM_DPICHANGED` adopts the new scale and suggested rectangle; a window that
-  opens on a monitor whose DPI differs from the system DPI is resized once. The next
-  frame's `WindowContext.syncWindowMetrics` passes the new scale to
-  `AppResources.setScaleFactor`, so glyphs, icons, and images rasterize at it. An app
+  opens on a monitor whose DPI differs from the system DPI is resized once. The core host
+  reads the new scale at its next tick (see "Sizes" below), so glyphs, icons, and images
+  rasterize at it. An app
   has one window (contract decision 14), so one scale serves the atlases. An infinite
   `max_size` axis means no limit, and every client extent is clamped to 32,767 device
   pixels (`WM_SIZE` and mouse messages carry 16-bit sizes and coordinates).
 - **Swapchain loss.** The shared renderer resets a frame's fence only after acquiring an
   image, so an out-of-date acquire skips the frame without leaving the fence unsignalled
-  (which hung the next `render` or `resize`); the window requests the frame that
-  rebuilds the swapchain. `VK_ERROR_DEVICE_LOST` and `VK_ERROR_SURFACE_LOST_KHR` panic
+  (which hung the next `render` or `resize`); the core host draws the frame again on the
+  rebuilt swapchain. `VK_ERROR_DEVICE_LOST` and `VK_ERROR_SURFACE_LOST_KHR` panic
   with the result code instead of reaching `unreachable`. Shared with Linux.
 - **Fractional scale.** The swapchain matches the client area exactly, but the shared
   renderer takes the viewport as whole logical pixels, so the window passes
@@ -186,12 +170,11 @@ the bindings. Validation layers ship with the SDK, so without it Debug builds lo
   at the right and bottom edges. Fixing it needs the shared `VulkanRenderer` to take a
   fractional logical viewport (or derive it from the swapchain extent and scale); there
   is no exact answer through its current API.
-- **Close.** `WM_CLOSE` runs the veto, records the close, and hides the window. The `HWND`
-  is destroyed in `deinit`, never from inside its own dispatch.
+- **Close.** `WM_CLOSE` runs the core host's close handler, records the close, and hides
+  the window. The `HWND` is destroyed in `deinit`, never from inside its own dispatch.
 - **Appearance.** `setAppearance` stores the request and does nothing else: the frame
   follows the system theme, and dark title bars (`DwmSetWindowAttribute`) are not
-  implemented. `PlatformCapabilities` has no appearance flag, so callers cannot detect
-  this.
+  implemented.
 - `platform/mod.zig` keys `DisplayLink` and the `macos` namespace on `is_macos`, not "not
   web and not Linux", which would select macOS code on Windows.
 
@@ -219,8 +202,8 @@ do (contract rule 1). `gooey.App.main` selects it with one `.windows` arm in
   thread rebuilds the swapchain for the viewport the frame was built at, rounded up to
   whole logical pixels as before. A minimized or zero-area window skips its frames;
   restoring it pushes a resize so the next frame is drawn.
-- **Live move and resize.** The modal loop's timer runs the host's turn instead of
-  `runModalTurn`, so the app keeps ticking during the drag.
+- **Live move and resize.** The modal loop's timer runs the host's turn, so the app keeps
+  ticking during the drag.
 - **IME.** Each turn the host reads `Query.imeCursorRect` from the rendered frame: the
   window's input context is attached (`ImmAssociateContextEx`) only while a text field is
   focused, so keys typed elsewhere never start a composition no field shows, and the

@@ -14,9 +14,9 @@
 //!
 //! `isActive` is true once any client has asked for the root, or while
 //! `UiaClientsAreListening` reports a subscribed client such as a screen
-//! reader. Only then does the accessibility system build the tree. A root
-//! request also makes the window render for one screen reader poll interval
-//! (`uia.activation_frame_count`), so an idle app activates promptly.
+//! reader. Only then does the accessibility system build the tree. The first
+//! root request also tells the core host, which polls for a screen reader at
+//! its next frame, so an idle app activates promptly.
 //!
 //! ## Resource sketch (CLAUDE.md §7)
 //!
@@ -324,8 +324,6 @@ fn comEnter() bool {
 }
 
 comptime {
-    // The window's activation burst covers exactly one poll interval.
-    assert(uia.activation_frame_count == constants.SCREEN_READER_CHECK_INTERVAL);
     assert(announcement_bytes_max <= provider_mod.bstr_bytes_max);
 }
 

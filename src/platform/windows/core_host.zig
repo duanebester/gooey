@@ -213,9 +213,12 @@ pub const Host = struct {
         self.viewport_sent = .{ .width = 0, .height = 0, .scale_factor = 0 };
         self.screen_reader_requested = false;
         self.present_due_ns = 0;
-        self.surface_width = @intFromFloat(@ceil(options.window.size.width));
-        self.surface_height = @intFromFloat(@ceil(options.window.size.height));
-        self.surface_scale = @floatCast(options.window.scale_factor);
+        // No size a frame can have, so the first frame sizes the swapchain to
+        // its viewport: `WM_SIZE` may have changed the client area after
+        // `Window.init` built the swapchain and before this host existed.
+        self.surface_width = 0;
+        self.surface_height = 0;
+        self.surface_scale = 0;
         self.swapchain_failure_logged = false;
         try self.initHandles();
         errdefer self.deinitHandles();

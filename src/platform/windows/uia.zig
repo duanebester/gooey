@@ -438,12 +438,6 @@ pub const Host = struct {
     client_requested: bool = false,
 };
 
-/// Frames the window renders after a root request even with nothing to draw,
-/// so the accessibility system's periodic screen reader poll runs promptly in
-/// an idle app. Equal to `constants.SCREEN_READER_CHECK_INTERVAL`, which the
-/// bridge asserts.
-pub const activation_frame_count: u8 = 60;
-
 // =============================================================================
 // Functions
 // =============================================================================
