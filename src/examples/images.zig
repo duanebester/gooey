@@ -77,7 +77,12 @@ pub const corner_radius = [_]Item{
 
 pub const effects = [_]Item{
     .square("normal", 80, rounded(8)),
-    .square("tint", 80, .{ .fit = .contain, .corners = .all(8), .tint = Color.hex(0x4488ff) }),
+    // Tint multiplies each pixel, so blue over the orange logo reads olive.
+    .square("tint (multiply)", 80, .{
+        .fit = .contain,
+        .corners = .all(8),
+        .tint = Color.hex(0x4488ff),
+    }),
     .square("grayscale", 80, .{ .fit = .contain, .corners = .all(8), .grayscale = 1 }),
     .square("50% gray", 80, .{ .fit = .contain, .corners = .all(8), .grayscale = 0.5 }),
     .square("50% opacity", 80, .{ .fit = .contain, .corners = .all(8), .opacity = 0.5 }),

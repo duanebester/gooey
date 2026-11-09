@@ -1855,6 +1855,39 @@ fn editorFolder(dir: std.Io.Dir) !void {
     try dir.writeFile(io, .{ .sub_path = "big.txt", .data = big });
 }
 
+test "code_editor's editor fills its panel at any window height" {
+    // Goal: the editor's rows follow the window, as 0.3.1's growing editor
+    // did, so none draws past its border. Method: settle at the 700 px
+    // launch height, then shrink to 635 px (the height the Windows report
+    // used) and grow to 900. At each, the editor's bottom must sit inside
+    // the panel (window less the 16 px outer and 8 px panel padding) and
+    // within one line of it, so it fills without overflowing, and the
+    // window must go idle: the resize's extra render converges.
+    const app = try testing.allocator.create(code_editor.App);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    now += 1;
+    app.tick(now);
+    const line_height = app.window.resources.text_system.getMetrics().?.line_height;
+    for ([_]f32{ 700, 635, 900 }) |height| {
+        if (height != 700) editorResize(app, &now, height);
+        const editor = nodeNamed(&app.window, .textarea, "Enter your code here...").?.bounds;
+        const panel_bottom = height - 16 - 8;
+        try testing.expect(editor.y + editor.height <= panel_bottom);
+        try testing.expect(editor.y + editor.height > panel_bottom - line_height);
+        // Settled: the one render the stale height asked for is spent, and
+        // nothing more is pending, so an idle window draws no more frames.
+        now += 1;
+        app.tick(now);
+        try testing.expect(app.window.renderDeadlineNs() == null);
+        try testing.expect(!app.window.render_requested);
+    }
+    try testing.expectEqual(core.internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
+}
+
 test "code_editor lists a folder in a List and opens its files on the core" {
     // Goal: the code_editor port end to end, with the lifecycle guard
     // proving no allocation after init. Methodology: choose a folder of 47

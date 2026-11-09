@@ -45,14 +45,9 @@ const window_height = 700;
 const outer_padding: f32 = 16;
 const panel_gap: f32 = 12;
 const panel_padding: f32 = 8;
-const header_height: f32 = 50;
-const editor_width: f32 = window_width - sidebar_width - outer_padding * 2 - panel_gap -
-    panel_padding * 2;
-const editor_height: f32 = window_height - outer_padding * 2 - header_height;
 
 comptime {
-    assert(editor_width > 0);
-    assert(editor_height > 0);
+    assert(window_width > sidebar_width + outer_padding * 2 + panel_gap);
     assert(file_bytes_max <= limits.text.editor.bytes_max);
 }
 
@@ -435,21 +430,16 @@ const EditorPanel = struct {
         }));
     }
 
-    /// The editor fills the panel: its rows are what fits above the status
-    /// bar at this font's line height.
+    /// The editor fills the panel at any window size: its rows are the
+    /// whole lines that fit above the status bar.
     fn editorView(cx: *Cx) void {
         const s = cx.state(State);
-        const line_height = cx.fontMetrics().line_height;
-        // Border and padding above and below the text, then the status bar
-        // and its one-pixel rule.
-        const chrome: f32 = 2 * 1 + 2 * 8 + 22 + 1;
-        const rows: u16 = @intFromFloat(@max(1, @floor((editor_height - chrome) / line_height)));
         cx.render(CodeEditor{
             .key = "source",
             .bind = &s.source,
             .placeholder = "Enter your code here...",
-            .width = editor_width,
-            .rows = rows,
+            .width = null,
+            .rows = null,
             .show_line_numbers = true,
             .gutter_width = 50,
             .tab_size = 4,
@@ -469,8 +459,8 @@ const EditorPanel = struct {
             .file_too_large, .line_too_long => &status_icons[2],
         };
         cx.render(ui.box(.{ .style = .{
-            .width = .{ .fixed = editor_width },
-            .height = .{ .fixed = editor_height },
+            .width = .{ .grow = 1 },
+            .height = .{ .grow = 1 },
             .background = .{ .rgba = Color.rgba(0, 0, 0, 0.2) },
             .corner_radius = .all(8),
             .gap = 16,

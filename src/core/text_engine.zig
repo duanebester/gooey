@@ -396,6 +396,10 @@ pub fn Engine(comptime kind: Kind) type {
                 } else {
                     self.moveLine(true, mods.shift);
                 },
+                // Ctrl+Home and Ctrl+End reach the text's ends, the Windows
+                // and Linux convention; plain Home and End stay on the line.
+                .home => if (editCommand(mods)) self.moveTo(0, mods.shift) else return false,
+                .end => if (editCommand(mods)) self.moveTo(self.len, mods.shift) else return false,
                 else => return false,
             }
             return true;
@@ -1185,7 +1189,17 @@ test "an area moves between lines at the preferred column" {
     try std.testing.expect(t.key(.down, .{ .shift = true }));
     try std.testing.expectEqual(@as(u32, 0), engine.selectionStart());
     try std.testing.expectEqual(@as(u32, 7), engine.selectionEnd());
-    // Home and End, and the command modifier, stay on the caret's line.
+    // Home and End, and the command modifier with Left, stay on the
+    // caret's line; with Home and End it reaches the text's ends.
+    try std.testing.expect(t.key(.end, TestOf(.area).command()));
+    try std.testing.expectEqual(@as(u32, 21), engine.cursor);
+    try std.testing.expect(t.key(.home, TestOf(.area).command()));
+    try std.testing.expectEqual(@as(u32, 0), engine.cursor);
+    try std.testing.expect(t.key(.end, .{ .shift = true, .ctrl = !uses_cmd, .cmd = uses_cmd }));
+    try std.testing.expectEqual(@as(u32, 0), engine.selectionStart());
+    try std.testing.expectEqual(@as(u32, 21), engine.selectionEnd());
+    try std.testing.expect(t.key(.home, TestOf(.area).command()));
+    try std.testing.expect(t.key(.down, .{ .shift = true }));
     try std.testing.expect(t.key(.right, .{}));
     try std.testing.expect(t.key(.right, .{}));
     try std.testing.expectEqual(@as(u32, 8), engine.cursor);
