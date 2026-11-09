@@ -52,8 +52,10 @@ pub const todo = trace.Trace{
         .{ .label = "filter Active", .step = .{ .click = .{ .x = 104, .y = 143 } } },
         .{ .label = "filter Done", .step = .{ .click = .{ .x = 172, .y = 143 } } },
         .{ .label = "filter All", .step = .{ .click = .{ .x = 44, .y = 143 } } },
-        .{ .label = "hover the second Delete", .step = .{ .move = .{ .x = 155, .y = 255 } } },
-        .{ .label = "delete the second row", .step = .{ .click = .{ .x = 155, .y = 255 } } },
+        // The core's rows fill the list, so Delete sits at its right end;
+        // 0.3.1's rows fit their content, and its golden pressed x = 155.
+        .{ .label = "hover the second Delete", .step = .{ .move = .{ .x = 413, .y = 255 } } },
+        .{ .label = "delete the second row", .step = .{ .click = .{ .x = 413, .y = 255 } } },
         .{ .label = "clear completed", .step = .{ .click = .{ .x = 146, .y = 521 } } },
     },
 };

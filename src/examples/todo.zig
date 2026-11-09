@@ -4,8 +4,9 @@
 //! so its golden is compared with the 0.3.1 golden. The draft is a
 //! `TextInput` bound to `State.draft`; IME composition reaches its retained
 //! engine through the router like any key.
-//! Rows render through a component loop: `components.List` needs scrolling,
-//! which arrives in phase 4.
+//! The rows scroll in a core scroll box between the fixed header and footer,
+//! and the input fills the row beside Add, so the layout holds at any count
+//! and down to narrow windows.
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -124,32 +125,45 @@ pub fn render(cx: *Cx) void {
         .background = .{ .rgba = .rgb(0.96, 0.96, 0.97) },
     } }, .{
         ui.text("Todos", .{ .size = 28, .color = .{ .rgba = .rgb(0.1, 0.1, 0.15) } }),
-        ui.box(.{ .style = .{ .direction = .row, .gap = 8, .alignment = .center_cross } }, .{
+        ui.box(.{ .style = .{
+            .direction = .row,
+            .width = .{ .grow = 1 },
+            .gap = 8,
+            .alignment = .center_cross,
+        } }, .{
             TextInput{
                 .key = "new-todo",
                 .placeholder = "What needs doing?",
                 .bind = &s.draft,
-                .width = 360,
+                .width = null,
             },
             Button{ .label = "Add", .on_click = cx.on(State.addTodo, .{}) },
         }),
         FilterBar{},
         ui.when(s.count == 0, emptyHint),
         ui.when(s.count > 0, todoList),
-        spacer,
         Footer{},
     }));
 }
 
+/// The hint, then a spacer that holds the footer at the bottom.
 fn emptyHint(cx: *Cx) void {
     cx.render(ui.text(
         "Nothing yet \u{2014} add your first todo above.",
         .{ .size = 14, .color = .{ .rgba = .rgb(0.5, 0.5, 0.55) } },
     ));
+    cx.render(spacer);
 }
 
+/// The rows fill the space between the filters and the footer and scroll
+/// once they overflow it.
 fn todoList(cx: *Cx) void {
-    cx.render(ui.box(.{ .style = .{ .gap = 8 } }, .{TodoItems{}}));
+    cx.render(ui.box(.{ .key = .{ .name = "todo-list" }, .style = .{
+        .width = .{ .grow = 1 },
+        .height = .{ .grow = 1 },
+        .gap = 8,
+        .scroll = .{},
+    } }, .{TodoItems{}}));
 }
 
 const FilterBar = struct {
@@ -190,6 +204,7 @@ const TodoItems = struct {
 
 const row_style: ui.Style = .{
     .direction = .row,
+    .width = .{ .grow = 1 },
     .gap = 12,
     .alignment = .center_cross,
     .padding = .all(10),

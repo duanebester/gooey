@@ -662,7 +662,8 @@ pub const TextInput = struct {
     key: []const u8,
     bind: *[]const u8,
     placeholder: []const u8 = "",
-    width: f32 = 200,
+    /// Null fills the parent's free width, as `CodeEditor.width` does.
+    width: ?f32 = 200,
     padding: f32 = 8,
     border_width: f32 = 1,
     /// The unfocused border, such as an error colour; defaults to the theme's.
@@ -689,7 +690,7 @@ pub const TextInput = struct {
             .focusable = true,
             .on_key = cx.on(InputEngine.onKey, .{ .entity = handle }),
             .style = .{
-                .width = .{ .fixed = self.width },
+                .width = if (self.width) |width| .{ .fixed = width } else .{ .grow = 1 },
                 .height = .{ .fixed = metrics.line_height + inset * 2 },
                 .padding = .all(inset),
                 .background = .surface,
