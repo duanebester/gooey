@@ -141,6 +141,11 @@ pub const Host = struct {
     render_error_logged: bool,
     /// The cursor last set on the window, main thread only.
     cursor: core_element.CursorShape,
+    /// The IME caret rect of the last rendered frame `syncIme` saw, and the
+    /// marked text length the last built frame drained. Main thread only.
+    ime_rect: ?records.Rect,
+    built_frame_number: u64,
+    built_marked_length_utf16: c_ulong,
 
     pub const Options = struct {
         platform: *MacPlatform,
@@ -171,6 +176,9 @@ pub const Host = struct {
         self.stopping = .init(false);
         self.render_error_logged = false;
         self.cursor = .default;
+        self.ime_rect = null;
+        self.built_frame_number = 0;
+        self.built_marked_length_utf16 = 0;
         self.bindWindow();
         errdefer self.unbindWindow();
         self.link = try createLink(self.window);
@@ -275,6 +283,7 @@ fn mainTick(context: ?*anyopaque) callconv(.c) void {
     if (host.core.phase != .idle) return;
     host.tick_main(host.app, host.nowNs());
     applyCursor(host);
+    syncIme(host);
     host.render_deadline_ns.store(host.core.render_deadline_ns, .release);
     if (host.core.quit_requested) {
         host.stop();
@@ -287,6 +296,29 @@ fn mainTick(context: ?*anyopaque) callconv(.c) void {
     const in_flight = host.core.frame_in_flight.load(.acquire);
     const pending = host.core.render_requested or host.core.queue.count > 0;
     if (pending and !in_flight) host.scheduleTick();
+}
+
+/// AppKit pulls the IME caret through `firstRectForCharacterRange:` right
+/// after `setMarkedText:`, before the frame with that composition renders,
+/// so it reads the previous caret. When the rendered caret changes, tell
+/// AppKit to ask again, as the other hosts push the new rect.
+fn syncIme(host: *Host) void {
+    assert(host.core.phase == .idle);
+    // A frame shows the marked text its build drained, which is all of it:
+    // `setMarkedText:` runs on this thread, never inside a tick.
+    if (host.core.rendered().frame_number == host.built_frame_number) {
+        host.window.rendered_marked_length_utf16 = host.built_marked_length_utf16;
+    }
+    if (host.core.frame_number != host.built_frame_number) {
+        host.built_frame_number = host.core.frame_number;
+        host.built_marked_length_utf16 = host.window.marked_length_utf16;
+    }
+    const rect = host.query.imeCursorRect();
+    if (std.meta.eql(rect, host.ime_rect)) return;
+    host.ime_rect = rect;
+    const context = host.window.ns_view.msgSend(objc.c.id, "inputContext", .{});
+    if (context == null) return;
+    objc.Object.fromId(context).msgSend(void, "invalidateCharacterCoordinates", .{});
 }
 
 /// Set the cursor the tick resolved from the hovered record, only when it

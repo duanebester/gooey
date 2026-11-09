@@ -138,6 +138,9 @@ pub const Window = struct {
     /// units as NSTextInputClient counts them; `marked_text` is UTF-8.
     marked_length_utf16: c_ulong = 0,
     marked_selection: appkit.NSRange = .{ .location = 0, .length = 0 },
+    /// `marked_length_utf16` as the core's rendered frame shows it, which
+    /// lags `setMarkedText:` by a frame. The core host sets it.
+    rendered_marked_length_utf16: c_ulong = 0,
     pending_key_event: ?objc.c.id = null,
     /// IME cursor rect in view coordinates (for candidate window positioning)
     ime_cursor_rect: appkit.NSRect = .{
