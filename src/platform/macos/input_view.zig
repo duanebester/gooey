@@ -449,13 +449,6 @@ fn setMarkedText(
     // NSString and NSAttributedString both answer `length` in UTF-16 units.
     const length_utf16 = objc.Object.fromId(text_id).msgSend(c_ulong, "length", .{});
 
-    std.debug.print("setMarkedText: \"{s}\" selected {d}+{d} of {d}\n", .{
-        str,
-        selected.location,
-        selected.length,
-        length_utf16,
-    });
-
     window.setMarkedText(str);
     window.marked_length_utf16 = length_utf16;
     window.marked_selection = clampRange(selected, length_utf16);
@@ -528,8 +521,6 @@ fn insertText(
     const window = getWindow(self) orelse return;
     const str = extractString(text_id) orelse return;
 
-    std.debug.print("insertText: \"{s}\"\n", .{str});
-
     // `str` lives until this call returns, and `handleInput` is done with it
     // by then: the core queue copies it (cutting it at a codepoint boundary
     // past its text budget), and 0.3.1's widgets insert it. No window buffer
@@ -588,9 +579,7 @@ fn coreImeRect(binding: CoreBinding) NSRect {
     };
 }
 
-fn doCommandBySelector(self: objc.c.id, _: objc.c.SEL, selector: objc.c.SEL) callconv(.c) void {
-    std.debug.print("doCommandBySelector called: {*}\n", .{selector});
-
+fn doCommandBySelector(self: objc.c.id, _: objc.c.SEL, _: objc.c.SEL) callconv(.c) void {
     const window = getWindow(self) orelse return;
     // A core app already queued this key from `keyDown:`.
     if (window.core != null) return;
