@@ -25,8 +25,6 @@ pub const TextBackend = enum {
 const ExampleDefinition = struct {
     name: []const u8,
     source: []const u8,
-    /// Drives the Wayland event loop directly, so the fbdev backend skips it.
-    wayland_only: bool = false,
     /// A 0.4.0 core app: on Linux its host needs the Wayland Vulkan backend.
     core: bool = false,
 };
@@ -155,47 +153,6 @@ pub fn build(b: *std.Build) void {
         charts_mod.addImport("gooey", mod);
 
         // =========================================================================
-        // Gooey Gen UI Module
-        // =========================================================================
-
-        const genui_mod = b.addModule("gooey-genui", .{
-            .root_source_file = b.path("genui/src/root.zig"),
-            .target = target,
-            .optimize = optimize,
-        });
-        genui_mod.addImport("gooey", mod);
-        genui_mod.addImport("gooey-components", components_mod);
-
-        // =========================================================================
-        // Main Demo (Showcase)
-        // =========================================================================
-
-        const exe = b.addExecutable(.{
-            .name = "gooey",
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("src/examples/showcase.zig"),
-                .target = target,
-                .optimize = optimize,
-                .imports = &.{
-                    .{ .name = "gooey", .module = mod },
-                    .{ .name = "gooey-components", .module = components_mod },
-                    .{ .name = "objc", .module = objc_mod },
-                },
-            }),
-        });
-
-        // Run step (default demo)
-        const run_step = b.step("run", "Run the showcase demo");
-        const run_cmd = b.addRunArtifact(exe);
-        run_step.dependOn(&run_cmd.step);
-        run_cmd.step.dependOn(b.getInstallStep());
-
-        // Enable Metal HUD for FPS/GPU stats
-        // run_cmd.setEnvironmentVariable("MTL_HUD_ENABLED", "1");
-
-        run_cmd.addPassthruArgs();
-
-        // =========================================================================
         // Native Mac Examples
         // =========================================================================
 
@@ -212,16 +169,14 @@ pub fn build(b: *std.Build) void {
             .{ .name = "virtual-list", .source = "src/examples/virtual_list_example.zig" },
             .{ .name = "data-table", .source = "src/examples/data_table_example.zig" },
             .{ .name = "accessible-form", .source = "src/examples/accessible_form.zig" },
-            .{ .name = "drag-drop", .source = "src/examples/drag_drop.zig" },
-            .{ .name = "disktree", .source = "src/examples/disktree.zig" },
             .{ .name = "lucide-demo", .source = "src/examples/lucide_demo.zig" },
             .{ .name = "code-editor", .source = "src/examples/code_editor.zig" },
             .{ .name = "dashboard", .source = "src/examples/dashboard.zig" },
-            .{ .name = "ai-canvas-spike", .source = "src/examples/ai_canvas_spike.zig" },
-            .{ .name = "ai-canvas", .source = "src/examples/ai_canvas.zig" },
         };
+        // `zig build run` runs todo, the default example (contract decision 15).
+        var todo_exe: ?*std.Build.Step.Compile = null;
         for (native_examples) |example| {
-            addNativeExample(
+            const example_exe = addNativeExample(
                 b,
                 mod,
                 components_mod,
@@ -232,8 +187,14 @@ pub fn build(b: *std.Build) void {
                 example.name,
                 example.source,
             );
+            if (std.mem.eql(u8, example.name, "todo")) todo_exe = example_exe;
         }
-        addGenuiNativeExample(b, mod, components_mod, genui_mod, objc_mod, target, optimize);
+        const exe = todo_exe.?;
+        const run_step = b.step("run", "Run the todo example");
+        const run_cmd = b.addRunArtifact(exe);
+        run_cmd.addPassthruArgs();
+        run_cmd.step.dependOn(b.getInstallStep());
+        run_step.dependOn(&run_cmd.step);
 
         // =====================================================================
         // Tests
@@ -264,28 +225,11 @@ pub fn build(b: *std.Build) void {
         });
         const run_exe_tests = b.addRunArtifact(exe_tests);
 
-        const disktree_example_tests = b.addTest(.{
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("src/examples/disktree.zig"),
-                .target = target,
-                .optimize = optimize,
-                .imports = &.{.{ .name = "gooey", .module = mod }},
-            }),
-        });
-        const run_disktree_example_tests = b.addRunArtifact(disktree_example_tests);
-        const test_disktree_step = b.step("test-disktree", "Run Disk Tree MVP tests");
-        test_disktree_step.dependOn(&run_disktree_example_tests.step);
-
         // Charts tests
         const charts_tests = b.addTest(.{
             .root_module = charts_mod,
         });
         const run_charts_tests = b.addRunArtifact(charts_tests);
-
-        const genui_tests = b.addTest(.{ .root_module = genui_mod });
-        const run_genui_tests = b.addRunArtifact(genui_tests);
-        const test_genui_step = b.step("test-genui", "Run gooey-genui tests");
-        test_genui_step.dependOn(&run_genui_tests.step);
 
         const test_step = b.step("test", "Run tests");
         test_step.dependOn(&run_mod_tests.step);
@@ -293,9 +237,7 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run_watcher_tests.step);
         test_step.dependOn(&run_exe_tests.step);
         addGoldens(b, target, optimize, .{ .objc = objc_mod }, test_step);
-        test_step.dependOn(&run_disktree_example_tests.step);
         test_step.dependOn(&run_charts_tests.step);
-        test_step.dependOn(&run_genui_tests.step);
         test_step.dependOn(&run_compare_tests.step);
         test_step.dependOn(&run_bench_tests.step);
 
@@ -721,66 +663,10 @@ pub fn build(b: *std.Build) void {
         charts_mod.addImport("gooey", mod);
 
         // =========================================================================
-        // Gooey Gen UI Module
-        // =========================================================================
-
-        const genui_mod = b.addModule("gooey-genui", .{
-            .root_source_file = b.path("genui/src/root.zig"),
-            .target = target,
-            .optimize = optimize,
-        });
-        genui_mod.addImport("gooey", mod);
-        genui_mod.addImport("gooey-components", components_mod);
-
-        // =========================================================================
-        // Linux Showcase (Main Demo)
-        // =========================================================================
-
-        const exe = b.addExecutable(.{
-            .name = "gooey",
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("src/examples/showcase.zig"),
-                .target = target,
-                .optimize = optimize,
-                .imports = &.{
-                    .{ .name = "gooey", .module = mod },
-                    .{ .name = "gooey-components", .module = components_mod },
-                },
-            }),
-        });
-
-        // Link system libraries (Vulkan + Wayland + text rendering)
-        linkLinuxLibraries(exe, linux_backend);
-
-        const install_showcase = b.addInstallArtifact(exe, .{});
-        b.getInstallStep().dependOn(&install_showcase.step);
-
-        // Keep preview builds focused: the default install step also builds
-        // every example, while this step installs only the showcase binary.
-        const showcase_step = b.step("showcase", "Build the showcase demo");
-        showcase_step.dependOn(&install_showcase.step);
-
-        // Ensure shaders are compiled before building executables that @embedFile them
-        // (only if shader compilation is enabled)
-        if (!skip_shader_compile) {
-            exe.step.dependOn(compile_shaders_step);
-        }
-
-        // Run step
-        const run_step = b.step("run", "Run the showcase demo");
-        const run_cmd = b.addRunArtifact(exe);
-        run_cmd.setCwd(b.path(".")); // Run from project root so assets/ can be found
-        run_step.dependOn(&run_cmd.step);
-
-        run_cmd.addPassthruArgs();
-
-        // =========================================================================
         // Linux Native Examples
         // =========================================================================
 
         const linux_examples = [_]ExampleDefinition{
-            .{ .name = "basic", .source = "src/examples/linux_demo.zig", .wayland_only = true },
-            .{ .name = "drag-drop", .source = "src/examples/drag_drop.zig" },
             .{
                 .name = "lucide-demo",
                 .source = "src/examples/lucide_demo.zig",
@@ -823,13 +709,13 @@ pub fn build(b: *std.Build) void {
                 .source = "src/examples/data_table_example.zig",
                 .core = true,
             },
-            .{ .name = "disktree", .source = "src/examples/disktree.zig" },
             .{ .name = "dashboard", .source = "src/examples/dashboard.zig", .core = true },
         };
+        // `zig build run` runs todo, the default example (contract decision 15).
+        var todo_install: ?*std.Build.Step.InstallArtifact = null;
         for (linux_examples) |example| {
-            if (example.wayland_only and linux_backend == .fbdev) continue;
             if (example.core and linux_backend != .wayland_vulkan) continue;
-            addLinuxExample(
+            const install = addLinuxExample(
                 b,
                 mod,
                 components_mod,
@@ -842,18 +728,9 @@ pub fn build(b: *std.Build) void {
                 example.name,
                 example.source,
             );
+            if (std.mem.eql(u8, example.name, "todo")) todo_install = install;
         }
-        addLinuxGenuiExample(
-            b,
-            mod,
-            components_mod,
-            genui_mod,
-            target,
-            optimize,
-            compile_shaders_step,
-            skip_shader_compile,
-            linux_backend,
-        );
+        addLinuxDefaultSteps(b, todo_install);
 
         // =====================================================================
         // Layout Benchmarks
@@ -1162,42 +1039,15 @@ pub fn build(b: *std.Build) void {
         });
         const run_watcher_tests = b.addRunArtifact(watcher_tests);
 
-        const genui_tests = b.addTest(.{
-            .root_module = genui_mod,
-            .use_llvm = true,
-        });
-        linkLinuxLibraries(genui_tests, linux_backend);
-        if (!skip_shader_compile) genui_tests.step.dependOn(compile_shaders_step);
-        const run_genui_tests = b.addRunArtifact(genui_tests);
-        const test_genui_step = b.step("test-genui", "Run gooey-genui tests");
-        test_genui_step.dependOn(&run_genui_tests.step);
-
-        const disktree_example_tests = b.addTest(.{
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("src/examples/disktree.zig"),
-                .target = target,
-                .optimize = optimize,
-                .imports = &.{.{ .name = "gooey", .module = mod }},
-            }),
-            .use_llvm = true,
-        });
-        linkLinuxLibraries(disktree_example_tests, linux_backend);
-        if (!skip_shader_compile) disktree_example_tests.step.dependOn(compile_shaders_step);
-        const run_disktree_example_tests = b.addRunArtifact(disktree_example_tests);
-        const test_disktree_step = b.step("test-disktree", "Run Disk Tree MVP tests");
-        test_disktree_step.dependOn(&run_disktree_example_tests.step);
-
         const test_step = b.step("test", "Run tests");
         test_step.dependOn(&run_mod_tests.step);
         test_step.dependOn(&run_components_tests.step);
         test_step.dependOn(&run_charts_tests.step);
         test_step.dependOn(&run_watcher_tests.step);
-        test_step.dependOn(&run_genui_tests.step);
         addGoldens(b, target, optimize, .{
             .linux_backend = linux_backend,
             .compile_dependency = if (skip_shader_compile) null else compile_shaders_step,
         }, test_step);
-        test_step.dependOn(&run_disktree_example_tests.step);
         test_step.dependOn(&run_compare_tests.step);
         test_step.dependOn(&run_bench_tests.step);
         test_step.dependOn(&run_scene_bench_tests.step);
@@ -1316,7 +1166,6 @@ fn addWindowsBuilds(
     charts_mod.addImport("gooey", mod);
 
     const examples = [_]struct { name: []const u8, source: []const u8 }{
-        .{ .name = "showcase", .source = "src/examples/showcase.zig" },
         .{ .name = "layout", .source = "src/examples/layout.zig" },
         // 0.4.0 core apps, on `platform/windows/core_host.zig`.
         .{ .name = "counter", .source = "src/examples/counter.zig" },
@@ -1453,9 +1302,9 @@ fn addWindowsTypecheck(b: *std.Build) void {
         .imports = &.{.{ .name = "gooey", .module = gooey_mod }},
     });
     const app = b.addExecutable(.{
-        .name = "typecheck-windows-showcase",
+        .name = "typecheck-windows-layout",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/examples/showcase.zig"),
+            .root_source_file = b.path("src/examples/layout.zig"),
             .target = windows_target,
             .optimize = .debug,
             .imports = &.{
@@ -1626,7 +1475,7 @@ fn addNativeExample(
     optimize: std.lang.Optimize,
     name: []const u8,
     source: []const u8,
-) void {
+) *std.Build.Step.Compile {
     const exe = b.addExecutable(.{
         .name = name,
         .root_module = b.createModule(.{
@@ -1652,39 +1501,7 @@ fn addNativeExample(
     run_cmd.addPassthruArgs();
     step.dependOn(&run_cmd.step);
     run_cmd.step.dependOn(b.getInstallStep());
-}
-
-fn addGenuiNativeExample(
-    b: *std.Build,
-    gooey_module: *std.Build.Module,
-    components_module: *std.Build.Module,
-    genui_module: *std.Build.Module,
-    objc_module: *std.Build.Module,
-    target: std.Build.ResolvedTarget,
-    optimize: std.lang.Optimize,
-) void {
-    const executable = b.addExecutable(.{
-        .name = "genui-demo",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/examples/genui_demo.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "gooey", .module = gooey_module },
-                .{ .name = "gooey-components", .module = components_module },
-                .{ .name = "gooey-genui", .module = genui_module },
-                .{ .name = "objc", .module = objc_module },
-            },
-        }),
-    });
-    const install = b.addInstallArtifact(executable, .{});
-    b.getInstallStep().dependOn(&install.step);
-    const build_step = b.step("genui-demo", "Build the Gooey Gen UI demo");
-    build_step.dependOn(&install.step);
-    const step = b.step("run-genui-demo", "Run the Gooey Gen UI demo");
-    const run = b.addRunArtifact(executable);
-    step.dependOn(&run.step);
-    run.step.dependOn(b.getInstallStep());
+    return exe;
 }
 
 /// Adds the fail-fast overflow checks to `test_step` on every native OS.
@@ -1943,25 +1760,23 @@ fn addLinuxTypecheck(b: *std.Build) void {
         "Semantically analyze the Linux backend from any host",
     );
 
-    // `src/examples/linux_demo.zig` is the Linux entry point and reaches the
-    // window/event/render path. The `src/root.zig` test root covers far more
-    // code: every `test {}` block in the library, plus the `refAllDecls`
-    // discovery chain.
+    // `src/examples/todo.zig` reaches the 0.4.0 core host: window binding,
+    // render thread, IME, and dialogs. The `src/root.zig` test root covers far
+    // more code: every `test {}` block in the library, plus the `refAllDecls`
+    // discovery chain. The core host runs only on `wayland_vulkan`, so the CPU
+    // backends' window and event paths are checked through `layout`, a 0.3.1
+    // `gooey.App`, until they get a core host or are cut.
     const roots = [_]TypecheckRoot{
         .{ .source = "src/root.zig", .as_test = true },
-        .{ .source = "src/examples/linux_demo.zig", .as_test = false },
-        // The 0.4.0 core host: window binding, render thread, and dialogs.
         .{ .source = "src/examples/todo.zig", .as_test = false },
         .{
-            .source = "src/examples/linux_demo.zig",
+            .source = "src/examples/layout.zig",
             .as_test = false,
             .linux_backend = .wayland_cpu,
         },
         .{ .source = "src/root.zig", .as_test = true, .linux_backend = .fbdev },
-        // `linux_demo` hand-rolls a Wayland dispatch loop, so the embedded
-        // fbdev backend is checked through the portable `gooey.App` showcase.
         .{
-            .source = "src/examples/showcase.zig",
+            .source = "src/examples/layout.zig",
             .as_test = false,
             .linux_backend = .fbdev,
             .cpu_arch = .aarch64,
@@ -2062,24 +1877,15 @@ fn addWasmBuilds(b: *std.Build) void {
 
     addWasmExample(b, gooey_module, components_module, wasm_target, .{
         .step_name = "wasm",
-        .description = "Build showcase for web",
-        .source = "src/examples/showcase.zig",
+        .description = "Build the todo example for web",
+        .source = "src/examples/todo.zig",
         .output_dir = "web",
-        .copy_showcase_assets = true,
     });
     addWasmExample(b, gooey_module, components_module, wasm_target, .{
         .step_name = "wasm-counter",
         .description = "Build the counter example for web",
         .source = "src/examples/counter.zig",
         .output_dir = "web/counter",
-        .copy_showcase_assets = false,
-    });
-    addWasmExample(b, gooey_module, components_module, wasm_target, .{
-        .step_name = "wasm-todo",
-        .description = "Build the todo example for web",
-        .source = "src/examples/todo.zig",
-        .output_dir = "web/todo",
-        .copy_showcase_assets = false,
     });
 }
 
@@ -2113,7 +1919,6 @@ fn addWasmExample(
         description: []const u8,
         source: []const u8,
         output_dir: []const u8,
-        copy_showcase_assets: bool,
     },
 ) void {
     std.debug.assert(options.step_name.len > 0);
@@ -2152,12 +1957,6 @@ fn addWasmExample(
         b.path("web/index.html"),
         b.fmt("{s}/index.html", .{options.output_dir}),
     ).step);
-    if (options.copy_showcase_assets) {
-        step.dependOn(&b.addInstallFile(
-            b.path("assets/gooey-logo-final.png"),
-            b.fmt("{s}/assets/gooey-logo-final.png", .{options.output_dir}),
-        ).step);
-    }
 }
 
 /// Helper to add a Linux native example with Vulkan + Wayland system libraries.
@@ -2173,7 +1972,7 @@ fn addLinuxExample(
     linux_backend: LinuxBackend,
     name: []const u8,
     source: []const u8,
-) void {
+) *std.Build.Step.InstallArtifact {
     const exe = b.addExecutable(.{
         .name = b.fmt("gooey-{s}", .{name}),
         .root_module = b.createModule(.{
@@ -2190,7 +1989,8 @@ fn addLinuxExample(
 
     linkLinuxLibraries(exe, linux_backend);
 
-    b.installArtifact(exe);
+    const install = b.addInstallArtifact(exe, .{});
+    b.getInstallStep().dependOn(&install.step);
     if (!skip_shader_compile) {
         exe.step.dependOn(compile_shaders_step);
     }
@@ -2203,43 +2003,29 @@ fn addLinuxExample(
     run_cmd.addPassthruArgs();
     step.dependOn(&run_cmd.step);
     run_cmd.step.dependOn(b.getInstallStep());
+    return install;
 }
 
-fn addLinuxGenuiExample(
-    b: *std.Build,
-    gooey_module: *std.Build.Module,
-    components_module: *std.Build.Module,
-    genui_module: *std.Build.Module,
-    target: std.Build.ResolvedTarget,
-    optimize: std.lang.Optimize,
-    compile_shaders_step: *std.Build.Step,
-    skip_shader_compile: bool,
-    linux_backend: LinuxBackend,
-) void {
-    const executable = b.addExecutable(.{
-        .name = "gooey-genui-demo",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/examples/genui_demo.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "gooey", .module = gooey_module },
-                .{ .name = "gooey-components", .module = components_module },
-                .{ .name = "gooey-genui", .module = genui_module },
-            },
-        }),
-    });
-    linkLinuxLibraries(executable, linux_backend);
-    const install = b.addInstallArtifact(executable, .{});
-    b.getInstallStep().dependOn(&install.step);
-    if (!skip_shader_compile) executable.step.dependOn(compile_shaders_step);
-    const build_step = b.step("genui-demo", "Build the Gooey Gen UI demo");
-    build_step.dependOn(&install.step);
-    const step = b.step("run-genui-demo", "Run the Gooey Gen UI demo");
-    const run = b.addRunArtifact(executable);
-    run.setCwd(b.path("."));
-    step.dependOn(&run.step);
-    run.step.dependOn(b.getInstallStep());
+/// `zig build run` runs the todo example, and `zig build todo` installs only
+/// its binary so previews stay focused. Todo is a core app, which runs on
+/// Linux only with the Wayland Vulkan backend; the CPU backends fail both
+/// steps with the alternative.
+fn addLinuxDefaultSteps(b: *std.Build, todo_install: ?*std.Build.Step.InstallArtifact) void {
+    const run_step = b.step("run", "Run the todo example");
+    const todo_step = b.step("todo", "Build only the todo example");
+    const install = todo_install orelse {
+        const fail = b.addFail("todo is a 0.4.0 core app and needs " ++
+            "-Dlinux-backend=wayland_vulkan; on this backend, try zig build run-layout");
+        run_step.dependOn(&fail.step);
+        todo_step.dependOn(&fail.step);
+        return;
+    };
+    todo_step.dependOn(&install.step);
+    const run_cmd = b.addRunArtifact(install.artifact);
+    run_cmd.setCwd(b.path(".")); // Run from the project root so assets/ can be found.
+    run_cmd.addPassthruArgs();
+    run_cmd.step.dependOn(&install.step);
+    run_step.dependOn(&run_cmd.step);
 }
 
 /// Links the macOS frameworks the `gooey` module needs (tests included).

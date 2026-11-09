@@ -3,7 +3,7 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/../../../.." && pwd)"
-output_path="${1:-.amp/in/artifacts/gooey-showcase.png}"
+output_path="${1:-.amp/in/artifacts/gooey-todo.png}"
 
 if [[ "$output_path" != /* ]]; then
     output_path="${repo_root}/${output_path}"
@@ -17,8 +17,8 @@ for command in amp dbus-run-session weston weston-screenshooter zig; do
 done
 
 cd "$repo_root"
-echo "Building the Gooey showcase..."
-zig build showcase -Dskip-shader-compile=true
+echo "Building the Gooey todo example..."
+zig build todo -Dskip-shader-compile=true
 
 amp orb service stop gooey-app >/dev/null 2>&1 || true
 amp orb service stop gooey-wayland >/dev/null 2>&1 || true
@@ -44,7 +44,7 @@ fi
 
 echo "Starting Gooey..."
 amp orb service start gooey-app --command \
-    'export XDG_RUNTIME_DIR=/tmp/gooey-runtime WAYLAND_DISPLAY=wayland-gooey; exec dbus-run-session -- ./zig-out/bin/gooey'
+    'export XDG_RUNTIME_DIR=/tmp/gooey-runtime WAYLAND_DISPLAY=wayland-gooey; exec dbus-run-session -- ./zig-out/bin/gooey-todo'
 
 # Software Vulkan needs several frames to populate the first presentation.
 sleep 5

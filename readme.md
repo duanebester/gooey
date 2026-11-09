@@ -101,24 +101,19 @@ your application uses:
     .{ .name = "gooey", .module = gooey_dependency.module("gooey") },
     .{ .name = "gooey-components", .module = gooey_dependency.module("gooey-components") },
     .{ .name = "gooey-charts", .module = gooey_dependency.module("gooey-charts") },
-    .{ .name = "gooey-genui", .module = gooey_dependency.module("gooey-genui") },
 },
 ```
 
 - [`gooey-components`](components/README.md) provides high-level controls built
   from Gooey's public primitives and state engines.
 - [`gooey-charts`](charts/README.md) provides optional GPU-accelerated charts.
-- [`gooey-genui`](genui/README.md) provides catalog-constrained generated UI
-  with direct TypeSafe Jev evaluation and no Vercel AI Gateway dependency.
 
 ### Run this repository's examples
 
 ```bash
-zig build run              # Showcase demo
+zig build run              # Todo on the 0.4.0 core (TextInput with IME, lists)
 zig build run-counter      # Counter on the 0.4.0 core
-zig build run-todo         # Todo on the 0.4.0 core (TextInput with IME, lists)
 zig build run-animation    # Animation demo
-zig build run-genui-demo      # Generated UI composition and native controls
 zig build run-dynamic-counters  # Entity system demo
 zig build run-layout       # Flexbox, shrink, text wrapping
 zig build run-actions      # Keybindings demo
@@ -1536,13 +1531,11 @@ fn render(cx: *Cx) void {
 }
 ```
 
-For a working reference, see the `Cmd+Q` handler in `src/examples/showcase.zig`, which quits directly from the window's `onEvent` callback via `cx.quit()`.
-
 ## More Examples
 
 | Example          | Command                          | Description                           |
 | ---------------- | -------------------------------- | ------------------------------------- |
-| Showcase         | `zig build run`                  | Full feature demo with navigation     |
+| Todo             | `zig build run`                  | Text input with IME, lists            |
 | Counter          | `zig build run-counter`          | Simple state management               |
 | Animation        | `zig build run-animation`        | Animation system with tweenOn         |
 | Dynamic Counters | `zig build run-dynamic-counters` | Entity creation and deletion          |
@@ -1551,7 +1544,6 @@ For a working reference, see the `Cmd+Q` handler in `src/examples/showcase.zig`,
 | Images           | `zig build run-images`           | Image loading and effects             |
 | File Dialog      | `zig build run-file-dialog`      | Native file open/save dialogs         |
 | Accessible Form  | `zig build run-accessible-form`  | Complete accessible form example      |
-| Drag & Drop      | `zig build run-drag-drop`        | Draggable items and drop targets      |
 | Virtual List     | `zig build run-virtual-list`     | Variable-height virtualized list      |
 | Data Table       | `zig build run-data-table`       | Virtualized table with 10,000 rows    |
 | Code Editor      | `zig build run-code-editor`      | Code editor beside a folder's files   |
@@ -1590,10 +1582,10 @@ callback bridges in `src/platform/web/`; unsupported general-purpose `std.Io`
 operations use `std.Io.failing`.
 
 ```bash
-zig build wasm                 # Showcase
+zig build wasm                 # Todo example
 zig build wasm-counter         # Counter example
 
-# Run the showcase with a local server
+# Serve the todo example locally
 python3 -m http.server 8080 -d zig-out/web
 ```
 
@@ -1602,7 +1594,7 @@ python3 -m http.server 8080 -d zig-out/web
 Simple brute-force hot reload for development:
 
 ```bash
-zig build hot                    # Showcase (default)
+zig build hot                    # Todo (default)
 zig build hot -- run-counter     # Specific example
 zig build hot -- run-animation
 ```
@@ -1637,7 +1629,7 @@ src/
 
 ## Linux Platform
 
-Gooey has full Linux support using Wayland and Vulkan. The showcase and all demos run on Linux.
+Gooey has full Linux support using Wayland and Vulkan. All demos run on Linux.
 
 ### Architecture
 
@@ -1714,11 +1706,10 @@ sudo pacman -S \
 ### Building & Running
 
 ```build.sh
-# Build and run the showcase
+# Build and run the todo example
 zig build run
 
 # Run specific demos
-zig build run-basic        # Simple Wayland + Vulkan test
 zig build run-file-dialog  # XDG portal file dialogs
 
 # Compile shaders (only needed if you modify GLSL sources)
@@ -1738,11 +1729,15 @@ renderer is not compiled or linked.
 
 ```cpu-backends.sh
 # Desktop without a GPU driver (e.g. Debian VMs, servers with a compositor)
-zig build run -Dlinux-backend=wayland_cpu
+zig build run-layout -Dlinux-backend=wayland_cpu
 
 # Embedded Linux: a full-screen app on the kernel framebuffer with evdev input
-zig build showcase -Dlinux-backend=fbdev -Doptimize=ReleaseSafe
+zig build run-layout -Dlinux-backend=fbdev -Doptimize=ReleaseSafe
 ```
+
+The 0.4.0 core apps, including `todo` and so the default `zig build run`, need the
+`wayland_vulkan` backend; on the CPU backends `zig build run` says so and names
+`run-layout`, a 0.3.1 app.
 
 The fbdev backend drops Wayland and Vulkan but still links FreeType, HarfBuzz,
 Fontconfig, libpng, and D-Bus. Build on the device, or cross-compile with

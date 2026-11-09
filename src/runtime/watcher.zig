@@ -148,7 +148,7 @@ fn parseArguments(args: []const []const u8) ?Arguments {
     const watch_paths = args[1..separator];
     const build_command_given = args[separator + 1 ..];
     // `zig build hot` cannot see passthrough arguments at configure time, so it
-    // always forwards `zig build ...`. A bare `zig build` means the showcase.
+    // always forwards `zig build ...`. A bare `zig build` means `zig build run`.
     const build_command = if (isBareZigBuild(build_command_given))
         build_command_default[0..]
     else
