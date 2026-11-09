@@ -28,7 +28,7 @@ const Metrics = types.Metrics;
 const FontVariant = types.FontVariant;
 const FontFamily = types.FontFamily;
 const TextDecoration = types.TextDecoration;
-const RenderStats = @import("../debug/render_stats.zig").RenderStats;
+const RenderStats = @import("../scene/render_stats.zig").RenderStats;
 
 const is_wasm = platform.is_wasm;
 

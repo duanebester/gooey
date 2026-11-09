@@ -15,7 +15,7 @@
 const std = @import("std");
 
 const Window = @import("window.zig").Window;
-const AppResources = @import("app_resources.zig").AppResources;
+const AppResources = @import("../core/app_resources.zig").AppResources;
 const Frame = @import("frame.zig").Frame;
 
 /// Returns true if a `name: bool` field is allowed to live on a type

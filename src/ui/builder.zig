@@ -57,7 +57,7 @@ const Hsla = scene_mod.Hsla;
 // Element imports
 const styles = @import("styles.zig");
 const primitives = @import("primitives.zig");
-const theme_mod = @import("theme.zig");
+const theme_mod = @import("../core/theme.zig");
 const FontVariant = @import("../text/types.zig").FontVariant;
 pub const Theme = theme_mod.Theme;
 

@@ -7,7 +7,7 @@
 
 const std = @import("std");
 
-pub const render_stats = @import("render_stats.zig");
+pub const render_stats = @import("../scene/render_stats.zig");
 
 pub const RenderStats = render_stats.RenderStats;
 pub const frame_stats = &render_stats.frame_stats;

@@ -30,11 +30,11 @@ const layout_mod = @import("../layout/layout.zig");
 const reservation = @import("reservation.zig");
 const scene_mod = @import("../scene/mod.zig");
 const text_mod = @import("../text/mod.zig");
-const app_resources = @import("../context/app_resources.zig");
+const app_resources = @import("app_resources.zig");
 const a11y_types = @import("../accessibility/types.zig");
 const cx_mod = @import("cx.zig");
 const keymap_mod = @import("keymap.zig");
-const A11ySystem = @import("../context/a11y_system.zig").A11ySystem;
+const A11ySystem = @import("a11y_system.zig").A11ySystem;
 const screen_reader_mod = @import("screen_reader.zig");
 const debugger_mod = @import("debugger.zig");
 

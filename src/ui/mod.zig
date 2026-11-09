@@ -24,7 +24,7 @@
 const builder_mod = @import("builder.zig");
 const primitives = @import("primitives.zig");
 const styles = @import("styles.zig");
-const theme_mod = @import("theme.zig");
+const theme_mod = @import("../core/theme.zig");
 const canvas_mod = @import("canvas.zig");
 
 // =============================================================================

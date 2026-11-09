@@ -61,7 +61,7 @@ const FRAME_BUDGET_SKIP_COUNT: u32 = 3;
 
 // Shared rendering resources (text system + atlases), owned upstream
 // (typically by `App`) and lent borrowed-shape into every per-window `Window`.
-const app_resources_mod = @import("../context/app_resources.zig");
+const app_resources_mod = @import("../core/app_resources.zig");
 const AppResources = app_resources_mod.AppResources;
 
 /// Per-window context, in place of module-level static callback state.

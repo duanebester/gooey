@@ -30,7 +30,7 @@ const window_mod = @import("window.zig");
 const emit_mod = @import("emit.zig");
 const limits_mod = @import("limits.zig");
 const input = @import("../input/mod.zig");
-const render_stats = @import("../debug/render_stats.zig");
+const render_stats = @import("../scene/render_stats.zig");
 const layout_types = @import("../layout/types.zig");
 const scene_mod = @import("../scene/mod.zig");
 
