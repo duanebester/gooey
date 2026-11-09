@@ -372,6 +372,7 @@ pub fn build(b: *std.Build) void {
 
         _ = addOverflowChecks(b, mod, target, optimize, test_step);
         _ = addFailFastChecks(b, mod, components_mod, target, optimize, test_step);
+        addImportBan(b, test_step);
 
         // =====================================================================
         // Accessibility Benchmarks (per-frame fingerprint + tree diff)
@@ -839,6 +840,7 @@ pub fn build(b: *std.Build) void {
             optimize,
             test_step,
         );
+        addImportBan(b, test_step);
         linkLinuxLibraries(fail_fast_exe, linux_backend);
         if (!skip_shader_compile) {
             fail_fast_exe.step.dependOn(compile_shaders_step);
@@ -1259,6 +1261,27 @@ fn addNativeExample(
     step.dependOn(&run_cmd.step);
     run_cmd.step.dependOn(b.getInstallStep());
     return exe;
+}
+
+/// Adds `zig build import-ban` (`src/tools/import_ban.zig`), which fails when a
+/// file or `@import` reaches a 0.3.1 path phase 6 deleted, and makes `test`
+/// run it and its own tests. It reads the tree, so it runs on the host.
+fn addImportBan(b: *std.Build, test_step: *std.Build.Step) void {
+    const module = b.createModule(.{
+        .root_source_file = b.path("src/tools/import_ban.zig"),
+        .target = b.graph.host,
+        .optimize = .Debug,
+    });
+    const exe = b.addExecutable(.{ .name = "import-ban", .root_module = module });
+    const run = b.addRunArtifact(exe);
+    run.setCwd(b.path("."));
+    // The tree is the input, which Zig's cache cannot see, so run every time.
+    run.has_side_effects = true;
+    b.step("import-ban", "Fail on imports of deleted 0.3.1 paths").dependOn(&run.step);
+    test_step.dependOn(&run.step);
+
+    const tests = b.addTest(.{ .root_module = module });
+    test_step.dependOn(&b.addRunArtifact(tests).step);
 }
 
 /// Adds the fail-fast overflow checks to `test_step` on every native OS.
