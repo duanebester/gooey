@@ -172,19 +172,15 @@ the bindings. Validation layers ship with the SDK, so without it Debug builds lo
   `dpi / 96`. `WM_DPICHANGED` adopts the new scale and suggested rectangle; a window that
   opens on a monitor whose DPI differs from the system DPI is resized once. The next
   frame's `WindowContext.syncWindowMetrics` passes the new scale to
-  `AppResources.setScaleFactor`, so glyphs, icons, and images rasterize at it. The
-  atlases are shared by every window, so with windows on monitors of different DPI the
-  last window to change scale wins (a follow-up). An infinite `max_size` axis means no
-  limit, and every client extent is clamped to 32,767 device pixels (`WM_SIZE` and mouse
-  messages carry 16-bit sizes and coordinates).
+  `AppResources.setScaleFactor`, so glyphs, icons, and images rasterize at it. An app
+  has one window (contract decision 14), so one scale serves the atlases. An infinite
+  `max_size` axis means no limit, and every client extent is clamped to 32,767 device
+  pixels (`WM_SIZE` and mouse messages carry 16-bit sizes and coordinates).
 - **Swapchain loss.** The shared renderer resets a frame's fence only after acquiring an
   image, so an out-of-date acquire skips the frame without leaving the fence unsignalled
   (which hung the next `render` or `resize`); the window requests the frame that
   rebuilds the swapchain. `VK_ERROR_DEVICE_LOST` and `VK_ERROR_SURFACE_LOST_KHR` panic
   with the result code instead of reaching `unreachable`. Shared with Linux.
-- **Custom shaders.** The Vulkan renderer does not run `WindowOptions.custom_shaders`;
-  window init logs a warning naming the shader count and the backend (Linux does the
-  same).
 - **Fractional scale.** The swapchain matches the client area exactly, but the shared
   renderer takes the viewport as whole logical pixels, so the window passes
   `ceil(size)`. At 150% a 1001 px client draws 668 logical px rather than 667.33
@@ -636,5 +632,3 @@ the event loop.
 - [ ] CPU fallback renderer for machines without a Vulkan driver (some VMs, RDP).
 - [ ] Writable UI Automation (actions; needs the framework path described above).
 - [ ] Clipboard, file dialog, and UI Automation allocations (phase 6 services redesign).
-- [ ] Custom shaders on Vulkan (shared with Linux; warned at init).
-- [ ] Per-window atlas scale for windows on monitors of different DPI.

@@ -1346,6 +1346,7 @@ fn addWindowsBuilds(
         .{ .name = "data-table", .source = "src/examples/data_table_example.zig" },
         .{ .name = "images", .source = "src/examples/images.zig" },
         .{ .name = "dashboard", .source = "src/examples/dashboard.zig" },
+        .{ .name = "animation", .source = "src/examples/animation.zig" },
     };
     for (examples) |example| {
         addWindowsExample(
