@@ -193,9 +193,6 @@ pub const validation = @import("validation.zig");
 /// Accessibility (A11Y): screen reader and assistive technology support.
 pub const accessibility = @import("accessibility/mod.zig");
 
-/// AI integration: canvas command buffer for LLM-driven drawing.
-pub const ai = @import("ai/mod.zig");
-
 /// Cross-platform file dialogs (open/save). Async on WASM via
 /// `platform.web.file_dialog`.
 pub const file_dialog = @import("file_dialog.zig");
@@ -383,7 +380,7 @@ test {
         @import("image/atlas.zig"),
         @import("image/loader.zig"),
 
-        // Context / accessibility / AI leaves.
+        // Context / accessibility leaves.
         @import("context/element_states.zig"),
         @import("context/global.zig"),
         @import("context/dispatch.zig"),
@@ -392,9 +389,6 @@ test {
         @import("context/entity.zig"),
         @import("accessibility/integration_test.zig"),
         @import("accessibility/tree.zig"),
-        @import("ai/json_parser.zig"),
-        @import("ai/theme_color.zig"),
-        @import("ai/ai_canvas.zig"),
 
         // UI / core leaves.
         @import("ui/primitives.zig"),

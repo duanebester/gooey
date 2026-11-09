@@ -1840,6 +1840,23 @@ test "check reports each negative case precisely" {
     try std.testing.expect(limits.check() == null);
     limits.atlas.upload_bytes_frame_max += 1;
     try std.testing.expectEqual(Violation.Rule.above_ceiling, limits.check().?.rule);
+
+    // A budget may mix rungs: `.large` with the ceiling quad count and `.standard`
+    // mesh geometry, the shape the removed disktree example declared for a tile
+    // map above `.large`. The quad count is exact at the ceiling and one past fails.
+    limits = ResourceLimits.large;
+    limits.scene.quad_count_frame_max = SceneLimits.ceiling.quad_count_frame_max;
+    inline for (.{
+        "path_vertex_count_frame_max",    "path_index_count_frame_max",
+        "polyline_point_count_frame_max", "point_count_frame_max",
+        "colored_point_count_frame_max",
+    }) |field| {
+        @field(limits.scene, field) = @field(SceneLimits.standard, field);
+    }
+    try std.testing.expect(limits.check() == null);
+    limits.scene.quad_count_frame_max += 1;
+    try std.testing.expectEqual(Violation.Rule.above_ceiling, limits.check().?.rule);
+    try std.testing.expectEqualStrings("quad_count_frame_max", limits.check().?.field);
 }
 
 test "derived budget quantities" {

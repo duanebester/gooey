@@ -13,12 +13,12 @@ examples Linux builds.
 
 ```sh
 zig build run-todo           # a 0.4.0 core app; copy and paste through its TextInput
-zig build run-showcase       # a 0.3.1 gooey.App example (all listed in addWindowsBuilds)
+zig build run-layout         # a 0.3.1 gooey.App example (all listed in addWindowsBuilds)
 zig build run-core-file-dialog # open, multi-select, folder, and save dialogs
 zig build run-accessible-form # UI Automation: Narrator, NVDA, or Inspect
 zig build run-windows-demo   # the platform-layer demo, no text
 zig build test-windows       # shared root.zig tests, then the Windows backend tests
-zig build typecheck-windows  # analyze the backend, showcase, and tests for x86_64-windows
+zig build typecheck-windows  # analyze the backend, layout, todo, and tests for x86_64-windows
 ```
 
 Toolchain: Zig 0.17.0. Scope: 64-bit Windows only. `vulkan.zig` declares every handle,
