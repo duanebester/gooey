@@ -65,7 +65,8 @@ field shown in the table.
 
 `TextArea` and `CodeEditor` have no `accessible_name`; `CodeEditor` says "Code editor"
 when its placeholder is empty. `Select` also sets `has_popup` and `disabled`, and its value
-is the chosen option, or the placeholder when nothing is chosen. `List`
+is the chosen option, or the placeholder when nothing is chosen. Its open menu is a
+`listbox` of `option` nodes, each with its label and set position. `List`
 adds no node of its own; each row annotates itself. The charts package adds no node
 either: `accessible_title`, `accessible_description`, `describe(buf)`, and
 `summarize(buf)` produce text, and the app puts that text on a box's `a11y`.
@@ -208,9 +209,34 @@ cx.render(ui.box(.{
 
 The enclosing radio group is a box with `.a11y = .{ .role = .group, .label = self.label }`.
 
-Keyboard access is separate from the annotation. Tab moves focus in tree order among boxes
-with `focusable = true`, and nothing turns Enter or Space into `on_click`. A custom control
-that keyboard users must reach needs `focusable = true` and an `on_key` handler of its own.
+Keyboard access is separate from the annotation. Tab and Shift+Tab move focus in tree
+order among boxes with `focusable = true`, and Enter or Space clicks the focused box: its
+`on_click` runs as a pointer click's would. Both happen only when no `on_key` handler on the
+focus path stopped the key, so a text field keeps Space and an editor keeps Tab. A held key's
+repeats and Cmd, Ctrl, or Alt chords do not click. A custom control that keyboard users must
+reach needs only `focusable = true` beside its `on_click`; the radio options above have both.
+
+While a modal is open, Tab cycles through the modal's controls only, and focus left behind
+it is dropped, so a key cannot reach what the pointer cannot.
+
+Focus that the keyboard moved, by Tab or by a handler reacting to a key, draws a focus ring:
+2 px of the theme's `border_focus`, 2 px outside the focused box and following its corners.
+A pointer press focuses too, but draws no ring, as a browser's `:focus-visible` does. The
+keyboard's move also scrolls the innermost scroll box around the focused box, once, so the
+box and its ring are in view.
+
+A control with keys of its own, such as `Select`, gives its box an `on_key` handler bound
+to state it retained with `cx.retain`, and presses its own parts with `effects.click(id)`,
+which runs that element's `on_click`. `Select` keeps focus on the combobox until the menu
+opens, then on the highlighted option, so a screen reader follows the highlight:
+
+| Focus on  | Key                     | Does                                              |
+| --------- | ----------------------- | ------------------------------------------------- |
+| combobox  | Enter, Space, Down, Up  | opens on the selected option, or the first        |
+| combobox  | Enter, Space (open)     | closes                                            |
+| option    | Down, Up, Home, End     | moves to the next, previous, first, or last       |
+| option    | Enter, Space            | chooses it and returns to the combobox            |
+| either    | Esc, Tab (open)         | closes and returns to the combobox                |
 
 ## Announcements and live regions
 
@@ -400,7 +426,8 @@ demand comes from another process.
 - `checked`, `disabled`, and `expanded` follow the same state that draws the control.
 - Headings use `heading_level`, and groups of related controls use `.group`.
 - Errors and results are announced when they appear.
-- Tab reaches every text field in a sensible order.
+- Tab reaches every control in a sensible order, and Enter or Space operates it.
+- The focus ring shows where keyboard focus is on every theme the app offers.
 - Color is not the only signal of state or error.
 
 ### Screen readers
@@ -440,11 +467,13 @@ this repository but is not API.
 
 ## Known gaps
 
-- Tab reaches only boxes with `focusable = true`. Of the components, that is `TextInput`,
-  `TextArea`, and `CodeEditor`; `Button`, `Checkbox`, `Select`, and the radio options in
-  `accessible_form` are reachable only with the pointer.
-- `Select` closes only by choosing an option, clicking the trigger, or clicking outside. It
-  has no key handling, so Esc does not close it, and its options carry no `a11y`.
+- Only the innermost scroll box scrolls to keyboard focus, and only when focus moves: a
+  focused control that a layout change pushes out of view stays there.
+- Focus on an element that stops rendering, such as a deleted row's button, is dropped, and
+  the next Tab starts from the first control.
+- Arrow keys do not move between radio options; each option is its own Tab stop.
+- `Select` has no type-ahead, and choosing an option with the pointer blurs it, as before.
+- An option's chosen state is not exported: `ui.A11y` has no `selected` field (see below).
 - No bridge supports actions (press, toggle, set value, expand, focus).
 - Linux has no screen-reader support (contract decision 12).
 - macOS: VoiceOver reports a 0x0 frame for many elements, including headings and radio

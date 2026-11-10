@@ -251,6 +251,8 @@ pub fn emit(window: *Window) void {
         emitFragment(window, &layers_open, &root);
     }
     assert(layers_open.len == 0);
+    // A focus move this frame did not render reveals nothing later.
+    window.focus_reveal = false;
 }
 
 /// Accessibility nodes in tree order, whatever fragment paints them, so a
@@ -282,6 +284,7 @@ fn emitFragment(window: *Window, layers_open: *LayerQueue, root: *const LayerRoo
     if (root.fragment != layers.content_fragment) {
         if (nodes[root.node_index].layer.?.kind == .modal) blockEarlierHits(window.built());
     }
+    var ring: ?FocusRing = null;
     var index = root.node_index;
     while (index < nodes.len) {
         const node = &nodes[index];
@@ -306,6 +309,14 @@ fn emitFragment(window: *Window, layers_open: *LayerQueue, root: *const LayerRoo
                     .parent = parent_hit,
                     .fragment = root.fragment,
                 });
+                if (window.focus_visible and node.focusable and window.isFocused(node.id)) {
+                    ring = .{
+                        .bounds = bounds,
+                        .corners = node.corners,
+                        .clip = clips.current(),
+                        .scroll = clips.innermostScroll(window),
+                    };
+                }
                 if (node.kind == .paint) emitPaint(window, node, bounds, clips.sceneDepth());
                 if (node.clip) clips.open(window, node, index, bounds);
             },
@@ -315,7 +326,94 @@ fn emitFragment(window: *Window, layers_open: *LayerQueue, root: *const LayerRoo
     }
     clips.close(window, 0);
     assert(clips.len == 0);
+    if (ring) |focused| {
+        if (window.focus_reveal) revealFocus(window, &focused);
+        emitFocusRing(window, &focused, clips.sceneDepth());
+    }
     if (root.clip != null) window.built().appendPaint(.clip_pop);
+}
+
+/// The keyboard focus ring: `focus_ring_width` px wide and
+/// `focus_ring_offset` px outside the focused box, in the theme's
+/// `border_focus`, so it shows on any theme and on a box filled with
+/// `primary`. Only keyboard focus draws it (`Window.focus_visible`).
+const focus_ring_width: f32 = 2;
+const focus_ring_offset: f32 = 2;
+/// Room a revealed box keeps from its scroll box's edge, past its ring.
+const focus_reveal_margin: f32 = 8;
+
+/// The focused box, recorded as the fragment passes it, and the innermost
+/// scroll box around it.
+const FocusRing = struct {
+    bounds: Rect,
+    corners: records.Corners,
+    clip: ?Rect,
+    scroll: ?ScrollHandle,
+};
+
+const ScrollHandle = retained_mod.Handle(window_mod.ScrollState);
+
+/// Scroll the innermost scroll box around keyboard focus so the box and its
+/// ring are in view, once per focus move: a wheel may scroll it away again.
+/// The next frame draws the new offset; outer scroll boxes stay put.
+fn revealFocus(window: *Window, ring: *const FocusRing) void {
+    assert(window.focus_reveal);
+    assert(window.focus_visible);
+    window.focus_reveal = false;
+    const handle = ring.scroll orelse return;
+    const state = window.retained.get(window_mod.ScrollState, handle);
+    const view = state.viewport;
+    const spread = focus_ring_offset + focus_ring_width + focus_reveal_margin;
+    const before_x = state.offset_x;
+    const before_y = state.offset_y;
+    const box = ring.bounds;
+    state.offset_x += revealDelta(view.x, view.width, box.x - spread, box.width + spread * 2);
+    state.offset_y += revealDelta(view.y, view.height, box.y - spread, box.height + spread * 2);
+    _ = state.clamp();
+    if (state.offset_x != before_x or state.offset_y != before_y) window.render_requested = true;
+}
+
+/// How far to scroll along one axis so `[start, start + size)` lies in the
+/// view: to its start when above it or larger than it, else to its end.
+fn revealDelta(view_start: f32, view_size: f32, start: f32, size: f32) f32 {
+    assert(view_size >= 0);
+    assert(size >= 0);
+    if (start < view_start or size > view_size) return start - view_start;
+    const overshoot = (start + size) - (view_start + view_size);
+    return @max(0, overshoot);
+}
+
+/// Drawn after the rest of its fragment, so later siblings do not cover
+/// it, inside the clip that encloses the box, so a scrolled-away box draws
+/// none outside its viewport. One quad and at most one clip per frame.
+fn emitFocusRing(window: *Window, ring: *const FocusRing, scene_depth: u32) void {
+    assert(ring.bounds.width >= 0);
+    assert(ring.bounds.height >= 0);
+    const spread = focus_ring_offset + focus_ring_width;
+    const corners = ring.corners;
+    const frame = window.built();
+    if (ring.clip) |clip| {
+        checkClipDepth(window, scene_depth);
+        frame.appendPaint(.{ .clip_push = clip });
+    }
+    frame.appendPaint(.{ .quad = .{
+        .bounds = .{
+            .x = ring.bounds.x - spread,
+            .y = ring.bounds.y - spread,
+            .width = ring.bounds.width + spread * 2,
+            .height = ring.bounds.height + spread * 2,
+        },
+        .fill = Color.transparent,
+        .border = .{ .width = focus_ring_width, .color = window.theme.border_focus },
+        .corners = .{
+            .top_left = corners.top_left + spread,
+            .top_right = corners.top_right + spread,
+            .bottom_right = corners.bottom_right + spread,
+            .bottom_left = corners.bottom_left + spread,
+        },
+        .blur = 0,
+    } });
+    if (ring.clip != null) frame.appendPaint(.clip_pop);
 }
 
 /// A modal fragment starts here: hit tests stop at its first record, so
@@ -425,6 +523,17 @@ const Clips = struct {
         extent_right: f32,
         extent_bottom: f32,
     };
+
+    /// The scroll state of the innermost open scroll box, if any.
+    fn innermostScroll(self: *const Clips, window: *const Window) ?ScrollHandle {
+        assert(self.len <= clip_depth_max);
+        var index = self.len;
+        while (index > 0) {
+            index -= 1;
+            if (window.nodes[self.entries[index].node_index].scroll) |handle| return handle;
+        }
+        return null;
+    }
 
     fn current(self: *const Clips) ?Rect {
         assert(self.len <= clip_depth_max);

@@ -89,16 +89,20 @@ pub const Cx = struct {
         return self.window.isFocused(target);
     }
 
-    /// Build a handler for `method` (contract §4).
+    /// Build a handler for `method` (contract §4). Its state is the root
+    /// state, an entity (`.entity`), or state retained with `cx.retain`
+    /// (`.entity` with the retained handle), which lets a component handle
+    /// events on state of its own.
     pub fn on(self: *Cx, comptime method: anytype, options: anytype) Handler {
         const handler = handler_mod.bind(method, options);
         if (comptime std.debug.runtime_safety) {
-            self.checkTarget(handler, comptime handler_mod.shapeOf(method).name);
+            const shape = comptime handler_mod.shapeOf(method);
+            self.checkTarget(shape.State, handler, shape.name);
         }
         return handler;
     }
 
-    fn checkTarget(self: *const Cx, handler: Handler, name: []const u8) void {
+    fn checkTarget(self: *Cx, comptime State: type, handler: Handler, name: []const u8) void {
         const store = self.window.store;
         const target = handler.target;
         if (target.isRoot()) {
@@ -109,10 +113,19 @@ pub const Cx = struct {
                 handler_mod.typeName(store.root_type_id),
             });
         }
-        const pool = store.findPool(target.type_id) orelse std.debug.panic(
-            "cx.on({s}): {s} is not a registered entity type",
-            .{ name, handler_mod.typeName(target.type_id) },
-        );
+        const pool = store.findPool(target.type_id) orelse {
+            if (comptime !retained.fitsSizeClass(State)) std.debug.panic(
+                "cx.on({s}): {s} is neither an entity type nor retained state",
+                .{ name, handler_mod.typeName(target.type_id) },
+            );
+            // Retained state: `get` panics on a stale handle.
+            const handle = retained.Handle(State){
+                .slot = target.slot,
+                .generation = target.generation,
+            };
+            _ = self.window.retained.get(State, handle);
+            return;
+        };
         if (target.slot < pool.generations.len) {
             if (pool.generations[target.slot] == target.generation) return;
         }

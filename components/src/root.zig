@@ -5,6 +5,10 @@
 //!
 //! Their geometry and colours match the 0.3.1 components, so the core's
 //! counter and todo goldens can be compared with the 0.3.1 goldens.
+//!
+//! Keyboard: `Button`, `Checkbox`, and `Select` are focusable, so Tab reaches
+//! them, and the core turns Enter and Space into a click on the focused
+//! element. `Select` adds its own keys (see `SelectKeys`).
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -14,7 +18,10 @@ const assert = std.debug.assert;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
 const Handler = gooey.Handler;
+const Effects = gooey.Effects;
+const ElementId = gooey.ElementId;
 const Key = gooey.Key;
+const KeyCode = gooey.input.KeyCode;
 const Color = ui.Color;
 const InputEngine = gooey.InputEngine;
 const AreaEngine = gooey.AreaEngine;
@@ -63,6 +70,7 @@ pub const Button = struct {
                 .alignment = .center,
                 .cursor = .pointer,
             },
+            .focusable = !self.disabled,
             .on_click = if (self.disabled) null else self.on_click,
             .a11y = .{
                 .role = .button,
@@ -127,6 +135,7 @@ pub const Checkbox = struct {
         cx.render(ui.box(.{
             .key = self.key,
             .style = .{ .direction = .row, .gap = 8, .alignment = .center_cross },
+            .focusable = self.on_click != null,
             .on_click = self.on_click,
             .a11y = .{
                 .role = .checkbox,
@@ -175,6 +184,14 @@ pub const Checkbox = struct {
 /// `.popover` layer. The app owns `selected` and `open`: the trigger calls
 /// `on_toggle`, a click outside calls `on_close`, and option `i` calls
 /// `on_select[i]`, typically `cx.on(State.choose, .{ .arg = i })`.
+///
+/// The combobox takes keyboard focus, and the focused option is the
+/// highlighted one, so a screen reader follows it. Enter, Space, Down, and
+/// Up open the menu on the selected option (or the first); Down, Up, Home,
+/// and End move between options; Enter and Space choose; and Esc or Tab
+/// closes, back on the combobox. Each opens or closes through `on_toggle`
+/// and chooses through `on_select`, pressed with `effects.click`. A Select
+/// retains one 64 B slot for its keys, and adds a key handler per option.
 pub const Select = struct {
     key: []const u8,
     options: []const []const u8,
@@ -196,13 +213,29 @@ pub const Select = struct {
         assert(self.key.len > 0);
         assert(self.on_select.len == self.options.len);
         if (self.selected) |index| assert(index < self.options.len);
+        if (self.options.len > select_option_count_max) std.debug.panic(
+            "Select \"{s}\" of {d} options: capacity {d}",
+            .{ self.key, self.options.len, select_option_count_max },
+        );
         const theme = cx.theme();
         const key = Key{ .name = self.key };
+        const id = cx.id(key);
+        const handle = cx.retain(SelectKeys, id, .frame, SelectKeys.init);
+        cx.get(SelectKeys, handle).root = id;
         const trigger_height = @as(f32, @floatFromInt(theme.font_size_base)) +
             self.padding * 2 + 4;
         cx.render(ui.box(.{
             .key = key,
-            .style = .{ .width = .{ .fixed = self.width } },
+            // The trigger's corners, for the focus ring; the box paints none.
+            .style = .{
+                .width = .{ .fixed = self.width },
+                .corner_radius = .all(theme.radius_md),
+            },
+            .focusable = !self.disabled,
+            .on_key = if (self.disabled) null else cx.on(SelectKeys.onKey, .{
+                .entity = handle,
+                .arg = self.keyArg(SelectKeys.on_combobox),
+            }),
             .on_click_outside = if (self.open) self.on_close else null,
             .a11y = .{
                 .role = .combobox,
@@ -215,13 +248,140 @@ pub const Select = struct {
             },
         }, .{
             SelectTrigger{ .select = &self, .height = trigger_height },
-            if (self.open) SelectMenu{ .select = &self, .offset_y = trigger_height } else null,
+            if (self.open) SelectMenu{
+                .select = &self,
+                .offset_y = trigger_height,
+                .keys = handle,
+            } else null,
         }));
     }
 
     fn displayText(self: *const Select) []const u8 {
         const index = self.selected orelse return self.placeholder;
         return self.options[index];
+    }
+
+    /// What a key handler on the combobox or option `focused` acts on.
+    fn keyArg(self: *const Select, focused: u16) SelectKeys.Arg {
+        assert(self.options.len <= select_option_count_max);
+        const start = self.selected orelse 0;
+        return .{
+            .focused = focused,
+            .count = @intCast(self.options.len),
+            .start = @intCast(start),
+            .open = self.open,
+        };
+    }
+};
+
+/// The most options one `Select` lists: the key handlers pack indexes into
+/// 16 bits, and a menu past a thousand rows is not a dropdown.
+pub const select_option_count_max: u32 = 1024;
+
+/// A `Select`'s keyboard handling, retained under its key so its handlers
+/// have state to run on. The arguments come from the frame on screen; only
+/// the combobox's id, which never changes, is kept.
+const SelectKeys = struct {
+    root: ElementId,
+
+    /// `Arg.focused` for the combobox itself.
+    const on_combobox: u16 = std.math.maxInt(u16);
+
+    const Arg = packed struct(u64) {
+        /// The focused option, or `on_combobox`.
+        focused: u16,
+        count: u16,
+        /// The option the menu opens on: the selected one, or the first.
+        start: u16,
+        open: bool,
+        padding: u15 = 0,
+    };
+
+    comptime {
+        assert(select_option_count_max < on_combobox);
+    }
+
+    fn init(self: *SelectKeys) void {
+        self.root = .root;
+    }
+
+    fn trigger(self: *const SelectKeys) ElementId {
+        assert(self.root.isKeyed());
+        return self.root.child(.{ .name = "trigger" });
+    }
+
+    fn option(self: *const SelectKeys, index: u16) ElementId {
+        assert(self.root.isKeyed());
+        assert(index < select_option_count_max);
+        return self.root.child(.{ .name = "menu" }).child(.{ .index = index });
+    }
+
+    /// Keys without Cmd, Ctrl, or Alt. A key an option leaves alone bubbles
+    /// to the combobox's handler, which closes the menu on Esc and Tab.
+    fn onKey(self: *SelectKeys, arg: Arg, effects: *Effects) void {
+        assert(self.root.isKeyed());
+        assert(arg.start < @max(arg.count, 1));
+        const event = effects.inputEvent() orelse return;
+        if (event.* != .key_down) return;
+        const key = event.key_down;
+        if (key.modifiers.cmd or key.modifiers.ctrl or key.modifiers.alt) return;
+        if (arg.focused == on_combobox) {
+            self.comboboxKey(arg, key.key, effects);
+        } else {
+            assert(arg.open);
+            assert(arg.focused < arg.count);
+            self.optionKey(arg, key.key, effects);
+        }
+    }
+
+    /// Opening focuses the start option, which the next frame renders.
+    fn comboboxKey(self: *SelectKeys, arg: Arg, key: KeyCode, effects: *Effects) void {
+        assert(arg.focused == on_combobox);
+        assert(arg.start < @max(arg.count, 1));
+        switch (key) {
+            .@"return", .keypad_enter, .space, .down, .up => {
+                const choosing = key != .down and key != .up;
+                if (arg.open and choosing) {
+                    effects.click(self.trigger());
+                } else {
+                    if (!arg.open) effects.click(self.trigger());
+                    if (arg.count > 0) effects.focus(self.option(arg.start));
+                }
+                effects.stopPropagation();
+            },
+            // Tab closes the menu too, as a macOS pop-up menu takes it, and
+            // stays: moving on would step through the closing menu's options,
+            // which the frame on screen still holds.
+            .escape, .tab => if (arg.open) {
+                effects.click(self.trigger());
+                effects.focus(self.root);
+                effects.stopPropagation();
+            },
+            else => {},
+        }
+    }
+
+    /// Movement stops at the first and last option, as a listbox's does.
+    fn optionKey(self: *SelectKeys, arg: Arg, key: KeyCode, effects: *Effects) void {
+        assert(arg.count > 0);
+        assert(arg.focused < arg.count);
+        const last = arg.count - 1;
+        const target: u16 = switch (key) {
+            .down => @min(arg.focused + 1, last),
+            .up => arg.focused -| 1,
+            .home => 0,
+            .end => last,
+            .@"return", .keypad_enter, .space => {
+                effects.click(self.option(arg.focused));
+                effects.focus(self.root);
+                effects.stopPropagation();
+                return;
+            },
+            else => return,
+        };
+        assert(target <= last);
+        effects.focus(self.option(target));
+        effects.stopPropagation();
     }
 };
 
@@ -269,12 +429,15 @@ const SelectTrigger = struct {
 const SelectMenu = struct {
     select: *const Select,
     offset_y: f32,
+    keys: gooey.Handle(SelectKeys),
 
     pub fn render(self: SelectMenu, cx: *Cx) void {
         const select = self.select;
         assert(select.open);
         const theme = cx.theme();
         cx.render(ui.box(.{
+            // `SelectKeys.option` derives the options' ids from this key.
+            .key = .{ .name = "menu" },
             .layer = .{
                 .kind = .popover,
                 .anchor = .{ .parent = .{ .y = self.offset_y } },
@@ -289,22 +452,31 @@ const SelectMenu = struct {
                 .gap = 2,
                 .shadow = .{ .blur = 12, .offset_y = 4 },
             },
-        }, .{SelectOptions{ .select = select }}));
+            .a11y = .{
+                .role = .listbox,
+                .label = select.accessible_name orelse select.placeholder,
+            },
+        }, .{SelectOptions{ .select = select, .keys = self.keys }}));
     }
 };
 
 const SelectOptions = struct {
     select: *const Select,
+    keys: gooey.Handle(SelectKeys),
 
     pub fn render(self: SelectOptions, cx: *Cx) void {
         const select = self.select;
         const theme = cx.theme();
         assert(select.options.len == select.on_select.len);
+        assert(select.options.len <= select_option_count_max);
+        const set_size: u16 = @intCast(select.options.len);
         for (select.options, select.on_select, 0..) |label, handler, index| {
             const key = Key{ .index = index };
+            const position: u16 = @intCast(index);
             const chosen = select.selected == index;
-            const hovered = cx.hovered(cx.id(key));
-            const background: ?Color = if (hovered)
+            // The focused option is the highlighted one, drawn as hovered.
+            const lit = cx.hovered(cx.id(key)) or cx.focused(cx.id(key));
+            const background: ?Color = if (lit)
                 theme.overlay
             else if (chosen) theme.primary.withAlpha(0.15) else null;
             cx.render(ui.box(.{
@@ -319,7 +491,18 @@ const SelectOptions = struct {
                     .alignment = .{ .main = .space_between, .cross = .center },
                     .cursor = .pointer,
                 },
+                .focusable = true,
                 .on_click = handler,
+                .on_key = cx.on(SelectKeys.onKey, .{
+                    .entity = self.keys,
+                    .arg = select.keyArg(position),
+                }),
+                .a11y = .{
+                    .role = .option,
+                    .label = label,
+                    .pos_in_set = position + 1,
+                    .set_size = set_size,
+                },
             }, .{
                 ui.text(label, .{ .size = theme.font_size_base, .color = .text }),
                 ui.box(.{ .style = .{

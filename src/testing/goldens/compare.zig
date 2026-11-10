@@ -19,6 +19,12 @@
 //!    outside its listener lists, so it records none.
 //! 6. Accessibility drops 0.3.1's `presentation` nodes, which its `Svg`
 //!    component adds around the checkbox's checkmark; the core paints it.
+//! 7. Buttons and checkboxes take focus in the core, as 0.3.1's did not, so
+//!    Tab reaches them (0.4.1): a clickable hit record drops its `focus`
+//!    flag, and a button or checkbox node its `focused` state, which a click
+//!    gives it. A text field's focus is still compared. This is the one rule
+//!    that removes a difference in behaviour; it is one kind, everywhere,
+//!    and the core checks test the focus it removes.
 //!
 //! A remaining difference must be listed in `known_differences` with why.
 
@@ -45,6 +51,7 @@ const Step = struct {
     fn deinit(self: *Step, gpa: std.mem.Allocator) void {
         for (self.paint.items) |item| gpa.free(item);
         for (self.hits.items) |item| gpa.free(item);
+        for (self.a11y.items) |item| gpa.free(item);
         self.paint.deinit(gpa);
         self.hits.deinit(gpa);
         self.a11y.deinit(gpa);
@@ -105,13 +112,29 @@ fn parse(gpa: std.mem.Allocator, dump: []const u8, steps: *[step_count_max]Step)
             section = .a11y;
         } else switch (section) {
             .paint => try addPaint(gpa, step, line),
-            .hits => try step.hits.append(gpa, try without(gpa, line, " key")),
+            .hits => try step.hits.append(gpa, try hitLine(gpa, line)),
             .a11y => if (!std.mem.startsWith(u8, line, "presentation ")) {
-                try step.a11y.append(gpa, line);
+                try step.a11y.append(gpa, try a11yLine(gpa, line));
             },
         }
     }
     return count;
+}
+
+/// Rules 5 and 7.
+fn hitLine(gpa: std.mem.Allocator, line: []const u8) ![]const u8 {
+    const keyless = try without(gpa, line, " key");
+    if (std.mem.indexOf(u8, keyless, " click focus") == null) return keyless;
+    defer gpa.free(keyless);
+    return without(gpa, keyless, " focus");
+}
+
+/// Rule 7.
+fn a11yLine(gpa: std.mem.Allocator, line: []const u8) ![]const u8 {
+    const control = std.mem.startsWith(u8, line, "button ") or
+        std.mem.startsWith(u8, line, "checkbox ");
+    if (!control) return gpa.dupe(u8, line);
+    return without(gpa, line, " focused");
 }
 
 fn addPaint(gpa: std.mem.Allocator, step: *Step, line: []const u8) !void {

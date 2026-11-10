@@ -39,6 +39,11 @@ pub const slab_alignment = 16;
 
 pub const size_classes = [_]u32{ 64, 256, 1024, 4096 };
 
+/// Whether `T` fits a size class, so `cx.retain` can hold it here.
+pub fn fitsSizeClass(comptime T: type) bool {
+    return @alignOf(T) <= slab_alignment and @sizeOf(T) <= size_classes[size_classes.len - 1];
+}
+
 /// The size class index for `T`; a type above the largest class is a
 /// compile error, and it belongs in a dedicated pool.
 pub fn classOf(comptime T: type) u8 {
@@ -314,10 +319,12 @@ pub const Retained = struct {
         return @ptrCast(slab.slotBytes(slot).ptr);
     }
 
+    /// The generation is checked in every build mode before the slot is
+    /// read: a handler in the frame on screen may name state a later sweep
+    /// released, and releasing advances the generation.
     pub fn get(self: *Retained, comptime T: type, handle: Handle(T)) *T {
         const slab = &self.slabs[comptime classOf(T)];
         assert(handle.slot < slab.slotCount());
-        assert(slab.meta[handle.slot].in_use);
         if (slab.generations[handle.slot] != handle.generation) {
             std.debug.panic("stale retained handle to {s}: slot {d} generation {d}, now {d}", .{
                 @typeName(T),
@@ -326,6 +333,7 @@ pub const Retained = struct {
                 slab.generations[handle.slot],
             });
         }
+        assert(slab.meta[handle.slot].in_use);
         assert(slab.meta[handle.slot].type_id == handler_mod.typeId(T));
         return @ptrCast(slab.slotBytes(handle.slot).ptr);
     }
