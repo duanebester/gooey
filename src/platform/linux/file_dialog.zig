@@ -443,7 +443,8 @@ fn buildHandlePath(buf: *[256]u8, unique_name: []const u8, token: [:0]const u8) 
 
 /// Build D-Bus match rule for Response signal
 fn buildMatchRule(buf: *[512]u8, handle_path: [:0]const u8) ![:0]const u8 {
-    const len = std.fmt.bufPrint(buf[0..511], "type='signal',interface='{s}',member='Response',path='{s}'", .{
+    const format = "type='signal',interface='{s}',member='Response',path='{s}'";
+    const len = std.fmt.bufPrint(buf[0..511], format, .{
         dbus.PORTAL_REQUEST_INTERFACE,
         handle_path,
     }) catch return error.RuleTooLong;
@@ -452,8 +453,13 @@ fn buildMatchRule(buf: *[512]u8, handle_path: [:0]const u8) ![:0]const u8 {
 }
 
 /// Append a dict entry with string value: {key: variant<string>}
-fn appendDictEntryString(dict_iter: *dbus.MessageIter, key: [:0]const u8, value: [:0]const u8) !void {
-    var entry = dict_iter.openContainer(dbus.TYPE_DICT_ENTRY, null) orelse return error.ContainerFailed;
+fn appendDictEntryString(
+    dict_iter: *dbus.MessageIter,
+    key: [:0]const u8,
+    value: [:0]const u8,
+) !void {
+    var entry = dict_iter.openContainer(dbus.TYPE_DICT_ENTRY, null) orelse
+        return error.ContainerFailed;
 
     if (!entry.appendString(key)) return error.AppendFailed;
 
@@ -466,7 +472,8 @@ fn appendDictEntryString(dict_iter: *dbus.MessageIter, key: [:0]const u8, value:
 
 /// Append a dict entry with boolean value: {key: variant<bool>}
 fn appendDictEntryBool(dict_iter: *dbus.MessageIter, key: [:0]const u8, value: bool) !void {
-    var entry = dict_iter.openContainer(dbus.TYPE_DICT_ENTRY, null) orelse return error.ContainerFailed;
+    var entry = dict_iter.openContainer(dbus.TYPE_DICT_ENTRY, null) orelse
+        return error.ContainerFailed;
 
     if (!entry.appendString(key)) return error.AppendFailed;
 
@@ -479,7 +486,8 @@ fn appendDictEntryBool(dict_iter: *dbus.MessageIter, key: [:0]const u8, value: b
 
 /// Append a dict entry with byte array value: {key: variant<ay>}
 fn appendDictEntryBytes(dict_iter: *dbus.MessageIter, key: [:0]const u8, value: []const u8) !void {
-    var entry = dict_iter.openContainer(dbus.TYPE_DICT_ENTRY, null) orelse return error.ContainerFailed;
+    var entry = dict_iter.openContainer(dbus.TYPE_DICT_ENTRY, null) orelse
+        return error.ContainerFailed;
 
     if (!entry.appendString(key)) return error.AppendFailed;
 
