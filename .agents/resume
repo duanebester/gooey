@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-zig_version="0.16.0"
+zig_version="0.17.0"
 
 if ! command -v zig >/dev/null 2>&1; then
     echo "Zig is unavailable; rerun .agents/setup." >&2
