@@ -40,6 +40,7 @@ const limits_mod = @import("../../core/limits.zig");
 const scene_mod = @import("../../scene/mod.zig");
 const text_mod = @import("../../text/mod.zig");
 const cpu = @import("../cpu/renderer.zig");
+const devicePxFromLogical = @import("../interface.zig").devicePxFromLogical;
 
 const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
@@ -198,9 +199,9 @@ pub const ShmRenderer = struct {
             @as(f64, @floatFromInt(height_max)) / height_f,
         );
         const scale = @min(scale_factor, budget_scale, cpu.scale_factor_max);
-        // Truncate like the Vulkan swapchain extent so both backends agree.
-        self.width_px = @max(1, @as(u32, @intFromFloat(width_f * scale)));
-        self.height_px = @max(1, @as(u32, @intFromFloat(height_f * scale)));
+        // Round like the Vulkan swapchain extent so both backends agree.
+        self.width_px = @max(1, devicePxFromLogical(logical_width, scale));
+        self.height_px = @max(1, devicePxFromLogical(logical_height, scale));
         self.effective_scale = @floatCast(scale);
         const downscaled = scale < scale_factor;
         if (downscaled and !self.downscaled) {

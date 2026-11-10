@@ -68,6 +68,10 @@ const surface_listener = wayland.SurfaceListener{
     .preferred_buffer_transform = Window.surfacePreferredTransform,
 };
 
+const fractional_scale_listener = wayland.FractionalScaleListener{
+    .preferred_scale = Window.fractionalPreferredScale,
+};
+
 const decoration_listener = wayland.ZxdgToplevelDecorationV1Listener{
     .configure = Window.decorationConfigure,
 };
@@ -93,6 +97,9 @@ pub const Window = struct {
     xdg_toplevel: ?*wayland.XdgToplevel = null,
     decoration: ?*wayland.ZxdgToplevelDecorationV1 = null,
     viewport: ?*wayland.WpViewport = null,
+    /// Bound only with a viewport. While bound, its `preferred_scale` sets
+    /// `scale_factor` and `wl_surface.preferred_buffer_scale` is ignored.
+    fractional_scale: ?*wayland.WpFractionalScaleV1 = null,
 
     // Window state. Both are *logical* pixels; multiply by `scale_factor` for
     // the physical swapchain extent.
@@ -173,6 +180,9 @@ pub const Window = struct {
     /// string, so the buffer is one byte wider for the terminator.
     pub const title_bytes_max: usize = 255;
 
+    /// Create the window and map it. The Wayland objects are created in
+    /// dependency order and unwound in reverse by the errdefers here, so each
+    /// helper below leaves nothing behind when it fails.
     pub fn init(allocator: Allocator, plat: *LinuxPlatform, options: *const WindowOptions) !*Self {
         std.debug.assert(options.width > 0);
         std.debug.assert(options.height > 0);
@@ -180,26 +190,17 @@ pub const Window = struct {
         const self = try allocator.create(Self);
         errdefer allocator.destroy(self);
 
-        // Get initial scale factor from platform (may be updated later by surface events)
-        const initial_scale = plat.getScaleFactor();
-
         self.* = Self{
             .allocator = allocator,
             .platform = plat,
             .width_px = @intFromFloat(options.width),
             .height_px = @intFromFloat(options.height),
             .size = .{ .width = options.width, .height = options.height },
-            .scale_factor = initial_scale,
+            // Surface events may update the output's scale later.
+            .scale_factor = plat.getScaleFactor(),
             .renderer = if (use_cpu_renderer) .{} else VulkanRenderer.init(allocator),
         };
-
-        // Store title. Over-long is a programmer error, and the clamp is what
-        // keeps a release build in bounds.
-        std.debug.assert(options.title.len <= title_bytes_max);
-        const title_len = @min(options.title.len, title_bytes_max);
-        @memcpy(self.title_buf[0..title_len], options.title[0..title_len]);
-        self.title_buf[title_len] = 0;
-        self.title_len = title_len;
+        self.storeTitle(options.title);
 
         // Register before any Wayland object exists so that every later error
         // path unwinds through one errdefer rather than a second exit branch.
@@ -209,76 +210,22 @@ pub const Window = struct {
             self.window_id = .invalid;
         }
 
-        // Create Wayland surface
-        const compositor = plat.getCompositor() orelse return error.NoCompositor;
-        self.wl_surface = wayland.compositorCreateSurface(compositor) orelse return error.FailedToCreateSurface;
-        errdefer {
-            if (self.wl_surface) |s| wayland.surfaceDestroy(s);
-            self.wl_surface = null;
-        }
+        try self.createSurface(plat);
+        errdefer self.destroySurface();
 
-        // Set up surface listener (uses module-level static listener)
-        _ = wayland.surfaceAddListener(self.wl_surface.?, &surface_listener, self);
-
-        // Create XDG surface
-        const xdg_wm_base = plat.getXdgWmBase() orelse return error.NoXdgWmBase;
-        self.xdg_surface = wayland.xdgWmBaseGetXdgSurface(xdg_wm_base, self.wl_surface.?) orelse return error.FailedToCreateXdgSurface;
+        try self.createToplevel(plat, options);
         errdefer {
+            if (self.xdg_toplevel) |tl| wayland.xdgToplevelDestroy(tl);
+            self.xdg_toplevel = null;
             if (self.xdg_surface) |xs| wayland.xdgSurfaceDestroy(xs);
             self.xdg_surface = null;
         }
 
-        // Set up XDG surface listener (uses module-level static listener)
-        _ = wayland.xdgSurfaceAddListener(self.xdg_surface.?, &xdg_surface_listener, self);
+        self.requestServerDecorations(plat);
 
-        // Create XDG toplevel
-        self.xdg_toplevel = wayland.xdgSurfaceGetToplevel(self.xdg_surface.?) orelse return error.FailedToCreateToplevel;
-        errdefer {
-            if (self.xdg_toplevel) |tl| wayland.xdgToplevelDestroy(tl);
-            self.xdg_toplevel = null;
-        }
-
-        // Set up toplevel listener (uses module-level static listener)
-        _ = wayland.xdgToplevelAddListener(self.xdg_toplevel.?, &toplevel_listener, self);
-
-        // Set window properties
-        wayland.xdgToplevelSetTitle(self.xdg_toplevel.?, @ptrCast(&self.title_buf));
-        wayland.xdgToplevelSetAppId(self.xdg_toplevel.?, "gooey");
-
-        // Set size hints
-        if (options.min_size) |min| {
-            wayland.xdgToplevelSetMinSize(
-                self.xdg_toplevel.?,
-                @intFromFloat(min.width),
-                @intFromFloat(min.height),
-            );
-        }
-        if (options.max_size) |max| {
-            wayland.xdgToplevelSetMaxSize(
-                self.xdg_toplevel.?,
-                @intFromFloat(max.width),
-                @intFromFloat(max.height),
-            );
-        }
-
-        // Request server-side decorations if available
-        if (plat.getDecorationManager()) |dm| {
-            std.debug.print("Decoration manager available, requesting server-side decorations...\n", .{});
-            self.decoration = wayland.zxdgDecorationManagerV1GetToplevelDecoration(dm, self.xdg_toplevel.?);
-            if (self.decoration) |dec| {
-                // Add listener to get decoration mode response
-                _ = wayland.zxdgToplevelDecorationV1AddListener(dec, &decoration_listener, self);
-                wayland.zxdgToplevelDecorationV1SetMode(dec, .server_side);
-            }
-        } else {
-            std.debug.print("WARNING: No decoration manager available - window will have no title bar!\n", .{});
-            std.debug.print("Your compositor may not support xdg-decoration-unstable-v1 protocol.\n", .{});
-        }
-
-        // Commit surface to trigger configure events
+        // Commit to trigger the initial configure, and wait for it. This may
+        // update scale_factor through the preferred_buffer_scale callback.
         wayland.surfaceCommit(self.wl_surface.?);
-
-        // Wait for initial configure - this may update scale_factor via preferred_buffer_scale callback
         _ = wayland.wl_display_roundtrip(plat.display.?);
 
         // errdefer for decoration (created above, may be null)
@@ -287,30 +234,160 @@ pub const Window = struct {
             self.decoration = null;
         }
 
-        // Create viewport for HiDPI scaling (preferred method over set_buffer_scale for Vulkan)
-        // wp_viewporter allows us to render at physical resolution and display at logical size
-        if (plat.getViewporter()) |viewporter| {
-            self.viewport = wayland.viewporterGetViewport(viewporter, self.wl_surface.?);
-            if (self.viewport) |vp| {
-                // Set destination to logical size - the compositor will scale our buffer to this size
-                wayland.viewportSetDestination(
-                    vp,
-                    @intCast(self.width_px),
-                    @intCast(self.height_px),
-                );
-            }
-        } else {
-            // Fallback: use buffer scale (may not work correctly with Vulkan on all compositors)
-            const scale_int: i32 = @intFromFloat(self.scale_factor);
-            wayland.surfaceSetBufferScale(self.wl_surface.?, scale_int);
-        }
-
-        // errdefer for viewport (created above, may be null)
+        self.createViewport(plat);
         errdefer {
             if (self.viewport) |vp| wayland.viewportDestroy(vp);
             self.viewport = null;
         }
 
+        try self.mapWithRenderer(plat, options);
+
+        // A newly mapped window claims focus. `setActiveWindowId` also derives
+        // the `*LinuxWindow` that Wayland input dispatch needs, so publishing
+        // the id alone keeps both authorities in agreement.
+        plat.setActiveWindowId(self.window_id);
+
+        std.debug.assert(self.window_id.isValid());
+        std.debug.assert(self.wl_surface != null);
+        return self;
+    }
+
+    /// Store the title as the C string `xdg_toplevel.set_title` takes. Over-long
+    /// is a programmer error, and the clamp is what keeps a release build in
+    /// bounds.
+    fn storeTitle(self: *Self, title: []const u8) void {
+        std.debug.assert(title.len <= title_bytes_max);
+        const title_len = @min(title.len, title_bytes_max);
+        @memcpy(self.title_buf[0..title_len], title[0..title_len]);
+        self.title_buf[title_len] = 0;
+        self.title_len = title_len;
+        std.debug.assert(self.title_buf[self.title_len] == 0);
+    }
+
+    /// Create the `wl_surface` and listen for its scale. The last fallible step
+    /// creates the surface, so a failure leaves nothing to destroy.
+    fn createSurface(self: *Self, plat: *LinuxPlatform) !void {
+        std.debug.assert(self.wl_surface == null);
+        const compositor = plat.getCompositor() orelse return error.NoCompositor;
+        self.wl_surface = wayland.compositorCreateSurface(compositor) orelse
+            return error.FailedToCreateSurface;
+
+        // Set up surface listener (uses module-level static listener)
+        _ = wayland.surfaceAddListener(self.wl_surface.?, &surface_listener, self);
+        self.bindFractionalScale(plat);
+        std.debug.assert(self.wl_surface != null);
+    }
+
+    /// Undo `createSurface`. The fractional scale object goes before its surface.
+    fn destroySurface(self: *Self) void {
+        if (self.fractional_scale) |fractional_scale| {
+            wayland.fractionalScaleDestroy(fractional_scale);
+        }
+        self.fractional_scale = null;
+        if (self.wl_surface) |s| wayland.surfaceDestroy(s);
+        self.wl_surface = null;
+        std.debug.assert(self.fractional_scale == null);
+        std.debug.assert(self.wl_surface == null);
+    }
+
+    /// Give the surface the xdg toplevel role, with its title, app id, and size
+    /// hints. A failure destroys whatever this created.
+    fn createToplevel(self: *Self, plat: *LinuxPlatform, options: *const WindowOptions) !void {
+        std.debug.assert(self.wl_surface != null);
+        std.debug.assert(self.xdg_surface == null);
+        const xdg_wm_base = plat.getXdgWmBase() orelse return error.NoXdgWmBase;
+        self.xdg_surface = wayland.xdgWmBaseGetXdgSurface(xdg_wm_base, self.wl_surface.?) orelse
+            return error.FailedToCreateXdgSurface;
+        errdefer {
+            if (self.xdg_surface) |xs| wayland.xdgSurfaceDestroy(xs);
+            self.xdg_surface = null;
+        }
+
+        // Set up XDG surface listener (uses module-level static listener)
+        _ = wayland.xdgSurfaceAddListener(self.xdg_surface.?, &xdg_surface_listener, self);
+
+        self.xdg_toplevel = wayland.xdgSurfaceGetToplevel(self.xdg_surface.?) orelse
+            return error.FailedToCreateToplevel;
+        const toplevel = self.xdg_toplevel.?;
+
+        // Set up toplevel listener (uses module-level static listener)
+        _ = wayland.xdgToplevelAddListener(toplevel, &toplevel_listener, self);
+
+        wayland.xdgToplevelSetTitle(toplevel, @ptrCast(&self.title_buf));
+        wayland.xdgToplevelSetAppId(toplevel, "gooey");
+        if (options.min_size) |min| {
+            wayland.xdgToplevelSetMinSize(
+                toplevel,
+                @intFromFloat(min.width),
+                @intFromFloat(min.height),
+            );
+        }
+        if (options.max_size) |max| {
+            wayland.xdgToplevelSetMaxSize(
+                toplevel,
+                @intFromFloat(max.width),
+                @intFromFloat(max.height),
+            );
+        }
+        std.debug.assert(self.xdg_toplevel != null);
+    }
+
+    /// Ask for server-side decorations when the compositor offers them. Best
+    /// effort: without them the window has no title bar.
+    fn requestServerDecorations(self: *Self, plat: *LinuxPlatform) void {
+        std.debug.assert(self.xdg_toplevel != null);
+        std.debug.assert(self.decoration == null);
+        const manager = plat.getDecorationManager() orelse {
+            std.debug.print(
+                "WARNING: No decoration manager available - window will have no title bar!\n",
+                .{},
+            );
+            std.debug.print(
+                "Your compositor may not support xdg-decoration-unstable-v1 protocol.\n",
+                .{},
+            );
+            return;
+        };
+        std.debug.print(
+            "Decoration manager available, requesting server-side decorations...\n",
+            .{},
+        );
+        self.decoration = wayland.zxdgDecorationManagerV1GetToplevelDecoration(
+            manager,
+            self.xdg_toplevel.?,
+        );
+        if (self.decoration) |dec| {
+            // Add listener to get decoration mode response
+            _ = wayland.zxdgToplevelDecorationV1AddListener(dec, &decoration_listener, self);
+            wayland.zxdgToplevelDecorationV1SetMode(dec, .server_side);
+        }
+    }
+
+    /// Map buffers to the logical size: through a viewport (wp_viewporter),
+    /// which lets the renderer draw at physical resolution, or else through
+    /// the integer buffer scale.
+    fn createViewport(self: *Self, plat: *LinuxPlatform) void {
+        std.debug.assert(self.wl_surface != null);
+        std.debug.assert(self.viewport == null);
+        const viewporter = plat.getViewporter() orelse {
+            // Fallback: use buffer scale (may not work correctly with Vulkan on all compositors)
+            const scale_int: i32 = @intFromFloat(self.scale_factor);
+            wayland.surfaceSetBufferScale(self.wl_surface.?, scale_int);
+            return;
+        };
+        self.viewport = wayland.viewporterGetViewport(viewporter, self.wl_surface.?);
+        if (self.viewport) |vp| {
+            // Set destination to logical size - the compositor will scale our buffer to this size
+            wayland.viewportSetDestination(vp, @intCast(self.width_px), @intCast(self.height_px));
+        }
+    }
+
+    /// Set the window geometry, create the renderer on the committed surface
+    /// state, and commit again, so pointer coordinates are logical once the
+    /// compositor has applied the viewport.
+    fn mapWithRenderer(self: *Self, plat: *LinuxPlatform, options: *const WindowOptions) !void {
+        std.debug.assert(self.xdg_surface != null);
+        std.debug.assert(self.wl_surface != null);
         // Set window geometry to logical size (what the user sees)
         wayland.xdgSurfaceSetWindowGeometry(
             self.xdg_surface.?,
@@ -324,6 +401,7 @@ pub const Window = struct {
         wayland.surfaceCommit(self.wl_surface.?);
         _ = wayland.wl_display_roundtrip(plat.display.?);
 
+        const renderer_scale = self.scale_factor;
         try self.initRenderer(plat, options);
 
         // Final commit after Vulkan initialization
@@ -334,14 +412,38 @@ pub const Window = struct {
         // the correct (logical) coordinate space until viewport is applied
         _ = wayland.wl_display_roundtrip(plat.display.?);
 
-        // A newly mapped window claims focus. `setActiveWindowId` also derives
-        // the `*LinuxWindow` that Wayland input dispatch needs, so publishing
-        // the id alone keeps both authorities in agreement.
-        plat.setActiveWindowId(self.window_id);
+        // The core host starts from `scale_factor`, so a scale that arrived in
+        // that roundtrip must reach the renderer's buffers here.
+        if (self.scale_factor != renderer_scale) {
+            self.renderer.resize(self.width_px, self.height_px, self.scale_factor);
+        }
+    }
 
-        std.debug.assert(self.window_id.isValid());
+    /// Ask for the compositor's fractional scale (1.5 rather than the 2 that
+    /// `wl_output` and `preferred_buffer_scale` round it up to). It applies only
+    /// through a viewport, so without wp_viewporter the window keeps integer
+    /// scales. Bound before the first commit, so a compositor that already
+    /// knows the output can send the scale before the renderer is created.
+    fn bindFractionalScale(self: *Self, plat: *LinuxPlatform) void {
         std.debug.assert(self.wl_surface != null);
-        return self;
+        std.debug.assert(self.fractional_scale == null);
+        const manager = plat.getFractionalScaleManager() orelse return;
+        if (plat.getViewporter() == null) return;
+        const fractional_scale = wayland.fractionalScaleManagerGetFractionalScale(
+            manager,
+            self.wl_surface.?,
+        ) orelse {
+            std.log.warn("wp_fractional_scale_v1: no proxy; keeping integer scales", .{});
+            return;
+        };
+        // Fails only for a proxy that already has a listener, and this one is new.
+        const added = wayland.fractionalScaleAddListener(
+            fractional_scale,
+            &fractional_scale_listener,
+            self,
+        );
+        std.debug.assert(added);
+        self.fractional_scale = fractional_scale;
     }
 
     /// Bind the renderer to the Wayland surface. Both renderers create their
@@ -407,7 +509,7 @@ pub const Window = struct {
         if (self.decoration) |dec| wayland.zxdgToplevelDecorationV1Destroy(dec);
         if (self.xdg_toplevel) |tl| wayland.xdgToplevelDestroy(tl);
         if (self.xdg_surface) |xs| wayland.xdgSurfaceDestroy(xs);
-        if (self.wl_surface) |s| wayland.surfaceDestroy(s);
+        self.destroySurface();
 
         std.debug.assert(!self.window_id.isValid());
         self.allocator.destroy(self);
@@ -662,12 +764,31 @@ pub const Window = struct {
     /// surface's viewport before it presents that frame, so the new size and
     /// the buffer drawn for it reach the compositor in one commit.
     fn resizeCore(self: *Self, binding: CoreBinding) void {
-        std.debug.assert(self.scale_factor > 0);
         self.applyPendingSize();
+        pushViewport(binding, self.size, self.scale_factor);
+    }
+
+    /// Adopt the compositor's scale at the same logical size. Once bound, the
+    /// core rebuilds at the new scale and the render thread resizes the
+    /// buffers before presenting that frame. Before, the host reads
+    /// `scale_factor` when it binds. A configure whose size is still pending
+    /// keeps it, and reports the new scale with it.
+    fn applyScale(self: *Self, scale: f64) void {
+        std.debug.assert(scale > 0);
+        if (self.scale_factor == scale) return;
+        self.scale_factor = scale;
+        if (self.core) |binding| pushViewport(binding, self.size, scale);
+        std.debug.assert(self.scale_factor == scale);
+    }
+
+    fn pushViewport(binding: CoreBinding, size: Size, scale: f64) void {
+        std.debug.assert(size.width > 0);
+        std.debug.assert(size.height > 0);
+        std.debug.assert(scale > 0);
         binding.queue.push(.{ .window = .{ .resized = .{
-            .width = @floatFromInt(self.pending_width),
-            .height = @floatFromInt(self.pending_height),
-            .scale_factor = @floatCast(self.scale_factor),
+            .width = @floatCast(size.width),
+            .height = @floatCast(size.height),
+            .scale_factor = @floatCast(scale),
         } } });
         binding.schedule_tick(binding.context);
     }
@@ -740,7 +861,8 @@ pub const Window = struct {
         _ = data;
         _ = surface;
         _ = output;
-        // A scale change arrives as `preferred_buffer_scale`.
+        // A scale change arrives as `preferred_buffer_scale`, or as
+        // `wp_fractional_scale_v1.preferred_scale` while that is bound.
     }
 
     fn surfaceLeave(
@@ -759,21 +881,36 @@ pub const Window = struct {
         factor: i32,
     ) callconv(.c) void {
         const self: *Self = @ptrCast(@alignCast(data));
-        const new_scale: f64 = @floatFromInt(factor);
-        if (self.scale_factor != new_scale) {
-            self.scale_factor = new_scale;
-            // If using viewport, we don't need to update buffer scale - just recreate swapchain
-            // The viewport destination size stays the same (logical pixels)
-            if (self.viewport == null) {
-                // Fallback: tell Wayland compositor about our buffer scale
-                wayland.surfaceSetBufferScale(surface, factor);
-            }
-            // Trigger resize to recreate swapchain with new scale
-            self.pending_resize = true;
-            self.pending_width = self.width_px;
-            self.pending_height = self.height_px;
-            if (self.core) |binding| self.resizeCore(binding);
+        // While bound, `preferred_scale` carries the exact scale; this is the
+        // same scale rounded up (2 for 1.5), and would draw buffers too large.
+        if (self.fractional_scale != null) return;
+        if (factor < 1) {
+            std.log.warn("wl_surface: ignoring preferred buffer scale {d}", .{factor});
+            return;
         }
+        const new_scale: f64 = @floatFromInt(factor);
+        if (self.scale_factor == new_scale) return;
+        // The viewport maps buffers to the logical size; without one, the
+        // compositor needs the buffer scale.
+        if (self.viewport == null) wayland.surfaceSetBufferScale(surface, factor);
+        self.applyScale(new_scale);
+    }
+
+    /// The compositor's preferred scale in 120ths (180 is 1.5). The viewport's
+    /// destination stays the logical size, so only the buffers change.
+    fn fractionalPreferredScale(
+        data: ?*anyopaque,
+        fractional_scale: *wayland.WpFractionalScaleV1,
+        scale_120ths: u32,
+    ) callconv(.c) void {
+        const self: *Self = @ptrCast(@alignCast(data));
+        std.debug.assert(self.fractional_scale == fractional_scale);
+        // The protocol has no zero scale; it would make empty buffers.
+        if (scale_120ths == 0) {
+            std.log.warn("wp_fractional_scale_v1: ignoring preferred scale 0", .{});
+            return;
+        }
+        self.applyScale(interface_mod.scaleFromSteps(scale_120ths));
     }
 
     fn surfacePreferredTransform(

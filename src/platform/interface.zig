@@ -46,6 +46,80 @@ pub const CursorShape = enum(u8) {
 };
 
 // =============================================================================
+// Device pixels
+// =============================================================================
+
+/// Steps per unit of scale. Wayland's `wp_fractional_scale_v1` reports scales
+/// in 120ths (180 is 1.5); integer scales and Windows' 25% DPI steps lie on
+/// the same grid.
+pub const scale_steps_per_unit: u32 = 120;
+
+/// How far, in steps, a scale may sit from the grid and still count as on it.
+/// A scale on the grid reaches the renderers through the frame's `f32`, which
+/// is off by under 2^-24 of the scale: 6e-5 steps at the CPU renderer's 8x.
+const scale_step_tolerance: f64 = 1e-3;
+
+/// The scale factor `steps` 120ths make, as `wp_fractional_scale_v1` reports
+/// it: 180 is 1.5.
+pub fn scaleFromSteps(steps: u32) f64 {
+    std.debug.assert(steps > 0);
+    const scale = @as(f64, @floatFromInt(steps)) / @as(f64, @floatFromInt(scale_steps_per_unit));
+    std.debug.assert(scale > 0);
+    return scale;
+}
+
+/// Device pixels covering `logical_px` at `scale_factor`, rounded half away
+/// from zero, as `wp_fractional_scale_v1` requires of buffer sizes so that the
+/// viewport maps the buffer onto the output one to one. A scale on the 1/120
+/// grid is computed exactly in integers: in floating point a product ending in
+/// .5 can round down (405 px at 1.3 is 526.5, but 405 * @as(f32, 1.3) is
+/// 526.49998). Any other scale, such as one lowered to fit a framebuffer
+/// budget, rounds in floating point.
+pub fn devicePxFromLogical(logical_px: u32, scale_factor: f64) u32 {
+    std.debug.assert(logical_px > 0);
+    std.debug.assert(scale_factor > 0);
+    const steps = scale_factor * @as(f64, @floatFromInt(scale_steps_per_unit));
+    const steps_nearest = @round(steps);
+    var device_px: u64 = 0;
+    if (@abs(steps - steps_nearest) <= scale_step_tolerance) {
+        const steps_whole: u64 = @intFromFloat(steps_nearest);
+        const product = @as(u64, logical_px) * steps_whole + scale_steps_per_unit / 2;
+        device_px = @divFloor(product, scale_steps_per_unit);
+    } else {
+        device_px = @intFromFloat(@round(@as(f64, @floatFromInt(logical_px)) * scale_factor));
+    }
+    std.debug.assert(device_px <= std.math.maxInt(u32));
+    return @intCast(device_px);
+}
+
+test "fractional scales convert exactly and round buffer sizes half away from zero" {
+    // Goal: pin the scale and buffer size a fractional Wayland scale produces.
+    // Methodology: scales arrive as 120ths and reach the renderers as f32, so each
+    // case converts that way; expected values are logical * steps / 120 worked by
+    // hand, on odd sizes where truncating, as the renderers did, gives one less.
+    try std.testing.expectEqual(1.25, scaleFromSteps(150));
+    try std.testing.expectEqual(1.5, scaleFromSteps(180));
+    try std.testing.expectEqual(1.75, scaleFromSteps(210));
+    const cases = [_]struct { steps: u32, logical_px: u32, device_px: u32 }{
+        .{ .steps = 150, .logical_px = 2, .device_px = 3 }, // 1.25: 2.5 rounds up.
+        .{ .steps = 150, .logical_px = 403, .device_px = 504 }, // 503.75
+        .{ .steps = 180, .logical_px = 401, .device_px = 602 }, // 1.5: 601.5
+        .{ .steps = 180, .logical_px = 400, .device_px = 600 },
+        .{ .steps = 210, .logical_px = 401, .device_px = 702 }, // 1.75: 701.75
+        .{ .steps = 210, .logical_px = 402, .device_px = 704 }, // 703.5
+        .{ .steps = 240, .logical_px = 401, .device_px = 802 }, // Integer 2x.
+        // 1.3: 526.5 exactly, which f32(1.3) * 405 alone would round down.
+        .{ .steps = 156, .logical_px = 405, .device_px = 527 },
+    };
+    for (cases) |case| {
+        const scale: f32 = @floatCast(scaleFromSteps(case.steps));
+        try std.testing.expectEqual(case.device_px, devicePxFromLogical(case.logical_px, scale));
+    }
+    // A scale off the grid, such as a budget-fitted one, never rounds past the budget.
+    try std.testing.expectEqual(3840, devicePxFromLogical(2561, 3840.0 / 2561.0));
+}
+
+// =============================================================================
 // Renderer capabilities
 // =============================================================================
 

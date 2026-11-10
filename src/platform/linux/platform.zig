@@ -19,6 +19,8 @@ const CursorSurface = @import("cursor_surface.zig").CursorSurface;
 const linux_backend = @import("../linux_backend.zig");
 
 // Static listeners - must persist for lifetime of Wayland objects
+const fractional_scale_manager_name = wayland.WP_FRACTIONAL_SCALE_MANAGER_V1_INTERFACE_NAME;
+
 const registry_listener = wayland.RegistryListener{
     .global = LinuxPlatform.registryGlobal,
     .global_remove = LinuxPlatform.registryGlobalRemove,
@@ -109,6 +111,9 @@ pub const LinuxPlatform = struct {
     /// typed with no field focused never start a composition nothing receives.
     text_input: ?*wayland.ZwpTextInputV3 = null,
     viewporter: ?*wayland.WpViewporter = null,
+    /// Fractional output scales (1.5 rather than the rounded-up 2). Windows use
+    /// it only together with `viewporter`; without it they keep integer scales.
+    fractional_scale_manager: ?*wayland.WpFractionalScaleManagerV1 = null,
     /// Shared-memory allocator for CPU-rendered frames. Bound on every build
     /// because it is a core global, but only `wayland_cpu` windows use it.
     shm: ?*wayland.Shm = null,
@@ -380,6 +385,10 @@ pub const LinuxPlatform = struct {
             wayland.cursorShapeManagerDestroy(manager);
             self.cursor_shape_manager = null;
         }
+        if (self.fractional_scale_manager) |manager| {
+            wayland.fractionalScaleManagerDestroy(manager);
+            self.fractional_scale_manager = null;
+        }
         // Before `shm` and `compositor`, which created its pool and surface.
         self.cursor_surface.deinit();
         if (self.xdg_wm_base) |wm| {
@@ -439,6 +448,11 @@ pub const LinuxPlatform = struct {
     /// Get the viewporter (for HiDPI support, may be null)
     pub fn getViewporter(self: *Self) ?*wayland.WpViewporter {
         return self.viewporter;
+    }
+
+    /// Get the fractional scale manager (may be null if not supported)
+    pub fn getFractionalScaleManager(self: *Self) ?*wayland.WpFractionalScaleManagerV1 {
+        return self.fractional_scale_manager;
     }
 
     /// Get current scale factor
@@ -546,6 +560,12 @@ pub const LinuxPlatform = struct {
             }
         } else if (std.mem.eql(u8, interface_name, wayland.WP_VIEWPORTER_INTERFACE_NAME)) {
             self.viewporter = wayland.bindViewporter(registry, name, version);
+        } else if (std.mem.eql(u8, interface_name, fractional_scale_manager_name)) {
+            self.fractional_scale_manager = wayland.bindFractionalScaleManager(
+                registry,
+                name,
+                version,
+            );
         } else if (std.mem.eql(u8, interface_name, wayland.WL_SHM_INTERFACE_NAME)) {
             self.shm = wayland.bindShm(registry, name, version);
         } else if (std.mem.eql(u8, interface_name, wayland.WP_CURSOR_SHAPE_MANAGER_V1_INTERFACE_NAME)) {
