@@ -67,7 +67,7 @@ field shown in the table.
 when its placeholder is empty. `Select` also sets `has_popup` and `disabled`, and its value
 is the chosen option, or the placeholder when nothing is chosen. Its open menu is a
 `listbox` of `option` nodes, each with its label and set position, and the chosen one
-`selected`. `List`
+`selected`; near the window's bottom it opens above the combobox. `List`
 adds no node of its own; each row annotates itself. The charts package adds no node
 either: `accessible_title`, `accessible_description`, `describe(buf)`, and
 `summarize(buf)` produce text, and the app puts that text on a box's `a11y`.

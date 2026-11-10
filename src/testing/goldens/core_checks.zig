@@ -3581,6 +3581,29 @@ fn selectedOptions(window: *internals.window.Window) u32 {
     return count;
 }
 
+test "a Select near the window's bottom opens its menu above, clear of the combobox" {
+    // Goal: an open menu never covers its combobox's open border when it
+    // fits on either side. Methodology: Tab to accessible_form's Select,
+    // which the focus reveal scrolls to the bottom of the 800 px window,
+    // where its four-option menu does not fit below; open it with Down.
+    // The listbox must end above the combobox, inside the window.
+    const app = try testing.allocator.create(accessible_form.App);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    for (0..6) |_| pressKey(app, &now, .tab, .{});
+    try expectFocused(&app.window, .combobox, "Experience level");
+    pressKey(app, &now, .down, .{});
+    try expectFocused(&app.window, .option, "Beginner");
+    const combobox = formNode(app, .combobox, "Experience level").?.bounds;
+    const menu = formNode(app, .listbox, "Experience level").?.bounds;
+    try testing.expect(combobox.y + combobox.height + menu.height > 800);
+    try testing.expect(menu.y >= 0);
+    try testing.expect(menu.y + menu.height <= combobox.y);
+}
+
 test "a Select opens, moves, and chooses from the keyboard" {
     // Goal: the Select's keys through its retained key handler and
     // `effects.click`, with focus as the highlight. Methodology: on the
