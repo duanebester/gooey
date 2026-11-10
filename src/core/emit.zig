@@ -783,6 +783,7 @@ fn emitA11y(window: *Window, node: *const Node, bounds: Rect, level: u8) u8 {
         .state = .{
             .focused = focused,
             .checked = a11y.checked,
+            .selected = a11y.selected,
             .disabled = a11y.disabled,
             .expanded = a11y.expanded,
             .has_popup = a11y.has_popup,

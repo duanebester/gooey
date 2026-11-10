@@ -175,6 +175,9 @@ pub const A11y = struct {
     label: ?[]const u8 = null,
     value: ?[]const u8 = null,
     checked: bool = false,
+    /// Chosen in a collection, such as a listbox's chosen option or the
+    /// current tab; `checked` is for checkboxes, radios, and switches.
+    selected: bool = false,
     disabled: bool = false,
     heading_level: HeadingLevel = .none,
     /// How a screen reader reports changes inside this element.

@@ -3571,6 +3571,16 @@ test "a radio group is one tab stop whose arrow keys select and wrap" {
     try testing.expectEqual(@as(?usize, null), app.state.experience_level);
 }
 
+/// The options in the frame on screen whose `selected` state is set.
+fn selectedOptions(window: *internals.window.Window) u32 {
+    const frame = window.rendered();
+    var count: u32 = 0;
+    for (frame.a11y[0..frame.a11y_count]) |*node| {
+        if (node.role == .option and node.state.selected) count += 1;
+    }
+    return count;
+}
+
 test "a Select opens, moves, and chooses from the keyboard" {
     // Goal: the Select's keys through its retained key handler and
     // `effects.click`, with focus as the highlight. Methodology: on the
@@ -3608,10 +3618,16 @@ test "a Select opens, moves, and chooses from the keyboard" {
     try testing.expect(!app.state.open);
     try expectFocused(&app.window, .combobox, "Level");
 
-    // Reopening starts on the chosen option; Esc closes without choosing.
+    // Reopening starts on the chosen option, which alone is selected for
+    // the screen reader; Esc closes without choosing.
     pressKey(app, &now, .space, .{});
     try testing.expect(app.state.open);
     try expectFocused(&app.window, .option, "Three");
+    try testing.expectEqual(@as(u32, 1), selectedOptions(&app.window));
+    try testing.expect(focusedNode(&app.window).?.state.selected);
+    pressKey(app, &now, .up, .{});
+    try testing.expect(!focusedNode(&app.window).?.state.selected);
+    pressKey(app, &now, .down, .{});
     pressKey(app, &now, .escape, .{});
     try testing.expect(!app.state.open);
     try testing.expectEqual(@as(?usize, 2), app.state.selected);
@@ -3709,7 +3725,10 @@ test "focus on an element that leaves passes to its combobox or the next tab sto
     now = 0;
     app.tick(now);
     // The input, Add, three filters, then each row's checkbox and Delete.
-    for (0..11) |_| pressKey(app, &now, .tab, .{});
+    for (0..10) |_| pressKey(app, &now, .tab, .{});
+    // Each row's checkbox is named by its todo.
+    try expectFocused(&app.window, .checkbox, "c");
+    pressKey(app, &now, .tab, .{});
     try expectFocused(&app.window, .button, "Delete");
     pressKey(app, &now, .@"return", .{});
     try testing.expectEqual(@as(u32, 2), app.state.count);

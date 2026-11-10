@@ -385,6 +385,7 @@ pub const A11yBuilt = struct {
     href: records.TextRange,
     description: records.TextRange,
     checked: bool,
+    selected: bool,
     disabled: bool,
     expanded: bool,
     has_popup: bool,

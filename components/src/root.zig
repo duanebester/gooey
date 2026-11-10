@@ -508,6 +508,7 @@ const SelectOptions = struct {
                 .a11y = .{
                     .role = .option,
                     .label = label,
+                    .selected = chosen,
                     .pos_in_set = position + 1,
                     .set_size = set_size,
                 },

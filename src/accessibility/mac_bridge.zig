@@ -172,6 +172,7 @@ pub const MacBridge = struct {
             // Set state properties
             setAccessibilityEnabled(ns, !elem.state.disabled);
             setAccessibilityFocused(ns, elem.state.focused);
+            if (isSelectable(elem.role)) setAccessibilitySelected(ns, elem.state.selected);
 
             self.refreshFrame(elem, ns_window, content_view);
             self.notifyChanges(ns, elem);
@@ -692,6 +693,17 @@ fn setAccessibilityEnabled(elem: objc.Object, enabled: bool) void {
 fn setAccessibilityFocused(elem: objc.Object, focused: bool) void {
     std.debug.assert(elem.value != null);
     elem.msgSend(void, "setAccessibilityFocused:", .{focused});
+}
+
+/// Roles whose `selected` state VoiceOver reads, as UIA's Selection Item
+/// and ARIA's `aria-selected` do.
+fn isSelectable(role: types.Role) bool {
+    return role == .option or role == .tab or role == .treeitem;
+}
+
+fn setAccessibilitySelected(elem: objc.Object, selected: bool) void {
+    std.debug.assert(elem.value != null);
+    elem.msgSend(void, "setAccessibilitySelected:", .{selected});
 }
 
 /// NSRect type for Cocoa coordinate conversion

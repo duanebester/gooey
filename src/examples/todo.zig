@@ -221,6 +221,8 @@ const TodoRow = struct {
             Checkbox{
                 .checked = todo.done,
                 .on_click = cx.on(State.toggle, .{ .arg = self.index }),
+                // The todo's text names it; the row's text box is not read.
+                .accessible_name = todo.text(),
             },
             ui.text(todo.text(), .{ .size = 16, .color = .{ .rgba = color } }),
             spacer,

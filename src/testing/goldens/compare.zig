@@ -22,9 +22,11 @@
 //! 7. Buttons and checkboxes take focus in the core, as 0.3.1's did not, so
 //!    Tab reaches them (0.4.1): a clickable hit record drops its `focus`
 //!    flag, and a button or checkbox node its `focused` state, which a click
-//!    gives it. A text field's focus is still compared. This is the one rule
-//!    that removes a difference in behaviour; it is one kind, everywhere,
-//!    and the core checks test the focus it removes.
+//!    gives it. A text field's focus is still compared. This and rule 8
+//!    remove differences in behaviour; each is one kind, everywhere, and the
+//!    core checks test what they remove.
+//! 8. A checkbox node drops its `name=`: todo names each row's checkbox by
+//!    its todo's text (0.4.1), where 0.3.1 left it unnamed.
 //!
 //! A remaining difference must be listed in `known_differences` with why.
 
@@ -129,12 +131,20 @@ fn hitLine(gpa: std.mem.Allocator, line: []const u8) ![]const u8 {
     return without(gpa, keyless, " focus");
 }
 
-/// Rule 7.
+/// Rules 7 and 8.
 fn a11yLine(gpa: std.mem.Allocator, line: []const u8) ![]const u8 {
-    const control = std.mem.startsWith(u8, line, "button ") or
-        std.mem.startsWith(u8, line, "checkbox ");
+    const checkbox = std.mem.startsWith(u8, line, "checkbox ");
+    const control = std.mem.startsWith(u8, line, "button ") or checkbox;
     if (!control) return gpa.dupe(u8, line);
-    return without(gpa, line, " focused");
+    const unfocused = try without(gpa, line, " focused");
+    if (!checkbox) return unfocused;
+    defer gpa.free(unfocused);
+    const name_start = std.mem.indexOf(u8, unfocused, " name=\"") orelse
+        return gpa.dupe(u8, unfocused);
+    const value_start = name_start + " name=\"".len;
+    const name_end = std.mem.indexOfScalarPos(u8, unfocused, value_start, '"').? + 1;
+    assert(name_end <= unfocused.len);
+    return std.mem.concat(gpa, u8, &.{ unfocused[0..name_start], unfocused[name_end..] });
 }
 
 fn addPaint(gpa: std.mem.Allocator, step: *Step, line: []const u8) !void {

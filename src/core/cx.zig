@@ -278,6 +278,7 @@ pub const Cx = struct {
             .href = frame.copyText(a11y.href orelse ""),
             .description = frame.copyText(a11y.description orelse ""),
             .checked = a11y.checked,
+            .selected = a11y.selected,
             .disabled = a11y.disabled,
             .expanded = a11y.expanded,
             .has_popup = a11y.has_popup,

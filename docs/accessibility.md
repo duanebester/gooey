@@ -66,7 +66,8 @@ field shown in the table.
 `TextArea` and `CodeEditor` have no `accessible_name`; `CodeEditor` says "Code editor"
 when its placeholder is empty. `Select` also sets `has_popup` and `disabled`, and its value
 is the chosen option, or the placeholder when nothing is chosen. Its open menu is a
-`listbox` of `option` nodes, each with its label and set position. `List`
+`listbox` of `option` nodes, each with its label and set position, and the chosen one
+`selected`. `List`
 adds no node of its own; each row annotates itself. The charts package adds no node
 either: `accessible_title`, `accessible_description`, `describe(buf)`, and
 `summarize(buf)` produce text, and the app puts that text on a box's `a11y`.
@@ -142,6 +143,7 @@ target. `role` is required; every other field has a default.
 | `value`         | `?[]const u8`  | Current value, such as a field's text or a choice. |
 | `description`   | `?[]const u8`  | Help text read after the name.                     |
 | `checked`       | `bool`         | A checkbox, radio, or switch is on.                |
+| `selected`      | `bool`         | Chosen in a collection, such as a listbox option.  |
 | `disabled`      | `bool`         | The element does not respond to input.             |
 | `expanded`      | `bool`         | A disclosure, such as a combobox, is open.         |
 | `has_popup`     | `bool`         | Activating the element opens a popup.              |
@@ -346,9 +348,9 @@ Each role maps to a platform role in `Role.toNSRole`, `Role.toUiaControlType`, a
 
 `State` is a 16-bit packed struct: `focused`, `selected`, `checked`, `pressed`, `expanded`,
 `disabled`, `readonly`, `required`, `invalid`, `busy`, `hidden`, `has_popup`. The core sets
-`focused` from keyboard focus and copies `checked`, `disabled`, `expanded`, and
-`has_popup` from `ui.A11y`. `ui.A11y` has no field for the other six, so they are always
-false in 0.4.0.
+`focused` from keyboard focus and copies `selected` (0.4.1), `checked`, `disabled`,
+`expanded`, and `has_popup` from `ui.A11y`. `ui.A11y` has no field for the other six, so
+they are always false.
 
 `Live`: `off`, `polite`, `assertive`.
 
@@ -368,10 +370,11 @@ All bridges live in `src/accessibility/`.
 
 **macOS.** The bridge keeps a pool of `NSAccessibilityElement` objects keyed by
 fingerprint. It sets role, label, value (a toggle without a value reports `checked` as 0 or
-1), enabled, focused, screen frame, parent, and children. Text fields also answer the
-selected range, character count, and line and range queries. It posts focus-changed,
-value-changed, and selected-text-changed notifications, and sends announcements with high
-priority for `.assertive` and medium for `.polite`. It does not expose `description`,
+1), enabled, focused, `selected` for options, tabs, and tree items, screen frame, parent,
+and children. Text fields also answer the selected range, character count, and line and
+range queries. It posts focus-changed, value-changed, and selected-text-changed
+notifications, and sends announcements with high priority for `.assertive` and medium
+for `.polite`. It does not expose `description`,
 `heading_level`, `expanded`, `has_popup`, or set positions. It runs only while
 `NSWorkspace.isVoiceOverEnabled` is true.
 
@@ -490,7 +493,6 @@ this repository but is not API.
 - Focus that leaves tries the nearest 32 Tab stops on each side; past those, or when a modal
   covers it, it is dropped and the next Tab starts from the first control.
 - `Select` has no type-ahead.
-- An option's chosen state is not exported: `ui.A11y` has no `selected` field (see below).
 - No bridge supports actions (press, toggle, set value, expand, focus).
 - Linux has no screen-reader support (contract decision 12).
 - macOS: VoiceOver reports a 0x0 frame for many elements, including headings and radio
@@ -501,10 +503,9 @@ this repository but is not API.
 - Web: value, `description`, heading level, and set positions are not exported, and no
   web build of `accessible_form` exists.
 - `href` reaches the rendered frame but no bridge reads it.
-- `State.selected`, `pressed`, `readonly`, `required`, `invalid`, `busy`, and `hidden` have
-  no `ui.A11y` field, so the core never sets them.
+- `State.pressed`, `readonly`, `required`, `invalid`, `busy`, and `hidden` have no
+  `ui.A11y` field, so the core never sets them.
 - There is no public query for whether a screen reader is running (contract C8, deferred).
-- The todo example's row checkbox has no name.
 
 ## References
 
