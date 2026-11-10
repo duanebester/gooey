@@ -210,7 +210,9 @@ cx.render(ui.box(.{
 The enclosing radio group is a box with `.a11y = .{ .role = .group, .label = self.label }`.
 
 Keyboard access is separate from the annotation. Tab and Shift+Tab move focus in tree
-order among boxes with `focusable = true`, and Enter or Space clicks the focused box: its
+order among boxes with `focusable = true`, skipping those that also set `tab_stop = false`,
+which a click or `effects.focus` still focuses and the control's own keys reach, as a
+listbox's arrow keys reach its options. Enter or Space clicks the focused box: its
 `on_click` runs as a pointer click's would. Both happen only when no `on_key` handler on the
 focus path stopped the key, so a text field keeps Space and an editor keeps Tab. A held key's
 repeats and Cmd, Ctrl, or Alt chords do not click. A custom control that keyboard users must
@@ -236,7 +238,8 @@ opens, then on the highlighted option, so a screen reader follows the highlight:
 | combobox  | Enter, Space (open)     | closes                                            |
 | option    | Down, Up, Home, End     | moves to the next, previous, first, or last       |
 | option    | Enter, Space            | chooses it and returns to the combobox            |
-| either    | Esc, Tab (open)         | closes and returns to the combobox                |
+| either    | Esc (open)              | closes and returns to the combobox                |
+| either    | Tab, Shift+Tab (open)   | closes and moves to the next or previous control  |
 
 ## Announcements and live regions
 

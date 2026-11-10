@@ -713,6 +713,7 @@ fn emitHit(window: *Window, node: *const Node, bounds: Rect, place: HitPlace) u3
         .fragment = place.fragment,
         .parent = place.parent,
         .focusable = node.focusable,
+        .tab_stop = node.tab_stop,
         .scroll = node.scroll != null,
         .cursor = node.cursor,
         .on_click = node.on_click,

@@ -3532,12 +3532,16 @@ test "a Select opens, moves, and chooses from the keyboard" {
     try testing.expect(!app.state.open);
 }
 
-test "a Select closes on Tab, and a click opens it with focus on the combobox" {
-    // Goal: Tab and Shift+Tab from an open menu close it back on the
-    // combobox, without stepping into the closing menu's options, and the
-    // pointer path still works beside the keys. Methodology: open with Down
-    // and Space, leave with Tab and Shift+Tab, then click the trigger and
-    // close with Enter; the button below is never clicked.
+test "Tab from a Select's menu closes it and moves on, and a click opens it on the combobox" {
+    // Goal: Tab and Shift+Tab from an open menu close it and reach the next
+    // or previous tab stop in one press, without stepping into the closing
+    // menu's options, which the frame on screen still holds; and the pointer
+    // path still works beside the keys. Methodology: here the button follows
+    // the Select, and the options follow both in hit order, so Shift+Tab
+    // from the combobox wraps past the options to the button only if they
+    // are not tab stops. Open with Down and Space, leave with Tab and
+    // Shift+Tab, then click the trigger and close with Enter; the button is
+    // never clicked.
     const app = try testing.allocator.create(SelectApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -3550,16 +3554,15 @@ test "a Select closes on Tab, and a click opens it with focus on the combobox" {
     try testing.expect(app.state.open);
     pressKey(app, &now, .tab, .{});
     try testing.expect(!app.state.open);
-    try expectFocused(&app.window, .combobox, "Level");
-    pressKey(app, &now, .tab, .{});
     try expectFocused(&app.window, .button, "Below");
+    try expectRingAround(&app.window, focusedNode(&app.window).?.bounds);
     pressKey(app, &now, .tab, .{ .shift = true });
     try expectFocused(&app.window, .combobox, "Level");
     pressKey(app, &now, .space, .{});
     try expectFocused(&app.window, .option, "One");
     pressKey(app, &now, .tab, .{ .shift = true });
     try testing.expect(!app.state.open);
-    try expectFocused(&app.window, .combobox, "Level");
+    try expectFocused(&app.window, .button, "Below");
     try testing.expectEqual(@as(u32, 0), app.state.below_clicks);
     try testing.expectEqual(@as(?usize, null), app.state.selected);
 

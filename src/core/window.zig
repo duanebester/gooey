@@ -123,6 +123,8 @@ pub const Node = struct {
     child_count: u32,
     // Box.
     focusable: bool,
+    /// Tab reaches it: focusable and `Box.tab_stop`.
+    tab_stop: bool,
     hit: bool,
     cursor: ?element.CursorShape,
     on_click: u32,

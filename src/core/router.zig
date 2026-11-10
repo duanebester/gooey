@@ -455,9 +455,11 @@ fn findAction(window: *const Window, key: *const input.KeyEvent) ?FoundAction {
     return null;
 }
 
-/// Focus the next (or previous) focusable record in tree order, wrapping,
-/// among the records a modal leaves reachable (contract §6): Tab never
-/// reaches a control the pointer cannot, so Enter cannot click it.
+/// Focus the next (or previous) tab stop in tree order, wrapping, among the
+/// records a modal leaves reachable (contract §6): Tab never reaches a
+/// control the pointer cannot, so Enter cannot click it. A focusable record
+/// that is not a tab stop, such as a Select's option, is left to its
+/// control's keys.
 fn moveFocus(window: *Window, backward: bool) void {
     const frame = window.rendered();
     const start = frame.modal_hit_start;
@@ -473,7 +475,7 @@ fn moveFocus(window: *Window, backward: bool) void {
             index = if (backward) (index + count - 1) % count else (index + 1) % count;
         }
         assert(start + index < frame.hit_count);
-        if (frame.hits[start + index].focusable) {
+        if (frame.hits[start + index].tab_stop) {
             setFocus(window, frame.hits[start + index].id, true);
             return;
         }

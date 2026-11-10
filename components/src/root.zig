@@ -188,8 +188,9 @@ pub const Checkbox = struct {
 /// The combobox takes keyboard focus, and the focused option is the
 /// highlighted one, so a screen reader follows it. Enter, Space, Down, and
 /// Up open the menu on the selected option (or the first); Down, Up, Home,
-/// and End move between options; Enter and Space choose; and Esc or Tab
-/// closes, back on the combobox. Each opens or closes through `on_toggle`
+/// and End move between options; Enter and Space choose; Esc closes, back
+/// on the combobox; and Tab or Shift+Tab closes and moves on, since the
+/// options are not tab stops. Each opens or closes through `on_toggle`
 /// and chooses through `on_select`, pressed with `effects.click`. A Select
 /// retains one 64 B slot for its keys, and adds a key handler per option.
 pub const Select = struct {
@@ -318,6 +319,7 @@ const SelectKeys = struct {
 
     /// Keys without Cmd, Ctrl, or Alt. A key an option leaves alone bubbles
     /// to the combobox's handler, which closes the menu on Esc and Tab.
+    /// Shift+Tab takes the Tab arm too: `KeyCode` has no back-tab.
     fn onKey(self: *SelectKeys, arg: Arg, effects: *Effects) void {
         assert(self.root.isKeyed());
         assert(arg.start < @max(arg.count, 1));
@@ -349,13 +351,17 @@ const SelectKeys = struct {
                 }
                 effects.stopPropagation();
             },
-            // Tab closes the menu too, as a macOS pop-up menu takes it, and
-            // stays: moving on would step through the closing menu's options,
-            // which the frame on screen still holds.
-            .escape, .tab => if (arg.open) {
+            .escape => if (arg.open) {
                 effects.click(self.trigger());
                 effects.focus(self.root);
                 effects.stopPropagation();
+            },
+            // Tab closes the menu and goes on: from the combobox, the core's
+            // Tab moves to the next tab stop, which the closing menu's
+            // options, still in the frame on screen, are not.
+            .tab => if (arg.open) {
+                effects.click(self.trigger());
+                effects.focus(self.root);
             },
             else => {},
         }
@@ -491,7 +497,9 @@ const SelectOptions = struct {
                     .alignment = .{ .main = .space_between, .cross = .center },
                     .cursor = .pointer,
                 },
+                // Arrow keys reach the options; Tab leaves the menu.
                 .focusable = true,
+                .tab_stop = false,
                 .on_click = handler,
                 .on_key = cx.on(SelectKeys.onKey, .{
                     .entity = self.keys,

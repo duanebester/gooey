@@ -259,6 +259,7 @@ pub const Cx = struct {
         node.clip = box.style.clip == .clip or scroll != null;
         node.layer = box.layer;
         node.focusable = box.focusable;
+        node.tab_stop = box.focusable and box.tab_stop;
         node.on_click = handlerIndex(frame, box.on_click);
         node.on_click_outside = handlerIndex(frame, box.on_click_outside);
         node.on_key = handlerIndex(frame, box.on_key);
@@ -454,6 +455,7 @@ fn addNode(window: *Window, kind: window_mod.NodeKind, node_id: ElementId) u32 {
         .depth = @intCast(window.open_depth),
         .child_count = 0,
         .focusable = false,
+        .tab_stop = false,
         .hit = false,
         .cursor = null,
         .on_click = index_none,
