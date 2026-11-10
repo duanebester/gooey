@@ -9,8 +9,7 @@ Join the [Gooey discord](https://discord.gg/bmzAZnZJyw)
 <img src="https://github.com/duanebester/gooey/blob/main/assets/gooey-logo-final.png"
   height="100px" />
 
-> **0.4.0 is in development** on `integration/v0.4.0` (`build.zig.zon` says `0.4.0-dev`).
-> It replaces the 0.3.1 API: `gooey.run`, `gooey.core.*`, `cx.animations`, `cx.changed`,
+> **0.4.0 replaces the 0.3.1 API:** `gooey.run`, `gooey.core.*`, `cx.animations`, `cx.changed`,
 > `cx.accessible`, `cx.io()`, `gooey.file_dialog`, and the validation helpers are gone.
 > This readme describes 0.4.0 only.
 
@@ -50,10 +49,10 @@ an Anthropic Claude client.
 
 ## Add Gooey to an application
 
-0.4.0 is not tagged yet. Until it is, fetch the branch into your `build.zig.zon`:
+Fetch the release into your `build.zig.zon`:
 
 ```bash
-zig fetch --save git+https://github.com/duanebester/gooey#integration/v0.4.0
+zig fetch --save git+https://github.com/duanebester/gooey#v0.4.0
 ```
 
 Then import the modules in your `build.zig`. `gooey` is required; `gooey-components` and
