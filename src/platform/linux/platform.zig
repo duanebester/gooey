@@ -345,7 +345,24 @@ pub const LinuxPlatform = struct {
         // Destroy in reverse order of creation, flushing between major objects
         // Clipboard first (depends on seat and manager)
         self.clipboard_state.deinit();
+        self.destroySeatObjects();
 
+        // Flush to ensure destroy requests are sent before destroying seat
+        _ = wayland.wl_display_flush(self.display.?);
+        self.destroyGlobals();
+
+        // Final flush before disconnect
+        _ = wayland.wl_display_flush(self.display.?);
+
+        // Disconnect last
+        wayland.wl_display_disconnect(self.display.?);
+        self.display = null;
+    }
+
+    /// Destroy the objects created from the seat and its managers, which must
+    /// go before the seat itself.
+    fn destroySeatObjects(self: *Self) void {
+        std.debug.assert(self.display != null);
         // Text input (depends on seat and manager)
         if (self.text_input) |ti| {
             wayland.zwpTextInputV3Destroy(ti);
@@ -369,10 +386,14 @@ pub const LinuxPlatform = struct {
             wayland.pointerDestroy(ptr);
             self.pointer = null;
         }
+        std.debug.assert(self.pointer == null);
+        std.debug.assert(self.keyboard == null);
+    }
 
-        // Flush to ensure destroy requests are sent before destroying seat
-        _ = wayland.wl_display_flush(self.display.?);
-
+    /// Destroy the bound globals, the seat first and the registry last.
+    fn destroyGlobals(self: *Self) void {
+        std.debug.assert(self.display != null);
+        std.debug.assert(self.pointer == null);
         if (self.seat) |seat| {
             wayland.seatDestroy(seat);
             self.seat = null;
@@ -411,13 +432,8 @@ pub const LinuxPlatform = struct {
             wayland.registryDestroy(reg);
             self.registry = null;
         }
-
-        // Final flush before disconnect
-        _ = wayland.wl_display_flush(self.display.?);
-
-        // Disconnect last
-        wayland.wl_display_disconnect(self.display.?);
-        self.display = null;
+        std.debug.assert(self.compositor == null);
+        std.debug.assert(self.registry == null);
     }
 
     /// Get the Wayland display pointer (for wgpu surface creation)
