@@ -36,6 +36,7 @@ const ImageInstance = image_instance_mod.ImageInstance;
 const Scene = scene_mod.Scene;
 const SceneLimits = scene_mod.SceneLimits;
 const limits_mod = @import("../../core/limits.zig");
+const devicePxFromLogical = @import("../interface.zig").devicePxFromLogical;
 const ResourceLimits = limits_mod.ResourceLimits;
 const WindowLimits = limits_mod.WindowLimits;
 const AtlasLimits = limits_mod.AtlasLimits;
@@ -923,6 +924,8 @@ pub const VulkanRenderer = struct {
     /// uniformly when the window would exceed `ResourceLimits.window`. The
     /// compositor scales the smaller buffer up through the window's viewport
     /// (wp_viewporter), as the CPU backend does. Logged once per transition.
+    /// Sizes round half away from zero, as a fractional Wayland scale requires
+    /// (`devicePxFromLogical`), which never passes the whole-pixel budget.
     fn fitExtent(self: *Self, width: u32, height: u32, scale_factor: f64) vk.Extent2D {
         assert(width > 0 and height > 0);
         assert(scale_factor > 0);
@@ -932,8 +935,8 @@ pub const VulkanRenderer = struct {
         const height_max: f64 = @floatFromInt(self.window_limits.framebuffer_height_max);
         const scale = @min(scale_factor, width_max / width_f, height_max / height_f);
         const extent = vk.Extent2D{
-            .width = @max(1, @as(u32, @intFromFloat(width_f * scale))),
-            .height = @max(1, @as(u32, @intFromFloat(height_f * scale))),
+            .width = @max(1, devicePxFromLogical(width, scale)),
+            .height = @max(1, devicePxFromLogical(height, scale)),
         };
         const downscaled = scale < scale_factor;
         if (downscaled and !self.extent_downscaled) {
