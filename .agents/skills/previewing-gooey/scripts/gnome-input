@@ -145,7 +145,7 @@ def run(command):
     elif operation == "shot":
         path = os.path.abspath(rest)
         call("org.gnome.Shell.Screenshot", "/org/gnome/Shell/Screenshot",
-             "org.gnome.Shell.Screenshot", "Screenshot", (False, True, path), "(bbs)")
+             "org.gnome.Shell.Screenshot", "Screenshot", (True, False, path), "(bbs)")
     elif operation == "sleep":
         time.sleep(float(rest))
     else:
