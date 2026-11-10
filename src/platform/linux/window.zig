@@ -68,6 +68,10 @@ const surface_listener = wayland.SurfaceListener{
     .preferred_buffer_transform = Window.surfacePreferredTransform,
 };
 
+const fractional_scale_listener = wayland.FractionalScaleListener{
+    .preferred_scale = Window.fractionalPreferredScale,
+};
+
 const decoration_listener = wayland.ZxdgToplevelDecorationV1Listener{
     .configure = Window.decorationConfigure,
 };
@@ -93,6 +97,9 @@ pub const Window = struct {
     xdg_toplevel: ?*wayland.XdgToplevel = null,
     decoration: ?*wayland.ZxdgToplevelDecorationV1 = null,
     viewport: ?*wayland.WpViewport = null,
+    /// Bound only with a viewport. While bound, its `preferred_scale` sets
+    /// `scale_factor` and `wl_surface.preferred_buffer_scale` is ignored.
+    fractional_scale: ?*wayland.WpFractionalScaleV1 = null,
 
     // Window state. Both are *logical* pixels; multiply by `scale_factor` for
     // the physical swapchain extent.
@@ -204,10 +211,7 @@ pub const Window = struct {
         }
 
         try self.createSurface(plat);
-        errdefer {
-            if (self.wl_surface) |s| wayland.surfaceDestroy(s);
-            self.wl_surface = null;
-        }
+        errdefer self.destroySurface();
 
         try self.createToplevel(plat, options);
         errdefer {
@@ -270,7 +274,20 @@ pub const Window = struct {
 
         // Set up surface listener (uses module-level static listener)
         _ = wayland.surfaceAddListener(self.wl_surface.?, &surface_listener, self);
+        self.bindFractionalScale(plat);
         std.debug.assert(self.wl_surface != null);
+    }
+
+    /// Undo `createSurface`. The fractional scale object goes before its surface.
+    fn destroySurface(self: *Self) void {
+        if (self.fractional_scale) |fractional_scale| {
+            wayland.fractionalScaleDestroy(fractional_scale);
+        }
+        self.fractional_scale = null;
+        if (self.wl_surface) |s| wayland.surfaceDestroy(s);
+        self.wl_surface = null;
+        std.debug.assert(self.fractional_scale == null);
+        std.debug.assert(self.wl_surface == null);
     }
 
     /// Give the surface the xdg toplevel role, with its title, app id, and size
@@ -384,6 +401,7 @@ pub const Window = struct {
         wayland.surfaceCommit(self.wl_surface.?);
         _ = wayland.wl_display_roundtrip(plat.display.?);
 
+        const renderer_scale = self.scale_factor;
         try self.initRenderer(plat, options);
 
         // Final commit after Vulkan initialization
@@ -393,6 +411,39 @@ pub const Window = struct {
         // This is important for HiDPI - pointer coordinates won't be in
         // the correct (logical) coordinate space until viewport is applied
         _ = wayland.wl_display_roundtrip(plat.display.?);
+
+        // The core host starts from `scale_factor`, so a scale that arrived in
+        // that roundtrip must reach the renderer's buffers here.
+        if (self.scale_factor != renderer_scale) {
+            self.renderer.resize(self.width_px, self.height_px, self.scale_factor);
+        }
+    }
+
+    /// Ask for the compositor's fractional scale (1.5 rather than the 2 that
+    /// `wl_output` and `preferred_buffer_scale` round it up to). It applies only
+    /// through a viewport, so without wp_viewporter the window keeps integer
+    /// scales. Bound before the first commit, so a compositor that already
+    /// knows the output can send the scale before the renderer is created.
+    fn bindFractionalScale(self: *Self, plat: *LinuxPlatform) void {
+        std.debug.assert(self.wl_surface != null);
+        std.debug.assert(self.fractional_scale == null);
+        const manager = plat.getFractionalScaleManager() orelse return;
+        if (plat.getViewporter() == null) return;
+        const fractional_scale = wayland.fractionalScaleManagerGetFractionalScale(
+            manager,
+            self.wl_surface.?,
+        ) orelse {
+            std.log.warn("wp_fractional_scale_v1: no proxy; keeping integer scales", .{});
+            return;
+        };
+        // Fails only for a proxy that already has a listener, and this one is new.
+        const added = wayland.fractionalScaleAddListener(
+            fractional_scale,
+            &fractional_scale_listener,
+            self,
+        );
+        std.debug.assert(added);
+        self.fractional_scale = fractional_scale;
     }
 
     /// Bind the renderer to the Wayland surface. Both renderers create their
@@ -458,7 +509,7 @@ pub const Window = struct {
         if (self.decoration) |dec| wayland.zxdgToplevelDecorationV1Destroy(dec);
         if (self.xdg_toplevel) |tl| wayland.xdgToplevelDestroy(tl);
         if (self.xdg_surface) |xs| wayland.xdgSurfaceDestroy(xs);
-        if (self.wl_surface) |s| wayland.surfaceDestroy(s);
+        self.destroySurface();
 
         std.debug.assert(!self.window_id.isValid());
         self.allocator.destroy(self);
@@ -713,12 +764,31 @@ pub const Window = struct {
     /// surface's viewport before it presents that frame, so the new size and
     /// the buffer drawn for it reach the compositor in one commit.
     fn resizeCore(self: *Self, binding: CoreBinding) void {
-        std.debug.assert(self.scale_factor > 0);
         self.applyPendingSize();
+        pushViewport(binding, self.size, self.scale_factor);
+    }
+
+    /// Adopt the compositor's scale at the same logical size. Once bound, the
+    /// core rebuilds at the new scale and the render thread resizes the
+    /// buffers before presenting that frame. Before, the host reads
+    /// `scale_factor` when it binds. A configure whose size is still pending
+    /// keeps it, and reports the new scale with it.
+    fn applyScale(self: *Self, scale: f64) void {
+        std.debug.assert(scale > 0);
+        if (self.scale_factor == scale) return;
+        self.scale_factor = scale;
+        if (self.core) |binding| pushViewport(binding, self.size, scale);
+        std.debug.assert(self.scale_factor == scale);
+    }
+
+    fn pushViewport(binding: CoreBinding, size: Size, scale: f64) void {
+        std.debug.assert(size.width > 0);
+        std.debug.assert(size.height > 0);
+        std.debug.assert(scale > 0);
         binding.queue.push(.{ .window = .{ .resized = .{
-            .width = @floatFromInt(self.pending_width),
-            .height = @floatFromInt(self.pending_height),
-            .scale_factor = @floatCast(self.scale_factor),
+            .width = @floatCast(size.width),
+            .height = @floatCast(size.height),
+            .scale_factor = @floatCast(scale),
         } } });
         binding.schedule_tick(binding.context);
     }
@@ -791,7 +861,8 @@ pub const Window = struct {
         _ = data;
         _ = surface;
         _ = output;
-        // A scale change arrives as `preferred_buffer_scale`.
+        // A scale change arrives as `preferred_buffer_scale`, or as
+        // `wp_fractional_scale_v1.preferred_scale` while that is bound.
     }
 
     fn surfaceLeave(
@@ -810,21 +881,36 @@ pub const Window = struct {
         factor: i32,
     ) callconv(.c) void {
         const self: *Self = @ptrCast(@alignCast(data));
-        const new_scale: f64 = @floatFromInt(factor);
-        if (self.scale_factor != new_scale) {
-            self.scale_factor = new_scale;
-            // If using viewport, we don't need to update buffer scale - just recreate swapchain
-            // The viewport destination size stays the same (logical pixels)
-            if (self.viewport == null) {
-                // Fallback: tell Wayland compositor about our buffer scale
-                wayland.surfaceSetBufferScale(surface, factor);
-            }
-            // Trigger resize to recreate swapchain with new scale
-            self.pending_resize = true;
-            self.pending_width = self.width_px;
-            self.pending_height = self.height_px;
-            if (self.core) |binding| self.resizeCore(binding);
+        // While bound, `preferred_scale` carries the exact scale; this is the
+        // same scale rounded up (2 for 1.5), and would draw buffers too large.
+        if (self.fractional_scale != null) return;
+        if (factor < 1) {
+            std.log.warn("wl_surface: ignoring preferred buffer scale {d}", .{factor});
+            return;
         }
+        const new_scale: f64 = @floatFromInt(factor);
+        if (self.scale_factor == new_scale) return;
+        // The viewport maps buffers to the logical size; without one, the
+        // compositor needs the buffer scale.
+        if (self.viewport == null) wayland.surfaceSetBufferScale(surface, factor);
+        self.applyScale(new_scale);
+    }
+
+    /// The compositor's preferred scale in 120ths (180 is 1.5). The viewport's
+    /// destination stays the logical size, so only the buffers change.
+    fn fractionalPreferredScale(
+        data: ?*anyopaque,
+        fractional_scale: *wayland.WpFractionalScaleV1,
+        scale_120ths: u32,
+    ) callconv(.c) void {
+        const self: *Self = @ptrCast(@alignCast(data));
+        std.debug.assert(self.fractional_scale == fractional_scale);
+        // The protocol has no zero scale; it would make empty buffers.
+        if (scale_120ths == 0) {
+            std.log.warn("wp_fractional_scale_v1: ignoring preferred scale 0", .{});
+            return;
+        }
+        self.applyScale(interface_mod.scaleFromSteps(scale_120ths));
     }
 
     fn surfacePreferredTransform(
