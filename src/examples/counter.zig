@@ -45,7 +45,9 @@ pub const State = struct {
 
 pub const App = gooey.App(State, render, .{
     .title = "Counter",
-    .width = 500,
+    // The controls row is 536 px wide in DejaVu Sans, which is wider than Segoe UI or
+    // San Francisco; 500 px clipped "Reset & Blur" on Linux (#55).
+    .width = 580,
     .height = 350,
     .limits = .nano,
 });

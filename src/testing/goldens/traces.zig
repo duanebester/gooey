@@ -8,7 +8,7 @@ const trace = @import("trace.zig");
 
 pub const counter = trace.Trace{
     .name = "counter",
-    .width = 500,
+    .width = 580,
     .height = 350,
     .scale_factor = 2,
     .steps = &.{
