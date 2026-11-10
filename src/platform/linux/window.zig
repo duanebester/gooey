@@ -173,6 +173,9 @@ pub const Window = struct {
     /// string, so the buffer is one byte wider for the terminator.
     pub const title_bytes_max: usize = 255;
 
+    /// Create the window and map it. The Wayland objects are created in
+    /// dependency order and unwound in reverse by the errdefers here, so each
+    /// helper below leaves nothing behind when it fails.
     pub fn init(allocator: Allocator, plat: *LinuxPlatform, options: *const WindowOptions) !*Self {
         std.debug.assert(options.width > 0);
         std.debug.assert(options.height > 0);
@@ -180,26 +183,17 @@ pub const Window = struct {
         const self = try allocator.create(Self);
         errdefer allocator.destroy(self);
 
-        // Get initial scale factor from platform (may be updated later by surface events)
-        const initial_scale = plat.getScaleFactor();
-
         self.* = Self{
             .allocator = allocator,
             .platform = plat,
             .width_px = @intFromFloat(options.width),
             .height_px = @intFromFloat(options.height),
             .size = .{ .width = options.width, .height = options.height },
-            .scale_factor = initial_scale,
+            // Surface events may update the output's scale later.
+            .scale_factor = plat.getScaleFactor(),
             .renderer = if (use_cpu_renderer) .{} else VulkanRenderer.init(allocator),
         };
-
-        // Store title. Over-long is a programmer error, and the clamp is what
-        // keeps a release build in bounds.
-        std.debug.assert(options.title.len <= title_bytes_max);
-        const title_len = @min(options.title.len, title_bytes_max);
-        @memcpy(self.title_buf[0..title_len], options.title[0..title_len]);
-        self.title_buf[title_len] = 0;
-        self.title_len = title_len;
+        self.storeTitle(options.title);
 
         // Register before any Wayland object exists so that every later error
         // path unwinds through one errdefer rather than a second exit branch.
@@ -209,76 +203,25 @@ pub const Window = struct {
             self.window_id = .invalid;
         }
 
-        // Create Wayland surface
-        const compositor = plat.getCompositor() orelse return error.NoCompositor;
-        self.wl_surface = wayland.compositorCreateSurface(compositor) orelse return error.FailedToCreateSurface;
+        try self.createSurface(plat);
         errdefer {
             if (self.wl_surface) |s| wayland.surfaceDestroy(s);
             self.wl_surface = null;
         }
 
-        // Set up surface listener (uses module-level static listener)
-        _ = wayland.surfaceAddListener(self.wl_surface.?, &surface_listener, self);
-
-        // Create XDG surface
-        const xdg_wm_base = plat.getXdgWmBase() orelse return error.NoXdgWmBase;
-        self.xdg_surface = wayland.xdgWmBaseGetXdgSurface(xdg_wm_base, self.wl_surface.?) orelse return error.FailedToCreateXdgSurface;
+        try self.createToplevel(plat, options);
         errdefer {
+            if (self.xdg_toplevel) |tl| wayland.xdgToplevelDestroy(tl);
+            self.xdg_toplevel = null;
             if (self.xdg_surface) |xs| wayland.xdgSurfaceDestroy(xs);
             self.xdg_surface = null;
         }
 
-        // Set up XDG surface listener (uses module-level static listener)
-        _ = wayland.xdgSurfaceAddListener(self.xdg_surface.?, &xdg_surface_listener, self);
+        self.requestServerDecorations(plat);
 
-        // Create XDG toplevel
-        self.xdg_toplevel = wayland.xdgSurfaceGetToplevel(self.xdg_surface.?) orelse return error.FailedToCreateToplevel;
-        errdefer {
-            if (self.xdg_toplevel) |tl| wayland.xdgToplevelDestroy(tl);
-            self.xdg_toplevel = null;
-        }
-
-        // Set up toplevel listener (uses module-level static listener)
-        _ = wayland.xdgToplevelAddListener(self.xdg_toplevel.?, &toplevel_listener, self);
-
-        // Set window properties
-        wayland.xdgToplevelSetTitle(self.xdg_toplevel.?, @ptrCast(&self.title_buf));
-        wayland.xdgToplevelSetAppId(self.xdg_toplevel.?, "gooey");
-
-        // Set size hints
-        if (options.min_size) |min| {
-            wayland.xdgToplevelSetMinSize(
-                self.xdg_toplevel.?,
-                @intFromFloat(min.width),
-                @intFromFloat(min.height),
-            );
-        }
-        if (options.max_size) |max| {
-            wayland.xdgToplevelSetMaxSize(
-                self.xdg_toplevel.?,
-                @intFromFloat(max.width),
-                @intFromFloat(max.height),
-            );
-        }
-
-        // Request server-side decorations if available
-        if (plat.getDecorationManager()) |dm| {
-            std.debug.print("Decoration manager available, requesting server-side decorations...\n", .{});
-            self.decoration = wayland.zxdgDecorationManagerV1GetToplevelDecoration(dm, self.xdg_toplevel.?);
-            if (self.decoration) |dec| {
-                // Add listener to get decoration mode response
-                _ = wayland.zxdgToplevelDecorationV1AddListener(dec, &decoration_listener, self);
-                wayland.zxdgToplevelDecorationV1SetMode(dec, .server_side);
-            }
-        } else {
-            std.debug.print("WARNING: No decoration manager available - window will have no title bar!\n", .{});
-            std.debug.print("Your compositor may not support xdg-decoration-unstable-v1 protocol.\n", .{});
-        }
-
-        // Commit surface to trigger configure events
+        // Commit to trigger the initial configure, and wait for it. This may
+        // update scale_factor through the preferred_buffer_scale callback.
         wayland.surfaceCommit(self.wl_surface.?);
-
-        // Wait for initial configure - this may update scale_factor via preferred_buffer_scale callback
         _ = wayland.wl_display_roundtrip(plat.display.?);
 
         // errdefer for decoration (created above, may be null)
@@ -287,30 +230,147 @@ pub const Window = struct {
             self.decoration = null;
         }
 
-        // Create viewport for HiDPI scaling (preferred method over set_buffer_scale for Vulkan)
-        // wp_viewporter allows us to render at physical resolution and display at logical size
-        if (plat.getViewporter()) |viewporter| {
-            self.viewport = wayland.viewporterGetViewport(viewporter, self.wl_surface.?);
-            if (self.viewport) |vp| {
-                // Set destination to logical size - the compositor will scale our buffer to this size
-                wayland.viewportSetDestination(
-                    vp,
-                    @intCast(self.width_px),
-                    @intCast(self.height_px),
-                );
-            }
-        } else {
-            // Fallback: use buffer scale (may not work correctly with Vulkan on all compositors)
-            const scale_int: i32 = @intFromFloat(self.scale_factor);
-            wayland.surfaceSetBufferScale(self.wl_surface.?, scale_int);
-        }
-
-        // errdefer for viewport (created above, may be null)
+        self.createViewport(plat);
         errdefer {
             if (self.viewport) |vp| wayland.viewportDestroy(vp);
             self.viewport = null;
         }
 
+        try self.mapWithRenderer(plat, options);
+
+        // A newly mapped window claims focus. `setActiveWindowId` also derives
+        // the `*LinuxWindow` that Wayland input dispatch needs, so publishing
+        // the id alone keeps both authorities in agreement.
+        plat.setActiveWindowId(self.window_id);
+
+        std.debug.assert(self.window_id.isValid());
+        std.debug.assert(self.wl_surface != null);
+        return self;
+    }
+
+    /// Store the title as the C string `xdg_toplevel.set_title` takes. Over-long
+    /// is a programmer error, and the clamp is what keeps a release build in
+    /// bounds.
+    fn storeTitle(self: *Self, title: []const u8) void {
+        std.debug.assert(title.len <= title_bytes_max);
+        const title_len = @min(title.len, title_bytes_max);
+        @memcpy(self.title_buf[0..title_len], title[0..title_len]);
+        self.title_buf[title_len] = 0;
+        self.title_len = title_len;
+        std.debug.assert(self.title_buf[self.title_len] == 0);
+    }
+
+    /// Create the `wl_surface` and listen for its scale. The last fallible step
+    /// creates the surface, so a failure leaves nothing to destroy.
+    fn createSurface(self: *Self, plat: *LinuxPlatform) !void {
+        std.debug.assert(self.wl_surface == null);
+        const compositor = plat.getCompositor() orelse return error.NoCompositor;
+        self.wl_surface = wayland.compositorCreateSurface(compositor) orelse
+            return error.FailedToCreateSurface;
+
+        // Set up surface listener (uses module-level static listener)
+        _ = wayland.surfaceAddListener(self.wl_surface.?, &surface_listener, self);
+        std.debug.assert(self.wl_surface != null);
+    }
+
+    /// Give the surface the xdg toplevel role, with its title, app id, and size
+    /// hints. A failure destroys whatever this created.
+    fn createToplevel(self: *Self, plat: *LinuxPlatform, options: *const WindowOptions) !void {
+        std.debug.assert(self.wl_surface != null);
+        std.debug.assert(self.xdg_surface == null);
+        const xdg_wm_base = plat.getXdgWmBase() orelse return error.NoXdgWmBase;
+        self.xdg_surface = wayland.xdgWmBaseGetXdgSurface(xdg_wm_base, self.wl_surface.?) orelse
+            return error.FailedToCreateXdgSurface;
+        errdefer {
+            if (self.xdg_surface) |xs| wayland.xdgSurfaceDestroy(xs);
+            self.xdg_surface = null;
+        }
+
+        // Set up XDG surface listener (uses module-level static listener)
+        _ = wayland.xdgSurfaceAddListener(self.xdg_surface.?, &xdg_surface_listener, self);
+
+        self.xdg_toplevel = wayland.xdgSurfaceGetToplevel(self.xdg_surface.?) orelse
+            return error.FailedToCreateToplevel;
+        const toplevel = self.xdg_toplevel.?;
+
+        // Set up toplevel listener (uses module-level static listener)
+        _ = wayland.xdgToplevelAddListener(toplevel, &toplevel_listener, self);
+
+        wayland.xdgToplevelSetTitle(toplevel, @ptrCast(&self.title_buf));
+        wayland.xdgToplevelSetAppId(toplevel, "gooey");
+        if (options.min_size) |min| {
+            wayland.xdgToplevelSetMinSize(
+                toplevel,
+                @intFromFloat(min.width),
+                @intFromFloat(min.height),
+            );
+        }
+        if (options.max_size) |max| {
+            wayland.xdgToplevelSetMaxSize(
+                toplevel,
+                @intFromFloat(max.width),
+                @intFromFloat(max.height),
+            );
+        }
+        std.debug.assert(self.xdg_toplevel != null);
+    }
+
+    /// Ask for server-side decorations when the compositor offers them. Best
+    /// effort: without them the window has no title bar.
+    fn requestServerDecorations(self: *Self, plat: *LinuxPlatform) void {
+        std.debug.assert(self.xdg_toplevel != null);
+        std.debug.assert(self.decoration == null);
+        const manager = plat.getDecorationManager() orelse {
+            std.debug.print(
+                "WARNING: No decoration manager available - window will have no title bar!\n",
+                .{},
+            );
+            std.debug.print(
+                "Your compositor may not support xdg-decoration-unstable-v1 protocol.\n",
+                .{},
+            );
+            return;
+        };
+        std.debug.print(
+            "Decoration manager available, requesting server-side decorations...\n",
+            .{},
+        );
+        self.decoration = wayland.zxdgDecorationManagerV1GetToplevelDecoration(
+            manager,
+            self.xdg_toplevel.?,
+        );
+        if (self.decoration) |dec| {
+            // Add listener to get decoration mode response
+            _ = wayland.zxdgToplevelDecorationV1AddListener(dec, &decoration_listener, self);
+            wayland.zxdgToplevelDecorationV1SetMode(dec, .server_side);
+        }
+    }
+
+    /// Map buffers to the logical size: through a viewport (wp_viewporter),
+    /// which lets the renderer draw at physical resolution, or else through
+    /// the integer buffer scale.
+    fn createViewport(self: *Self, plat: *LinuxPlatform) void {
+        std.debug.assert(self.wl_surface != null);
+        std.debug.assert(self.viewport == null);
+        const viewporter = plat.getViewporter() orelse {
+            // Fallback: use buffer scale (may not work correctly with Vulkan on all compositors)
+            const scale_int: i32 = @intFromFloat(self.scale_factor);
+            wayland.surfaceSetBufferScale(self.wl_surface.?, scale_int);
+            return;
+        };
+        self.viewport = wayland.viewporterGetViewport(viewporter, self.wl_surface.?);
+        if (self.viewport) |vp| {
+            // Set destination to logical size - the compositor will scale our buffer to this size
+            wayland.viewportSetDestination(vp, @intCast(self.width_px), @intCast(self.height_px));
+        }
+    }
+
+    /// Set the window geometry, create the renderer on the committed surface
+    /// state, and commit again, so pointer coordinates are logical once the
+    /// compositor has applied the viewport.
+    fn mapWithRenderer(self: *Self, plat: *LinuxPlatform, options: *const WindowOptions) !void {
+        std.debug.assert(self.xdg_surface != null);
+        std.debug.assert(self.wl_surface != null);
         // Set window geometry to logical size (what the user sees)
         wayland.xdgSurfaceSetWindowGeometry(
             self.xdg_surface.?,
@@ -333,15 +393,6 @@ pub const Window = struct {
         // This is important for HiDPI - pointer coordinates won't be in
         // the correct (logical) coordinate space until viewport is applied
         _ = wayland.wl_display_roundtrip(plat.display.?);
-
-        // A newly mapped window claims focus. `setActiveWindowId` also derives
-        // the `*LinuxWindow` that Wayland input dispatch needs, so publishing
-        // the id alone keeps both authorities in agreement.
-        plat.setActiveWindowId(self.window_id);
-
-        std.debug.assert(self.window_id.isValid());
-        std.debug.assert(self.wl_surface != null);
-        return self;
     }
 
     /// Bind the renderer to the Wayland surface. Both renderers create their
