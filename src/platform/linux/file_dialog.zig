@@ -183,25 +183,7 @@ fn promptForNewPathInternal(
 
     // Options dictionary a{sv}
     var dict_iter = iter.openContainer(dbus.TYPE_ARRAY, "{sv}") orelse return error.ContainerFailed;
-
-    // handle_token
-    try appendDictEntryString(&dict_iter, "handle_token", token);
-
-    // modal
-    try appendDictEntryBool(&dict_iter, "modal", true);
-
-    // current_folder (starting directory)
-    if (options.directory) |dir| {
-        try appendDictEntryBytes(&dict_iter, "current_folder", dir);
-    }
-
-    // current_name (suggested filename)
-    if (options.suggested_name) |name| {
-        var name_buf: [256:0]u8 = undefined;
-        const name_z = toSentinelSlice(name, &name_buf) orelse return error.NameTooLong;
-        try appendDictEntryString(&dict_iter, "current_name", name_z);
-    }
-
+    try appendSaveOptions(&dict_iter, token, &options);
     if (!iter.closeContainer(&dict_iter)) return error.ContainerFailed;
 
     // Send request
@@ -217,6 +199,35 @@ fn promptForNewPathInternal(
     return result.paths[0];
 }
 
+/// Append the SaveFile options: the request token, modality, and the
+/// starting folder and suggested file name when the app gave them.
+fn appendSaveOptions(
+    dict_iter: *dbus.MessageIter,
+    token: [:0]const u8,
+    options: *const SavePromptOptions,
+) !void {
+    std.debug.assert(token.len > 0);
+    if (options.suggested_name) |name| std.debug.assert(name.len > 0);
+
+    // handle_token
+    try appendDictEntryString(dict_iter, "handle_token", token);
+
+    // modal
+    try appendDictEntryBool(dict_iter, "modal", true);
+
+    // current_folder (starting directory)
+    if (options.directory) |dir| {
+        try appendDictEntryBytes(dict_iter, "current_folder", dir);
+    }
+
+    // current_name (suggested filename)
+    if (options.suggested_name) |name| {
+        var name_buf: [256:0]u8 = undefined;
+        const name_z = toSentinelSlice(name, &name_buf) orelse return error.NameTooLong;
+        try appendDictEntryString(dict_iter, "current_name", name_z);
+    }
+}
+
 // =============================================================================
 // Response Handling
 // =============================================================================
@@ -229,6 +240,10 @@ fn waitForResponse(
     conn: *dbus.Connection,
     handle_path: [:0]const u8,
 ) !?PathPromptResult {
+    // buildHandlePath produces every handle under the portal's request path.
+    const request_path_prefix = "/org/freedesktop/portal/desktop/request/";
+    std.debug.assert(handle_path.len > request_path_prefix.len);
+    std.debug.assert(std.mem.startsWith(u8, handle_path, request_path_prefix));
     var iterations: u32 = 0;
 
     while (iterations < MAX_SIGNAL_WAIT_ITERATIONS) : (iterations += 1) {
@@ -248,56 +263,63 @@ fn waitForResponse(
 
             if (!signal_msg.isSignal(dbus.PORTAL_REQUEST_INTERFACE, "Response")) continue;
 
-            // Parse response
-            var iter = signal_msg.iterInit() orelse return error.InvalidResponse;
-
-            // First argument: response code (u32)
-            if (iter.getArgType() != dbus.TYPE_UINT32) return error.InvalidResponse;
-            const response_code = iter.getUint32();
-
-            // The portal's codes: 0 success, 1 cancelled by the user, 2 the
-            // interaction ended some other way, which GNOME's portal sends
-            // for Escape. Both 1 and 2 are a cancel, not an error.
-            if (response_code == 1 or response_code == 2) return null;
-            if (response_code != 0) return error.PortalError;
-
-            // Second argument: results dict a{sv}
-            if (!iter.next()) return error.InvalidResponse;
-            if (iter.getArgType() != dbus.TYPE_ARRAY) return error.InvalidResponse;
-
-            // Look for "uris" key in results
-            var dict_iter = iter.recurse();
-            while (dict_iter.getArgType() == dbus.TYPE_DICT_ENTRY) {
-                var entry_iter = dict_iter.recurse();
-
-                // Key (string)
-                if (entry_iter.getArgType() != dbus.TYPE_STRING) {
-                    _ = dict_iter.next();
-                    continue;
-                }
-                const key = entry_iter.getString() orelse {
-                    _ = dict_iter.next();
-                    continue;
-                };
-
-                if (std.mem.eql(u8, key, "uris")) {
-                    // Found uris - parse variant containing string array
-                    if (!entry_iter.next()) return error.InvalidResponse;
-                    if (entry_iter.getArgType() != dbus.TYPE_VARIANT) return error.InvalidResponse;
-
-                    var variant_iter = entry_iter.recurse();
-                    if (variant_iter.getArgType() != dbus.TYPE_ARRAY) return error.InvalidResponse;
-                    return urisToPathResult(allocator, &variant_iter);
-                }
-
-                _ = dict_iter.next();
-            }
-
-            return error.NoUrisInResponse;
+            return parseResponse(allocator, &signal_msg);
         }
     }
 
     return error.Timeout;
+}
+
+/// Read a portal Response signal: null for a cancel, otherwise the paths of
+/// the "uris" entry in its results, converted into `allocator`.
+fn parseResponse(allocator: std.mem.Allocator, signal_msg: *dbus.Message) !?PathPromptResult {
+    std.debug.assert(signal_msg.getType() == dbus.MESSAGE_TYPE_SIGNAL);
+    std.debug.assert(signal_msg.isSignal(dbus.PORTAL_REQUEST_INTERFACE, "Response"));
+    var iter = signal_msg.iterInit() orelse return error.InvalidResponse;
+
+    // First argument: response code (u32)
+    if (iter.getArgType() != dbus.TYPE_UINT32) return error.InvalidResponse;
+    const response_code = iter.getUint32();
+
+    // The portal's codes: 0 success, 1 cancelled by the user, 2 the
+    // interaction ended some other way, which GNOME's portal sends
+    // for Escape. Both 1 and 2 are a cancel, not an error.
+    if (response_code == 1 or response_code == 2) return null;
+    if (response_code != 0) return error.PortalError;
+
+    // Second argument: results dict a{sv}
+    if (!iter.next()) return error.InvalidResponse;
+    if (iter.getArgType() != dbus.TYPE_ARRAY) return error.InvalidResponse;
+
+    // Look for "uris" key in results
+    var dict_iter = iter.recurse();
+    while (dict_iter.getArgType() == dbus.TYPE_DICT_ENTRY) {
+        var entry_iter = dict_iter.recurse();
+
+        // Key (string)
+        if (entry_iter.getArgType() != dbus.TYPE_STRING) {
+            _ = dict_iter.next();
+            continue;
+        }
+        const key = entry_iter.getString() orelse {
+            _ = dict_iter.next();
+            continue;
+        };
+
+        if (std.mem.eql(u8, key, "uris")) {
+            // Found uris - parse variant containing string array
+            if (!entry_iter.next()) return error.InvalidResponse;
+            if (entry_iter.getArgType() != dbus.TYPE_VARIANT) return error.InvalidResponse;
+
+            var variant_iter = entry_iter.recurse();
+            if (variant_iter.getArgType() != dbus.TYPE_ARRAY) return error.InvalidResponse;
+            return urisToPathResult(allocator, &variant_iter);
+        }
+
+        _ = dict_iter.next();
+    }
+
+    return error.NoUrisInResponse;
 }
 
 // =============================================================================
