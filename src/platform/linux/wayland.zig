@@ -1136,6 +1136,88 @@ pub fn pointerDestroy(pointer: *Pointer) void {
     wl_proxy_destroy(@ptrCast(pointer));
 }
 
+/// wl_pointer request opcodes in protocol declaration order.
+const PointerRequest = enum(u32) {
+    set_cursor = 0,
+    release = 1,
+};
+
+/// Show `surface` as the pointer image, or hide the pointer when it is null. `serial` must be
+/// the serial of the latest `wl_pointer.enter`; the compositor ignores any other.
+pub fn pointer_set_cursor(
+    pointer: *Pointer,
+    serial: u32,
+    surface: ?*Surface,
+    hotspot: struct { x: i32, y: i32 },
+) void {
+    std.debug.assert(hotspot.x >= 0);
+    std.debug.assert(hotspot.y >= 0);
+    _ = wl_proxy_marshal_flags(
+        @ptrCast(pointer),
+        @backingInt(PointerRequest.set_cursor),
+        null,
+        wl_proxy_get_version(@ptrCast(pointer)),
+        0,
+        serial,
+        @as(?*anyopaque, @ptrCast(surface)),
+        hotspot.x,
+        hotspot.y,
+    );
+}
+
+test "wl_pointer request opcodes match libwayland's protocol table" {
+    // Goal: catch `pointer_set_cursor` marshaling another request. Methodology: the same as
+    // the wl_surface test; each `PointerRequest` name must equal the name at its opcode.
+    const names = @typeInfo(PointerRequest).@"enum".field_names;
+    const values = @typeInfo(PointerRequest).@"enum".field_values;
+    const method_count: usize = @intCast(wl_pointer_interface.method_count);
+    const methods: [*]const Message = @ptrCast(wl_pointer_interface.methods.?);
+    try std.testing.expectEqual(names.len, method_count);
+    inline for (names, values) |name, opcode| {
+        try std.testing.expect(opcode < method_count);
+        try std.testing.expectEqualStrings(name, std.mem.span(methods[opcode].name));
+    }
+}
+
+// =============================================================================
+// libwayland-cursor (XCursor theme loading)
+// =============================================================================
+
+pub const CursorTheme = opaque {};
+
+/// `struct wl_cursor_image`: one frame of a cursor, in buffer pixels.
+pub const CursorImage = extern struct {
+    width: u32,
+    height: u32,
+    hotspot_x: u32,
+    hotspot_y: u32,
+    delay: u32,
+};
+
+/// `struct wl_cursor`: the frames of one named cursor.
+pub const Cursor = extern struct {
+    image_count: c_uint,
+    images: [*]*CursorImage,
+    name: [*:0]u8,
+};
+
+/// Loads every cursor of the theme into one shared-memory pool. A null `name` loads the
+/// "default" theme; a theme with no cursors falls back to libwayland-cursor's built-in set.
+pub extern "wayland-cursor" fn wl_cursor_theme_load(
+    name: ?[*:0]const u8,
+    size: c_int,
+    shm: *Shm,
+) ?*CursorTheme;
+pub extern "wayland-cursor" fn wl_cursor_theme_destroy(theme: *CursorTheme) void;
+/// A lookup in the already-loaded table: it never loads or allocates.
+pub extern "wayland-cursor" fn wl_cursor_theme_get_cursor(
+    theme: *CursorTheme,
+    name: [*:0]const u8,
+) ?*Cursor;
+/// Creates the image's `wl_buffer` on the first call and returns the same buffer afterwards.
+/// The theme owns the buffer and destroys it in `wl_cursor_theme_destroy`.
+pub extern "wayland-cursor" fn wl_cursor_image_get_buffer(image: *CursorImage) ?*Buffer;
+
 pub fn cursorShapeManagerGetPointer(manager: *WpCursorShapeManagerV1, pointer: *Pointer) ?*WpCursorShapeDeviceV1 {
     const result = wl_proxy_marshal_flags(
         @ptrCast(manager),

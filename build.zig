@@ -1831,11 +1831,18 @@ fn linkLinuxBackendLibraries(mod: *std.Build.Module, linux_backend: LinuxBackend
     switch (linux_backend) {
         .wayland_vulkan => {
             mod.linkSystemLibrary("vulkan", .{});
-            mod.linkSystemLibrary("wayland-client", .{});
+            linkWaylandLibraries(mod);
         },
-        .wayland_cpu => mod.linkSystemLibrary("wayland-client", .{}),
+        .wayland_cpu => linkWaylandLibraries(mod),
         .fbdev => {},
     }
+}
+
+/// The Wayland client library, plus libwayland-cursor for the XCursor theme fallback on
+/// compositors without `wp_cursor_shape_v1`.
+fn linkWaylandLibraries(mod: *std.Build.Module) void {
+    mod.linkSystemLibrary("wayland-client", .{});
+    mod.linkSystemLibrary("wayland-cursor", .{});
 }
 
 /// Platform wiring the goldens' `gooey` module needs on the host target.

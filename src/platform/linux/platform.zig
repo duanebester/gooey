@@ -15,6 +15,7 @@ const WindowRegistry = window_registry.WindowRegistry;
 const linux_input = @import("input.zig");
 const input = @import("../../input/events.zig");
 const clipboard = @import("clipboard.zig");
+const CursorSurface = @import("cursor_surface.zig").CursorSurface;
 const linux_backend = @import("../linux_backend.zig");
 
 // Static listeners - must persist for lifetime of Wayland objects
@@ -113,6 +114,9 @@ pub const LinuxPlatform = struct {
     shm: ?*wayland.Shm = null,
     cursor_shape_manager: ?*wayland.WpCursorShapeManagerV1 = null,
     cursor_shape_device: ?*wayland.WpCursorShapeDeviceV1 = null,
+    /// XCursor theme images, loaded at initialization only when the compositor offers no
+    /// `wp_cursor_shape_manager_v1`, which stays the preferred path.
+    cursor_surface: CursorSurface = .{},
     output: ?*wayland.Output = null,
 
     // Display refresh rate in millihertz (e.g., 60000 = 60Hz, 144000 = 144Hz)
@@ -266,10 +270,30 @@ pub const LinuxPlatform = struct {
         }
 
         try self.setupListeners();
+        self.loadCursorSurface();
 
         std.debug.assert(self.compositor != null);
         std.debug.assert(self.xdg_wm_base != null);
         std.debug.assert(!self.running);
+    }
+
+    /// Load the cursor theme fallback while still initializing: a hover change after the
+    /// event loop starts must not allocate. Runs after `setupListeners`, whose second
+    /// roundtrip delivered `wl_output.scale`.
+    fn loadCursorSurface(self: *Self) void {
+        std.debug.assert(self.compositor != null);
+        std.debug.assert(self.cursor_surface.surface == null);
+        if (self.cursor_shape_manager != null) return;
+
+        const shm = self.shm orelse {
+            std.log.warn("cursor: no wl_shm; keeping the compositor's cursor", .{});
+            return;
+        };
+        self.cursor_surface.load(.{
+            .compositor = self.compositor.?,
+            .shm = shm,
+            .output_scale = self.scale_factor,
+        });
     }
 
     /// Bind the Wayland listeners that capture `self`.
@@ -356,6 +380,8 @@ pub const LinuxPlatform = struct {
             wayland.cursorShapeManagerDestroy(manager);
             self.cursor_shape_manager = null;
         }
+        // Before `shm` and `compositor`, which created its pool and surface.
+        self.cursor_surface.deinit();
         if (self.xdg_wm_base) |wm| {
             wayland.xdgWmBaseDestroy(wm);
             self.xdg_wm_base = null;
@@ -432,19 +458,24 @@ pub const LinuxPlatform = struct {
         std.debug.assert(self.pointer != null);
     }
 
+    /// Prefer `wp_cursor_shape_v1`; without it, show the theme image on the cursor surface.
     pub fn setCursorShape(self: *Self, shape: interface_mod.CursorShape) void {
         if (self.cursor_shape_device != null) std.debug.assert(self.pointer != null);
         if (self.cursor_shape_device != null) std.debug.assert(self.cursor_shape_manager != null);
         if (self.cursor_shape == shape) return;
         const serial = self.pointer_enter_serial orelse return;
-        const device = self.cursor_shape_device orelse return;
 
-        const protocol_shape: u32 = switch (shape) {
-            .default => 1,
-            .text => 9,
-            .pointer => 4,
-        };
-        wayland.cursorShapeDeviceSetShape(device, serial, protocol_shape);
+        if (self.cursor_shape_device) |device| {
+            const protocol_shape: u32 = switch (shape) {
+                .default => 1,
+                .text => 9,
+                .pointer => 4,
+            };
+            wayland.cursorShapeDeviceSetShape(device, serial, protocol_shape);
+        } else {
+            const pointer = self.pointer orelse return;
+            if (!self.cursor_surface.show(pointer, serial, shape)) return;
+        }
         self.cursor_shape = shape;
     }
 
