@@ -71,8 +71,8 @@ Run long-lived servers as orb services.
 
 - **Expected on GNOME:** no title bar, because mutter offers no server-side decorations and
   Gooey draws none. Alt+F4 closes the window.
-- **Expected on GNOME 43:** no hover cursor changes. Gooey sets cursors only through
-  `wp_cursor_shape_v1`, which mutter added in GNOME 48.
+- **Not exercised on GNOME 43:** the `wp_cursor_shape_v1` cursor path, which mutter added
+  in GNOME 48. Hover cursors here come from Gooey's XCursor theme fallback.
 - **Not covered:** hardware GPUs, fractional scaling, and physical displays. Test those on a
   real Linux machine.
 - **Fonts differ:** text layout uses the orb's fonts (DejaVu Sans), which are wider than
