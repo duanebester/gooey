@@ -121,7 +121,13 @@ test "the core counter draws, hits, and announces what 0.3.1 does" {
         std.testing.allocator,
         @embedFile("legacy_counter.txt"),
         @embedFile("core_counter.txt"),
-        &.{},
+        &.{.{
+            .step = null,
+            .legacy_line = "fill (0.00 0.00 500.00 350.00) #f2f2f2ff -",
+            .core_line = "fill (0.00 0.00 580.00 350.00) #f2f2f2ff -",
+            .reason = "the counter window is 580 px wide so its controls row fits " ++
+                "DejaVu Sans (#55); every control keeps its 0.3.1 position",
+        }},
     );
     try std.testing.expectEqual(@as(u32, 0), unexplained);
 }

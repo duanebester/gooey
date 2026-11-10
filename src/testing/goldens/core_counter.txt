@@ -1,8 +1,8 @@
-trace counter 500x350@2.00
+trace counter 580x350@2.00
 
 == step 0: initial frame
-packed 1000x700@2.00 clear=#eff1f5ff
-  quad (0.00 0.00 500.00 350.00) fill=#f2f2f2ff
+packed 1160x700@2.00 clear=#eff1f5ff
+  quad (0.00 0.00 580.00 350.00) fill=#f2f2f2ff
   glyphs n=16 (32.00 34.00 181.00 17.00) color=#333333ff hash=4ed11807
   quad (32.00 80.06 83.20 121.57) fill=#ffffffff radius=12.00,12.00,12.00,12.00
   glyphs n=1 (56.00 110.00 28.50 45.00) color=#3380ccff hash=a510b7d8
@@ -39,8 +39,8 @@ a11y
   button (154.40 289.57 39.40 28.80) name="10"
 
 == step 1: click +
-packed 1000x700@2.00 clear=#eff1f5ff
-  quad (0.00 0.00 500.00 350.00) fill=#f2f2f2ff
+packed 1160x700@2.00 clear=#eff1f5ff
+  quad (0.00 0.00 580.00 350.00) fill=#f2f2f2ff
   glyphs n=16 (32.00 34.00 181.00 17.00) color=#333333ff hash=4ed11807
   quad (32.00 80.06 83.20 121.57) fill=#ffffffff radius=12.00,12.00,12.00,12.00
   glyphs n=1 (56.00 110.00 28.50 45.00) color=#3380ccff hash=a610b96b
@@ -77,8 +77,8 @@ a11y
   button (154.40 289.57 39.40 28.80) name="10"
 
 == step 2: click + again
-packed 1000x700@2.00 clear=#eff1f5ff
-  quad (0.00 0.00 500.00 350.00) fill=#f2f2f2ff
+packed 1160x700@2.00 clear=#eff1f5ff
+  quad (0.00 0.00 580.00 350.00) fill=#f2f2f2ff
   glyphs n=16 (32.00 34.00 181.00 17.00) color=#333333ff hash=4ed11807
   quad (32.00 80.06 83.20 121.57) fill=#ffffffff radius=12.00,12.00,12.00,12.00
   glyphs n=1 (56.00 110.00 28.50 45.00) color=#3380ccff hash=a710bafe
@@ -115,8 +115,8 @@ a11y
   button (154.40 289.57 39.40 28.80) name="10"
 
 == step 3: click -
-packed 1000x700@2.00 clear=#eff1f5ff
-  quad (0.00 0.00 500.00 350.00) fill=#f2f2f2ff
+packed 1160x700@2.00 clear=#eff1f5ff
+  quad (0.00 0.00 580.00 350.00) fill=#f2f2f2ff
   glyphs n=16 (32.00 34.00 181.00 17.00) color=#333333ff hash=4ed11807
   quad (32.00 80.06 83.20 121.57) fill=#ffffffff radius=12.00,12.00,12.00,12.00
   glyphs n=1 (56.00 110.00 28.50 45.00) color=#3380ccff hash=a610b96b
@@ -153,8 +153,8 @@ a11y
   button (154.40 289.57 39.40 28.80) name="10"
 
 == step 4: click step 5
-packed 1000x700@2.00 clear=#eff1f5ff
-  quad (0.00 0.00 500.00 350.00) fill=#f2f2f2ff
+packed 1160x700@2.00 clear=#eff1f5ff
+  quad (0.00 0.00 580.00 350.00) fill=#f2f2f2ff
   glyphs n=16 (32.00 34.00 181.00 17.00) color=#333333ff hash=4ed11807
   quad (32.00 80.06 83.20 121.57) fill=#ffffffff radius=12.00,12.00,12.00,12.00
   glyphs n=1 (56.00 110.00 28.50 45.00) color=#3380ccff hash=a610b96b
@@ -191,8 +191,8 @@ a11y
   button (154.40 289.57 39.40 28.80) name="10"
 
 == step 5: click + with step 5
-packed 1000x700@2.00 clear=#eff1f5ff
-  quad (0.00 0.00 500.00 350.00) fill=#f2f2f2ff
+packed 1160x700@2.00 clear=#eff1f5ff
+  quad (0.00 0.00 580.00 350.00) fill=#f2f2f2ff
   glyphs n=16 (32.00 34.00 181.00 17.00) color=#333333ff hash=4ed11807
   quad (32.00 80.06 83.20 121.57) fill=#ffffffff radius=12.00,12.00,12.00,12.00
   glyphs n=1 (56.00 110.00 28.50 45.00) color=#3380ccff hash=ab10c14a
@@ -229,8 +229,8 @@ a11y
   button (154.40 289.57 39.40 28.80) name="10"
 
 == step 6: hover Reset
-packed 1000x700@2.00 clear=#eff1f5ff
-  quad (0.00 0.00 500.00 350.00) fill=#f2f2f2ff
+packed 1160x700@2.00 clear=#eff1f5ff
+  quad (0.00 0.00 580.00 350.00) fill=#f2f2f2ff
   glyphs n=16 (32.00 34.00 181.00 17.00) color=#333333ff hash=4ed11807
   quad (32.00 80.06 83.20 121.57) fill=#ffffffff radius=12.00,12.00,12.00,12.00
   glyphs n=1 (56.00 110.00 28.50 45.00) color=#3380ccff hash=ab10c14a
@@ -267,8 +267,8 @@ a11y
   button (154.40 289.57 39.40 28.80) name="10"
 
 == step 7: click Reset
-packed 1000x700@2.00 clear=#eff1f5ff
-  quad (0.00 0.00 500.00 350.00) fill=#f2f2f2ff
+packed 1160x700@2.00 clear=#eff1f5ff
+  quad (0.00 0.00 580.00 350.00) fill=#f2f2f2ff
   glyphs n=16 (32.00 34.00 181.00 17.00) color=#333333ff hash=4ed11807
   quad (32.00 75.85 83.20 103.33) fill=#ffffffff radius=12.00,12.00,12.00,12.00
   glyphs n=1 (56.00 106.00 28.50 45.00) color=#3380ccff hash=20377f4f
@@ -306,8 +306,8 @@ a11y
   button (154.40 257.77 39.40 28.80) name="10"
 
 == step 8: click step 10
-packed 1000x700@2.00 clear=#eff1f5ff
-  quad (0.00 0.00 500.00 350.00) fill=#f2f2f2ff
+packed 1160x700@2.00 clear=#eff1f5ff
+  quad (0.00 0.00 580.00 350.00) fill=#f2f2f2ff
   glyphs n=16 (32.00 34.00 181.00 17.00) color=#333333ff hash=4ed11807
   quad (32.00 80.06 83.20 121.57) fill=#ffffffff radius=12.00,12.00,12.00,12.00
   glyphs n=1 (56.00 110.00 28.50 45.00) color=#3380ccff hash=a510b7d8
@@ -344,8 +344,8 @@ a11y
   button (154.40 289.57 39.40 28.80) name="10"
 
 == step 9: click - into negative
-packed 1000x700@2.00 clear=#eff1f5ff
-  quad (0.00 0.00 500.00 350.00) fill=#f2f2f2ff
+packed 1160x700@2.00 clear=#eff1f5ff
+  quad (0.00 0.00 580.00 350.00) fill=#f2f2f2ff
   glyphs n=16 (32.00 34.00 181.00 17.00) color=#333333ff hash=4ed11807
   quad (32.00 80.06 140.80 121.57) fill=#ffffffff radius=12.00,12.00,12.00,12.00
   glyphs n=3 (56.00 110.00 86.00 45.00) color=#cc4d4dff hash=ee8cb87c
@@ -382,8 +382,8 @@ a11y
   button (154.40 289.57 39.40 28.80) name="10"
 
 == step 10: click Reset & Blur
-packed 1000x700@2.00 clear=#eff1f5ff
-  quad (0.00 0.00 500.00 350.00) fill=#f2f2f2ff
+packed 1160x700@2.00 clear=#eff1f5ff
+  quad (0.00 0.00 580.00 350.00) fill=#f2f2f2ff
   glyphs n=16 (32.00 34.00 181.00 17.00) color=#333333ff hash=4ed11807
   quad (32.00 75.85 83.20 103.33) fill=#ffffffff radius=12.00,12.00,12.00,12.00
   glyphs n=1 (56.00 106.00 28.50 45.00) color=#3380ccff hash=20377f4f
