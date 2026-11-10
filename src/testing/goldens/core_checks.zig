@@ -3620,6 +3620,59 @@ test "Tab from a Select's menu closes it and moves on, and a click opens it on t
     try testing.expectEqual(@as(u32, 0), app.state.below_clicks);
 }
 
+test "focus on an element that leaves passes to its combobox or the next tab stop" {
+    // Goal: lost focus goes somewhere sensible instead of nowhere, so the
+    // next Tab continues from there. Methodology: choose a Select option
+    // with the pointer, which removes the pressed option: focus passes to
+    // its combobox, ringless as the press left it. Then on todo, delete the
+    // last row with Enter on its Delete button: focus passes to the next
+    // tab stop, Clear completed, with its ring, and Shift+Tab goes on to the
+    // previous row's Delete button.
+    const select = try testing.allocator.create(SelectApp);
+    defer testing.allocator.destroy(select);
+    try select.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer select.deinitHeadless();
+    var now: u64 = 0;
+    select.tick(now);
+    var ring: internals.records.Rect = undefined;
+    pressKey(select, &now, .tab, .{});
+    pressKey(select, &now, .down, .{});
+    try expectFocused(&select.window, .option, "One");
+    const frame = select.window.rendered();
+    var two: ?internals.records.Rect = null;
+    for (frame.a11y[0..frame.a11y_count]) |*node| {
+        if (std.mem.eql(u8, frame.text(node.name) orelse "", "Two")) two = node.bounds;
+    }
+    clickAt(select, &now, two.?.x + 10, two.?.y + 4);
+    try testing.expectEqual(@as(?usize, 1), select.state.selected);
+    try expectFocused(&select.window, .combobox, "Level");
+    try testing.expectEqual(@as(u32, 0), focusRings(&select.window, &ring));
+
+    const app = try testing.allocator.create(todo.App);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    for ([_][]const u8{ "a", "b", "c" }) |text| {
+        app.state.draft = text;
+        app.state.addTodo();
+    }
+    now = 0;
+    app.tick(now);
+    // The input, Add, three filters, then each row's checkbox and Delete.
+    for (0..11) |_| pressKey(app, &now, .tab, .{});
+    try expectFocused(&app.window, .button, "Delete");
+    pressKey(app, &now, .@"return", .{});
+    try testing.expectEqual(@as(u32, 2), app.state.count);
+    try expectFocused(&app.window, .button, "Clear completed");
+    try expectRingAround(&app.window, focusedNode(&app.window).?.bounds);
+    pressKey(app, &now, .tab, .{ .shift = true });
+    try expectFocused(&app.window, .button, "Delete");
+    pressKey(app, &now, .space, .{});
+    try testing.expectEqual(@as(u32, 1), app.state.count);
+    try testing.expectEqualStrings("a", app.state.todos[0].bytes[0..1]);
+    try testing.expectEqual(internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
+}
+
 /// A CodeEditor beside a Button, for the claimed-Tab check.
 const EditorButtonState = struct {
     source: []const u8 = "",
@@ -3673,8 +3726,9 @@ test "Tab stays inside a modal, so Enter never clicks what the modal blocks" {
     // Goal: keyboard focus follows the pointer's modal rule (contract §6).
     // Methodology: with the small modal open over the content button, Tab
     // from nothing and again must land on the modal's button both times;
-    // Enter clicks it and closes the modal, and only then does Tab reach the
-    // content button, where Space clicks it.
+    // Enter clicks it and closes the modal, which passes focus to the
+    // content button, the tab stop before it, where Tab stays and Space
+    // clicks.
     const app = try testing.allocator.create(BlockApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -3688,7 +3742,8 @@ test "Tab stays inside a modal, so Enter never clicks what the modal blocks" {
     pressKey(app, &now, .@"return", .{});
     try testing.expectEqual(@as(u32, 1), app.state.inside_clicks);
     try testing.expectEqual(@as(u32, 0), app.state.below_clicks);
-    try testing.expect(focusedNode(&app.window) == null);
+    try expectFocused(&app.window, .button, "Below");
+    try expectRingAround(&app.window, focusedNode(&app.window).?.bounds);
     pressKey(app, &now, .tab, .{});
     try expectFocused(&app.window, .button, "Below");
     pressKey(app, &now, .space, .{});

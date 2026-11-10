@@ -221,6 +221,12 @@ reach needs only `focusable = true` beside its `on_click`; the radio options abo
 While a modal is open, Tab cycles through the modal's controls only, and focus left behind
 it is dropped, so a key cannot reach what the pointer cannot.
 
+When the focused element stops rendering or stops taking focus, such as a deleted row's
+button or an option chosen with the pointer, focus passes to its nearest focusable
+ancestor, such as the option's combobox; else to the next Tab stop after it in the frame
+it left, such as the next row's control; else to the previous one. The next Tab continues
+from there, and keyboard focus keeps its ring.
+
 Focus that the keyboard moved, by Tab or by a handler reacting to a key, draws a focus ring:
 2 px of the theme's `border_focus`, 2 px outside the focused box and following its corners.
 A pointer press focuses too, but draws no ring, as a browser's `:focus-visible` does. The
@@ -474,10 +480,10 @@ this repository but is not API.
 
 - Only the innermost scroll box scrolls to keyboard focus. Focus the pointer gave, which
   draws no ring, is not scrolled to when a layout change moves it.
-- Focus on an element that stops rendering, such as a deleted row's button, is dropped, and
-  the next Tab starts from the first control.
+- Focus that leaves tries the nearest 32 Tab stops on each side; past those, or when a modal
+  covers it, it is dropped and the next Tab starts from the first control.
 - Arrow keys do not move between radio options; each option is its own Tab stop.
-- `Select` has no type-ahead, and choosing an option with the pointer blurs it, as before.
+- `Select` has no type-ahead.
 - An option's chosen state is not exported: `ui.A11y` has no `selected` field (see below).
 - No bridge supports actions (press, toggle, set value, expand, focus).
 - Linux has no screen-reader support (contract decision 12).

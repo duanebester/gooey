@@ -668,8 +668,10 @@ pub fn updateHover(window: *Window) void {
     window.render_requested = true;
 }
 
-/// Blur a focused element that the frame just built did not render, or
-/// that a modal opened over: keys must not reach what the pointer cannot.
+/// Move focus off an element that the frame just built did not render, no
+/// longer lets focus, or that a modal opened over: keys must not reach what
+/// the pointer cannot. Focus passes to its successor (`focusSuccessor`), so
+/// the next Tab continues from where it was, and keeps its ring.
 pub fn validateFocus(window: *Window) void {
     if (window.focus == .root) return;
     const frame = window.built();
@@ -677,6 +679,81 @@ pub fn validateFocus(window: *Window) void {
     if (index != index_none and frame.hits[index].focusable) {
         if (index >= frame.modal_hit_start) return;
     }
-    window.focus = .root;
+    const successor = focusSuccessor(window.rendered(), frame, window.focus);
+    assert(successor != window.focus);
+    window.focus = successor;
+    if (successor == .root) window.focus_visible = false;
+    window.focus_reveal = window.focus_visible;
     window.render_requested = true;
+}
+
+/// Tab stops tried on each side of a lost focus (`focusSuccessor`).
+const successor_tab_stop_count_max: u32 = 32;
+const successor_candidate_count_max: u32 =
+    window_mod.box_depth_max + 2 * successor_tab_stop_count_max;
+
+/// Where focus goes when `lost` leaves: in the frame on screen, its nearest
+/// focusable ancestor, such as the combobox of an option chosen with the
+/// pointer; else the next tab stop after it, such as the next row's control
+/// after a deleted row's; else the previous one. The first of these that
+/// `built` still renders, focusable and reachable past its modal, wins.
+/// None is `.root`. One pass over `built`'s records against at most
+/// `successor_candidate_count_max` ids, run only when focus is lost.
+fn focusSuccessor(
+    rendered: *const records.Frame,
+    built: *const records.Frame,
+    lost: ElementId,
+) ElementId {
+    var candidates: [successor_candidate_count_max]ElementId = undefined;
+    const count = successorCandidates(rendered, lost, &candidates);
+    assert(count <= candidates.len);
+    var best: u32 = count;
+    var found: ElementId = .root;
+    for (built.hits[built.modal_hit_start..built.hit_count]) |*record| {
+        if (!record.focusable) continue;
+        const rank = std.mem.indexOfScalar(ElementId, candidates[0..best], record.id) orelse
+            continue;
+        best = @intCast(rank);
+        found = record.id;
+        if (best == 0) break;
+    }
+    if (found != .root) assert(best < count);
+    return found;
+}
+
+/// `focusSuccessor`'s candidates in order of preference. Returns the count.
+fn successorCandidates(frame: *const records.Frame, lost: ElementId, out: []ElementId) u32 {
+    assert(out.len == successor_candidate_count_max);
+    const start = findRecord(frame, lost);
+    if (start == index_none) return 0;
+    var count: u32 = 0;
+    var index = frame.hits[start].parent;
+    var depth: u32 = 0;
+    while (index != index_none) : (index = frame.hits[index].parent) {
+        depth += 1;
+        assert(depth <= window_mod.box_depth_max);
+        if (frame.hits[index].focusable) {
+            out[count] = frame.hits[index].id;
+            count += 1;
+        }
+    }
+    var tab_stops: u32 = 0;
+    index = start + 1;
+    while (index < frame.hit_count and tab_stops < successor_tab_stop_count_max) : (index += 1) {
+        if (!frame.hits[index].tab_stop) continue;
+        out[count] = frame.hits[index].id;
+        count += 1;
+        tab_stops += 1;
+    }
+    tab_stops = 0;
+    index = start;
+    while (index > 0 and tab_stops < successor_tab_stop_count_max) {
+        index -= 1;
+        if (!frame.hits[index].tab_stop) continue;
+        out[count] = frame.hits[index].id;
+        count += 1;
+        tab_stops += 1;
+    }
+    assert(count <= out.len);
+    return count;
 }
