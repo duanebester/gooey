@@ -1,6 +1,6 @@
-//! macOS platform: the shared NSApplication, its event loop, and the main
-//! menu. The core host (`core_host.zig`) runs `run` and turns the loop
-//! through `setLoopTurnCallback`.
+//! macOS platform: the shared NSApplication, its event loop, the main menu,
+//! and the quit Apple Event. The core host (`core_host.zig`) runs `run` and
+//! turns the loop through `setLoopTurnCallback`.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -19,9 +19,24 @@ fn getDistantFuture() objc.Object {
     return NSDate.msgSend(objc.Object, "distantFuture", .{});
 }
 
+/// `kCoreEventClass` ('aevt') and `kAEQuitApplication` ('quit'): the event the
+/// Dock's Quit, loginwindow at logout, and `osascript ... to quit` send.
+const ae_core_event_class: u32 = 0x61657674;
+const ae_quit_application: u32 = 0x71756974;
+
+/// Receives the quit Apple Event; registered once, by the first `initInPlace`.
+var quit_handler_class: ?objc.Class = null;
+
 pub const MacPlatform = struct {
     app: objc.Object,
     running: bool,
+
+    /// A `GooeyQuitHandler` pointing back here; see `handleQuitEvent`.
+    quit_handler: objc.Object,
+    /// The window Cmd+Q closes, set by `installMainMenu`.
+    quit_window: ?objc.Object,
+    /// The quit Apple Event whose reply waits for teardown; `deinit` sends it.
+    quit_suspension: ?*const anyopaque,
 
     /// Owner hook fired once per `run` iteration; see `setLoopTurnCallback`.
     loop_turn_callback: ?LoopTurnCallback = null,
@@ -45,18 +60,43 @@ pub const MacPlatform = struct {
         // tile and a menu bar, as opposed to an accessory or background agent.
         _ = app.msgSend(bool, "setActivationPolicy:", .{@as(i64, 0)});
 
+        const handler_class = try registerQuitHandlerClass();
+        const handler = handler_class.msgSend(objc.Object, "alloc", .{})
+            .msgSend(objc.Object, "init", .{});
+        if (handler.value == null) return error.QuitHandlerUnavailable;
+        const self_id: objc.c.id = @ptrCast(self);
+        handler.setInstanceVariable("_gooeyPlatform", objc.Object.fromId(self_id));
+
         self.app = app;
         self.running = false;
         self.loop_turn_callback = null;
+        self.quit_handler = handler;
+        self.quit_window = null;
+        self.quit_suspension = null;
 
         assert(self.app.value != null);
         assert(!self.running);
     }
 
+    /// Runs last in the core host's teardown, so a held quit Apple Event is
+    /// answered only once every other deinit has run. Its sender (the Dock,
+    /// or loginwindow at logout) gets success, and the process exits 0.
     pub fn deinit(self: *Self) void {
         assert(self.app.value != null);
         self.running = false;
+        const manager = appleEventManager();
+        if (self.quit_suspension) |suspension| {
+            manager.msgSend(void, "resumeWithSuspensionID:", .{suspension});
+            self.quit_suspension = null;
+        }
+        // The manager does not retain its handlers, so unhook before release.
+        manager.msgSend(void, "removeEventHandlerForEventClass:andEventID:", .{
+            ae_core_event_class,
+            ae_quit_application,
+        });
+        self.quit_handler.release();
         assert(!self.running);
+        assert(self.quit_suspension == null);
         // NSApplication is a process-wide singleton; releasing it would be a
         // double-free of a shared instance we never owned.
     }
@@ -84,6 +124,14 @@ pub const MacPlatform = struct {
 
         // Finish launching
         _ = self.app.msgSend(void, "finishLaunching", .{});
+        // After `finishLaunching`, which installs AppKit's own quit handler.
+        const install = "setEventHandler:andSelector:forEventClass:andEventID:";
+        appleEventManager().msgSend(void, install, .{
+            self.quit_handler.value,
+            objc.sel("handleQuitEvent:withReplyEvent:"),
+            ae_core_event_class,
+            ae_quit_application,
+        });
 
         // Run the event loop - BLOCKING on events
         while (self.running) {
@@ -121,7 +169,7 @@ pub const MacPlatform = struct {
 
     /// Stop the loop so `run` returns and its caller tears down in order.
     /// `-[NSApp terminate:]` would `exit()` from inside this call and skip
-    /// every deinit; quitting from the Dock or at logout still does.
+    /// every deinit; the quit Apple Event avoids it (`handleQuitEvent`).
     pub fn quit(self: *Self) void {
         assert(self.app.value != null);
 
@@ -192,6 +240,7 @@ pub const MacPlatform = struct {
         defer quit_item.release();
 
         quit_item.msgSend(void, "setTarget:", .{ns_window});
+        self.quit_window = ns_window;
         app_menu.msgSend(void, "addItem:", .{quit_item});
         app_item.msgSend(void, "setSubmenu:", .{app_menu});
         main_menu.msgSend(void, "addItem:", .{app_item});
@@ -199,11 +248,73 @@ pub const MacPlatform = struct {
         assert(self.app.msgSend(objc.c.id, "mainMenu", .{}) == main_menu.value);
     }
 
+    /// The quit Apple Event (Dock Quit, logout, `osascript`) closes the window
+    /// the way Cmd+Q does, and holds the event's reply until `deinit`.
+    ///
+    /// AppKit's own handler calls `terminate:`, which `exit()`s and skips
+    /// teardown. Answering `applicationShouldTerminate:` with
+    /// `NSTerminateLater` does not help: `terminate:` then waits in a nested
+    /// run loop for the reply, so `run` never returns to tear down, and the
+    /// reply `exit()`s from there. Suspending the event is what
+    /// `NSTerminateLater` does for its sender, without the nested loop.
+    fn handleQuitEvent(
+        handler: objc.c.id,
+        _: objc.c.SEL,
+        _: objc.c.id, // event
+        _: objc.c.id, // reply
+    ) callconv(.c) void {
+        const ptr = objc.Object.fromId(handler).getInstanceVariable("_gooeyPlatform");
+        const self: *Self = @ptrCast(@alignCast(ptr.value orelse return));
+        assert(self.app.value != null);
+        // A repeated quit is answered now; the first one's reply is held.
+        if (self.quit_suspension != null) return;
+        self.quit_suspension = appleEventManager().msgSend(
+            ?*const anyopaque,
+            "suspendCurrentAppleEvent",
+            .{},
+        );
+        assert(self.quit_suspension != null);
+        // A file dialog's modal loop would hold `run` until the user answers
+        // it, so end it: the dialog reports a cancel, then the window closes.
+        if (self.app.msgSend(objc.c.id, "modalWindow", .{}) != null) {
+            self.app.msgSend(void, "stopModal", .{});
+        }
+        const window = self.quit_window orelse return self.quit();
+        // `performClose:` beeps and does nothing while a modal session runs,
+        // so it waits until the loop is back in the default mode: after this
+        // event, and after the modal loop `stopModal` ends.
+        window.msgSend(void, "performSelector:withObject:afterDelay:", .{
+            objc.sel("performClose:"),
+            @as(objc.c.id, null),
+            @as(f64, 0),
+        });
+    }
+
     /// Whether the host event loop is currently pumping events. Only
     /// observable from inside a callback dispatched by `run`.
     pub fn isRunning(self: *const Self) bool {
         assert(self.app.value != null);
         return self.running;
+    }
+
+    fn appleEventManager() objc.Object {
+        const NSAppleEventManager = objc.getClass("NSAppleEventManager") orelse unreachable;
+        return NSAppleEventManager.msgSend(objc.Object, "sharedAppleEventManager", .{});
+    }
+
+    /// Register `GooeyQuitHandler` once per process.
+    fn registerQuitHandlerClass() !objc.Class {
+        if (quit_handler_class) |class| return class;
+        const NSObject = objc.getClass("NSObject") orelse return error.ClassNotFound;
+        var class = objc.allocateClassPair(NSObject, "GooeyQuitHandler") orelse
+            return error.ClassAllocationFailed;
+        if (!class.addIvar("_gooeyPlatform")) return error.IvarAddFailed;
+        if (!class.addMethod("handleQuitEvent:withReplyEvent:", handleQuitEvent)) {
+            return error.MethodAddFailed;
+        }
+        objc.registerClassPair(class);
+        quit_handler_class = class;
+        return class;
     }
 
     // =========================================================================
