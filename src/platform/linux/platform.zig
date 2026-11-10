@@ -573,32 +573,9 @@ pub const LinuxPlatform = struct {
                 .{ .advertised = version, .supported_max = 1 },
             )));
         } else if (std.mem.eql(u8, interface_name, wayland.WL_SEAT_INTERFACE_NAME)) {
-            self.seat = @ptrCast(@alignCast(wayland.registryBind(
-                registry,
-                name,
-                &wayland.wl_seat_interface,
-                .{ .advertised = version, .supported_max = seatVersionMax() },
-            )));
-
-            if (self.seat) |seat| {
-                // Uses module-level static listener
-                _ = wayland.seatAddListener(seat, &seat_listener, self);
-            }
+            self.bindSeat(registry, name, version);
         } else if (std.mem.eql(u8, interface_name, wayland.ZWP_TEXT_INPUT_MANAGER_V3_INTERFACE_NAME)) {
-            self.text_input_manager = @ptrCast(@alignCast(wayland.registryBind(
-                registry,
-                name,
-                &wayland.zwp_text_input_manager_v3_interface,
-                .{ .advertised = version, .supported_max = 1 },
-            )));
-
-            // Create text input object if we have both manager and seat
-            if (self.text_input_manager != null and self.seat != null and self.text_input == null) {
-                self.text_input = wayland.zwpTextInputManagerV3GetTextInput(self.text_input_manager.?, self.seat.?);
-                if (self.text_input) |ti| {
-                    wayland.zwpTextInputV3AddListener(ti, &text_input_listener, self);
-                }
-            }
+            self.bindTextInputManager(registry, name, version);
         } else if (std.mem.eql(u8, interface_name, wayland.WP_VIEWPORTER_INTERFACE_NAME)) {
             self.viewporter = wayland.bindViewporter(registry, name, version);
         } else if (std.mem.eql(u8, interface_name, fractional_scale_manager_name)) {
@@ -610,29 +587,85 @@ pub const LinuxPlatform = struct {
         } else if (std.mem.eql(u8, interface_name, wayland.WL_SHM_INTERFACE_NAME)) {
             self.shm = wayland.bindShm(registry, name, version);
         } else if (std.mem.eql(u8, interface_name, wayland.WP_CURSOR_SHAPE_MANAGER_V1_INTERFACE_NAME)) {
-            self.cursor_shape_manager = @ptrCast(@alignCast(wayland.registryBind(
-                registry,
-                name,
-                &wayland.wp_cursor_shape_manager_v1_interface,
-                .{ .advertised = version, .supported_max = 2 },
-            )));
-            self.ensureCursorShapeDevice();
+            self.bindCursorShapeManager(registry, name, version);
         } else if (std.mem.eql(u8, interface_name, wayland.WL_OUTPUT_INTERFACE_NAME)) {
             // Bind to first output only (for refresh rate)
-            if (self.output == null) {
-                self.output = @ptrCast(@alignCast(wayland.registryBind(
-                    registry,
-                    name,
-                    wayland.getOutputInterface(),
-                    .{ .advertised = version, .supported_max = 4 },
-                )));
-                if (self.output) |output| {
-                    _ = wayland.outputAddListener(output, &output_listener, self);
-                }
-            }
+            if (self.output == null) self.bindOutput(registry, name, version);
         } else if (std.mem.eql(u8, interface_name, clipboard.WL_DATA_DEVICE_MANAGER_INTERFACE_NAME)) {
             self.clipboard_state.bindManager(registry, name, version);
             // Data device setup is deferred to setupListeners() after roundtrips complete
+        }
+    }
+
+    /// Bind the seat and listen for its capabilities, which create the pointer,
+    /// keyboard, and touch objects.
+    fn bindSeat(self: *Self, registry: *wayland.Registry, name: u32, version: u32) void {
+        self.seat = @ptrCast(@alignCast(wayland.registryBind(
+            registry,
+            name,
+            &wayland.wl_seat_interface,
+            .{ .advertised = version, .supported_max = seatVersionMax() },
+        )));
+
+        if (self.seat) |seat| {
+            // Uses module-level static listener
+            _ = wayland.seatAddListener(seat, &seat_listener, self);
+        }
+    }
+
+    /// Bind the text input manager and create the seat's text input, which the
+    /// core host enables only while a text field is focused.
+    fn bindTextInputManager(
+        self: *Self,
+        registry: *wayland.Registry,
+        name: u32,
+        version: u32,
+    ) void {
+        self.text_input_manager = @ptrCast(@alignCast(wayland.registryBind(
+            registry,
+            name,
+            &wayland.zwp_text_input_manager_v3_interface,
+            .{ .advertised = version, .supported_max = 1 },
+        )));
+
+        // Create text input object if we have both manager and seat
+        const manager = self.text_input_manager orelse return;
+        const seat = self.seat orelse return;
+        if (self.text_input != null) return;
+        self.text_input = wayland.zwpTextInputManagerV3GetTextInput(manager, seat);
+        if (self.text_input) |ti| {
+            wayland.zwpTextInputV3AddListener(ti, &text_input_listener, self);
+        }
+    }
+
+    /// Bind the cursor shape manager and create the pointer's shape device, if
+    /// the pointer already exists.
+    fn bindCursorShapeManager(
+        self: *Self,
+        registry: *wayland.Registry,
+        name: u32,
+        version: u32,
+    ) void {
+        self.cursor_shape_manager = @ptrCast(@alignCast(wayland.registryBind(
+            registry,
+            name,
+            &wayland.wp_cursor_shape_manager_v1_interface,
+            .{ .advertised = version, .supported_max = 2 },
+        )));
+        self.ensureCursorShapeDevice();
+    }
+
+    /// Bind the first output and listen for its mode and scale.
+    fn bindOutput(self: *Self, registry: *wayland.Registry, name: u32, version: u32) void {
+        std.debug.assert(self.output == null);
+        self.output = @ptrCast(@alignCast(wayland.registryBind(
+            registry,
+            name,
+            wayland.getOutputInterface(),
+            .{ .advertised = version, .supported_max = 4 },
+        )));
+        if (self.output) |output| {
+            _ = wayland.outputAddListener(output, &output_listener, self);
         }
     }
 
@@ -928,12 +961,7 @@ pub const LinuxPlatform = struct {
         // Update clipboard serial for copy operations
         self.clipboard_state.updateSerial(serial);
 
-        const button_bit: u32 = switch (button) {
-            wayland.BTN_LEFT => 1,
-            wayland.BTN_RIGHT => 2,
-            wayland.BTN_MIDDLE => 4,
-            else => 0,
-        };
+        const button_bit = pointerButtonBit(button);
 
         const modifiers = linux_input.modifiersFromFlags(
             self.modifier_shift,
@@ -947,36 +975,12 @@ pub const LinuxPlatform = struct {
 
             // Dispatch mouse_down event to active window
             if (self.active_window) |window| {
-                // Track click count for double/triple click detection
-                const click_count = window.click_tracker.recordClick(
-                    time,
-                    self.pointer_x,
-                    self.pointer_y,
-                    button,
-                );
-
-                const event = linux_input.mouseDownEvent(
-                    self.pointer_x,
-                    self.pointer_y,
-                    button,
-                    click_count,
-                    modifiers,
-                );
-                const handled = window.handleInput(event);
+                const handled = self.pointerButtonPressed(window, time, button, modifiers);
 
                 // Handle client-side window management when no server decorations
                 // Only if the event wasn't handled by the app
                 if (!handled and !window.has_server_decorations and button == wayland.BTN_LEFT) {
-                    const border_width: f64 = 8.0;
-                    const title_bar_height: f64 = 32.0;
-
-                    // Check for resize edges first
-                    if (window.getResizeEdge(self.pointer_x, self.pointer_y, border_width)) |edge| {
-                        window.startResize(edge);
-                    } else if (window.isInTitleBar(self.pointer_y, title_bar_height)) {
-                        // If in title bar area, start move
-                        window.startMove();
-                    }
+                    self.startPointerMoveOrResize(window);
                 }
             }
         } else {
@@ -992,6 +996,61 @@ pub const LinuxPlatform = struct {
                 );
                 _ = window.handleInput(event);
             }
+        }
+    }
+
+    /// The `pointer_buttons` bit for an evdev button code; zero for buttons it
+    /// does not track.
+    fn pointerButtonBit(button: u32) u32 {
+        return switch (button) {
+            wayland.BTN_LEFT => 1,
+            wayland.BTN_RIGHT => 2,
+            wayland.BTN_MIDDLE => 4,
+            else => 0,
+        };
+    }
+
+    /// Send a mouse_down, with its click count, to `window`. Returns whether the
+    /// app handled it.
+    fn pointerButtonPressed(
+        self: *Self,
+        window: *LinuxWindow,
+        time: u32,
+        button: u32,
+        modifiers: input.Modifiers,
+    ) bool {
+        std.debug.assert(self.active_window == window);
+        // Track click count for double/triple click detection
+        const click_count = window.click_tracker.recordClick(
+            time,
+            self.pointer_x,
+            self.pointer_y,
+            button,
+        );
+
+        const event = linux_input.mouseDownEvent(
+            self.pointer_x,
+            self.pointer_y,
+            button,
+            click_count,
+            modifiers,
+        );
+        return window.handleInput(event);
+    }
+
+    /// Without server-side decorations, a left press the app did not handle
+    /// resizes the window from its edges or moves it from its title bar area.
+    fn startPointerMoveOrResize(self: *Self, window: *LinuxWindow) void {
+        std.debug.assert(!window.has_server_decorations);
+        const border_width: f64 = 8.0;
+        const title_bar_height: f64 = 32.0;
+
+        // Check for resize edges first
+        if (window.getResizeEdge(self.pointer_x, self.pointer_y, border_width)) |edge| {
+            window.startResize(edge);
+        } else if (window.isInTitleBar(self.pointer_y, title_bar_height)) {
+            // If in title bar area, start move
+            window.startMove();
         }
     }
 
@@ -1333,37 +1392,14 @@ pub const LinuxPlatform = struct {
                 const handled = window.handleInput(event);
 
                 // Handle built-in shortcuts only if not handled by app
-                // Both shortcuts close the focused window rather than clearing
-                // `running`, matching their messages and what `Window.close`
-                // does for `xdg_toplevel.close`. Stopping the loop here would
-                // reintroduce a single-window assumption that `run` and
-                // `Window.close` avoid, and would skip the application's close
-                // veto.
                 if (!handled) {
-                    // Alt+F4 to close
-                    if (key == linux_input.evdev.KEY_F4 and self.modifier_alt) {
-                        std.debug.print("Alt+F4 pressed - closing window\n", .{});
-                        window.close();
-                        return;
-                    }
-
-                    // Ctrl+Q to close
-                    if (key == linux_input.evdev.KEY_Q and self.modifier_ctrl) {
-                        std.debug.print("Ctrl+Q pressed - closing window\n", .{});
-                        window.close();
-                        return;
-                    }
+                    if (self.closeOnShortcut(window, key)) return;
                 }
 
                 // Generate text_input event for printable characters
                 // Skip if Ctrl or Alt/Super are held (those are shortcuts, not text)
                 if (!self.modifier_ctrl and !self.modifier_alt and !self.modifier_super) {
-                    if (linux_input.evdevKeyToChar(key, self.modifier_shift)) |char| {
-                        // Create a single-character string on the stack
-                        var char_buf: [1]u8 = .{char};
-                        const text_event = linux_input.textInputEvent(&char_buf);
-                        _ = window.handleInput(text_event);
-                    }
+                    self.sendKeyText(window, key);
                 }
             }
         } else {
@@ -1374,6 +1410,43 @@ pub const LinuxPlatform = struct {
                 const event = linux_input.keyUpEvent(key, modifiers);
                 _ = window.handleInput(event);
             }
+        }
+    }
+
+    /// Close `window` for Alt+F4 or Ctrl+Q, and return whether it did. Both
+    /// shortcuts close the focused window rather than clearing `running`,
+    /// matching their messages and what `Window.close` does for
+    /// `xdg_toplevel.close`. Stopping the loop here would reintroduce a
+    /// single-window assumption that `run` and `Window.close` avoid, and would
+    /// skip the application's close veto.
+    fn closeOnShortcut(self: *Self, window: *LinuxWindow, key: u32) bool {
+        std.debug.assert(self.active_window == window);
+        // Alt+F4 to close
+        if (key == linux_input.evdev.KEY_F4 and self.modifier_alt) {
+            std.debug.print("Alt+F4 pressed - closing window\n", .{});
+            window.close();
+            return true;
+        }
+
+        // Ctrl+Q to close
+        if (key == linux_input.evdev.KEY_Q and self.modifier_ctrl) {
+            std.debug.print("Ctrl+Q pressed - closing window\n", .{});
+            window.close();
+            return true;
+        }
+        return false;
+    }
+
+    /// Send the character `key` types with the current Shift state as a
+    /// text_input event, if it types one.
+    fn sendKeyText(self: *Self, window: *LinuxWindow, key: u32) void {
+        std.debug.assert(!self.modifier_ctrl);
+        std.debug.assert(!self.modifier_alt);
+        if (linux_input.evdevKeyToChar(key, self.modifier_shift)) |char| {
+            // Create a single-character string on the stack
+            var char_buf: [1]u8 = .{char};
+            const text_event = linux_input.textInputEvent(&char_buf);
+            _ = window.handleInput(text_event);
         }
     }
 
