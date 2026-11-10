@@ -52,7 +52,7 @@ an Anthropic Claude client.
 Fetch the release into your `build.zig.zon`:
 
 ```bash
-zig fetch --save git+https://github.com/duanebester/gooey#v0.4.0
+zig fetch --save git+https://github.com/duanebester/gooey#v0.4.1
 ```
 
 Then import the modules in your `build.zig`. `gooey` is required; `gooey-components` and
@@ -768,7 +768,9 @@ zig build hot -- run-counter     # any run step
 ### Linux
 
 Wayland only, with no X11 fallback. Text uses FreeType, HarfBuzz, and Fontconfig, file
-dialogs use the XDG Desktop Portal over D-Bus, and IME uses `zwp_text_input_v3`.
+dialogs use the XDG Desktop Portal over D-Bus, and IME uses `zwp_text_input_v3`. Windows
+render at fractional scales through `wp_fractional_scale_v1`, and hover cursors use
+`wp_cursor_shape_v1` or, without it, the XCursor theme (`XCURSOR_THEME`, `XCURSOR_SIZE`).
 
 ```bash
 # Debian/Ubuntu
