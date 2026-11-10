@@ -64,6 +64,22 @@ pub fn tickMain(app: anytype, window: *Window, now_ns: u64) bool {
     if (in_flight) return false;
     window.render_requested = false;
 
+    buildFrame(App, window);
+    // An item skipped because this frame's upload staging was full is staged
+    // by the next frame (`AtlasLimits.upload_bytes_frame_max`).
+    if (window.resources.atlas_uploads.deferredSince(window.atlas_frame)) {
+        window.render_requested = true;
+    }
+    publish(window);
+    return true;
+}
+
+/// Build, lay out, and emit one frame into the built slot. Runs only with no
+/// frame in flight, so the main thread is the slot's only writer, and leaves
+/// the window back in the idle phase.
+fn buildFrame(comptime App: type, window: *Window) void {
+    assert(!window.frame_in_flight.load(.acquire));
+    assert(!window.render_requested);
     window.setPhase(.idle, .build);
     if (window.resources.text_system.scale_factor != window.scale_factor) {
         window.resources.setScaleFactor(window.scale_factor);
@@ -110,13 +126,7 @@ pub fn tickMain(app: anytype, window: *Window, now_ns: u64) bool {
     // The debugger's overlay paints last, over every layer.
     debugger.finishBuild(window, .{ .build = build_ns, .layout = layout_ns, .emit = emit_ns });
     window.setPhase(.emit, .idle);
-    // An item skipped because this frame's upload staging was full is staged
-    // by the next frame (`AtlasLimits.upload_bytes_frame_max`).
-    if (window.resources.atlas_uploads.deferredSince(window.atlas_frame)) {
-        window.render_requested = true;
-    }
-    publish(window);
-    return true;
+    assert(window.built().frame_number == window.frame_number);
 }
 
 /// The render side: pack the published frame, draw it, and hand it back.
