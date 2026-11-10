@@ -7,9 +7,11 @@
 //! - The main thread runs the Wayland event loop (`runLoop`). The window
 //!   pushes input and configures into the core's queue and schedules a tick.
 //!   The loop runs at most one tick (drain, build, layout, emit) per turn,
-//!   between dispatches, so no tick nests inside a Wayland callback and a
-//!   handler's file dialog (a blocking portal call) opens on the main thread
-//!   between handlers.
+//!   between dispatches, so no tick nests inside a Wayland callback. A
+//!   handler's file dialog is a portal request sent on the main thread after
+//!   the drain; the loop keeps turning while it is open, polling the
+//!   request's D-Bus connection beside the display fd, and queues the outcome
+//!   once the portal's Response arrives (`pollDialog`).
 //! - The render thread presents the frame in flight (pack, then draw on
 //!   Vulkan), paced by the compositor: it requests a `wl_surface.frame`
 //!   callback on a private event queue with each present and presents the
@@ -40,12 +42,15 @@
 //! core's `Query` would answer.
 //!
 //! Resource sketch: one thread whose stack the OS maps at init, two eventfds,
-//! one event queue, one surface wrapper, at most one frame callback, and one
-//! frame in flight. Per turn the main thread runs at most one tick and one
-//! dispatch; per compositor frame the render thread does at most one pack and
-//! one draw. Every allocation happens before `finishInit`; the core's
-//! lifecycle guard panics on any later one, including the Vulkan renderer's,
-//! which shares the guard.
+//! one event queue, one surface wrapper, at most one frame callback, one
+//! frame in flight, and at most one open file dialog with its D-Bus
+//! connection and a `dialog_path_bytes_max` path buffer. Per turn the main
+//! thread runs at most one tick, one dispatch, and one non-blocking read of
+//! the dialog's connection that handles at most
+//! `PortalRequest.messages_per_poll_max` messages; per compositor frame the
+//! render thread does at most one pack and one draw. Every allocation happens
+//! before `finishInit`; the core's lifecycle guard panics on any later one,
+//! including the Vulkan renderer's, which shares the guard.
 
 const std = @import("std");
 const linux = std.os.linux;
@@ -63,6 +68,7 @@ const core_tick = @import("../../core/tick.zig");
 const core_router = @import("../../core/router.zig");
 const core_events = @import("../../core/events.zig");
 const core_handler = @import("../../core/handler.zig");
+const core_limits = @import("../../core/limits.zig");
 const records = @import("../../core/records.zig");
 
 const assert = std.debug.assert;
@@ -121,6 +127,7 @@ pub fn run(comptime App: type, app: *App, backing: std.mem.Allocator, io: std.Io
     const host = try gpa.create(Host);
     defer gpa.destroy(host);
     try host.initInPlace(.{
+        .gpa = gpa,
         .platform = platform,
         .window = window,
         .core = &app.window,
@@ -140,6 +147,7 @@ pub fn run(comptime App: type, app: *App, backing: std.mem.Allocator, io: std.Io
 }
 
 pub const Host = struct {
+    gpa: std.mem.Allocator,
     platform: *LinuxPlatform,
     window: *PlatformWindow,
     core: *core_window.Window,
@@ -173,6 +181,11 @@ pub const Host = struct {
     ime_rect: ?records.Rect,
     /// The cursor last set on the window.
     cursor: core_element.CursorShape,
+    /// The portal dialog that is open, at most one (`openDialog`).
+    dialog: ?PendingDialog,
+    /// A Response's paths, decoded here before the queue copies them:
+    /// `limits.events.dialog_path_bytes_max` bytes, reserved at init.
+    dialog_paths: []u8,
 
     // Render thread only.
     frame_callback: ?*wayland.Callback,
@@ -185,6 +198,7 @@ pub const Host = struct {
     surface_scale: f32,
 
     pub const Options = struct {
+        gpa: std.mem.Allocator,
         platform: *LinuxPlatform,
         window: *PlatformWindow,
         core: *core_window.Window,
@@ -198,6 +212,10 @@ pub const Host = struct {
     pub fn initInPlace(self: *Host, options: Options) !void {
         assert(options.core.presenter == null);
         assert(options.window.configured);
+        const path_bytes_max = options.core.limits.events.dialog_path_bytes_max;
+        assert(path_bytes_max > 0);
+        assert(path_bytes_max <= core_limits.EventLimits.ceiling.dialog_path_bytes_max);
+        self.gpa = options.gpa;
         self.platform = options.platform;
         self.window = options.window;
         self.core = options.core;
@@ -214,12 +232,16 @@ pub const Host = struct {
         self.ime_enabled = false;
         self.ime_rect = null;
         self.cursor = .default;
+        self.dialog = null;
         self.frame_callback = null;
         self.frame_callback_deadline_ns = 0;
         self.presented_ns = null;
         self.surface_width = self.window.width_px;
         self.surface_height = self.window.height_px;
         self.surface_scale = @floatCast(self.window.scale_factor);
+        self.dialog_paths = try options.gpa.alloc(u8, path_bytes_max);
+        errdefer options.gpa.free(self.dialog_paths);
+
         try self.initWayland();
         errdefer self.deinitWayland();
         self.bindWindow();
@@ -309,6 +331,9 @@ pub const Host = struct {
     /// bound and release the Wayland objects the thread used. No draw can
     /// start afterwards.
     pub fn deinit(self: *Host) void {
+        // The app is leaving: close its open dialog rather than orphan it.
+        if (self.dialog) |*pending| pending.request.close();
+        self.dialog = null;
         if (self.thread) |thread| {
             self.stopping.store(true, .release);
             signal(self.render_wake_fd);
@@ -317,7 +342,9 @@ pub const Host = struct {
         }
         self.unbindWindow();
         self.deinitWayland();
+        self.gpa.free(self.dialog_paths);
         assert(self.stopping.load(.acquire));
+        assert(self.dialog == null);
     }
 
     /// Undo `bindWindow` once the render thread, the atlas consumer, has
@@ -361,15 +388,17 @@ pub const Host = struct {
     // Main thread
     // =========================================================================
 
-    /// The event loop. Each turn runs at most one tick, syncs the IME, and
-    /// waits for and dispatches one batch of events, so every turn is
-    /// bounded; the loop ends when the window closes or the app quits.
+    /// The event loop. Each turn runs at most one tick, syncs the IME, reads
+    /// an open dialog's connection, and waits for and dispatches one batch of
+    /// events, so every turn is bounded; the loop ends when the window closes
+    /// or the app quits.
     fn runLoop(self: *Host) void {
         assert(self.thread != null);
         while (!self.quit) {
             if (self.tick_scheduled.swap(false, .acq_rel)) self.mainTick();
             if (self.quit) break;
             self.syncIme();
+            self.pollDialog();
             if (!self.waitForEvents()) {
                 std.log.err("core host: the Wayland connection failed", .{});
                 break;
@@ -415,9 +444,13 @@ pub const Host = struct {
             return true;
         }
         _ = wayland.wl_display_flush(self.display);
+        // An open dialog's connection wakes the loop for `pollDialog`; poll
+        // skips a negative fd.
+        const dialog_fd: posix.fd_t = if (self.dialog) |pending| pending.fd else -1;
         var fds = [_]posix.pollfd{
             .{ .fd = self.display_fd, .events = posix.POLL.IN, .revents = 0 },
             .{ .fd = self.main_wake_fd, .events = posix.POLL.IN, .revents = 0 },
+            .{ .fd = dialog_fd, .events = posix.POLL.IN, .revents = 0 },
         };
         _ = posix.poll(&fds, timeout_ms) catch {
             wayland.wl_display_cancel_read(self.display);
@@ -431,6 +464,50 @@ pub const Host = struct {
         if (wayland.wl_display_dispatch_pending(self.display) < 0) return false;
         if ((fds[1].revents & posix.POLL.IN) != 0) drain(self.main_wake_fd);
         return true;
+    }
+
+    /// Read the open dialog's connection without blocking and, once its
+    /// Response has arrived, end the request and queue the outcome under the
+    /// core's request id for the next tick. Main thread, between ticks.
+    fn pollDialog(self: *Host) void {
+        assert(self.core.phase == .idle);
+        const pending = if (self.dialog) |*pending| pending else return;
+        assert(pending.fd >= 0);
+        const status = pending.request.poll(self.dialog_paths) catch |err| status: {
+            std.log.err("core host: the file dialog portal failed: {t}", .{err});
+            break :status .cancelled;
+        };
+        const outcome: Outcome = switch (status) {
+            .open => return,
+            // Messages wait past this turn's bound and the fd will not
+            // announce them again, so turn again soon.
+            .open_more => return self.scheduleTick(),
+            .cancelled => .cancelled,
+            .selected => |selection| self.selectedOutcome(pending.many, selection),
+        };
+        const request_id = pending.request_id;
+        pending.request.end();
+        self.dialog = null;
+        self.core.queue.push(.{ .completion = .{ .request_id = request_id, .outcome = outcome } });
+        // The queue copied the paths; zero what they used (CLAUDE.md §21).
+        switch (outcome) {
+            .file_selected => |paths| @memset(self.dialog_paths[0..paths.bytes.len], 0),
+            .cancelled, .failed => {},
+        }
+        self.scheduleTick();
+        assert(self.dialog == null);
+    }
+
+    /// Check a Response's selection against the app's limits, which fails
+    /// fast past them, and wrap the paths decoded into `dialog_paths`.
+    fn selectedOutcome(self: *const Host, many: bool, selection: file_dialog.Selection) Outcome {
+        core_tick.checkSelection(self.core, many, selection.count, selection.bytes_len);
+        // The buffer holds `dialog_path_bytes_max` bytes, so a selection
+        // within the limits was written whole.
+        assert(selection.bytes_len <= self.dialog_paths.len);
+        const bytes = self.dialog_paths[0..@intCast(selection.bytes_len)];
+        assert(std.mem.count(u8, bytes, &.{0}) == selection.count - 1);
+        return .{ .file_selected = .{ .bytes = bytes, .count = selection.count } };
     }
 
     /// How long the main loop may sleep before the last build's render
@@ -608,6 +685,16 @@ pub const Host = struct {
     }
 };
 
+/// The file dialog the main loop is waiting on: the portal request, the
+/// core's handler slot for its outcome, and the connection's fd it polls.
+const PendingDialog = struct {
+    request: file_dialog.PortalRequest,
+    request_id: u32,
+    fd: posix.fd_t,
+    /// The request may select more than one path (`Open Files`).
+    many: bool,
+};
+
 /// Three quarters of the refresh period of an output refreshing at
 /// `refresh_rate_mhz`. A compositor that paces callbacks to its refresh
 /// answers each about one period after the last present, so this floor never
@@ -687,29 +774,53 @@ fn onClose(window: *PlatformWindow) bool {
 // File dialogs
 // =============================================================================
 
-/// The core's file dialog service, on the main thread after the drain. The
-/// portal reports cancel and failure alike as no selection, so both arrive as
-/// `cancelled`.
+/// The core's file dialog service, on the main thread during the drain. It
+/// sends the portal call and returns null: the dialog stays open while the
+/// loop keeps turning, and `pollDialog` queues the outcome once the Response
+/// arrives. The portal reports cancel and failure alike as no selection, so
+/// a call that fails arrives as `cancelled`. One dialog is open at a time: a
+/// second request while one is open fails at once and leaves the first open.
 fn openDialog(
     context: *anyopaque,
     scratch: std.mem.Allocator,
+    request_id: u32,
     request: core_handler.FileDialogRequest,
-) Outcome {
+) ?Outcome {
     const host: *Host = @ptrCast(@alignCast(context));
+    _ = scratch; // The Response's paths are decoded into `dialog_paths`.
     assert(host.core.phase == .drain);
-    const paths = switch (request.kind) {
-        .open => |options| paths: {
-            const result = file_dialog.promptForPaths(scratch, options) orelse return .cancelled;
-            if (result.paths.len == 0) return .cancelled;
-            if (!options.multiple) assert(result.paths.len == 1);
-            break :paths core_events.Paths.join(scratch, result.paths);
-        },
-        .save => |options| paths: {
-            const path = file_dialog.promptForNewPath(scratch, options) orelse return .cancelled;
-            break :paths core_events.Paths.join(scratch, &.{path});
-        },
+    assert(request_id < core_window.dialog_count_max);
+    if (host.dialog) |open| {
+        std.log.warn("core host: file dialog request {d} failed: request {d} is still open", .{
+            request_id,
+            open.request_id,
+        });
+        return .{ .failed = error.FileDialogBusy };
+    }
+    host.dialog = .{
+        .request = undefined,
+        .request_id = request_id,
+        .fd = -1,
+        .many = core_tick.selectsMany(request),
     };
-    return .{ .file_selected = paths catch |err| return .{ .failed = err } };
+    const pending = &host.dialog.?;
+    const begun = switch (request.kind) {
+        .open => |*options| pending.request.begin(.{ .open = options }),
+        .save => |*options| pending.request.begin(.{ .save = options }),
+    };
+    begun catch |err| {
+        host.dialog = null;
+        std.log.err("core host: the file dialog portal call failed: {t}", .{err});
+        return .cancelled;
+    };
+    pending.fd = pending.request.fd() orelse {
+        pending.request.close();
+        host.dialog = null;
+        std.log.err("core host: the session bus has no socket to poll", .{});
+        return .cancelled;
+    };
+    assert(pending.fd >= 0);
+    return null;
 }
 
 // =============================================================================

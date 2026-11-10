@@ -458,9 +458,12 @@ fn draw(
 fn openDialog(
     context: *anyopaque,
     scratch: std.mem.Allocator,
+    request_id: u32,
     request: core_handler.FileDialogRequest,
-) Outcome {
+) ?Outcome {
     const host: *Host = @ptrCast(@alignCast(context));
+    // The modal loop returns the outcome; the core queues it under this id.
+    _ = request_id;
     assert(host.core.phase == .drain);
     // When a panel's modal session ends, AppKit leaves no window key, so the
     // next click would only make the window key and never reach the view.

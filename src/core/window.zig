@@ -454,16 +454,24 @@ pub const Presenter = struct {
     ) void,
 };
 
-/// Runs a file dialog on the main thread and returns its outcome. Bound per
+/// Opens a file dialog on the main thread, during the drain. Bound per
 /// backend: AppKit's panels on macOS, the XDG portal on Linux, and a
 /// scripted service in tests.
+///
+/// `open` returns the outcome when the dialog ran to completion inside the
+/// call, in the platform's modal loop. It returns null when the dialog stays
+/// open while the host's loop keeps turning: the backend then pushes
+/// `.completion` with `request_id` onto `queue` on the main thread, between
+/// ticks, once the dialog closes, and schedules a tick. The request's
+/// handler slot stays claimed until that completion is routed.
 pub const FileDialogService = struct {
     context: *anyopaque,
     open: *const fn (
         context: *anyopaque,
         scratch: std.mem.Allocator,
+        request_id: u32,
         request: handler_mod.FileDialogRequest,
-    ) events.Completion.Outcome,
+    ) ?events.Completion.Outcome,
 };
 
 pub const Window = struct {

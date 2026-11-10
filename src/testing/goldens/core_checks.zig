@@ -978,10 +978,12 @@ const ScriptedDialog = struct {
     fn open(
         context: *anyopaque,
         scratch: std.mem.Allocator,
+        request_id: u32,
         request: internals.handler.FileDialogRequest,
-    ) internals.events.Completion.Outcome {
+    ) ?internals.events.Completion.Outcome {
         const self: *ScriptedDialog = @ptrCast(@alignCast(context));
         _ = scratch;
+        _ = request_id;
         switch (request.kind) {
             .open => |options| std.debug.assert(options.multiple),
             .save => |options| {
@@ -1055,6 +1057,64 @@ test "a file dialog opened from a handler runs on the main thread after the hand
     try testing.expectEqualStrings("/tmp/draft-4.txt", saved);
     try testing.expectEqual(@as(u32, 1), app.state.cancelled);
     try testing.expectEqual(@as(u32, 1), app.state.failed);
+}
+
+test "a file dialog that stays open completes later through the queue" {
+    // Goal: the deferred half of `FileDialogService` (Linux's portal keeps
+    // its loop turning). Methodology: the service returns no outcome and
+    // records the request ids. The tick that opened a dialog must still
+    // build, two dialogs may be open at once, and each completion pushed
+    // between ticks must reach its handler, in either order, free its slot,
+    // and build the frame that shows it.
+    const app = try testing.allocator.create(DialogApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var service = DeferredDialog{};
+    app.window.file_dialog = .{ .context = &service, .open = DeferredDialog.open };
+
+    var now: u64 = 0;
+    app.tick(now);
+    var opened: u32 = 0;
+    while (opened < 2) : (opened += 1) {
+        app.window.queue.push(.{ .input = .{ .mouse_down = mouse(20, 20) } });
+        app.window.queue.push(.{ .input = .{ .mouse_up = mouse(20, 20) } });
+        const built = app.window.frame_number;
+        now += 1;
+        app.tick(now);
+        // Nothing waited on the dialog, so the click's frame is built.
+        try testing.expectEqual(built + 1, app.window.frame_number);
+        try testing.expectEqual(opened + 1, service.count);
+        try testing.expect(app.window.dialog_handlers[service.ids[opened]] != null);
+    }
+    try testing.expect(service.ids[0] != service.ids[1]);
+
+    // The second dialog closes first.
+    app.window.queue.push(.{ .completion = .{
+        .request_id = service.ids[1],
+        .outcome = .cancelled,
+    } });
+    var built = app.window.frame_number;
+    now += 1;
+    app.tick(now);
+    try testing.expectEqual(@as(u32, 1), app.state.cancelled);
+    try testing.expectEqual(built + 1, app.window.frame_number);
+    try testing.expect(app.window.dialog_handlers[service.ids[1]] == null);
+    try testing.expect(app.window.dialog_handlers[service.ids[0]] != null);
+
+    const paths = internals.events.Paths{ .bytes = "/tmp/a\x00/tmp/bc", .count = 2 };
+    app.window.queue.push(.{ .completion = .{
+        .request_id = service.ids[0],
+        .outcome = .{ .file_selected = paths },
+    } });
+    built = app.window.frame_number;
+    now += 1;
+    app.tick(now);
+    try testing.expectEqual(built + 1, app.window.frame_number);
+    try testing.expectEqual(@as(u32, 2), app.state.path_count);
+    const selected = app.state.path_bytes[0..app.state.path_len];
+    try testing.expectEqualStrings("/tmp/a\x00/tmp/bc", selected);
+    try testing.expect(app.window.dialog_handlers[service.ids[0]] == null);
 }
 
 test "counter and todo run their traces with no allocation after init" {
@@ -1960,14 +2020,38 @@ const FolderDialog = struct {
     fn open(
         context: *anyopaque,
         scratch: std.mem.Allocator,
+        request_id: u32,
         request: internals.handler.FileDialogRequest,
-    ) internals.events.Completion.Outcome {
+    ) ?internals.events.Completion.Outcome {
         const self: *FolderDialog = @ptrCast(@alignCast(context));
         _ = scratch;
+        _ = request_id;
         assert(request.kind.open.directories);
         assert(!request.kind.open.files);
         self.opened += 1;
         return .{ .file_selected = .{ .bytes = self.path, .count = 1 } };
+    }
+};
+
+/// A dialog service whose dialogs stay open: it records each request id and
+/// returns no outcome, as Linux's portal host does.
+const DeferredDialog = struct {
+    ids: [2]u32 = undefined,
+    count: u32 = 0,
+
+    fn open(
+        context: *anyopaque,
+        scratch: std.mem.Allocator,
+        request_id: u32,
+        request: internals.handler.FileDialogRequest,
+    ) ?internals.events.Completion.Outcome {
+        const self: *DeferredDialog = @ptrCast(@alignCast(context));
+        _ = scratch;
+        assert(request.kind == .open);
+        assert(self.count < self.ids.len);
+        self.ids[self.count] = request_id;
+        self.count += 1;
+        return null;
     }
 };
 

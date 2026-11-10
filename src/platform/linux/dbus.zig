@@ -108,6 +108,12 @@ pub extern fn dbus_connection_read_write(connection: *DBusConnection, timeout_mi
 pub extern fn dbus_connection_dispatch(connection: *DBusConnection) c_int;
 pub extern fn dbus_connection_send_with_reply_and_block(connection: *DBusConnection, message: *DBusMessage, timeout_milliseconds: c_int, err: *DBusError) ?*DBusMessage;
 pub extern fn dbus_connection_pop_message(connection: *DBusConnection) ?*DBusMessage;
+pub extern fn dbus_connection_send(
+    connection: *DBusConnection,
+    message: *DBusMessage,
+    serial: ?*u32,
+) c_uint;
+pub extern fn dbus_connection_get_unix_fd(connection: *DBusConnection, fd: *c_int) c_uint;
 pub extern fn dbus_bus_add_match(connection: *DBusConnection, rule: [*:0]const u8, err: *DBusError) void;
 pub extern fn dbus_bus_remove_match(connection: *DBusConnection, rule: [*:0]const u8, err: *DBusError) void;
 pub extern fn dbus_bus_get_unique_name(connection: *DBusConnection) ?[*:0]const u8;
@@ -255,6 +261,19 @@ pub const Connection = struct {
         };
 
         return Message{ .msg = reply };
+    }
+
+    /// Queue a message without waiting for a reply; `flush` sends it.
+    pub fn send(self: *Self, message: *Message) Error!void {
+        if (dbus_connection_send(self.conn, message.msg, null) == 0) return Error.OutOfMemory;
+    }
+
+    /// The connection's socket, for a caller that polls it with other fds.
+    pub fn unixFd(self: *Self) ?std.posix.fd_t {
+        var fd: c_int = -1;
+        if (dbus_connection_get_unix_fd(self.conn, &fd) == 0) return null;
+        std.debug.assert(fd >= 0);
+        return fd;
     }
 
     /// Read available data (non-blocking with timeout)
