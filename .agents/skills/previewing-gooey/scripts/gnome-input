@@ -1,0 +1,169 @@
+#!/usr/bin/python3
+"""Drive the headless GNOME Shell from `gnome-session`: keyboard and pointer input
+through org.gnome.Mutter.RemoteDesktop, screenshots through org.gnome.Shell.Screenshot.
+
+Usage: gnome-input "<command>; <command>; ..."
+
+    move X Y          Move the pointer to screen coordinates (1280x800 monitor).
+    click [X Y]       Left click, after moving when coordinates are given.
+    drag X0 Y0 X1 Y1  Press at the first point, move to the second, release.
+    scroll STEPS      Wheel steps; positive scrolls down.
+    key A+B+...       Press the keys in order, release in reverse (key Alt_L+F4).
+    down KEY / up KEY Hold or release one key.
+    type TEXT         Type text; uppercase and shifted symbols press Shift.
+    shot PATH         Save a PNG of the whole screen, pointer included.
+    sleep SECONDS     Wait.
+
+This is Python, not shell, because both APIs need one long-lived D-Bus connection:
+Mutter closes a remote-desktop session when its creator disconnects, and GNOME Shell 43
+allows screenshots only for a caller that owns an allowlisted bus name.
+"""
+import os
+import sys
+import time
+
+import gi
+
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib  # noqa: E402
+
+BUTTON_LEFT = 0x110
+MONITOR = "Meta-0"
+KEYSYMS = {
+    "BackSpace": 0xFF08, "Tab": 0xFF09, "Return": 0xFF0D, "Escape": 0xFF1B,
+    "Home": 0xFF50, "Left": 0xFF51, "Up": 0xFF52, "Right": 0xFF53, "Down": 0xFF54,
+    "Page_Up": 0xFF55, "Page_Down": 0xFF56, "End": 0xFF57, "Delete": 0xFFFF,
+    "F4": 0xFFC1, "Shift_L": 0xFFE1, "Control_L": 0xFFE3, "Alt_L": 0xFFE9,
+    "Super_L": 0xFFEB, "space": 0x20,
+}
+# US layout: the unshifted key that produces each shifted symbol.
+SHIFTED = dict(zip('~!@#$%^&*()_+{}|:"<>?', "`1234567890-=[]\\;',./"))
+
+os.environ.setdefault("DBUS_SESSION_BUS_ADDRESS", "unix:path=/tmp/gnome-rt/bus")
+bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+
+
+def call(destination, path, interface, method, args=None, signature=None):
+    parameters = GLib.Variant(signature, args) if signature else None
+    reply = bus.call_sync(destination, path, interface, method, parameters, None,
+                          Gio.DBusCallFlags.NONE, -1, None)
+    return reply.unpack()
+
+
+def open_session():
+    """Create a remote-desktop session linked to a screencast of the monitor; Mutter
+    accepts absolute pointer motion only relative to a stream."""
+    call("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+         "RequestName", ("org.gnome.Screenshot", 4), "(su)")
+    session = call("org.gnome.Mutter.RemoteDesktop", "/org/gnome/Mutter/RemoteDesktop",
+                   "org.gnome.Mutter.RemoteDesktop", "CreateSession")[0]
+    session_id = call("org.gnome.Mutter.RemoteDesktop", session,
+                      "org.freedesktop.DBus.Properties", "Get",
+                      ("org.gnome.Mutter.RemoteDesktop.Session", "SessionId"), "(ss)")[0]
+    cast = call("org.gnome.Mutter.ScreenCast", "/org/gnome/Mutter/ScreenCast",
+                "org.gnome.Mutter.ScreenCast", "CreateSession",
+                ({"remote-desktop-session-id": GLib.Variant("s", session_id)},), "(a{sv})")[0]
+    stream = call("org.gnome.Mutter.ScreenCast", cast, "org.gnome.Mutter.ScreenCast.Session",
+                  "RecordMonitor", (MONITOR, {}), "(sa{sv})")[0]
+    return session, stream
+
+
+SESSION, STREAM = open_session()
+
+
+def remote(method, args=None, signature=None):
+    return call("org.gnome.Mutter.RemoteDesktop", SESSION,
+                "org.gnome.Mutter.RemoteDesktop.Session", method, args, signature)
+
+
+def keysym(name):
+    if name in KEYSYMS:
+        return KEYSYMS[name]
+    if len(name) == 1:
+        return ord(name)
+    raise SystemExit(f"unknown key {name!r}")
+
+
+def key(name, pressed):
+    remote("NotifyKeyboardKeysym", (keysym(name), pressed), "(ub)")
+
+
+def move(x, y):
+    remote("NotifyPointerMotionAbsolute", (STREAM, float(x), float(y)), "(sdd)")
+    time.sleep(0.05)
+
+
+def button(pressed):
+    remote("NotifyPointerButton", (BUTTON_LEFT, pressed), "(ib)")
+
+
+def type_text(text):
+    for character in text:
+        base = SHIFTED.get(character, character.lower())
+        shift = character in SHIFTED or character != character.lower()
+        if shift:
+            key("Shift_L", True)
+        key(base, True)
+        key(base, False)
+        if shift:
+            key("Shift_L", False)
+        time.sleep(0.02)
+
+
+def run(command):
+    operation, _, rest = command.partition(" ")
+    if operation == "move":
+        move(*rest.split())
+    elif operation == "click":
+        if rest:
+            move(*rest.split())
+        button(True)
+        time.sleep(0.05)
+        button(False)
+    elif operation == "drag":
+        x0, y0, x1, y1 = (float(value) for value in rest.split())
+        move(x0, y0)
+        button(True)
+        steps = 10
+        for step in range(1, steps + 1):
+            move(x0 + (x1 - x0) * step / steps, y0 + (y1 - y0) * step / steps)
+        button(False)
+    elif operation == "scroll":
+        remote("NotifyPointerAxisDiscrete", (0, int(rest)), "(ui)")
+    elif operation == "key":
+        names = rest.split("+")
+        for name in names:
+            key(name, True)
+        for name in reversed(names):
+            key(name, False)
+    elif operation == "down":
+        key(rest, True)
+    elif operation == "up":
+        key(rest, False)
+    elif operation == "type":
+        type_text(rest)
+    elif operation == "shot":
+        path = os.path.abspath(rest)
+        call("org.gnome.Shell.Screenshot", "/org/gnome/Shell/Screenshot",
+             "org.gnome.Shell.Screenshot", "Screenshot", (False, True, path), "(bbs)")
+    elif operation == "sleep":
+        time.sleep(float(rest))
+    else:
+        raise SystemExit(f"unknown command {operation!r}")
+    time.sleep(0.1)
+
+
+def main():
+    if len(sys.argv) != 2:
+        raise SystemExit(__doc__)
+    remote("Start")
+    time.sleep(0.5)
+    try:
+        for command in sys.argv[1].split(";"):
+            if command.strip():
+                run(command.strip())
+    finally:
+        remote("Stop")
+
+
+main()

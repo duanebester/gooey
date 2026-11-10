@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+# Check Gooey on GNOME Wayland: every example on each Linux Wayland backend, then todo
+# editing and Japanese IME input. Needs a session from `gnome-session start`.
+#
+# Usage: gnome-check [vulkan|cpu|all]   (default: all)
+#
+# Each example runs as a child of this script, not as an orb service, so its real exit
+# status is visible: an orb service restarts on exit and hides it. Screenshots go to
+# .amp/in/artifacts/gnome/; inspect them, because a frame that draws wrong still passes.
+set -uo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "${script_dir}/../../../.." && pwd)"
+artifact_dir="${repo_root}/.amp/in/artifacts/gnome"
+input="${script_dir}/gnome-input"
+selection="${1:-all}"
+failures=0
+
+if [[ ! -S /tmp/gnome-rt/wayland-gnome ]]; then
+    echo "No GNOME session; run ${script_dir}/gnome-session start first." >&2
+    exit 1
+fi
+# shellcheck source=/dev/null
+source /tmp/gnome-rt/env
+mkdir -p "$artifact_dir"
+cd "$repo_root"
+
+build_backend() {
+    local backend="$1"
+    local prefix="$2"
+    local flags=(-Dlinux-backend="$backend" --prefix "$prefix")
+    if [[ "$backend" == wayland_vulkan ]]; then
+        flags+=(-Dskip-shader-compile=true)
+    fi
+    echo "Building every example for ${backend}..."
+    rm -rf "$prefix"
+    zig build "${flags[@]}"
+}
+
+# Launch one example, capture it, close it with Alt+F4, and report its exit status and
+# any failure lines on stderr. The frame wait covers llvmpipe's first presentation.
+check_example() {
+    local executable="$1"
+    local label="$2"
+    local log="/tmp/gnome-check-${label}.log"
+    "$executable" >"$log" 2>&1 &
+    local pid=$!
+    sleep 6
+    if ! kill -0 "$pid" 2>/dev/null; then
+        wait "$pid"
+        echo "FAIL ${label}: exited during startup with status $?"
+        tail -n 5 "$log"
+        return 1
+    fi
+    "$input" "shot ${artifact_dir}/${label}.png; key Alt_L+F4"
+    local status="still running"
+    for _ in $(seq 1 50); do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            wait "$pid"
+            status=$?
+            break
+        fi
+        sleep 0.1
+    done
+    if [[ "$status" == "still running" ]]; then
+        kill "$pid" 2>/dev/null
+        wait "$pid" 2>/dev/null
+    fi
+    local problems
+    problems="$(grep -iE 'panic|unreachable|exhausted|segmentation|assert|error' "$log" |
+        grep -v 'Validation layers' | head -n 3)"
+    if [[ "$status" == 0 && -z "$problems" ]]; then
+        echo "ok   ${label}"
+        return 0
+    fi
+    echo "FAIL ${label}: Alt+F4 exit status ${status}"
+    [[ -n "$problems" ]] && echo "$problems"
+    return 1
+}
+
+check_backend() {
+    local backend="$1"
+    local short="$2"
+    local prefix="/tmp/gnome-check-${short}"
+    build_backend "$backend" "$prefix" || return 1
+    local count=0
+    for executable in "$prefix"/bin/gooey-*; do
+        count=$((count + 1))
+        check_example "$executable" "${short}-$(basename "$executable" | sed 's/^gooey-//')" ||
+            failures=$((failures + 1))
+    done
+    echo "${backend}: ran ${count} examples."
+    if command -v magick >/dev/null 2>&1; then
+        magick montage -label '%t' "${artifact_dir}/${short}"-*.png -tile 5x \
+            -geometry 512x320+4+4 "${artifact_dir}/${short}-all.png"
+    fi
+}
+
+# todo on Vulkan, maximized so the field and button sit at fixed coordinates:
+# typing with Shift and symbols, Backspace, Home and End, Add, then Anthy conversion.
+check_todo_input() {
+    local executable=/tmp/gnome-check-vulkan/bin/gooey-todo
+    [[ -x "$executable" ]] || build_backend wayland_vulkan /tmp/gnome-check-vulkan || return 1
+    "$executable" >/tmp/gnome-check-todo.log 2>&1 &
+    local pid=$!
+    sleep 6
+    local field="590 138"
+    local add="1210 138"
+    "$input" "key Super_L+Up; sleep 1.5; click ${field}; type Buy milkk; key BackSpace; \
+key Home; type X; key End; type !; click ${add}; sleep 0.5; click ${field}; \
+type Walk dog; click ${add}; sleep 0.8; shot ${artifact_dir}/todo-edit.png"
+    "$input" "click ${field}; key Super_L+space; sleep 1.5"
+    local engine
+    engine="$(ibus engine)"
+    if [[ "$engine" != anthy ]]; then
+        echo "FAIL todo IME: the input source switch left IBus on ${engine}"
+        failures=$((failures + 1))
+    fi
+    "$input" "type kanji; sleep 0.8; shot ${artifact_dir}/todo-ime-preedit.png; key space; \
+sleep 0.6; key space; sleep 1; shot ${artifact_dir}/todo-ime-candidates.png; key Return; \
+sleep 0.8; shot ${artifact_dir}/todo-ime-commit.png; key Super_L+space; sleep 1; \
+key Alt_L+F4; sleep 1.5"
+    if kill -0 "$pid" 2>/dev/null; then
+        kill "$pid"
+        echo "FAIL todo: still running after Alt+F4"
+        failures=$((failures + 1))
+    elif wait "$pid"; then
+        echo "ok   todo input (inspect todo-edit and todo-ime-*.png)"
+    else
+        echo "FAIL todo: exit status $?"
+        failures=$((failures + 1))
+    fi
+}
+
+case "$selection" in
+    vulkan) check_backend wayland_vulkan vulkan ;;
+    cpu) check_backend wayland_cpu cpu ;;
+    all)
+        check_backend wayland_vulkan vulkan
+        check_backend wayland_cpu cpu
+        ;;
+    *)
+        echo "Usage: $0 [vulkan|cpu|all]" >&2
+        exit 2
+        ;;
+esac
+if [[ "$selection" != cpu ]]; then
+    check_todo_input
+fi
+
+echo "Screenshots: ${artifact_dir}"
+if ((failures > 0)); then
+    echo "${failures} check(s) failed."
+    exit 1
+fi
+echo "All checks passed."

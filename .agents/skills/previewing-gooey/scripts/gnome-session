@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# Start or stop a headless GNOME Shell (mutter) Wayland session for testing Gooey.
+#
+# Usage: gnome-session start | stop
+#
+# `start` runs a session bus, PipeWire, WirePlumber, and GNOME Shell as supervised orb
+# services, configures IBus with Anthy (Japanese) as a second input source, and writes
+# the client environment to /tmp/gnome-rt/env. Source that file before running a Gooey
+# example or `gnome-input`.
+set -euo pipefail
+
+runtime_dir=/tmp/gnome-rt
+display_name=wayland-gnome
+bus_address="unix:path=${runtime_dir}/bus"
+services=(gnome-shell gnome-wireplumber gnome-pipewire gnome-dbus)
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# ibus-anthy's engine runs `python3` from PATH and needs the system Python's GObject
+# bindings, so the system bin directories come first in every service's environment.
+service_env="export PATH=/usr/bin:/bin:\$PATH XDG_RUNTIME_DIR=${runtime_dir}"
+service_env+=" DBUS_SESSION_BUS_ADDRESS=${bus_address}"
+
+stop_session() {
+    for service in "${services[@]}"; do
+        amp orb service stop "$service" >/dev/null 2>&1 || true
+    done
+}
+
+wait_for_path() {
+    local path="$1"
+    local description="$2"
+    for _ in $(seq 1 100); do
+        if [[ -e "$path" ]]; then
+            return 0
+        fi
+        sleep 0.2
+    done
+    echo "${description} did not appear within 20 seconds." >&2
+    return 1
+}
+
+configure_input() {
+    # Hot corners open the overview whenever the pointer reaches the top left.
+    gsettings set org.gnome.desktop.interface enable-hot-corners false
+    gsettings set org.gnome.desktop.input-sources sources "[('xkb', 'us'), ('ibus', 'anthy')]"
+    # Anthy starts in Latin mode (3); hiragana (0) makes romaji compose.
+    gsettings set org.freedesktop.ibus.engine.anthy.common input-mode 0
+    # GNOME Shell starts ibus-daemon before this runs, with a stale engine registry.
+    rm -f "${HOME}/.cache/ibus/bus/registry"*
+    ibus write-cache
+    ibus restart
+    for _ in $(seq 1 50); do
+        if ibus list-engine 2>/dev/null | grep -q ' anthy - '; then
+            return 0
+        fi
+        sleep 0.2
+    done
+    echo "IBus did not register the Anthy engine." >&2
+    return 1
+}
+
+start_session() {
+    for command in amp dbus-daemon gnome-shell ibus pipewire wireplumber gsettings; do
+        if ! command -v "$command" >/dev/null 2>&1; then
+            echo "Missing ${command}; run .agents/setup first." >&2
+            exit 1
+        fi
+    done
+    if ! /usr/bin/python3 -c 'import gi' >/dev/null 2>&1; then
+        echo "Missing python3-gi; run .agents/setup first." >&2
+        exit 1
+    fi
+
+    stop_session
+    rm -rf "$runtime_dir"
+    install -d -m 700 "$runtime_dir"
+
+    amp orb service start gnome-dbus --command \
+        "${service_env}; exec dbus-daemon --session --nofork --address=${bus_address}" >/dev/null
+    wait_for_path "${runtime_dir}/bus" "The session bus socket"
+    amp orb service start gnome-pipewire --command "${service_env}; exec pipewire" >/dev/null
+    wait_for_path "${runtime_dir}/pipewire-0" "The PipeWire socket"
+    amp orb service start gnome-wireplumber --command "${service_env}; exec wireplumber" >/dev/null
+    amp orb service start gnome-shell --command \
+        "${service_env} XDG_SESSION_TYPE=wayland XDG_CURRENT_DESKTOP=GNOME; exec gnome-shell \
+--headless --wayland --no-x11 --virtual-monitor 1280x800 --wayland-display ${display_name}" \
+        >/dev/null
+    wait_for_path "${runtime_dir}/${display_name}" "The GNOME Shell Wayland socket"
+    # The shell finishes starting its D-Bus services after the socket appears.
+    sleep 4
+
+    cat >"${runtime_dir}/env" <<EOF
+export XDG_RUNTIME_DIR=${runtime_dir}
+export WAYLAND_DISPLAY=${display_name}
+export DBUS_SESSION_BUS_ADDRESS=${bus_address}
+export PATH=/usr/bin:/bin:\$PATH
+EOF
+    # shellcheck source=/dev/null
+    source "${runtime_dir}/env"
+    configure_input
+    # GNOME Shell starts in the overview; leave it so new windows show on the desktop.
+    "${script_dir}/gnome-input" "key Escape; sleep 0.5"
+
+    echo "GNOME Shell $(gnome-shell --version | awk '{print $3}') is running on Wayland."
+    echo "Client environment: source ${runtime_dir}/env"
+}
+
+case "${1:-}" in
+    start) start_session ;;
+    stop) stop_session ;;
+    *)
+        echo "Usage: $0 start | stop" >&2
+        exit 2
+        ;;
+esac
