@@ -355,8 +355,9 @@ const TooManyPaths = struct {
     fn open(
         _: *anyopaque,
         _: std.mem.Allocator,
+        _: u32,
         _: gooey.internals.handler.FileDialogRequest,
-    ) gooey.internals.events.Completion.Outcome {
+    ) ?gooey.internals.events.Completion.Outcome {
         return .{ .file_selected = .{ .bytes = bytes, .count = count } };
     }
 };

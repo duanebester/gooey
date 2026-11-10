@@ -192,7 +192,8 @@ fn applyFont(window: *Window) void {
     window.render_requested = true;
 }
 
-/// Route every queued event. Returns whether a file dialog ran.
+/// Route every queued event. Returns whether a file dialog ran to completion
+/// in this drain; one that stays open completes in a later tick.
 fn drain(window: *Window) bool {
     window.setPhase(.idle, .drain);
     window.completions.drainInto(&window.queue, &window.images.landed);
@@ -205,20 +206,22 @@ fn drain(window: *Window) bool {
     window.clipboard.flush();
     // Entities removed by this drain's handlers leave before the build.
     window.store.freeRemoved();
-    const dialog_ran = window.pending_dialog != null;
+    var dialog_ran = false;
     if (window.pending_dialog) |request| {
         window.pending_dialog = null;
-        openDialog(window, request);
-        assert(window.queue.count > 0); // Its outcome, for the next drain.
+        dialog_ran = openDialog(window, request);
+        if (dialog_ran) assert(window.queue.count > 0); // Its outcome, for the next drain.
     }
     window.setPhase(.drain, .idle);
     return dialog_ran;
 }
 
-/// Open a requested file dialog on the main thread and queue its outcome
-/// for the next tick's drain. A platform's modal dialog runs its own event
-/// loop here; the core is between handlers, so nothing re-enters it.
-fn openDialog(window: *Window, request: @import("handler.zig").FileDialogRequest) void {
+/// Open a requested file dialog on the main thread. A platform's modal
+/// dialog runs its own event loop here and its outcome is queued for the next
+/// tick's drain; the core is between handlers, so nothing re-enters it.
+/// Returns false when the dialog stays open: the backend queues the outcome
+/// with the request's id once it closes (`FileDialogService`).
+fn openDialog(window: *Window, request: @import("handler.zig").FileDialogRequest) bool {
     const service = window.file_dialog orelse std.debug.panic(
         "a file dialog was requested but this backend binds no file dialog service",
         .{},
@@ -229,40 +232,52 @@ fn openDialog(window: *Window, request: @import("handler.zig").FileDialogRequest
     const outcome = service.open(
         service.context,
         window.text_scratch_allocator.allocator(),
+        request_id,
         request,
-    );
+    ) orelse {
+        assert(window.dialog_handlers[request_id] != null);
+        return false;
+    };
     switch (outcome) {
-        .file_selected => |paths| checkSelection(window, request, paths),
+        .file_selected => |paths| {
+            checkSelection(window, selectsMany(request), paths.count, paths.bytes.len);
+        },
         .cancelled, .failed => {},
     }
     window.queue.push(.{ .completion = .{ .request_id = request_id, .outcome = outcome } });
     window.render_requested = true;
+    return true;
+}
+
+/// Whether `request` may select more than one path.
+pub fn selectsMany(request: @import("handler.zig").FileDialogRequest) bool {
+    return switch (request.kind) {
+        .open => |options| options.multiple,
+        .save => false,
+    };
 }
 
 /// A selection past `ResourceLimits.events` fails fast (decision 11); one
-/// the request could not produce is the platform's bug.
-fn checkSelection(
-    window: *const Window,
-    request: @import("handler.zig").FileDialogRequest,
-    paths: @import("events.zig").Paths,
-) void {
-    assert(paths.count > 0);
-    switch (request.kind) {
-        .open => |options| if (!options.multiple) assert(paths.count == 1),
-        .save => assert(paths.count == 1),
-    }
+/// the request could not produce is the platform's bug. Public for a backend
+/// that completes a dialog later: it checks its selection's totals here
+/// before it queues the completion, even when they exceed its buffer.
+pub fn checkSelection(window: *const Window, many: bool, count: u32, bytes_len: u64) void {
+    assert(count > 0);
+    if (!many) assert(count == 1);
+    // Every path holds at least one byte, and NUL bytes separate them.
+    assert(bytes_len >= @as(u64, count) * 2 - 1);
     const limits = &window.limits.events;
-    if (paths.count > limits.dialog_path_count_max) {
+    if (count > limits.dialog_path_count_max) {
         std.debug.panic("file dialog selected {d} paths: capacity {d}. Raise " ++
             "ResourceLimits.events.dialog_path_count_max.", .{
-            paths.count,
+            count,
             limits.dialog_path_count_max,
         });
     }
-    if (paths.bytes.len > limits.dialog_path_bytes_max) {
+    if (bytes_len > limits.dialog_path_bytes_max) {
         std.debug.panic("file dialog selected {d} bytes of paths: capacity {d}. Raise " ++
             "ResourceLimits.events.dialog_path_bytes_max.", .{
-            paths.bytes.len,
+            bytes_len,
             limits.dialog_path_bytes_max,
         });
     }

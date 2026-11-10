@@ -309,10 +309,12 @@ fn draw(
 fn openDialog(
     context: *anyopaque,
     scratch: std.mem.Allocator,
+    request_id: u32,
     request: core_handler.FileDialogRequest,
-) Outcome {
+) ?Outcome {
     const host: *Host = @ptrCast(@alignCast(context));
     _ = scratch;
+    _ = request_id;
     _ = request;
     assert(host.core.phase == .drain);
     std.log.warn("fbdev core host: the fbdev backend has no file dialog", .{});
