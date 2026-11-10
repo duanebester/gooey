@@ -194,7 +194,10 @@ A radio option with its state and set position, from `src/examples/accessible_fo
 cx.render(ui.box(.{
     .key = .{ .name = self.label },
     .style = .{ .direction = .row, .gap = 8, .alignment = .center_cross },
+    .focusable = true,
+    .tab_stop = self.selected,
     .on_click = self.on_select,
+    .on_key = self.on_key,
     .a11y = .{
         .role = .radio,
         .label = self.label,
@@ -208,6 +211,10 @@ cx.render(ui.box(.{
 ```
 
 The enclosing radio group is a box with `.a11y = .{ .role = .group, .label = self.label }`.
+Only the selected option is a Tab stop, so Tab enters the group there and leaves it in one
+press, and each option's `on_key` handler (`RadioKeys` in the example) selects the next or
+previous option on the arrow keys, wrapping, and moves focus to it, as a native radio group
+does.
 
 Keyboard access is separate from the annotation. Tab and Shift+Tab move focus in tree
 order among boxes with `focusable = true`, skipping those that also set `tab_stop = false`,
@@ -216,7 +223,7 @@ listbox's arrow keys reach its options. Enter or Space clicks the focused box: i
 `on_click` runs as a pointer click's would. Both happen only when no `on_key` handler on the
 focus path stopped the key, so a text field keeps Space and an editor keeps Tab. A held key's
 repeats and Cmd, Ctrl, or Alt chords do not click. A custom control that keyboard users must
-reach needs only `focusable = true` beside its `on_click`; the radio options above have both.
+reach needs only `focusable = true` beside its `on_click`.
 
 While a modal is open, Tab cycles through the modal's controls only, and focus left behind
 it is dropped, so a key cannot reach what the pointer cannot.
@@ -482,7 +489,6 @@ this repository but is not API.
   draws no ring, is not scrolled to when a layout change moves it.
 - Focus that leaves tries the nearest 32 Tab stops on each side; past those, or when a modal
   covers it, it is dropped and the next Tab starts from the first control.
-- Arrow keys do not move between radio options; each option is its own Tab stop.
 - `Select` has no type-ahead.
 - An option's chosen state is not exported: `ui.A11y` has no `selected` field (see below).
 - No bridge supports actions (press, toggle, set value, expand, focus).

@@ -3389,9 +3389,8 @@ test "Tab walks accessible_form's controls in tree order and draws the focus rin
         .{ .role = .textbox, .name = "Full name, required field" },
         .{ .role = .textbox, .name = "Email address, required field" },
         .{ .role = .textbox, .name = "Phone number, optional field" },
+        // Only the selected radio is a tab stop.
         .{ .role = .radio, .name = "Email" },
-        .{ .role = .radio, .name = "Phone" },
-        .{ .role = .radio, .name = "Postal Mail" },
         .{ .role = .checkbox, .name = "Subscribe to newsletter" },
         .{ .role = .combobox, .name = "Experience level" },
         .{ .role = .checkbox, .name = "Accept terms and conditions, required" },
@@ -3443,7 +3442,7 @@ test "Enter and Space click the focused control once per press" {
     var now: u64 = 0;
     app.tick(now);
     try testing.expect(app.state.newsletter);
-    for (0..7) |_| pressKey(app, &now, .tab, .{});
+    for (0..5) |_| pressKey(app, &now, .tab, .{});
     try expectFocused(&app.window, .checkbox, "Subscribe to newsletter");
     pressKey(app, &now, .space, .{});
     try testing.expect(!app.state.newsletter);
@@ -3458,9 +3457,11 @@ test "Enter and Space click the focused control once per press" {
     try expectFocused(&app.window, .checkbox, "Subscribe to newsletter");
 
     pressKey(app, &now, .tab, .{ .shift = true });
-    try expectFocused(&app.window, .radio, "Postal Mail");
+    try expectFocused(&app.window, .radio, "Email");
+    // Unselect it behind the frame's back, so the click shows.
+    app.state.contact_method = .phone;
     pressKey(app, &now, .keypad_enter, .{});
-    try testing.expect(formNode(app, .radio, "Postal Mail").?.state.checked);
+    try testing.expect(formNode(app, .radio, "Email").?.state.checked);
 
     // A text field has no `on_click`, so Space there clicks nothing; its
     // text arrives as text input.
@@ -3472,7 +3473,7 @@ test "Enter and Space click the focused control once per press" {
     try testing.expectEqualStrings("Ada", app.state.name);
     try testing.expect(app.state.newsletter);
 
-    for (0..9) |_| pressKey(app, &now, .tab, .{});
+    for (0..7) |_| pressKey(app, &now, .tab, .{});
     try expectFocused(&app.window, .button, "Submit registration form");
     pressKey(app, &now, .@"return", .{});
     try testing.expect(formNode(app, .alert, "Valid email is required") != null);
@@ -3493,7 +3494,7 @@ test "keyboard focus stays in view when a layout change moves it, but not after 
     defer app.deinitHeadless();
     var now: u64 = 0;
     app.tick(now);
-    for (0..10) |_| pressKey(app, &now, .tab, .{});
+    for (0..8) |_| pressKey(app, &now, .tab, .{});
     try expectFocused(&app.window, .button, "Submit registration form");
     const before = focusedNode(&app.window).?.bounds;
     try testing.expect(before.y + before.height + 4 <= 800.01);
@@ -3519,6 +3520,55 @@ test "keyboard focus stays in view when a layout change moves it, but not after 
     const wheeled = focusedNode(&app.window).?.bounds;
     try testing.expect(wheeled.y > 800);
     try expectFocused(&app.window, .button, "Submit registration form");
+}
+
+test "a radio group is one tab stop whose arrow keys select and wrap" {
+    // Goal: accessible_form's radios behave as a native group. Methodology:
+    // Tab enters at the selected option; Down and Right select the next,
+    // Up and Left the previous, wrapping at both ends, with focus and its
+    // ring following; Tab leaves the group in one press and Shift+Tab
+    // comes back to the option now selected. Then Shift+Tab from the open
+    // Select's menu closes it and lands on the newsletter checkbox before
+    // it, past the radios.
+    const app = try testing.allocator.create(accessible_form.App);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    for (0..4) |_| pressKey(app, &now, .tab, .{});
+    try expectFocused(&app.window, .radio, "Email");
+    const Step = struct { key: gooey.input.KeyCode, method: accessible_form.State.ContactMethod };
+    const steps = [_]Step{
+        .{ .key = .down, .method = .phone },
+        .{ .key = .right, .method = .mail },
+        .{ .key = .down, .method = .email },
+        .{ .key = .up, .method = .mail },
+        .{ .key = .left, .method = .phone },
+    };
+    const names = [_][]const u8{ "Email", "Phone", "Postal Mail" };
+    for (steps) |step| {
+        pressKey(app, &now, step.key, .{});
+        try testing.expectEqual(step.method, app.state.contact_method);
+        const name = names[@backingInt(step.method)];
+        try expectFocused(&app.window, .radio, name);
+        try testing.expect(focusedNode(&app.window).?.state.checked);
+        try expectRingAround(&app.window, focusedNode(&app.window).?.bounds);
+    }
+    pressKey(app, &now, .tab, .{});
+    try expectFocused(&app.window, .checkbox, "Subscribe to newsletter");
+    pressKey(app, &now, .tab, .{ .shift = true });
+    try expectFocused(&app.window, .radio, "Phone");
+
+    pressKey(app, &now, .tab, .{});
+    pressKey(app, &now, .tab, .{});
+    try expectFocused(&app.window, .combobox, "Experience level");
+    pressKey(app, &now, .down, .{});
+    try expectFocused(&app.window, .option, "Beginner");
+    pressKey(app, &now, .tab, .{ .shift = true });
+    try testing.expect(!app.state.experience_open);
+    try expectFocused(&app.window, .checkbox, "Subscribe to newsletter");
+    try testing.expectEqual(@as(?usize, null), app.state.experience_level);
 }
 
 test "a Select opens, moves, and chooses from the keyboard" {
