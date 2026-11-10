@@ -392,6 +392,8 @@ const RadioOption = struct {
         cx.render(ui.box(.{
             .key = .{ .name = self.label },
             .style = .{ .direction = .row, .gap = 8, .alignment = .center_cross },
+            // Tab reaches each option, and Enter or Space selects it.
+            .focusable = true,
             .on_click = self.on_select,
             .a11y = .{
                 .role = .radio,

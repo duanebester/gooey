@@ -22,13 +22,13 @@ packed 1160x700@2.00 clear=#eff1f5ff
   quad (154.40 289.57 39.40 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
   glyphs n=2 (166.00 296.50 14.50 10.00) color=#4c4f69ff hash=f7549df7
 hits
-  hit (32.00 220.99 76.60 49.60) click
-  hit (120.60 220.99 70.30 49.60) click
-  hit (214.90 226.19 90.40 39.20) click
-  hit (317.30 226.19 134.40 39.20) click
-  hit (75.00 289.57 31.70 28.80) click
-  hit (114.70 289.57 31.70 28.80) click
-  hit (154.40 289.57 39.40 28.80) click
+  hit (32.00 220.99 76.60 49.60) click focus
+  hit (120.60 220.99 70.30 49.60) click focus
+  hit (214.90 226.19 90.40 39.20) click focus
+  hit (317.30 226.19 134.40 39.20) click focus
+  hit (75.00 289.57 31.70 28.80) click focus
+  hit (114.70 289.57 31.70 28.80) click focus
+  hit (154.40 289.57 39.40 28.80) click focus
 a11y
   button (32.00 220.99 76.60 49.60) name="−"
   button (120.60 220.99 70.30 49.60) name="+"
@@ -60,16 +60,16 @@ packed 1160x700@2.00 clear=#eff1f5ff
   quad (154.40 289.57 39.40 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
   glyphs n=2 (166.00 296.50 14.50 10.00) color=#4c4f69ff hash=f7549df7
 hits
-  hit (32.00 220.99 76.60 49.60) click
-  hit (120.60 220.99 70.30 49.60) click
-  hit (214.90 226.19 90.40 39.20) click
-  hit (317.30 226.19 134.40 39.20) click
-  hit (75.00 289.57 31.70 28.80) click
-  hit (114.70 289.57 31.70 28.80) click
-  hit (154.40 289.57 39.40 28.80) click
+  hit (32.00 220.99 76.60 49.60) click focus
+  hit (120.60 220.99 70.30 49.60) click focus
+  hit (214.90 226.19 90.40 39.20) click focus
+  hit (317.30 226.19 134.40 39.20) click focus
+  hit (75.00 289.57 31.70 28.80) click focus
+  hit (114.70 289.57 31.70 28.80) click focus
+  hit (154.40 289.57 39.40 28.80) click focus
 a11y
   button (32.00 220.99 76.60 49.60) name="−"
-  button (120.60 220.99 70.30 49.60) name="+"
+  button (120.60 220.99 70.30 49.60) name="+" focused
   button (214.90 226.19 90.40 39.20) name="Reset"
   button (317.30 226.19 134.40 39.20) name="Reset & Blur"
   button (75.00 289.57 31.70 28.80) name="1"
@@ -98,16 +98,16 @@ packed 1160x700@2.00 clear=#eff1f5ff
   quad (154.40 289.57 39.40 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
   glyphs n=2 (166.00 296.50 14.50 10.00) color=#4c4f69ff hash=f7549df7
 hits
-  hit (32.00 220.99 76.60 49.60) click
-  hit (120.60 220.99 70.30 49.60) click
-  hit (214.90 226.19 90.40 39.20) click
-  hit (317.30 226.19 134.40 39.20) click
-  hit (75.00 289.57 31.70 28.80) click
-  hit (114.70 289.57 31.70 28.80) click
-  hit (154.40 289.57 39.40 28.80) click
+  hit (32.00 220.99 76.60 49.60) click focus
+  hit (120.60 220.99 70.30 49.60) click focus
+  hit (214.90 226.19 90.40 39.20) click focus
+  hit (317.30 226.19 134.40 39.20) click focus
+  hit (75.00 289.57 31.70 28.80) click focus
+  hit (114.70 289.57 31.70 28.80) click focus
+  hit (154.40 289.57 39.40 28.80) click focus
 a11y
   button (32.00 220.99 76.60 49.60) name="−"
-  button (120.60 220.99 70.30 49.60) name="+"
+  button (120.60 220.99 70.30 49.60) name="+" focused
   button (214.90 226.19 90.40 39.20) name="Reset"
   button (317.30 226.19 134.40 39.20) name="Reset & Blur"
   button (75.00 289.57 31.70 28.80) name="1"
@@ -136,15 +136,15 @@ packed 1160x700@2.00 clear=#eff1f5ff
   quad (154.40 289.57 39.40 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
   glyphs n=2 (166.00 296.50 14.50 10.00) color=#4c4f69ff hash=f7549df7
 hits
-  hit (32.00 220.99 76.60 49.60) click
-  hit (120.60 220.99 70.30 49.60) click
-  hit (214.90 226.19 90.40 39.20) click
-  hit (317.30 226.19 134.40 39.20) click
-  hit (75.00 289.57 31.70 28.80) click
-  hit (114.70 289.57 31.70 28.80) click
-  hit (154.40 289.57 39.40 28.80) click
+  hit (32.00 220.99 76.60 49.60) click focus
+  hit (120.60 220.99 70.30 49.60) click focus
+  hit (214.90 226.19 90.40 39.20) click focus
+  hit (317.30 226.19 134.40 39.20) click focus
+  hit (75.00 289.57 31.70 28.80) click focus
+  hit (114.70 289.57 31.70 28.80) click focus
+  hit (154.40 289.57 39.40 28.80) click focus
 a11y
-  button (32.00 220.99 76.60 49.60) name="−"
+  button (32.00 220.99 76.60 49.60) name="−" focused
   button (120.60 220.99 70.30 49.60) name="+"
   button (214.90 226.19 90.40 39.20) name="Reset"
   button (317.30 226.19 134.40 39.20) name="Reset & Blur"
@@ -174,20 +174,20 @@ packed 1160x700@2.00 clear=#eff1f5ff
   quad (154.40 289.57 39.40 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
   glyphs n=2 (166.00 296.50 14.50 10.00) color=#4c4f69ff hash=f7549df7
 hits
-  hit (32.00 220.99 76.60 49.60) click
-  hit (120.60 220.99 70.30 49.60) click
-  hit (214.90 226.19 90.40 39.20) click
-  hit (317.30 226.19 134.40 39.20) click
-  hit (75.00 289.57 31.70 28.80) click
-  hit (114.70 289.57 31.70 28.80) click
-  hit (154.40 289.57 39.40 28.80) click
+  hit (32.00 220.99 76.60 49.60) click focus
+  hit (120.60 220.99 70.30 49.60) click focus
+  hit (214.90 226.19 90.40 39.20) click focus
+  hit (317.30 226.19 134.40 39.20) click focus
+  hit (75.00 289.57 31.70 28.80) click focus
+  hit (114.70 289.57 31.70 28.80) click focus
+  hit (154.40 289.57 39.40 28.80) click focus
 a11y
   button (32.00 220.99 76.60 49.60) name="−"
   button (120.60 220.99 70.30 49.60) name="+"
   button (214.90 226.19 90.40 39.20) name="Reset"
   button (317.30 226.19 134.40 39.20) name="Reset & Blur"
   button (75.00 289.57 31.70 28.80) name="1"
-  button (114.70 289.57 31.70 28.80) name="5"
+  button (114.70 289.57 31.70 28.80) name="5" focused
   button (154.40 289.57 39.40 28.80) name="10"
 
 == step 5: click + with step 5
@@ -212,16 +212,16 @@ packed 1160x700@2.00 clear=#eff1f5ff
   quad (154.40 289.57 39.40 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
   glyphs n=2 (166.00 296.50 14.50 10.00) color=#4c4f69ff hash=f7549df7
 hits
-  hit (32.00 220.99 76.60 49.60) click
-  hit (120.60 220.99 70.30 49.60) click
-  hit (214.90 226.19 90.40 39.20) click
-  hit (317.30 226.19 134.40 39.20) click
-  hit (75.00 289.57 31.70 28.80) click
-  hit (114.70 289.57 31.70 28.80) click
-  hit (154.40 289.57 39.40 28.80) click
+  hit (32.00 220.99 76.60 49.60) click focus
+  hit (120.60 220.99 70.30 49.60) click focus
+  hit (214.90 226.19 90.40 39.20) click focus
+  hit (317.30 226.19 134.40 39.20) click focus
+  hit (75.00 289.57 31.70 28.80) click focus
+  hit (114.70 289.57 31.70 28.80) click focus
+  hit (154.40 289.57 39.40 28.80) click focus
 a11y
   button (32.00 220.99 76.60 49.60) name="−"
-  button (120.60 220.99 70.30 49.60) name="+"
+  button (120.60 220.99 70.30 49.60) name="+" focused
   button (214.90 226.19 90.40 39.20) name="Reset"
   button (317.30 226.19 134.40 39.20) name="Reset & Blur"
   button (75.00 289.57 31.70 28.80) name="1"
@@ -250,16 +250,16 @@ packed 1160x700@2.00 clear=#eff1f5ff
   quad (154.40 289.57 39.40 28.80) fill=#839496ff radius=8.00,8.00,8.00,8.00
   glyphs n=2 (166.00 296.50 14.50 10.00) color=#4c4f69ff hash=f7549df7
 hits
-  hit (32.00 220.99 76.60 49.60) click
-  hit (120.60 220.99 70.30 49.60) click
-  hit (214.90 226.19 90.40 39.20) click
-  hit (317.30 226.19 134.40 39.20) click
-  hit (75.00 289.57 31.70 28.80) click
-  hit (114.70 289.57 31.70 28.80) click
-  hit (154.40 289.57 39.40 28.80) click
+  hit (32.00 220.99 76.60 49.60) click focus
+  hit (120.60 220.99 70.30 49.60) click focus
+  hit (214.90 226.19 90.40 39.20) click focus
+  hit (317.30 226.19 134.40 39.20) click focus
+  hit (75.00 289.57 31.70 28.80) click focus
+  hit (114.70 289.57 31.70 28.80) click focus
+  hit (154.40 289.57 39.40 28.80) click focus
 a11y
   button (32.00 220.99 76.60 49.60) name="−"
-  button (120.60 220.99 70.30 49.60) name="+"
+  button (120.60 220.99 70.30 49.60) name="+" focused
   button (214.90 226.19 90.40 39.20) name="Reset"
   button (317.30 226.19 134.40 39.20) name="Reset & Blur"
   button (75.00 289.57 31.70 28.80) name="1"
@@ -289,17 +289,17 @@ packed 1160x700@2.00 clear=#eff1f5ff
   glyphs n=2 (166.00 264.50 14.50 10.00) color=#4c4f69ff hash=b1ae15b7
   glyphs n=14 (32.00 305.00 93.50 10.00) color=#4d994dff hash=3f392153
 hits
-  hit (32.00 194.91 76.60 49.60) click
-  hit (120.60 194.91 70.30 49.60) click
-  hit (214.90 200.11 90.40 39.20) click
-  hit (317.30 200.11 134.40 39.20) click
-  hit (75.00 257.77 31.70 28.80) click
-  hit (114.70 257.77 31.70 28.80) click
-  hit (154.40 257.77 39.40 28.80) click
+  hit (32.00 194.91 76.60 49.60) click focus
+  hit (120.60 194.91 70.30 49.60) click focus
+  hit (214.90 200.11 90.40 39.20) click focus
+  hit (317.30 200.11 134.40 39.20) click focus
+  hit (75.00 257.77 31.70 28.80) click focus
+  hit (114.70 257.77 31.70 28.80) click focus
+  hit (154.40 257.77 39.40 28.80) click focus
 a11y
   button (32.00 194.91 76.60 49.60) name="−"
   button (120.60 194.91 70.30 49.60) name="+"
-  button (214.90 200.11 90.40 39.20) name="Reset"
+  button (214.90 200.11 90.40 39.20) name="Reset" focused
   button (317.30 200.11 134.40 39.20) name="Reset & Blur"
   button (75.00 257.77 31.70 28.80) name="1"
   button (114.70 257.77 31.70 28.80) name="5"
@@ -327,13 +327,13 @@ packed 1160x700@2.00 clear=#eff1f5ff
   quad (154.40 289.57 39.40 28.80) fill=#1e66f5d9 radius=8.00,8.00,8.00,8.00
   glyphs n=2 (166.00 296.50 14.50 10.00) color=#ffffffff hash=f7549df7
 hits
-  hit (32.00 220.99 76.60 49.60) click
-  hit (120.60 220.99 70.30 49.60) click
-  hit (214.90 226.19 90.40 39.20) click
-  hit (317.30 226.19 134.40 39.20) click
-  hit (75.00 289.57 31.70 28.80) click
-  hit (114.70 289.57 31.70 28.80) click
-  hit (154.40 289.57 39.40 28.80) click
+  hit (32.00 220.99 76.60 49.60) click focus
+  hit (120.60 220.99 70.30 49.60) click focus
+  hit (214.90 226.19 90.40 39.20) click focus
+  hit (317.30 226.19 134.40 39.20) click focus
+  hit (75.00 289.57 31.70 28.80) click focus
+  hit (114.70 289.57 31.70 28.80) click focus
+  hit (154.40 289.57 39.40 28.80) click focus
 a11y
   button (32.00 220.99 76.60 49.60) name="−"
   button (120.60 220.99 70.30 49.60) name="+"
@@ -341,7 +341,7 @@ a11y
   button (317.30 226.19 134.40 39.20) name="Reset & Blur"
   button (75.00 289.57 31.70 28.80) name="1"
   button (114.70 289.57 31.70 28.80) name="5"
-  button (154.40 289.57 39.40 28.80) name="10"
+  button (154.40 289.57 39.40 28.80) name="10" focused
 
 == step 9: click - into negative
 packed 1160x700@2.00 clear=#eff1f5ff
@@ -365,15 +365,15 @@ packed 1160x700@2.00 clear=#eff1f5ff
   quad (154.40 289.57 39.40 28.80) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
   glyphs n=2 (166.00 296.50 14.50 10.00) color=#ffffffff hash=f7549df7
 hits
-  hit (32.00 220.99 76.60 49.60) click
-  hit (120.60 220.99 70.30 49.60) click
-  hit (214.90 226.19 90.40 39.20) click
-  hit (317.30 226.19 134.40 39.20) click
-  hit (75.00 289.57 31.70 28.80) click
-  hit (114.70 289.57 31.70 28.80) click
-  hit (154.40 289.57 39.40 28.80) click
+  hit (32.00 220.99 76.60 49.60) click focus
+  hit (120.60 220.99 70.30 49.60) click focus
+  hit (214.90 226.19 90.40 39.20) click focus
+  hit (317.30 226.19 134.40 39.20) click focus
+  hit (75.00 289.57 31.70 28.80) click focus
+  hit (114.70 289.57 31.70 28.80) click focus
+  hit (154.40 289.57 39.40 28.80) click focus
 a11y
-  button (32.00 220.99 76.60 49.60) name="−"
+  button (32.00 220.99 76.60 49.60) name="−" focused
   button (120.60 220.99 70.30 49.60) name="+"
   button (214.90 226.19 90.40 39.20) name="Reset"
   button (317.30 226.19 134.40 39.20) name="Reset & Blur"
@@ -404,13 +404,13 @@ packed 1160x700@2.00 clear=#eff1f5ff
   glyphs n=2 (166.00 264.50 14.50 10.00) color=#ffffffff hash=b1ae15b7
   glyphs n=18 (32.00 305.00 114.50 10.00) color=#4d994dff hash=ad9c7877
 hits
-  hit (32.00 194.91 76.60 49.60) click
-  hit (120.60 194.91 70.30 49.60) click
-  hit (214.90 200.11 90.40 39.20) click
-  hit (317.30 200.11 134.40 39.20) click
-  hit (75.00 257.77 31.70 28.80) click
-  hit (114.70 257.77 31.70 28.80) click
-  hit (154.40 257.77 39.40 28.80) click
+  hit (32.00 194.91 76.60 49.60) click focus
+  hit (120.60 194.91 70.30 49.60) click focus
+  hit (214.90 200.11 90.40 39.20) click focus
+  hit (317.30 200.11 134.40 39.20) click focus
+  hit (75.00 257.77 31.70 28.80) click focus
+  hit (114.70 257.77 31.70 28.80) click focus
+  hit (154.40 257.77 39.40 28.80) click focus
 a11y
   button (32.00 194.91 76.60 49.60) name="−"
   button (120.60 194.91 70.30 49.60) name="+"

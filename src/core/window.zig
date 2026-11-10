@@ -520,6 +520,12 @@ pub const Window = struct {
     file_dialog: ?FileDialogService,
     // Interaction state, owned by the router.
     focus: ElementId,
+    /// The focus moved by keyboard (Tab, or a handler for a key), so the
+    /// focused element draws its focus ring; a pointer press clears it.
+    focus_visible: bool,
+    /// Keyboard focus moved since the last emit, which scrolls the focused
+    /// box into its scroll box's view once, so the ring is seen.
+    focus_reveal: bool,
     hover_path: [box_depth_max]ElementId,
     hover_len: u32,
     /// The hovered record's cursor, or the nearest ancestor's that sets one;
@@ -744,11 +750,15 @@ pub noinline fn initInPlace(self: *Window, gpa: std.mem.Allocator, options: *con
     self.store.registerPool(self.inputs.entityPool());
     if (self.areas_reserved) self.store.registerPool(self.areas.entityPool());
     if (self.editors_reserved) self.store.registerPool(self.editors.entityPool());
+    assert(self.store.retained == null);
+    self.store.retained = &self.retained;
     self.resources.text_system.useRunAllocator(self.text_scratch_allocator.allocator());
     self.cx = .{ .window = self };
     self.presenter = null;
     self.file_dialog = null;
     self.focus = .root;
+    self.focus_visible = false;
+    self.focus_reveal = false;
     self.hover_len = 0;
     self.cursor = .default;
     self.press_len = 0;

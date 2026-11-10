@@ -3304,3 +3304,348 @@ test "todo keeps its header, footer, and Add in view at 20 items and narrow widt
     try testing.expect(delete.x + delete.width <= 360 - 24);
     try testing.expectEqual(internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
 }
+
+// =============================================================================
+// Keyboard access
+// =============================================================================
+
+/// Press `key` once and settle: the drain routes it against the frame on
+/// screen, and the build shows the result.
+fn pressKey(
+    app: anytype,
+    now: *u64,
+    key: gooey.input.KeyCode,
+    modifiers: gooey.input.Modifiers,
+) void {
+    app.window.queue.push(.{ .input = .{ .key_down = chord(key, modifiers) } });
+    now.* += 1;
+    app.tick(now.*);
+    now.* += 1;
+    app.tick(now.*);
+}
+
+/// The accessibility node holding keyboard focus in the frame on screen.
+fn focusedNode(window: *internals.window.Window) ?*const internals.records.A11yNode {
+    const frame = window.rendered();
+    var found: ?*const internals.records.A11yNode = null;
+    for (frame.a11y[0..frame.a11y_count]) |*node| {
+        if (!node.state.focused) continue;
+        assert(found == null);
+        found = node;
+    }
+    return found;
+}
+
+fn expectFocused(window: *internals.window.Window, role: gooey.ui.Role, name: []const u8) !void {
+    const node = focusedNode(window) orelse return error.NothingFocused;
+    const frame = window.rendered();
+    try testing.expectEqualStrings(name, frame.text(node.name) orelse "");
+    try testing.expectEqual(role, node.role);
+}
+
+/// The focus rings in the frame on screen: transparent quads with a 2 px
+/// border in the theme's `border_focus`. Returns how many, and the last.
+fn focusRings(window: *internals.window.Window, ring: *internals.records.Rect) u32 {
+    const frame = window.rendered();
+    const color = window.theme.border_focus;
+    var count: u32 = 0;
+    for (frame.paint[0..frame.paint_count]) |*record| {
+        if (record.* != .quad) continue;
+        const quad = record.quad;
+        if (quad.fill.a != 0 or quad.border.width != 2) continue;
+        if (!std.meta.eql(quad.border.color, color)) continue;
+        ring.* = quad.bounds;
+        count += 1;
+    }
+    return count;
+}
+
+/// A ring 2 px outside `bounds` and 2 px wide.
+fn expectRingAround(window: *internals.window.Window, bounds: internals.records.Rect) !void {
+    var ring: internals.records.Rect = undefined;
+    try testing.expectEqual(@as(u32, 1), focusRings(window, &ring));
+    try testing.expectEqual(bounds.x - 4, ring.x);
+    try testing.expectEqual(bounds.y - 4, ring.y);
+    try testing.expectEqual(bounds.width + 8, ring.width);
+    try testing.expectEqual(bounds.height + 8, ring.height);
+}
+
+test "Tab walks accessible_form's controls in tree order and draws the focus ring" {
+    // Goal: Tab reaches every control, components and the app's own radios
+    // alike, in tree order, wrapping at both ends, and only keyboard focus
+    // draws a ring, scrolled into the window. Methodology: Tab from nothing
+    // focused through the whole form, taller than its 800 px window, and
+    // once more, then Shift+Tab back; the expected order is read off the
+    // example's render. A click on a focused control keeps focus but drops
+    // the ring.
+    const app = try testing.allocator.create(accessible_form.App);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    const Stop = struct { role: gooey.ui.Role, name: []const u8 };
+    const order = [_]Stop{
+        .{ .role = .textbox, .name = "Full name, required field" },
+        .{ .role = .textbox, .name = "Email address, required field" },
+        .{ .role = .textbox, .name = "Phone number, optional field" },
+        .{ .role = .radio, .name = "Email" },
+        .{ .role = .radio, .name = "Phone" },
+        .{ .role = .radio, .name = "Postal Mail" },
+        .{ .role = .checkbox, .name = "Subscribe to newsletter" },
+        .{ .role = .combobox, .name = "Experience level" },
+        .{ .role = .checkbox, .name = "Accept terms and conditions, required" },
+        .{ .role = .button, .name = "Submit registration form" },
+        .{ .role = .button, .name = "Reset form to default values" },
+    };
+    try testing.expect(focusedNode(&app.window) == null);
+    var ring: internals.records.Rect = undefined;
+    try testing.expectEqual(@as(u32, 0), focusRings(&app.window, &ring));
+    for (order) |stop| {
+        pressKey(app, &now, .tab, .{});
+        try expectFocused(&app.window, stop.role, stop.name);
+        // The form scrolls each control and its 4 px ring into the window,
+        // up to float rounding of the offset.
+        const bounds = focusedNode(&app.window).?.bounds;
+        try testing.expect(bounds.y - 4 >= -0.01);
+        try testing.expect(bounds.y + bounds.height + 4 <= 800.01);
+        try expectRingAround(&app.window, bounds);
+    }
+    // Wrapping to the first field scrolls the form back up to it.
+    pressKey(app, &now, .tab, .{});
+    try expectFocused(&app.window, order[0].role, order[0].name);
+    try testing.expect(focusedNode(&app.window).?.bounds.y - 4 >= -0.01);
+    pressKey(app, &now, .tab, .{ .shift = true });
+    var index: usize = order.len;
+    while (index > 0) {
+        index -= 1;
+        try expectFocused(&app.window, order[index].role, order[index].name);
+        pressKey(app, &now, .tab, .{ .shift = true });
+    }
+    try expectFocused(&app.window, order[order.len - 1].role, order[order.len - 1].name);
+
+    // A pointer press on the focused Reset button keeps it focused, ringless.
+    formClick(app, &now, .button, "Reset form to default values");
+    try expectFocused(&app.window, .button, "Reset form to default values");
+    try testing.expectEqual(@as(u32, 0), focusRings(&app.window, &ring));
+}
+
+test "Enter and Space click the focused control once per press" {
+    // Goal: the core's activation rule. Methodology: on accessible_form,
+    // focus the newsletter checkbox (checked by default) by Tab and toggle it
+    // with Space and Enter; a key repeat, Cmd+Enter, and Ctrl+Space must not
+    // click. Space in a text field clicks nothing. Enter on a radio
+    // selects it, and Enter on Submit submits, which announces.
+    const app = try testing.allocator.create(accessible_form.App);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    try testing.expect(app.state.newsletter);
+    for (0..7) |_| pressKey(app, &now, .tab, .{});
+    try expectFocused(&app.window, .checkbox, "Subscribe to newsletter");
+    pressKey(app, &now, .space, .{});
+    try testing.expect(!app.state.newsletter);
+    pressKey(app, &now, .@"return", .{});
+    try testing.expect(app.state.newsletter);
+    var repeat = chord(.space, .{});
+    repeat.is_repeat = true;
+    app.window.queue.push(.{ .input = .{ .key_down = repeat } });
+    pressKey(app, &now, .@"return", .{ .cmd = true });
+    pressKey(app, &now, .space, .{ .ctrl = true });
+    try testing.expect(app.state.newsletter);
+    try expectFocused(&app.window, .checkbox, "Subscribe to newsletter");
+
+    pressKey(app, &now, .tab, .{ .shift = true });
+    try expectFocused(&app.window, .radio, "Postal Mail");
+    pressKey(app, &now, .keypad_enter, .{});
+    try testing.expect(formNode(app, .radio, "Postal Mail").?.state.checked);
+
+    // A text field has no `on_click`, so Space there clicks nothing; its
+    // text arrives as text input.
+    formClick(app, &now, .textbox, "Full name, required field");
+    pressKey(app, &now, .space, .{});
+    app.window.queue.push(.{ .input = .{ .text_input = .{ .text = "Ada" } } });
+    now += 1;
+    app.tick(now);
+    try testing.expectEqualStrings("Ada", app.state.name);
+    try testing.expect(app.state.newsletter);
+
+    for (0..9) |_| pressKey(app, &now, .tab, .{});
+    try expectFocused(&app.window, .button, "Submit registration form");
+    pressKey(app, &now, .@"return", .{});
+    try testing.expect(formNode(app, .alert, "Valid email is required") != null);
+    try testing.expectEqual(internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
+}
+
+test "a Select opens, moves, and chooses from the keyboard" {
+    // Goal: the Select's keys through its retained key handler and
+    // `effects.click`, with focus as the highlight. Methodology: on the
+    // three-option Select, Tab to the combobox, open with Down, walk the
+    // options with Down past the end, Up, Home, and End, and choose with
+    // Enter; reopen with Space on the chosen option and close with Esc; then
+    // choose with Up and Space.
+    const app = try testing.allocator.create(SelectApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    pressKey(app, &now, .tab, .{});
+    try expectFocused(&app.window, .combobox, "Level");
+    try expectRingAround(&app.window, focusedNode(&app.window).?.bounds);
+    pressKey(app, &now, .down, .{});
+    try testing.expect(app.state.open);
+    try expectFocused(&app.window, .option, "One");
+    try testing.expectEqual(@as(?u16, 1), focusedNode(&app.window).?.pos_in_set);
+    try testing.expectEqual(@as(?u16, 3), focusedNode(&app.window).?.set_size);
+    try expectRingAround(&app.window, focusedNode(&app.window).?.bounds);
+    pressKey(app, &now, .down, .{});
+    pressKey(app, &now, .down, .{});
+    pressKey(app, &now, .down, .{});
+    try expectFocused(&app.window, .option, "Three");
+    pressKey(app, &now, .up, .{});
+    try expectFocused(&app.window, .option, "Two");
+    pressKey(app, &now, .home, .{});
+    try expectFocused(&app.window, .option, "One");
+    pressKey(app, &now, .end, .{});
+    try expectFocused(&app.window, .option, "Three");
+    pressKey(app, &now, .@"return", .{});
+    try testing.expectEqual(@as(?usize, 2), app.state.selected);
+    try testing.expect(!app.state.open);
+    try expectFocused(&app.window, .combobox, "Level");
+
+    // Reopening starts on the chosen option; Esc closes without choosing.
+    pressKey(app, &now, .space, .{});
+    try testing.expect(app.state.open);
+    try expectFocused(&app.window, .option, "Three");
+    pressKey(app, &now, .escape, .{});
+    try testing.expect(!app.state.open);
+    try testing.expectEqual(@as(?usize, 2), app.state.selected);
+    try expectFocused(&app.window, .combobox, "Level");
+
+    pressKey(app, &now, .@"return", .{});
+    pressKey(app, &now, .up, .{});
+    pressKey(app, &now, .space, .{});
+    try testing.expectEqual(@as(?usize, 1), app.state.selected);
+    try testing.expect(!app.state.open);
+}
+
+test "a Select closes on Tab, and a click opens it with focus on the combobox" {
+    // Goal: Tab and Shift+Tab from an open menu close it back on the
+    // combobox, without stepping into the closing menu's options, and the
+    // pointer path still works beside the keys. Methodology: open with Down
+    // and Space, leave with Tab and Shift+Tab, then click the trigger and
+    // close with Enter; the button below is never clicked.
+    const app = try testing.allocator.create(SelectApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    var ring: internals.records.Rect = undefined;
+    pressKey(app, &now, .tab, .{});
+    pressKey(app, &now, .down, .{});
+    try testing.expect(app.state.open);
+    pressKey(app, &now, .tab, .{});
+    try testing.expect(!app.state.open);
+    try expectFocused(&app.window, .combobox, "Level");
+    pressKey(app, &now, .tab, .{});
+    try expectFocused(&app.window, .button, "Below");
+    pressKey(app, &now, .tab, .{ .shift = true });
+    try expectFocused(&app.window, .combobox, "Level");
+    pressKey(app, &now, .space, .{});
+    try expectFocused(&app.window, .option, "One");
+    pressKey(app, &now, .tab, .{ .shift = true });
+    try testing.expect(!app.state.open);
+    try expectFocused(&app.window, .combobox, "Level");
+    try testing.expectEqual(@as(u32, 0), app.state.below_clicks);
+    try testing.expectEqual(@as(?usize, null), app.state.selected);
+
+    // A click opens the menu with focus on the combobox, ringless, where
+    // Enter closes it again.
+    clickAt(app, &now, 20, 20);
+    try testing.expect(app.state.open);
+    try expectFocused(&app.window, .combobox, "Level");
+    try testing.expectEqual(@as(u32, 0), focusRings(&app.window, &ring));
+    pressKey(app, &now, .@"return", .{});
+    try testing.expect(!app.state.open);
+    try testing.expectEqual(@as(?usize, null), app.state.selected);
+    try testing.expectEqual(@as(u32, 0), app.state.below_clicks);
+}
+
+/// A CodeEditor beside a Button, for the claimed-Tab check.
+const EditorButtonState = struct {
+    source: []const u8 = "",
+    clicks: u32 = 0,
+
+    pub fn click(self: *EditorButtonState) void {
+        self.clicks += 1;
+    }
+};
+
+const EditorButtonApp = gooey.App(EditorButtonState, editorButtonRender, .{
+    .title = "Editor and button",
+    .width = 400,
+    .height = 200,
+    .limits = editor_limits,
+});
+
+fn editorButtonRender(cx: *Cx) void {
+    const state = cx.state(EditorButtonState);
+    cx.render(ui.box(.{ .style = .{ .width = .{ .grow = 1 }, .gap = 8 } }, .{
+        components.CodeEditor{ .key = "source", .bind = &state.source, .rows = 2 },
+        components.Button{ .label = "Run", .on_click = cx.on(EditorButtonState.click, .{}) },
+    }));
+}
+
+test "a Tab the focused editor claims indents and keeps focus" {
+    // Goal: Tab moves focus only when no key handler stopped it, so an
+    // editor's indent does not also send focus to the next control.
+    // Methodology: Tab into the editor, Tab again to indent, and check the
+    // indent and that focus stayed; Shift+Tab, which the editor leaves alone,
+    // then moves focus back around to the button, where Enter clicks it.
+    const app = try testing.allocator.create(EditorButtonApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    pressKey(app, &now, .tab, .{});
+    const editor = app.window.focus;
+    try testing.expect(editor != .root);
+    pressKey(app, &now, .tab, .{});
+    try testing.expectEqualStrings("    ", app.state.source);
+    try testing.expectEqual(editor, app.window.focus);
+    pressKey(app, &now, .tab, .{ .shift = true });
+    try expectFocused(&app.window, .button, "Run");
+    pressKey(app, &now, .@"return", .{});
+    try testing.expectEqual(@as(u32, 1), app.state.clicks);
+}
+
+test "Tab stays inside a modal, so Enter never clicks what the modal blocks" {
+    // Goal: keyboard focus follows the pointer's modal rule (contract §6).
+    // Methodology: with the small modal open over the content button, Tab
+    // from nothing and again must land on the modal's button both times;
+    // Enter clicks it and closes the modal, and only then does Tab reach the
+    // content button, where Space clicks it.
+    const app = try testing.allocator.create(BlockApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    pressKey(app, &now, .tab, .{});
+    try expectFocused(&app.window, .button, "Inside");
+    pressKey(app, &now, .tab, .{ .shift = true });
+    try expectFocused(&app.window, .button, "Inside");
+    pressKey(app, &now, .@"return", .{});
+    try testing.expectEqual(@as(u32, 1), app.state.inside_clicks);
+    try testing.expectEqual(@as(u32, 0), app.state.below_clicks);
+    try testing.expect(focusedNode(&app.window) == null);
+    pressKey(app, &now, .tab, .{});
+    try expectFocused(&app.window, .button, "Below");
+    pressKey(app, &now, .space, .{});
+    try testing.expectEqual(@as(u32, 1), app.state.below_clicks);
+}

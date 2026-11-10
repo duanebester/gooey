@@ -20,6 +20,7 @@ const Theme = @import("theme.zig").Theme;
 const Live = @import("../accessibility/types.zig").Live;
 const Clipboard = @import("clipboard.zig").Clipboard;
 const entities = @import("entities.zig");
+const retained_mod = @import("retained.zig");
 
 const assert = std.debug.assert;
 
@@ -121,13 +122,16 @@ pub const EntityPool = struct {
 /// the app's `config.entities`.
 pub const entity_pool_count_max: u32 = 16;
 
-/// What a handler's `app` pointer points at: the root state and the entity
-/// pools, without the app's generic type.
+/// What a handler's `app` pointer points at: the root state, the entity
+/// pools, and the window's retained store, without the app's generic type.
 pub const Store = struct {
     root_state: *anyopaque,
     root_type_id: usize,
     pools: [entity_pool_count_max]EntityPool,
     pool_count: u32,
+    /// The window's retained store, set when the window initializes, so a
+    /// component's handler can target state it retained (`cx.retain`).
+    retained: ?*retained_mod.Retained,
 
     pub fn init(comptime State: type, state: *State) Store {
         return .{
@@ -135,6 +139,7 @@ pub const Store = struct {
             .root_type_id = typeId(State),
             .pools = undefined,
             .pool_count = 0,
+            .retained = null,
         };
     }
 
@@ -175,18 +180,24 @@ pub const Store = struct {
         }
     }
 
-    /// The state a target names. A stale generation or wrong type is a
-    /// programmer error: handlers are rebuilt every frame from live state.
+    /// The state a target names: the root state, an entity, or state a
+    /// component retained. A stale generation or wrong type is a programmer
+    /// error: handlers are rebuilt every frame from live state.
     pub fn resolve(self: *const Store, comptime State: type, target: Target) *State {
         assert(target.type_id == typeId(State));
         if (target.isRoot()) {
             assert(self.root_type_id == typeId(State));
             return @ptrCast(@alignCast(self.root_state));
         }
-        const pool = self.findPool(target.type_id) orelse std.debug.panic(
-            "handler targets {s}, which is not a registered entity type",
-            .{@typeName(State)},
-        );
+        const pool = self.findPool(target.type_id) orelse {
+            if (comptime !retained_mod.fitsSizeClass(State)) std.debug.panic(
+                "handler targets {s}, which is neither an entity nor retained state",
+                .{@typeName(State)},
+            );
+            // The window sets `retained` at init, before any handler runs.
+            const handle = Entity(State){ .slot = target.slot, .generation = target.generation };
+            return self.retained.?.get(State, handle);
+        };
         if (pool.app_pool != null) {
             const value = pool.checkedValue(target.slot, target.generation, "handler");
             return @ptrCast(@alignCast(value));
@@ -226,6 +237,7 @@ pub const Effects = struct {
     font_request: ?FontRequest,
     theme_request: ?*const Theme,
     announcement: ?Announcement,
+    click_request: ?ElementId,
     /// The text engines' clipboard, set by the router. Not an app API
     /// (decision 10): only `text_engine.zig` reads it.
     clipboard: ?*Clipboard,
@@ -255,6 +267,7 @@ pub const Effects = struct {
             .font_request = null,
             .theme_request = null,
             .announcement = null,
+            .click_request = null,
             .clipboard = null,
             .store = null,
             .current = current,
@@ -287,6 +300,19 @@ pub const Effects = struct {
 
     pub fn blur(self: *Effects) void {
         self.focus_request = .blur;
+    }
+
+    /// Run keyed element `id`'s `on_click` in the frame on screen, with this
+    /// handler's event, after this handler's own requests are applied; at
+    /// most one per handler. A component's key handler uses it to press its
+    /// own parts, whose `on_click` the app supplied. An element that is not
+    /// on screen or has no `on_click` is not clicked. The clicked handler
+    /// cannot request another click, so one event runs at most two handlers
+    /// this way.
+    pub fn click(self: *Effects, id: ElementId) void {
+        assert(id.isKeyed());
+        assert(self.click_request == null);
+        self.click_request = id;
     }
 
     pub fn quit(self: *Effects) void {

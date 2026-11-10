@@ -12,6 +12,12 @@
 //! `records.hit_record_count_frame_max` records, and a bubble at most the box
 //! depth. A press focuses and runs click-outside handlers; the click fires
 //! on release, over a record the press also landed in (decision 7).
+//!
+//! A key no handler stopped has a default, as in a browser: Tab moves focus,
+//! and Enter or Space runs the focused record's `on_click` (0.4.1), one more
+//! handler per key. `effects.click` adds one record search and one handler
+//! per handler that asks. Focus the keyboard moved is `focus_visible`, which
+//! draws the focus ring in emit.
 
 const std = @import("std");
 const records = @import("records.zig");
@@ -165,7 +171,7 @@ fn press(window: *Window, event: *const input.InputEvent, point: Point) void {
         }
         index = frame.hits[index].parent;
     }
-    setFocus(window, focus_id);
+    setFocus(window, focus_id, false);
 }
 
 /// A release: click handlers bubbling from the record under the pointer,
@@ -275,7 +281,8 @@ fn isAncestorOrSelf(frame: *const records.Frame, ancestor: u32, index_start: u32
 
 const Slot = enum { click, key };
 
-fn bubble(window: *Window, event: *const input.InputEvent, start: u32, slot: Slot) void {
+/// Returns whether a handler stopped propagation.
+fn bubble(window: *Window, event: *const input.InputEvent, start: u32, slot: Slot) bool {
     const frame = window.rendered();
     var index = start;
     var depth: u32 = 0;
@@ -287,10 +294,11 @@ fn bubble(window: *Window, event: *const input.InputEvent, start: u32, slot: Slo
             .key => record.on_key,
         };
         if (frame.handlerAt(handler_index)) |handler| {
-            if (invoke(window, handler, event, null, record.id)) return;
+            if (invoke(window, handler, event, null, record.id)) return true;
         }
         index = record.parent;
     }
+    return false;
 }
 
 /// The wheel scrolls the innermost scrollable under the pointer: a text area
@@ -346,11 +354,40 @@ fn keyToFocus(window: *Window, event: *const input.InputEvent) void {
     }
     const frame = window.rendered();
     const target = findRecord(frame, window.focus);
-    if (target != index_none) bubble(window, event, target, .key);
-    if (event.* == .key_down and event.key_down.key == .tab) {
-        // Tab moves focus when no handler claimed it: the key bubbled here.
-        moveFocus(window, event.key_down.modifiers.shift);
+    if (target == index_none) {
+        if (event.* == .key_down and event.key_down.key == .tab) {
+            moveFocus(window, event.key_down.modifiers.shift);
+        }
+        return;
     }
+    if (bubble(window, event, target, .key)) return;
+    if (event.* != .key_down) return;
+    // The defaults for a key no handler claimed, as a browser's: Tab moves
+    // focus, and Enter or Space clicks the element the key was sent to,
+    // which a handler may have moved focus away from.
+    const key = &event.key_down;
+    assert(target < frame.hit_count);
+    if (key.key == .tab) {
+        moveFocus(window, key.modifiers.shift);
+    } else {
+        if (activates(key)) {
+            if (frame.handlerAt(frame.hits[target].on_click)) |handler| {
+                _ = invoke(window, handler, event, null, frame.hits[target].id);
+            }
+        }
+    }
+}
+
+/// Enter or Space without Cmd, Ctrl, or Alt, and not a repeat: one click
+/// per press, as a native button gives.
+fn activates(key: *const input.KeyEvent) bool {
+    const modifiers = key.modifiers;
+    if (key.is_repeat) return false;
+    if (modifiers.cmd or modifiers.ctrl or modifiers.alt) return false;
+    return switch (key.key) {
+        .@"return", .keypad_enter, .space => true,
+        else => false,
+    };
 }
 
 /// The focus path for keys, innermost first: the focused record and its
@@ -418,20 +455,26 @@ fn findAction(window: *const Window, key: *const input.KeyEvent) ?FoundAction {
     return null;
 }
 
-/// Focus the next (or previous) focusable record in tree order, wrapping.
+/// Focus the next (or previous) focusable record in tree order, wrapping,
+/// among the records a modal leaves reachable (contract §6): Tab never
+/// reaches a control the pointer cannot, so Enter cannot click it.
 fn moveFocus(window: *Window, backward: bool) void {
     const frame = window.rendered();
-    const count = frame.hit_count;
+    const start = frame.modal_hit_start;
+    assert(start <= frame.hit_count);
+    const count = frame.hit_count - start;
     if (count == 0) return;
-    const current = findRecord(frame, window.focus);
+    const found = findRecord(frame, window.focus);
+    const current = if (found != index_none and found >= start) found - start else index_none;
     var step: u32 = 0;
     var index = if (current == index_none) (if (backward) count - 1 else 0) else current;
     while (step < count) : (step += 1) {
         if (current != index_none or step > 0) {
             index = if (backward) (index + count - 1) % count else (index + 1) % count;
         }
-        if (frame.hits[index].focusable) {
-            setFocus(window, frame.hits[index].id);
+        assert(start + index < frame.hit_count);
+        if (frame.hits[start + index].focusable) {
+            setFocus(window, frame.hits[start + index].id, true);
             return;
         }
     }
@@ -447,8 +490,8 @@ fn routeCompletion(window: *Window, completion: *const events.Completion) void {
     _ = invoke(window, handler, null, completion, .root);
 }
 
-/// Invoke one handler and apply its effects. Returns whether it stopped
-/// propagation.
+/// Invoke one handler and apply its effects, then the click it requested,
+/// if any. Returns whether the handler stopped propagation.
 fn invoke(
     window: *Window,
     handler: handler_mod.Handler,
@@ -458,15 +501,44 @@ fn invoke(
 ) bool {
     var effects = handler_mod.Effects.init(event, current);
     effects.completion = completion;
+    call(window, handler, &effects);
+    if (effects.click_request) |id| clickRequested(window, id, event);
+    return effects.propagation_stopped;
+}
+
+/// `effects.click`: the clicked element's `on_click`, from the frame on
+/// screen. Not recursive: a click it requests in turn is a programmer error.
+fn clickRequested(window: *Window, id: ElementId, event: ?*const input.InputEvent) void {
+    assert(id.isKeyed());
+    const frame = window.rendered();
+    const index = findRecord(frame, id);
+    if (index == index_none) return;
+    assert(index < frame.hit_count);
+    const handler = frame.handlerAt(frame.hits[index].on_click) orelse return;
+    var effects = handler_mod.Effects.init(event, id);
+    call(window, handler, &effects);
+    if (effects.click_request != null) std.debug.panic(
+        "effects.click from a handler that effects.click ran, in frame {d}",
+        .{window.frame_number},
+    );
+}
+
+/// Run one handler and apply every request but a click, which `invoke`
+/// applies after it.
+fn call(window: *Window, handler: handler_mod.Handler, effects: *handler_mod.Effects) void {
+    assert(effects.click_request == null);
+    assert(!effects.propagation_stopped);
     effects.clipboard = &window.clipboard;
     effects.store = window.store;
-    handler.call(window.store, &effects);
+    handler.call(window.store, effects);
     if (effects.render_requested) window.render_requested = true;
     if (effects.quit_requested) window.quit_requested = true;
+    // Focus a handler moves for a key shows its ring, as Tab's does.
+    const from_keyboard = if (effects.event) |event| isKeyboard(event) else false;
     switch (effects.focus_request) {
         .none => {},
-        .focus => |id| setFocus(window, id),
-        .blur => setFocus(window, .root),
+        .focus => |id| setFocus(window, id, from_keyboard),
+        .blur => setFocus(window, .root, false),
     }
     if (effects.file_dialog) |request| requestDialog(window, request);
     if (effects.font_request) |request| requestFont(window, request);
@@ -480,7 +552,13 @@ fn invoke(
         window.announcements.push(announcement.text, announcement.politeness);
         window.render_requested = true;
     }
-    return effects.propagation_stopped;
+}
+
+fn isKeyboard(event: *const input.InputEvent) bool {
+    return switch (event.*) {
+        .key_down, .key_up, .text_input, .composition => true,
+        else => false,
+    };
 }
 
 /// Copy a font change for the tick to apply (`tick.applyFont`). A name past
@@ -551,9 +629,12 @@ fn copySaveOptions(window: *Window, options: *handler_mod.SavePromptOptions) voi
     assert(directory_len + name_len <= capacity);
 }
 
-pub fn setFocus(window: *Window, id: ElementId) void {
-    if (window.focus == id) return;
+/// `visible` draws the focused element's ring: focus moved by keyboard.
+pub fn setFocus(window: *Window, id: ElementId, visible: bool) void {
+    if (window.focus == id and window.focus_visible == visible) return;
     window.focus = id;
+    window.focus_visible = visible;
+    window.focus_reveal = visible;
     window.render_requested = true;
 }
 
@@ -585,12 +666,15 @@ pub fn updateHover(window: *Window) void {
     window.render_requested = true;
 }
 
-/// Blur a focused element that the frame just built did not render.
+/// Blur a focused element that the frame just built did not render, or
+/// that a modal opened over: keys must not reach what the pointer cannot.
 pub fn validateFocus(window: *Window) void {
     if (window.focus == .root) return;
     const frame = window.built();
     const index = findRecord(frame, window.focus);
-    if (index != index_none and frame.hits[index].focusable) return;
+    if (index != index_none and frame.hits[index].focusable) {
+        if (index >= frame.modal_hit_start) return;
+    }
     window.focus = .root;
     window.render_requested = true;
 }

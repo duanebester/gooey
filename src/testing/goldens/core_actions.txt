@@ -12,8 +12,8 @@ packed 1600x1200@2.00 clear=#eff1f5ff
   glyphs n=18 (196.00 166.00 132.50 11.50) color=#ffffffff hash=0f7f33b1
 hits
   hit (24.00 101.60 200.00 37.20) focus key
-  hit (24.00 154.80 140.00 39.20) click
-  hit (172.00 154.80 181.60 39.20) click
+  hit (24.00 154.80 140.00 39.20) click focus
+  hit (172.00 154.80 181.60 39.20) click focus
 a11y
   textbox (24.00 101.60 200.00 37.20) name="Type here... (cmd+s to save)"
   button (24.00 154.80 140.00 39.20) name="Undo (cmd+z)"
@@ -32,8 +32,8 @@ packed 1600x1200@2.00 clear=#eff1f5ff
   glyphs n=18 (196.00 166.00 132.50 11.50) color=#ffffffff hash=0f7f33b1
 hits
   hit (24.00 101.60 200.00 37.20) focus key
-  hit (24.00 154.80 140.00 39.20) click
-  hit (172.00 154.80 181.60 39.20) click
+  hit (24.00 154.80 140.00 39.20) click focus
+  hit (172.00 154.80 181.60 39.20) click focus
 a11y
   textbox (24.00 101.60 200.00 37.20) name="Type here... (cmd+s to save)"
   button (24.00 154.80 140.00 39.20) name="Undo (cmd+z)"
@@ -52,8 +52,8 @@ packed 1600x1200@2.00 clear=#eff1f5ff
   glyphs n=18 (196.00 166.00 132.50 11.50) color=#ffffffff hash=0f7f33b1
 hits
   hit (24.00 101.60 200.00 37.20) focus key
-  hit (24.00 154.80 140.00 39.20) click
-  hit (172.00 154.80 181.60 39.20) click
+  hit (24.00 154.80 140.00 39.20) click focus
+  hit (172.00 154.80 181.60 39.20) click focus
 a11y
   textbox (24.00 101.60 200.00 37.20) name="Type here... (cmd+s to save)"
   button (24.00 154.80 140.00 39.20) name="Undo (cmd+z)"
@@ -72,8 +72,8 @@ packed 1600x1200@2.00 clear=#eff1f5ff
   glyphs n=18 (196.00 166.00 132.50 11.50) color=#ffffffff hash=0f7f33b1
 hits
   hit (24.00 101.60 200.00 37.20) focus key
-  hit (24.00 154.80 140.00 39.20) click
-  hit (172.00 154.80 181.60 39.20) click
+  hit (24.00 154.80 140.00 39.20) click focus
+  hit (172.00 154.80 181.60 39.20) click focus
 a11y
   textbox (24.00 101.60 200.00 37.20) name="Type here... (cmd+s to save)"
   button (24.00 154.80 140.00 39.20) name="Undo (cmd+z)"
@@ -92,8 +92,8 @@ packed 1600x1200@2.00 clear=#eff1f5ff
   glyphs n=18 (196.00 166.00 132.50 11.50) color=#ffffffff hash=0f7f33b1
 hits
   hit (24.00 101.60 200.00 37.20) focus key
-  hit (24.00 154.80 140.00 39.20) click
-  hit (172.00 154.80 181.60 39.20) click
+  hit (24.00 154.80 140.00 39.20) click focus
+  hit (172.00 154.80 181.60 39.20) click focus
 a11y
   textbox (24.00 101.60 200.00 37.20) name="Type here... (cmd+s to save)"
   button (24.00 154.80 140.00 39.20) name="Undo (cmd+z)"
@@ -113,8 +113,8 @@ packed 1600x1200@2.00 clear=#eff1f5ff
   glyphs n=18 (196.00 166.00 132.50 11.50) color=#ffffffff hash=0f7f33b1
 hits
   hit (24.00 101.60 200.00 37.20) focus key
-  hit (24.00 154.80 140.00 39.20) click
-  hit (172.00 154.80 181.60 39.20) click
+  hit (24.00 154.80 140.00 39.20) click focus
+  hit (172.00 154.80 181.60 39.20) click focus
 a11y
   textbox (24.00 101.60 200.00 37.20) name="Type here... (cmd+s to save)" focused
   button (24.00 154.80 140.00 39.20) name="Undo (cmd+z)"
@@ -134,8 +134,8 @@ packed 1600x1200@2.00 clear=#eff1f5ff
   glyphs n=18 (196.00 166.00 132.50 11.50) color=#ffffffff hash=0f7f33b1
 hits
   hit (24.00 101.60 200.00 37.20) focus key
-  hit (24.00 154.80 140.00 39.20) click
-  hit (172.00 154.80 181.60 39.20) click
+  hit (24.00 154.80 140.00 39.20) click focus
+  hit (172.00 154.80 181.60 39.20) click focus
 a11y
   textbox (24.00 101.60 200.00 37.20) name="Type here... (cmd+s to save)" value="hi" focused
   button (24.00 154.80 140.00 39.20) name="Undo (cmd+z)"
@@ -155,8 +155,8 @@ packed 1600x1200@2.00 clear=#eff1f5ff
   glyphs n=18 (196.00 166.00 132.50 11.50) color=#ffffffff hash=0f7f33b1
 hits
   hit (24.00 101.60 200.00 37.20) focus key
-  hit (24.00 154.80 140.00 39.20) click
-  hit (172.00 154.80 181.60 39.20) click
+  hit (24.00 154.80 140.00 39.20) click focus
+  hit (172.00 154.80 181.60 39.20) click focus
 a11y
   textbox (24.00 101.60 200.00 37.20) name="Type here... (cmd+s to save)" value="hi" focused
   button (24.00 154.80 140.00 39.20) name="Undo (cmd+z)"
@@ -176,8 +176,8 @@ packed 1600x1200@2.00 clear=#eff1f5ff
   glyphs n=18 (196.00 166.00 132.50 11.50) color=#ffffffff hash=0f7f33b1
 hits
   hit (24.00 101.60 200.00 37.20) focus key
-  hit (24.00 154.80 140.00 39.20) click
-  hit (172.00 154.80 181.60 39.20) click
+  hit (24.00 154.80 140.00 39.20) click focus
+  hit (172.00 154.80 181.60 39.20) click focus
 a11y
   textbox (24.00 101.60 200.00 37.20) name="Type here... (cmd+s to save)" value="hi" focused
   button (24.00 154.80 140.00 39.20) name="Undo (cmd+z)"
@@ -196,11 +196,11 @@ packed 1600x1200@2.00 clear=#eff1f5ff
   glyphs n=18 (196.00 166.00 132.50 11.50) color=#ffffffff hash=0f7f33b1
 hits
   hit (24.00 101.60 200.00 37.20) focus key
-  hit (24.00 154.80 140.00 39.20) click
-  hit (172.00 154.80 181.60 39.20) click
+  hit (24.00 154.80 140.00 39.20) click focus
+  hit (172.00 154.80 181.60 39.20) click focus
 a11y
   textbox (24.00 101.60 200.00 37.20) name="Type here... (cmd+s to save)" value="hi"
-  button (24.00 154.80 140.00 39.20) name="Undo (cmd+z)"
+  button (24.00 154.80 140.00 39.20) name="Undo (cmd+z)" focused
   button (172.00 154.80 181.60 39.20) name="Redo (cmd+shift+z)"
 
 == step 10: click Redo
@@ -216,9 +216,9 @@ packed 1600x1200@2.00 clear=#eff1f5ff
   glyphs n=18 (196.00 166.00 132.50 11.50) color=#ffffffff hash=0f7f33b1
 hits
   hit (24.00 101.60 200.00 37.20) focus key
-  hit (24.00 154.80 140.00 39.20) click
-  hit (172.00 154.80 181.60 39.20) click
+  hit (24.00 154.80 140.00 39.20) click focus
+  hit (172.00 154.80 181.60 39.20) click focus
 a11y
   textbox (24.00 101.60 200.00 37.20) name="Type here... (cmd+s to save)" value="hi"
   button (24.00 154.80 140.00 39.20) name="Undo (cmd+z)"
-  button (172.00 154.80 181.60 39.20) name="Redo (cmd+shift+z)"
+  button (172.00 154.80 181.60 39.20) name="Redo (cmd+shift+z)" focused

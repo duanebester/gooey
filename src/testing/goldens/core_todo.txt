@@ -20,11 +20,11 @@ packed 960x1120@2.00 clear=#eff1f5ff
   glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=b23182a8
 hits
   hit (24.00 74.60 349.60 37.20) focus key
-  hit (381.60 73.60 74.40 39.20) click
-  hit (24.00 128.80 40.10 28.80) click
-  hit (72.10 128.80 64.60 28.80) click
-  hit (144.70 128.80 54.10 28.80) click
-  hit (83.70 507.20 124.80 28.80) click
+  hit (381.60 73.60 74.40 39.20) click focus
+  hit (24.00 128.80 40.10 28.80) click focus
+  hit (72.10 128.80 64.60 28.80) click focus
+  hit (144.70 128.80 54.10 28.80) click focus
+  hit (83.70 507.20 124.80 28.80) click focus
 a11y
   textbox (24.00 74.60 349.60 37.20) name="What needs doing?"
   button (381.60 73.60 74.40 39.20) name="Add"
@@ -54,11 +54,11 @@ packed 960x1120@2.00 clear=#eff1f5ff
   glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=b23182a8
 hits
   hit (24.00 74.60 349.60 37.20) focus key
-  hit (381.60 73.60 74.40 39.20) click
-  hit (24.00 128.80 40.10 28.80) click
-  hit (72.10 128.80 64.60 28.80) click
-  hit (144.70 128.80 54.10 28.80) click
-  hit (83.70 507.20 124.80 28.80) click
+  hit (381.60 73.60 74.40 39.20) click focus
+  hit (24.00 128.80 40.10 28.80) click focus
+  hit (72.10 128.80 64.60 28.80) click focus
+  hit (144.70 128.80 54.10 28.80) click focus
+  hit (83.70 507.20 124.80 28.80) click focus
 a11y
   textbox (24.00 74.60 349.60 37.20) name="What needs doing?" focused
   button (381.60 73.60 74.40 39.20) name="Add"
@@ -88,11 +88,11 @@ packed 960x1120@2.00 clear=#eff1f5ff
   glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=b23182a8
 hits
   hit (24.00 74.60 349.60 37.20) focus key
-  hit (381.60 73.60 74.40 39.20) click
-  hit (24.00 128.80 40.10 28.80) click
-  hit (72.10 128.80 64.60 28.80) click
-  hit (144.70 128.80 54.10 28.80) click
-  hit (83.70 507.20 124.80 28.80) click
+  hit (381.60 73.60 74.40 39.20) click focus
+  hit (24.00 128.80 40.10 28.80) click focus
+  hit (72.10 128.80 64.60 28.80) click focus
+  hit (144.70 128.80 54.10 28.80) click focus
+  hit (83.70 507.20 124.80 28.80) click focus
 a11y
   textbox (24.00 74.60 349.60 37.20) name="What needs doing?" value="buy milk" focused
   button (381.60 73.60 74.40 39.20) name="Add"
@@ -122,11 +122,11 @@ packed 960x1120@2.00 clear=#eff1f5ff
   glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=b23182a8
 hits
   hit (24.00 74.60 349.60 37.20) focus key
-  hit (381.60 73.60 74.40 39.20) click
-  hit (24.00 128.80 40.10 28.80) click
-  hit (72.10 128.80 64.60 28.80) click
-  hit (144.70 128.80 54.10 28.80) click
-  hit (83.70 507.20 124.80 28.80) click
+  hit (381.60 73.60 74.40 39.20) click focus
+  hit (24.00 128.80 40.10 28.80) click focus
+  hit (72.10 128.80 64.60 28.80) click focus
+  hit (144.70 128.80 54.10 28.80) click focus
+  hit (83.70 507.20 124.80 28.80) click focus
 a11y
   textbox (24.00 74.60 349.60 37.20) name="What needs doing?" value="buy mil" focused
   button (381.60 73.60 74.40 39.20) name="Add"
@@ -156,11 +156,11 @@ packed 960x1120@2.00 clear=#eff1f5ff
   glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=b23182a8
 hits
   hit (24.00 74.60 349.60 37.20) focus key
-  hit (381.60 73.60 74.40 39.20) click
-  hit (24.00 128.80 40.10 28.80) click
-  hit (72.10 128.80 64.60 28.80) click
-  hit (144.70 128.80 54.10 28.80) click
-  hit (83.70 507.20 124.80 28.80) click
+  hit (381.60 73.60 74.40 39.20) click focus
+  hit (24.00 128.80 40.10 28.80) click focus
+  hit (72.10 128.80 64.60 28.80) click focus
+  hit (144.70 128.80 54.10 28.80) click focus
+  hit (83.70 507.20 124.80 28.80) click focus
 a11y
   textbox (24.00 74.60 349.60 37.20) name="What needs doing?" value="buy milk" focused
   button (381.60 73.60 74.40 39.20) name="Add"
@@ -193,16 +193,16 @@ packed 960x1120@2.00 clear=#eff1f5ff
   glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=b23182a8
 hits
   hit (24.00 74.60 349.60 37.20) focus key
-  hit (381.60 73.60 74.40 39.20) click
-  hit (24.00 128.80 40.10 28.80) click
-  hit (72.10 128.80 64.60 28.80) click
-  hit (144.70 128.80 54.10 28.80) click
-  hit (34.00 189.00 18.00 18.00) click
-  hit (381.40 183.60 64.60 28.80) click
-  hit (83.70 507.20 124.80 28.80) click
+  hit (381.60 73.60 74.40 39.20) click focus
+  hit (24.00 128.80 40.10 28.80) click focus
+  hit (72.10 128.80 64.60 28.80) click focus
+  hit (144.70 128.80 54.10 28.80) click focus
+  hit (34.00 189.00 18.00 18.00) click focus
+  hit (381.40 183.60 64.60 28.80) click focus
+  hit (83.70 507.20 124.80 28.80) click focus
 a11y
   textbox (24.00 74.60 349.60 37.20) name="What needs doing?"
-  button (381.60 73.60 74.40 39.20) name="Add"
+  button (381.60 73.60 74.40 39.20) name="Add" focused
   button (24.00 128.80 40.10 28.80) name="All"
   button (72.10 128.80 64.60 28.80) name="Active"
   button (144.70 128.80 54.10 28.80) name="Done"
@@ -235,13 +235,13 @@ packed 960x1120@2.00 clear=#eff1f5ff
   glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=b23182a8
 hits
   hit (24.00 74.60 349.60 37.20) focus key
-  hit (381.60 73.60 74.40 39.20) click
-  hit (24.00 128.80 40.10 28.80) click
-  hit (72.10 128.80 64.60 28.80) click
-  hit (144.70 128.80 54.10 28.80) click
-  hit (34.00 189.00 18.00 18.00) click
-  hit (381.40 183.60 64.60 28.80) click
-  hit (83.70 507.20 124.80 28.80) click
+  hit (381.60 73.60 74.40 39.20) click focus
+  hit (24.00 128.80 40.10 28.80) click focus
+  hit (72.10 128.80 64.60 28.80) click focus
+  hit (144.70 128.80 54.10 28.80) click focus
+  hit (34.00 189.00 18.00 18.00) click focus
+  hit (381.40 183.60 64.60 28.80) click focus
+  hit (83.70 507.20 124.80 28.80) click focus
 a11y
   textbox (24.00 74.60 349.60 37.20) name="What needs doing?" focused
   button (381.60 73.60 74.40 39.20) name="Add"
@@ -277,13 +277,13 @@ packed 960x1120@2.00 clear=#eff1f5ff
   glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=b23182a8
 hits
   hit (24.00 74.60 349.60 37.20) focus key
-  hit (381.60 73.60 74.40 39.20) click
-  hit (24.00 128.80 40.10 28.80) click
-  hit (72.10 128.80 64.60 28.80) click
-  hit (144.70 128.80 54.10 28.80) click
-  hit (34.00 189.00 18.00 18.00) click
-  hit (381.40 183.60 64.60 28.80) click
-  hit (83.70 507.20 124.80 28.80) click
+  hit (381.60 73.60 74.40 39.20) click focus
+  hit (24.00 128.80 40.10 28.80) click focus
+  hit (72.10 128.80 64.60 28.80) click focus
+  hit (144.70 128.80 54.10 28.80) click focus
+  hit (34.00 189.00 18.00 18.00) click focus
+  hit (381.40 183.60 64.60 28.80) click focus
+  hit (83.70 507.20 124.80 28.80) click focus
 a11y
   textbox (24.00 74.60 349.60 37.20) name="What needs doing?" focused
   button (381.60 73.60 74.40 39.20) name="Add"
@@ -319,13 +319,13 @@ packed 960x1120@2.00 clear=#eff1f5ff
   glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=b23182a8
 hits
   hit (24.00 74.60 349.60 37.20) focus key
-  hit (381.60 73.60 74.40 39.20) click
-  hit (24.00 128.80 40.10 28.80) click
-  hit (72.10 128.80 64.60 28.80) click
-  hit (144.70 128.80 54.10 28.80) click
-  hit (34.00 189.00 18.00 18.00) click
-  hit (381.40 183.60 64.60 28.80) click
-  hit (83.70 507.20 124.80 28.80) click
+  hit (381.60 73.60 74.40 39.20) click focus
+  hit (24.00 128.80 40.10 28.80) click focus
+  hit (72.10 128.80 64.60 28.80) click focus
+  hit (144.70 128.80 54.10 28.80) click focus
+  hit (34.00 189.00 18.00 18.00) click focus
+  hit (381.40 183.60 64.60 28.80) click focus
+  hit (83.70 507.20 124.80 28.80) click focus
 a11y
   textbox (24.00 74.60 349.60 37.20) name="What needs doing?" focused
   button (381.60 73.60 74.40 39.20) name="Add"
@@ -361,13 +361,13 @@ packed 960x1120@2.00 clear=#eff1f5ff
   glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=b23182a8
 hits
   hit (24.00 74.60 349.60 37.20) focus key
-  hit (381.60 73.60 74.40 39.20) click
-  hit (24.00 128.80 40.10 28.80) click
-  hit (72.10 128.80 64.60 28.80) click
-  hit (144.70 128.80 54.10 28.80) click
-  hit (34.00 189.00 18.00 18.00) click
-  hit (381.40 183.60 64.60 28.80) click
-  hit (83.70 507.20 124.80 28.80) click
+  hit (381.60 73.60 74.40 39.20) click focus
+  hit (24.00 128.80 40.10 28.80) click focus
+  hit (72.10 128.80 64.60 28.80) click focus
+  hit (144.70 128.80 54.10 28.80) click focus
+  hit (34.00 189.00 18.00 18.00) click focus
+  hit (381.40 183.60 64.60 28.80) click focus
+  hit (83.70 507.20 124.80 28.80) click focus
 a11y
   textbox (24.00 74.60 349.60 37.20) name="What needs doing?" focused
   button (381.60 73.60 74.40 39.20) name="Add"
@@ -403,13 +403,13 @@ packed 960x1120@2.00 clear=#eff1f5ff
   glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=b23182a8
 hits
   hit (24.00 74.60 349.60 37.20) focus key
-  hit (381.60 73.60 74.40 39.20) click
-  hit (24.00 128.80 40.10 28.80) click
-  hit (72.10 128.80 64.60 28.80) click
-  hit (144.70 128.80 54.10 28.80) click
-  hit (34.00 189.00 18.00 18.00) click
-  hit (381.40 183.60 64.60 28.80) click
-  hit (83.70 507.20 124.80 28.80) click
+  hit (381.60 73.60 74.40 39.20) click focus
+  hit (24.00 128.80 40.10 28.80) click focus
+  hit (72.10 128.80 64.60 28.80) click focus
+  hit (144.70 128.80 54.10 28.80) click focus
+  hit (34.00 189.00 18.00 18.00) click focus
+  hit (381.40 183.60 64.60 28.80) click focus
+  hit (83.70 507.20 124.80 28.80) click focus
 a11y
   textbox (24.00 74.60 349.60 37.20) name="What needs doing?" value="café" focused
   button (381.60 73.60 74.40 39.20) name="Add"
@@ -449,18 +449,18 @@ packed 960x1120@2.00 clear=#eff1f5ff
   glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=b23182a8
 hits
   hit (24.00 74.60 349.60 37.20) focus key
-  hit (381.60 73.60 74.40 39.20) click
-  hit (24.00 128.80 40.10 28.80) click
-  hit (72.10 128.80 64.60 28.80) click
-  hit (144.70 128.80 54.10 28.80) click
-  hit (34.00 189.00 18.00 18.00) click
-  hit (381.40 183.60 64.60 28.80) click
-  hit (34.00 245.80 18.00 18.00) click
-  hit (381.40 240.40 64.60 28.80) click
-  hit (83.70 507.20 124.80 28.80) click
+  hit (381.60 73.60 74.40 39.20) click focus
+  hit (24.00 128.80 40.10 28.80) click focus
+  hit (72.10 128.80 64.60 28.80) click focus
+  hit (144.70 128.80 54.10 28.80) click focus
+  hit (34.00 189.00 18.00 18.00) click focus
+  hit (381.40 183.60 64.60 28.80) click focus
+  hit (34.00 245.80 18.00 18.00) click focus
+  hit (381.40 240.40 64.60 28.80) click focus
+  hit (83.70 507.20 124.80 28.80) click focus
 a11y
   textbox (24.00 74.60 349.60 37.20) name="What needs doing?"
-  button (381.60 73.60 74.40 39.20) name="Add"
+  button (381.60 73.60 74.40 39.20) name="Add" focused
   button (24.00 128.80 40.10 28.80) name="All"
   button (72.10 128.80 64.60 28.80) name="Active"
   button (144.70 128.80 54.10 28.80) name="Done"
@@ -500,22 +500,22 @@ packed 960x1120@2.00 clear=#eff1f5ff
   glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=b23182a8
 hits
   hit (24.00 74.60 349.60 37.20) focus key
-  hit (381.60 73.60 74.40 39.20) click
-  hit (24.00 128.80 40.10 28.80) click
-  hit (72.10 128.80 64.60 28.80) click
-  hit (144.70 128.80 54.10 28.80) click
-  hit (34.00 189.00 18.00 18.00) click
-  hit (381.40 183.60 64.60 28.80) click
-  hit (34.00 245.80 18.00 18.00) click
-  hit (381.40 240.40 64.60 28.80) click
-  hit (83.70 507.20 124.80 28.80) click
+  hit (381.60 73.60 74.40 39.20) click focus
+  hit (24.00 128.80 40.10 28.80) click focus
+  hit (72.10 128.80 64.60 28.80) click focus
+  hit (144.70 128.80 54.10 28.80) click focus
+  hit (34.00 189.00 18.00 18.00) click focus
+  hit (381.40 183.60 64.60 28.80) click focus
+  hit (34.00 245.80 18.00 18.00) click focus
+  hit (381.40 240.40 64.60 28.80) click focus
+  hit (83.70 507.20 124.80 28.80) click focus
 a11y
   textbox (24.00 74.60 349.60 37.20) name="What needs doing?"
   button (381.60 73.60 74.40 39.20) name="Add"
   button (24.00 128.80 40.10 28.80) name="All"
   button (72.10 128.80 64.60 28.80) name="Active"
   button (144.70 128.80 54.10 28.80) name="Done"
-  checkbox (34.00 189.00 18.00 18.00) checked
+  checkbox (34.00 189.00 18.00 18.00) focused checked
   button (381.40 183.60 64.60 28.80) name="Delete"
   checkbox (34.00 245.80 18.00 18.00)
   button (381.40 240.40 64.60 28.80) name="Delete"
@@ -545,18 +545,18 @@ packed 960x1120@2.00 clear=#eff1f5ff
   glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=b23182a8
 hits
   hit (24.00 74.60 349.60 37.20) focus key
-  hit (381.60 73.60 74.40 39.20) click
-  hit (24.00 128.80 40.10 28.80) click
-  hit (72.10 128.80 64.60 28.80) click
-  hit (144.70 128.80 54.10 28.80) click
-  hit (34.00 189.00 18.00 18.00) click
-  hit (381.40 183.60 64.60 28.80) click
-  hit (83.70 507.20 124.80 28.80) click
+  hit (381.60 73.60 74.40 39.20) click focus
+  hit (24.00 128.80 40.10 28.80) click focus
+  hit (72.10 128.80 64.60 28.80) click focus
+  hit (144.70 128.80 54.10 28.80) click focus
+  hit (34.00 189.00 18.00 18.00) click focus
+  hit (381.40 183.60 64.60 28.80) click focus
+  hit (83.70 507.20 124.80 28.80) click focus
 a11y
   textbox (24.00 74.60 349.60 37.20) name="What needs doing?"
   button (381.60 73.60 74.40 39.20) name="Add"
   button (24.00 128.80 40.10 28.80) name="All"
-  button (72.10 128.80 64.60 28.80) name="Active"
+  button (72.10 128.80 64.60 28.80) name="Active" focused
   button (144.70 128.80 54.10 28.80) name="Done"
   checkbox (34.00 189.00 18.00 18.00)
   button (381.40 183.60 64.60 28.80) name="Delete"
@@ -587,19 +587,19 @@ packed 960x1120@2.00 clear=#eff1f5ff
   glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=b23182a8
 hits
   hit (24.00 74.60 349.60 37.20) focus key
-  hit (381.60 73.60 74.40 39.20) click
-  hit (24.00 128.80 40.10 28.80) click
-  hit (72.10 128.80 64.60 28.80) click
-  hit (144.70 128.80 54.10 28.80) click
-  hit (34.00 189.00 18.00 18.00) click
-  hit (381.40 183.60 64.60 28.80) click
-  hit (83.70 507.20 124.80 28.80) click
+  hit (381.60 73.60 74.40 39.20) click focus
+  hit (24.00 128.80 40.10 28.80) click focus
+  hit (72.10 128.80 64.60 28.80) click focus
+  hit (144.70 128.80 54.10 28.80) click focus
+  hit (34.00 189.00 18.00 18.00) click focus
+  hit (381.40 183.60 64.60 28.80) click focus
+  hit (83.70 507.20 124.80 28.80) click focus
 a11y
   textbox (24.00 74.60 349.60 37.20) name="What needs doing?"
   button (381.60 73.60 74.40 39.20) name="Add"
   button (24.00 128.80 40.10 28.80) name="All"
   button (72.10 128.80 64.60 28.80) name="Active"
-  button (144.70 128.80 54.10 28.80) name="Done"
+  button (144.70 128.80 54.10 28.80) name="Done" focused
   checkbox (34.00 189.00 18.00 18.00) checked
   button (381.40 183.60 64.60 28.80) name="Delete"
   button (83.70 507.20 124.80 28.80) name="Clear completed"
@@ -634,19 +634,19 @@ packed 960x1120@2.00 clear=#eff1f5ff
   glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=b23182a8
 hits
   hit (24.00 74.60 349.60 37.20) focus key
-  hit (381.60 73.60 74.40 39.20) click
-  hit (24.00 128.80 40.10 28.80) click
-  hit (72.10 128.80 64.60 28.80) click
-  hit (144.70 128.80 54.10 28.80) click
-  hit (34.00 189.00 18.00 18.00) click
-  hit (381.40 183.60 64.60 28.80) click
-  hit (34.00 245.80 18.00 18.00) click
-  hit (381.40 240.40 64.60 28.80) click
-  hit (83.70 507.20 124.80 28.80) click
+  hit (381.60 73.60 74.40 39.20) click focus
+  hit (24.00 128.80 40.10 28.80) click focus
+  hit (72.10 128.80 64.60 28.80) click focus
+  hit (144.70 128.80 54.10 28.80) click focus
+  hit (34.00 189.00 18.00 18.00) click focus
+  hit (381.40 183.60 64.60 28.80) click focus
+  hit (34.00 245.80 18.00 18.00) click focus
+  hit (381.40 240.40 64.60 28.80) click focus
+  hit (83.70 507.20 124.80 28.80) click focus
 a11y
   textbox (24.00 74.60 349.60 37.20) name="What needs doing?"
   button (381.60 73.60 74.40 39.20) name="Add"
-  button (24.00 128.80 40.10 28.80) name="All"
+  button (24.00 128.80 40.10 28.80) name="All" focused
   button (72.10 128.80 64.60 28.80) name="Active"
   button (144.70 128.80 54.10 28.80) name="Done"
   checkbox (34.00 189.00 18.00 18.00) checked
@@ -685,19 +685,19 @@ packed 960x1120@2.00 clear=#eff1f5ff
   glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=b23182a8
 hits
   hit (24.00 74.60 349.60 37.20) focus key
-  hit (381.60 73.60 74.40 39.20) click
-  hit (24.00 128.80 40.10 28.80) click
-  hit (72.10 128.80 64.60 28.80) click
-  hit (144.70 128.80 54.10 28.80) click
-  hit (34.00 189.00 18.00 18.00) click
-  hit (381.40 183.60 64.60 28.80) click
-  hit (34.00 245.80 18.00 18.00) click
-  hit (381.40 240.40 64.60 28.80) click
-  hit (83.70 507.20 124.80 28.80) click
+  hit (381.60 73.60 74.40 39.20) click focus
+  hit (24.00 128.80 40.10 28.80) click focus
+  hit (72.10 128.80 64.60 28.80) click focus
+  hit (144.70 128.80 54.10 28.80) click focus
+  hit (34.00 189.00 18.00 18.00) click focus
+  hit (381.40 183.60 64.60 28.80) click focus
+  hit (34.00 245.80 18.00 18.00) click focus
+  hit (381.40 240.40 64.60 28.80) click focus
+  hit (83.70 507.20 124.80 28.80) click focus
 a11y
   textbox (24.00 74.60 349.60 37.20) name="What needs doing?"
   button (381.60 73.60 74.40 39.20) name="Add"
-  button (24.00 128.80 40.10 28.80) name="All"
+  button (24.00 128.80 40.10 28.80) name="All" focused
   button (72.10 128.80 64.60 28.80) name="Active"
   button (144.70 128.80 54.10 28.80) name="Done"
   checkbox (34.00 189.00 18.00 18.00) checked
@@ -731,13 +731,13 @@ packed 960x1120@2.00 clear=#eff1f5ff
   glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=b23182a8
 hits
   hit (24.00 74.60 349.60 37.20) focus key
-  hit (381.60 73.60 74.40 39.20) click
-  hit (24.00 128.80 40.10 28.80) click
-  hit (72.10 128.80 64.60 28.80) click
-  hit (144.70 128.80 54.10 28.80) click
-  hit (34.00 189.00 18.00 18.00) click
-  hit (381.40 183.60 64.60 28.80) click
-  hit (83.70 507.20 124.80 28.80) click
+  hit (381.60 73.60 74.40 39.20) click focus
+  hit (24.00 128.80 40.10 28.80) click focus
+  hit (72.10 128.80 64.60 28.80) click focus
+  hit (144.70 128.80 54.10 28.80) click focus
+  hit (34.00 189.00 18.00 18.00) click focus
+  hit (381.40 183.60 64.60 28.80) click focus
+  hit (83.70 507.20 124.80 28.80) click focus
 a11y
   textbox (24.00 74.60 349.60 37.20) name="What needs doing?"
   button (381.60 73.60 74.40 39.20) name="Add"
@@ -768,11 +768,11 @@ packed 960x1120@2.00 clear=#eff1f5ff
   glyphs n=15 (95.50 514.00 99.50 10.00) color=#4c4f69ff hash=b23182a8
 hits
   hit (24.00 74.60 349.60 37.20) focus key
-  hit (381.60 73.60 74.40 39.20) click
-  hit (24.00 128.80 40.10 28.80) click
-  hit (72.10 128.80 64.60 28.80) click
-  hit (144.70 128.80 54.10 28.80) click
-  hit (83.70 507.20 124.80 28.80) click
+  hit (381.60 73.60 74.40 39.20) click focus
+  hit (24.00 128.80 40.10 28.80) click focus
+  hit (72.10 128.80 64.60 28.80) click focus
+  hit (144.70 128.80 54.10 28.80) click focus
+  hit (83.70 507.20 124.80 28.80) click focus
 a11y
   textbox (24.00 74.60 349.60 37.20) name="What needs doing?"
   button (381.60 73.60 74.40 39.20) name="Add"
