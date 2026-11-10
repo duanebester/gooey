@@ -349,7 +349,7 @@ pub const ClipboardState = struct {
             registry,
             name,
             &wl_data_device_manager_interface,
-            @min(version, 3),
+            .{ .advertised = version, .supported_max = 3 },
         )));
     }
 
