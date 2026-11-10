@@ -3479,6 +3479,48 @@ test "Enter and Space click the focused control once per press" {
     try testing.expectEqual(internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
 }
 
+test "keyboard focus stays in view when a layout change moves it, but not after a wheel" {
+    // Goal: the reveal follows the focused box when content around it
+    // changes size, not only when focus moves, and leaves a scroll the user
+    // made alone. Methodology: on accessible_form, Tab to Submit, which
+    // scrolls it to the bottom of the 800 px window, and press Enter on the
+    // empty form: three error messages appear above it, pushing it down by
+    // more than its margin. It must stay in the window with its ring. Then
+    // wheel the form up, which moves Submit off the bottom: it stays there.
+    const app = try testing.allocator.create(accessible_form.App);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    for (0..10) |_| pressKey(app, &now, .tab, .{});
+    try expectFocused(&app.window, .button, "Submit registration form");
+    const before = focusedNode(&app.window).?.bounds;
+    try testing.expect(before.y + before.height + 4 <= 800.01);
+    try testing.expect(before.y + before.height > 700);
+    pressKey(app, &now, .@"return", .{});
+    try testing.expect(formNode(app, .alert, "Name is required") != null);
+    try expectFocused(&app.window, .button, "Submit registration form");
+    const after = focusedNode(&app.window).?.bounds;
+    try testing.expect(after.y - 4 >= -0.01);
+    try testing.expect(after.y + after.height + 4 <= 800.01);
+    try expectRingAround(&app.window, after);
+
+    const direction: f32 = if (@import("builtin").os.tag == .macos) -1 else 1;
+    app.window.queue.push(.{ .input = .{ .scroll = .{
+        .position = .{ .x = 300, .y = 400 },
+        .delta = .{ .x = 0, .y = -300 * direction },
+        .modifiers = .{},
+    } } });
+    now += 1;
+    app.tick(now);
+    now += 1;
+    app.tick(now);
+    const wheeled = focusedNode(&app.window).?.bounds;
+    try testing.expect(wheeled.y > 800);
+    try expectFocused(&app.window, .button, "Submit registration form");
+}
+
 test "a Select opens, moves, and chooses from the keyboard" {
     // Goal: the Select's keys through its retained key handler and
     // `effects.click`, with focus as the highlight. Methodology: on the

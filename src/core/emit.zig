@@ -310,12 +310,7 @@ fn emitFragment(window: *Window, layers_open: *LayerQueue, root: *const LayerRoo
                     .fragment = root.fragment,
                 });
                 if (window.focus_visible and node.focusable and window.isFocused(node.id)) {
-                    ring = .{
-                        .bounds = bounds,
-                        .corners = node.corners,
-                        .clip = clips.current(),
-                        .scroll = clips.innermostScroll(window),
-                    };
+                    ring = focusRing(window, &clips, node, bounds);
                 }
                 if (node.kind == .paint) emitPaint(window, node, bounds, clips.sceneDepth());
                 if (node.clip) clips.open(window, node, index, bounds);
@@ -327,7 +322,12 @@ fn emitFragment(window: *Window, layers_open: *LayerQueue, root: *const LayerRoo
     clips.close(window, 0);
     assert(clips.len == 0);
     if (ring) |focused| {
-        if (window.focus_reveal) revealFocus(window, &focused);
+        if (window.focus_reveal or focusShifted(window, &focused)) revealFocus(window, &focused);
+        window.focus_place = .{
+            .id = window.focus,
+            .frame_number = window.frame_number,
+            .content = focused.content,
+        };
         emitFocusRing(window, &focused, clips.sceneDepth());
     }
     if (root.clip != null) window.built().appendPaint(.clip_pop);
@@ -349,16 +349,53 @@ const FocusRing = struct {
     corners: records.Corners,
     clip: ?Rect,
     scroll: ?ScrollHandle,
+    /// `Window.FocusPlace.content`: `bounds` in the scroll box's content.
+    content: Rect,
 };
 
 const ScrollHandle = retained_mod.Handle(window_mod.ScrollState);
 
-/// Scroll the innermost scroll box around keyboard focus so the box and its
-/// ring are in view, once per focus move: a wheel may scroll it away again.
-/// The next frame draws the new offset; outer scroll boxes stay put.
-fn revealFocus(window: *Window, ring: *const FocusRing) void {
-    assert(window.focus_reveal);
+/// Read while the scroll box is open, so its offset is the one this
+/// frame's layout applied; the emit may clamp it when the box closes.
+fn focusRing(window: *Window, clips: *const Clips, node: *const Node, bounds: Rect) FocusRing {
+    assert(window.isFocused(node.id));
     assert(window.focus_visible);
+    var ring = FocusRing{
+        .bounds = bounds,
+        .corners = node.corners,
+        .clip = clips.current(),
+        .scroll = null,
+        .content = bounds,
+    };
+    if (clips.innermostScroll(window)) |scroll| {
+        const state = window.retained.get(window_mod.ScrollState, scroll.handle);
+        ring.scroll = scroll.handle;
+        ring.content.x = bounds.x - scroll.bounds.x + state.offset_x;
+        ring.content.y = bounds.y - scroll.bounds.y + state.offset_y;
+    }
+    assert(ring.content.width == bounds.width);
+    return ring;
+}
+
+/// Whether the last build drew this ring elsewhere in its scroll box's
+/// content: a layout change above or around the focused box, such as an
+/// error message appearing, moved or resized it. A scroll does not.
+fn focusShifted(window: *const Window, ring: *const FocusRing) bool {
+    const place = &window.focus_place;
+    assert(place.frame_number < window.frame_number);
+    if (ring.scroll == null) return false;
+    if (place.id != window.focus) return false;
+    if (place.frame_number + 1 != window.frame_number) return false;
+    return !std.meta.eql(place.content, ring.content);
+}
+
+/// Scroll the innermost scroll box around keyboard focus so the box and its
+/// ring are in view: once per focus move, and again when a layout change
+/// moves the box, but not after a wheel scrolled it away. The next frame
+/// draws the new offset; outer scroll boxes stay put.
+fn revealFocus(window: *Window, ring: *const FocusRing) void {
+    assert(window.focus_visible);
+    assert(ring.bounds.width >= 0);
     window.focus_reveal = false;
     const handle = ring.scroll orelse return;
     const state = window.retained.get(window_mod.ScrollState, handle);
@@ -524,13 +561,18 @@ const Clips = struct {
         extent_bottom: f32,
     };
 
-    /// The scroll state of the innermost open scroll box, if any.
-    fn innermostScroll(self: *const Clips, window: *const Window) ?ScrollHandle {
+    const Scroll = struct { handle: ScrollHandle, bounds: Rect };
+
+    /// The innermost open scroll box's state and bounds, if any.
+    fn innermostScroll(self: *const Clips, window: *const Window) ?Scroll {
         assert(self.len <= clip_depth_max);
         var index = self.len;
         while (index > 0) {
             index -= 1;
-            if (window.nodes[self.entries[index].node_index].scroll) |handle| return handle;
+            const entry = &self.entries[index];
+            if (window.nodes[entry.node_index].scroll) |handle| {
+                return .{ .handle = handle, .bounds = entry.bounds };
+            }
         }
         return null;
     }

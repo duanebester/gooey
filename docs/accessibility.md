@@ -224,8 +224,10 @@ it is dropped, so a key cannot reach what the pointer cannot.
 Focus that the keyboard moved, by Tab or by a handler reacting to a key, draws a focus ring:
 2 px of the theme's `border_focus`, 2 px outside the focused box and following its corners.
 A pointer press focuses too, but draws no ring, as a browser's `:focus-visible` does. The
-keyboard's move also scrolls the innermost scroll box around the focused box, once, so the
-box and its ring are in view.
+keyboard's move also scrolls the innermost scroll box around the focused box, so the box
+and its ring are in view, and so does a later layout change that moves or resizes the box
+within that scroll box's content, such as error text appearing above it. A wheel scroll
+does not move the box within the content, so it scrolls keyboard focus away freely.
 
 A control with keys of its own, such as `Select`, gives its box an `on_key` handler bound
 to state it retained with `cx.retain`, and presses its own parts with `effects.click(id)`,
@@ -470,8 +472,8 @@ this repository but is not API.
 
 ## Known gaps
 
-- Only the innermost scroll box scrolls to keyboard focus, and only when focus moves: a
-  focused control that a layout change pushes out of view stays there.
+- Only the innermost scroll box scrolls to keyboard focus. Focus the pointer gave, which
+  draws no ring, is not scrolled to when a layout change moves it.
 - Focus on an element that stops rendering, such as a deleted row's button, is dropped, and
   the next Tab starts from the first control.
 - Arrow keys do not move between radio options; each option is its own Tab stop.

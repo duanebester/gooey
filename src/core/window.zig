@@ -158,6 +158,16 @@ pub const Node = struct {
     source: debugger_mod.NodeSource,
 };
 
+/// A focused box's place in its innermost scroll box's content, which a
+/// scroll does not change and a layout change above or around it does; the
+/// box's own bounds when no scroll box encloses it.
+pub const FocusPlace = struct {
+    id: ElementId,
+    /// The build that drew it.
+    frame_number: u64,
+    content: records.Rect,
+};
+
 /// A scroll box's offset, retained by its key (contract §1), and what the
 /// last emit measured, so the router clamps a wheel step and the next build
 /// clamps a shrunk content without waiting for layout. The scrollbar's
@@ -528,6 +538,9 @@ pub const Window = struct {
     /// Keyboard focus moved since the last emit, which scrolls the focused
     /// box into its scroll box's view once, so the ring is seen.
     focus_reveal: bool,
+    /// Where the last build drew the focus ring, so the next one sees a
+    /// layout change move the focused box and scrolls it back into view.
+    focus_place: FocusPlace,
     hover_path: [box_depth_max]ElementId,
     hover_len: u32,
     /// The hovered record's cursor, or the nearest ancestor's that sets one;
@@ -761,6 +774,11 @@ pub noinline fn initInPlace(self: *Window, gpa: std.mem.Allocator, options: *con
     self.focus = .root;
     self.focus_visible = false;
     self.focus_reveal = false;
+    self.focus_place = .{
+        .id = .root,
+        .frame_number = 0,
+        .content = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
+    };
     self.hover_len = 0;
     self.cursor = .default;
     self.press_len = 0;
