@@ -127,6 +127,16 @@ pub const MeshPool = struct {
         }
     }
 
+    /// Reserve `count` frame meshes now, so later frames never allocate: the
+    /// 0.4.0 core calls this at init, sized by `ResourceLimits.scene`.
+    pub fn reserveFrame(self: *Self, count: u32) MeshPoolError!void {
+        std.debug.assert(self.frame_meshes == null);
+        std.debug.assert(count > 0 and count <= MAX_FRAME_MESHES);
+        self.frame_meshes = self.allocator.alloc(PathMesh, count) catch {
+            return error.OutOfMemory;
+        };
+    }
+
     /// Ensure frame mesh array is allocated
     fn ensureFrameAllocated(self: *Self) MeshPoolError!void {
         if (self.frame_meshes == null) {
@@ -176,6 +186,9 @@ pub const MeshPool = struct {
 
         if (self.frame_count >= MAX_FRAME_MESHES) {
             return error.FramePoolFull;
+        }
+        if (self.frame_meshes) |meshes| {
+            if (self.frame_count >= meshes.len) return error.FramePoolFull;
         }
 
         // Lazy allocation of frame array
@@ -311,7 +324,7 @@ test "MeshRef toGpuRef" {
 }
 
 test "MeshPool persistent caching" {
-    const vec2_mod = @import("../core/vec2.zig");
+    const vec2_mod = @import("../geometry/vec2.zig");
 
     var pool = MeshPool.init(std.testing.allocator);
     defer pool.deinit();
@@ -338,7 +351,7 @@ test "MeshPool persistent caching" {
 }
 
 test "MeshPool frame allocation" {
-    const vec2_mod = @import("../core/vec2.zig");
+    const vec2_mod = @import("../geometry/vec2.zig");
 
     var pool = MeshPool.init(std.testing.allocator);
     defer pool.deinit();
@@ -367,7 +380,7 @@ test "MeshPool frame allocation" {
 }
 
 test "MeshPool hasPersistent" {
-    const vec2_mod = @import("../core/vec2.zig");
+    const vec2_mod = @import("../geometry/vec2.zig");
 
     var pool = MeshPool.init(std.testing.allocator);
     defer pool.deinit();
@@ -412,7 +425,7 @@ test "MeshPool lazy allocation" {
     try std.testing.expect(!stats1.frame_allocated);
 
     // After using persistent, only persistent should be allocated
-    const vec2_mod = @import("../core/vec2.zig");
+    const vec2_mod = @import("../geometry/vec2.zig");
     const triangle = [_]vec2_mod.Vec2{
         .{ .x = 0, .y = 0 },
         .{ .x = 1, .y = 0 },

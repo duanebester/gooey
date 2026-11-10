@@ -11,7 +11,7 @@
 //! const charts = @import("gooey-charts");
 //!
 //! // Create theme from Gooey's theme
-//! const chart_theme = charts.ChartTheme.fromTheme(&gooey.ui.Theme.dark);
+//! const chart_theme = charts.ChartTheme.fromTheme(&gooey.Theme.dark);
 //!
 //! // Or use built-in presets
 //! const light_theme = charts.ChartTheme.light;
@@ -23,8 +23,8 @@
 
 const std = @import("std");
 const gooey = @import("gooey");
-const Color = gooey.ui.Color;
-const Theme = gooey.ui.Theme;
+const Color = gooey.Color;
+const Theme = gooey.Theme;
 
 // =============================================================================
 // Constants

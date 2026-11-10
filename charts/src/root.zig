@@ -1,8 +1,8 @@
 //! Gooey Charts — GPU-Accelerated Charting Library
 //!
-//! A declarative, high-performance charting library that integrates
-//! seamlessly with Gooey's UI system. Charts render directly to the GPU
-//! via Gooey's canvas API, with zero dynamic allocation during render.
+//! Charts draw into a core `ui.paint` element through its `Painter`, with
+//! zero dynamic allocation during render. Chart data lives in app state, so
+//! it outlives the paint function.
 //!
 //! ## Quick Start
 //!
@@ -11,27 +11,20 @@
 //! const charts = @import("gooey-charts");
 //! const ui = gooey.ui;
 //!
-//! // Chart data (must outlive the paint callback)
-//! var bar_data: [1]charts.CategorySeries = undefined;
-//! var initialized = false;
+//! const State = struct { sales: [1]charts.CategorySeries = undefined };
 //!
-//! fn paintChart(ctx: *charts.DrawContext) void {
-//!     const chart = charts.BarChart.init(&bar_data);
-//!     chart.render(ctx);
+//! fn paintSales(state: *const State, painter: *ui.Painter) void {
+//!     var chart = charts.BarChart.init(&state.sales);
+//!     chart.width = painter.bounds.width;
+//!     chart.height = painter.bounds.height;
+//!     chart.render(painter);
 //! }
 //!
 //! fn render(cx: *gooey.Cx) void {
-//!     if (!initialized) {
-//!         bar_data[0] = charts.CategorySeries.init("Sales", charts.Color.hex(0x4285f4));
-//!         bar_data[0].addPoint(charts.CategoryPoint.init("Q1", 30));
-//!         bar_data[0].addPoint(charts.CategoryPoint.init("Q2", 45));
-//!         bar_data[0].addPoint(charts.CategoryPoint.init("Q3", 28));
-//!         bar_data[0].addPoint(charts.CategoryPoint.init("Q4", 55));
-//!         initialized = true;
-//!     }
-//!
-//!     cx.render(ui.box(.{}, .{
-//!         ui.canvas(400, 300, paintChart),
+//!     const state = cx.state(State);
+//!     cx.render(ui.paint(State, state, paintSales, .{
+//!         .width = .{ .fixed = 400 },
+//!         .height = .{ .fixed = 300 },
 //!     }));
 //! }
 //! ```
@@ -56,6 +49,7 @@ pub const types = @import("types.zig");
 pub const util = @import("util.zig");
 pub const theme = @import("theme.zig");
 pub const accessibility = @import("accessibility.zig");
+pub const paint = @import("paint.zig");
 
 // =============================================================================
 // Primitives (Layer 2)
@@ -154,8 +148,8 @@ pub const CategorySeries = types.CategorySeries;
 // Core Types (from Gooey)
 // =============================================================================
 
-pub const Color = gooey.ui.Color;
-pub const DrawContext = gooey.ui.DrawContext;
+pub const Color = paint.Color;
+pub const Painter = paint.Painter;
 
 // =============================================================================
 // Constants

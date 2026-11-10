@@ -8,8 +8,7 @@
 //! This avoids embedding large arrays on the stack (per CLAUDE.md).
 
 const std = @import("std");
-const builtin = @import("builtin");
-const gooey = @import("gooey");
+const paint = @import("../paint.zig");
 const constants = @import("../constants.zig");
 const types = @import("../types.zig");
 const util = @import("../util.zig");
@@ -27,17 +26,12 @@ const Series = types.Series;
 const DataPoint = types.DataPoint;
 const ChartTheme = theme_mod.ChartTheme;
 
-pub const Color = gooey.ui.Color;
-pub const DrawContext = gooey.ui.DrawContext;
+pub const Color = paint.Color;
+pub const Painter = paint.Painter;
 
 const MAX_SERIES = constants.MAX_SERIES;
 const MAX_DATA_POINTS = constants.MAX_DATA_POINTS;
-const ENABLE_PERF_LOGGING = constants.ENABLE_PERF_LOGGING;
-const PERF_WARNING_THRESHOLD_NS = constants.PERF_WARNING_THRESHOLD_NS;
 const LOD_THRESHOLD = constants.LOD_THRESHOLD;
-
-// Decimation point type alias for LTTB algorithm
-const DecimationPoint = util.DecimationPoint;
 
 // =============================================================================
 // Default Color Palette (imported from theme.zig - single source of truth)
@@ -172,28 +166,15 @@ pub const ScatterChart = struct {
     // Rendering
     // ==========================================================================
 
-    /// Render the scatter chart to a DrawContext.
-    pub fn render(self: *const ScatterChart, ctx: *DrawContext) void {
-        // Performance timing (Phase 4 optimization)
-        const start_time = if (ENABLE_PERF_LOGGING) std.time.nanoTimestamp() else 0;
-        defer if (ENABLE_PERF_LOGGING) {
-            const elapsed = std.time.nanoTimestamp() - start_time;
-            if (elapsed > PERF_WARNING_THRESHOLD_NS) {
-                if (builtin.mode == .debug) {
-                    std.log.warn("ScatterChart render: {d:.2}ms exceeds 8ms budget", .{
-                        @as(f64, @floatFromInt(elapsed)) / 1_000_000.0,
-                    });
-                }
-            }
-        };
-
+    /// Render the scatter chart, offset by the paint element's bounds.
+    pub fn render(self: *const ScatterChart, painter: *Painter) void {
         // Assertions at API boundary
         std.debug.assert(self.data.len > 0);
         std.debug.assert(self.width > 0 and self.height > 0);
 
         // Calculate inner bounds
-        const inner_x = self.margin_left;
-        const inner_y = self.margin_top;
+        const inner_x = painter.bounds.x + self.margin_left;
+        const inner_y = painter.bounds.y + self.margin_top;
         const inner_width = self.width - self.margin_left - self.margin_right;
         const inner_height = self.height - self.margin_top - self.margin_bottom;
 
@@ -224,33 +205,21 @@ pub const ScatterChart = struct {
 
         // Draw grid (behind points)
         if (self.show_grid) {
-            self.drawGrid(ctx, x_scale, y_scale, inner_x, inner_y, inner_width, inner_height);
+            self.drawGrid(painter, x_scale, y_scale, inner_x, inner_y, inner_width, inner_height);
         }
 
         // Draw points for each series
-        self.drawAllPoints(ctx, x_scale, y_scale);
+        self.drawAllPoints(painter, x_scale, y_scale);
 
-        // Draw axes (on top)
+        // Axes on top.
         if (self.show_x_axis) {
-            var x_opts = self.x_axis_opts;
-            x_opts.orientation = .bottom;
-            // Apply theme colors if available
-            if (self.chart_theme) |t| {
-                x_opts.color = t.axis_color;
-                x_opts.label_color = t.tick_color;
-            }
-            Axis.drawLinear(ctx, x_scale, inner_x, inner_y + inner_height, x_opts);
+            const x_opts = Axis.themed(self.x_axis_opts, .bottom, self.chart_theme);
+            Axis.drawLinear(painter, x_scale, inner_x, inner_y + inner_height, x_opts);
         }
 
         if (self.show_y_axis) {
-            var y_opts = self.y_axis_opts;
-            y_opts.orientation = .left;
-            // Apply theme colors if available
-            if (self.chart_theme) |t| {
-                y_opts.color = t.axis_color;
-                y_opts.label_color = t.tick_color;
-            }
-            Axis.drawLinear(ctx, y_scale, inner_x, inner_y, y_opts);
+            const y_opts = Axis.themed(self.y_axis_opts, .left, self.chart_theme);
+            Axis.drawLinear(painter, y_scale, inner_x, inner_y, y_opts);
         }
     }
 
@@ -313,7 +282,7 @@ pub const ScatterChart = struct {
     /// Draw grid lines.
     fn drawGrid(
         self: *const ScatterChart,
-        ctx: *DrawContext,
+        painter: *Painter,
         x_scale: LinearScale,
         y_scale: LinearScale,
         x: f32,
@@ -328,7 +297,7 @@ pub const ScatterChart = struct {
         }
 
         Grid.drawLinearXY(
-            ctx,
+            painter,
             x_scale,
             y_scale,
             .{ .x = x, .y = y, .width = w, .height = h },
@@ -338,22 +307,25 @@ pub const ScatterChart = struct {
         );
     }
 
-    /// Draw all series points.
-    /// TODO: Investigate using drawSeriesPointsBatched for circle shapes without size encoding.
-    /// The pointCloud API should work (LineChart uses it successfully), but when enabled here
-    /// the points don't render. Likely a z-ordering or clip bounds issue to investigate.
-    /// For now, use individual fillCircleAdaptive calls which work correctly.
-    fn drawAllPoints(self: *const ScatterChart, ctx: *DrawContext, x_scale: LinearScale, y_scale: LinearScale) void {
+    /// Draw all series points. Uniform-radius circles go through the batched
+    /// point-cloud path in one draw call; other shapes and size-encoded series
+    /// draw point by point.
+    fn drawAllPoints(
+        self: *const ScatterChart,
+        painter: *Painter,
+        x_scale: LinearScale,
+        y_scale: LinearScale,
+    ) void {
         std.debug.assert(self.data.len > 0);
 
         // OPTIMIZATION: Use point cloud batched rendering for circles with uniform radius
         // This renders ALL points across ALL series in ONE GPU draw call using instanced rendering
-        // Before: N series × M points = N×M draw calls, N×M×64 vertices (tessellated circles)
-        // After:  1 draw call, total_points × 4 vertices (quads with SDF)
+        // Per-point drawing: N series × M points = N×M draw calls, N×M×64 vertices (tessellated)
+        // Batched:           1 draw call, total_points × 4 vertices (quads with SDF)
         const can_batch = self.point_shape == .circle and self.size_data == null;
 
         if (can_batch) {
-            self.drawAllPointsBatched(ctx, x_scale, y_scale);
+            self.drawAllPointsBatched(painter, x_scale, y_scale);
         } else {
             // Fall back to individual drawing for non-circle shapes or variable sizes
             for (self.data, 0..) |*series, series_idx| {
@@ -366,72 +338,36 @@ pub const ScatterChart = struct {
                 else
                     null;
 
-                self.drawSeriesPoints(ctx, series, series_idx, x_scale, y_scale, alpha_color, size_slice);
+                self.drawSeriesPoints(
+                    painter,
+                    series,
+                    series_idx,
+                    x_scale,
+                    y_scale,
+                    alpha_color,
+                    size_slice,
+                );
             }
         }
     }
 
-    /// Draw ALL points from ALL series in a single batched draw call.
-    /// Uses pointCloudColoredArrays for multi-series with different colors.
-    /// Applies LTTB decimation for large datasets when LOD is enabled.
-    fn drawAllPointsBatched(self: *const ScatterChart, ctx: *DrawContext, x_scale: LinearScale, y_scale: LinearScale) void {
+    /// Draw each series as one point cloud at `point_opacity`.
+    fn drawAllPointsBatched(
+        self: *const ScatterChart,
+        painter: *Painter,
+        x_scale: LinearScale,
+        y_scale: LinearScale,
+    ) void {
         std.debug.assert(self.data.len > 0);
         std.debug.assert(self.point_shape == .circle); // Only circles can be batched
-
         var centers: [MAX_DATA_POINTS][2]f32 = undefined;
-        var colors: [MAX_DATA_POINTS]Color = undefined;
-        var total_count: usize = 0;
-
+        const lod_points: ?u32 = if (self.enable_lod) self.lod_target_points else null;
         for (self.data, 0..) |*series, series_idx| {
             if (series.data_len == 0) continue;
-
+            const count = scale_mod.projectSeries(series, x_scale, y_scale, lod_points, &centers);
             const color = self.getSeriesColor(series, series_idx);
             const alpha_color = Color.rgba(color.r, color.g, color.b, self.point_opacity);
-
-            // Check if LOD decimation is needed for this series
-            const use_lod = self.enable_lod and series.data_len > self.lod_target_points;
-
-            if (use_lod) {
-                // Apply LTTB decimation for large datasets
-                var input_points: [MAX_DATA_POINTS]DecimationPoint = undefined;
-                var decimated: [MAX_DATA_POINTS]DecimationPoint = undefined;
-
-                // Convert to decimation format
-                var i: u32 = 0;
-                while (i < series.data_len and i < MAX_DATA_POINTS) : (i += 1) {
-                    input_points[i] = .{ .x = series.data[i].x, .y = series.data[i].y };
-                }
-
-                // Decimate using LTTB algorithm
-                const decimated_count = util.decimateLTTB(
-                    input_points[0..series.data_len],
-                    series.data_len,
-                    &decimated,
-                    self.lod_target_points,
-                );
-
-                // Scale decimated points and add to batch
-                var j: u32 = 0;
-                while (j < decimated_count and total_count < MAX_DATA_POINTS) : (j += 1) {
-                    centers[total_count] = .{ x_scale.scale(decimated[j].x), y_scale.scale(decimated[j].y) };
-                    colors[total_count] = alpha_color;
-                    total_count += 1;
-                }
-            } else {
-                // Use all points directly
-                var i: u32 = 0;
-                while (i < series.data_len and total_count < MAX_DATA_POINTS) : (i += 1) {
-                    const point = &series.data[i];
-                    centers[total_count] = .{ x_scale.scale(point.x), y_scale.scale(point.y) };
-                    colors[total_count] = alpha_color;
-                    total_count += 1;
-                }
-            }
-        }
-
-        // Single draw call for ALL points across ALL series (instanced rendering)
-        if (total_count >= 1) {
-            ctx.pointCloudColoredArrays(centers[0..total_count], colors[0..total_count], self.point_radius);
+            painter.pointCloud(centers[0..count], self.point_radius, alpha_color);
         }
     }
 
@@ -440,7 +376,7 @@ pub const ScatterChart = struct {
     /// For large datasets (>LOD_THRESHOLD), uses LTTB decimation to reduce point count.
     fn drawSeriesPoints(
         self: *const ScatterChart,
-        ctx: *DrawContext,
+        painter: *Painter,
         series: *const Series,
         series_idx: usize,
         x_scale: LinearScale,
@@ -478,71 +414,14 @@ pub const ScatterChart = struct {
 
             // Calculate radius (either fixed or from size data)
             const radius = if (size_slice) |sizes|
-                if (i < sizes.len) self.scaleSize(sizes[i], size_min, size_max) else self.point_radius
+                if (i < sizes.len)
+                    self.scaleSize(sizes[i], size_min, size_max)
+                else
+                    self.point_radius
             else
                 self.point_radius;
 
-            self.drawPoint(ctx, px, py, radius, color);
-        }
-    }
-
-    /// Draw points using batched pointCloud API (instanced rendering).
-    /// Much more efficient than N individual fillCircle calls.
-    /// Applies LTTB decimation for large datasets.
-    fn drawSeriesPointsBatched(
-        self: *const ScatterChart,
-        ctx: *DrawContext,
-        series: *const Series,
-        x_scale: LinearScale,
-        y_scale: LinearScale,
-        color: Color,
-    ) void {
-        if (series.data_len == 0) return;
-
-        // Check if LOD decimation is needed
-        const use_lod = self.enable_lod and series.data_len > self.lod_target_points;
-
-        var centers: [MAX_DATA_POINTS][2]f32 = undefined;
-        var count: usize = 0;
-
-        if (use_lod) {
-            // Apply LTTB decimation for large datasets
-            var input_points: [MAX_DATA_POINTS]DecimationPoint = undefined;
-            var decimated: [MAX_DATA_POINTS]DecimationPoint = undefined;
-
-            // Convert to decimation format
-            var i: u32 = 0;
-            while (i < series.data_len and i < MAX_DATA_POINTS) : (i += 1) {
-                input_points[i] = .{ .x = series.data[i].x, .y = series.data[i].y };
-            }
-
-            // Decimate using LTTB algorithm
-            const decimated_count = util.decimateLTTB(
-                input_points[0..series.data_len],
-                series.data_len,
-                &decimated,
-                self.lod_target_points,
-            );
-
-            // Scale decimated points
-            var j: u32 = 0;
-            while (j < decimated_count) : (j += 1) {
-                centers[count] = .{ x_scale.scale(decimated[j].x), y_scale.scale(decimated[j].y) };
-                count += 1;
-            }
-        } else {
-            // Use all points directly
-            var i: u32 = 0;
-            while (i < series.data_len and count < MAX_DATA_POINTS) : (i += 1) {
-                const point = &series.data[i];
-                centers[count] = .{ x_scale.scale(point.x), y_scale.scale(point.y) };
-                count += 1;
-            }
-        }
-
-        // Single draw call for all points (instanced rendering)
-        if (count >= 1) {
-            ctx.pointCloud(centers[0..count], self.point_radius, color);
+            self.drawPoint(painter, px, py, radius, color);
         }
     }
 
@@ -558,28 +437,52 @@ pub const ScatterChart = struct {
     }
 
     /// Draw a single point with the configured shape.
-    fn drawPoint(self: *const ScatterChart, ctx: *DrawContext, x: f32, y: f32, radius: f32, color: Color) void {
+    fn drawPoint(
+        self: *const ScatterChart,
+        painter: *Painter,
+        x: f32,
+        y: f32,
+        radius: f32,
+        color: Color,
+    ) void {
         std.debug.assert(radius > 0);
         std.debug.assert(!std.math.isNan(x) and !std.math.isNan(y));
 
         switch (self.point_shape) {
-            .circle => ctx.fillCircleAdaptive(x, y, radius, color),
-            .square => self.drawSquare(ctx, x, y, radius, color),
-            .triangle => self.drawTriangle(ctx, x, y, radius, color),
-            .diamond => self.drawDiamond(ctx, x, y, radius, color),
+            .circle => painter.circle(.{ x, y }, radius, color),
+            .square => self.drawSquare(painter, x, y, radius, color),
+            .triangle => self.drawTriangle(painter, x, y, radius, color),
+            .diamond => self.drawDiamond(painter, x, y, radius, color),
         }
     }
 
     /// Draw a square point centered at (x, y).
-    fn drawSquare(_: *const ScatterChart, ctx: *DrawContext, x: f32, y: f32, radius: f32, color: Color) void {
+    fn drawSquare(
+        _: *const ScatterChart,
+        painter: *Painter,
+        x: f32,
+        y: f32,
+        radius: f32,
+        color: Color,
+    ) void {
         std.debug.assert(radius > 0);
         const size = radius * 1.8; // Make square visually similar area to circle
-        ctx.fillRect(x - size / 2, y - size / 2, size, size, color);
+        painter.fill(
+            .{ .x = x - size / 2, .y = y - size / 2, .width = size, .height = size },
+            color,
+        );
     }
 
     /// Draw a triangle point centered at (x, y).
     /// OPTIMIZED: Uses single fillTriangle call instead of 8 rectangle strips.
-    fn drawTriangle(_: *const ScatterChart, ctx: *DrawContext, x: f32, y: f32, radius: f32, color: Color) void {
+    fn drawTriangle(
+        _: *const ScatterChart,
+        painter: *Painter,
+        x: f32,
+        y: f32,
+        radius: f32,
+        color: Color,
+    ) void {
         std.debug.assert(radius > 0);
         // Equilateral triangle with centroid at (x, y)
         const h = radius * 2.2; // Height for similar visual area
@@ -590,12 +493,22 @@ pub const ScatterChart = struct {
         const bottom_y = y + h * 0.333; // 1/3 below centroid
 
         // Single triangle call - much more efficient than 8 rectangles
-        ctx.fillTriangle(x, top_y, x - half_w, bottom_y, x + half_w, bottom_y, color);
+        painter.triangles(
+            &.{ .{ x, top_y }, .{ x - half_w, bottom_y }, .{ x + half_w, bottom_y } },
+            color,
+        );
     }
 
     /// Draw a diamond point centered at (x, y).
     /// OPTIMIZED: Uses 2 fillTriangle calls instead of 16 rectangle strips.
-    fn drawDiamond(_: *const ScatterChart, ctx: *DrawContext, x: f32, y: f32, radius: f32, color: Color) void {
+    fn drawDiamond(
+        _: *const ScatterChart,
+        painter: *Painter,
+        x: f32,
+        y: f32,
+        radius: f32,
+        color: Color,
+    ) void {
         std.debug.assert(radius > 0);
         // Diamond is a rotated square
         const half = radius * 1.0; // Half diagonal
@@ -607,8 +520,10 @@ pub const ScatterChart = struct {
         const right = x + half;
 
         // Two triangles to form the diamond (top half and bottom half)
-        ctx.fillTriangle(x, top, left, y, right, y, color); // Top triangle
-        ctx.fillTriangle(x, bottom, left, y, right, y, color); // Bottom triangle
+        painter.triangles(&.{
+            .{ x, top }, .{ left, y }, .{ right, y }, // Top triangle
+            .{ x, bottom }, .{ left, y }, .{ right, y }, // Bottom triangle
+        }, color);
     }
 
     /// Get color for a series (use series color or fall back to theme/default palette).

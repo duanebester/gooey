@@ -2,11 +2,15 @@
 //! Implements NSTextInputClient for IME support (emoji, dead keys, CJK input)
 
 const std = @import("std");
+const assert = std.debug.assert;
 const objc = @import("objc");
 const input = @import("../../input/events.zig");
-const geometry = @import("../../core/geometry.zig");
+const geometry = @import("../../geometry/geometry.zig");
 const appkit = @import("appkit.zig");
 const Window = @import("window.zig").Window;
+const CoreBinding = @import("window.zig").CoreBinding;
+const core_events = @import("../../core/events.zig");
+const mac_bridge = @import("../../accessibility/mac_bridge.zig");
 
 const NSRect = appkit.NSRect;
 const NSPoint = appkit.NSPoint;
@@ -27,6 +31,12 @@ pub fn registerClass() !void {
 
     // Add instance variable to store pointer to Zig Window
     if (!cls.addIvar("_gooeyWindow")) {
+        return error.IvarAddFailed;
+    }
+
+    // VoiceOver's focused element: the bridge stores it, the view answers
+    // `accessibilityFocusedUIElement` with it.
+    if (!cls.addIvar(mac_bridge.focus_ivar)) {
         return error.IvarAddFailed;
     }
 
@@ -70,6 +80,9 @@ pub fn registerClass() !void {
     if (!cls.addMethod("firstRectForCharacterRange:actualRange:", firstRectForCharacterRange)) return error.MethodAddFailed;
     if (!cls.addMethod("doCommandBySelector:", doCommandBySelector)) return error.MethodAddFailed;
     if (!cls.addMethod("performKeyEquivalent:", performKeyEquivalent)) return error.MethodAddFailed;
+    if (!cls.addMethod("accessibilityFocusedUIElement", accessibilityFocusedUIElement)) {
+        return error.MethodAddFailed;
+    }
 
     objc.registerClassPair(cls);
     view_class = cls;
@@ -232,15 +245,39 @@ fn scrollWheel(self: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c)
     const window_loc: NSPoint = event.msgSend(NSPoint, "locationInWindow", .{});
     const view_loc: NSPoint = view.msgSend(NSPoint, "convertPoint:fromView:", .{ window_loc, @as(objc.c.id, @ptrFromInt(0)) });
 
-    const delta_x = event.msgSend(f64, "scrollingDeltaX", .{});
-    const delta_y = event.msgSend(f64, "scrollingDeltaY", .{});
+    const delta = scrollDelta(
+        event.msgSend(f64, "scrollingDeltaX", .{}),
+        event.msgSend(f64, "scrollingDeltaY", .{}),
+        event.msgSend(bool, "hasPreciseScrollingDeltas", .{}),
+    );
     const modifier_flags = event.msgSend(c_ulong, "modifierFlags", .{});
 
     _ = window.handleInput(.{ .scroll = .{
         .position = geometry.Point(f64).init(view_loc.x, view_loc.y),
-        .delta = geometry.Point(f64).init(delta_x, delta_y),
+        .delta = delta,
         .modifiers = parseModifiers(modifier_flags),
     } });
+}
+
+/// Points one wheel line scrolls. A mouse wheel reports `scrollingDelta`
+/// in lines, not points (`hasPreciseScrollingDeltas` is false), and AppKit
+/// says to multiply by a line height. 10 is `NSScrollView`'s default
+/// `verticalLineScroll` and `horizontalLineScroll`, as read on macOS 26.
+const wheel_line_points: f64 = 10;
+
+/// Scroll delta in points. Trackpads and Magic Mouse report points already.
+fn scrollDelta(delta_x: f64, delta_y: f64, precise: bool) geometry.Point(f64) {
+    const scale: f64 = if (precise) 1 else wheel_line_points;
+    return geometry.Point(f64).init(delta_x * scale, delta_y * scale);
+}
+
+test "scrollDelta scales wheel lines to points and passes precise deltas through" {
+    const wheel = scrollDelta(-3, 1.5, false);
+    try std.testing.expectEqual(@as(f64, -30), wheel.x);
+    try std.testing.expectEqual(@as(f64, 15), wheel.y);
+    const precise = scrollDelta(-3, 1.5, true);
+    try std.testing.expectEqual(@as(f64, -3), precise.x);
+    try std.testing.expectEqual(@as(f64, 1.5), precise.y);
 }
 
 // =============================================================================
@@ -260,10 +297,6 @@ fn keyDown(self: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) voi
             return;
         }
     }
-
-    // Store the current event for doCommandBySelector fallback
-    window.pending_key_event = event_id;
-    defer window.pending_key_event = null;
 
     // Route through interpretKeyEvents for IME support
     const NSArray = objc.getClass("NSArray") orelse return;
@@ -352,23 +385,41 @@ fn getCharactersIgnoringModifiers(event: objc.Object) ?[]const u8 {
 // NSTextInputClient Protocol Implementation
 // =============================================================================
 
+// Ranges: the view presents the marked text as a document that starts at 0,
+// counted in UTF-16 units as the protocol requires. `markedRange`,
+// `selectedRange`, and `attributedSubstringForProposedRange:` must agree, or
+// an input method that reads back the composition (Kotoeri converting on
+// Space) sees a document that contradicts what it just set.
+
+/// AppKit asks the first responder which element has focus. The view itself
+/// is not an accessibility element, so without Gooey's focused element
+/// VoiceOver falls back to the nearest ancestor that is, AppKit's default.
+fn accessibilityFocusedUIElement(self: objc.c.id, _: objc.c.SEL) callconv(.c) objc.c.id {
+    std.debug.assert(self != null);
+    const focus = objc.Object.fromId(self).getInstanceVariable(mac_bridge.focus_ivar);
+    if (focus.value != null) return focus.value;
+    return NSAccessibilityUnignoredAncestor(self);
+}
+
+extern "c" fn NSAccessibilityUnignoredAncestor(element: objc.c.id) objc.c.id;
+
 fn hasMarkedText(self: objc.c.id, _: objc.c.SEL) callconv(.c) bool {
     const window = getWindow(self) orelse return false;
-    return window.marked_text.len > 0;
+    return window.marked_length_utf16 > 0;
 }
 
 fn markedRange(self: objc.c.id, _: objc.c.SEL) callconv(.c) NSRange {
     const window = getWindow(self) orelse return NSRange.invalid();
-    if (window.marked_text.len > 0) {
-        return .{ .location = 0, .length = window.marked_text.len };
-    }
-    return NSRange.invalid();
+    if (window.marked_length_utf16 == 0) return NSRange.invalid();
+    return .{ .location = 0, .length = window.marked_length_utf16 };
 }
 
-fn selectedRange(_: objc.c.id, _: objc.c.SEL) callconv(.c) NSRange {
-    // For now, return an empty selection at position 0
-    // A real implementation would query the focused text element
-    return .{ .location = 0, .length = 0 };
+fn selectedRange(self: objc.c.id, _: objc.c.SEL) callconv(.c) NSRange {
+    const window = getWindow(self) orelse return .{ .location = 0, .length = 0 };
+    const selection = window.marked_selection;
+    assert(selection.location <= window.marked_length_utf16);
+    assert(selection.length <= window.marked_length_utf16 - selection.location);
+    return selection;
 }
 
 fn performKeyEquivalent(self: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) bool {
@@ -389,7 +440,12 @@ fn performKeyEquivalent(self: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) cal
             .is_repeat = false,
         };
 
-        // Send to our input handler - if it returns true, we handled it
+        // A key is queued here only when the keymap claims it. Any other
+        // key equivalent comes back as `keyDown:` once this returns NO, which
+        // queues it then; queueing it here too would deliver it twice (paste
+        // or undo twice in a text engine).
+        const binding = window.core orelse return false;
+        if (!binding.query.keymapClaims(key_event)) return false;
         if (window.handleInput(.{ .key_down = key_event })) {
             return true;
         }
@@ -403,16 +459,26 @@ fn setMarkedText(
     self: objc.c.id,
     _: objc.c.SEL,
     text_id: objc.c.id,
-    _: NSRange,
+    selected: NSRange,
     _: NSRange,
 ) callconv(.c) void {
     const window = getWindow(self) orelse return;
     const str = extractString(text_id) orelse "";
-
-    std.debug.print("setMarkedText: \"{s}\"\n", .{str});
+    // NSString and NSAttributedString both answer `length` in UTF-16 units.
+    const length_utf16 = objc.Object.fromId(text_id).msgSend(c_ulong, "length", .{});
 
     window.setMarkedText(str);
+    window.marked_length_utf16 = length_utf16;
+    window.marked_selection = clampRange(selected, length_utf16);
     _ = window.handleInput(.{ .composition = .{ .text = window.marked_text } });
+}
+
+/// `range` limited to `0..length`; an input method may pass NSNotFound.
+fn clampRange(range: NSRange, length: c_ulong) NSRange {
+    const location = @min(range.location, length);
+    const result = NSRange{ .location = location, .length = @min(range.length, length - location) };
+    assert(result.location + result.length <= length);
+    return result;
 }
 
 fn unmarkText(self: objc.c.id, _: objc.c.SEL) callconv(.c) void {
@@ -431,14 +497,37 @@ fn validAttributesForMarkedText(_: objc.c.id, _: objc.c.SEL) callconv(.c) objc.c
     return NSArray.msgSend(objc.c.id, "array", .{});
 }
 
+/// The part of the marked text in `range`, or nil outside it. The view
+/// exposes only the composition, so that is all an input method can read.
 fn attributedSubstring(
-    _: objc.c.id,
+    self: objc.c.id,
     _: objc.c.SEL,
-    _: NSRange, // range
-    _: *NSRange, // actual_range
+    range: NSRange,
+    actual_range: ?*NSRange,
 ) callconv(.c) objc.c.id {
-    // Return nil - we don't support this for now
-    return null;
+    const window = getWindow(self) orelse return null;
+    const length = window.marked_length_utf16;
+    if (length == 0) return null;
+    if (range.location >= length) return null;
+    const clamped = clampRange(range, length);
+    const NSString = objc.getClass("NSString") orelse return null;
+    const NSAttributedString = objc.getClass("NSAttributedString") orelse return null;
+    var bytes: [Window.marked_text_bytes_max + 1]u8 = undefined;
+    @memcpy(bytes[0..window.marked_text.len], window.marked_text);
+    bytes[window.marked_text.len] = 0;
+    const string = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{
+        @as([*:0]const u8, @ptrCast(&bytes)),
+    });
+    if (string.value == null) return null;
+    // A composition longer than the window's buffer was cut; never read past
+    // what the buffer holds.
+    const stored = string.msgSend(c_ulong, "length", .{});
+    if (clamped.location + clamped.length > stored) return null;
+    const attributed = NSAttributedString.msgSend(objc.Object, "alloc", .{})
+        .msgSend(objc.Object, "initWithString:", .{string.value});
+    defer attributed.release();
+    if (actual_range) |actual| actual.* = clamped;
+    return attributed.msgSend(objc.c.id, "attributedSubstringFromRange:", .{clamped});
 }
 
 fn insertText(
@@ -450,12 +539,12 @@ fn insertText(
     const window = getWindow(self) orelse return;
     const str = extractString(text_id) orelse return;
 
-    std.debug.print("insertText: \"{s}\"\n", .{str});
-
-    // Copy to window-owned buffer before the objc call returns
-    window.setInsertedText(str);
+    // `str` lives until this call returns, and `handleInput` is done with it
+    // by then: the core queue copies it (cutting it at a codepoint boundary
+    // past its text budget), and 0.3.1's widgets insert it. No window buffer
+    // sits between, so long dictation or a long IME commit arrives whole.
     window.clearMarkedText();
-    _ = window.handleInput(.{ .text_input = .{ .text = window.inserted_text } });
+    _ = window.handleInput(.{ .text_input = .{ .text = str } });
 }
 
 fn characterIndexForPoint(_: objc.c.id, _: objc.c.SEL, _: NSPoint) callconv(.c) c_ulong {
@@ -467,7 +556,7 @@ fn firstRectForCharacterRange(
     self: objc.c.id,
     _: objc.c.SEL,
     _: NSRange, // range
-    _: *NSRange, // actual_range
+    actual_range: ?*NSRange,
 ) callconv(.c) NSRect {
     const view = objc.Object.fromId(self);
     const window = getWindow(self) orelse {
@@ -483,8 +572,19 @@ fn firstRectForCharacterRange(
     }
     const ns_window = objc.Object.fromId(ns_window_id);
 
-    // Use the IME cursor rect set by the focused TextInput
-    const view_rect = window.ime_cursor_rect;
+    // The rect comes from the core's rendered frame (contract §5 `Query`).
+    // Before the core binds there is no caret to place the IME against.
+    const binding = window.core orelse {
+        return .{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = 0, .height = 0 } };
+    };
+    const view_rect = coreImeRect(binding);
+    // The rect is the caret after the marked text the rendered frame shows,
+    // so it covers only the empty range there, whatever range was asked
+    // for. Ranges count from the start of the marked text, as `markedRange`
+    // does. The host calls `invalidateCharacterCoordinates` once the frame
+    // with the latest marked text renders, and the next answer moves.
+    const caret_utf16 = window.rendered_marked_length_utf16;
+    if (actual_range) |actual| actual.* = .{ .location = caret_utf16, .length = 0 };
 
     // Convert from view coordinates to window coordinates, then to screen coordinates
     const window_rect = view.msgSend(NSRect, "convertRect:toView:", .{ view_rect, @as(objc.c.id, @ptrFromInt(0)) });
@@ -493,14 +593,68 @@ fn firstRectForCharacterRange(
     return screen_rect;
 }
 
-fn doCommandBySelector(self: objc.c.id, _: objc.c.SEL, selector: objc.c.SEL) callconv(.c) void {
-    std.debug.print("doCommandBySelector called: {*}\n", .{selector});
+/// The caret rect of the rendered frame in view coordinates (the view is
+/// flipped, like the core's), or a caret-sized rect at the origin.
+fn coreImeRect(binding: CoreBinding) NSRect {
+    const rect = binding.query.imeCursorRect() orelse {
+        return .{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = 1, .height = 20 } };
+    };
+    assert(rect.width >= 0);
+    assert(rect.height >= 0);
+    return .{
+        .origin = .{ .x = rect.x, .y = rect.y },
+        .size = .{ .width = rect.width, .height = rect.height },
+    };
+}
 
-    const window = getWindow(self) orelse return;
+/// Registered so AppKit does not beep for commands `interpretKeyEvents:`
+/// maps a key to: the core already queued that key from `keyDown:`.
+fn doCommandBySelector(_: objc.c.id, _: objc.c.SEL, _: objc.c.SEL) callconv(.c) void {}
 
-    if (window.pending_key_event) |event_id| {
-        if (parseKeyEvent(event_id)) |key_event| {
-            _ = window.handleInput(.{ .key_down = key_event });
-        }
-    }
+fn testNoTick(_: *anyopaque) void {}
+
+test "insertText delivers long text whole and setMarkedText cuts it at a codepoint" {
+    // Goal: dictation or an IME commit past 256 bytes reaches the core whole
+    // and valid. 0.3.1 cut "a" x 255 + "東京" at byte 256, inside "東", and the
+    // next paint panicked in the shaper. Methodology: call the real
+    // NSTextInputClient methods on a view bound to a core queue and read the
+    // queued events: the insert arrives whole, and the composition, which the
+    // window keeps for the input method, is cut before "東".
+    var queue: core_events.EventQueue = undefined;
+    try queue.initInPlace(std.testing.allocator, .{
+        .event_count_max = 4,
+        .text_bytes_max = 1024,
+    });
+    defer queue.deinit(std.testing.allocator);
+    var window: Window = undefined;
+    var context: u8 = 0;
+    window.core = .{
+        .queue = &queue,
+        .query = undefined, // Read for key events only.
+        .context = &context,
+        .schedule_tick = testNoTick,
+    };
+    window.clearMarkedText();
+    const frame = NSRect{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = 100, .height = 100 } };
+    const view = try create(frame, &window);
+    defer view.release();
+
+    const filler: [255]u8 = @splat('a');
+    const long: [:0]const u8 = filler ++ "東京";
+    const NSString = objc.getClass("NSString").?;
+    const string = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{
+        long.ptr,
+    });
+    const none = NSRange{ .location = 0, .length = 0 };
+    view.msgSend(void, "insertText:replacementRange:", .{ string.value, none });
+    try std.testing.expectEqualStrings(long, queue.pending()[0].input.text_input.text);
+
+    view.msgSend(void, "setMarkedText:selectedRange:replacementRange:", .{
+        string.value,
+        none,
+        none,
+    });
+    const marked = queue.pending()[1].input.composition.text;
+    try std.testing.expectEqualStrings(&filler, marked);
+    try std.testing.expectEqualStrings(marked, window.marked_text);
 }

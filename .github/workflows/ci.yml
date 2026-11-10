@@ -152,6 +152,11 @@ jobs:
       - name: Typecheck Linux backend
         run: zig build typecheck-linux
 
+      # The Win32 and Vulkan bindings are plain externs too, so the Windows
+      # backend can be analyzed from macOS with no SDK or import libraries.
+      - name: Typecheck Windows backend
+        run: zig build typecheck-windows
+
   # ==========================================================================
   # Linux Build (Multiple Optimization Levels)
   # ==========================================================================
@@ -426,7 +431,7 @@ jobs:
           FAILED=0
           : > bench-report.txt
 
-          for module in core layout context text scene animation element-states accessibility; do
+          for module in core layout text scene accessibility; do
             BASELINE=$(ls baseline/*-*-"${module}"-benchmarks-*.json 2>/dev/null | head -1)
             CURRENT=$(ls current/*-*-"${module}"-benchmarks-*.json 2>/dev/null | head -1)
 

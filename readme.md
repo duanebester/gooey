@@ -1,67 +1,62 @@
 # Gooey
 
-A GPU-accelerated UI framework for Zig, targeting macOS (Metal), Linux (Vulkan/Wayland), and Browser (WASM/WebGPU).
+A GPU-accelerated UI framework for Zig. It targets macOS (Metal), Linux (Wayland with
+Vulkan or a CPU renderer, or the kernel framebuffer), Windows (Win32 with Vulkan), and the
+browser (WASM with WebGPU).
 
 Join the [Gooey discord](https://discord.gg/bmzAZnZJyw)
 
-<img src="https://github.com/duanebester/gooey/blob/main/assets/gooey-logo-final.png" height="100px" />
+<img src="https://github.com/duanebester/gooey/blob/main/assets/gooey-logo-final.png"
+  height="100px" />
 
-> **Early Development**: API is evolving.
+> **0.4.0 replaces the 0.3.1 API:** `gooey.run`, `gooey.core.*`, `cx.animations`, `cx.changed`,
+> `cx.accessible`, `cx.io()`, `gooey.file_dialog`, and the validation helpers are gone.
+> This readme describes 0.4.0 only.
 
-[![CI](https://github.com/duanebester/gooey/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/duanebester/gooey/actions/workflows/ci.yml)
+[![CI](https://github.com/duanebester/gooey/actions/workflows/ci.yml/badge.svg?branch=main)][ci]
 
-Example app built with Gooey — [**chat-zig**](https://github.com/duanebester/chat-zig), an Anthropic Claude client using the Zig 0.16 `std.Io` stack for async HTTP:
+[ci]: https://github.com/duanebester/gooey/actions/workflows/ci.yml
+
+Example app built with Gooey 0.2.9: [**chat-zig**](https://github.com/duanebester/chat-zig),
+an Anthropic Claude client.
 
 <a href="https://github.com/duanebester/chat-zig">
-  <img src="https://github.com/duanebester/gooey/blob/main/assets/screenshots/chat-zig.png" height="360px" />
+  <img src="https://github.com/duanebester/gooey/blob/main/assets/screenshots/chat-zig.png"
+    height="360px" />
 </a>
 
 ## Features
 
-- **GPU Rendering** - Metal (macOS), Vulkan (Linux) with MSAA anti-aliasing, and WebGPU (WASM)
-- **Declarative UI** - Component-based layout with `ui.*` primitives and flexbox-style system
-- **Cx/UI Separation** - `Cx` for state, handlers, and focus; `ui.*` for layout primitives
-- **Pure State Pattern** - Testable state methods with automatic re-rendering
-- **Animation System** - Built-in animations with easing, `tweenOn` triggers
-- **Entity System** - Dynamic entity creation/deletion with auto-cleanup
-- **Retained Widgets** - TextInput, TextArea, Checkbox, Scroll containers
-- **Text Rendering** - CoreText (macOS), FreeType/HarfBuzz (Linux), Canvas (WASM)
-- **Custom Shaders** - Drop in your own Metal/GLSL shaders
-- **Drag & Drop** - Type-safe drag sources and drop targets with `pointer_events` control
-- **Liquid Glass** - macOS 26.0+ Tahoe transparent window effects
-- **Actions & Keybindings** - Contextual action system with keymap
-- **Theming** - Built-in light/dark mode support
-- **Images & SVG** - Load images and render SVG icons with styling
-- **File Dialogs** - Native file open/save dialogs (macOS, Linux, WASM)
-- **Clipboard** - Native clipboard support on all platforms
-- **IME Support** - Input method editor for international text input
-- **Accessibility** - Built-in screen reader support (VoiceOver, Orca, ARIA) with semantic roles and live regions
-- **Zero Dependencies** - No external Zig packages; builds against system frameworks/libraries only (the Objective-C runtime bindings are vendored in-tree)
+- **Small core.** An app is a state struct, a render function, and handlers. `gooey.App`,
+  `gooey.Cx`, and `gooey.ui` cover most of it.
+- **Static memory.** Each app declares a resource budget at compile time. Gooey reserves
+  everything before the first frame, never grows it, and fails fast naming the pool that ran
+  out.
+- **Flexbox-style layout** with keyed identity, scrolling, popovers, and modals.
+- **Text input with IME**, undo, selection, and clipboard through the text engines.
+- **Components** (buttons, checkboxes, selects, modals, virtual lists, text inputs, a code
+  editor, Lucide icons) and **charts**, built as library code on the public API.
+- **Accessibility** through VoiceOver (macOS), UI Automation (Windows), and ARIA (web).
+- **Zero dependencies.** No Zig packages; only system frameworks and libraries.
 
-## Quick Start
+## Requirements
 
-**Requirements:** Zig 0.17.0+
+- **Zig 0.17.0** or newer (`minimum_zig_version` in `build.zig.zon`).
+- **macOS:** 14.0 or newer.
+- **Linux:** a Wayland compositor and Vulkan driver for the default backend, plus FreeType,
+  HarfBuzz, Fontconfig, libpng, and D-Bus. See [Linux](#linux).
+- **Windows:** 64-bit, with the Vulkan loader your GPU driver installs. No SDK is needed.
 
-**Dependencies:** None. Gooey has zero external Zig package dependencies — `build.zig.zon` lists no dependencies. It links only against platform system frameworks/libraries (see platform notes below).
+## Add Gooey to an application
 
-**macOS:** macOS 12.0+
+Fetch the release into your `build.zig.zon`:
 
-**Linux:** Wayland compositor, Vulkan drivers, FreeType, HarfBuzz, Fontconfig, libpng, D-Bus
-
-### Add Gooey to an application
-
-Add the current release to your application's `build.zig.zon`:
-
-```zig
-.dependencies = .{
-    .gooey = .{
-        .url = "https://github.com/duanebester/gooey/archive/refs/tags/v0.3.1.tar.gz",
-        .hash = "gooey-0.3.1-uPBZ7oToZgAZzTbY3oH2x3D3X28NDL65T3BRh11HAkr2",
-    },
-},
+```bash
+zig fetch --save git+https://github.com/duanebester/gooey#v0.4.0
 ```
 
-Then import Gooey's module in your `build.zig`:
+Then import the modules in your `build.zig`. `gooey` is required; `gooey-components` and
+`gooey-charts` are optional siblings from the same dependency.
 
 ```zig
 const std = @import("std");
@@ -82,6 +77,10 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "gooey", .module = gooey_dependency.module("gooey") },
+                .{
+                    .name = "gooey-components",
+                    .module = gooey_dependency.module("gooey-components"),
+                },
             },
         }),
     });
@@ -89,1901 +88,767 @@ pub fn build(b: *std.Build) void {
 }
 ```
 
-Application source can now use `const gooey = @import("gooey");`. Gooey's
-module carries its platform linker requirements transitively, keeping consumer
-builds independent of Gooey's internal framework/library list.
+The `gooey` module carries its platform link requirements, so your build does not list
+frameworks or system libraries.
 
-### Optional packages
-
-The same Gooey dependency exports optional sibling modules. Add only the ones
-your application uses:
+## Hello world
 
 ```zig
-.imports = &.{
-    .{ .name = "gooey", .module = gooey_dependency.module("gooey") },
-    .{ .name = "gooey-components", .module = gooey_dependency.module("gooey-components") },
-    .{ .name = "gooey-charts", .module = gooey_dependency.module("gooey-charts") },
-    .{ .name = "gooey-genui", .module = gooey_dependency.module("gooey-genui") },
-},
-```
-
-- [`gooey-components`](components/README.md) provides high-level controls built
-  from Gooey's public primitives and state engines.
-- [`gooey-charts`](charts/README.md) provides optional GPU-accelerated charts.
-- [`gooey-genui`](genui/README.md) provides catalog-constrained generated UI
-  with direct TypeSafe Jev evaluation and no Vercel AI Gateway dependency.
-
-### Run this repository's examples
-
-```bash
-zig build run              # Showcase demo
-zig build run-counter      # Counter example
-zig build run-todo         # Todo app (state, handlers, TextInput, lists)
-zig build run-animation    # Animation demo
-zig build run-pomodoro     # Pomodoro timer
-zig build run-glass        # Liquid glass effect
-zig build run-spaceship    # Space dashboard with shader
-zig build run-genui-demo      # Generated UI composition and native controls
-zig build run-dynamic-counters  # Entity system demo
-zig build run-layout       # Flexbox, shrink, text wrapping
-zig build run-actions      # Keybindings demo
-zig build run-select       # Dropdown select component
-zig build run-tooltip      # Tooltip component
-zig build run-modal        # Modal dialogs
-zig build run-images       # Image loading and styling
-zig build run-file-dialog  # Native file dialogs
-zig build run-uniform-list # Virtualized list (10k items)
-zig build run-virtual-list # Variable-height list
-zig build run-data-table   # Virtualized table (10k rows)
-zig build run-code-editor  # Code editor with syntax highlighting
-zig build test             # Run tests
-```
-
-## Hello World
-
-An example for the smallest way to get a window with some text.
-
-```zig
-const std = @import("std");
 const gooey = @import("gooey");
 
-const Cx = gooey.Cx;
-const ui = gooey.ui;
+const State = struct { count: i32 = 0 };
 
-var state: void = {};
-
-fn render(cx: *Cx) void {
-    cx.render(ui.box(.{}, .{
-        ui.text("Hello World!", .{}),
-    }));
-}
-
-const App = gooey.App(void, &state, render, .{});
-
-pub fn main(init: std.process.Init) !void {
-    return App.main(init);
-}
-```
-
-## Todo App Example
-
-A small todo app that touches a representative slice of the API: a pure,
-UI-free state model; `cx.update` / `cx.updateWith` / `cx.command` handlers; a
-bound `TextInput`; `Checkbox` and `Button`; list iteration; and unit tests that
-exercise the state with no UI in play.
-
-The full, runnable source lives in [`src/examples/todo.zig`](src/examples/todo.zig)
-(`zig build run-todo`). Its state model is covered by the tests shown at the
-bottom, which run as part of `zig build test`.
-
-```zig
-const std = @import("std");
-const gooey = @import("gooey");
-const components = @import("gooey-components");
-
-const ui = gooey.ui;
-const Cx = gooey.Cx;
-const Button = components.Button;
-const Checkbox = components.Checkbox;
-const TextInput = components.TextInput;
-
-const MAX_TODOS = 64;
-const TEXT_CAP = 128;
-const draft_input_id = "new-todo";
-
-// State is pure — no UI knowledge, fully testable.
-const Todo = struct {
-    buf: [TEXT_CAP]u8 = [_]u8{0} ** TEXT_CAP,
-    len: usize = 0,
-    done: bool = false,
-
-    fn text(self: *const Todo) []const u8 {
-        return self.buf[0..self.len];
-    }
-};
-
-const Filter = enum { all, active, done };
-
-const AppState = struct {
-    todos: [MAX_TODOS]Todo = [_]Todo{.{}} ** MAX_TODOS,
-    count: usize = 0,
-    draft: []const u8 = "", // two-way bound to the TextInput
-    filter: Filter = .all,
-
-    // Pure logic — what the tests below drive.
-    fn pushTodo(self: *AppState, value: []const u8) void {
-        const trimmed = std.mem.trim(u8, value, " \t\r\n");
-        if (trimmed.len == 0) return;
-        if (self.count >= MAX_TODOS) return;
-        const slot = &self.todos[self.count];
-        const n = @min(trimmed.len, TEXT_CAP);
-        @memcpy(slot.buf[0..n], trimmed[0..n]);
-        slot.len = n;
-        slot.done = false;
-        self.count += 1;
-    }
-
-    pub fn toggle(self: *AppState, index: usize) void {
-        if (index >= self.count) return;
-        self.todos[index].done = !self.todos[index].done;
-    }
-
-    pub fn remove(self: *AppState, index: usize) void {
-        if (index >= self.count) return;
-        var i = index;
-        while (i + 1 < self.count) : (i += 1) self.todos[i] = self.todos[i + 1];
-        self.count -= 1;
-    }
-
-    pub fn setFilter(self: *AppState, filter: Filter) void {
-        self.filter = filter;
-    }
-
-    pub fn clearCompleted(self: *AppState) void {
-        var write: usize = 0;
-        var read: usize = 0;
-        while (read < self.count) : (read += 1) {
-            if (!self.todos[read].done) {
-                self.todos[write] = self.todos[read];
-                write += 1;
-            }
-        }
-        self.count = write;
-    }
-
-    fn remaining(self: *const AppState) u32 {
-        var n: u32 = 0;
-        for (self.todos[0..self.count]) |*t| {
-            if (!t.done) n += 1;
-        }
-        return n;
-    }
-
-    fn visible(self: *const AppState, t: *const Todo) bool {
-        return switch (self.filter) {
-            .all => true,
-            .active => !t.done,
-            .done => t.done,
-        };
-    }
-
-    // Controlled binding: resetting the model clears retained editor state.
-    pub fn addTodo(self: *AppState) void {
-        self.pushTodo(self.draft);
-        self.draft = "";
-    }
-};
-
-var state = AppState{};
-
-const App = gooey.App(AppState, &state, render, .{
-    .title = "Todos",
-    .width = 480,
-    .height = 560,
+pub const App = gooey.App(State, render, .{
+    .title = "Counter",
+    .width = 400,
+    .height = 300,
+    .limits = .nano,
 });
 
-comptime {
-    _ = App; // Force analysis (also wires @export on WASM).
+pub const main = App.main;
+
+fn render(cx: *gooey.Cx) void {
+    cx.render(gooey.ui.text("Hello", .{}));
 }
+```
 
-pub fn main(init: std.process.Init) !void {
-    return App.main(init);
-}
+`gooey.App(State, render, config)` owns the state, initializes it in place from its field
+defaults, and generates the entry point: `main` on native targets and the browser exports on
+WASM. The root file must declare `pub const main = App.main;`.
 
-fn render(cx: *Cx) void {
-    const s = cx.state(AppState);
+## Run the examples
 
-    cx.render(ui.root(.{
-        .direction = .column,
-        .padding = .{ .all = 24 },
+Every example in `src/examples/` is a complete app; read them next. Run one with
+`zig build <step>`.
+
+| Step                   | Source                     | Shows                                      |
+| ---------------------- | -------------------------- | ------------------------------------------ |
+| `run`                  | `todo.zig`                 | TextInput with IME, scroll box, filters    |
+| `run-counter`          | `counter.zig`              | State, handlers, components                |
+| `run-layout`           | `layout.zig`               | Popover layer, click outside, keymap       |
+| `run-actions`          | `actions.zig`              | Keymaps, key contexts, actions             |
+| `run-animation`        | `animation.zig`            | `tween`, `tweenOn`, spring `motion`        |
+| `run-dynamic-counters` | `dynamic_counters.zig`     | Entities                                   |
+| `run-accessible-form`  | `accessible_form.zig`      | Roles, headings, live regions, `announce`  |
+| `run-nested-overlay`   | `nested_overlay.zig`       | `Select` inside a `Modal`                  |
+| `run-virtual-list`     | `virtual_list_example.zig` | `List` with per-row heights                |
+| `run-data-table`       | `data_table_example.zig`   | 10,000 rows, `on_init`, sorting            |
+| `run-code-editor`      | `code_editor.zig`          | `CodeEditor`, folder dialog, custom limits |
+| `run-images`           | `images.zig`               | `Painter.image`, fit modes, effects        |
+| `run-lucide-demo`      | `lucide_demo.zig`          | `Painter.svg` with every Lucide icon       |
+| `run-dashboard`        | `dashboard.zig`            | gooey-charts in `ui.paint` elements        |
+| `run-core-file-dialog` | `core_file_dialog.zig`     | Open, multi-select, folder, save dialogs   |
+
+`lucide-demo` does not build on Windows; every other example builds on every desktop
+platform.
+
+## Building blocks
+
+The public surface is `src/root.zig`, and `src/api_check.zig` pins it. `gooey.internals` is
+not API and may change in any release.
+
+### App, Config, and ResourceLimits
+
+`Config` has four required fields and five reviewed defaults:
+
+| Field       | Default         | Meaning                                                    |
+| ----------- | --------------- | ---------------------------------------------------------- |
+| `title`     | required        | Window title.                                              |
+| `width`     | required        | Initial width in logical pixels.                           |
+| `height`    | required        | Initial height in logical pixels.                          |
+| `limits`    | required        | The `ResourceLimits` budget. There is no default.          |
+| `theme`     | `&Theme.light`  | The theme every color token resolves against.              |
+| `keymap`    | `&.{}`          | Keyboard bindings for actions.                             |
+| `entities`  | `&.{}`          | Entity types, one fixed pool each.                         |
+| `fonts`     | `.{}`           | App and mono families, size, and faces.                    |
+| `on_init`   | `null`          | `fn (state: *State, effects: *Effects) void`, run at init. |
+
+Unknown fields are compile errors. Pick the smallest profile that fits; the name also selects
+the `FontLimits` profile of the same name:
+
+| Profile     | For                                                 | Font faces |
+| ----------- | --------------------------------------------------- | ---------: |
+| `.nano`     | Counter-class apps                                  |          1 |
+| `.small`    | Single-screen forms and lists                       |          4 |
+| `.standard` | Multi-panel apps, tables, dashboards                |          6 |
+| `.large`    | Dense content, hundreds of icons, large images      |          6 |
+| `.ceiling`  | Framework maxima for tests; `gooey.App` rejects it  |         14 |
+
+To raise one budget without moving the whole app up a rung, start from a profile and change
+fields. `code_editor.zig` reserves one code editor slot on top of `.small`:
+
+```zig
+pub const limits = blk: {
+    var value = gooey.ResourceLimits.small;
+    value.text.editor = .{ .count_max = 1, .bytes_max = file_bytes_max, .undo_depth_max = 128 };
+    break :blk value;
+};
+
+pub const App = gooey.App(State, render, .{
+    .title = "Code Editor",
+    .width = window_width,
+    .height = window_height,
+    .limits = limits,
+    .theme = &gooey.Theme.dark,
+    .fonts = .{ .limits = gooey.FontLimits.small },
+});
+```
+
+A modified value has no profile name, so set `.fonts.limits` when it needs more than the
+`standard` faces it falls back to. A mixed budget passes the same compile-time checks as a
+profile. The fields and their measurements are in `src/core/limits.zig` and
+`docs/v0.4.0-memory-budget.md`.
+
+### Render with `Cx` and `ui`
+
+A render function takes `*gooey.Cx` and emits elements with `cx.render`. There are four
+element constructors:
+
+- `ui.box(box, children)`: a container. `ui.Box` holds per-element fields (`key`, `style`,
+  `layer`, `focusable`, `key_context`, `on_click`, `on_click_outside`, `on_key`, `actions`,
+  `a11y`).
+- `ui.text(content, text)`: a text run. `ui.Text` has `size`, `color`, `weight`, `italic`,
+  `family`, `wrap`, `line_height`, and `alignment`.
+- `ui.paint(Data, &data, paint_fn, style)`: a leaf drawn with a `Painter`.
+- `ui.when(condition, render_fn)`: renders `render_fn` only when `condition` holds.
+
+Children are elements, components, tuples, optionals, and arrays or slices of components. A
+component is any struct with `pub fn render(self, cx: *Cx) void`. From `todo.zig`:
+
+```zig
+pub fn render(cx: *Cx) void {
+    const s = cx.state(State);
+    cx.render(ui.box(.{ .style = .{
+        .width = .{ .grow = 1 },
+        .height = .{ .grow = 1 },
+        .padding = .all(24),
         .gap = 16,
-        .background = ui.Color.rgb(0.96, 0.96, 0.97),
-    }, .{
-        ui.text("Todos", .{ .size = 28 }),
-
-        // Input row: TextInput binds to state.draft; Add resets the model.
-        ui.hstack(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
-            TextInput{ .id = draft_input_id, .placeholder = "What needs doing?", .bind = &s.draft, .width = 360 },
-            Button{ .label = "Add", .on_click_handler = cx.update(AppState.addTodo) },
+        .background = .{ .rgba = .rgb(0.96, 0.96, 0.97) },
+    } }, .{
+        ui.text("Todos", .{ .size = 28, .color = .{ .rgba = .rgb(0.1, 0.1, 0.15) } }),
+        ui.box(.{ .style = .{
+            .direction = .row,
+            .width = .{ .grow = 1 },
+            .gap = 8,
+            .alignment = .center_cross,
+        } }, .{
+            TextInput{
+                .key = "new-todo",
+                .placeholder = "What needs doing?",
+                .bind = &s.draft,
+                .width = null,
+            },
+            Button{ .label = "Add", .on_click = cx.on(State.addTodo, .{}) },
         }),
-
-        // Filters: each button packs its enum value into the handler arg.
-        ui.hstack(.{ .gap = 8 }, .{
-            FilterButton{ .label = "All", .filter = .all, .active = s.filter == .all },
-            FilterButton{ .label = "Active", .filter = .active, .active = s.filter == .active },
-            FilterButton{ .label = "Done", .filter = .done, .active = s.filter == .done },
-        }),
-
-        // The list, or an empty-state hint.
-        ui.when(s.count == 0, .{
-            ui.text("Nothing yet — add your first todo above.", .{ .size = 14 }),
-        }),
-        TodoItems{},
-
-        ui.spacer(),
-        ui.hstack(.{ .gap = 12, .alignment = .{ .cross = .center } }, .{
-            ui.textFmt("{d} left", .{s.remaining()}, .{ .size = 14 }),
-            ui.spacer(),
-            Button{ .label = "Clear completed", .variant = .secondary, .size_preset = .small, .on_click_handler = cx.update(AppState.clearCompleted) },
-        }),
+        FilterBar{},
+        ui.when(s.count == 0, emptyHint),
+        ui.when(s.count > 0, todoList),
+        Footer{},
     }));
 }
+```
 
-// Iteration lives in a component because each row needs `cx` for its handlers.
-const TodoItems = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        const s = cx.state(AppState);
-        for (s.todos[0..s.count], 0..) |*todo, index| {
-            if (!s.visible(todo)) continue;
-            cx.render(TodoRow{ .index = index, .done = todo.done, .label = todo.text() });
-        }
-    }
+`ui.Style` holds layout and appearance only: `direction`, `width`, `height`, the `_min` and
+`_max` sizes, `padding`, `gap`, `alignment`, `background`, `border`, `corner_radius`,
+`shadow`, `opacity`, `clip`, `scroll`, `cursor`, `pointer_events`, and `source`. It has no
+per-element data, so a style can be a shared constant:
+
+```zig
+const row_style: ui.Style = .{
+    .direction = .row,
+    .width = .{ .grow = 1 },
+    .gap = 12,
+    .alignment = .center_cross,
+    .padding = .all(10),
+    .background = .{ .rgba = ui.Color.white },
+    .corner_radius = .all(8),
 };
 
 const TodoRow = struct {
-    index: usize,
-    done: bool,
-    label: []const u8,
+    index: u32,
 
-    pub fn render(self: @This(), cx: *Cx) void {
-        // A background + cross-axis centering means this is a `box` (with
-        // `.direction = .row`), not an `hstack` — stacks carry only gap/
-        // alignment/padding.
-        cx.render(ui.box(.{
-            .direction = .row,
-            .gap = 12,
-            .alignment = .{ .cross = .center },
-            .padding = .{ .all = 10 },
-            .background = ui.Color.white,
-            .corner_radius = 8,
-        }, .{
-            Checkbox{ .selected = self.done, .on_click_handler = cx.updateWith(self.index, AppState.toggle) },
-            ui.text(self.label, .{ .size = 16 }),
-            ui.spacer(),
-            Button{ .label = "Delete", .variant = .danger, .size_preset = .small, .on_click_handler = cx.updateWith(self.index, AppState.remove) },
+    pub fn render(self: TodoRow, cx: *Cx) void {
+        const todo = &cx.state(State).todos[self.index];
+        const color = if (todo.done) ui.Color.rgb(0.6, 0.6, 0.6) else ui.Color.rgb(0.1, 0.1, 0.1);
+        cx.render(ui.box(.{ .key = .{ .index = self.index }, .style = row_style }, .{
+            Checkbox{
+                .checked = todo.done,
+                .on_click = cx.on(State.toggle, .{ .arg = self.index }),
+            },
+            ui.text(todo.text(), .{ .size = 16, .color = .{ .rgba = color } }),
+            spacer,
+            Button{
+                .label = "Delete",
+                .variant = .danger,
+                .size = .small,
+                .on_click = cx.on(State.remove, .{ .arg = self.index }),
+            },
         }));
     }
 };
+```
 
-const FilterButton = struct {
-    label: []const u8,
-    filter: Filter,
-    active: bool,
+Sizes are `.fit` (the default), `.{ .grow = weight }`, `.{ .fixed = px }`, or
+`.{ .percent = fraction }`. Colors are theme tokens (`.surface`, `.primary`, `.text`,
+`.muted`, ...) or literals (`.{ .rgba = Color.rgb(...) }`). A box with `.scroll = .{}`
+scrolls; give it a `key` so its offset is kept.
 
-    pub fn render(self: @This(), cx: *Cx) void {
-        cx.render(Button{
-            .label = self.label,
-            .size_preset = .small,
-            .variant = if (self.active) .primary else .secondary,
-            .on_click_handler = cx.updateWith(self.filter, AppState.setFilter),
+The `Cx` methods:
+
+| Method                               | Use                                                      |
+| ------------------------------------ | -------------------------------------------------------- |
+| `cx.state(State)`                    | The root state.                                          |
+| `cx.render(child)`                   | Emit an element, component, tuple, or slice.             |
+| `cx.on(method, options)`             | Build a `Handler`.                                       |
+| `cx.id(key)`                         | The `ElementId` a child box with `key` will get.         |
+| `cx.hovered(id)`, `cx.focused(id)`   | Pointer and focus state, for choosing a style.           |
+| `cx.theme()`, `cx.fontMetrics()`     | The active theme and base font metrics.                  |
+| `cx.requestRenderAfter(delay_ms)`    | Render again by then; renew it every frame you need it.  |
+| `cx.retain`, `cx.get`, `cx.release`  | Retained state and entity reads.                         |
+
+Hover is not a style field. A component reads `cx.hovered(cx.id(key))` and picks a style, as
+`lucide_demo.zig` does for its icon cells.
+
+### Handlers and Effects
+
+A handler is a method on the root state (or on an entity) with one of four shapes:
+
+```text
+fn (state: *State) void
+fn (state: *State, arg: Arg) void
+fn (state: *State, effects: *Effects) void
+fn (state: *State, arg: Arg, effects: *Effects) void
+```
+
+`cx.on(method, options)` accepts only `.arg` and `.entity`. `.arg` is coerced to the
+method's argument type and must fit in 8 bytes; pass an index for larger data. Every handler
+call requests a render. From `counter.zig`, trimmed:
+
+```zig
+pub const State = struct {
+    count: i32 = 0,
+    step: i32 = 1,
+    message: []const u8 = "",
+
+    pub fn increment(self: *State) void {
+        self.count += self.step;
+    }
+
+    pub fn setStep(self: *State, step: i32) void {
+        self.step = step;
+        self.message = "";
+    }
+
+    pub fn resetAndBlur(self: *State, effects: *Effects) void {
+        self.count = 0;
+        self.message = "Reset and blurred!";
+        effects.blur();
+    }
+};
+```
+
+```zig
+Button{ .label = "+", .size = .large, .on_click = cx.on(State.increment, .{}) },
+```
+
+```zig
+.on_click = cx.on(State.setStep, .{ .arg = self.value }),
+```
+
+In Debug and ReleaseSafe builds, a handler whose state type is neither the root state nor a
+registered entity panics on the first frame with the method's name, and so does `cx.state`
+with the wrong type.
+
+`Effects` is how a handler asks the framework for things. Requests apply after the handler
+returns.
+
+| Method                                   | Effect                                              |
+| ---------------------------------------- | --------------------------------------------------- |
+| `focus(id)`, `blur()`                    | Move or clear keyboard focus.                       |
+| `quit()`                                 | Close the app.                                      |
+| `requestRender()`, `stopPropagation()`   | Render again; stop the event from bubbling further. |
+| `openFileDialog(request)`                | Open or save dialog; see below.                     |
+| `setTheme(theme)`, `setFont(name, size)` | Switch the theme or the app font family.            |
+| `announce(text, politeness)`             | Ask the screen reader to speak.                     |
+| `create(T, value)`, `remove(T, handle)`  | Create or remove an entity.                         |
+| `handler(method)`                        | A root-state handler for a completion.              |
+| `inputEvent()`, `completionEvent()`      | What invoked this handler.                          |
+
+**File dialogs.** A handler requests a dialog and names the handler that receives the
+outcome. The dialog opens on the main thread after the handler returns, and the outcome
+(`file_selected`, `cancelled`, or `failed`) arrives on the next drain. From
+`core_file_dialog.zig`:
+
+```zig
+    pub fn save(_: *State, effects: *Effects) void {
+        effects.openFileDialog(.{
+            .kind = .{ .save = .{ .directory = null, .suggested_name = "untitled.txt" } },
+            .on_complete = effects.handler(State.completed),
         });
     }
-};
 
-// State is testable without UI.
-test "remove keeps the list contiguous" {
-    var s = AppState{};
-    s.pushTodo("a");
-    s.pushTodo("b");
-    s.pushTodo("c");
-    s.remove(1); // drop "b"
-    try std.testing.expectEqual(@as(usize, 2), s.count);
-    try std.testing.expectEqualStrings("a", s.todos[0].text());
-    try std.testing.expectEqualStrings("c", s.todos[1].text());
-}
-
-test "remaining and clearCompleted" {
-    var s = AppState{};
-    s.pushTodo("a");
-    s.pushTodo("b");
-    s.toggle(0);
-    try std.testing.expectEqual(@as(u32, 1), s.remaining());
-    s.clearCompleted();
-    try std.testing.expectEqual(@as(usize, 1), s.count);
-    try std.testing.expectEqualStrings("b", s.todos[0].text());
-}
-```
-
-## API Pattern
-
-Gooey separates concerns between `Cx` (context) and `ui` (layout primitives):
-
-| Module | Purpose                            | Examples                                                                            |
-| ------ | ---------------------------------- | ----------------------------------------------------------------------------------- |
-| `cx.*` | State, handlers, animations, focus | `cx.state()`, `cx.update()`, `cx.animations.tween()`, `cx.changed()`, `cx.render()` |
-| `ui.*` | Layout containers and primitives   | `ui.box()`, `ui.rect()`, `ui.hstack()`, `ui.vstack()`, `ui.text()`, `ui.when()`     |
-
-```/dev/null/example.zig#L1-19
-fn render(cx: *Cx) void {
-    const s = cx.state(AppState);
-
-    cx.render(ui.box(.{ .width = 100 }, .{
-        ui.text("Hello", .{}),
-
-        // Conditional rendering
-        ui.when(s.show_extra, .{
-            ui.text("Extra content", .{}),
-        }),
-
-        // Iterate over items. The callback returns a single, concrete
-        // element type - name it directly (ui.Text, or a component struct).
-        ui.each(&s.items, struct {
-            fn render(item: Item, _: usize) ui.Text {
-                return ui.text(item.name, .{});
-            }
-        }.render),
-    }));
-}
-```
-
-When layout, accessibility, focus, or input must share one identity, resolve it once and
-attach it to the declarative box:
-
-```/dev/null/identified_box.zig#L1-12
-const layout_id = cx.idFor("save-button");
-const pushed = cx.accessible(.{
-    .layout_id = layout_id,
-    .role = .button,
-    .name = "Save",
-});
-defer if (pushed) cx.accessibleEnd();
-
-cx.render(ui.box_with_layout_id(layout_id, .{}, .{
-    ui.text("Save", .{}),
-}));
-```
-
-**Key primitives:**
-
-- `ui.box()` - Anonymous container with flexbox layout
-- `ui.box_with_layout_id()` - Container with identity resolved once by `cx.idFor()`
-- `ui.rect()` - Childless box (dividers, spacers, colored blocks)
-- `ui.hstack()` / `ui.vstack()` - Horizontal/vertical stacks
-- `ui.text()` / `ui.textFmt()` - Text rendering
-- `ui.when(cond, children)` - Conditional rendering. **Children are built eagerly** - only the rendering is conditional, so `ui.when(user != null, .{ ui.text(user.?.name, .{}) })` crashes: `user.?` runs before the check. Use `ui.maybe`/`ui.whenFn` for guarded access
-- `ui.whenFn(cond, fn)` - Lazy conditional rendering; `fn` is only called when `cond` is true
-- `ui.maybe(optional, fn)` - Render if optional has value; `fn` receives the unwrapped value (lazy, null-safe)
-- `ui.each(items, fn)` - Render for each item; `fn(item, index)` must return one concrete element type
-- `ui.scroll(id, style, children)` - Scrollable container
-- `ui.spacer()` - Flexible space
-
-## Handler Types
-
-| Method                  | Signature                       | Use Case                                 |
-| ----------------------- | ------------------------------- | ---------------------------------------- |
-| `cx.update()`           | `fn(*State) void`               | Pure state mutations                     |
-| `cx.updateWith()`       | `fn(*State, Arg) void`          | Mutations with argument                  |
-| `cx.command()`          | `fn(*State, *Window) void`      | Framework access (focus, quit, entities) |
-| `cx.commandWith()`      | `fn(*State, *Window, Arg) void` | Framework access with argument           |
-| `cx.deferCommand()`     | `fn(*State, *Window) void`      | Run after current event completes        |
-| `cx.deferCommandWith()` | `fn(*State, *Window, Arg) void` | Deferred with argument                   |
-
-> **Note:** The state type is inferred automatically from the method pointer's first parameter — no need to pass it separately.
-
-### Handlers with Arguments
-
-The `*With` variants (`updateWith`, `commandWith`, `deferCommandWith`) let you pass data to your handler. The argument is captured at handler creation time and passed when invoked:
-
-```zig
-// In a list render callback - capture the index
-.on_click_handler = cx.updateWith(index, State.selectItem),
-
-// The handler receives the captured value
-pub fn selectItem(self: *State, index: u32) void {
-    self.selected = index;
-}
-```
-
-**The 8-byte limit:** Arguments are packed into a `u64` for zero-allocation storage. This means your argument must be ≤8 bytes. If it exceeds this, you'll get a compile error:
-
-```
-error: updateWith: argument type 'MyLargeStruct' exceeds 8 bytes. Use a pointer or index instead.
-```
-
-**What fits in 8 bytes:**
-
-| Type                                | Size     | ✓/✗ |
-| ----------------------------------- | -------- | --- |
-| `u8`, `i8`, `bool`                  | 1 byte   | ✓   |
-| `u16`, `i16`                        | 2 bytes  | ✓   |
-| `u32`, `i32`, `f32`                 | 4 bytes  | ✓   |
-| `u64`, `i64`, `f64`                 | 8 bytes  | ✓   |
-| `usize` (64-bit)                    | 8 bytes  | ✓   |
-| `*T` (any pointer)                  | 8 bytes  | ✓   |
-| `struct { x: u32, y: u32 }`         | 8 bytes  | ✓   |
-| `[2]u32`                            | 8 bytes  | ✓   |
-| `struct { a: u32, b: u32, c: u32 }` | 12 bytes | ✗   |
-
-**Workarounds for larger data:**
-
-```zig
-// Option 1: Use an index into your data
-.on_click_handler = cx.updateWith(row_index, State.selectRow),
-
-// Option 2: Use a pointer (if the data outlives the handler)
-.on_click_handler = cx.updateWith(&self.items[i], State.editItem),
-
-// Option 3: Store data in state, pass an ID
-pub fn openFile(self: *State, file_id: u32) void {
-    const file = self.files.get(file_id) orelse return;
-    // ... use file.path, file.name, etc.
-}
-```
-
-### Deferred Commands
-
-Use `defer` when you need to run code **after** the current event handler completes. This is essential for:
-
-- **Modal dialogs** - They run their own event loop, which would deadlock if called during event handling
-- **File pickers** - Same reason as modals
-- **Heavy operations** - Defer work to avoid blocking the current frame
-
-```zig
-// In a command handler, use g.deferCommand():
-pub fn openFolder(self: *State, g: *Window) void {
-    _ = self;
-    g.deferCommand(State.openFolderDeferred);
-}
-
-fn openFolderDeferred(self: *State, g: *Window) void {
-    _ = g;
-    // Safe to open modal dialog here - we're outside event handling
-    const file_dialog = gooey.file_dialog;
-    if (file_dialog.promptForPaths(allocator, .{ .directories = true })) |result| {
-        defer result.deinit();
-        const path = result.paths[0];
-        self.loadDirectory(path);
+    pub fn completed(self: *State, effects: *Effects) void {
+        const completion = effects.completionEvent().?;
+        self.path_len = 0;
+        switch (completion.outcome) {
+            .file_selected => |paths| {
+                const first = paths.first();
+                const kept = keptLength(first);
+                @memcpy(self.path_bytes[0..kept], first[0..kept]);
+                @memset(self.path_bytes[kept..], 0);
+                self.path_len = @intCast(kept);
+                if (paths.count == 1) {
+                    self.setStatus("Selected:", .{});
+                } else {
+                    self.setStatus("Selected {d} paths; the first:", .{paths.count});
+                }
+            },
+            .cancelled => self.setStatus("Cancelled.", .{}),
+            .failed => self.setStatus("The dialog failed.", .{}),
+        }
     }
-}
-
-// With an argument (same 8-byte limit applies):
-pub fn deleteItem(self: *State, g: *Window, index: u32) void {
-    _ = self;
-    g.deferCommandWith(index, State.confirmDelete);
-}
-
-fn confirmDelete(self: *State, g: *Window, index: u32) void {
-    _ = g;
-    if (dialog.confirm("Delete item?")) {
-        self.items.remove(index);
-    }
-}
 ```
 
-The deferred command queue holds up to 32 commands and is flushed after each event cycle.
+Open dialogs take `gooey.PathPromptOptions` (`files`, `directories`, `multiple`). A
+selection's path count and bytes are bounded by `limits.events`. `Paths.iterator()` walks
+every path of a multiple selection.
 
-### Background Work (`Io.Queue` / `Io.Group`)
+**Timers.** There is no timer API. A view that changes with the clock calls
+`cx.requestRenderAfter(delay_ms)` in every render that needs the next one.
 
-Run expensive work — network requests, file I/O, heavy computation — off the UI thread using Zig 0.16's `std.Io`. The framework owns no executor of its own: background tasks are spawned with `cx.io().async(...)`, hand their results back through a bounded `std.Io.Queue(T)`, and the render loop drains that queue each frame. Background tasks **never touch UI state directly** — they only push typed results — so there are no locks on your state.
+**Background work.** 0.4.0 has no public API for it. Handlers run on the main thread, and the
+completions they receive come from file dialogs.
 
-This is the same pattern `src/image/loader.zig` uses for async image URL fetches.
+### Keymaps and actions
+
+An action is an empty struct type. The keymap binds keys to it in `Config`, and a box handles
+it with `actions` while it is on the focus path. From `layout.zig`:
 
 ```zig
-// A typed result the background task hands back to the render loop.
-const Fetch = union(enum) {
-    ok: []const u8,
-    failed,
-};
+const CloseMenu = struct {};
+```
 
-const State = struct {
-    // Fixed-capacity, statically-backed channel — no allocation after init.
-    result_buffer: [16]Fetch = undefined,
-    result_queue: std.Io.Queue(Fetch) = undefined,
+```zig
+    .keymap = &.{.{ .keys = "escape", .action = ui.action(CloseMenu) }},
+```
 
-    // Owns the in-flight task(s) so they can be cancelled together.
-    fetch_group: std.Io.Group = .init,
+```zig
+    cx.render(ui.box(.{
+        .actions = &.{.{
+            .action = ui.action(CloseMenu),
+            .handler = cx.on(State.closeDropdown, .{}),
+        }},
+```
 
-    response: []const u8 = "",
+A binding with `.key_context = .named("Editor")` matches only inside a box with
+`.key_context = .named("Editor")`. `actions.zig` binds Save that way. Key strings name exact
+modifiers, such as `"cmd-shift-z"` or `"ctrl-s"`.
 
-    // Kick off background work from a handler — runs off the UI thread.
-    pub fn startFetch(self: *State, cx: *Cx) void {
-        const url = "https://api.example.com/data";
-        self.result_queue = .init(&self.result_buffer);
+### Entities
 
-        // `io` is passed twice: once to drive `async`, and again inside the
-        // args tuple so the task body can push into the queue.
-        self.fetch_group.async(cx.io(), fetchData, .{ cx.io(), url, &self.result_queue });
+Entities are app data with their own handlers, kept in fixed pools. List the types in
+`Config.entities`; each pool holds `limits.entities.count_per_type_max` values. From
+`dynamic_counters.zig`:
 
-        // Auto-cancel on window close so a late task can't write into freed state.
-        cx.registerCancelGroup(&self.fetch_group);
+```zig
+pub const Counter = struct {
+    count: i32 = 0,
+    label: []const u8 = "Counter",
+
+    pub fn increment(self: *Counter) void {
+        self.count += 1;
+    }
+
+    pub fn decrement(self: *Counter) void {
+        self.count -= 1;
+    }
+
+    pub fn reset(self: *Counter) void {
+        self.count = 0;
     }
 };
-
-// Background task — never touches UI state, only pushes a typed result.
-fn fetchData(io: std.Io, url: []const u8, queue: *std.Io.Queue(Fetch)) void {
-    const body = httpGet(io, url) catch {
-        queue.putOneUncancelable(io, .failed) catch {};
-        return;
-    };
-    queue.putOneUncancelable(io, .{ .ok = body }) catch {};
-}
-
-fn render(cx: *Cx) void {
-    const s = cx.state(State);
-
-    // Non-blocking drain — safe to call every frame from `render`.
-    var buffer: [16]Fetch = undefined;
-    for (cx.drainQueue(Fetch, &s.result_queue, &buffer)) |result| switch (result) {
-        .ok => |body| s.response = body,
-        .failed => {},
-    }
-
-    // ... build UI from s.response ...
-}
 ```
 
-**Key pieces:**
+```zig
+    pub fn addCounter(self: *State, effects: *Effects) void {
+        assert(self.counter_count <= counter_count_max);
+        if (self.counter_count == counter_count_max) return;
+        const label = labels[self.counter_count];
+        self.counters[self.counter_count] = effects.create(Counter, .{ .label = label });
+        self.counter_count += 1;
+    }
 
-- **`cx.io()`** — the `std.Io` instance threaded through the framework from `main()`. Pass it to `async`, queue, and timing calls.
-- **`cx.io().async(fn, .{args})`** (or **`group.async(io, fn, .{args})`**) — spawn background work. Pass `io` inside the args tuple too if the task needs to push into a queue.
-- **`std.Io.Queue(T)`** — bounded, lock-free, statically-backed channel. Tasks push with `putOneUncancelable(io, value)`; capacity is fixed at init (no allocation afterward).
-- **`cx.drainQueue(T, &queue, &buffer)`** — non-blocking drain into your buffer; returns an empty slice when nothing is ready, so it's safe to call every frame.
-- **`std.Io.Group`** — owns one or more in-flight tasks so they can be cancelled together.
-- **`cx.registerCancelGroup(&group)`** — auto-cancel a group on window close (pair with `cx.unregisterCancelGroup` if the work finishes normally). For per-entity lifecycles, use `cx.entities.attachCancel(id, &group)` to cancel when the entity is removed.
-
-> **Note:** This rides on Zig 0.16's `std.Io`, so the threaded backend is unavailable on WASM (single-threaded) — see [WASM](#wasm). The earlier `cx.dispatchBackground` / `dispatchOnMainThread` / `dispatchAfter` APIs were removed in the `std.Io` migration; the `Io.Queue` + `Io.Group` pattern above replaces them. See [`docs/zig-0.16-io-migration.md`](docs/zig-0.16-io-migration.md).
-
-## Fonts
-
-By default, Gooey uses the platform's system sans-serif font (e.g., DejaVu Sans on Linux, SF Pro on macOS, system-ui on web). You can set a custom font at app init or switch fonts at runtime.
-
-### App-Level Font
-
-Set `.font` in your app config to use any font installed on the system:
+    pub fn removeCounter(self: *State, effects: *Effects) void {
+        assert(self.counter_count <= counter_count_max);
+        if (self.counter_count == 0) return;
+        self.counter_count -= 1;
+        effects.remove(Counter, self.counters[self.counter_count]);
+    }
+```
 
 ```zig
-const App = gooey.App(AppState, &state, render, .{
-    .title = "My App",
-    .font = "Inter",
-    .font_size = 16.0,   // optional, defaults to 16.0
+pub const App = gooey.App(State, render, .{
+    .title = "Dynamic Counters",
+    .width = 600,
+    .height = 400,
+    .limits = .nano,
+    .entities = &.{Counter},
 });
 ```
 
-Omitting `.font` uses the platform default. On Linux, any font discoverable by Fontconfig works — install fonts via your package manager (e.g., `sudo apt install fonts-inter`) or drop `.ttf`/`.otf` files into `~/.local/share/fonts/`.
-
-### Runtime Font Switching
-
-Change the font on the fly from any event handler:
+Read an entity with `cx.get` and bind a handler to it with `.entity`:
 
 ```zig
-fn onSettingsChanged(cx: *Cx) void {
-    const s = cx.state(AppState);
-    cx.setFont(s.font_name, s.font_size) catch {};
+        const data = cx.get(Counter, self.counter);
+```
+
+```zig
+                    .on_click = cx.on(Counter.increment, .{ .entity = self.counter }),
+```
+
+`effects.create` claims the slot at once. `remove` frees it after the current drain, and a
+stale handle panics in every build mode. Key an entity's boxes by its `slot` and
+`generation` so a reused slot starts fresh.
+
+### Retained state and text engines
+
+`cx.retain(T, id, lifetime, init)` finds or creates state kept under a keyed `ElementId`, and
+`cx.get` reads it during the tick. `gooey.Lifetime` is `.frame` (swept after a few unrendered
+frames), `.{ .scope = id }` (alive while `id` renders), or `.owned` (freed only by
+`cx.release`). Pointers from `cx.get` do not survive the tick.
+
+The three text engines, `gooey.InputEngine`, `gooey.AreaEngine`, and `gooey.EditorEngine`,
+are retained values with their own pools, sized by `limits.text.input`, `.area`, and
+`.editor`. Every profile reserves inputs; `.nano` reserves no areas, and no profile reserves
+editors. Apps normally use them through `TextInput`, `TextArea`, and `CodeEditor`, which bind
+to a `[]const u8` field in state. The engines own copy, cut, and paste; the clipboard has no
+public API. This is how `TextInput` retains its engine:
+
+```zig
+        const handle = cx.retain(InputEngine, id, .{ .scope = id }, initEngine);
+        const engine = cx.get(InputEngine, handle);
+        engine.syncBound(self.bind);
+        const focused = cx.focused(id);
+        setView(&engine.view, theme, id, self.placeholder);
+        engine.blink(cx, focused);
+```
+
+### Animation
+
+`gooey.animation` has three module functions. Each keeps its state under a key and requests
+frames only while it moves. From `animation.zig`:
+
+```zig
+    const fade_in = animation.tween(cx, .{ .name = "main-fade" }, .{ .duration_ms = 500 });
+```
+
+```zig
+        const pulse = animation.tweenOn(cx, .{ .name = "count-pulse" }, trigger, .{
+            .duration_ms = 200,
+            .easing = animation.Easing.easeOutBack,
+        });
+```
+
+```zig
+        const m = animation.motion(cx, .{ .name = "panel-spring" }, self.show, .snappy);
+        assert(m.progress >= 0);
+        assert(m.progress <= 1);
+        if (!m.visible) return;
+```
+
+`tween` eases from 0 to 1 after its first build and replays when its element returns.
+`tweenOn` starts at 1 and plays from 0 again whenever its trigger changes. `motion`
+springs toward shown or hidden and reports `progress`, `visible`, and `phase`. Easings are in
+`animation.Easing` (`linear`, `easeIn`, `easeOut`, `easeInOut`, `easeOutCubic`,
+`easeOutBack`); spring presets are `.snappy`, `.bouncy`, `.gentle`, `.stiff`, and `.wobbly`.
+
+### Painting
+
+`ui.paint` draws a leaf with a `Painter`, whose `bounds` is the element's rectangle. The
+painter has `fill`, `quad`, `text`, `textOnBaseline`, `measureText`, `svg`, `image`, `line`,
+`circle`, `polyline`, `pointCloud`, `triangles`, `pushClip`, and `popClip`. From
+`images.zig`:
+
+```zig
+                ui.paint(Item, item, paintImage, .{
+                    .width = .{ .fixed = item.width },
+                    .height = .{ .fixed = item.height },
+                }),
+```
+
+```zig
+fn paintImage(item: *const Item, painter: *ui.Painter) void {
+    assert(item.width > 0);
+    assert(item.height > 0);
+    painter.image(logo_path, painter.bounds, item.style);
 }
 ```
 
-This clears the glyph and shape caches and triggers a re-render automatically. All text in the UI updates immediately.
-
-### Platform Details
-
-| Platform | Font Discovery | System Sans-Serif                                 |
-| -------- | -------------- | ------------------------------------------------- |
-| Linux    | Fontconfig     | `sans-serif` (typically DejaVu Sans or Noto Sans) |
-| macOS    | CoreText       | SF Pro                                            |
-| Web      | CSS font stack | `system-ui, -apple-system, sans-serif`            |
-
-> **Note:** Gooey currently uses a single global font. Per-component font families (e.g., mixing a serif body font with a monospace code font) are not yet supported — components expose `font_size` but not `font_family`.
-
-## Theming
-
-Gooey ships with two built-in themes — `Theme.light` (Catppuccin Latte) and `Theme.dark` (Catppuccin Macchiato). Set the active theme before rendering:
-
-```zig
-fn render(cx: *Cx) void {
-    cx.setTheme(if (s.dark_mode) &Theme.dark else &Theme.light);
-    // ...
-}
-```
-
-### Custom Themes
-
-Define a light/dark pair of `Theme` values and swap between them the same way as the built-ins. Every field has a semantic role so components resolve colors automatically without per-component overrides:
-
-```zig
-const my_light = gooey.ui.Theme{
-    .bg      = Color.rgb(0.97, 0.97, 0.98),
-    .surface = Color.rgb(0.93, 0.93, 0.95),
-    .overlay = Color.rgb(0.88, 0.88, 0.91),
-
-    .primary   = Color.rgb(0.20, 0.50, 0.90),
-    .secondary = Color.rgb(0.45, 0.48, 0.58),
-    .accent    = Color.rgb(0.55, 0.25, 0.85),
-    .success   = Color.rgb(0.20, 0.65, 0.30),
-    .warning   = Color.rgb(0.85, 0.60, 0.10),
-    .danger    = Color.rgb(0.82, 0.24, 0.24),
-
-    .text    = Color.rgb(0.15, 0.15, 0.20),
-    .subtext = Color.rgb(0.35, 0.37, 0.45),
-    .muted   = Color.rgb(0.55, 0.57, 0.65),
-
-    .border       = Color.rgba(0.55, 0.57, 0.65, 0.3),
-    .border_focus = Color.rgb(0.20, 0.50, 0.90),
-
-    .radius_sm = 4,
-    .radius_md = 8,
-    .radius_lg = 16,
-
-    .font_size_base = 14,
-};
-
-const my_dark = gooey.ui.Theme{
-    .bg      = Color.rgb(0.10, 0.10, 0.12),
-    .surface = Color.rgb(0.15, 0.15, 0.18),
-    .overlay = Color.rgb(0.20, 0.20, 0.24),
-
-    .primary   = Color.rgb(0.40, 0.70, 1.00),
-    .secondary = Color.rgb(0.45, 0.48, 0.58),
-    .accent    = Color.rgb(0.75, 0.55, 0.95),
-    .success   = Color.rgb(0.45, 0.85, 0.55),
-    .warning   = Color.rgb(0.95, 0.80, 0.35),
-    .danger    = Color.rgb(0.95, 0.40, 0.40),
-
-    .text    = Color.rgb(0.92, 0.92, 0.95),
-    .subtext = Color.rgb(0.70, 0.72, 0.80),
-    .muted   = Color.rgb(0.50, 0.52, 0.60),
-
-    .border       = Color.rgba(0.50, 0.52, 0.60, 0.3),
-    .border_focus = Color.rgb(0.40, 0.70, 1.00),
-
-    .radius_sm = 4,
-    .radius_md = 8,
-    .radius_lg = 16,
-
-    .font_size_base = 14,
-};
-
-fn render(cx: *Cx) void {
-    cx.setTheme(if (s.dark_mode) &my_dark else &my_light);
-    // ...
-}
-```
-
-### Base Font Size
-
-The `font_size_base` field (default `14`) is the single source of truth for text sizing across components. Components scale relative to it — for example, `Button` derives its per-size font sizes as:
-
-| Button size | Font size       |
-| ----------- | --------------- |
-| `.small`    | `base - 2` (12) |
-| `.medium`   | `base` (14)     |
-| `.large`    | `base + 2` (16) |
-
-Set it once in your theme and every component scales consistently — no per-component font size overrides needed:
-
-```zig
-const large_text_theme = gooey.ui.Theme{
-    // ...colors...
-    .font_size_base = 18,  // small=16, medium=18, large=20
-};
-```
+`ui.PaintImage` sets `fit`, `corners`, `tint`, `grayscale`, and `opacity`. Images decode on a
+worker and appear a few frames later. `painter.svg(path, bounds, .{ .fill, .stroke,
+.stroke_width })` draws SVG path data such as `components.Lucide` icons. The `data` pointer
+must stay valid until the frame is emitted, so point it at state or a constant.
 
 ## Components
 
-The sibling `gooey-components` package provides ready-to-use controls built on
-Gooey's public API. Import it explicitly:
+`gooey-components` is library code on the public API; only `List` reaches into
+`gooey.internals`, for its scroll state. Import it as `@import("gooey-components")`.
+
+| Component       | Notes                                                                       |
+| --------------- | --------------------------------------------------------------------------- |
+| `Button`        | `label`, `on_click`, `variant`, `size` (`.small`, `.medium`, `.large`)      |
+| `Checkbox`      | `checked`, `on_click`, optional `label`                                     |
+| `Select`        | Dropdown on a popover layer; the app owns `selected` and `open`             |
+| `Modal(Child)`  | Dialog over a backdrop on a modal layer                                     |
+| `List(Row)`     | Virtual list that builds only visible rows                                  |
+| `TextInput`     | Single-line input bound to a `[]const u8`                                   |
+| `TextArea`      | Multi-line input; needs `limits.text.area`                                  |
+| `CodeEditor`    | Line numbers, status bar, Tab indent; needs `limits.text.editor`            |
+| `Lucide`        | SVG data for every Lucide icon, for `Painter.svg`                           |
+
+`Select` takes one handler per option. From `nested_overlay.zig`:
 
 ```zig
-const components = @import("gooey-components");
-const Button = components.Button;
-const TextInput = components.TextInput;
+        var on_select: [options.len]Handler = undefined;
+        for (&on_select, 0..) |*handler, index| {
+            handler.* = cx.on(State.selectOption, .{ .arg = @as(u32, @intCast(index)) });
+        }
 ```
 
-### Button
-
 ```zig
-// Button variants
-Button{ .label = "Save", .variant = .primary, .on_click_handler = cx.update(State.save) }
-Button{ .label = "Cancel", .variant = .secondary, .size_preset = .small, .on_click_handler = ... }
-Button{ .label = "Delete", .variant = .danger, .on_click_handler = ... }
+            Select{
+                .key = "nested-select",
+                .options = &options,
+                .on_select = &on_select,
+                .on_toggle = cx.on(State.toggleSelect, .{}),
+                .on_close = cx.on(State.closeSelect, .{}),
+                .selected = state.selected,
+                .open = state.select_open,
+                .width = 280,
+            },
 ```
 
-### TextInput & TextArea
+A `List` row has an `index: u32` field and declares either one height for every row
+(`pub const row_height`) or a height per row (`pub fn height(cx, index)` with
+`pub const count_max`). From `virtual_list_example.zig`:
 
 ```zig
-// Single-line text input with binding
-TextInput{
-    .id = "email",
-    .placeholder = "Enter email...",
-    .bind = &s.email,
-    .width = 250,
-}
-
-// Multi-line text area
-TextArea{
-    .id = "notes",
-    .placeholder = "Enter notes...",
-    .bind = &s.notes,
-    .width = 400,
-    .height = 200,
-}
-```
-
-Bindings are controlled and two-way: user edits update the bound slice, and
-assigning a new model value (including `""`) updates the retained editor on the
-next render. Active IME preedit is allowed to finish before an external value is
-applied, and valid cursor/selection offsets are preserved.
-
-### Checkbox
-
-```zig
-Checkbox{
-    .id = "terms",
-    .selected = s.agreed_to_terms,
-    .on_click_handler = cx.update(State.toggleTerms),
-}
-```
-
-### RadioButton & RadioGroup
-
-```zig
-// RadioButton - individual buttons for custom layouts
-RadioButton{
-    .label = "Email",
-    .selected = s.contact_method == 0,
-    .on_click = cx.updateWith(@as(u8, 0), State.setContactMethod),
-}
-
-// RadioGroup - grouped buttons with a single index-based handler
-RadioGroup{
-    .id = "priority",
-    .options = &.{ "Low", "Medium", "High" },
-    .selected = s.priority, // ?usize
-    .on_select = cx.onSelect(State.setPriority), // fn(*State, usize) void
-    .direction = .row,  // or .column
-    .gap = 16,
-}
-```
-
-`on_select` mirrors `Select`/`TabBar`: one method receives the chosen index, so you never hand-align a positional handler array. A per-option `handlers` array is still supported when each option needs a distinct method.
-
-### Select (Dropdown)
-
-```zig
-const State = struct {
-    selected_fruit: ?usize = null,
-    fruit_select_open: bool = false,
-
-    pub fn selectFruit(self: *State, index: usize) void {
-        self.selected_fruit = index;
-        self.fruit_select_open = false;
-    }
-
-    pub fn toggleFruitSelect(self: *State) void {
-        self.fruit_select_open = !self.fruit_select_open;
-    }
-
-    pub fn closeFruitSelect(self: *State) void {
-        self.fruit_select_open = false;
-    }
-};
-
-// In render:
-Select{
-    .id = "fruit-select",
-    .options = &.{ "Apple", "Banana", "Cherry", "Date" },
-    .selected = s.selected_fruit,
-    .placeholder = "Choose a fruit...",
-    .is_open = s.fruit_select_open,
-    .on_toggle = cx.update(State.toggleFruitSelect),
-    .on_close = cx.update(State.closeFruitSelect),
-    .on_select = cx.onSelect(State.selectFruit),
-    .width = 200,
-}
-```
-
-Like `Modal` and `ContextMenu`, `Select` is controlled by the application. The
-application supplies `is_open`, toggles and closes that state, and decides in
-its selection method whether choosing an option also closes the dropdown.
-
-### Modal
-
-```zig
-const State = struct {
-    show_confirm: bool = false,
-
-    pub fn openConfirm(self: *State) void {
-        self.show_confirm = true;
-    }
-
-    pub fn closeConfirm(self: *State) void {
-        self.show_confirm = false;
-    }
-};
-
-// Trigger button
-Button{ .label = "Delete Item", .variant = .danger, .on_click_handler = cx.update(State.openConfirm) }
-
-// Modal with custom content
-Modal(ConfirmContent){
-    .id = "confirm-dialog",
-    .is_open = s.show_confirm,
-    .on_close = cx.update(State.closeConfirm),
-    .child = ConfirmContent{
-        .message = "Are you sure you want to delete?",
-        .on_confirm = cx.update(State.doDelete),
-        .on_cancel = cx.update(State.closeConfirm),
-    },
-    .animate = true,
-    .close_on_backdrop = true,
-}
-```
-
-### Tooltip
-
-```zig
-// Wrap any component with a tooltip
-Tooltip(Button){
-    .text = "Click to save your changes",
-    .child = Button{ .label = "Save", .on_click_handler = ... },
-    .position = .top,  // .top, .bottom, .left, .right
-}
-
-// With custom styling
-Tooltip(IconButton){
-    .text = "This field is required",
-    .child = HelpIcon{},
-    .position = .right,
-    .max_width = 200,
-    .background = Color.rgb(0.2, 0.2, 0.25),
-}
-```
-
-### Image
-
-```zig
-// Simple image from path
-components.Image{ .src = "assets/logo.png" }
-
-// With explicit sizing
-components.Image{ .src = "photo.jpg", .width = 200, .height = 150 }
-
-// Rounded avatar
-components.Image{ .src = "avatar.png", .size = 48, .rounded = true }
-
-// Cover image (fills container, may crop)
-components.Image{ .src = "banner.jpg", .width = 800, .height = 200, .fit = .cover }
-
-// With effects
-components.Image{
-    .src = "icon.png",
-    .size = 64,
-    .grayscale = 1.0,           // 0.0 = color, 1.0 = grayscale
-    .tint = gooey.Color.blue,   // Color overlay
-    .opacity = 0.8,
-    .corner_radius = 8,
-}
-```
-
-### SVG Icons
-
-```zig
-const gooey = @import("gooey");
-const components = @import("gooey-components");
-const Svg = components.Svg;
-const Icons = components.Icons;
-
-// Using built-in icon paths
-Svg{ .path = Icons.star, .size = 24, .color = Color.gold }
-Svg{ .path = Icons.check, .size = 20, .color = Color.green }
-Svg{ .path = Icons.close, .size = 16, .color = Color.red }
-
-// Stroked icon (outline only)
-Svg{ .path = Icons.star_outline, .size = 24, .stroke_color = Color.white, .stroke_width = 2 }
-
-// Both fill and stroke
-Svg{ .path = Icons.favorite, .size = 24, .color = Color.red, .stroke_color = Color.black, .stroke_width = 1 }
-
-// Available icons: arrow_back, arrow_forward, menu, close, more_vert,
-// check, add, remove, edit, delete, search, star, star_outline, favorite,
-// info, warning, error_icon, play, pause, skip_next, skip_prev, volume_up,
-// visibility, visibility_off, folder, file, download, upload
-```
-
-### ProgressBar
-
-```zig
-ProgressBar{
-    .progress = s.completion,  // 0.0 to 1.0
-    .width = 200,
-    .height = 8,
-    .corner_radius = 4,
-}
-```
-
-### Tabs
-
-```zig
-// Individual tabs for custom navigation
-cx.render(ui.hstack(.{ .gap = 4 }, .{
-    Tab{
-        .label = "Home",
-        .selected = s.tab == 0,
-        .on_click = cx.updateWith(@as(u8, 0), State.setTab),
-    },
-    Tab{
-        .label = "Settings",
-        .selected = s.tab == 1,
-        .on_click = cx.updateWith(@as(u8, 1), State.setTab),
-        .variant = .underline, // .pills (default), .underline, .segmented
-    },
-}))
-
-// Or TabBar for the common case: one index-based handler for all tabs
-// (same `on_select` shape as Select and RadioGroup).
-TabBar{
-    .tabs = &.{ "Home", "Settings", "About" },
-    .selected = s.tab, // ?usize
-    .on_select = cx.onSelect(State.selectTab), // fn(*State, usize) void
-}
-```
-
-### UniformList
-
-Virtualized list for efficiently rendering large datasets with uniform item heights. Only visible items are rendered, regardless of total count. The render callback receives `*Cx` for full access to state and handlers.
-
-```zig
-const State = struct {
-    list_state: UniformListState = UniformListState.init(10_000, 32.0), // count, item height
-    selected: ?u32 = null,
-
-    pub fn scrollToTop(self: *State) void {
-        self.list_state.scrollToTop();
-    }
-
-    pub fn scrollToMiddle(self: *State) void {
-        self.list_state.scrollToItem(5000, .center);
-    }
-
-    pub fn selectItem(self: *State, index: u32) void {
-        self.selected = index;
-    }
-};
-
-// In render function:
-fn render(cx: *Cx) void {
-    const s = cx.state(State);
-    cx.uniformList("my-list", &s.list_state, .{
-        .fill_width = true,
-        .grow_height = true,
-    }, renderItem);
-}
-
-fn renderItem(index: u32, cx: *Cx) void {
-    const s = cx.stateConst(State);
-    const theme = cx.theme();
-    const is_selected = if (s.selected) |sel| sel == index else false;
-
-    // Color is available via: const Color = gooey.Color;
-    const text_color = if (is_selected) Color.white else theme.text;
-
-    cx.render(ui.box(.{
-        .fill_width = true,
-        .height = 32,
-        .background = if (is_selected) theme.primary else null,
-        .hover_background = theme.overlay,
-        .on_click_handler = cx.updateWith(index, State.selectItem),
-    }, .{
-        ui.text("Item", .{ .color = text_color }),
-    }));
-}
-```
-
-### VirtualList
-
-Virtualized list supporting variable item heights. Heights are cached after rendering for efficient scroll calculations. Ideal for chat messages or expandable rows. The callback must return the rendered height.
-
-```zig
-const State = struct {
-    list_state: VirtualListState = VirtualListState.init(1000, 48.0), // count, default height
-};
-
-// In render function - callback returns item height:
-fn render(cx: *Cx) void {
-    const s = cx.state(State);
-    cx.virtualList("chat-list", &s.list_state, .{ .grow_height = true }, renderMessage);
-}
-
-fn renderMessage(index: u32, cx: *Cx) f32 {
-    const s = cx.stateConst(State);
-    const msg = s.messages[index];
-    const height: f32 = if (msg.has_image) 120.0 else 48.0;
-
-    cx.render(ui.box(.{
-        .fill_width = true,
-        .height = height,
-        .on_click_handler = cx.updateWith(index, State.selectMessage),
-    }, .{
-        ui.text(msg.text, .{}),
-    }));
-
-    return height; // Return actual rendered height for caching
-}
-```
-
-#### Accurate Height Estimation with `measureText`
-
-Instead of hardcoding heights or guessing character widths, use `cx.measureText()` to get pixel-accurate dimensions from the platform text shaper (CoreText/HarfBuzz/browser):
-
-```zig
-fn renderMessage(index: u32, cx: *Cx) f32 {
-    const s = cx.stateConst(State);
-    const msg = s.messages[index];
-    const padding: f32 = 32.0;
-    const max_bubble_width: f32 = 400.0;
-
-    // Measure with wrapping — uses the real shaper so kerning matches rendering
-    const m = cx.measureText(msg.text, .{
-        .max_width = max_bubble_width,
-        .font_size = 15,        // null = use the current font size
-    }) catch |_| TextMeasurement{ .width = 0, .height = 48, .line_count = 1 };
-
-    const height = m.height + padding;
-
-    cx.render(ui.box(.{
-        .fill_width = true,
-        .height = height,
-    }, .{
-        ui.text(msg.text, .{ .size = 15, .wrap = .word }),
-    }));
-
-    return height;
-}
-```
-
-`measureText` returns a `TextMeasurement` with `.width`, `.height`, and `.line_count`.
-
-### DataTable
-
-Virtualized 2D table with both vertical and horizontal virtualization. Supports column resizing, sorting, and selection. Uses a callbacks struct for header and cell rendering.
-
-```zig
-const State = struct {
-    table_state: DataTableState = blk: {
-        var t = DataTableState.init(10_000, 32.0); // row count, row height
-        t.addColumn(.{ .width_px = 80, .sortable = true }) catch unreachable;   // ID
-        t.addColumn(.{ .width_px = 200, .sortable = true }) catch unreachable;  // Name
-        t.addColumn(.{ .width_px = 100 }) catch unreachable;                     // Status
-        break :blk t;
-    },
-
-    pub fn onHeaderClick(self: *State, col: u32) void {
-        _ = self.table_state.toggleSort(col);
-        // Re-sort your data based on table_state.sort_column and direction
-    }
-
-    pub fn onRowClick(self: *State, row: u32) void {
-        self.table_state.selection.row = row;
-    }
-};
-
-// In render function:
-fn render(cx: *Cx) void {
-    const s = cx.state(State);
-    const theme = cx.theme();
-    cx.dataTable("my-table", &s.table_state, .{
-        .fill_width = true,
-        .grow_height = true,
-        .row_hover_background = theme.overlay,
-        .row_selected_background = theme.primary,
-    }, .{
-        .render_header = renderHeader,
-        .render_cell = renderCell,
-    });
-}
-
-fn renderHeader(col: u32, cx: *Cx) void {
-    const s = cx.stateConst(State);
-    const theme = cx.theme();
-
-    // Add sort indicator if this column is sorted
-    const name = COLUMN_NAMES[col];
-    const label = if (s.table_state.sort_column == col)
-        if (s.table_state.sort_direction == .ascending) name ++ " ▲" else name ++ " ▼"
-    else
-        name;
-
-    cx.render(ui.box(.{
-        .fill_width = true,
-        .fill_height = true,
-        .on_click_handler = cx.updateWith(col, State.onHeaderClick),
-    }, .{
-        ui.text(label, .{ .weight = .semibold, .color = theme.text }),
-    }));
-}
-
-fn renderCell(row: u32, col: u32, cx: *Cx) void {
-    const theme = cx.theme();
-
-    cx.render(ui.box(.{
-        .fill_width = true,
-        .fill_height = true,
-        .padding = .{ .symmetric = .{ .x = 8, .y = 0 } },
-    }, .{
-        switch (col) {
-            0 => ui.textFmt("{d}", .{row}, .{ .color = theme.text }),
-            1 => ui.text(data[row].name, .{ .color = theme.text }),
-            2 => ui.text(data[row].status, .{ .color = theme.text }),
-            else => ui.text("—", .{}),
+        List(MessageRow){
+            .key = "chat-list",
+            .count = message_count,
+            .gap = 8,
+            .style = .{ .background = .surface, .corner_radius = .all(8), .padding = .all(8) },
         },
-    }));
-}
 ```
 
-## Form Validation
-
-Gooey provides utilities for form validation with touched-state tracking:
-
-### Validation Utilities
-
 ```zig
-const validation = gooey.validation;
+pub const MessageRow = struct {
+    index: u32,
 
-// Single validators
-const err = validation.required(value);           // Non-empty check
-const err = validation.email(value);              // Email format
-const err = validation.minLength(value, 8);       // Minimum length
-const err = validation.maxLength(value, 100);     // Maximum length
-const err = validation.numeric(value);            // Digits only
-const err = validation.alphanumeric(value);       // Letters and numbers
-const err = validation.matches(value, other);     // Values must match
+    pub const count_max: u32 = message_count;
 
-// Password strength
-const err = validation.hasUppercase(value);       // At least one uppercase
-const err = validation.hasLowercase(value);       // At least one lowercase
-const err = validation.hasDigit(value);           // At least one number
-const err = validation.hasSpecialChar(value);     // At least one special char
-
-// Chain multiple validators - returns first error or null
-const err = validation.all(password, .{
-    validation.required,
-    validation.minLengthValidator(8),
-    validation.hasUppercase,
-    validation.hasDigit,
-});
-```
-
-### Custom Messages (i18n)
-
-Create validators with custom messages for internationalization:
-
-```zig
-// Define a locale struct with custom validators
-const french = struct {
-    pub const required = validation.requiredMsg("Ce champ est requis");
-    pub const email = validation.emailMsg("Adresse e-mail invalide");
-    pub const minLength8 = validation.minLengthMsg(8, "Au moins 8 caractères");
-    pub const hasUppercase = validation.hasUppercaseMsg("Au moins une majuscule");
-};
-
-// Use in validation - works with all() combinator
-const err = validation.all(value, .{
-    french.required,
-    french.email,
-});
-
-// Available message factories:
-// validation.requiredMsg(msg)
-// validation.emailMsg(msg)
-// validation.minLengthMsg(min, msg)
-// validation.maxLengthMsg(max, msg)
-// validation.numericMsg(msg)
-// validation.alphanumericMsg(msg)
-// validation.hasUppercaseMsg(msg)
-// validation.hasLowercaseMsg(msg)
-// validation.hasDigitMsg(msg)
-// validation.hasSpecialCharMsg(msg)
-// validation.matchesMsg(msg)
-```
-
-### Error Codes (Programmatic Handling)
-
-Use error codes when you need to programmatically handle errors (e.g., focus first invalid field):
-
-```zig
-// Returns ?ErrorCode instead of ?[]const u8
-const code = validation.requiredCode(value);
-if (code == .required) {
-    cx.setFocus("username");  // Focus first invalid field
-}
-
-// Available error codes:
-// .required, .min_length, .max_length, .invalid_email,
-// .not_numeric, .not_alphanumeric, .mismatch,
-// .no_uppercase, .no_lowercase, .no_digit, .no_special_char
-
-// Find first invalid field - call individual *Code functions in sequence
-// (there's no allCode() combinator; this pattern keeps the API simple)
-pub fn getFirstInvalidField(s: *const State) ?[]const u8 {
-    if (validation.requiredCode(s.username) != null) return "username";
-    if (validation.emailCode(s.email) != null) return "email";
-    if (validation.minLengthCode(s.password, 8) != null) return "password";
-    return null;
-}
-```
-
-> **Note:** Unlike `all()` for error messages, there's no `allCode()` combinator.
-> For multi-field validation with error codes, call individual `*Code` functions
-> in sequence as shown above. This keeps the API simple while covering the
-> common "focus first invalid field" use case.
-
-### Structured Results (Full Accessibility Control)
-
-When you need different messages for visual display vs screen readers:
-
-```zig
-// Structured result with separate messages
-const result = validation.requiredResult(value, .{
-    .message = "Required",  // Terse for visual display
-    .accessible_message = "The email field is required. Please enter your email address.",
-});
-
-if (result) |r| {
-    r.code              // ErrorCode for programmatic handling
-    r.displayMessage()  // Message for visual display
-    r.screenReaderMessage()  // Message for screen readers (falls back to display)
-}
-
-// Use with ValidatedTextInput for full a11y control
-components.ValidatedTextInput{
-    .id = "email",
-    .error_result = validation.requiredResult(s.email, .{
-        .message = "Required",
-        .accessible_message = "The email address field is required",
-    }),
-    .show_error = s.touched_email,
-}
-```
-
-### ValidatedTextInput Component
-
-All-in-one form field with label, input, error display, and help text:
-
-```zig
-const State = struct {
-    email: []const u8 = "",
-    touched_email: bool = false,
-
-    pub fn validateEmail(self: *const State) ?[]const u8 {
-        return gooey.validation.all(self.email, .{
-            gooey.validation.required,
-            gooey.validation.email,
-        });
+    pub fn height(_: *Cx, index: u32) f32 {
+        assert(index < message_count);
+        return messages[index].height();
     }
+```
 
-    pub fn onEmailBlur(self: *State) void {
-        self.touched_email = true;
+The row's `render` follows in the file.
+
+`gooey-charts` draws bar, line, pie, and scatter charts through a `Painter`. Keep series in
+state and fill them in `on_init`. See [charts/README.md](charts/README.md) and
+`dashboard.zig`.
+
+## Theming and fonts
+
+`gooey.Theme.light` (Catppuccin Latte) is the default and `gooey.Theme.dark` (Catppuccin
+Macchiato) is built in. Set one in `Config` with `.theme = &gooey.Theme.dark`, or switch at
+run time from a handler, as the theme check in `src/testing/goldens/core_checks.zig` does:
+
+```zig
+    pub fn goDark(_: *ThemeState, effects: *Effects) void {
+        effects.setTheme(&gooey.Theme.dark);
+        effects.announce("Dark theme", .polite);
     }
-};
-
-// In render:
-components.ValidatedTextInput{
-    .id = "email",
-    .label = "Email Address",
-    .required_indicator = true,        // Shows "*" after label
-    .placeholder = "you@example.com",
-    .bind = &s.email,
-    .error_message = s.validateEmail(),  // Simple string error
-    .show_error = s.touched_email,       // Only show after interaction
-    .help_text = "We'll never share your email",
-    .on_blur = cx.update(State.onEmailBlur),
-    .width = 300,
-}
-
-// Or with structured result for different a11y messages:
-components.ValidatedTextInput{
-    .id = "email",
-    .label = "Email Address",
-    .error_result = validation.emailResult(s.email, .{
-        .message = "Invalid email",
-        .accessible_message = "Please enter a valid email address in the format name@example.com",
-    }),
-    .show_error = s.touched_email,
-}
 ```
 
-### Form-Level Helpers
+A custom theme is a `gooey.Theme` value with every color field set: `bg`, `surface`,
+`overlay`, `primary`, `secondary`, `accent`, `success`, `warning`, `danger`, `text`,
+`subtext`, `muted`, `border`, and `border_focus`. `radius_sm`, `radius_md`, `radius_lg`, and
+`font_size_base` have defaults. Color tokens of the same names resolve against the active
+theme, and components scale their text from `font_size_base`.
+
+`Config.fonts` sets the app family (`name`, null for the platform's sans-serif), the point
+size (`size`, null for `font_size_base`), an optional second family (`mono`), and the faces to
+load (`limits`). A second family needs mono faces:
 
 ```zig
-// Track errors for multiple fields
-var errors = validation.FormErrors(4).init();
-errors.set(0, validation.required(s.username));
-errors.set(1, validation.email(s.email));
-errors.set(2, validation.minLength(s.password, 8));
-errors.set(3, validation.matches(s.confirm, s.password));
-
-if (errors.isValid()) {
-    // Submit form
-} else {
-    // errors.firstErrorIndex() returns index of first invalid field
-}
-
-// Track touched state
-var touched = validation.TouchedFields(4).init();
-touched.touch(0);  // Mark field 0 as touched
-if (touched.isTouched(0)) { ... }
-touched.touchAll();  // Mark all on submit
-touched.reset();     // Clear on form reset
+    .fonts = .{
+        .mono = .{ .system = .monospace },
+        .limits = .{ .variants = &.{.regular}, .mono_variants = &.{.regular} },
+    },
 ```
-
-Run `zig build run-form-validation` for a complete example.
-
-## Animation System
-
-Built-in animation support with easing functions:
 
 ```zig
-// Simple animation (runs once on mount)
-const fade = cx.animations.tween("fade-in", .{ .duration_ms = 500 });
-// fade.progress goes 0.0 -> 1.0
-
-// Animation that restarts when a value changes
-const pulse = cx.animations.tweenOn("counter-pulse", s.count, .{
-    .duration_ms = 200,
-    .easing = Easing.easeOutBack,
-});
-
-// Continuous animation
-const spin = cx.animations.tween("spinner", .{
-    .duration_ms = 1000,
-    .mode = .ping_pong,  // or .loop
-});
-
-// Use animation values
-cx.render(ui.box(.{
-    .background = Color.white.withAlpha(fade.progress),
-    .width = gooey.animation.lerp(100.0, 150.0, pulse.progress),
-}, .{...}));
+        ui.text("mmm", .{ .size = 16, .family = .mono }),
 ```
 
-**Available Easings:** `linear`, `easeIn`, `easeOut`, `easeInOut`, `easeOutBack`, `easeOutCubic`, `easeInOutCubic`
+`effects.setFont(name, size)` swaps the app family at run time into the same face slots.
+The font snippets also come from `core_checks.zig`.
 
-## Change Detection
+## Accessibility
 
-`cx.changed()` detects when a value changes between frames — replacing the common pattern of module-level `var last_foo: ?T = null` with manual diffing:
+Accessibility is a field on the box. `ui.A11y` has `role` (`gooey.accessibility.Role`),
+`label`, `value`, `checked`, `disabled`, `heading_level`, `live`, `href`, `description`,
+`expanded`, `has_popup`, `pos_in_set`, and `set_size`. The components fill it in. From
+`accessible_form.zig`:
 
 ```zig
-// Invalidate caches when dependencies change
-if (cx.changed("dark_mode", s.dark_mode) or cx.changed("window_width", size.width)) {
-    s.invalidateCachedHeights();
-}
+        cx.render(ui.box(.{
+            .a11y = .{ .role = .heading, .label = self.text, .heading_level = self.level },
+        }, .{
 ```
-
-**Semantics:**
-
-- **First call** for a given key → returns `false` (no previous value)
-- **Same value** as last frame → returns `false`
-- **Different value** → returns `true` (and stores the new value)
-
-Works with any value type: `bool`, `f32`, `i32`, enums, small structs.
 
 ```zig
-// Theme change
-if (cx.changed("theme", s.theme)) {
-    s.rebuildStyles();
-}
-
-// Window resize (triggers layout recalc)
-const size = cx.windowSize();
-if (cx.changed("width", size.width)) {
-    s.onResize(size.width);
-}
-
-// Enum state
-if (cx.changed("view", s.current_view)) {
-    s.scrollToTop();
-}
+            .a11y = .{ .role = .alert, .label = self.message, .live = .assertive },
 ```
-
-Keys are comptime strings hashed to `u32` (same approach as the animation system). Up to 64 tracked values per app.
-
-## File Dialogs
-
-Cross-platform file open/save dialogs via `gooey.file_dialog`:
 
 ```zig
-const file_dialog = gooey.file_dialog;
-
-// Open dialog
-if (file_dialog.promptForPaths(allocator, .{
-    .files = true,
-    .prompt = "Attach",
-    .allowed_extensions = &.{ "txt", "png", "pdf" },
-})) |result| {
-    defer result.deinit();
-    for (result.paths) |path| {
-        // ...
-    }
-}
-
-// Save dialog
-if (file_dialog.promptForNewPath(allocator, .{
-    .suggested_name = "untitled.txt",
-    .prompt = "Save",
-})) |path| {
-    defer allocator.free(path);
-    // ...
-}
+            effects.announce("Form submitted successfully!", .polite);
+        } else {
+            effects.announce("Please fix the errors in the form", .assertive);
 ```
 
-- **macOS**: NSOpenPanel / NSSavePanel (blocking)
-- **Linux**: XDG Desktop Portal via D-Bus (blocking)
-- **WASM**: Returns `null` — use `gooey.platform.web.file_dialog` for the async callback API
+Screen readers: VoiceOver on macOS, UI Automation (Narrator, NVDA) on Windows, and ARIA in
+the browser. Linux has no screen reader support in 0.4.0. See
+[docs/accessibility.md](docs/accessibility.md) for roles, live regions, limits, and testing.
 
-Use `file_dialog.supported` (comptime bool) for feature detection. File dialogs block the thread, so call them from a [deferred command](#deferred-commands) to avoid deadlocks during event handling.
+## Debugging and logging
 
-## Entity System
+Debug and ReleaseSafe builds include an inspector and profiler, toggled with
+Cmd/Ctrl+Shift+I. Set `.source = @src()` on a `Style` to show where an element was built.
+ReleaseFast and ReleaseSmall compile both out.
 
-Dynamic creation and deletion with automatic cleanup:
-
-```zig
-const Counter = struct {
-    count: i32 = 0,
-    pub fn increment(self: *Counter) void { self.count += 1; }
-};
-
-const AppState = struct {
-    counters: [10]gooey.context.Entity(Counter) = ...,
-
-    // Command method - needs Gooey access for entity operations
-    pub fn addCounter(self: *AppState, g: *gooey.Window) void {
-        const entity = g.createEntity(Counter, .{ .count = 0 }) catch return;
-        self.counters[self.counter_count] = entity;
-        self.counter_count += 1;
-    }
-};
-
-// In render - use cx.entities.context for entity-scoped handlers
-var entity_cx = cx.entities.context(Counter, counter_entity) orelse return;
-Button{ .label = "+", .on_click_handler = entity_cx.update(Counter.increment) }
-
-// Read entity data
-if (cx.window().readEntity(Counter, entity)) |data| {
-    ui.textFmt("{d}", .{data.count}, .{});
-}
-```
-
-## Layout System
-
-Flexbox-inspired layout with shrink behavior and text wrapping:
-
-```zig
-// Application roots track the current window size automatically.
-cx.render(ui.root(.{ .padding = .{ .all = 24 } }, .{...}));
-
-cx.render(ui.box(.{
-    .direction = .row,           // or .column
-    .gap = 16,
-    .padding = .{ .all = 24 },   // or .symmetric, .each
-    .alignment = .{ .main = .space_between, .cross = .center },
-    .fill_width = true,
-    .grow = true,
-}, .{...}));
-
-// Childless boxes — use ui.rect() for dividers, spacers, colored blocks
-ui.rect(.{ .width = 1, .height = 18, .background = t.border })  // divider
-ui.rect(.{ .grow = true })                                       // spacer
-ui.rect(.{ .width = 40, .height = 40, .background = color, .corner_radius = 4 })
-
-// Shrink behavior - elements shrink when container is too small
-cx.render(ui.box(.{ .width = 150, .min_width = 60 }, .{...}));
-
-// Text wrapping
-ui.text("Long text...", .{ .wrap = .words });  // .none, .words, .newlines
-```
-
-`grow` participates in flexible-space distribution (`grow_width` and
-`grow_height` select one axis). `fill_width` and `fill_height` request 100% of
-the parent's available size without sharing flex space; percentages request a
-fraction from 0 through 1. Grow wins over fixed sizing, fixed sizing wins over
-percentage and fill, and percentage wins over fill. Min/max constrain grow or
-fixed sizing and select fit sizing when neither is present.
-
-## Custom Shaders
-
-Add custom post-processing shaders for visual effects. Shaders are cross-platform with MSL for macOS and WGSL for web:
-
-> **Advanced/unstable API:** Custom shader descriptors and backend shader
-> interfaces may change while the platform renderers converge. Prefer standard
-> components unless an application owns the backend-specific shader code.
-
-```zig
-// MSL shader (macOS)
-pub const plasma_msl =
-    \\void mainImage(thread float4& fragColor, float2 fragCoord,
-    \\               constant ShaderUniforms& uniforms,
-    \\               texture2d<float> iChannel0,
-    \\               sampler iChannel0Sampler) {
-    \\    float2 uv = fragCoord / uniforms.iResolution.xy;
-    \\    float time = uniforms.iTime;
-    \\    // ... shader code
-    \\    fragColor = float4(color, 1.0);
-    \\}
-;
-
-// WGSL shader (Web)
-pub const plasma_wgsl =
-    \\fn mainImage(
-    \\    fragCoord: vec2<f32>,
-    \\    u: ShaderUniforms,
-    \\    tex: texture_2d<f32>,
-    \\    samp: sampler
-    \\) -> vec4<f32> {
-    \\    let uv = fragCoord / u.iResolution.xy;
-    \\    let time = u.iTime;
-    \\    // ... shader code
-    \\    return vec4<f32>(color, 1.0);
-    \\}
-;
-
-const App = gooey.App(AppState, &state, render, .{
-    .custom_shaders = &.{.{ .msl = plasma_msl, .wgsl = plasma_wgsl }},
-});
-```
-
-You can also provide only one platform's shader:
-
-```zig
-// macOS only
-.custom_shaders = &.{.{ .msl = plasma_msl }},
-
-// Web only
-.custom_shaders = &.{.{ .wgsl = plasma_wgsl }},
-```
-
-## Glass Effect (macOS 26.0+)
-
-Transparent window with liquid glass effect:
-
-```zig
-const App = gooey.App(AppState, &state, render, .{
-    .title = "Glass Demo",
-    .background_color = gooey.Color.rgba(0.1, 0.1, 0.15, 1.0),
-    .background_opacity = 0.2,
-    .glass_style = .glass_regular,  // .glass_clear, .blur, .none
-    .glass_corner_radius = 10.0,
-    .titlebar_transparent = true,
-});
-
-// Change glass style at runtime
-pub fn cycleStyle(self: *AppState, g: *gooey.Window) void {
-    g.window.setGlassStyle(.glass_clear, 0.7, 10.0);
-}
-```
-
-## Actions & Keybindings
-
-Contextual action system with keyboard shortcuts:
-
-```zig
-const Undo = struct {};
-const Save = struct {};
-
-fn setupKeymap(cx: *Cx) void {
-    const g = cx.window();
-    g.keymap().bind(Undo, "cmd-z", null);        // Global
-    g.keymap().bind(Save, "cmd-s", "Editor");    // Context-specific
-}
-
-fn render(cx: *Cx) void {
-    cx.render(ui.box(.{}, .{
-        ui.onAction(Undo, doUndo),  // Handle action
-
-        // Scoped context
-        ui.keyContext("Editor"),
-        ui.onAction(Save, doSave),
-    }));
-}
-```
-
-### Quitting the App
-
-Use `g.quit()` from a `cx.command()` handler to quit portably across macOS, Linux, and WASM (no-op).
-
-Both `ui.onActionHandler` and `Button.on_click_handler` accept a `HandlerRef`, so the same `cx.command()` handler works for both the keybinding and the button:
-
-```zig
-const QuitApp = struct {};
-
-const AppState = struct {
-    initialized: bool = false,
-
-    fn quitApp(_: *AppState, g: *gooey.Window) void {
-        g.quit();
-    }
-};
-
-fn setupKeymap(cx: *Cx) void {
-    const s = cx.state(AppState);
-    if (s.initialized) return;
-    s.initialized = true;
-
-    cx.window().keymap().bind(QuitApp, "cmd-q", null);
-}
-
-fn render(cx: *Cx) void {
-    setupKeymap(cx);
-
-    const quit_handler = cx.command(AppState.quitApp);
-
-    cx.render(ui.box(.{ .padding = .{ .all = 24 }, .gap = 16 }, .{
-        // cmd+q triggers quitApp via the action system
-        ui.onActionHandler(QuitApp, quit_handler),
-
-        // Button triggers the same handler on click
-        Button{
-            .label = "Quit",
-            .variant = .danger,
-            .on_click_handler = quit_handler,
-        },
-    }));
-}
-```
-
-For a working reference, see the `Cmd+Q` handler in `src/examples/showcase.zig`, which quits directly from the window's `onEvent` callback via `cx.quit()`.
-
-## More Examples
-
-| Example          | Command                          | Description                           |
-| ---------------- | -------------------------------- | ------------------------------------- |
-| Showcase         | `zig build run`                  | Full feature demo with navigation     |
-| Counter          | `zig build run-counter`          | Simple state management               |
-| Animation        | `zig build run-animation`        | Animation system with tweenOn         |
-| Pomodoro         | `zig build run-pomodoro`         | Timer with tasks and custom shader    |
-| Dynamic Counters | `zig build run-dynamic-counters` | Entity creation and deletion          |
-| Layout           | `zig build run-layout`           | Flexbox, shrink, text wrapping        |
-| Glass            | `zig build run-glass`            | Liquid glass transparency effect      |
-| Spaceship        | `zig build run-spaceship`        | Sci-fi dashboard with hologram shader |
-| Actions          | `zig build run-actions`          | Keybindings and action system         |
-| Select           | `zig build run-select`           | Dropdown select component             |
-| Tooltip          | `zig build run-tooltip`          | Tooltip positioning and styling       |
-| Modal            | `zig build run-modal`            | Modal dialogs with animation          |
-| Images           | `zig build run-images`           | Image loading and effects             |
-| File Dialog      | `zig build run-file-dialog`      | Native file open/save dialogs         |
-| A11y Demo        | `zig build run-a11y-demo`        | VoiceOver accessibility demo          |
-| Accessible Form  | `zig build run-accessible-form`  | Complete accessible form example      |
-| Drag & Drop      | `zig build run-drag-drop`        | Draggable items and drop targets      |
-| Uniform List     | `zig build run-uniform-list`     | Virtualized list with 10,000 items    |
-| Virtual List     | `zig build run-virtual-list`     | Variable-height virtualized list      |
-| Data Table       | `zig build run-data-table`       | Virtualized table with 10,000 rows    |
-| Code Editor      | `zig build run-code-editor`      | Code editor with syntax highlighting  |
-
-See [docs/accessibility.md](docs/accessibility.md) for comprehensive accessibility documentation.
-
-## Logging
-
-Two options for cross-platform logging (native + WASM):
-
-**Option A: `gooey.std_options`** — one-liner for `std.log` compatibility:
-
-```zig
-const gooey = @import("gooey");
-
-// Routes std.log through console.log on WASM, default on native
-pub const std_options = gooey.std_options;
-```
-
-**Option B: `gooey.log`** — zero-config, no `std_options` needed:
+`gooey.log` works on native and WASM without configuration:
 
 ```zig
 const log = gooey.log.scoped(.myapp);
-
 log.info("connected to {s}", .{host});
-log.err("request failed: {}", .{code});
 ```
 
-On native, `gooey.log` delegates to `std.log.scoped()`. On WASM, it writes directly to the browser console. Use option A if you need third-party libraries to log through `std.log`. Use option B if you just want logging that works everywhere.
+To route `std.log` (and libraries that use it) to the browser console too, declare this in
+the root file:
 
-## WASM
+```zig
+pub const std_options = gooey.std_options;
+```
 
-Gooey avoids `std.Io.Threaded` on `wasm32-freestanding`, where the implementation
-does not compile in Zig 0.16. Browser services use the explicit JavaScript
-callback bridges in `src/platform/web/`; unsupported general-purpose `std.Io`
-operations use `std.Io.failing`.
+## Not in 0.4.0
+
+- **Known gaps:** the web host has no file dialogs and does not load images yet. The IME
+  candidate window is placed at the caret, whatever character range the input method asks
+  about. Linux has no screen reader bridge.
+- **Cut from 0.4.0:** multi-window (one window per app), liquid glass, custom shaders, and
+  post-processing.
+- **Deferred:** drag and drop, tooltip layers, and programmatic scrolling (`List` has no
+  `scroll_to`).
+
+## Platforms
+
+### macOS
+
+Metal rendering, CoreText text, native file dialogs, IME, and VoiceOver. Requires macOS 14.
+`zig build hot` rebuilds and restarts on source changes (macOS only):
 
 ```bash
-zig build wasm                 # Showcase
-zig build wasm-counter         # Counter example
+zig build hot                    # todo
+zig build hot -- run-counter     # any run step
+```
 
-# Run the showcase with a local server
+### Linux
+
+Wayland only, with no X11 fallback. Text uses FreeType, HarfBuzz, and Fontconfig, file
+dialogs use the XDG Desktop Portal over D-Bus, and IME uses `zwp_text_input_v3`.
+
+```bash
+# Debian/Ubuntu
+sudo apt install libwayland-dev libvulkan-dev libfreetype-dev libharfbuzz-dev \
+    libfontconfig-dev libpng-dev libdbus-1-dev
+
+# Fedora/RHEL
+sudo dnf install wayland-devel vulkan-loader-devel freetype-devel harfbuzz-devel \
+    fontconfig-devel libpng-devel dbus-devel
+
+# Arch Linux
+sudo pacman -S wayland vulkan-icd-loader freetype2 harfbuzz fontconfig libpng dbus
+```
+
+`-Dlinux-backend` selects the display and renderer at build time:
+
+| Backend                    | Display            | Renderer             | Display libraries |
+| -------------------------- | ------------------ | -------------------- | ----------------- |
+| `wayland_vulkan` (default) | Wayland compositor | Vulkan               | Vulkan, Wayland   |
+| `wayland_cpu`              | Wayland compositor | CPU into `wl_shm`    | Wayland           |
+| `fbdev`                    | `/dev/fb0`         | CPU into framebuffer | None              |
+
+```bash
+zig build run -Dlinux-backend=wayland_cpu                 # no GPU driver
+zig build run -Dlinux-backend=fbdev -Doptimize=ReleaseSafe  # kernel framebuffer
+zig build compile-shaders   # only after editing GLSL; needs glslc
+```
+
+Precompiled SPIR-V is checked in; pass `-Dskip-shader-compile=true` when `glslc` is missing.
+The fbdev backend still links FreeType, HarfBuzz, Fontconfig, libpng, and D-Bus. It covers the
+whole panel, reads 16 and 32 bpp framebuffers, takes input from `/dev/input/event*`, and
+completes file dialog requests with `error.FileDialogUnsupported`. Ctrl+Q or Alt+F4 exits.
+
+| Variable             | Effect                                                     |
+| -------------------- | ---------------------------------------------------------- |
+| `GOOEY_FBDEV`        | Framebuffer device path (default `/dev/fb0`)               |
+| `GOOEY_SCALE`        | UI scale factor from 1 to 8 (default 1)                    |
+| `GOOEY_EVDEV_GRAB=1` | Grab input devices exclusively so the console ignores them |
+
+The CPU renderer reserves its framebuffers from `limits.window` (`framebuffer_width_max`
+and `framebuffer_height_max`). An fbdev panel larger than that fails to open, and a larger
+Wayland window renders at a reduced scale.
+
+### Windows
+
+Win32 windows, the shared Vulkan renderer, DirectWrite text, WIC images, native file
+dialogs, IME, and UI Automation. 64-bit only. See [docs/windows-port.md](docs/windows-port.md).
+
+```bash
+zig build run-todo
+zig build test-windows
+```
+
+### Web (WASM)
+
+```bash
+zig build wasm                 # todo, into zig-out/web
+zig build wasm-counter         # counter, into zig-out/web/counter
 python3 -m http.server 8080 -d zig-out/web
 ```
 
-## Hot Reloading (macOS)
+The browser needs WebGPU. The page runs every frame stage on the browser's one thread. Gooey
+avoids `std.Io.Threaded` on `wasm32-freestanding`; browser services use the JavaScript
+bridges in `src/platform/web/`.
 
-Simple brute-force hot reload for development:
-
-```bash
-zig build hot                    # Showcase (default)
-zig build hot -- run-counter     # Specific example
-zig build hot -- run-pomodoro
-zig build hot -- run-glass
-```
-
-## Architecture
-
-```architecture.txt
-components/           # High-level controls built on Gooey's public API
-src/
-├── app.zig          # App entry points (runCx, App, WebApp)
-├── cx.zig           # Unified context (Cx)
-├── root.zig         # Public API exports
-│
-├── core/            # Foundational types (geometry, events, shaders)
-├── input/           # Input handling (events, actions, keymaps)
-├── scene/           # GPU primitives (scene graph, batching)
-├── context/         # App context (focus, entity, dispatch, widget store)
-├── animation/       # Animation system and easing
-├── debug/           # Debugging tools and render stats
-│
-├── ui/              # Declarative builder (box, vstack, hstack, primitives)
-├── widgets/         # Stateful widget implementations (text input/area state)
-├── layout/          # Flexbox-style layout engine
-│
-├── text/            # Text rendering (CoreText, FreeType/HarfBuzz, Canvas)
-├── image/           # Image loading and atlas management
-├── svg/             # SVG rasterization (CoreGraphics, Linux, Canvas)
-├── platform/        # macOS/Metal, Linux/Vulkan/Wayland, WASM/WebGPU
-├── runtime/         # Frame rendering and input handling
-└── examples/        # Demo applications
-```
-
-## Linux Platform
-
-Gooey has full Linux support using Wayland and Vulkan. The showcase and all demos run on Linux.
-
-### Architecture
-
-```linux-architecture.txt
-Linux Platform Stack:
-┌─────────────────────────────────────┐
-│         gooey Application           │
-├─────────────────────────────────────┤
-│  LinuxPlatform  │  Window           │
-│  (event loop)   │  (XDG shell)      │
-├─────────────────────────────────────┤
-│  VulkanRenderer │  SceneRenderer    │
-│  (direct Vulkan, GLSL shaders)      │
-├─────────────────────────────────────┤
-│  Wayland Client  │  Vulkan Driver   │
-└─────────────────────────────────────┘
-```
-
-### What's Implemented ✓
-
-| Feature                | Implementation                                                                  |
-| ---------------------- | ------------------------------------------------------------------------------- |
-| **Windowing**          | Wayland via XDG shell (xdg-toplevel, xdg-decoration)                            |
-| **GPU Rendering**      | Direct Vulkan with GLSL shaders (unified, text, svg, image pipelines)           |
-| **Text Rendering**     | FreeType for rasterization, HarfBuzz for shaping, Fontconfig for font discovery |
-| **Input Handling**     | Full keyboard (evdev keycodes), mouse, scroll with modifier support             |
-| **Clipboard**          | Wayland data-device protocol (copy/paste text)                                  |
-| **File Dialogs**       | XDG Desktop Portal via D-Bus (open, save, directory selection)                  |
-| **IME Support**        | zwp_text_input_v3 protocol for international text input                         |
-| **HiDPI**              | wp_viewporter protocol with scale factor support                                |
-| **Server Decorations** | zxdg-decoration-manager-v1 protocol                                             |
-
-### Key Design Decisions
-
-1. **Wayland-only** - No X11 fallback (modern approach like Ghostty)
-2. **Direct Vulkan** - No wgpu-native dependency, full control over rendering
-3. **Native text stack** - FreeType/HarfBuzz/Fontconfig (same as most Linux apps)
-4. **XDG Portal integration** - Native file dialogs that respect user's desktop environment
-
-### Dependencies Required
-
-```deps.sh
-# System packages (Debian/Ubuntu)
-sudo apt install \
-    libwayland-dev \
-    libvulkan-dev \
-    libfreetype-dev \
-    libharfbuzz-dev \
-    libfontconfig-dev \
-    libpng-dev \
-    libdbus-1-dev
-
-# Fedora/RHEL
-sudo dnf install \
-    wayland-devel \
-    vulkan-loader-devel \
-    freetype-devel \
-    harfbuzz-devel \
-    fontconfig-devel \
-    libpng-devel \
-    dbus-devel
-
-# Arch Linux
-sudo pacman -S \
-    wayland \
-    vulkan-icd-loader \
-    freetype2 \
-    harfbuzz \
-    fontconfig \
-    libpng \
-    dbus
-```
-
-### Building & Running
-
-```build.sh
-# Build and run the showcase
-zig build run
-
-# Run specific demos
-zig build run-basic        # Simple Wayland + Vulkan test
-zig build run-text         # Text rendering demo
-zig build run-file-dialog  # XDG portal file dialogs
-
-# Compile shaders (only needed if you modify GLSL sources)
-zig build compile-shaders
-```
-
-### What's Left / Known Limitations
-
-1. **Custom cursors** - Cursor theming via wl_cursor not yet implemented
-2. **Hot reloading** - macOS-only currently (uses FSEvents)
-3. **Glass effects** - macOS-specific (compositor-dependent on Linux)
-4. **Multi-window** - Supported in platform but not fully tested
-
-## Testing & CI
-
-### Running Tests
+## Testing and CI
 
 ```bash
-# Run all tests
-zig build test
-
-# Run tests under valgrind (Linux only - detects memory leaks)
-zig build test-valgrind
-
-# Check code formatting
+zig build test                  # unit tests, goldens, fail-fast checks, import ban
+zig build test-valgrind         # Linux: tests under valgrind with valgrind.supp
+zig build typecheck-linux       # analyze the Linux backend from any host
+zig build typecheck-windows     # analyze the Windows backend from any host
+zig build typecheck-macos       # analyze the macOS backend from any host
+zig build goldens               # rewrite src/testing/goldens after an intended change
 zig fmt --check src/ charts/
 ```
 
-### Continuous Integration
-
-The project uses GitHub Actions for CI. Every push and pull request runs:
-
-| Job           | Platform | Description                                                                   |
-| ------------- | -------- | ----------------------------------------------------------------------------- |
-| `test-linux`  | Ubuntu   | Unit tests on Linux                                                           |
-| `test-macos`  | macOS    | Unit tests on macOS                                                           |
-| `build-linux` | Ubuntu   | Build all optimization levels (Debug, ReleaseSafe, ReleaseFast, ReleaseSmall) |
-| `build-macos` | macOS    | Build all optimization levels                                                 |
-| `build-wasm`  | Ubuntu   | WebAssembly targets                                                           |
-| `valgrind`    | Ubuntu   | Memory leak detection via valgrind                                            |
-| `zig-fmt`     | Ubuntu   | Code formatting check                                                         |
-
-### Memory Leak Detection
-
-Valgrind integration helps catch memory issues early:
-
-```bash
-# Run tests with full leak checking
-zig build test-valgrind
-```
-
-The `valgrind.supp` file contains suppressions for known false positives from system libraries (Vulkan, Wayland, FreeType, HarfBuzz, etc.).
+On Linux without `glslc`, add `-Dskip-shader-compile=true`. CI (`.github/workflows/ci.yml`)
+runs tests on Linux and macOS, builds every optimize mode on both, builds the WASM targets,
+runs valgrind and `zig fmt`, and gates benchmarks on macOS.
 
 ## Inspiration
 

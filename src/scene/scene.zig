@@ -11,8 +11,9 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const geometry = @import("../core/geometry.zig");
+const geometry = @import("../geometry/geometry.zig");
 const limits = @import("../core/limits.zig");
+const reservation = @import("../core/reservation.zig");
 const svg_instance_mod = @import("svg_instance.zig");
 pub const SvgInstance = svg_instance_mod.SvgInstance;
 const image_instance_mod = @import("image_instance.zig");
@@ -500,7 +501,7 @@ const PERM_DONE: u64 = std.math.maxInt(u64);
 /// Pack a draw order and array index into a single sortable u64. The order
 /// occupies the high 32 bits (primary key) and the index the low 32 bits, so an
 /// ascending u64 sort breaks ties by insertion order — a stable, deterministic
-/// result, unlike the old unstable payload pdq.
+/// result, unlike an unstable payload pdq.
 inline fn makeOrderKey(order: DrawOrder, index: u32) u64 {
     return (@as(u64, order) << 32) | @as(u64, index);
 }
@@ -544,8 +545,8 @@ fn applyPermutation(comptime T: type, items: []T, keys: []u64) void {
 
 /// Parallel-array variant of `applyPermutation`: gathers `instances` and
 /// `gradients` with the same permutation so the two stay index-aligned. This is
-/// what lets the paths arrays be sorted together without the old O(n²) selection
-/// sort that hand-swapped both arrays per comparison.
+/// what lets the paths arrays be sorted together without an O(n²) selection
+/// sort that hand-swaps both arrays per comparison.
 fn applyPermutationPaths(
     instances: []PathInstance,
     gradients: []GradientUniforms,
@@ -635,6 +636,9 @@ pub const Scene = struct {
     /// This scene's budget. Inserts check against it, never the global ceilings;
     /// every list above was reserved at exactly this capacity.
     limits: SceneLimits,
+    /// Most items each `Pool` has held in any frame, its high-water mark.
+    /// `deinit` zeroes that prefix before releasing the storage (CLAUDE.md §21).
+    pool_count_max: [pool_count]u32,
     /// Frames completed by `finish`; names the frame in overflow reports.
     frame_count_finished: u64,
     // Per-array dirty flags: track which arrays had out-of-order inserts (requiring sort)
@@ -654,7 +658,7 @@ pub const Scene = struct {
     culling_enabled: bool,
 
     // Stats tracking (optional)
-    stats: ?*@import("../debug/render_stats.zig").RenderStats,
+    stats: ?*@import("render_stats.zig").RenderStats,
 
     const Self = @This();
 
@@ -678,6 +682,7 @@ pub const Scene = struct {
             .clip_stack = .empty,
             .sort_keys = .empty,
             .limits = std.mem.zeroes(SceneLimits),
+            .pool_count_max = @splat(0),
             .frame_count_finished = 0,
             .needs_sort_shadows = false,
             .needs_sort_quads = false,
@@ -699,6 +704,10 @@ pub const Scene = struct {
     /// Initialize a scene that reserves exactly `scene_limits` for every pool.
     /// This is the only constructor for a scene that is built into: after it
     /// returns, inserts never allocate, and a full pool fails fast (§2).
+    ///
+    /// Pools come from `core/reservation.zig`, not `allocator`: nothing is
+    /// written at init, so a frame's pages become resident only as it fills
+    /// them (counter touches about 70 KB of a 1.8 MiB `.standard` scene).
     pub fn initCapacity(allocator: std.mem.Allocator, scene_limits: *const SceneLimits) !Self {
         assert(scene_limits.check() == null);
 
@@ -706,45 +715,48 @@ pub const Scene = struct {
         errdefer self.deinit();
         self.limits = scene_limits.*;
 
-        const budget = &self.limits;
-        try self.shadows.ensureTotalCapacityPrecise(allocator, budget.shadow_count_frame_max);
-        try self.quads.ensureTotalCapacityPrecise(allocator, budget.quad_count_frame_max);
-        try self.glyphs.ensureTotalCapacityPrecise(allocator, budget.glyph_count_frame_max);
-        try self.svg_instances.ensureTotalCapacityPrecise(allocator, budget.svg_count_frame_max);
-        try self.images.ensureTotalCapacityPrecise(allocator, budget.image_count_frame_max);
-        try self.path_instances.ensureTotalCapacityPrecise(allocator, budget.path_count_frame_max);
-        try self.path_gradients.ensureTotalCapacityPrecise(allocator, budget.path_count_frame_max);
-        try self.polylines.ensureTotalCapacityPrecise(allocator, budget.polyline_count_frame_max);
-        try self.point_clouds.ensureTotalCapacityPrecise(
-            allocator,
-            budget.point_cloud_count_frame_max,
-        );
-        try self.colored_point_clouds.ensureTotalCapacityPrecise(
-            allocator,
-            budget.colored_point_cloud_count_frame_max,
-        );
-        try self.clip_stack.ensureTotalCapacityPrecise(allocator, budget.clip_depth_max);
-        try self.sort_keys.ensureTotalCapacityPrecise(allocator, budget.sortKeyCountMax());
+        inline for (comptime std.enums.values(Pool)) |pool| {
+            const List = @FieldType(Self, @tagName(pool));
+            const Item = std.meta.Elem(List.Slice);
+            @field(self, @tagName(pool)) =
+                try reservation.reserveList(Item, self.poolCapacity(pool));
+        }
+        self.sort_keys = try reservation.reserveList(u64, self.limits.sortKeyCountMax());
 
-        assert(self.quads.capacity == budget.quad_count_frame_max);
-        assert(self.sort_keys.capacity == budget.sortKeyCountMax());
+        assert(self.quads.capacity == self.limits.quad_count_frame_max);
+        assert(self.sort_keys.capacity == self.limits.sortKeyCountMax());
         return self;
     }
 
     pub fn deinit(self: *Self) void {
-        self.shadows.deinit(self.allocator);
-        self.quads.deinit(self.allocator);
-        self.glyphs.deinit(self.allocator);
-        self.svg_instances.deinit(self.allocator);
-        self.images.deinit(self.allocator);
-        self.path_instances.deinit(self.allocator);
-        self.path_gradients.deinit(self.allocator);
-        self.polylines.deinit(self.allocator);
-        self.point_clouds.deinit(self.allocator);
-        self.colored_point_clouds.deinit(self.allocator);
-        self.clip_stack.deinit(self.allocator);
-        self.sort_keys.deinit(self.allocator);
+        self.notePoolCountMax();
+        // `finish` sorts at most the longest sortable pool's keys, so the
+        // longest pool of any kind bounds the keys ever written.
+        var sort_key_count_max: u32 = 0;
+        inline for (comptime std.enums.values(Pool)) |pool| {
+            const List = @FieldType(Self, @tagName(pool));
+            const Item = std.meta.Elem(List.Slice);
+            const used = self.pool_count_max[@backingInt(pool)];
+            sort_key_count_max = @max(sort_key_count_max, used);
+            const list = &@field(self, @tagName(pool));
+            if (list.capacity > 0) reservation.releaseList(Item, list, used);
+        }
+        if (self.sort_keys.capacity > 0) {
+            const used = @min(sort_key_count_max, self.sort_keys.capacity);
+            reservation.releaseList(u64, &self.sort_keys, used);
+        }
         self.mesh_pool.deinit();
+    }
+
+    /// Fold each pool's current length into its high-water mark.
+    fn notePoolCountMax(self: *Self) void {
+        inline for (comptime std.enums.values(Pool)) |pool| {
+            const list = &@field(self, @tagName(pool));
+            assert(list.items.len <= list.capacity);
+            const count: u32 = @intCast(list.items.len);
+            const slot = &self.pool_count_max[@backingInt(pool)];
+            slot.* = @max(slot.*, count);
+        }
     }
 
     /// Reserve the quad and matching sort-key storage used by ordered canvas
@@ -764,6 +776,7 @@ pub const Scene = struct {
     }
 
     pub fn clear(self: *Self) void {
+        self.notePoolCountMax();
         self.shadows.clearRetainingCapacity();
         self.quads.clearRetainingCapacity();
         self.glyphs.clearRetainingCapacity();
@@ -806,6 +819,7 @@ pub const Scene = struct {
         colored_point_clouds,
         clip_stack,
     };
+    const pool_count = @typeInfo(Pool).@"enum".field_names.len;
 
     fn poolCapacity(self: *const Self, comptime pool: Pool) u32 {
         const budget = &self.limits;
@@ -1631,14 +1645,14 @@ pub const Scene = struct {
         if (self.needs_sort_images) self.sortByOrder(ImageInstance, self.images.items);
         if (self.needs_sort_paths) {
             // Paths carry a parallel gradient array; gather both with one
-            // permutation (retires the former O(n²) selection sort).
+            // permutation in O(n log n).
             sortPathsByOrder(self.path_instances.items, self.path_gradients.items);
         }
         if (self.needs_sort_polylines) self.sortByOrder(Polyline, self.polylines.items);
         if (self.needs_sort_point_clouds) self.sortByOrder(PointCloud, self.point_clouds.items);
-        // Previously missing: the flag was set on out-of-order inserts but never
-        // consumed, so colored point clouds rendered in insertion order. Wiring
-        // the branch in fixes that dead-invariant bug (§11, negative space).
+        // Every flag set on out-of-order inserts must be consumed here; an
+        // unconsumed flag would render colored point clouds in insertion order
+        // (§11, negative space).
         if (self.needs_sort_colored_point_clouds) {
             self.sortByOrder(ColoredPointCloud, self.colored_point_clouds.items);
         }
@@ -1678,7 +1692,7 @@ pub const Scene = struct {
     }
 
     /// Attach stats tracker (optional)
-    pub fn setStats(self: *Self, stats: *@import("../debug/render_stats.zig").RenderStats) void {
+    pub fn setStats(self: *Self, stats: *@import("render_stats.zig").RenderStats) void {
         self.stats = stats;
     }
 };
@@ -1695,6 +1709,11 @@ const test_limits: SceneLimits = .{
     .polyline_count_frame_max = 4,
     .point_cloud_count_frame_max = 4,
     .colored_point_cloud_count_frame_max = 4,
+    .path_vertex_count_frame_max = 16,
+    .path_index_count_frame_max = 24,
+    .polyline_point_count_frame_max = 8,
+    .point_count_frame_max = 4,
+    .colored_point_count_frame_max = 4,
     .clip_depth_max = 4,
 };
 
@@ -1889,12 +1908,21 @@ test "insertQuadWithOrder interleaves correctly with BatchIterator" {
 test "finish sorts all nine per-type draw-order arrays ascending" {
     // Goal: prove every per-type array that can be flagged out-of-order is
     // actually re-sorted by `finish()` — including `colored_point_clouds`, whose
-    // sort branch was previously missing (write-only flag), and the parallel
+    // flag is easy to leave write-only, and the parallel
     // path arrays, whose gradients must travel with their instances. We seed
     // each array directly (white-box) with a descending-ish order permutation so
     // a correct sort must move every element, then assert ascending order.
     const testing = std.testing;
-    var scene = try Scene.initCapacity(testing.allocator, &test_limits);
+    // Five primitives of each kind: the budget holds exactly that many, since
+    // pool storage is a fixed reservation that cannot grow.
+    var sort_limits = test_limits;
+    inline for (.{
+        "quad_count_frame_max",        "shadow_count_frame_max",
+        "svg_count_frame_max",         "image_count_frame_max",
+        "path_count_frame_max",        "polyline_count_frame_max",
+        "point_cloud_count_frame_max", "colored_point_cloud_count_frame_max",
+    }) |field| @field(sort_limits, field) = 5;
+    var scene = try Scene.initCapacity(testing.allocator, &sort_limits);
     defer scene.deinit();
 
     // Distinct, non-monotonic orders: a stable ascending sort must reorder them
@@ -1908,10 +1936,9 @@ test "finish sorts all nine per-type draw-order arrays ascending" {
         fn run(
             comptime T: type,
             list: *std.ArrayListUnmanaged(T),
-            gpa: std.mem.Allocator,
             order_values: []const DrawOrder,
-        ) !void {
-            for (order_values) |order| try list.append(gpa, .{ .order = order });
+        ) void {
+            for (order_values) |order| list.appendAssumeCapacity(.{ .order = order });
         }
     }.run;
 
@@ -1924,28 +1951,28 @@ test "finish sorts all nine per-type draw-order arrays ascending" {
         }
     }.run;
 
-    try seed(Shadow, &scene.shadows, scene.allocator, &orders);
+    seed(Shadow, &scene.shadows, &orders);
     scene.needs_sort_shadows = true;
-    try seed(Quad, &scene.quads, scene.allocator, &orders);
+    seed(Quad, &scene.quads, &orders);
     scene.needs_sort_quads = true;
-    try seed(GlyphInstance, &scene.glyphs, scene.allocator, &orders);
+    seed(GlyphInstance, &scene.glyphs, &orders);
     scene.needs_sort_glyphs = true;
-    try seed(SvgInstance, &scene.svg_instances, scene.allocator, &orders);
+    seed(SvgInstance, &scene.svg_instances, &orders);
     scene.needs_sort_svgs = true;
-    try seed(ImageInstance, &scene.images, scene.allocator, &orders);
+    seed(ImageInstance, &scene.images, &orders);
     scene.needs_sort_images = true;
-    try seed(Polyline, &scene.polylines, scene.allocator, &orders);
+    seed(Polyline, &scene.polylines, &orders);
     scene.needs_sort_polylines = true;
-    try seed(PointCloud, &scene.point_clouds, scene.allocator, &orders);
+    seed(PointCloud, &scene.point_clouds, &orders);
     scene.needs_sort_point_clouds = true;
-    try seed(ColoredPointCloud, &scene.colored_point_clouds, scene.allocator, &orders);
+    seed(ColoredPointCloud, &scene.colored_point_clouds, &orders);
     scene.needs_sort_colored_point_clouds = true;
 
     // Paths: parallel instance/gradient arrays. Tag each gradient's `param0`
     // with its instance's order so we can prove the gather kept them aligned.
     for (orders) |order| {
-        try scene.path_instances.append(scene.allocator, .{ .order = order, .index_count = 1 });
-        try scene.path_gradients.append(scene.allocator, .{ .param0 = @floatFromInt(order) });
+        scene.path_instances.appendAssumeCapacity(.{ .order = order, .index_count = 1 });
+        scene.path_gradients.appendAssumeCapacity(.{ .param0 = @floatFromInt(order) });
     }
     scene.needs_sort_paths = true;
 

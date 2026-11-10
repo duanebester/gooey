@@ -389,8 +389,14 @@ or hide bounds checks inside abstractions. Keep loop bounds and memory strides e
 ## 21. Buffer Bleeds
 
 A partially written buffer can leak stale or sensitive bytes and break deterministic output.
-Zero every unused byte, including alignment padding, unused GPU ranges, serialization padding,
-and pooled storage returned to a different logical owner.
+Zero every unused byte before a different owner can read it, including alignment padding,
+unused GPU ranges, serialization padding, and pooled storage returned to a different logical
+owner. Fresh pages from the operating system count as zeroed: they are zero by kernel contract.
+
+Do not zero budget-sized reservations at initialization. Take them from fresh pages and zero
+on release instead: a pool zeroes the range it used, up to its high-water mark, before its
+storage returns to the allocator or passes to a new owner. The cost is proportional to use,
+never to capacity, and untouched pages stay non-resident.
 
 Assert the used range when writing and again before submission or transmission.
 

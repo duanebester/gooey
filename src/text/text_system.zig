@@ -13,10 +13,11 @@ const types = @import("types.zig");
 const font_face_mod = @import("font_face.zig");
 const cache_mod = @import("cache.zig");
 const platform = @import("../platform/mod.zig");
-const render_stats = @import("../debug/render_stats.zig");
+const render_stats = @import("../scene/render_stats.zig");
 const RenderStats = render_stats.RenderStats;
 
-const Atlas = @import("atlas.zig").Atlas;
+const atlas_mod = @import("atlas.zig");
+const Atlas = atlas_mod.Atlas;
 
 // =============================================================================
 // Shaped Run Cache - Fixed Capacity, Zero Runtime Allocation
@@ -128,8 +129,6 @@ pub const ShapedRunCache = struct {
     entry_count: u32,
     /// Global access counter for LRU
     access_counter: u32,
-    /// Track font pointer to invalidate on font change
-    current_font_ptr: usize,
 
     const Self = @This();
 
@@ -159,7 +158,6 @@ pub const ShapedRunCache = struct {
             .hash_table = @as([HASH_TABLE_SIZE]u16, @splat(EMPTY_SLOT)),
             .entry_count = 0,
             .access_counter = 0,
-            .current_font_ptr = 0,
         };
 
         // Initialize all entries as invalid
@@ -179,7 +177,6 @@ pub const ShapedRunCache = struct {
     pub noinline fn initInPlace(self: *Self) void {
         self.entry_count = 0;
         self.access_counter = 0;
-        self.current_font_ptr = 0;
 
         // Initialize hash table to empty slots
         @memset(&self.hash_table, EMPTY_SLOT);
@@ -197,20 +194,7 @@ pub const ShapedRunCache = struct {
         // No dynamic memory to free - just clear state
         self.entry_count = 0;
         self.access_counter = 0;
-        self.current_font_ptr = 0;
         self.* = undefined;
-    }
-
-    /// Check if font changed and invalidate if needed
-    pub fn checkFont(self: *Self, font_ptr: usize) void {
-        std.debug.assert(font_ptr != 0);
-
-        if (self.current_font_ptr != font_ptr) {
-            self.clearAll();
-            self.current_font_ptr = font_ptr;
-        }
-
-        std.debug.assert(self.current_font_ptr == font_ptr);
     }
 
     /// Get cached shaped run, returns null if not cached
@@ -438,8 +422,10 @@ pub const ShapedRunCache = struct {
         }
     }
 
-    /// Clear all entries (e.g., on font change)
-    fn clearAll(self: *Self) void {
+    /// Drop every entry. Keys hold the face address, and `TextSystem` reloads
+    /// faces into the same slots, so a font change must clear explicitly.
+    /// Entries for different faces coexist; nothing clears on a face switch.
+    pub fn clear(self: *Self) void {
         for (&self.entries) |*entry| {
             entry.clear();
         }
@@ -499,8 +485,6 @@ pub const MeasureCache = struct {
     slots: [SLOT_COUNT]MeasureEntry,
     /// Global access counter for LRU
     access_counter: u32,
-    /// Track font pointer to invalidate on font change
-    current_font_ptr: usize,
 
     const Self = @This();
 
@@ -524,14 +508,13 @@ pub const MeasureCache = struct {
     /// `ShapedRunCache`. Marked noinline to keep the ~57KB off the WASM stack.
     pub noinline fn initInPlace(self: *Self) void {
         self.access_counter = 0;
-        self.current_font_ptr = 0;
 
         for (&self.slots) |*slot| {
             slot.clear();
         }
 
         std.debug.assert(self.access_counter == 0);
-        std.debug.assert(self.current_font_ptr == 0);
+        std.debug.assert(!self.slots[0].valid);
     }
 
     pub fn init() Self {
@@ -542,21 +525,7 @@ pub const MeasureCache = struct {
 
     pub fn deinit(self: *Self) void {
         self.access_counter = 0;
-        self.current_font_ptr = 0;
         self.* = undefined;
-    }
-
-    /// Check if the font changed and invalidate the whole cache if so.
-    /// Widths are only meaningful for the font that produced them.
-    pub fn checkFont(self: *Self, font_ptr: usize) void {
-        std.debug.assert(font_ptr != 0);
-
-        if (self.current_font_ptr != font_ptr) {
-            self.clearAll();
-            self.current_font_ptr = font_ptr;
-        }
-
-        std.debug.assert(self.current_font_ptr == font_ptr);
     }
 
     /// Look up a cached width. Returns null on miss. Updates LRU on hit.
@@ -630,8 +599,10 @@ pub const MeasureCache = struct {
         std.debug.assert(victim.width == width);
     }
 
-    /// Clear all slots (e.g. on font change).
-    fn clearAll(self: *Self) void {
+    /// Drop every width. Widths are only meaningful for the face that produced
+    /// them; keys carry the face address, so faces coexist and only a font
+    /// reload, which reuses those addresses, clears.
+    pub fn clear(self: *Self) void {
         for (&self.slots) |*slot| {
             slot.clear();
         }
@@ -648,33 +619,59 @@ pub const MeasureCache = struct {
 
 const is_wasm = platform.is_wasm;
 const is_linux = platform.is_linux;
+const is_windows = platform.is_windows;
 
-const backend = if (is_wasm)
+/// `text_backend = .synthetic` replaces the platform's fonts with derived
+/// metrics on every target, so headless goldens match across hosts.
+pub const is_synthetic = @import("gooey_build_options").text_backend == .synthetic;
+
+const backend = if (is_synthetic)
+    @import("backends/synthetic/mod.zig")
+else if (is_wasm)
     @import("backends/web/mod.zig")
 else if (is_linux)
     @import("backends/freetype/mod.zig")
+else if (is_windows)
+    @import("backends/directwrite/mod.zig")
 else
     @import("backends/coretext/mod.zig");
 
 /// Platform-specific font face type
-const PlatformFace = if (is_wasm)
+const PlatformFace = if (is_synthetic)
+    backend.SyntheticFace
+else if (is_wasm)
     backend.WebFontFace
 else if (is_linux)
     backend.FreeTypeFace
+else if (is_windows)
+    backend.DirectWriteFace
 else
     backend.CoreTextFace;
 
 /// Platform-specific shaper type
-const PlatformShaper = if (is_wasm)
+const PlatformShaper = if (is_synthetic)
+    backend.SyntheticShaper
+else if (is_wasm)
     backend.WebShaper
 else if (is_linux)
     backend.HarfBuzzShaper
+else if (is_windows)
+    backend.DirectWriteShaper
 else
     backend.CoreTextShaper;
 
 // =============================================================================
 // Public Types
 // =============================================================================
+
+/// The most codepoints one shaped run may hold, on every backend. CoreText
+/// shapes at most 2048 UTF-16 units and 1024 glyphs per CTRun, DirectWrite
+/// 2048 UTF-16 units, and the 0.4.0 core's per-tick text scratch holds the
+/// shaped glyphs of one such run with room for the shaper's growth (asserted
+/// in `core/window.zig`). A codepoint is at most two UTF-16 units and, in the
+/// scripts Gooey shapes, at most one glyph. A longer run fails shaping with
+/// `error.TextRunTooLong` before any backend sees it.
+pub const run_codepoint_count_max: u32 = 1024;
 
 pub const FontFace = font_face_mod.FontFace;
 pub const Metrics = types.Metrics;
@@ -683,15 +680,39 @@ pub const ShapedGlyph = types.ShapedGlyph;
 pub const ShapedRun = types.ShapedRun;
 pub const TextMeasurement = types.TextMeasurement;
 pub const SystemFont = types.SystemFont;
+pub const FontVariant = types.FontVariant;
+pub const FontFamily = types.FontFamily;
+pub const FontLimits = @import("../core/limits.zig").FontLimits;
 pub const CachedGlyph = cache_mod.CachedGlyph;
+pub const AtlasOptions = cache_mod.AtlasOptions;
 pub const SUBPIXEL_VARIANTS_X = types.SUBPIXEL_VARIANTS_X;
 
 /// High-level text system
 pub const TextSystem = struct {
     allocator: std.mem.Allocator,
+    /// Owns every `ShapedRun` a shape miss returns; callers free runs with it.
+    /// It is `allocator` unless a caller with reserved scratch storage sets it
+    /// (`useRunAllocator`), so a shape miss after initialization claims that
+    /// storage instead of the heap (CLAUDE.md §2; the 0.4.0 core does this).
+    run_allocator: std.mem.Allocator,
     cache: cache_mod.GlyphCache,
-    /// Current font face (platform-specific)
-    current_face: ?PlatformFace,
+    /// One face per variant in `FontLimits.variants` (the app family), then
+    /// one per `FontLimits.mono_variants` (the second family), allocated at
+    /// init and reloaded in place by `loadFont`. Slot addresses never change,
+    /// so `@intFromPtr(&faces[slot])` is a stable per-face cache key.
+    faces: []PlatformFace,
+    /// Slots `0..app_face_count` hold the app family; the rest hold mono.
+    app_face_count: u8,
+    /// The variant each slot holds, in `FontLimits` order.
+    face_variants: [face_slot_count_max]FontVariant,
+    /// Slot of each family's variant, or `face_slot_none` when its set omits it.
+    face_slot_by_variant: [FontFamily.count][FontVariant.count]u8,
+    /// True once every app-family slot holds a loaded face.
+    faces_loaded: bool,
+    /// True once every mono-family slot holds a loaded face (`loadMonoFont`).
+    mono_loaded: bool,
+    /// Where the loaded set came from; meaningful only while `faces_loaded`.
+    loaded_source: LoadedSource,
     /// Complex shaper (native only, void on web)
     shaper: ?PlatformShaper,
     scale_factor: f32,
@@ -718,48 +739,80 @@ pub const TextSystem = struct {
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, io: std.Io) !Self {
-        return initWithScale(allocator, 1.0, io);
-    }
+    const face_slot_none: u8 = std.math.maxInt(u8);
+    const face_slot_count_max: u8 = FontFamily.count * FontVariant.count;
 
-    pub fn initWithScale(allocator: std.mem.Allocator, scale: f32, io: std.Io) !Self {
-        std.debug.assert(scale > 0);
-        std.debug.assert(scale <= 4.0); // Reasonable scale factor limit
-
-        return .{
-            .allocator = allocator,
-            .cache = try cache_mod.GlyphCache.init(allocator, scale),
-            .current_face = null,
-            .shaper = null,
-            .scale_factor = scale,
-            .shape_cache = ShapedRunCache.init(),
-            .measure_cache = MeasureCache.init(),
-            .io = io,
-            .shape_cache_mutex = .init,
-            .glyph_cache_mutex = .init,
-        };
+    comptime {
+        std.debug.assert(face_slot_count_max < face_slot_none);
     }
 
     /// Initialize TextSystem in-place using out-pointer pattern.
     /// Avoids stack overflow on WASM where TextSystem is ~1.7MB
     /// (GlyphCache: ~200KB, ShapedRunCache: ~1.5MB).
     /// Marked noinline to prevent stack accumulation in WASM builds.
-    pub noinline fn initInPlace(self: *Self, allocator: std.mem.Allocator, scale: f32, io: std.Io) !void {
+    ///
+    /// Reserves one face slot per `font_limits.variants` entry; `loadFont` or
+    /// `loadSystemFont` fills every slot before the first frame.
+    pub noinline fn initInPlace(
+        self: *Self,
+        allocator: std.mem.Allocator,
+        scale: f32,
+        io: std.Io,
+        font_limits: *const FontLimits,
+        atlas_options: cache_mod.AtlasOptions,
+    ) !void {
         std.debug.assert(scale > 0);
         std.debug.assert(scale <= 4.0); // Reasonable scale factor limit
+        font_limits.assertValid();
 
+        const app_count = font_limits.variants.len;
+        const face_count = app_count + font_limits.mono_variants.len;
+        self.faces = try allocator.alloc(PlatformFace, face_count);
+        errdefer allocator.free(self.faces);
+
+        self.app_face_count = @intCast(app_count);
+        self.face_variants = @splat(.regular);
+        self.face_slot_by_variant = @splat(@splat(face_slot_none));
+        for (font_limits.variants, 0..) |variant, slot| {
+            self.face_variants[slot] = variant;
+            self.face_slot_by_variant[0][@backingInt(variant)] = @intCast(slot);
+        }
+        for (font_limits.mono_variants, app_count..) |variant, slot| {
+            self.face_variants[slot] = variant;
+            self.face_slot_by_variant[1][@backingInt(variant)] = @intCast(slot);
+        }
+        self.faces_loaded = false;
+        self.mono_loaded = false;
+        self.loaded_source.system = null;
+        self.loaded_source.name_buffer = @splat(0);
+        self.loaded_source.name_len = 0;
+        self.loaded_source.size = 0;
         self.allocator = allocator;
-        self.current_face = null;
+        self.run_allocator = allocator;
         self.shaper = null;
         self.scale_factor = scale;
         self.io = io;
 
         // Initialize caches in-place to avoid large stack temporaries
-        try self.cache.initInPlace(allocator, scale);
+        try self.cache.initInPlace(allocator, scale, atlas_options);
+        errdefer self.cache.deinit();
         self.shape_cache.initInPlace();
         self.measure_cache.initInPlace();
         self.shape_cache_mutex = .init;
         self.glyph_cache_mutex = .init;
+
+        std.debug.assert(self.faces.len == face_count);
+        const regular_slot = self.face_slot_by_variant[0][@backingInt(FontVariant.regular)];
+        std.debug.assert(regular_slot < self.app_face_count);
+    }
+
+    /// Make `run_allocator` own shaped runs from now on, and create the
+    /// shaper now so its lazy creation cannot happen after initialization.
+    pub fn useRunAllocator(self: *Self, run_allocator: std.mem.Allocator) void {
+        std.debug.assert(self.faces_loaded);
+        if (self.shaper == null) self.shaper = PlatformShaper.init(self.allocator);
+        self.run_allocator = run_allocator;
+        std.debug.assert(self.shaper != null);
     }
 
     pub fn setScaleFactor(self: *Self, scale: f32) void {
@@ -771,7 +824,9 @@ pub const TextSystem = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        if (self.current_face) |*f| f.deinit();
+        self.unloadFaces();
+        self.unloadMonoFaces();
+        self.allocator.free(self.faces);
         if (self.shaper) |*s| s.deinit();
         self.cache.deinit();
         self.shape_cache.deinit();
@@ -779,57 +834,258 @@ pub const TextSystem = struct {
         self.* = undefined;
     }
 
-    /// Load a font by name
+    /// Load every variant in the face set from the named family. `cx.setFont`
+    /// reaches this at runtime, under the platform's render exclusion: the set
+    /// is reloaded into the same slots, so a font change claims no new storage.
     pub fn loadFont(self: *Self, name: []const u8, size: f32) !void {
         std.debug.assert(name.len > 0);
         std.debug.assert(size > 0 and size < 1000);
-
-        if (self.current_face) |*f| f.deinit();
-        self.current_face = try PlatformFace.init(name, size);
-        self.cache.clear();
-        // Force cache invalidation by setting invalid font ptr. Needed because
-        // the keyed font_ptr is the address of `current_face`, which is stable
-        // across font loads and so cannot itself signal the change.
-        self.shape_cache.current_font_ptr = 0;
-        self.measure_cache.current_font_ptr = 0;
+        // Checked before any face is unloaded, so a bad name changes nothing.
+        if (name.len > family_name_bytes_max) return error.FontNameTooLong;
+        try self.loadFaces(.{ .name = name }, size);
     }
 
-    /// Load a system font
+    /// Load every variant in the face set from a system family.
     pub fn loadSystemFont(self: *Self, style: SystemFont, size: f32) !void {
         std.debug.assert(size > 0 and size < 1000);
-
-        if (self.current_face) |*f| f.deinit();
-        self.current_face = try PlatformFace.initSystem(style, size);
-        self.cache.clear();
-        // Force cache invalidation (see `loadFont`).
-        self.shape_cache.current_font_ptr = 0;
-        self.measure_cache.current_font_ptr = 0;
+        try self.loadFaces(.{ .system = style }, size);
     }
 
-    /// Get current font metrics
-    pub inline fn getMetrics(self: *const Self) ?Metrics {
-        if (self.current_face) |f| return f.metrics;
-        return null;
-    }
-
-    /// Get the FontFace interface for the current font
-    pub inline fn getFontFace(self: *Self) !FontFace {
-        if (self.current_face) |*f| {
-            return f.asFontFace();
+    /// Load the second family into the `FontLimits.mono_variants` slots, once
+    /// during init. It keeps its size when `loadFont` replaces the app family;
+    /// each family scales by its own regular face's point size.
+    pub fn loadMonoFont(self: *Self, source: FaceSource, size: f32) !void {
+        std.debug.assert(size > 0 and size < 1000);
+        std.debug.assert(!self.mono_loaded);
+        if (self.faces.len == self.app_face_count) {
+            std.debug.panic("TextSystem: a second family was loaded but " ++
+                "Fonts.limits.mono_variants is empty; set Config.fonts.limits", .{});
         }
-        return error.NoFontLoaded;
+        if (source == .name and source.name.len > family_name_bytes_max) {
+            return error.FontNameTooLong;
+        }
+        try self.loadFaceRange(source, size, self.app_face_count, self.faces.len);
+        self.mono_loaded = true;
+        self.clearCaches();
+        std.debug.assert(self.faceFor(.mono, .regular).metrics.point_size == size);
+    }
+
+    /// Longest family name `loadFont` accepts; the loaded name is kept so a
+    /// failed reload can restore it.
+    pub const family_name_bytes_max: u32 = 255;
+
+    /// A family to load: an installed name or a platform family.
+    pub const FaceSource = union(enum) {
+        name: []const u8,
+        system: SystemFont,
+    };
+
+    /// The source of the loaded set, with the family name copied inline.
+    const LoadedSource = struct {
+        system: ?SystemFont,
+        name_buffer: [family_name_bytes_max]u8,
+        name_len: u8,
+        size: f32,
+
+        fn faceSource(self: *const LoadedSource) FaceSource {
+            if (self.system) |style| return .{ .system = style };
+            std.debug.assert(self.name_len > 0);
+            return .{ .name = self.name_buffer[0..self.name_len] };
+        }
+    };
+
+    /// Replace every face, then drop cached data keyed by the old faces.
+    ///
+    /// The set is never left empty once loaded: if the new family fails
+    /// partway, the previous one is reloaded before the error is returned, so
+    /// a frame after a failed `cx.setFont` still has a complete set. Only the
+    /// first load at init can fail with nothing loaded, before any frame.
+    fn loadFaces(self: *Self, source: FaceSource, size: f32) !void {
+        std.debug.assert(self.faces.len > 0);
+        std.debug.assert(self.faces.len <= FontVariant.count);
+
+        const previous: ?LoadedSource = if (self.faces_loaded) self.loaded_source else null;
+        self.unloadFaces();
+        self.loadEveryFace(source, size) catch |err| {
+            const restore = previous orelse return err;
+            self.loadEveryFace(restore.faceSource(), restore.size) catch |restore_err| {
+                std.debug.panic(
+                    "TextSystem: font reload failed ({s}) and the previous font " ++
+                        "could not be restored ({s})",
+                    .{ @errorName(err), @errorName(restore_err) },
+                );
+            };
+            self.clearCaches();
+            return err;
+        };
+
+        self.loaded_source.size = size;
+        switch (source) {
+            .system => |style| self.loaded_source.system = style,
+            .name => |name| {
+                std.debug.assert(name.len <= family_name_bytes_max);
+                self.loaded_source.system = null;
+                @memcpy(self.loaded_source.name_buffer[0..name.len], name);
+                self.loaded_source.name_len = @intCast(name.len);
+            },
+        }
+        self.clearCaches();
+
+        std.debug.assert(self.faces_loaded);
+        std.debug.assert(self.faceFor(.app, .regular).metrics.point_size == size);
+    }
+
+    /// Load every app-family slot.
+    fn loadEveryFace(self: *Self, source: FaceSource, size: f32) !void {
+        std.debug.assert(!self.faces_loaded);
+        try self.loadFaceRange(source, size, 0, self.app_face_count);
+        self.faces_loaded = true;
+    }
+
+    /// Load one face per slot in `first..end`; on failure, release the faces
+    /// already loaded.
+    fn loadFaceRange(self: *Self, source: FaceSource, size: f32, first: usize, end: usize) !void {
+        std.debug.assert(first < end);
+        std.debug.assert(end <= self.faces.len);
+        var slot: usize = first;
+        errdefer for (self.faces[first..slot]) |*face| face.deinit();
+
+        while (slot < end) : (slot += 1) {
+            const variant = self.face_variants[slot];
+            self.faces[slot] = switch (source) {
+                .name => |name| try PlatformFace.init(name, size, variant),
+                .system => |style| try PlatformFace.initSystem(style, size, variant),
+            };
+        }
+        std.debug.assert(slot == end);
+    }
+
+    /// Drop every cached glyph; the atlas condemns their pixels. Called when a
+    /// renderer whose texture starts empty begins drawing from the atlas.
+    pub fn clearGlyphCache(self: *Self) void {
+        self.glyph_cache_mutex.lockUncancelable(self.io);
+        defer self.glyph_cache_mutex.unlock(self.io);
+        self.cache.clear();
+        std.debug.assert(self.cache.entry_count == 0);
+    }
+
+    /// Faces reuse their slot addresses across reloads, so the keyed pointers
+    /// cannot signal the change: every cache is cleared explicitly instead.
+    fn clearCaches(self: *Self) void {
+        self.glyph_cache_mutex.lockUncancelable(self.io);
+        self.cache.clear();
+        self.glyph_cache_mutex.unlock(self.io);
+        self.shape_cache_mutex.lockUncancelable(self.io);
+        self.shape_cache.clear();
+        self.measure_cache.clear();
+        self.shape_cache_mutex.unlock(self.io);
+    }
+
+    fn unloadFaces(self: *Self) void {
+        if (self.faces_loaded) {
+            for (self.faces[0..self.app_face_count]) |*face| face.deinit();
+        }
+        self.faces_loaded = false;
+    }
+
+    fn unloadMonoFaces(self: *Self) void {
+        if (self.mono_loaded) {
+            for (self.faces[self.app_face_count..]) |*face| face.deinit();
+        }
+        self.mono_loaded = false;
+    }
+
+    /// The loaded face for `variant` in `family`. A variant outside the
+    /// family's `FontLimits` set, or the mono family when none was loaded, is
+    /// a programmer error and panics in every build mode: the check is one
+    /// byte compare, and substituting another face would silently mis-measure.
+    pub fn faceFor(self: *Self, family: FontFamily, variant: FontVariant) *PlatformFace {
+        std.debug.assert(self.faces_loaded);
+        if (family == .mono and !self.mono_loaded) {
+            std.debug.panic("TextSystem: text uses family .mono, but no second family " ++
+                "is loaded; set Config.fonts.mono and fonts.limits.mono_variants", .{});
+        }
+        const slot = self.face_slot_by_variant[@backingInt(family)][@backingInt(variant)];
+        if (slot < self.faces.len) {
+            std.debug.assert(self.face_variants[slot] == variant);
+            return &self.faces[slot];
+        } else {
+            self.panicVariantNotLoaded(family, variant);
+        }
+    }
+
+    fn panicVariantNotLoaded(self: *const Self, family: FontFamily, variant: FontVariant) noreturn {
+        // Each entry is a ", " separator plus one tag name.
+        const entry_bytes_max = comptime blk: {
+            var tag_len_max: usize = 0;
+            for (std.meta.fieldNames(FontVariant)) |name| tag_len_max = @max(tag_len_max, name.len);
+            break :blk tag_len_max + 2;
+        };
+        var names_buffer: [FontVariant.count * entry_bytes_max]u8 = undefined;
+        var names_len: usize = 0;
+        const first: usize = if (family == .app) 0 else self.app_face_count;
+        const end: usize = if (family == .app) self.app_face_count else self.faces.len;
+        std.debug.assert(end - first <= FontVariant.count);
+        for (self.face_variants[first..end], 0..) |loaded, index| {
+            const separator = if (index == 0) "" else ", ";
+            // Cannot fail: at most `count` entries of at most `entry_bytes_max` bytes.
+            const written = std.fmt.bufPrint(names_buffer[names_len..], "{s}{s}", .{
+                separator,
+                @tagName(loaded),
+            }) catch unreachable;
+            names_len += written.len;
+        }
+        std.debug.panic(
+            "TextSystem: font variant '{s}' (font_id {d}) is not loaded; " ++
+                "FontLimits.{s} loads {d} face{s}: {s}. Add it to the app's font_limits.",
+            .{
+                @tagName(variant),
+                family.fontId(variant),
+                if (family == .app) "variants" else "mono_variants",
+                end - first,
+                if (end - first == 1) "" else "s",
+                names_buffer[0..names_len],
+            },
+        );
+    }
+
+    /// Metrics of the app family's regular face, which set line height and
+    /// baseline for all variants so mixed weights on one line share a baseline.
+    pub inline fn getMetrics(self: *const Self) ?Metrics {
+        if (!self.faces_loaded) return null;
+        const slot = self.face_slot_by_variant[0][@backingInt(FontVariant.regular)];
+        return self.faces[slot].metrics;
+    }
+
+    /// Metrics of `family`'s regular face: the line height, baseline, and
+    /// point size that family's runs scale by.
+    pub fn getMetricsFor(self: *Self, family: FontFamily) Metrics {
+        return self.faceFor(family, .regular).metrics;
+    }
+
+    /// The FontFace interface of the regular face.
+    pub inline fn getFontFace(self: *Self) !FontFace {
+        if (!self.faces_loaded) return error.NoFontLoaded;
+        return self.faceFor(.app, .regular).asFontFace();
     }
 
     /// Shape text with proper kerning and ligature support.
     /// Stats parameter is optional - pass null to skip performance tracking.
-    pub fn shapeText(self: *Self, text: []const u8, stats: ?*RenderStats) !ShapedRun {
+    pub fn shapeText(
+        self: *Self,
+        family: FontFamily,
+        text: []const u8,
+        variant: FontVariant,
+        stats: ?*RenderStats,
+    ) !ShapedRun {
         std.debug.assert(text.len > 0);
 
-        const face = self.current_face orelse return error.NoFontLoaded;
+        if (!self.faces_loaded) return error.NoFontLoaded;
+        const face = self.faceFor(family, variant);
 
         std.debug.assert(face.metrics.point_size > 0);
 
-        const font_ptr = @intFromPtr(&self.current_face);
+        const font_ptr = @intFromPtr(face);
         const use_cache = text.len <= ShapedRunCache.MAX_TEXT_LEN;
 
         // Build the key once, reuse for lookup and store.
@@ -842,14 +1098,13 @@ pub const TextSystem = struct {
             self.shape_cache_mutex.lockUncancelable(self.io);
             defer self.shape_cache_mutex.unlock(self.io);
 
-            self.shape_cache.checkFont(font_ptr);
-
             if (self.shape_cache.get(cache_key)) |cached_run| {
                 if (stats) |s| s.recordShapeCacheHit();
                 // Copy glyphs to owned memory to prevent use-after-free race.
                 // The cache entry may be evicted by another thread after we release
                 // shape_cache_mutex, so we must not return a slice pointing into cache memory.
-                const glyphs_copy = try self.allocator.alloc(types.ShapedGlyph, cached_run.glyphs.len);
+                const glyph_count = cached_run.glyphs.len;
+                const glyphs_copy = try self.run_allocator.alloc(types.ShapedGlyph, glyph_count);
                 @memcpy(glyphs_copy, cached_run.glyphs);
                 return types.ShapedRun{
                     .glyphs = glyphs_copy,
@@ -860,6 +1115,7 @@ pub const TextSystem = struct {
         }
 
         // Cache miss - perform shaping
+        if (codepointCount(text) > run_codepoint_count_max) return error.TextRunTooLong;
         if (self.shaper == null) {
             self.shaper = PlatformShaper.init(self.allocator);
         }
@@ -869,7 +1125,7 @@ pub const TextSystem = struct {
         // Time the shaping call for stats (native only — skip the JS FFI clock
         // read on WASM's hot path). Monotonic `.awake` keeps `elapsed` >= 0.
         const start_ts = if (!is_wasm) std.Io.Timestamp.now(self.io, .awake) else std.Io.Timestamp.zero;
-        const result = try self.shaper.?.shape(&face, text, self.allocator);
+        const result = try self.shaper.?.shape(face, text, self.run_allocator);
         const end_ts = if (!is_wasm) std.Io.Timestamp.now(self.io, .awake) else std.Io.Timestamp.zero;
 
         std.debug.assert(result.width >= 0);
@@ -903,22 +1159,25 @@ pub const TextSystem = struct {
     /// Typical usage with a stack buffer (zero heap alloc on warm path):
     ///
     ///   var buf: [ShapedRunCache.MAX_GLYPHS_PER_ENTRY]ShapedGlyph = undefined;
-    ///   var shaped = try ts.shapeTextInto(text, stats, &buf);
-    ///   defer if (shaped.owned) shaped.deinit(ts.allocator);
+    ///   var shaped = try ts.shapeTextInto(.app, text, .regular, stats, &buf);
+    ///   defer if (shaped.owned) shaped.deinit(ts.run_allocator);
     pub fn shapeTextInto(
         self: *Self,
+        family: FontFamily,
         text: []const u8,
+        variant: FontVariant,
         stats: ?*RenderStats,
         out_glyphs: []types.ShapedGlyph,
     ) !ShapedRun {
         std.debug.assert(text.len > 0);
         std.debug.assert(out_glyphs.len > 0);
 
-        const face = self.current_face orelse return error.NoFontLoaded;
+        if (!self.faces_loaded) return error.NoFontLoaded;
+        const face = self.faceFor(family, variant);
 
         std.debug.assert(face.metrics.point_size > 0);
 
-        const font_ptr = @intFromPtr(&self.current_face);
+        const font_ptr = @intFromPtr(face);
         const use_cache = text.len <= ShapedRunCache.MAX_TEXT_LEN;
 
         // Warm path: copy cached glyphs into caller's buffer — zero heap allocation.
@@ -927,8 +1186,6 @@ pub const TextSystem = struct {
 
             self.shape_cache_mutex.lockUncancelable(self.io);
             defer self.shape_cache_mutex.unlock(self.io);
-
-            self.shape_cache.checkFont(font_ptr);
 
             if (self.shape_cache.get(cache_key)) |cached_run| {
                 if (stats) |s| s.recordShapeCacheHit();
@@ -948,8 +1205,8 @@ pub const TextSystem = struct {
         }
 
         // Cold path (or buffer overflow): delegate to heap-allocating shapeText.
-        // Returns owned = true; caller must deinit with self.allocator.
-        return self.shapeText(text, stats);
+        // Returns owned = true; caller must deinit with self.run_allocator.
+        return self.shapeText(family, text, variant, stats);
     }
 
     /// Get cached glyph with subpixel variant (renders if needed)
@@ -970,11 +1227,19 @@ pub const TextSystem = struct {
     /// cache entry under the mutex — no glyph array copy, no allocator call
     /// (~200x faster than the alloc+memcpy+free path: ~25 ns vs ~5200 ns warm).
     /// On web, uses a single JS call instead of character-by-character iteration.
-    pub fn measureText(self: *Self, text: []const u8) !f32 {
-        if (is_wasm) {
+    pub fn measureText(
+        self: *Self,
+        family: FontFamily,
+        text: []const u8,
+        variant: FontVariant,
+    ) !f32 {
+        if (!self.faces_loaded) return error.NoFontLoaded;
+        // The width comes from the face that renders the text: a bold run is
+        // wider than the same string in regular, so layout must measure it bold.
+        const face = self.faceFor(family, variant);
+        if (is_wasm and !is_synthetic) {
             // Web optimization: single JS call to measure entire string.
             // This avoids N boundary crossings for N characters.
-            const face = self.current_face orelse return error.NoFontLoaded;
             const font_name = face.font_name_buf[0..face.font_name_len];
             const web_imports = @import("../platform/web/imports.zig");
             return web_imports.measureText(
@@ -986,20 +1251,21 @@ pub const TextSystem = struct {
             );
         } else {
             if (text.len == 0) return 0;
-
-            const face = self.current_face orelse return error.NoFontLoaded;
             std.debug.assert(face.metrics.point_size > 0);
 
             // Text past MAX_TEXT_LEN cannot even be keyed -- `hashText` asserts
             // that bound -- so it shapes uncached on every call.  Accepted: it is
-            // far rarer than the 129..512 band this function used to mishandle.
+            // far rarer than the 129..512 band that `MeasureCache` covers.
             if (text.len > ShapedRunCache.MAX_TEXT_LEN) {
-                var shaped_long = try self.shapeText(text, &render_stats.frame_stats);
-                defer shaped_long.deinit(self.allocator);
+                const stats = &render_stats.frame_stats;
+                var shaped_long = try self.shapeText(family, text, variant, stats);
+                defer shaped_long.deinit(self.run_allocator);
                 return shaped_long.width;
             }
 
-            const font_ptr = @intFromPtr(&self.current_face);
+            // Keyed by face, like the shaped-run cache, so each variant's
+            // widths stay resident side by side.
+            const font_ptr = @intFromPtr(face);
             const cache_key = ShapedRunKey.init(text, font_ptr, face.metrics.point_size);
 
             // Fast path: both caches are read under the same mutex, and only the
@@ -1007,9 +1273,6 @@ pub const TextSystem = struct {
             {
                 self.shape_cache_mutex.lockUncancelable(self.io);
                 defer self.shape_cache_mutex.unlock(self.io);
-
-                self.measure_cache.checkFont(font_ptr);
-                self.shape_cache.checkFont(font_ptr);
 
                 if (self.measure_cache.get(cache_key)) |cached_width| {
                     std.debug.assert(cached_width >= 0);
@@ -1036,8 +1299,8 @@ pub const TextSystem = struct {
             // than silent. Measurement runs on the main thread during frame
             // building -- the same thread that resets `frame_stats` in
             // `beginFrame` -- so the unsynchronised increment is safe here.
-            var shaped = try self.shapeText(text, &render_stats.frame_stats);
-            defer shaped.deinit(self.allocator);
+            var shaped = try self.shapeText(family, text, variant, &render_stats.frame_stats);
+            defer shaped.deinit(self.run_allocator);
             std.debug.assert(shaped.width >= 0);
 
             {
@@ -1055,22 +1318,29 @@ pub const TextSystem = struct {
     /// measurement directly over the cached glyph slice under the mutex — no
     /// glyph array copy, no allocator call.  Falls through to `shapeText` on
     /// cache miss.
-    pub fn measureTextEx(self: *Self, text: []const u8, max_width: ?f32) !TextMeasurement {
-        const face = try self.getFontFace();
-        const line_height = face.metrics.line_height;
+    pub fn measureTextEx(
+        self: *Self,
+        family: FontFamily,
+        text: []const u8,
+        variant: FontVariant,
+        max_width: ?f32,
+    ) !TextMeasurement {
+        if (!self.faces_loaded) return error.NoFontLoaded;
+        const face = self.faceFor(family, variant);
+        // Rows take their height from the regular face, as in layout and
+        // rendering, so wrapped bold text measures as many pixels tall as it draws.
+        const line_height = self.faceFor(family, .regular).metrics.line_height;
         std.debug.assert(line_height > 0);
 
         // Fast path: measure directly from shape cache under the lock.
         // The cache entry is valid while the mutex is held; we iterate the
         // glyph slice in-place and never let a pointer escape the lock scope.
         if (text.len > 0 and text.len <= ShapedRunCache.MAX_TEXT_LEN) {
-            const font_ptr = @intFromPtr(&self.current_face);
+            const font_ptr = @intFromPtr(face);
             const cache_key = ShapedRunKey.init(text, font_ptr, face.metrics.point_size);
 
             self.shape_cache_mutex.lockUncancelable(self.io);
             defer self.shape_cache_mutex.unlock(self.io);
-
-            self.shape_cache.checkFont(font_ptr);
 
             if (self.shape_cache.get(cache_key)) |cached_run| {
                 std.debug.assert(cached_run.width >= 0);
@@ -1080,41 +1350,30 @@ pub const TextSystem = struct {
 
         // Cache miss: full shape via CoreText/HarfBuzz, measure, free.
         // The shapeText call also populates the cache for next time.
-        var run = try self.shapeText(text, null);
-        defer run.deinit(self.allocator);
+        var run = try self.shapeText(family, text, variant, null);
+        defer run.deinit(self.run_allocator);
         return measureGlyphRun(run.glyphs, text, run.width, max_width, line_height);
     }
 
-    /// Get the glyph atlas for GPU upload
-    /// WARNING: Not thread-safe! Use withAtlasLocked for multi-window scenarios.
+    /// The glyph atlas. Its size, kind, and upload journal are fixed at init;
+    /// placement state is guarded by `glyph_cache_mutex`.
     pub inline fn getAtlas(self: *const Self) *const Atlas {
         return self.cache.getAtlas();
-    }
-
-    /// Thread-safe atlas access with user data for GPU upload.
-    /// Holds the glyph_cache_mutex while calling the callback.
-    pub fn withAtlasLockedCtx(
-        self: *Self,
-        comptime Ctx: type,
-        ctx: Ctx,
-        comptime callback: fn (Ctx, *const Atlas) anyerror!void,
-    ) !void {
-        self.glyph_cache_mutex.lockUncancelable(self.io);
-        defer self.glyph_cache_mutex.unlock(self.io);
-        return callback(ctx, self.cache.getAtlas());
     }
 
     /// Batch resolve glyphs under a single glyph_cache_mutex lock.
     /// Writes CachedGlyph results into `out_cached[0..glyphs.len]`.
     /// For glyphs with font_ref != null, uses the fallback font path;
-    /// otherwise uses the primary font face.
+    /// otherwise uses the face for `variant`, the one that shaped the run.
     ///
     /// This is the glyph-cache equivalent of `shapeTextInto`: same batch
     /// pattern, next layer down.  Eliminates N-1 lock/unlock pairs when
     /// rendering a text run of N glyphs.
     pub fn resolveGlyphBatch(
         self: *Self,
+        family: FontFamily,
         glyphs: []const types.ShapedGlyph,
+        variant: FontVariant,
         font_size: f32,
         subpixel_xs: []const u8,
         out_cached: []CachedGlyph,
@@ -1125,16 +1384,27 @@ pub const TextSystem = struct {
         std.debug.assert(font_size > 0);
         std.debug.assert(font_size < 1000);
 
-        const face = try self.getFontFace();
+        if (!self.faces_loaded) return error.NoFontLoaded;
+        // `GlyphKey` holds this face's address, so variants rasterize and cache
+        // separately even for the same glyph id.
+        const face = self.faceFor(family, variant).asFontFace();
 
         self.glyph_cache_mutex.lockUncancelable(self.io);
         defer self.glyph_cache_mutex.unlock(self.io);
 
+        // Build the key's loop-invariant fields and read the frame clock once,
+        // under the lock that keeps `scale_factor` stable; see
+        // `GlyphCache.getOrRenderKey`.
+        const key_base = cache_mod.GlyphKey.init(face, 0, font_size, self.cache.scale_factor, 0, 0);
+        const frame = self.cache.frameCurrent();
         for (0..glyphs.len) |i| {
             if (glyphs[i].font_ref) |fallback_font| {
                 out_cached[i] = try self.cache.getOrRenderFallback(fallback_font, glyphs[i].glyph_id, font_size, subpixel_xs[i], 0);
             } else {
-                out_cached[i] = try self.cache.getOrRenderSubpixel(face, glyphs[i].glyph_id, font_size, subpixel_xs[i], 0);
+                var key = key_base;
+                key.glyph_id = glyphs[i].glyph_id;
+                key.subpixel_x = subpixel_xs[i];
+                out_cached[i] = try self.cache.getOrRenderKey(face, key, font_size, frame);
             }
         }
     }
@@ -1248,7 +1518,6 @@ test "ShapedRunCache basic operations" {
     };
 
     const key = ShapedRunKey.init("ab", 0x1000, 16.0);
-    cache.checkFont(0x1000);
 
     // Miss before put
     try std.testing.expect(cache.get(key) == null);
@@ -1281,8 +1550,6 @@ test "ShapedRunCache LRU eviction" {
         .owned = true,
     };
 
-    cache.checkFont(0x1000);
-
     // Fill cache completely
     var i: usize = 0;
     while (i < ShapedRunCache.MAX_ENTRIES) : (i += 1) {
@@ -1312,37 +1579,62 @@ test "ShapedRunCache LRU eviction" {
     try std.testing.expect(cache.get(first_key) != null);
 }
 
-test "ShapedRunCache font change invalidation" {
-    var cache = ShapedRunCache.init();
-    defer cache.deinit();
+test "cache keys differ by face, and faces stay resident side by side" {
+    // Goal: the variant contract for every text cache. Each loaded face has its
+    // own slot address, so the same string in regular and bold must key apart
+    // in the shaped-run cache, the width cache, and the glyph cache, and
+    // alternating between faces must not evict the other face's entries.
+    // Methodology: same text and size, two face addresses, distinct payloads;
+    // read both back after interleaved writes, then check `clear` drops both.
+    const testing = std.testing;
+    const regular_face: usize = 0x1000;
+    const bold_face: usize = 0x2000;
 
-    var glyph = ShapedGlyph{
-        .glyph_id = 1,
+    const regular_key = ShapedRunKey.init("Total", regular_face, 16.0);
+    const bold_key = ShapedRunKey.init("Total", bold_face, 16.0);
+    try testing.expect(!ShapedRunKey.eql(regular_key, bold_key));
+
+    const glyph_regular = cache_mod.GlyphKey.initWithFontPtr(regular_face, 55, 16.0, 2.0, 0, 0);
+    const glyph_bold = cache_mod.GlyphKey.initWithFontPtr(bold_face, 55, 16.0, 2.0, 0, 0);
+    try testing.expect(!cache_mod.GlyphKey.eql(glyph_regular, glyph_bold));
+
+    var shape_cache = ShapedRunCache.init();
+    defer shape_cache.deinit();
+    var regular_glyph = [_]ShapedGlyph{.{
+        .glyph_id = 55,
         .x_offset = 0,
         .y_offset = 0,
-        .x_advance = 10,
+        .x_advance = 9,
         .y_advance = 0,
         .cluster = 0,
-    };
+    }};
+    var bold_glyph = [_]ShapedGlyph{.{
+        .glyph_id = 55,
+        .x_offset = 0,
+        .y_offset = 0,
+        .x_advance = 11,
+        .y_advance = 0,
+        .cluster = 0,
+    }};
+    shape_cache.put(regular_key, .{ .glyphs = &regular_glyph, .width = 9, .owned = true });
+    shape_cache.put(bold_key, .{ .glyphs = &bold_glyph, .width = 11, .owned = true });
+    try testing.expectEqual(@as(f32, 9), shape_cache.get(regular_key).?.width);
+    try testing.expectEqual(@as(f32, 11), shape_cache.get(bold_key).?.width);
 
-    const run = ShapedRun{
-        .glyphs = @as(*[1]ShapedGlyph, &glyph),
-        .width = 10.0,
-        .owned = true,
-    };
+    var measure_cache = MeasureCache.init();
+    defer measure_cache.deinit();
+    measure_cache.put(regular_key, 40);
+    measure_cache.put(bold_key, 46);
+    try testing.expectEqual(@as(f32, 40), measure_cache.get(regular_key).?);
+    try testing.expectEqual(@as(f32, 46), measure_cache.get(bold_key).?);
 
-    cache.checkFont(0x1000);
-    const key = ShapedRunKey.init("test", 0x1000, 16.0);
-    cache.put(key, run);
-
-    try std.testing.expect(cache.get(key) != null);
-    try std.testing.expectEqual(@as(u32, 1), cache.entry_count);
-
-    // Change font - should clear cache
-    cache.checkFont(0x2000);
-
-    try std.testing.expectEqual(@as(u32, 0), cache.entry_count);
-    try std.testing.expect(cache.get(key) == null);
+    // A font reload reuses the face addresses, so it clears everything.
+    shape_cache.clear();
+    measure_cache.clear();
+    try testing.expect(shape_cache.get(regular_key) == null);
+    try testing.expect(shape_cache.get(bold_key) == null);
+    try testing.expect(measure_cache.get(regular_key) == null);
+    try testing.expect(measure_cache.get(bold_key) == null);
 }
 
 test "ShapedRunCache hash collision handling" {
@@ -1363,8 +1655,6 @@ test "ShapedRunCache hash collision handling" {
         .width = 10.0,
         .owned = true,
     };
-
-    cache.checkFont(0x1000);
 
     // Insert many entries that may have hash collisions
     // Using sequential strings which may hash to nearby slots
@@ -1473,7 +1763,6 @@ test "shapeTextInto warm path copies into caller buffer with owned=false" {
     };
 
     const font_ptr: usize = 0x1000;
-    cache.checkFont(font_ptr);
     const key = ShapedRunKey.init("abc", font_ptr, 14.0);
     cache.put(key, source_run);
 
@@ -1506,7 +1795,7 @@ test "shapeTextInto warm path copies into caller buffer with owned=false" {
     try testing.expectEqual(@as(f32, 9.0), result.glyphs[2].x_advance);
 
     // Verify buffer independence: invalidating the cache does not corrupt our copy.
-    cache.checkFont(0x2000);
+    cache.clear();
     try testing.expectEqual(@as(u16, 42), result.glyphs[0].glyph_id);
     try testing.expectEqual(@as(f32, 24.5), result.width);
 }
@@ -1547,7 +1836,7 @@ test "shape cache insert limit is MAX_GLYPHS_PER_ENTRY, not MAX_TEXT_LEN" {
     // This asymmetry is intentional and still holds: an entry embeds its glyph
     // array inline, so raising the insert limit to MAX_TEXT_LEN would blow the
     // 2MB comptime budget.  `MeasureCache` is what compensates -- it stores width
-    // without glyphs, so `measureText` no longer pays for this refusal.  The test
+    // without glyphs, so `measureText` does not pay for this refusal.  The test
     // pins the refusal itself so that compensation stays necessary and visible.
     //
     // Methodology: drive the cache at exactly the limit and one past it, using
@@ -1633,7 +1922,6 @@ test "MeasureCache stores widths the shape cache refuses" {
     defer cache.deinit();
 
     const font_ptr: usize = 0x2000;
-    cache.checkFont(font_ptr);
 
     const lengths = [_]usize{
         ShapedRunCache.MAX_GLYPHS_PER_ENTRY + 1, // 129: first refused length
@@ -1662,7 +1950,7 @@ test "MeasureCache stores widths the shape cache refuses" {
 }
 
 test "MeasureCache converges after a single miss for over-limit text" {
-    // Goal: this is the fix, stated as a test.  The shape-cache test above runs
+    // Goal: prove `MeasureCache` covers that band.  The shape-cache test above runs
     // the same put-then-get cycle and never converges; here the second frame
     // onward must hit.  Methodology: replay 8 frames of an unchanged string and
     // count how many of them would have had to shape.
@@ -1672,7 +1960,6 @@ test "MeasureCache converges after a single miss for over-limit text" {
     defer cache.deinit();
 
     const font_ptr: usize = 0x3000;
-    cache.checkFont(font_ptr);
 
     var buf: [ShapedRunCache.MAX_GLYPHS_PER_ENTRY + 1]u8 = undefined;
     fillTestText(&buf, 7);
@@ -1695,30 +1982,6 @@ test "MeasureCache converges after a single miss for over-limit text" {
     try testing.expectEqual(@as(u32, 1), shape_count);
 }
 
-test "MeasureCache invalidates on font change" {
-    // Goal: widths are only meaningful for the font that produced them. A font
-    // swap that reuses the same key must not surface the previous font's width.
-    const testing = std.testing;
-
-    var cache = MeasureCache.init();
-    defer cache.deinit();
-
-    var buf: [200]u8 = undefined;
-    fillTestText(&buf, 1);
-
-    const first_font: usize = 0x1111;
-    cache.checkFont(first_font);
-
-    const key = ShapedRunKey.init(&buf, first_font, 16.0);
-    cache.put(key, 500.0);
-    try testing.expectEqual(@as(f32, 500.0), cache.get(key).?);
-
-    // Swapping fonts drops everything.
-    const second_font: usize = 0x2222;
-    cache.checkFont(second_font);
-    try testing.expect(cache.get(key) == null);
-}
-
 test "MeasureCache keys distinguish font size" {
     // Goal: the same string at two sizes has two different widths. Guard against
     // a key that hashes text but forgets the size.
@@ -1728,7 +1991,6 @@ test "MeasureCache keys distinguish font size" {
     defer cache.deinit();
 
     const font_ptr: usize = 0x5555;
-    cache.checkFont(font_ptr);
 
     var buf: [200]u8 = undefined;
     fillTestText(&buf, 3);
@@ -1755,7 +2017,6 @@ test "MeasureCache never returns a stale width under eviction pressure" {
     defer cache.deinit();
 
     const font_ptr: usize = 0x4000;
-    cache.checkFont(font_ptr);
 
     const insert_count: u32 = @intCast(MeasureCache.SLOT_COUNT * 4);
     var buf: [200]u8 = undefined;
@@ -1788,4 +2049,155 @@ test "MeasureCache never returns a stale width under eviction pressure" {
     fillTestText(&buf, insert_count - 1);
     const newest = ShapedRunKey.init(&buf, font_ptr, 16.0);
     try testing.expectEqual(@as(f32, @floatFromInt(insert_count - 1)), cache.get(newest).?);
+}
+
+test "glyph cache re-renders a glyph whose atlas shelf was evicted" {
+    // Goal: a cached glyph never points at evicted pixels. Methodology: a 64²
+    // CPU atlas holds only a few 40 px glyphs. Render 'A' and save its pixels,
+    // then render one other glyph per frame until far more than the atlas
+    // holds have passed, so LRU eviction must have reclaimed 'A's shelf.
+    // Asking for 'A' again must return a region holding 'A's own pixels, not
+    // the pixels of whichever glyph took its place.
+    const testing = std.testing;
+    var uploads: atlas_mod.AtlasUploads = undefined;
+    try uploads.init(testing.allocator, testing.io, .{
+        .storage = .cpu_texture,
+        .upload_bytes_frame_max = 64,
+    });
+    defer uploads.deinit();
+    const consumer: usize = 1;
+    uploads.registerConsumer(consumer);
+    defer uploads.unregisterConsumer(consumer);
+
+    const text_system = try testing.allocator.create(TextSystem);
+    defer testing.allocator.destroy(text_system);
+    try text_system.initInPlace(testing.allocator, 1.0, testing.io, &FontLimits.standard, .{
+        .size = 64,
+        .uploads = &uploads,
+    });
+    defer text_system.deinit();
+    try text_system.loadSystemFont(.sans_serif, 40);
+
+    const letters = "ABCDEFGHKMNOPQRSUVWXYZ";
+    var run = try text_system.shapeText(.app, letters, .regular, null);
+    defer run.deinit(testing.allocator);
+    try testing.expectEqual(letters.len, run.glyphs.len);
+
+    const atlas = text_system.getAtlas();
+    var saved: [64 * 64]u8 = undefined;
+    _ = uploads.beginFrame(consumer);
+    const first = try text_system.getGlyphSubpixel(run.glyphs[0].glyph_id, 40, 0, 0);
+    try testing.expect(first.region.width > 8);
+    const saved_len = copyRegion(atlas, first.region, &saved);
+
+    for (run.glyphs[1..]) |glyph| {
+        _ = uploads.beginFrame(consumer);
+        _ = uploads.consumeBegin(consumer);
+        uploads.consumeEnd(consumer);
+        _ = try text_system.getGlyphSubpixel(glyph.glyph_id, 40, 0, 0);
+    }
+    // Twenty-one glyphs of about 30² with borders do not fit four times over in
+    // 64²; the atlas must have evicted and reused space, including 'A's.
+    try testing.expect(atlas.rows_active <= 64);
+
+    _ = uploads.beginFrame(consumer);
+    const again = try text_system.getGlyphSubpixel(run.glyphs[0].glyph_id, 40, 0, 0);
+    var current: [64 * 64]u8 = undefined;
+    const current_len = copyRegion(atlas, again.region, &current);
+    try testing.expectEqual(first.region.width, again.region.width);
+    try testing.expectEqual(first.region.height, again.region.height);
+    try testing.expectEqualSlices(u8, saved[0..saved_len], current[0..current_len]);
+}
+
+test "glyph cache hits protect their shelf in every frame they are used" {
+    // Goal: a glyph used in the current frame is never evicted, although only
+    // its first hit in each frame stamps its shelf. Methodology: 'A' at 20 px
+    // and 'B' at 40 px take separate shelves in frame 1, and 'A' is hit there
+    // too, so a stamp that is merely non-zero would look current. In frame 2
+    // 'A' is hit twice in one batch, uploads are consumed, and every
+    // unprotected shelf is evicted. 'B's shelf (lowest y on a tie would be
+    // 'A's) must go; 'A' must keep its region and pixels.
+    const testing = std.testing;
+    var uploads: atlas_mod.AtlasUploads = undefined;
+    try uploads.init(testing.allocator, testing.io, .{
+        .storage = .cpu_texture,
+        .upload_bytes_frame_max = 4096,
+    });
+    defer uploads.deinit();
+    const consumer: usize = 1;
+    uploads.registerConsumer(consumer);
+    defer uploads.unregisterConsumer(consumer);
+
+    const text_system = try testing.allocator.create(TextSystem);
+    defer testing.allocator.destroy(text_system);
+    try text_system.initInPlace(testing.allocator, 1.0, testing.io, &FontLimits.standard, .{
+        .size = 128,
+        .uploads = &uploads,
+    });
+    defer text_system.deinit();
+    try text_system.loadSystemFont(.sans_serif, 40);
+
+    var run = try text_system.shapeText(.app, "AB", .regular, null);
+    defer run.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 2), run.glyphs.len);
+    const id_a = run.glyphs[0].glyph_id;
+    const id_b = run.glyphs[1].glyph_id;
+    const atlas = text_system.getAtlas();
+
+    _ = uploads.beginFrame(consumer);
+    const first = try text_system.getGlyphSubpixel(id_a, 20, 0, 0);
+    _ = try text_system.getGlyphSubpixel(id_a, 20, 0, 0);
+    const tall = try text_system.getGlyphSubpixel(id_b, 40, 0, 0);
+    try testing.expect(tall.region.y > first.region.y);
+    var saved: [128 * 128]u8 = undefined;
+    const saved_len = copyRegion(atlas, first.region, &saved);
+    const rows_frame_1 = atlas.rows_active;
+
+    _ = uploads.beginFrame(consumer);
+    const pair = [_]types.ShapedGlyph{ run.glyphs[0], run.glyphs[0] };
+    const subpixels = [_]u8{ 0, 0 };
+    var resolved: [2]CachedGlyph = undefined;
+    try text_system.resolveGlyphBatch(.app, &pair, .regular, 20, &subpixels, &resolved);
+    try testing.expectEqual(first.region.y, resolved[1].region.y);
+    _ = uploads.consumeBegin(consumer);
+    uploads.consumeEnd(consumer);
+
+    // Each eviction frees one shelf, so the shelf count bounds the loop.
+    var evicted: u32 = 0;
+    while (evicted < atlas.shelves.len) : (evicted += 1) {
+        if (!text_system.cache.grayscale_atlas.evictOne()) break;
+    }
+    try testing.expectEqual(@as(u32, 1), evicted);
+    try testing.expect(atlas.rows_active < rows_frame_1);
+
+    const again = try text_system.getGlyphSubpixel(id_a, 20, 0, 0);
+    try testing.expectEqual(first.region.x, again.region.x);
+    try testing.expectEqual(first.region.y, again.region.y);
+    var current: [128 * 128]u8 = undefined;
+    const current_len = copyRegion(atlas, again.region, &current);
+    try testing.expectEqualSlices(u8, saved[0..saved_len], current[0..current_len]);
+}
+
+/// Copy a region of a CPU grayscale atlas into `out`, row by row (test helper).
+fn copyRegion(atlas: *const Atlas, region: atlas_mod.Region, out: []u8) usize {
+    std.debug.assert(atlas.format == .grayscale);
+    const data = atlas.getData();
+    var row: usize = 0;
+    while (row < region.height) : (row += 1) {
+        const source = (@as(usize, region.y) + row) * atlas.size + region.x;
+        @memcpy(out[row * region.width ..][0..region.width], data[source..][0..region.width]);
+    }
+    return @as(usize, region.width) * region.height;
+}
+
+/// The codepoints in `text`, counting lead bytes, so invalid UTF-8 still
+/// yields a bound rather than an error.
+pub fn codepointCount(text: []const u8) u32 {
+    std.debug.assert(text.len <= std.math.maxInt(u32));
+    var count: u32 = 0;
+    for (text) |byte| {
+        if (byte & 0xC0 != 0x80) count += 1;
+    }
+    std.debug.assert(count <= text.len);
+    return count;
 }

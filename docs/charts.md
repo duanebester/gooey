@@ -24,7 +24,7 @@ Gooey Charts (`gooey-charts`) is an optional data visualization library built on
 
 ### What Is This?
 
-`gooey-charts` is an **optional sub-package** within the Gooey monorepo that provides data visualization components built on top of Gooey's `DrawContext` API. Users opt-in by importing the `gooey-charts` module.
+`gooey-charts` is an **optional sub-package** within the Gooey monorepo that provides data visualization components drawn through the core `Painter` of a `ui.paint` element. Users opt-in by importing the `gooey-charts` module.
 
 ### Why Separate?
 
@@ -79,6 +79,7 @@ const std = @import("std");
 const gooey = @import("gooey");
 const charts = @import("gooey-charts");
 const ui = gooey.ui;
+const State = struct {};
 
 // Data stored in static memory (survives paint callback)
 var quarterly_sales: charts.CategorySeries = undefined;
@@ -96,12 +97,12 @@ fn ensureDataInitialized() void {
     data_initialized = true;
 }
 
-fn paintBarChart(ctx: *ui.DrawContext) void {
+fn paintBarChart(_: *const State, painter: *ui.Painter) void {
     ensureDataInitialized();
     var chart = charts.BarChart.init(&chart_data);
-    chart.width = ctx.width();
-    chart.height = ctx.height();
-    chart.render(ctx);
+    chart.width = painter.bounds.width;
+    chart.height = painter.bounds.height;
+    chart.render(painter);
 }
 ```
 
@@ -124,29 +125,36 @@ fn ensureLineDataInitialized() void {
     line_data[1].addPoint(charts.DataPoint.init(3, 45));
 }
 
-fn paintLineChart(ctx: *ui.DrawContext) void {
+fn paintLineChart(_: *const State, painter: *ui.Painter) void {
     var chart = charts.LineChart.init(&line_data);
-    chart.width = ctx.width();
-    chart.height = ctx.height();
+    chart.width = painter.bounds.width;
+    chart.height = painter.bounds.height;
     chart.line_width = 2.5;
     chart.show_points = true;
     chart.show_area = true;
-    chart.render(ctx);
+    chart.render(painter);
 }
 ```
 
-### Using Canvas
+### Using `ui.paint`
 
-Charts are rendered via Gooey's canvas system:
+Charts draw inside core paint elements:
 
 ```gooey/docs/charts.md#L124-132
 fn render(cx: *gooey.Cx) void {
-    cx.render(ui.box(.{ .padding = .{ .all = 20 } }, .{
+    const state = cx.state(State);
+    cx.render(ui.box(.{ .style = .{ .padding = .all(20) } }, .{
         // Bar chart at 400x300 pixels
-        ui.canvas(400, 300, paintBarChart),
+        ui.paint(State, state, paintBarChart, .{
+            .width = .{ .fixed = 400 },
+            .height = .{ .fixed = 300 },
+        }),
 
         // Line chart at 500x200 pixels
-        ui.canvas(500, 200, paintLineChart),
+        ui.paint(State, state, paintLineChart, .{
+            .width = .{ .fixed = 500 },
+            .height = .{ .fixed = 200 },
+        }),
     }));
 }
 ```
@@ -167,8 +175,8 @@ fn render(cx: *gooey.Cx) void {
 │  Axis, Grid, Legend, Scale (Linear, Band)               │
 │  (Reusable across chart types)                          │
 ├─────────────────────────────────────────────────────────┤
-│  Layer 1: Gooey Canvas (EXTERNAL)                       │
-│  DrawContext: fillRect, polyline, pointCloud, etc.      │
+│  Layer 1: Gooey core Painter (EXTERNAL)                 │
+│  Painter: fill, triangles, polyline, pointCloud, etc.   │
 │  (Foundation — NOT part of this package)                │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -213,7 +221,6 @@ gooey/
 │           ├── pie_chart.zig
 │           └── scatter_chart.zig
 └── src/examples/
-    ├── charts_demo.zig        # Chart types showcase
     └── dashboard.zig          # Multi-chart dashboard
 ```
 
@@ -300,12 +307,12 @@ The `Path` struct used for arbitrary vector graphics is ~70KB. Charts avoid it.
 var path = Path.init();
 _ = path.moveTo(x1, y1);
 _ = path.lineTo(x2, y2);
-ctx.strokePath(&path, stroke_width, color);
+painter.polyline(&.{ .{ x1, y1 }, .{ x2, y2 } }, stroke_width, color);
 
 // ✅ GOOD: Use optimized chart primitives
-ctx.polyline(points[0..count], line_width, color);  // Line charts
-ctx.pointCloud(centers[0..count], radius, color);   // Scatter/markers
-ctx.fillCircle(cx, cy, radius, color);              // Individual points
+painter.polyline(points[0..count], line_width, color);  // Line charts
+painter.pointCloud(centers[0..count], radius, color);   // Scatter/markers
+painter.circle(.{ cx, cy }, radius, color);           // Individual points
 ```
 
 ### Struct Size Targets
@@ -443,7 +450,7 @@ pub const BarChart = struct {
     pub fn init(data: []const CategorySeries) BarChart;
     pub fn initSingle(series: *const CategorySeries) BarChart;
     pub fn seriesCount(self: *const BarChart) u32;
-    pub fn render(self: *const BarChart, ctx: *DrawContext) void;
+    pub fn render(self: *const BarChart, painter: *Painter) void;
 
     // Accessibility
     pub fn getAccessibilityInfo(self: *const BarChart) accessibility.ChartInfo;
@@ -455,10 +462,10 @@ pub const BarChart = struct {
 **Example:**
 
 ```gooey/docs/charts.md#L424-438
-fn paintBarChart(ctx: *ui.DrawContext) void {
+fn paintBarChart(_: *const State, painter: *ui.Painter) void {
     var chart = charts.BarChart.init(&bar_data);
-    chart.width = ctx.width();
-    chart.height = ctx.height();
+    chart.width = painter.bounds.width;
+    chart.height = painter.bounds.height;
     chart.corner_radius = 4;
     chart.show_grid = true;
     chart.grid_opts = .{
@@ -467,7 +474,7 @@ fn paintBarChart(ctx: *ui.DrawContext) void {
         .color = ui.Color.hex(0x2a3a5e),
     };
     chart.chart_theme = &charts.ChartTheme.dark;
-    chart.render(ctx);
+    chart.render(painter);
 }
 ```
 
@@ -529,7 +536,7 @@ pub const LineChart = struct {
     pub fn init(data: []const Series) LineChart;
     pub fn initSingle(series: *const Series) LineChart;
     pub fn seriesCount(self: *const LineChart) u32;
-    pub fn render(self: *const LineChart, ctx: *DrawContext) void;
+    pub fn render(self: *const LineChart, painter: *Painter) void;
 
     // Accessibility
     pub fn getAccessibilityInfo(self: *const LineChart) accessibility.ChartInfo;
@@ -541,9 +548,9 @@ pub const LineChart = struct {
 **Example with Legend:**
 
 ```gooey/docs/charts.md#L503-532
-fn paintLineChart(ctx: *ui.DrawContext) void {
-    const w = ctx.width();
-    const h = ctx.height();
+fn paintLineChart(_: *const State, painter: *ui.Painter) void {
+    const w = painter.bounds.width;
+    const h = painter.bounds.height;
 
     // Legend items
     const legend_items = [_]charts.Legend.Item{
@@ -565,10 +572,10 @@ fn paintLineChart(ctx: *ui.DrawContext) void {
     chart.line_width = 2.5;
     chart.show_points = true;
     chart.show_area = true;
-    chart.render(ctx);
+    chart.render(painter);
 
     // Draw legend
-    _ = charts.Legend.draw(ctx,
+    _ = charts.Legend.draw(painter,
         .{ .x = 0, .y = 5, .width = w, .height = legend_dims.height },
         &legend_items, legend_opts);
 }
@@ -608,7 +615,7 @@ pub const PieChart = struct {
     chart_theme: ?*const ChartTheme = null,
 
     pub fn init(data: []const CategoryPoint) PieChart;
-    pub fn render(self: *const PieChart, ctx: *DrawContext) void;
+    pub fn render(self: *const PieChart, painter: *Painter) void;
     pub fn hitTest(self: *const PieChart, x: f32, y: f32) ?usize;
 
     // Accessibility
@@ -627,22 +634,22 @@ pub const PieChart = struct {
 **Example (Pie vs Donut):**
 
 ```gooey/docs/charts.md#L593-610
-fn paintPieChart(ctx: *ui.DrawContext) void {
+fn paintPieChart(_: *const State, painter: *ui.Painter) void {
     var chart = charts.PieChart.init(&pie_data);
-    chart.width = ctx.width();
-    chart.height = ctx.height();
+    chart.width = painter.bounds.width;
+    chart.height = painter.bounds.height;
     chart.inner_radius_ratio = 0;  // Full pie (no hole)
     chart.gap_pixels = 3;
-    chart.render(ctx);
+    chart.render(painter);
 }
 
-fn paintDonutChart(ctx: *ui.DrawContext) void {
+fn paintDonutChart(_: *const State, painter: *ui.Painter) void {
     var chart = charts.PieChart.init(&donut_data);
-    chart.width = ctx.width();
-    chart.height = ctx.height();
+    chart.width = painter.bounds.width;
+    chart.height = painter.bounds.height;
     chart.inner_radius_ratio = 0.55;  // 55% hole
     chart.gap_pixels = 4;
-    chart.render(ctx);
+    chart.render(painter);
 }
 ```
 
@@ -693,7 +700,7 @@ pub const ScatterChart = struct {
 
     pub fn init(data: []const Series) ScatterChart;
     pub fn initSingle(series: *const Series) ScatterChart;
-    pub fn render(self: *const ScatterChart, ctx: *DrawContext) void;
+    pub fn render(self: *const ScatterChart, painter: *Painter) void;
     pub fn hitTest(self: *const ScatterChart, px: f32, py: f32) ?HitResult;
 };
 
@@ -770,12 +777,12 @@ pub const Axis = struct {
         font_size: f32 = 12.0,
     };
 
-    pub fn drawLinear(ctx: *DrawContext, scale: LinearScale, x: f32, y: f32, opts: Options) void;
-    pub fn drawBand(ctx: *DrawContext, scale: BandScale, x: f32, y: f32, opts: Options) void;
+    pub fn drawLinear(painter: *Painter, scale: LinearScale, x: f32, y: f32, opts: Options) void;
+    pub fn drawBand(painter: *Painter, scale: BandScale, x: f32, y: f32, opts: Options) void;
 };
 
 // Example
-Axis.drawLinear(ctx, y_scale, margin_left, margin_top, .{
+Axis.drawLinear(painter, y_scale, margin_left, margin_top, .{
     .orientation = .left,
     .color = ui.Color.hex(0x4a5a7e),
     .label_color = ui.Color.hex(0xcccccc),
@@ -802,11 +809,11 @@ pub const Grid = struct {
         height: f32,
     };
 
-    pub fn drawLinear(ctx: *DrawContext, x_scale: LinearScale, y_scale: LinearScale,
+    pub fn drawLinear(painter: *Painter, x_scale: LinearScale, y_scale: LinearScale,
                       bounds: Bounds, tick_count: u32, opts: Options) void;
-    pub fn drawMixed(ctx: *DrawContext, x_band: BandScale, y_linear: LinearScale,
+    pub fn drawMixed(painter: *Painter, x_band: BandScale, y_linear: LinearScale,
                      bounds: Bounds, tick_count: u32, opts: Options) void;
-    pub fn drawLinearXY(ctx: *DrawContext, x_scale: LinearScale, y_scale: LinearScale,
+    pub fn drawLinearXY(painter: *Painter, x_scale: LinearScale, y_scale: LinearScale,
                         bounds: Bounds, x_ticks: u32, y_ticks: u32, opts: Options) void;
 };
 ```
@@ -847,7 +854,7 @@ pub const Legend = struct {
         height: f32,
     };
 
-    pub fn draw(ctx: *DrawContext, bounds: Bounds, items: []const Item, opts: Options) DrawResult;
+    pub fn draw(painter: *Painter, bounds: Bounds, items: []const Item, opts: Options) DrawResult;
     pub fn calculateDimensions(items: []const Item, opts: Options) struct { width: f32, height: f32 };
 };
 ```
@@ -872,7 +879,7 @@ const legend_opts = charts.Legend.Options{
 const dims = charts.Legend.calculateDimensions(&legend_items, legend_opts);
 
 // Draw legend
-_ = charts.Legend.draw(ctx, .{ .x = 0, .y = 5, .width = w, .height = dims.height }, &legend_items, legend_opts);
+_ = charts.Legend.draw(painter, .{ .x = 0, .y = 5, .width = w, .height = dims.height }, &legend_items, legend_opts);
 ```
 
 ---
@@ -1007,27 +1014,20 @@ pub fn announceSelection(label: []const u8, value: f32, position: u32, total: u3
 ### Usage Example
 
 ```gooey/docs/charts.md#L1004-1027
-fn renderAccessibleChart(b: *ui.Builder) void {
-    const chart = charts.BarChart.init(&bar_data);
-
-    // Generate accessible description
-    var desc_buf: [charts.accessibility.MAX_DESCRIPTION_LENGTH]u8 = undefined;
-    const description = chart.describe(&desc_buf);
-
-    // Push accessible element before canvas
-    if (b.accessible(.{
+fn renderAccessibleChart(cx: *gooey.Cx) void {
+    const state = cx.state(State);
+    // `state.description` was written once by `chart.describe` in `on_init`:
+    // accessibility text must outlive the frame.
+    cx.render(ui.box(.{ .a11y = .{
         .role = .img,
-        .name = chart.accessible_title orelse "Bar Chart",
-        .description = description,
-    })) {
-        defer b.accessibleEnd();
-    }
-
-    ui.canvas(400, 300, struct {
-        fn paint(ctx: *ui.DrawContext) void {
-            chart.render(ctx);
-        }
-    }.paint).render(b);
+        .label = "Bar Chart",
+        .description = state.description,
+    } }, .{
+        ui.paint(State, state, paintBarChart, .{
+            .width = .{ .fixed = 400 },
+            .height = .{ .fixed = 300 },
+        }),
+    }));
 }
 ```
 
@@ -1063,13 +1063,13 @@ pub fn summarize(self: *const Chart, buf: []u8) []const u8;
 
 ```gooey/docs/charts.md#L1063-1070
 // Before: N draw calls, N tessellations
-for (points) |p| ctx.strokeLine(prev, p, ...);
+for (points) |p| painter.line(prev, p, ...);
 
 // After: 1 draw call for up to 4096 points
-ctx.polyline(points[0..count], line_width, color);
+painter.polyline(points[0..count], line_width, color);
 
-// Point markers: 1 draw call with GPU instancing
-ctx.pointCloud(centers[0..count], radius, color);
+// Point markers: 1 draw call with GPU instancing, one cloud per series
+painter.pointCloud(centers[0..count], radius, color);
 ```
 
 ### Performance Comparison
@@ -1111,7 +1111,7 @@ LTTB (Largest-Triangle-Three-Buckets) algorithm enables smooth rendering of 10K+
 var chart = charts.LineChart.init(&large_data);
 chart.enable_lod = true;           // Enable automatic decimation
 chart.lod_target_points = 1000;    // Target point count after decimation
-chart.render(ctx);
+chart.render(painter);
 ```
 
 ---
@@ -1169,23 +1169,12 @@ pub const accessibility = @import("accessibility.zig");
 
 // Re-exports from gooey for convenience
 pub const Color = gooey.ui.Color;
-pub const DrawContext = gooey.ui.DrawContext;
+pub const Painter = gooey.Painter;
 ```
 
 ---
 
 ## Examples
-
-### Charts Demo
-
-See `src/examples/charts_demo.zig` for a complete showcase of all chart types:
-
-- Bar chart with custom styling
-- Multi-series line chart with legend
-- Pie and donut charts
-- Scatter plot with multiple series
-- Progress ring (thin donut)
-- Themed line chart with palette colors
 
 ### Dashboard Example
 
@@ -1199,10 +1188,9 @@ See `src/examples/dashboard.zig` for a multi-chart analytics dashboard:
 - Conversion rate (progress ring)
 - Theme toggle with `[T]` key
 
-Run examples with:
+Run the example with:
 
 ```gooey/docs/charts.md#L1217-1219
-zig build run-charts-demo # Charts demo
 zig build run-dashboard   # Dashboard example
 ```
 

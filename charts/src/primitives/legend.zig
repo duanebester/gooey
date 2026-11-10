@@ -5,11 +5,12 @@
 //! different marker shapes (rect, circle, line).
 
 const std = @import("std");
-const gooey = @import("gooey");
 const constants = @import("../constants.zig");
 
-pub const Color = gooey.ui.Color;
-pub const DrawContext = gooey.ui.DrawContext;
+const paint = @import("../paint.zig");
+
+pub const Color = paint.Color;
+pub const Painter = paint.Painter;
 
 const MAX_LEGEND_ITEMS = constants.MAX_LEGEND_ITEMS;
 const MAX_LABEL_LENGTH = constants.MAX_LABEL_LENGTH;
@@ -79,7 +80,7 @@ pub const Legend = struct {
     /// Draw a legend with the given items and options.
     /// Returns the bounds consumed by the legend.
     pub fn draw(
-        ctx: *DrawContext,
+        painter: *Painter,
         bounds: Bounds,
         items: []const Item,
         opts: Options,
@@ -93,13 +94,18 @@ pub const Legend = struct {
 
         // Draw background if specified
         if (opts.background) |bg| {
-            ctx.fillRect(layout.x, layout.y, layout.width, layout.height, bg);
+            paint.rect(painter, .{
+                .x = layout.x,
+                .y = layout.y,
+                .width = layout.width,
+                .height = layout.height,
+            }, 0, bg);
         }
 
         // Draw items based on orientation
         switch (opts.position) {
-            .top, .bottom => drawHorizontal(ctx, items, layout, opts),
-            .left, .right => drawVertical(ctx, items, layout, opts),
+            .top, .bottom => drawHorizontal(painter, items, layout, opts),
+            .left, .right => drawVertical(painter, items, layout, opts),
         }
 
         return .{ .consumed = layout };
@@ -192,7 +198,7 @@ fn calculateLayout(
 
 /// Draw legend items horizontally (for top/bottom positions).
 fn drawHorizontal(
-    ctx: *DrawContext,
+    painter: *Painter,
     items: []const Legend.Item,
     layout: Legend.Bounds,
     opts: Legend.Options,
@@ -208,20 +214,18 @@ fn drawHorizontal(
         if (i > 0) x += opts.spacing;
 
         // Draw marker
-        drawMarker(ctx, x, y_center, opts.item_size, item.color, item.shape);
+        drawMarker(painter, x, y_center, opts.item_size, item.color, item.shape);
         x += opts.item_size + opts.item_gap;
 
         // Draw label - vertically centered with marker
-        _ = ctx.drawTextVCentered(item.label, x, y_center, opts.color, opts.font_size);
-        // Use actual text measurement for accurate positioning
-        const text_width = ctx.measureText(item.label, opts.font_size);
-        x += text_width;
+        _ = paint.textCentered(painter, item.label, x, y_center, opts.color, opts.font_size);
+        x += paint.measure(painter, item.label);
     }
 }
 
 /// Draw legend items vertically (for left/right positions).
 fn drawVertical(
-    ctx: *DrawContext,
+    painter: *Painter,
     items: []const Legend.Item,
     layout: Legend.Bounds,
     opts: Legend.Options,
@@ -240,15 +244,15 @@ fn drawVertical(
         const x = layout.x + opts.padding;
 
         // Draw marker
-        drawMarker(ctx, x, y, opts.item_size, item.color, item.shape);
+        drawMarker(painter, x, y, opts.item_size, item.color, item.shape);
 
         // Draw label - vertically centered with marker
         const label_x = x + opts.item_size + opts.item_gap;
-        _ = ctx.drawTextVCentered(item.label, label_x, y, opts.color, opts.font_size);
+        _ = paint.textCentered(painter, item.label, label_x, y, opts.color, opts.font_size);
     }
 }
 fn drawMarker(
-    ctx: *DrawContext,
+    painter: *Painter,
     x: f32,
     y_center: f32,
     size: f32,
@@ -260,47 +264,31 @@ fn drawMarker(
 
     switch (shape) {
         .rect => {
-            ctx.fillRect(x, y_center - size / 2, size, size, color);
+            painter.fill(
+                .{ .x = x, .y = y_center - size / 2, .width = size, .height = size },
+                color,
+            );
         },
         .circle => {
             // Draw filled circle centered at (x + radius, y_center)
             // Uses adaptive LOD - small legend markers get fewer segments
             const radius = size / 2;
-            ctx.fillCircleAdaptive(x + radius, y_center, radius, color);
+            painter.circle(.{ x + radius, y_center }, radius, color);
         },
         .line => {
             // Draw a horizontal line with a point marker
             const line_y = y_center;
-            ctx.strokeLine(x, line_y, x + size, line_y, 2.0, color);
+            painter.line(.{ x, line_y }, .{ x + size, line_y }, 2.0, color);
             // Draw small circle/square at center
             const marker_size = size * 0.4;
-            ctx.fillRect(
-                x + size / 2 - marker_size / 2,
-                y_center - marker_size / 2,
-                marker_size,
-                marker_size,
-                color,
-            );
+            painter.fill(.{
+                .x = x + size / 2 - marker_size / 2,
+                .y = y_center - marker_size / 2,
+                .width = marker_size,
+                .height = marker_size,
+            }, color);
         },
     }
-}
-
-/// Render text using DrawContext.
-/// Uses real text rendering when TextSystem is available, otherwise
-/// falls back to placeholder rectangles for backwards compatibility.
-fn drawTextSimple(
-    ctx: *DrawContext,
-    text: []const u8,
-    x: f32,
-    y: f32,
-    color: Color,
-    font_size: f32,
-) void {
-    std.debug.assert(!std.math.isNan(x) and !std.math.isNan(y));
-    std.debug.assert(font_size > 0);
-
-    // Use DrawContext's drawText which handles TextSystem availability
-    _ = ctx.drawText(text, x, y, color, font_size);
 }
 
 // =============================================================================

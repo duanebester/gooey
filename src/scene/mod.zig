@@ -21,6 +21,10 @@ pub const scene = @import("scene.zig");
 pub const Scene = scene.Scene;
 pub const SceneLimits = scene.SceneLimits;
 pub const DrawOrder = scene.DrawOrder;
+pub const GeometryCounts = @import("geometry_budget.zig").GeometryCounts;
+pub const GeometryPool = @import("geometry_budget.zig").GeometryPool;
+pub const InstanceCounts = @import("instance_budget.zig").InstanceCounts;
+pub const InstancePool = @import("instance_budget.zig").InstancePool;
 
 // Hard limits (static memory allocation policy)
 pub const MAX_QUADS_PER_FRAME = scene.MAX_QUADS_PER_FRAME;
@@ -76,6 +80,7 @@ pub const PathInstance = path_instance.PathInstance;
 pub const polyline = @import("polyline.zig");
 pub const Polyline = polyline.Polyline;
 pub const MAX_POLYLINE_POINTS = polyline.MAX_POLYLINE_POINTS;
+pub const MAX_LINE_WIDTH = polyline.MAX_LINE_WIDTH;
 
 // =============================================================================
 // Point Cloud (instanced circles for scatter plots/markers)
@@ -84,6 +89,7 @@ pub const MAX_POLYLINE_POINTS = polyline.MAX_POLYLINE_POINTS;
 pub const point_cloud = @import("point_cloud.zig");
 pub const PointCloud = point_cloud.PointCloud;
 pub const MAX_POINTS_PER_CLOUD = point_cloud.MAX_POINTS_PER_CLOUD;
+pub const MAX_POINT_RADIUS = point_cloud.MAX_POINT_RADIUS;
 
 // =============================================================================
 // Colored Point Cloud (instanced circles with per-point colors)

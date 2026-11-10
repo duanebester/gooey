@@ -14,6 +14,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const types = @import("types.zig");
+const reservation = @import("../core/reservation.zig");
 const layout_id = @import("layout_id.zig");
 const arena_mod = @import("arena.zig");
 const render_commands = @import("render_commands.zig");
@@ -131,45 +132,6 @@ pub const ScrollOffset = struct {
     y: f32 = 0,
 };
 
-/// Where an element was created (for debugging). Stores compile-time string
-/// pointers, so it needs no allocation.
-pub const SourceLoc = struct {
-    file: ?[*:0]const u8 = null,
-    line: u32 = 0,
-    column: u32 = 0,
-    fn_name: ?[*:0]const u8 = null,
-
-    pub const none: SourceLoc = .{};
-
-    /// Create from Zig's builtin SourceLocation
-    pub fn from(src: std.builtin.SourceLocation) SourceLoc {
-        return .{
-            .file = src.file.ptr,
-            .line = src.line,
-            .column = src.column,
-            .fn_name = src.fn_name.ptr,
-        };
-    }
-
-    /// Check if this has valid source information
-    pub fn isValid(self: SourceLoc) bool {
-        return self.file != null and self.line > 0;
-    }
-
-    /// Get file name as a slice (for display)
-    pub fn getFile(self: SourceLoc) ?[]const u8 {
-        if (self.file) |f| {
-            return std.mem.span(f);
-        }
-        return null;
-    }
-
-    /// Get just the filename without path (for compact display)
-    pub fn getBasename(self: SourceLoc) ?[]const u8 {
-        return std.fs.path.basename(self.getFile() orelse return null);
-    }
-};
-
 pub const ElementDeclaration = struct {
     id: LayoutId = LayoutId.none,
     layout: LayoutConfig = .{},
@@ -182,8 +144,6 @@ pub const ElementDeclaration = struct {
     user_data: ?*anyopaque = null,
     /// Opacity for the entire element subtree (0.0 = transparent, 1.0 = opaque)
     opacity: f32 = 1.0,
-    /// Source location where this element was created (for debugging)
-    source_location: SourceLoc = .{},
     /// Whether this element is a canvas (for deferred paint callbacks)
     is_canvas: bool = false,
 };
@@ -255,34 +215,54 @@ pub const LayoutElement = struct {
     cached_z_index: i16 = 0,
 };
 
-/// Element storage (unmanaged ArrayList pattern)
+/// Element storage: one fixed reservation of `MAX_ELEMENTS_PER_FRAME`
+/// elements, never grown.
 pub const ElementList = struct {
-    allocator: std.mem.Allocator,
     elements: std.ArrayList(LayoutElement),
+    /// Most elements any frame has held; `deinit` zeroes this prefix (§21).
+    element_count_max: u32,
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator) Self {
-        var list = Self{
-            .allocator = allocator,
-            .elements = .empty,
+    /// Reserves exactly the per-frame element budget (10.1 MiB at 648 B per
+    /// element) through `core/reservation.zig`, so only the elements a frame
+    /// writes become resident. It used to round up through `ArrayList` growth
+    /// to 24,577 elements, 50% over. A failed reservation is returned rather
+    /// than ignored: an engine without it would allocate on the frame path
+    /// (CLAUDE.md §2).
+    pub fn init() error{OutOfMemory}!Self {
+        const list = Self{
+            .elements = try reservation.reserveList(LayoutElement, MAX_ELEMENTS_PER_FRAME),
+            .element_count_max = 0,
         };
-        // Pre-allocate at startup to avoid per-frame allocation
-        list.elements.ensureTotalCapacity(allocator, MAX_ELEMENTS_PER_FRAME) catch {};
+        std.debug.assert(list.elements.capacity == MAX_ELEMENTS_PER_FRAME);
         return list;
     }
 
     pub fn deinit(self: *Self) void {
-        self.elements.deinit(self.allocator);
+        reservation.releaseList(LayoutElement, &self.elements, self.element_count_max);
     }
 
     pub fn clear(self: *Self) void {
+        std.debug.assert(self.elements.items.len <= MAX_ELEMENTS_PER_FRAME);
+        self.element_count_max = @max(self.element_count_max, self.len());
         self.elements.clearRetainingCapacity();
     }
 
-    pub fn append(self: *Self, elem: LayoutElement) !u32 {
+    /// Exhaustion is a capacity-planning error (CLAUDE.md §2): it stops with
+    /// the pool name and capacity rather than growing a reservation no
+    /// allocator owns. `createElement` asserts the same bound before calling.
+    pub fn append(self: *Self, elem: LayoutElement) error{}!u32 {
         const index: u32 = @intCast(self.elements.items.len);
-        try self.elements.append(self.allocator, elem);
+        if (index < self.elements.capacity) {
+            self.elements.appendAssumeCapacity(elem);
+        } else {
+            std.debug.panic("layout element list exhausted: capacity {d} " ++
+                "(MAX_ELEMENTS_PER_FRAME), {d} in use, 1 requested", .{
+                self.elements.capacity,
+                index,
+            });
+        }
         return index;
     }
 
@@ -344,22 +324,37 @@ pub const LayoutEngine = struct {
     id_to_index: std.AutoHashMap(u32, u32),
     /// Floating elements to position after main layout (fixed capacity)
     floating_roots: FixedCapacityArray(u32, MAX_FLOATING_ROOTS) = .{},
+    /// Wrapped lines per frame, across every text. The 0.4.0 core sets it from
+    /// its glyph budget and sizes the fixed arena to match; null (the 0.3.1
+    /// runtime's growing arena) leaves only the per-text cap.
+    wrapped_line_count_frame_max: ?u32 = null,
+    wrapped_line_count: u32 = 0,
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator) Self {
+    /// Reserves every per-frame table at initialization and returns a failed
+    /// reservation instead of ignoring it, so the frame path never allocates
+    /// to make up for it (CLAUDE.md §2, §17).
+    pub fn init(allocator: std.mem.Allocator) error{OutOfMemory}!Self {
         var seen_ids = std.AutoHashMap(u32, ?[]const u8).init(allocator);
+        errdefer seen_ids.deinit();
+        try seen_ids.ensureTotalCapacity(MAX_TRACKED_IDS);
+
         var id_to_index = std.AutoHashMap(u32, u32).init(allocator);
+        errdefer id_to_index.deinit();
+        try id_to_index.ensureTotalCapacity(MAX_TRACKED_IDS);
 
-        // Pre-allocate hash maps to avoid per-frame allocation
-        seen_ids.ensureTotalCapacity(MAX_TRACKED_IDS) catch {};
-        id_to_index.ensureTotalCapacity(MAX_TRACKED_IDS) catch {};
+        var elements = try ElementList.init();
+        errdefer elements.deinit();
 
+        const commands = try RenderCommandList.init();
+        std.debug.assert(seen_ids.capacity() >= MAX_TRACKED_IDS);
+        std.debug.assert(id_to_index.capacity() >= MAX_TRACKED_IDS);
         return .{
             .allocator = allocator,
             .arena = LayoutArena.init(allocator),
-            .elements = ElementList.init(allocator),
-            .commands = RenderCommandList.init(allocator),
+            .elements = elements,
+            .commands = commands,
             .seen_ids = seen_ids,
             .id_to_index = id_to_index,
         };
@@ -391,6 +386,7 @@ pub const LayoutEngine = struct {
         self.root_index = null;
         self.viewport_width = width;
         self.viewport_height = height;
+        self.wrapped_line_count = 0;
     }
 
     pub fn openElement(self: *Self, decl: ElementDeclaration) !void {

@@ -5,7 +5,7 @@
 //! - LineChart: Continuous X/Y data as connected lines
 //! - PieChart: Categorical data as circular slices (pie/donut)
 //!
-//! Additional charts (ScatterChart) will be added in Phase 2C.
+//! ScatterChart lives in `scatter_chart.zig` and is re-exported from `root.zig`.
 
 pub const bar_chart = @import("bar_chart.zig");
 pub const line_chart = @import("line_chart.zig");
@@ -21,9 +21,8 @@ pub const bar_palette = bar_chart.default_palette;
 pub const line_palette = line_chart.default_palette;
 pub const pie_palette = pie_chart.default_palette;
 
-// Re-export Color and DrawContext
 pub const Color = bar_chart.Color;
-pub const DrawContext = bar_chart.DrawContext;
+pub const Painter = bar_chart.Painter;
 
 // =============================================================================
 // Tests

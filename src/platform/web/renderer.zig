@@ -4,6 +4,7 @@
 //! of the Metal renderer on macOS.
 
 const std = @import("std");
+const assert = std.debug.assert;
 const imports = @import("imports.zig");
 const unified = @import("../unified.zig");
 const interface_verify = @import("../../core/interface_verify.zig");
@@ -11,9 +12,6 @@ const scene_mod = @import("../../scene/mod.zig");
 const GradientUniforms = scene_mod.GradientUniforms;
 const batch_iter = @import("../../scene/batch_iterator.zig");
 const text_mod = @import("../../text/mod.zig");
-const svg_mod = @import("../../svg/mod.zig");
-const image_mod = @import("../../image/mod.zig");
-const custom_shader = @import("custom_shader.zig");
 const path_mesh_mod = @import("../../scene/path_mesh.zig");
 const path_instance_mod = @import("../../scene/path_instance.zig");
 const mesh_pool_mod = @import("../../scene/mesh_pool.zig");
@@ -22,11 +20,7 @@ const point_cloud_mod = @import("../../scene/point_cloud.zig");
 
 const Scene = scene_mod.Scene;
 const SvgInstance = scene_mod.SvgInstance;
-const TextSystem = text_mod.TextSystem;
-const SvgAtlas = svg_mod.SvgAtlas;
-const ImageAtlas = image_mod.ImageAtlas;
 const ImageInstance = scene_mod.ImageInstance;
-const PostProcessState = custom_shader.PostProcessState;
 const PathInstance = path_instance_mod.PathInstance;
 const ClipBounds = path_instance_mod.ClipBounds;
 const PathVertex = path_mesh_mod.PathVertex;
@@ -54,12 +48,12 @@ pub const MAX_PATHS = 256;
 pub const MAX_PATH_VERTICES = 16384;
 pub const MAX_PATH_INDICES = 49152;
 
-// Phase 4: Gradient path batching - storage buffer for instance + gradient data
+// Gradient path batching - storage buffer for instance + gradient data
 pub const MAX_GRADIENT_BATCH_PATHS = 64;
 pub const MAX_GRADIENT_BATCH_VERTICES = 8192;
 pub const MAX_GRADIENT_BATCH_INDICES = MAX_GRADIENT_BATCH_VERTICES * 3;
 
-// Phase 2: Solid path batching limits (static allocation per CLAUDE.md)
+// Solid path batching limits (static allocation per CLAUDE.md)
 pub const MAX_SOLID_BATCH_VERTICES: u32 = path_mesh_mod.MAX_SOLID_BATCH_VERTICES;
 pub const MAX_SOLID_BATCH_INDICES: u32 = MAX_SOLID_BATCH_VERTICES * 3; // Worst case: 3 indices per vertex
 
@@ -321,7 +315,7 @@ pub const DrawCallInfo = struct {
 };
 
 // =============================================================================
-// Phase 2: Solid Path Batching GPU Types
+// Solid Path Batching GPU Types
 // =============================================================================
 
 /// GPU-ready solid path vertex for batched rendering (32 bytes)
@@ -480,10 +474,10 @@ const BatchDesc = struct {
 
 const MAX_BATCHES: u32 = 256;
 
-// Phase 1 batching: max clip regions per frame (per CLAUDE.md: put a limit on everything)
+// Clip batching: max clip regions per frame (per CLAUDE.md: put a limit on everything)
 const MAX_CLIP_BATCHES: u32 = 64;
 
-/// Clip batch info for Phase 1 optimization
+/// Clip batch info for grouping consecutive same-clip paths
 /// Tracks a contiguous range of paths sharing the same clip bounds
 const ClipBatch = struct {
     clip: ClipBounds,
@@ -518,8 +512,6 @@ pub const WebRenderer = struct {
     glyph_buffer: u32 = 0,
     text_bind_group: u32 = 0,
     atlas_texture: u32 = 0,
-    atlas_generation: u32 = 0,
-    atlas_texture_size: u32 = 0,
     gpu_glyphs: [MAX_GLYPHS]GpuGlyph = undefined,
 
     // SVG rendering
@@ -527,8 +519,6 @@ pub const WebRenderer = struct {
     svg_buffer: u32 = 0,
     svg_bind_group: u32 = 0,
     svg_atlas_texture: u32 = 0,
-    svg_atlas_generation: u32 = 0,
-    svg_atlas_texture_size: u32 = 0,
     gpu_svgs: [MAX_SVGS]GpuSvgInstance = undefined,
 
     // Image rendering
@@ -536,8 +526,9 @@ pub const WebRenderer = struct {
     image_buffer: u32 = 0,
     image_bind_group: u32 = 0,
     image_atlas_texture: u32 = 0,
-    image_atlas_generation: u32 = 0,
-    image_atlas_texture_size: u32 = 0,
+    /// Atlas upload journal and this window's consumer key (`initAtlases`).
+    atlas_uploads: ?*text_mod.AtlasUploads = null,
+    atlas_key: usize = 0,
     gpu_images: [MAX_IMAGES]ImageInstance = undefined,
 
     // Path rendering (triangulated meshes)
@@ -548,7 +539,7 @@ pub const WebRenderer = struct {
     path_gradient_buffer: u32 = 0,
     path_bind_group: u32 = 0,
 
-    // Phase 2: Solid path rendering (batched, no gradients)
+    // Solid path rendering (batched, no gradients)
     solid_path_pipeline: u32 = 0,
     solid_path_vertex_buffer: u32 = 0,
     solid_path_index_buffer: u32 = 0,
@@ -577,9 +568,6 @@ pub const WebRenderer = struct {
     msaa_height: u32 = 0,
     sample_count: u32 = 4,
 
-    // Post-processing state for custom shaders
-    post_process_state: ?PostProcessState = null,
-
     // Batch descriptors for deferred rendering
     batches: [MAX_BATCHES]BatchDesc = undefined,
 
@@ -601,7 +589,7 @@ pub const WebRenderer = struct {
     staging_draw_calls: [MAX_PATHS]DrawCallInfo = undefined,
 
     // =========================================================================
-    // Phase 2: Solid Path Batching - Staging Buffers
+    // Solid Path Batching - Staging Buffers
     // =========================================================================
     // These staging buffers hold baked (transformed + colored) vertices for
     // solid paths, enabling single draw call per clip region.
@@ -648,17 +636,16 @@ pub const WebRenderer = struct {
         self.glyph_buffer = 0;
         self.text_bind_group = 0;
         self.atlas_texture = 0;
-        self.atlas_generation = 0;
         self.svg_pipeline = 0;
         self.svg_buffer = 0;
         self.svg_bind_group = 0;
         self.svg_atlas_texture = 0;
-        self.svg_atlas_generation = 0;
         self.image_pipeline = 0;
         self.image_buffer = 0;
         self.image_bind_group = 0;
         self.image_atlas_texture = 0;
-        self.image_atlas_generation = 0;
+        self.atlas_uploads = null;
+        self.atlas_key = 0;
         self.path_pipeline = 0;
         self.path_vertex_buffer = 0;
         self.path_index_buffer = 0;
@@ -685,7 +672,6 @@ pub const WebRenderer = struct {
         self.msaa_width = 0;
         self.msaa_height = 0;
         self.sample_count = 4;
-        self.post_process_state = null;
         // Note: primitives, gpu_glyphs, gpu_svgs, gpu_images, batches arrays
         // are left undefined - they get overwritten during rendering anyway
 
@@ -711,7 +697,7 @@ pub const WebRenderer = struct {
             self.image_pipeline = imports.createMSAARenderPipeline(image_module, "vs_main", 7, "fs_main", 7, self.sample_count);
             // Path shader outputs premultiplied alpha
             self.path_pipeline = imports.createPathPipeline(path_module, "vs_main", 7, "fs_main", 7, self.sample_count);
-            // Phase 2: Solid path shader outputs premultiplied alpha
+            // Solid path shader outputs premultiplied alpha
             self.solid_path_pipeline = imports.createPathPipeline(solid_path_module, "vs_main", 7, "fs_main", 7, self.sample_count);
             // Polyline and point cloud shaders output premultiplied alpha
             self.polyline_pipeline = imports.createPathPipeline(polyline_module, "vs_main", 7, "fs_main", 7, self.sample_count);
@@ -725,7 +711,7 @@ pub const WebRenderer = struct {
             self.image_pipeline = imports.createRenderPipeline(image_module, "vs_main", 7, "fs_main", 7);
             // Path shader outputs premultiplied alpha (fallback non-MSAA)
             self.path_pipeline = imports.createPremultipliedAlphaPipeline(path_module, "vs_main", 7, "fs_main", 7);
-            // Phase 2: Solid path shader outputs premultiplied alpha (fallback non-MSAA)
+            // Solid path shader outputs premultiplied alpha (fallback non-MSAA)
             self.solid_path_pipeline = imports.createPremultipliedAlphaPipeline(solid_path_module, "vs_main", 7, "fs_main", 7);
             // Polyline and point cloud shaders output premultiplied alpha (fallback non-MSAA)
             self.polyline_pipeline = imports.createPremultipliedAlphaPipeline(polyline_module, "vs_main", 7, "fs_main", 7);
@@ -748,7 +734,7 @@ pub const WebRenderer = struct {
         self.path_instance_buffer = imports.createBuffer(@sizeOf(GpuPathInstance), uniform_copy);
         self.path_gradient_buffer = imports.createBuffer(@sizeOf(GpuGradientUniforms), uniform_copy);
 
-        // Phase 2: Solid path buffers - larger capacity, 32-byte vertices with baked transform/color
+        // Solid path buffers - larger capacity, 32-byte vertices with baked transform/color
         self.solid_path_vertex_buffer = imports.createBuffer(@sizeOf(GpuSolidPathVertex) * MAX_SOLID_BATCH_VERTICES, storage_copy);
         self.solid_path_index_buffer = imports.createBuffer(@sizeOf(u32) * MAX_SOLID_BATCH_INDICES, storage_copy);
         self.solid_path_clip_buffer = imports.createBuffer(@sizeOf(GpuClipBounds), uniform_copy);
@@ -778,7 +764,7 @@ pub const WebRenderer = struct {
             self.path_gradient_buffer,
         );
 
-        // Phase 2: Solid path bind group: vertex buffer, clip buffer, uniform buffer
+        // Solid path bind group: vertex buffer, clip buffer, uniform buffer
         self.solid_path_bind_group = imports.createPathBindGroup(
             self.solid_path_pipeline,
             0,
@@ -809,9 +795,7 @@ pub const WebRenderer = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        if (self.post_process_state) |*state| {
-            state.deinit();
-        }
+        std.debug.assert(self.sample_count > 0);
     }
 
     /// Ensure MSAA texture is the right size
@@ -832,42 +816,31 @@ pub const WebRenderer = struct {
         }
     }
 
-    /// Initialize post-processing state (lazy initialization)
-    fn initPostProcess(self: *Self) !void {
-        if (self.post_process_state != null) return;
-        self.post_process_state = PostProcessState.init(self.allocator);
-    }
-
-    /// Add a custom WGSL shader for post-processing
-    pub fn addCustomShader(self: *Self, shader_source: []const u8, name: []const u8) !void {
-        try self.initPostProcess();
-        if (self.post_process_state) |*state| {
-            try state.addShader(shader_source, name);
-            imports.log("Added shader, pipeline count: {}", .{state.pipelines.items.len});
-        }
-    }
-
-    /// Check if we have custom shaders enabled
-    pub fn hasCustomShaders(self: *const Self) bool {
-        if (self.post_process_state) |*state| {
-            return state.hasShaders();
-        }
-        return false;
-    }
-
     // =========================================================================
-    // Text Atlas Management
+    // Atlas Textures
     // =========================================================================
 
-    pub fn uploadAtlas(self: *Self, text_system: *TextSystem) void {
-        const atlas = text_system.getAtlas();
-        const pixels = atlas.getData();
-        const size = atlas.size;
+    /// Create the three atlas textures once, at their budget sizes, and bind
+    /// them (memory-budget decisions 6 and 8). WebGPU zero-initializes new
+    /// textures, and pixels arrive only through `uploadAtlasRegions`, so the
+    /// textures are never recreated and no CPU copy of them exists.
+    pub fn initAtlases(self: *Self, options: AtlasOptions) void {
+        assert(options.key != 0);
+        assert(self.atlas_texture == 0);
+        assert(options.uploads.storage == .gpu_upload);
+        self.atlas_uploads = options.uploads;
+        self.atlas_key = options.key;
 
-        if (self.atlas_texture == 0) {
-            self.atlas_texture = imports.createTexture(size, size, pixels.ptr, @intCast(pixels.len));
-            self.atlas_texture_size = size;
-        }
+        self.atlas_texture = imports.createAtlasTexture(options.text_size, options.text_size, 1);
+        self.svg_atlas_texture = imports.createAtlasTexture(options.svg_size, options.svg_size, 4);
+        self.image_atlas_texture = imports.createAtlasTexture(
+            options.image_size,
+            options.image_size,
+            4,
+        );
+        assert(self.atlas_texture != 0);
+        assert(self.svg_atlas_texture != 0);
+        assert(self.image_atlas_texture != 0);
 
         self.text_bind_group = imports.createTextBindGroup(
             self.text_pipeline,
@@ -877,55 +850,6 @@ pub const WebRenderer = struct {
             self.atlas_texture,
             self.sampler,
         );
-    }
-
-    pub fn syncAtlas(self: *Self, text_system: *TextSystem) void {
-        const atlas = text_system.getAtlas();
-
-        // Only update if generation changed
-        if (atlas.generation == self.atlas_generation) return;
-
-        if (self.atlas_texture != 0) {
-            const pixels = atlas.getData();
-            const size = atlas.size;
-
-            // Check if atlas size changed - need to recreate texture
-            if (size != self.atlas_texture_size) {
-                imports.destroyTexture(self.atlas_texture);
-                self.atlas_texture = imports.createTexture(size, size, pixels.ptr, @intCast(pixels.len));
-                self.atlas_texture_size = size;
-
-                // Recreate bind group with new texture
-                self.text_bind_group = imports.createTextBindGroup(
-                    self.text_pipeline,
-                    0,
-                    self.glyph_buffer,
-                    self.uniform_buffer,
-                    self.atlas_texture,
-                    self.sampler,
-                );
-            } else {
-                imports.updateTexture(self.atlas_texture, size, size, pixels.ptr, @intCast(pixels.len));
-            }
-            self.atlas_generation = atlas.generation;
-        }
-    }
-
-    // =========================================================================
-    // SVG Atlas Management
-    // =========================================================================
-
-    pub fn uploadSvgAtlas(self: *Self, svg_atlas: *SvgAtlas) void {
-        const atlas = svg_atlas.getAtlas();
-        const pixels = atlas.getData();
-        const size = atlas.size;
-
-        if (self.svg_atlas_texture == 0) {
-            // SVG atlas uses RGBA format
-            self.svg_atlas_texture = imports.createRgbaTexture(size, size, pixels.ptr, @intCast(pixels.len));
-            self.svg_atlas_texture_size = size;
-        }
-
         self.svg_bind_group = imports.createSvgBindGroup(
             self.svg_pipeline,
             0,
@@ -934,61 +858,6 @@ pub const WebRenderer = struct {
             self.svg_atlas_texture,
             self.sampler,
         );
-
-        self.svg_atlas_generation = atlas.generation;
-    }
-
-    pub fn syncSvgAtlas(self: *Self, svg_atlas: *SvgAtlas) void {
-        const atlas = svg_atlas.getAtlas();
-        const generation = svg_atlas.getGeneration();
-
-        // Only update if generation changed
-        if (generation == self.svg_atlas_generation) return;
-
-        if (self.svg_atlas_texture != 0) {
-            const pixels = atlas.getData();
-            const size = atlas.size;
-
-            // Check if atlas size changed - need to recreate texture
-            if (size != self.svg_atlas_texture_size) {
-                imports.destroyTexture(self.svg_atlas_texture);
-                self.svg_atlas_texture = imports.createRgbaTexture(size, size, pixels.ptr, @intCast(pixels.len));
-                self.svg_atlas_texture_size = size;
-
-                // Recreate bind group with new texture
-                self.svg_bind_group = imports.createSvgBindGroup(
-                    self.svg_pipeline,
-                    0,
-                    self.svg_buffer,
-                    self.uniform_buffer,
-                    self.svg_atlas_texture,
-                    self.sampler,
-                );
-            } else {
-                imports.updateRgbaTexture(self.svg_atlas_texture, size, size, pixels.ptr, @intCast(pixels.len));
-            }
-            self.svg_atlas_generation = generation;
-        } else {
-            // First time - create the texture
-            self.uploadSvgAtlas(svg_atlas);
-        }
-    }
-
-    // =========================================================================
-    // Image Atlas Management
-    // =========================================================================
-
-    pub fn uploadImageAtlas(self: *Self, image_atlas: *ImageAtlas) void {
-        const atlas = image_atlas.getAtlas();
-        const pixels = atlas.getData();
-        const size = atlas.size;
-
-        if (self.image_atlas_texture == 0) {
-            // Image atlas uses RGBA format
-            self.image_atlas_texture = imports.createRgbaTexture(size, size, pixels.ptr, @intCast(pixels.len));
-            self.image_atlas_texture_size = size;
-        }
-
         self.image_bind_group = imports.createImageBindGroup(
             self.image_pipeline,
             0,
@@ -997,43 +866,44 @@ pub const WebRenderer = struct {
             self.image_atlas_texture,
             self.sampler,
         );
-
-        self.image_atlas_generation = atlas.generation;
     }
 
-    pub fn syncImageAtlas(self: *Self, image_atlas: *ImageAtlas) void {
-        const atlas = image_atlas.getAtlas();
-        const generation = image_atlas.getGeneration();
+    pub const AtlasOptions = struct {
+        uploads: *text_mod.AtlasUploads,
+        /// Consumer key registered for this window (its platform window).
+        key: usize,
+        text_size: u32,
+        svg_size: u32,
+        image_size: u32,
+    };
 
-        // Only update if generation changed
-        if (generation == self.image_atlas_generation) return;
-
-        if (self.image_atlas_texture != 0) {
-            const pixels = atlas.getData();
-            const size = atlas.size;
-
-            // Check if atlas size changed - need to recreate texture
-            if (size != self.image_atlas_texture_size) {
-                imports.destroyTexture(self.image_atlas_texture);
-                self.image_atlas_texture = imports.createRgbaTexture(size, size, pixels.ptr, @intCast(pixels.len));
-                self.image_atlas_texture_size = size;
-
-                // Recreate bind group with new texture
-                self.image_bind_group = imports.createImageBindGroup(
-                    self.image_pipeline,
-                    0,
-                    self.image_buffer,
-                    self.uniform_buffer,
-                    self.image_atlas_texture,
-                    self.sampler,
-                );
-            } else {
-                imports.updateRgbaTexture(self.image_atlas_texture, size, size, pixels.ptr, @intCast(pixels.len));
-            }
-            self.image_atlas_generation = generation;
-        } else {
-            // First time - create the texture
-            self.uploadImageAtlas(image_atlas);
+    /// Write every atlas record this renderer has not seen into its texture.
+    /// `queue.writeTexture` copies the bytes before returning, so the journal
+    /// is the only staging; at most `upload_bytes_frame_max` bytes per frame.
+    pub fn uploadAtlasRegions(self: *Self) void {
+        const uploads = self.atlas_uploads orelse return;
+        assert(self.atlas_key != 0);
+        const pending = uploads.consumeBegin(self.atlas_key);
+        defer uploads.consumeEnd(self.atlas_key);
+        for (pending.records) |record| {
+            const byte_count = record.byteCount();
+            assert(record.offset <= pending.bytes.len);
+            assert(byte_count <= pending.bytes.len - record.offset);
+            const texture = switch (record.kind) {
+                .text => self.atlas_texture,
+                .svg => self.svg_atlas_texture,
+                .image => self.image_atlas_texture,
+            };
+            imports.writeAtlasRegion(
+                texture,
+                record.x,
+                record.y,
+                record.width,
+                record.height,
+                record.kind.bytesPerPixel(),
+                pending.bytes[record.offset..].ptr,
+                byte_count,
+            );
         }
     }
 
@@ -1043,7 +913,7 @@ pub const WebRenderer = struct {
 
     pub fn render(
         self: *Self,
-        scene: *Scene,
+        scene: *const Scene,
         viewport_width: f32,
         viewport_height: f32,
         clear_r: f32,
@@ -1064,67 +934,8 @@ pub const WebRenderer = struct {
             self.ensureMSAATexture(device_width, device_height);
         }
 
-        // Check if we need post-processing
-        const has_post_process = if (self.post_process_state) |*state| state.hasShaders() else false;
-        if (has_post_process) {
-            // Render to offscreen texture first for post-processing
-            const prim_count = unified.convertScene(scene, &self.primitives);
-
-            var glyph_count: u32 = 0;
-            for (scene.getGlyphs()) |g| {
-                if (glyph_count >= MAX_GLYPHS) break;
-                self.gpu_glyphs[glyph_count] = GpuGlyph.fromScene(g);
-                glyph_count += 1;
-            }
-
-            var svg_count: u32 = 0;
-            for (scene.getSvgInstances()) |s| {
-                if (svg_count >= MAX_SVGS) break;
-                self.gpu_svgs[svg_count] = GpuSvgInstance.fromScene(s);
-                svg_count += 1;
-            }
-
-            // Upload all buffers for post-process path
-            if (prim_count > 0) {
-                imports.writeBuffer(
-                    self.primitive_buffer,
-                    0,
-                    std.mem.sliceAsBytes(self.primitives[0..prim_count]).ptr,
-                    @intCast(@sizeOf(unified.Primitive) * prim_count),
-                );
-            }
-            if (glyph_count > 0) {
-                imports.writeBuffer(
-                    self.glyph_buffer,
-                    0,
-                    std.mem.sliceAsBytes(self.gpu_glyphs[0..glyph_count]).ptr,
-                    @intCast(@sizeOf(GpuGlyph) * glyph_count),
-                );
-            }
-            if (svg_count > 0) {
-                imports.writeBuffer(
-                    self.svg_buffer,
-                    0,
-                    std.mem.sliceAsBytes(self.gpu_svgs[0..svg_count]).ptr,
-                    @intCast(@sizeOf(GpuSvgInstance) * svg_count),
-                );
-            }
-
-            self.renderWithPostProcess(
-                prim_count,
-                glyph_count,
-                svg_count,
-                viewport_width,
-                viewport_height,
-                clear_r,
-                clear_g,
-                clear_b,
-                clear_a,
-            );
-        } else {
-            // Render directly to screen using batched rendering for correct z-order
-            self.renderBatched(scene, clear_r, clear_g, clear_b, clear_a);
-        }
+        // Render directly to screen using batched rendering for correct z-order.
+        self.renderBatched(scene, clear_r, clear_g, clear_b, clear_a);
     }
 
     /// Render using batch iteration for correct z-ordering across primitive types.
@@ -1579,7 +1390,7 @@ pub const WebRenderer = struct {
             total_indices * @sizeOf(u32),
         );
 
-        // Draw grouped by clip batches (Phase 1 optimization)
+        // Draw grouped by clip batches
         for (clip_batches[0..clip_batch_count]) |batch| {
             // Draw all paths in this clip batch
             for (batch.start_index..batch.end_index) |i| {
@@ -1656,7 +1467,7 @@ pub const WebRenderer = struct {
     }
 
     /// Fallback: render paths without batching (used for overflow)
-    /// This is the original per-path upload approach, used when batch limits are exceeded
+    /// Uploads each path separately; used when batch limits are exceeded
     fn renderPathsUnbatched(
         self: *Self,
         paths: []const PathInstance,
@@ -1713,7 +1524,7 @@ pub const WebRenderer = struct {
         }
     }
 
-    /// Phase 2: Render solid-color paths with single draw call per clip region
+    /// Render solid-color paths with single draw call per clip region
     /// Transform and color are baked into vertices at upload time
     /// This is the main optimization - reduces N draw calls to 1 for solid paths sharing a clip
     fn renderSolidPathBatch(
@@ -1847,7 +1658,7 @@ pub const WebRenderer = struct {
         imports.drawIndexed(index_offset, 1, 0, 0, 0);
     }
 
-    /// Phase 2+3: Optimized batch rendering with solid/gradient partitioning
+    /// Optimized batch rendering with solid/gradient partitioning
     /// Partitions paths by gradient type, then renders:
     ///   - Solid paths: batched by clip region (1 draw call per clip)
     ///   - Gradient paths: individual draw calls (existing approach)
@@ -1871,7 +1682,7 @@ pub const WebRenderer = struct {
         std.debug.assert(paths.len <= MAX_PATHS);
 
         // =====================================================================
-        // Phase 3a: Partition paths into solid vs gradient
+        // Partition paths into solid vs gradient
         // Use existing hasGradient() method from PathInstance
         // =====================================================================
         var solid_instances: [256]PathInstance = undefined;
@@ -1895,7 +1706,7 @@ pub const WebRenderer = struct {
         std.debug.assert(solid_count + gradient_count == paths.len);
 
         // =====================================================================
-        // Phase 3b: Render solid paths (batched by clip region)
+        // Render solid paths (batched by clip region)
         // Group consecutive same-clip paths for single draw call each
         // =====================================================================
         if (solid_count > 0) {
@@ -1945,7 +1756,7 @@ pub const WebRenderer = struct {
         }
 
         // =====================================================================
-        // Phase 3c: Render gradient paths (individual draw calls)
+        // Render gradient paths (individual draw calls)
         // Uses existing renderPathBatch approach for gradient paths
         // =====================================================================
         if (gradient_count > 0) {
@@ -1954,7 +1765,7 @@ pub const WebRenderer = struct {
         }
     }
 
-    /// Phase 4: Batched gradient path rendering
+    /// Batched gradient path rendering
     /// Uploads all vertices and indices ONCE, then issues draws with offset tracking.
     /// This reduces writeBuffer calls from 4×N to 2 + 2×N (eliminating per-path vertex/index uploads).
     fn renderGradientPathsOnly(
@@ -2323,100 +2134,6 @@ pub const WebRenderer = struct {
             // Draw indexed triangles
             imports.setIndexBuffer(self.point_cloud_index_buffer, imports.IndexFormat.uint32, 0, @intCast(index_offset * @sizeOf(u32)));
             imports.drawIndexed(index_offset, 1, 0, 0, 0);
-        }
-    }
-
-    /// Render with post-processing shaders
-    fn renderWithPostProcess(
-        self: *Self,
-        prim_count: u32,
-        glyph_count: u32,
-        svg_count: u32,
-        _: f32, // viewport_width - unused, we use device pixels instead
-        _: f32, // viewport_height - unused, we use device pixels instead
-        clear_r: f32,
-        clear_g: f32,
-        clear_b: f32,
-        clear_a: f32,
-    ) void {
-        const state: *PostProcessState = blk: {
-            if (self.post_process_state) |*s| break :blk s;
-            return; // shouldn't happen if hasCustomShaders was true
-        };
-
-        // Ensure textures are the right size (use device pixels for sharp rendering)
-        const device_width = imports.getCanvasPixelWidth();
-        const device_height = imports.getCanvasPixelHeight();
-        state.ensureSize(device_width, device_height) catch return;
-
-        // Ensure MSAA texture matches post-process texture size
-        if (self.sample_count > 1) {
-            self.ensureMSAATexture(device_width, device_height);
-        }
-
-        // Update timing uniforms
-        state.updateTiming();
-        state.uploadUniforms();
-
-        // Step 1: Render scene to front texture (with MSAA if available)
-        if (self.sample_count > 1 and self.msaa_texture != 0) {
-            imports.beginMSAATextureRenderPass(self.msaa_texture, state.front_texture, clear_r, clear_g, clear_b, clear_a);
-        } else {
-            const front_view = state.getFrontTextureView();
-            imports.beginTextureRenderPass(front_view, clear_r, clear_g, clear_b, clear_a);
-        }
-
-        if (prim_count > 0) {
-            imports.setPipeline(self.pipeline);
-            imports.setBindGroup(0, self.bind_group);
-            imports.drawInstanced(6, prim_count);
-        }
-
-        if (glyph_count > 0 and self.text_bind_group != 0) {
-            imports.setPipeline(self.text_pipeline);
-            imports.setBindGroup(0, self.text_bind_group);
-            imports.drawInstanced(6, glyph_count);
-        }
-
-        if (svg_count > 0 and self.svg_bind_group != 0) {
-            imports.setPipeline(self.svg_pipeline);
-            imports.setBindGroup(0, self.svg_bind_group);
-            imports.drawInstanced(6, svg_count);
-        }
-
-        imports.endRenderPass();
-
-        // Step 2: Apply each post-process shader in sequence
-        const num_shaders = state.pipelines.items.len;
-        for (0..num_shaders) |i| {
-            const is_last = (i == num_shaders - 1);
-            const pipeline_entry = state.pipelines.items[i];
-
-            // Update bind group to use current front texture
-            state.updateBindGroup(i);
-            const bind_group = state.bind_groups.items[i];
-
-            if (is_last) {
-                // Final pass: render to screen
-                const screen_view = imports.getCurrentTextureView();
-                imports.beginRenderPass(screen_view, 0, 0, 0, 1);
-                imports.setPipeline(pipeline_entry.pipeline);
-                imports.setBindGroup(0, bind_group);
-                imports.drawInstanced(3, 1); // Fullscreen triangle
-                imports.endRenderPass();
-                imports.releaseTextureView(screen_view);
-            } else {
-                // Intermediate pass: render to back texture
-                const back_view = state.getBackTextureView();
-                imports.beginTextureRenderPass(back_view, 0, 0, 0, 1);
-                imports.setPipeline(pipeline_entry.pipeline);
-                imports.setBindGroup(0, bind_group);
-                imports.drawInstanced(3, 1); // Fullscreen triangle
-                imports.endRenderPass();
-
-                // Swap textures for next pass
-                state.swapTextures();
-            }
         }
     }
 };

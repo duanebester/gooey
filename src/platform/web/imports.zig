@@ -44,10 +44,17 @@ pub extern "env" fn getCanvasHeight() u32;
 /// cost precision on fractional browser-zoom ratios.
 pub extern "env" fn getDevicePixelRatio() f64;
 /// Get canvas actual pixel width (canvas.width, not clientWidth)
+/// Resize the canvas drawing buffer to its CSS size at the current device
+/// pixel ratio. Returns true when the size changed, which clears the canvas.
+pub extern "env" fn syncCanvasSize() bool;
 pub extern "env" fn getCanvasPixelWidth() u32;
 pub extern "env" fn getCanvasPixelHeight() u32;
 pub extern "env" fn setCanvasSize(width: u32, height: u32) void;
 pub extern "env" fn setDocumentTitle(ptr: [*]const u8, len: u32) void;
+
+/// Set the canvas's CSS cursor: `@intFromEnum(interface.CursorShape)`, in
+/// the order `default`, `text`, `pointer`.
+pub extern "env" fn setCanvasCursor(shape: u32) void;
 
 /// Position the hidden input element for IME candidate window placement
 pub extern "env" fn setImeCursorPosition(x: f32, y: f32, width: f32, height: f32) void;
@@ -61,33 +68,6 @@ pub extern "env" fn getCurrentTextureView() u32;
 
 /// Release a texture view handle
 pub extern "env" fn releaseTextureView(handle: u32) void;
-
-// =============================================================================
-// WebGPU - Post-Processing Support
-// =============================================================================
-
-/// Create a render texture (can be rendered to and sampled from)
-pub extern "env" fn createRenderTexture(width: u32, height: u32) u32;
-
-/// Create a texture view from a texture handle
-pub extern "env" fn createTextureView(texture_handle: u32) u32;
-
-/// Create a post-process render pipeline (fullscreen shader)
-pub extern "env" fn createPostProcessPipeline(shader_handle: u32) u32;
-
-/// Create a bind group for post-process shader
-pub extern "env" fn createPostProcessBindGroup(
-    pipeline_handle: u32,
-    uniform_buffer: u32,
-    texture_handle: u32,
-    sampler_handle: u32,
-) u32;
-
-/// Begin a render pass to a texture (not the screen)
-pub extern "env" fn beginTextureRenderPass(texture_view: u32, r: f32, g: f32, b: f32, a: f32) void;
-
-/// Copy the current screen to a texture for post-processing
-pub extern "env" fn copyToTexture(src_view: u32, dst_texture: u32, width: u32, height: u32) void;
 
 // =============================================================================
 // WebGPU - Shader Creation
@@ -155,15 +135,6 @@ pub extern "env" fn getFrameTime() f64;
 pub extern "env" fn getTimestampMillis() f64;
 
 // =============================================================================
-// Input Events (polled from JS)
-// =============================================================================
-
-pub extern "env" fn getMouseX() f32;
-pub extern "env" fn getMouseY() f32;
-pub extern "env" fn getMouseButtons() u32; // bitmask: 1=left, 2=right, 4=middle
-pub extern "env" fn isMouseInCanvas() bool;
-
-// =============================================================================
 // Text / Font
 // =============================================================================
 
@@ -218,11 +189,22 @@ pub extern "env" fn rasterizeGlyphSubpixel(
     out_advance: *f32,
 ) void;
 
-/// Create a texture from pixel data
-pub extern "env" fn createTexture(width: u32, height: u32, data_ptr: [*]const u8, data_len: u32) u32;
+/// Create a zero-initialized atlas texture: R8 when `bytes_per_pixel` is 1,
+/// RGBA8 when it is 4. Called once per atlas at its budget size.
+pub extern "env" fn createAtlasTexture(width: u32, height: u32, bytes_per_pixel: u32) u32;
 
-/// Update an existing texture with new pixel data
-pub extern "env" fn updateTexture(handle: u32, width: u32, height: u32, data_ptr: [*]const u8, data_len: u32) void;
+/// Write tightly packed rows of `width × bytes_per_pixel` bytes into the
+/// rectangle at `(x, y)` of an atlas texture.
+pub extern "env" fn writeAtlasRegion(
+    handle: u32,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    bytes_per_pixel: u32,
+    data_ptr: [*]const u8,
+    data_len: u32,
+) void;
 
 /// Create a sampler
 pub extern "env" fn createSampler() u32;
@@ -257,12 +239,6 @@ pub extern "env" fn rasterizeSvgPath(
     out_offset_x: *i16,
     out_offset_y: *i16,
 ) bool;
-
-/// Create an RGBA texture (for SVG atlas, unlike text atlas which is R8)
-pub extern "env" fn createRgbaTexture(width: u32, height: u32, data_ptr: [*]const u8, data_len: u32) u32;
-
-/// Update an existing RGBA texture with new pixel data
-pub extern "env" fn updateRgbaTexture(handle: u32, width: u32, height: u32, data_ptr: [*]const u8, data_len: u32) void;
 
 /// Create bind group for SVG pipeline (same layout as text but uses RGBA texture)
 pub extern "env" fn createSvgBindGroup(
@@ -325,16 +301,6 @@ pub extern "env" fn beginMSAARenderPass(
     a: f32,
 ) void;
 
-/// Begin an MSAA render pass that resolves to a texture (for post-process)
-pub extern "env" fn beginMSAATextureRenderPass(
-    msaa_texture_handle: u32,
-    resolve_texture_handle: u32,
-    r: f32,
-    g: f32,
-    b: f32,
-    a: f32,
-) void;
-
 /// Get the current MSAA sample count (4 if supported, 1 otherwise)
 pub extern "env" fn getMSAASampleCount() u32;
 
@@ -345,52 +311,13 @@ pub extern "env" fn getMSAASampleCount() u32;
 /// Write text to clipboard. Fire-and-forget from WASM side (async in JS).
 pub extern "env" fn clipboardWriteText(ptr: [*]const u8, len: u32) void;
 
-// =============================================================================
-// File Dialog (Async)
-// =============================================================================
-
-/// Request file open dialog - async, JS calls back with results.
-/// accept_ptr/len: file type filter (e.g., ".txt,.md" or "image/*")
-/// multiple: allow selecting multiple files
-/// directories: allow directory selection (Chrome only)
-pub extern "env" fn requestFileDialog(
-    request_id: u32,
-    accept_ptr: [*]const u8,
-    accept_len: u32,
-    multiple: bool,
-    directories: bool,
-) void;
-
-/// Trigger a file download (web "save" dialog).
-/// Creates a Blob and triggers download - fire-and-forget.
-pub extern "env" fn promptSaveFile(
-    name_ptr: [*]const u8,
-    name_len: u32,
-    data_ptr: [*]const u8,
-    data_len: u32,
-) void;
+/// Whether the browser runs on macOS or iOS, whose text fields take edit
+/// commands with Cmd rather than Ctrl.
+pub extern "env" fn isApplePlatform() bool;
 
 // =============================================================================
-// Image Loading (Async)
+// Images
 // =============================================================================
-
-/// Request async image decode - JS will decode using createImageBitmap
-/// and call back via onImageDecoded export when complete.
-/// request_id is used to correlate the callback with the original request.
-pub extern "env" fn requestImageDecode(
-    data_ptr: [*]const u8,
-    data_len: u32,
-    request_id: u32,
-) void;
-
-/// Request async image fetch from URL - JS will fetch and decode using fetch + createImageBitmap
-/// and call back via onImageDecoded export when complete.
-/// request_id is used to correlate the callback with the original request.
-pub extern "env" fn requestUrlFetch(
-    url_ptr: [*]const u8,
-    url_len: u32,
-    request_id: u32,
-) void;
 
 /// Create bind group for image pipeline (RGBA texture, same pattern as SVG)
 pub extern "env" fn createImageBindGroup(

@@ -318,6 +318,34 @@ test "BatchIterator - single type" {
     try std.testing.expect(iter.next() == null);
 }
 
+test "BatchIterator - a scene holding one primitive kind yields that kind" {
+    // Goal: the Metal renderer draws exactly the batches yielded here, with no
+    // empty-scene shortcut, so a paths-only (or polyline-, point-cloud-only)
+    // frame must still produce its batch. The switch is exhaustive, so a new
+    // primitive kind cannot be added without being covered.
+    inline for (comptime std.enums.values(PrimitiveKind)) |kind| {
+        var scene = try scene_mod.Scene.initCapacity(std.testing.allocator, &test_limits);
+        defer scene.deinit();
+        switch (kind) {
+            .shadow => try scene.insertShadow(scene_mod.Shadow.drop(0, 0, 10, 10, 2)),
+            .quad => try scene.insertQuad(scene_mod.Quad.filled(0, 0, 10, 10, scene_mod.Hsla.red)),
+            .glyph => try scene.insertGlyph(scene_mod.GlyphInstance.init(0, 0, 6, 12, 0, 0, 1, 1, scene_mod.Hsla.black)),
+            .svg => try scene.insertSvg(.{}),
+            .image => try scene.insertImage(.{}),
+            .path => try scene.insertPath(.{ .index_count = 3 }),
+            .polyline => try scene.insertPolyline(.{ .point_count = 2 }),
+            .point_cloud => try scene.insertPointCloud(.{ .count = 1 }),
+            .colored_point_cloud => try scene.insertColoredPointCloud(.{ .count = 1 }),
+        }
+
+        var iter = BatchIterator.init(&scene);
+        const batch = iter.next() orelse return error.TestExpectedBatch;
+        try std.testing.expectEqual(kind, std.meta.activeTag(batch));
+        try std.testing.expectEqual(@as(usize, 1), batch.len());
+        try std.testing.expect(iter.next() == null);
+    }
+}
+
 test "BatchIterator - interleaved types" {
     var scene = try scene_mod.Scene.initCapacity(std.testing.allocator, &test_limits);
     defer scene.deinit();

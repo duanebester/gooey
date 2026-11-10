@@ -1,59 +1,107 @@
-//! Pipeline Setup - Metal pipeline state creation for quads, shadows, and MSAA
+//! Pipeline Setup - Metal pipeline state creation for quads and shadows
 //!
 //! This module handles the creation and configuration of Metal render pipelines.
 
 const std = @import("std");
+const assert = std.debug.assert;
 const objc = @import("objc");
 const mtl = @import("api.zig");
 const quad_shader = @import("quad.zig");
 const shadow_shader = @import("shadow.zig");
+const limits = @import("../../../core/limits.zig");
 
-/// Create MSAA texture for multi-sample anti-aliasing
-pub fn createMSAATexture(
-    device: objc.Object,
-    width: f64,
-    height: f64,
-    scale_factor: f64,
-    sample_count: u32,
-    unified_memory: bool,
-) !objc.Object {
-    const MTLTextureDescriptor = objc.getClass("MTLTextureDescriptor") orelse
-        return error.ClassNotFound;
+/// Most frames in flight any budget may declare. Per-frame Metal buffers are
+/// declared at this size and created for the window budget's
+/// `ResourceLimits.frame.in_flight_count`. The in-flight proof is the one
+/// documented on `UnifiedPrimitiveRing`: the renderer sets the layer's
+/// `maximumDrawableCount` to that same count at init.
+pub const frame_count_max: u32 = limits.MAX_FRAMES_IN_FLIGHT;
 
-    const desc = MTLTextureDescriptor.msgSend(
-        objc.Object,
-        "texture2DDescriptorWithPixelFormat:width:height:mipmapped:",
-        .{
-            @backingInt(mtl.MTLPixelFormat.bgra8unorm),
-            @as(c_ulong, @intFromFloat(width * scale_factor)),
-            @as(c_ulong, @intFromFloat(height * scale_factor)),
-            false,
-        },
-    );
+/// Samples per pixel of every render target and pipeline. Metal draws one
+/// sample per pixel, like Vulkan: quads, glyphs, SVGs, images and points fade
+/// their edges in the fragment shader, and path triangles and polylines
+/// compute analytic edge coverage (`mesh_edges.zig`). Without an MSAA target
+/// nothing window-sized is allocated or recreated on resize (CLAUDE.md §2).
+pub const sample_count: u32 = 1;
 
-    desc.msgSend(void, "setTextureType:", .{@backingInt(mtl.MTLTextureType.type_2d_multisample)});
-    desc.msgSend(void, "setSampleCount:", .{@as(c_ulong, sample_count)});
+/// One shared buffer per frame in flight, created once in `init` and rotated
+/// with `nextIndex`. Entries past `count` are never created or read.
+pub const FrameBuffers = struct {
+    buffers: [frame_count_max]objc.Object,
+    count: u32,
 
-    const usage = mtl.MTLTextureUsage.render_target_only;
-    desc.msgSend(void, "setUsage:", .{@as(c_ulong, @bitCast(usage))});
-
-    // Use memoryless on unified memory (Apple Silicon)
-    const storage_mode: mtl.MTLStorageMode = if (unified_memory)
-        .memoryless
-    else
-        .private;
-
-    desc.msgSend(void, "setStorageMode:", .{@backingInt(storage_mode)});
-
-    const texture_ptr = device.msgSend(?*anyopaque, "newTextureWithDescriptor:", .{desc.value});
-    if (texture_ptr == null) {
-        return error.MSAATextureCreationFailed;
+    /// The buffer of frame slot `frame_index`.
+    pub fn at(self: *const FrameBuffers, frame_index: u32) objc.Object {
+        assert(self.count <= frame_count_max);
+        assert(frame_index < self.count);
+        return self.buffers[frame_index];
     }
-    return objc.Object.fromId(texture_ptr);
+
+    /// The slot after `frame_index`, wrapping at the budget's frame count.
+    pub fn nextIndex(self: *const FrameBuffers, frame_index: u32) u32 {
+        assert(self.count >= limits.MIN_FRAMES_IN_FLIGHT);
+        assert(frame_index < self.count);
+        return (frame_index + 1) % self.count;
+    }
+
+    pub fn release(self: *const FrameBuffers) void {
+        assert(self.count <= frame_count_max);
+        for (self.buffers[0..self.count]) |buffer| buffer.release();
+    }
+};
+
+/// Create one shared buffer of `size_bytes` per frame in flight. Mesh and
+/// instance pipelines call this only from `init`, with sizes derived from
+/// `ResourceLimits.scene` and `frame_count` from `ResourceLimits.frame`, and
+/// never replace the buffers. A budget the device cannot hold fails here,
+/// naming the buffer, rather than at draw time.
+pub fn createFrameBuffers(
+    device: objc.Object,
+    size_bytes: u64,
+    name: []const u8,
+    frame_count: u32,
+) !FrameBuffers {
+    assert(size_bytes > 0);
+    assert(name.len > 0);
+    assert(frame_count >= limits.MIN_FRAMES_IN_FLIGHT);
+    assert(frame_count <= frame_count_max);
+    const length_max: u64 = device.msgSend(c_ulong, "maxBufferLength", .{});
+    if (size_bytes > length_max) {
+        std.log.err(
+            "Metal buffer '{s}' needs {d} B per frame (ResourceLimits.scene), above " ++
+                "the device's maxBufferLength of {d} B.",
+            .{ name, size_bytes, length_max },
+        );
+        return error.BufferTooLarge;
+    }
+
+    var result: FrameBuffers = .{ .buffers = undefined, .count = 0 };
+    errdefer result.release();
+
+    while (result.count < frame_count) : (result.count += 1) {
+        // Fresh shared buffers are zero-filled; draws read only the prefix written
+        // in the same frame, so no stale bytes from an earlier frame are exposed.
+        const buffer_ptr = device.msgSend(?*anyopaque, "newBufferWithLength:options:", .{
+            @as(c_ulong, size_bytes),
+            @as(c_ulong, @bitCast(mtl.MTLResourceOptions.storage_shared)),
+        }) orelse return error.BufferCreationFailed;
+        result.buffers[result.count] = objc.Object.fromId(buffer_ptr);
+        assert(result.buffers[result.count].msgSend(c_ulong, "length", .{}) == size_bytes);
+    }
+    assert(result.count == frame_count);
+    return result;
+}
+
+/// CPU-visible base address of a buffer made by `createFrameBuffers`, as `[*]T`.
+pub fn frameBufferContents(comptime T: type, buffer: objc.Object) [*]T {
+    const contents = buffer.msgSend(*anyopaque, "contents", .{});
+    assert(@intFromPtr(contents) % @alignOf(T) == 0);
+    return @ptrCast(@alignCast(contents));
 }
 
 /// Setup shadow rendering pipeline
-pub fn setupShadowPipeline(device: objc.Object, sample_count: u32) !objc.Object {
+pub fn setupShadowPipeline(device: objc.Object) !objc.Object {
+    assert(device.value != null);
     const NSString = objc.getClass("NSString") orelse return error.ClassNotFound;
     const source_str = NSString.msgSend(
         objc.Object,
@@ -122,7 +170,8 @@ pub fn setupShadowPipeline(device: objc.Object, sample_count: u32) !objc.Object 
 }
 
 /// Setup quad rendering pipeline
-pub fn setupQuadPipeline(device: objc.Object, sample_count: u32) !objc.Object {
+pub fn setupQuadPipeline(device: objc.Object) !objc.Object {
+    assert(device.value != null);
     const NSString = objc.getClass("NSString") orelse return error.ClassNotFound;
     const source_str = NSString.msgSend(
         objc.Object,
@@ -212,7 +261,8 @@ fn configureBlending(attachment: objc.Object) void {
 }
 
 /// Setup unified quad+shadow rendering pipeline
-pub fn setupUnifiedPipeline(device: objc.Object, sample_count: u32) !objc.Object {
+pub fn setupUnifiedPipeline(device: objc.Object) !objc.Object {
+    assert(device.value != null);
     const unified_shader = @import("../../unified.zig");
     const NSString = objc.getClass("NSString") orelse return error.ClassNotFound;
     const source_str = NSString.msgSend(

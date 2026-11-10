@@ -1,93 +1,101 @@
-//! Gooey \u2014 top-level public surface.
+//! Gooey: the public surface (contract "Shape").
 //!
-//! Two tiers:
-//!   1. The seven flat re-exports below are the curated core. They
-//!      satisfy ~all uses across `src/examples/*.zig` and are the
-//!      only names guaranteed to live at `gooey.X`.
-//!   2. Everything else lives under a namespace
-//!      (`gooey.core.Rect`, `gooey.animation.lerp`, \u2026). A namespace is the
-//!      source-of-truth home; the curated-core flat names are
-//!      re-exports for ergonomics only.
+//! Every public name lives here, one spelling each: the app entry point
+//! (`App`), the render context (`Cx`), element constructors (`ui`), handlers
+//! (`Handler`, `Effects`), identity (`ElementId`, `Key`), retained state
+//! (`Lifetime`, `Handle`), and the resource budget (`ResourceLimits`). The
+//! `input`, `text`, and `accessibility` namespaces hold the types handlers and
+//! accessibility fields name.
 //!
-//! Earlier drafts of this layout planned a `src/prelude.zig` file plus
-//! `usingnamespace gooey.prelude;` in example headers. Zig 0.16 removed
-//! `usingnamespace`, so the prelude file collapses into this top-section
-//! comment.
+//! `internals` is the framework's own machinery (records, the window, the
+//! platform layer, the scene). Tests, the goldens, and library components
+//! reach into it; it is not part of the API and may change in any release.
 //!
 //! ## Quick start
 //!
-//! `gooey.App(...)` is the canonical entry point: it builds a type whose
-//! `main` runs natively *and* generates the WASM exports on freestanding
-//! targets, so the same source ships to desktop and web unchanged. (Reach for
-//! `gooey.run(...)` only when you want a native-only one-liner — see its doc.)
-//!
 //! ```zig
-//! const std = @import("std");
 //! const gooey = @import("gooey");
 //!
-//! pub const std_options = gooey.std_options;
+//! const State = struct { count: i32 = 0 };
 //!
-//! const AppState = struct { count: i32 = 0 };
-//! var state: AppState = .{};
-//!
-//! const App = gooey.App(AppState, &state, render, .{
+//! pub const App = gooey.App(State, render, .{
 //!     .title = "Counter",
+//!     .width = 400,
+//!     .height = 300,
+//!     .limits = .nano, // Resource and font budget; see `ResourceLimits`.
 //! });
 //!
-//! pub fn main(init: std.process.Init) !void {
-//!     try App.main(init);
-//! }
+//! pub const main = App.main;
 //!
 //! fn render(cx: *gooey.Cx) void {
-//!     cx.render(gooey.ui.vstack(.{ .gap = 16 }, .{
-//!         gooey.ui.text("Hello", .{}),
-//!     }));
+//!     cx.render(gooey.ui.text("Hello", .{}));
 //! }
 //! ```
 
 const std = @import("std");
 const builtin = @import("builtin");
 
+const core = @import("core/root.zig");
+
 // =============================================================================
-// Curated core (7)
+// Public surface
 // =============================================================================
 
-/// Native-only one-liner: run an app with the unified `Cx` context directly
-/// from `main`, without generating a wrapper type. Convenient for desktop-only
-/// programs and quick experiments, but it does **not** emit the WASM exports,
-/// so it can't ship to web. For cross-platform code prefer `App` (below),
-/// which is the canonical entry point; `run` is the native shortcut.
-pub const run = @import("app.zig").runCx;
-
-/// Canonical, cross-platform app entry point. Generates a type whose
-/// `pub fn main(init: std.process.Init)` runs the native event loop, and on
-/// freestanding (WASM) targets instead emits the browser `init`/`frame`/
-/// `resize` exports — so one `App` definition ships to both desktop and web.
-/// Application `main` bodies just forward to it: `pub fn main(init) { try
-/// App.main(init); }`. `App` is a strict superset of `run`; reach for `run`
-/// only when you explicitly want the native-only shortcut.
-pub const App = @import("app.zig").App;
+pub const App = core.App;
+pub const Config = core.Config;
+pub const Cx = core.Cx;
+pub const ui = core.ui;
+pub const Handler = core.Handler;
+pub const Effects = core.Effects;
+pub const Entity = core.Entity;
+pub const ElementId = core.ElementId;
+pub const Key = core.Key;
+pub const Lifetime = core.Lifetime;
+pub const Handle = core.Handle;
+pub const Query = core.Query;
+pub const Theme = core.Theme;
+pub const Painter = core.Painter;
+pub const PathPromptOptions = core.PathPromptOptions;
+pub const SavePromptOptions = core.SavePromptOptions;
+pub const Paths = core.Paths;
+pub const InputEngine = core.InputEngine;
+pub const AreaEngine = core.AreaEngine;
+pub const EditorEngine = core.EditorEngine;
 
 /// The application's resource budget, declared once at `App` (`.limits = ...`)
-/// and validated at comptime. Named profiles: `standard` (measured default),
-/// `large` (dense content), `ceiling` (framework maxima, for stress tests).
-pub const ResourceLimits = @import("core/limits.zig").ResourceLimits;
+/// and validated at comptime. There is no default; pick one of five rungs,
+/// smallest first: `nano` (counter-class), `small` (single-screen forms),
+/// `standard` (multi-panel apps), `large` (dense content, many icons or
+/// images), `ceiling` (framework maxima, for stress tests). To raise one budget
+/// or field without moving the whole app up a rung, pass a modified copy, for
+/// example `ResourceLimits.standard` with `atlas.image_size = 2_048`, plus
+/// `.font_limits = .standard`.
+pub const ResourceLimits = core.ResourceLimits;
 
-/// The unified rendering context handed to every `render` callback.
-/// Holds the state pointer, layout builder, animation pools, and the
-/// `cx.lists` / `cx.animations` / `cx.focus` / `cx.entities` /
-/// `cx.element_states` sub-namespaces.
-pub const Cx = @import("app.zig").Cx;
+/// The font faces every text system loads at init. `App`'s `.limits` profile
+/// name selects the `FontLimits` profile of the same name; `.font_limits = ...`
+/// overrides it. Profiles: `nano` (regular only), `small` (regular, medium,
+/// semibold, bold), `standard` and `large` (those plus italic and bold italic),
+/// `ceiling` (all 14).
+pub const FontLimits = core.FontLimits;
+pub const FontSource = core.FontSource;
 
-/// Framework-level window wrapper (was `Gooey` pre-PR 7b.1b). Holds
-/// per-window subsystems \u2014 focus, hover, animations, change tracker,
-/// element-state pool, \u2026 \u2014 and the OS-level `PlatformWindow` handle.
-pub const Window = @import("context/mod.zig").Window;
+/// A colour value (`Color.rgb(...)`); the same type as `ui.Color`.
+pub const Color = core.ui.Color;
 
-/// Literal-friendly color value used inside render fns (`Color.rgb(\u2026)`).
-/// `Rect` / `Size` / `Bounds` live under `gooey.core` since they are
-/// almost always layout return values, never typed explicitly.
-pub const Color = @import("core/mod.zig").Color;
+/// Animation helpers: easing, interpolation, and timing as module functions
+/// (contract decision 14).
+pub const animation = core.animation;
+
+/// Input events: keycodes, mouse buttons, modifiers, and keystrokes.
+pub const input = @import("input/mod.zig");
+
+/// Text measurement helpers and limits (`codepointCount`,
+/// `run_codepoint_count_max`).
+pub const text = @import("text/mod.zig");
+
+/// Accessibility roles, states, and live-region politeness for `ui.A11y`.
+pub const accessibility = @import("accessibility/mod.zig");
 
 /// Platform-aware logger. Works on native and WASM without
 /// `std_options`. Pair with the `gooey.std_options` one-liner if you
@@ -101,9 +109,8 @@ pub const log = @import("log.zig");
 
 /// Pre-configured `std.Options` that routes `std.log` through the
 /// browser console on WASM and falls back to the default `logFn` on
-/// native. **Zig contract** \u2014 looked up by name on the root source
-/// file, so this declaration must keep its exact name and stay at the
-/// top level.
+/// native. Zig looks it up by name on the root source file, so this
+/// declaration must keep its exact name and stay at the top level.
 ///
 /// ```zig
 /// pub const std_options = gooey.std_options;
@@ -113,90 +120,51 @@ pub const std_options: std.Options = if (builtin.os.tag == .freestanding)
 else
     .{};
 
-// =============================================================================
-// Namespaces
-// =============================================================================
-//
-// Each namespace below is the canonical home for the types underneath
-// it. Examples reach for `gooey.core.Rect`, `gooey.animation.lerp`, etc.
-// PR 9 removed the duplicate flat aliases
-// (`gooey.Button`, `gooey.Rect`, \u2026) that lived next to these
-// namespaces.
-
-/// Core primitives: geometry (`Point` / `Rect` / `Bounds`), color,
-/// element IDs, custom shaders.
-pub const core = @import("core/mod.zig");
-
-/// Input events: keycodes, mouse buttons, modifiers, event phases.
-pub const input = @import("input/mod.zig");
-
-/// Scene primitives for GPU rendering (`Quad`, `Shadow`, `Hsla`,
-/// `GlyphInstance`, `render_bridge`).
-pub const scene = @import("scene/mod.zig");
-
-/// Application context: focus manager, dispatch, entity system,
-/// handler types, `Window` (also re-exported in the curated core).
-pub const context = @import("context/mod.zig");
-
-/// Animation system: time-based interpolation, springs, motions,
-/// staggers, the `AnimationStore` pool composed onto `Window`.
-pub const animation = @import("animation/mod.zig");
-
-/// Clay-inspired layout engine. Layout primitives and the engine itself.
-pub const layout = @import("layout/layout.zig");
-
-/// Text rendering system with backend abstraction (`TextSystem`,
-/// `FontFace`, `TextMeasurement`).
-pub const text = @import("text/mod.zig");
-
-/// Declarative UI builder + theme + style types.
-pub const ui = @import("ui/mod.zig");
-
-/// Stateful widget engines: virtual / uniform / tree lists, data table,
-/// scroll container.
-pub const widgets = @import("widgets/mod.zig");
-
-/// Platform abstraction (macOS/Metal, Linux/Vulkan, Web/WGPU) and the
-/// `web.image_loader` async WASM image-decode shim.
-pub const platform = @import("platform/mod.zig");
-
-/// Event loop, frame rendering, multi-window app generator.
-pub const runtime = @import("runtime/mod.zig");
-
-/// Image loading and atlas caching (native async loader + WASM
-/// `platform.web.image_loader` callbacks).
-pub const image = @import("image/mod.zig");
-
-/// SVG parsing, rasterization, and atlas caching.
-pub const svg = @import("svg/mod.zig");
-
-/// Debug tools: inspector, profiler, render stats.
-pub const debug = @import("debug/mod.zig");
-
-/// Form validation utilities (pure functions).
-pub const validation = @import("validation.zig");
-
-/// Accessibility (A11Y): screen reader and assistive technology support.
-pub const accessibility = @import("accessibility/mod.zig");
-
-/// AI integration: canvas command buffer for LLM-driven drawing.
-pub const ai = @import("ai/mod.zig");
-
-/// Cross-platform file dialogs (open/save). Async on WASM via
-/// `platform.web.file_dialog`.
-pub const file_dialog = @import("file_dialog.zig");
-
-/// App entry-point types (`Cx`, `App`, `WebApp`, `CxConfig`, \u2026). The
-/// curated-core `run` / `App` / `Cx` are re-exported above; reach for
-/// the rest through this namespace.
-pub const app = @import("app.zig");
-
-/// Testing utilities and mock implementations. Only compiled when
-/// running tests, so it adds no bloat to production builds.
-pub const testing = if (builtin.is_test)
+/// Testing utilities and mock implementations. Compiled for tests and for the
+/// synthetic-text build the goldens tools use, so production builds carry none.
+pub const testing = if (builtin.is_test or text.is_synthetic)
     @import("testing/mod.zig")
 else
     struct {};
+
+// =============================================================================
+// Internals
+// =============================================================================
+
+/// The framework's own machinery, for tests, goldens, and library
+/// components. Not API: anything here may change in any release.
+pub const internals = struct {
+    // The core's modules.
+    pub const id = core.id;
+    pub const records = core.records;
+    pub const handler = core.handler;
+    pub const events = core.events;
+    pub const element = core.element;
+    pub const cx = core.cx;
+    pub const retained = core.retained;
+    pub const router = core.router;
+    pub const layers = core.layers;
+    pub const tick = core.tick;
+    pub const app = core.app;
+    pub const emit = core.emit;
+    pub const pack = core.pack;
+    pub const window = core.window;
+    pub const lifecycle = core.lifecycle;
+    pub const text_engine = core.text_engine;
+    pub const debugger = core.debugger;
+    pub const limits = @import("core/limits.zig");
+    pub const backend = @import("core/backend.zig");
+    pub const fixed_array = @import("core/fixed_array.zig");
+    pub const interface_verify = @import("core/interface_verify.zig");
+
+    // The layers beneath the core.
+    pub const geometry = @import("geometry/mod.zig");
+    pub const scene = @import("scene/mod.zig");
+    pub const layout = @import("layout/layout.zig");
+    pub const platform = @import("platform/mod.zig");
+    pub const image = @import("image/mod.zig");
+    pub const svg = @import("svg/mod.zig");
+};
 
 // =============================================================================
 // Internal helpers
@@ -234,61 +202,26 @@ fn wasmLogFn(
 
 test {
     std.testing.refAllDecls(@This());
-    // PR 9 — the previous root.zig had ~120 flat aliases of the form
-    // `pub const Foo = ns.Foo`. `refAllDecls(@This())` referenced each
-    // one, which forced *struct-level* analysis of the underlying
-    // type and pulled in any `test {}` blocks living inside that
-    // struct's body. After the slim, the curated 7 + namespace exports
-    // reach mod.zig files (which have their own `refAllDecls`), but
-    // type-level analysis of every leaf struct is now lazy. Most leaf
-    // structs' tests are still discovered via their own file's
-    // top-level `test {}` blocks; a handful of files keep their tests
-    // *inside* struct bodies and need an explicit comptime touch here
-    // to stay in the discovery set. The list mirrors the demotion
-    // ledger — if any of these later move into a mod.zig with its own
-    // `refAllDecls`, drop the corresponding line here.
+    std.testing.refAllDecls(core);
+    std.testing.refAllDecls(internals);
+    // `refAllDecls` reaches only the public names and the namespace
+    // exports. Those reach mod.zig files (which have their own
+    // `refAllDecls`), but type-level analysis of every leaf struct is
+    // lazy, so `test {}` blocks inside a leaf struct's body are not
+    // discovered on their own. Most leaf structs' tests are discovered
+    // via their own file's top-level `test {}` blocks; a handful of files
+    // keep their tests *inside* struct bodies and need an explicit
+    // comptime touch here to stay in the discovery set. If any of these
+    // move into a mod.zig with its own `refAllDecls`, drop the
+    // corresponding line here.
     comptime {
-        // Borrow the top-level namespace aliases without shadowing them.
-        const anim = animation;
-        const wid = widgets;
-        const u = ui;
-        const lay = layout;
-        const plat = platform;
+        // Borrow the namespace aliases without shadowing them.
+        const lay = internals.layout;
+        const plat = internals.platform;
         const txt = text;
-        const ctx = context;
-        const sc = scene;
+        const sc = internals.scene;
         const inp = input;
-        const img = image;
-        const rt = runtime;
-        const co = core;
-
-        // Animation leaves (these were `spring_mod` / `stagger_mod` /
-        // `motion_mod` flat aliases pre-PR-9).
-        _ = anim.SpringConfig;
-        _ = anim.SpringHandle;
-        _ = anim.StaggerConfig;
-        _ = anim.StaggerDirection;
-        _ = anim.MotionConfig;
-        _ = anim.MotionHandle;
-        _ = anim.MotionPhase;
-        _ = anim.SpringMotionConfig;
-        _ = anim.Animation;
-        _ = anim.AnimationHandle;
-        _ = anim.AnimationStore;
-        _ = anim.Easing;
-        _ = anim.Duration;
-
-        // Widgets.
-        _ = wid.UniformListState;
-        _ = wid.VirtualListState;
-        _ = wid.DataTableState;
-        _ = wid.TreeListState;
-
-        // UI styles.
-        _ = u.Builder;
-        _ = u.Theme;
-        _ = u.Box;
-        _ = u.StackStyle;
+        const img = internals.image;
 
         // Layout.
         _ = lay.LayoutEngine;
@@ -298,17 +231,8 @@ test {
         // Platform / runtime / text.
         _ = plat.Platform;
         _ = plat.PlatformWindow;
-        _ = rt.WindowHandle;
-        _ = rt.MultiWindowApp;
         _ = txt.TextSystem;
         _ = txt.FontFace;
-
-        // Context.
-        _ = ctx.Entity;
-        _ = ctx.HandlerRef;
-        _ = ctx.OnSelectHandler;
-        _ = ctx.FocusManager;
-        _ = ctx.FontConfig;
 
         // Scene / input / image / core leaves.
         _ = sc.Scene;
@@ -317,44 +241,27 @@ test {
         _ = inp.InputEvent;
         _ = inp.KeyEvent;
         _ = img.ImageAtlas;
-        _ = co.CustomShader;
     }
-    // Leaf files with file-level `test {}` blocks that previously
-    // depended on a flat alias in root.zig for analysis-discovery.
-    // PR 9 removed those aliases, so we anchor the leaves here to
-    // keep the test count stable. `inline for` lets us list paths in
+    // Leaf files with file-level `test {}` blocks that no namespace
+    // export makes reachable, so we anchor the leaves here to keep
+    // them in the test binary. `inline for` lets us list paths in
     // bulk; `std.testing.refAllDecls(@This())` only touches a file's
     // top-level decls, but the file's own `test {}` blocks become
     // part of the test binary once the file is reachable, which the
     // `@import` call below guarantees.
     inline for (.{
-        // Animation leaves — ex-flat-aliased `spring_mod` / `stagger_mod` /
-        // `motion_mod`.
-        @import("animation/spring.zig"),
-        @import("animation/stagger.zig"),
-        @import("animation/motion.zig"),
-        @import("animation/animation.zig"),
-        @import("animation/store.zig"),
-
-        // Widget engines — ex-flat-aliased through `cx.zig`'s direct
-        // file imports.
-        @import("widgets/data_table.zig"),
-        @import("widgets/tree_list.zig"),
-        @import("widgets/uniform_list.zig"),
-        @import("widgets/virtual_list.zig"),
-        @import("widgets/code_editor_state.zig"),
-        @import("widgets/text_input_state.zig"),
-        @import("widgets/text_area_state.zig"),
-        @import("widgets/scroll_container.zig"),
-        @import("widgets/edit_history.zig"),
-        @import("widgets/text_common.zig"),
-
-        // Platform-independent web input buffer logic.
-        @import("platform/web/composition_buffer.zig"),
-
         // Vulkan instance-buffer budget math. Pure Zig (no Vulkan headers), so
         // its capacity tests run on every OS, not only where the renderer builds.
         @import("platform/linux/vk_types.zig"),
+        // Path edge classification for the Vulkan and Metal mesh shaders'
+        // analytic anti-aliasing. Pure Zig, tested on every OS.
+        @import("platform/mesh_edges.zig"),
+
+        // Platform-independent CPU rasterizer used by the Wayland shm and
+        // fbdev backends. Tested on every host, not only CPU-backend builds.
+        @import("platform/cpu/raster.zig"),
+        @import("platform/cpu/mesh.zig"),
+        @import("platform/cpu/renderer.zig"),
 
         // Scene leaves — path/polyline/svg test-heavy files.
         @import("scene/path.zig"),
@@ -382,53 +289,35 @@ test {
         @import("image/atlas.zig"),
         @import("image/loader.zig"),
 
-        // Context / accessibility / AI leaves.
-        @import("context/element_states.zig"),
-        @import("context/global.zig"),
-        @import("context/dispatch.zig"),
-        @import("context/change_tracker.zig"),
-        @import("context/handler.zig"),
-        @import("context/entity.zig"),
+        // Accessibility leaves.
         @import("accessibility/integration_test.zig"),
         @import("accessibility/tree.zig"),
-        @import("ai/json_parser.zig"),
-        @import("ai/theme_color.zig"),
-        @import("ai/ai_canvas.zig"),
 
-        // UI / core leaves.
-        @import("ui/primitives.zig"),
-        @import("core/triangulator.zig"),
-        @import("validation.zig"),
+        // Geometry leaves.
+        @import("geometry/triangulator.zig"),
 
-        // PR 11a — Tier-1 public-API pin list. Lives in the
+        // Tier-1 public-API pin list. Lives in the
         // test-only discovery set (not on the public `gooey.*`
         // surface) so it can't accidentally become a name it is
         // itself meant to guard. The single `test "tier 1 public
         // API surface compiles"` block inside this file runs
         // every Tier-1 reference at comptime and fails the build
-        // with a precise line on accidental rename/deletion. See
-        // `docs/cleanup-implementation-plan.md` PR 11 and
-        // `docs/architectural-cleanup-plan.md` §8.
+        // with a precise line on accidental rename/deletion.
         @import("api_check.zig"),
     }) |leaf| {
         std.testing.refAllDecls(leaf);
     }
-}
-
-test {
-    // Method *bodies* on `Cx` and `Window`, which the block above cannot
-    // reach. `refAllDecls(@This())` references the `Cx` / `Window` aliases,
-    // which forces struct-level analysis only: field types and decl
-    // signatures. A `pub fn` body is analyzed lazily, on first call. Neither
-    // type has in-tree callers for every method, so several bodies had never
-    // been compiled on any target — `Cx.setTitle` referenced a field renamed
-    // two refactors earlier and `Window.setAccentColor` reached a
-    // macOS-only renderer member. Both were found by inspection, not by CI.
-    //
-    // `refAllDecls` takes a pointer to each decl, so naming these two types
-    // explicitly makes every method body a hard compile error at test time,
-    // on every target the test root is built for — including the
-    // `typecheck-linux` step's Linux analysis.
-    std.testing.refAllDecls(Cx);
-    std.testing.refAllDecls(Window);
+    // The macOS host's NSTextInputClient tests need AppKit, so only a macOS
+    // test binary reaches them.
+    if (comptime builtin.os.tag == .macos) _ = @import("platform/macos/input_view.zig");
+    // The fbdev backend is only selected by `-Dlinux-backend=fbdev`, but its
+    // pixel conversion, evdev translation, and clipboard logic are pure and
+    // must stay tested in the default Linux test run.
+    if (builtin.os.tag == .linux) {
+        std.testing.refAllDecls(@import("platform/fbdev/framebuffer.zig"));
+        std.testing.refAllDecls(@import("platform/fbdev/evdev.zig"));
+        std.testing.refAllDecls(@import("platform/fbdev/clipboard.zig"));
+        // Only the reservation-limit test: the rest of the file calls Vulkan.
+        _ = @import("platform/linux/vk_buffers.zig");
+    }
 }

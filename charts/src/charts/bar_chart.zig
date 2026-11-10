@@ -8,8 +8,7 @@
 //! This avoids embedding ~300KB of data on the stack (per CLAUDE.md).
 
 const std = @import("std");
-const builtin = @import("builtin");
-const gooey = @import("gooey");
+const paint = @import("../paint.zig");
 const constants = @import("../constants.zig");
 const types = @import("../types.zig");
 const util = @import("../util.zig");
@@ -28,13 +27,11 @@ const CategorySeries = types.CategorySeries;
 const CategoryPoint = types.CategoryPoint;
 const ChartTheme = theme_mod.ChartTheme;
 
-pub const Color = gooey.ui.Color;
-pub const DrawContext = gooey.ui.DrawContext;
+pub const Color = paint.Color;
+pub const Painter = paint.Painter;
 
 const MAX_SERIES = constants.MAX_SERIES;
 const MAX_CATEGORIES = constants.MAX_CATEGORIES;
-const ENABLE_PERF_LOGGING = constants.ENABLE_PERF_LOGGING;
-const PERF_WARNING_THRESHOLD_NS = constants.PERF_WARNING_THRESHOLD_NS;
 
 // =============================================================================
 // Default Color Palette (imported from theme.zig - single source of truth)
@@ -144,28 +141,15 @@ pub const BarChart = struct {
     // Rendering
     // ==========================================================================
 
-    /// Render the bar chart to a DrawContext.
-    pub fn render(self: *const BarChart, ctx: *DrawContext) void {
-        // Performance timing (Phase 4 optimization)
-        const start_time = if (ENABLE_PERF_LOGGING) std.time.nanoTimestamp() else 0;
-        defer if (ENABLE_PERF_LOGGING) {
-            const elapsed = std.time.nanoTimestamp() - start_time;
-            if (elapsed > PERF_WARNING_THRESHOLD_NS) {
-                if (builtin.mode == .debug) {
-                    std.log.warn("BarChart render: {d:.2}ms exceeds 8ms budget", .{
-                        @as(f64, @floatFromInt(elapsed)) / 1_000_000.0,
-                    });
-                }
-            }
-        };
-
+    /// Render the bar chart, offset by the paint element's bounds.
+    pub fn render(self: *const BarChart, painter: *Painter) void {
         // Assertions at API boundary
         std.debug.assert(self.data.len > 0);
         std.debug.assert(self.width > 0 and self.height > 0);
 
         // Calculate inner bounds
-        const inner_x = self.margin_left;
-        const inner_y = self.margin_top;
+        const inner_x = painter.bounds.x + self.margin_left;
+        const inner_y = painter.bounds.y + self.margin_top;
         const inner_width = self.width - self.margin_left - self.margin_right;
         const inner_height = self.height - self.margin_top - self.margin_bottom;
 
@@ -201,33 +185,21 @@ pub const BarChart = struct {
 
         // Draw grid (behind bars)
         if (self.show_grid) {
-            self.drawGrid(ctx, x_scale, y_scale, inner_x, inner_y, inner_width, inner_height);
+            self.drawGrid(painter, x_scale, y_scale, inner_x, inner_y, inner_width, inner_height);
         }
 
         // Draw bars
-        self.drawBars(ctx, x_scale, y_scale, inner_y + inner_height);
+        self.drawBars(painter, x_scale, y_scale, inner_y + inner_height);
 
-        // Draw axes (on top)
+        // Axes on top.
         if (self.show_x_axis) {
-            var x_opts = self.x_axis_opts;
-            x_opts.orientation = .bottom;
-            // Apply theme colors if available
-            if (self.chart_theme) |t| {
-                x_opts.color = t.axis_color;
-                x_opts.label_color = t.tick_color;
-            }
-            Axis.drawBand(ctx, x_scale, inner_x, inner_y + inner_height, x_opts);
+            const x_opts = Axis.themed(self.x_axis_opts, .bottom, self.chart_theme);
+            Axis.drawBand(painter, x_scale, inner_x, inner_y + inner_height, x_opts);
         }
 
         if (self.show_y_axis) {
-            var y_opts = self.y_axis_opts;
-            y_opts.orientation = .left;
-            // Apply theme colors if available
-            if (self.chart_theme) |t| {
-                y_opts.color = t.axis_color;
-                y_opts.label_color = t.tick_color;
-            }
-            Axis.drawLinear(ctx, y_scale, inner_x, inner_y, y_opts);
+            const y_opts = Axis.themed(self.y_axis_opts, .left, self.chart_theme);
+            Axis.drawLinear(painter, y_scale, inner_x, inner_y, y_opts);
         }
     }
 
@@ -251,7 +223,7 @@ pub const BarChart = struct {
     /// Draw grid lines.
     fn drawGrid(
         self: *const BarChart,
-        ctx: *DrawContext,
+        painter: *Painter,
         x_scale: BandScale,
         y_scale: LinearScale,
         x: f32,
@@ -268,7 +240,7 @@ pub const BarChart = struct {
         }
 
         Grid.drawMixed(
-            ctx,
+            painter,
             BandScale.init(&[_][]const u8{""}, x, x + width), // Dummy band scale
             y_scale,
             .{ .x = x, .y = y, .width = width, .height = height },
@@ -280,7 +252,7 @@ pub const BarChart = struct {
     /// Draw all bars.
     fn drawBars(
         self: *const BarChart,
-        ctx: *DrawContext,
+        painter: *Painter,
         x_scale: BandScale,
         y_scale: LinearScale,
         baseline: f32,
@@ -304,7 +276,10 @@ pub const BarChart = struct {
                 const point = &series.data[cat_idx];
                 // Color priority: point color > series color > theme palette
                 const color = point.color orelse series.color orelse
-                    (if (self.chart_theme) |t| t.paletteColor(series_idx) else default_palette[series_idx % 12]);
+                    (if (self.chart_theme) |t|
+                        t.paletteColor(series_idx)
+                    else
+                        default_palette[series_idx % 12]);
 
                 // Calculate bar position
                 const bar_x = if (self.data.len > 1)
@@ -318,18 +293,12 @@ pub const BarChart = struct {
 
                 // Draw the bar
                 if (bar_height > 0) {
-                    if (self.corner_radius > 0) {
-                        ctx.fillRoundedRect(
-                            bar_x,
-                            y_pos,
-                            bar_width,
-                            bar_height,
-                            self.corner_radius,
-                            color,
-                        );
-                    } else {
-                        ctx.fillRect(bar_x, y_pos, bar_width, bar_height, color);
-                    }
+                    paint.rect(painter, .{
+                        .x = bar_x,
+                        .y = y_pos,
+                        .width = bar_width,
+                        .height = bar_height,
+                    }, self.corner_radius, color);
                 }
             }
         }

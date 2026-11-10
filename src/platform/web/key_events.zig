@@ -115,7 +115,7 @@ const KeyEvent = input.KeyEvent;
 const KeyCode = input.KeyCode;
 
 /// Convert raw key event to InputEvent
-fn toInputEvent(raw: RawKeyEvent) InputEvent {
+pub fn toInputEvent(raw: RawKeyEvent) InputEvent {
     const key_event = KeyEvent{
         .key = KeyCode.from(raw.key_code),
         .modifiers = raw.modifiers.toInput(),
@@ -128,18 +128,4 @@ fn toInputEvent(raw: RawKeyEvent) InputEvent {
         .key_down => .{ .key_down = key_event },
         .key_up => .{ .key_up = key_event },
     };
-}
-
-/// Process all pending key events
-/// Returns number of events processed
-pub fn processEvents(handler: *const fn (InputEvent) bool) u32 {
-    var processed: u32 = 0;
-
-    while (@as(*volatile KeyEventRing, &g_key_ring).pop()) |raw| {
-        const event = toInputEvent(raw);
-        _ = handler(event);
-        processed += 1;
-    }
-
-    return processed;
 }

@@ -6,7 +6,7 @@
 //! No JS↔WASM calls needed during frame processing.
 
 const input = @import("../../input/events.zig");
-const geometry = @import("../../core/geometry.zig");
+const geometry = @import("../../geometry/geometry.zig");
 
 /// Packed scroll event - exactly 24 bytes
 /// Layout matches JavaScript writer:
@@ -71,7 +71,7 @@ comptime {
 const InputEvent = input.InputEvent;
 
 /// Convert raw scroll event to InputEvent
-fn toInputEvent(raw: RawScrollEvent) InputEvent {
+pub fn toInputEvent(raw: RawScrollEvent) InputEvent {
     return .{
         .scroll = .{
             .position = .{ .x = raw.position_x, .y = raw.position_y },
@@ -79,17 +79,4 @@ fn toInputEvent(raw: RawScrollEvent) InputEvent {
             .modifiers = .{},
         },
     };
-}
-
-/// Process all pending scroll events
-pub fn processEvents(handler: *const fn (InputEvent) bool) u32 {
-    var processed: u32 = 0;
-
-    while (@as(*volatile ScrollEventRing, &g_scroll_ring).pop()) |raw| {
-        const event = toInputEvent(raw);
-        _ = handler(event);
-        processed += 1;
-    }
-
-    return processed;
 }

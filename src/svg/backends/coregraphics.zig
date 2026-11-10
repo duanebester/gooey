@@ -88,6 +88,8 @@ pub const RasterizedSvg = struct {
 
 pub const RasterizeError = error{
     EmptyPath,
+    /// The path exceeds `RasterBudget.path_bytes_max` or its parse reservation.
+    PathTooComplex,
     GraphicsError,
     BufferTooSmall,
     OutOfMemory,
@@ -99,6 +101,22 @@ pub const StrokeOptions = struct {
     width: f32 = 1.0,
 };
 
+pub const RasterBudget = svg_mod.RasterBudget;
+
+/// Alignment padding before the parse reservations (1 and 4 byte aligned).
+const scratch_alignment_slack_bytes: u32 = 2 * 3;
+
+/// Bytes one rasterization allocates: the parsed path and the stroke buffer
+/// used when fill and stroke combine. CoreGraphics flattens curves itself, so
+/// `vertex_count_max` does not apply here.
+pub fn scratchBytes(budget: RasterBudget, device_size_max: u32) u32 {
+    std.debug.assert(device_size_max > 0);
+    std.debug.assert(budget.path_bytes_max > 0);
+    const stroke_buffer_bytes = device_size_max * device_size_max * 4;
+    return RasterBudget.parseBytes(budget.path_bytes_max) + stroke_buffer_bytes +
+        scratch_alignment_slack_bytes;
+}
+
 /// Rasterize SVG path data to RGBA buffer
 pub fn rasterize(
     allocator: std.mem.Allocator,
@@ -107,7 +125,16 @@ pub fn rasterize(
     device_size: u32,
     buffer: []u8,
 ) RasterizeError!RasterizedSvg {
-    return rasterizeWithOptions(allocator, path_data, viewbox, device_size, buffer, true, .{});
+    return rasterizeWithOptions(
+        allocator,
+        path_data,
+        viewbox,
+        device_size,
+        buffer,
+        true,
+        .{},
+        RasterBudget.ceiling,
+    );
 }
 
 /// Build a CGPath directly from parsed SVG commands - preserves beziers for native CG rendering
@@ -511,8 +538,10 @@ pub fn rasterizeWithOptions(
     buffer: []u8,
     fill: bool,
     stroke: StrokeOptions,
+    budget: RasterBudget,
 ) RasterizeError!RasterizedSvg {
     if (path_data.len == 0) return error.EmptyPath;
+    if (path_data.len > budget.path_bytes_max) return error.PathTooComplex;
 
     const pixel_count = device_size * device_size;
     const required_size = pixel_count * 4;
@@ -522,13 +551,9 @@ pub fn rasterizeWithOptions(
     @memset(buffer[0..required_size], 0);
 
     // Parse SVG path (supports both raw path data and SVG elements like circle, rect, etc.)
-    var parser = svg_mod.SvgElementParser.init(allocator);
     var path = svg_mod.SvgPath.init(allocator);
     defer path.deinit();
-
-    parser.parse(&path, path_data) catch return error.EmptyPath;
-
-    if (path.commands.items.len == 0) return error.EmptyPath;
+    try svg_mod.parseBounded(allocator, &path, path_data);
 
     // Create color space once
     const color_space = cg.CGColorSpaceCreateDeviceRGB();

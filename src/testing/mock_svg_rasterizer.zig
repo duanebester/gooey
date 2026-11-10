@@ -52,6 +52,15 @@ pub const StrokeOptions = struct {
     color: ?[4]u8 = null, // RGBA, null = use path's stroke color
 };
 
+pub const RasterBudget = @import("../svg/path.zig").RasterBudget;
+
+/// The mock allocates nothing, so it needs no scratch.
+pub fn scratchBytes(budget: RasterBudget, device_size_max: u32) u32 {
+    _ = budget;
+    _ = device_size_max;
+    return 0;
+}
+
 // =============================================================================
 // Mock Implementation
 // =============================================================================

@@ -1,7 +1,6 @@
 //! Tests for engine internal data structures and low-level helpers.
 //!
 //! Covers:
-//!   - `SourceLoc` source-location capture
 //!   - `FixedCapacityArray` fixed-capacity collection
 //!   - `open_element_stack` / `floating_roots` fixed-capacity invariants
 //!   - UTF-8 text wrapping
@@ -25,7 +24,6 @@ const LayoutEngine = engine_mod.LayoutEngine;
 const ElementDeclaration = engine_mod.ElementDeclaration;
 const FixedCapacityArray = engine_mod.FixedCapacityArray;
 const WordInfo = engine_mod.WordInfo;
-const SourceLoc = engine_mod.SourceLoc;
 const TextMeasurement = engine_mod.TextMeasurement;
 const MAX_ELEMENTS_PER_FRAME = engine_mod.MAX_ELEMENTS_PER_FRAME;
 const MAX_OPEN_DEPTH = engine_mod.MAX_OPEN_DEPTH;
@@ -46,82 +44,7 @@ const TextConfig = types.TextConfig;
 const Offset2D = types.Offset2D;
 
 // =============================================================================
-// SourceLoc Tests (Phase 5)
-// =============================================================================
-
-test "SourceLoc.none is invalid" {
-    const loc = SourceLoc.none;
-    try std.testing.expect(!loc.isValid());
-    try std.testing.expectEqual(@as(?[*:0]const u8, null), loc.file);
-    try std.testing.expectEqual(@as(u32, 0), loc.line);
-}
-
-test "SourceLoc.from captures builtin source location" {
-    const src = @src();
-    const loc = SourceLoc.from(src);
-
-    try std.testing.expect(loc.isValid());
-    try std.testing.expect(loc.line > 0);
-    try std.testing.expect(loc.file != null);
-}
-
-test "SourceLoc.getFile returns file name" {
-    const src = @src();
-    const loc = SourceLoc.from(src);
-
-    const file = loc.getFile();
-    try std.testing.expect(file != null);
-    try std.testing.expect(file.?.len > 0);
-}
-
-test "SourceLoc.getBasename extracts filename" {
-    const src = @src();
-    const loc = SourceLoc.from(src);
-
-    const basename = loc.getBasename();
-    try std.testing.expect(basename != null);
-    // The basename should be this test file itself.
-    try std.testing.expectEqualStrings("engine_internal_tests.zig", basename.?);
-}
-
-test "SourceLoc stored in ElementDeclaration" {
-    const src = @src();
-    const loc = SourceLoc.from(src);
-
-    const decl = ElementDeclaration{
-        .source_location = loc,
-    };
-
-    try std.testing.expect(decl.source_location.isValid());
-    try std.testing.expectEqual(loc.line, decl.source_location.line);
-}
-
-test "SourceLoc propagates through createElement" {
-    var engine = LayoutEngine.init(std.testing.allocator);
-    defer engine.deinit();
-
-    engine.beginFrame(800, 600);
-
-    const src = @src();
-    const loc = SourceLoc.from(src);
-
-    try engine.openElement(.{
-        .id = LayoutId.init("test-element"),
-        .layout = .{ .sizing = Sizing.fixed(100, 100) },
-        .source_location = loc,
-    });
-    engine.closeElement();
-
-    _ = try engine.endFrame();
-
-    // Verify the element stored the source location
-    const elem = engine.elements.getConst(0);
-    try std.testing.expect(elem.config.source_location.isValid());
-    try std.testing.expectEqual(loc.line, elem.config.source_location.line);
-}
-
-// =============================================================================
-// Phase 1 Tests: Fixed Capacity Arrays, UTF-8, Capacity Limits
+// Fixed Capacity Arrays, UTF-8, Capacity Limits
 // =============================================================================
 
 test "FixedCapacityArray basic operations" {
@@ -169,7 +92,7 @@ test "FixedCapacityArray pop on empty returns null" {
 }
 
 test "open_element_stack uses fixed capacity" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.beginFrame(800, 600);
@@ -193,7 +116,7 @@ test "open_element_stack uses fixed capacity" {
 }
 
 test "floating_roots uses fixed capacity" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.beginFrame(800, 600);
@@ -242,7 +165,7 @@ test "floating_roots uses fixed capacity" {
 }
 
 test "UTF-8 text wrapping handles multi-byte characters" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     // Mock text measurement: each codepoint is 10px wide
@@ -293,7 +216,7 @@ test "UTF-8 text wrapping handles multi-byte characters" {
 }
 
 test "UTF-8 text wrapping with emoji" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     const mockMeasure = struct {
@@ -349,7 +272,7 @@ test "capacity constants are reasonable" {
 }
 
 test "id_to_index is pre-allocated" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     // After init, hashmaps should have capacity (pre-allocated)
@@ -398,7 +321,7 @@ test "id_to_index is pre-allocated" {
 }
 
 test "beginFrame clears fixed capacity arrays" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     // First frame
@@ -420,7 +343,7 @@ test "beginFrame clears fixed capacity arrays" {
 }
 
 // ============================================================================
-// Phase 2 Tests: Performance Improvements
+// Word Measurement and Floating Elements
 // ============================================================================
 
 test "word-level measurement measures words not characters" {
@@ -481,7 +404,7 @@ test "word-level measurement handles newlines" {
 }
 
 test "floating element resolved_floating_parent is cached at creation" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.beginFrame(800, 600);
@@ -521,7 +444,7 @@ test "floating element resolved_floating_parent is cached at creation" {
 }
 
 test "floating expand.width makes element match parent width" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.beginFrame(800, 600);
@@ -555,7 +478,7 @@ test "floating expand.width makes element match parent width" {
 }
 
 test "floating expand.height makes element match parent height" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.beginFrame(800, 600);
@@ -589,7 +512,7 @@ test "floating expand.height makes element match parent height" {
 }
 
 test "floating expand both dimensions" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.beginFrame(800, 600);
@@ -624,7 +547,7 @@ test "floating expand both dimensions" {
 }
 
 // ============================================================================
-// Phase 3 Tests: Code Quality
+// Shared Types and Size Distribution
 // ============================================================================
 
 test "Offset2D shared type works in FloatingConfig" {
@@ -677,7 +600,7 @@ test "MAX_WORDS_PER_TEXT constant is reasonable" {
 }
 
 test "distributeGrow gives equal space to grow elements" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.beginFrame(300, 100);
@@ -722,7 +645,7 @@ test "distributeGrow gives equal space to grow elements" {
 }
 
 test "distributeShrink respects minimum constraints" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.beginFrame(100, 100); // Very small viewport
@@ -771,7 +694,7 @@ test "distributeShrink respects minimum constraints" {
 // =============================================================================
 
 test "fast path: single grow child gets full available space" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.beginFrame(400, 300);
@@ -801,7 +724,7 @@ test "fast path: single grow child gets full available space" {
 }
 
 test "fast path: all floating children falls back to slow path" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.beginFrame(400, 300);
@@ -844,7 +767,7 @@ test "fast path: all floating children falls back to slow path" {
 }
 
 test "fast path: mixed sizing children falls back to slow path" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.beginFrame(400, 100);
@@ -901,7 +824,7 @@ test "fast path: mixed sizing children falls back to slow path" {
 }
 
 test "fast path: grow with min constraint falls back to slow path" {
-    var engine = LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.beginFrame(300, 100);

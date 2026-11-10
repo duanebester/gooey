@@ -129,12 +129,17 @@ void main() {
     if (p.primitive_type == PRIM_QUAD) {
         vec2 origin = vec2(p.bounds_origin_x, p.bounds_origin_y);
         vec2 size = vec2(p.bounds_size_width, p.bounds_size_height);
-        vec2 pos = origin + unit * size;
+        // The fragment shader fades across [-0.5, +0.5] px of the edge. With one
+        // sample per pixel the geometry must cover the outer half too, so grow
+        // the quad by one logical pixel; empty quads stay empty.
+        float fringe = (size.x > 0.0 && size.y > 0.0) ? 1.0 : 0.0;
+        vec2 pos = origin - fringe + unit * (size + 2.0 * fringe);
         // Vulkan NDC is Y-down like scene pixels (unlike Metal/WebGPU), so no flip.
         vec2 ndc = pos / viewport_size * 2.0 - 1.0;
 
         gl_Position = vec4(ndc, 0.0, 1.0);
-        out_quad_coord = unit;
+        // Quad-local position in pixels; outside [0, size] within the fringe.
+        out_quad_coord = pos - origin;
         out_quad_size = size;
         out_screen_pos = pos;
         out_content_size = size;

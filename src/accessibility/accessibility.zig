@@ -57,10 +57,13 @@ pub const tree = @import("tree.zig");
 pub const bridge = @import("bridge.zig");
 pub const debug = @import("debug.zig");
 
-// Platform bridges (Phase 2+)
+// Platform bridges
 pub const mac_bridge = if (builtin.os.tag == .macos) @import("mac_bridge.zig") else struct {};
-pub const linux_bridge = if (builtin.os.tag == .linux) @import("linux_bridge.zig") else struct {};
 pub const web_bridge = if (builtin.os.tag == .freestanding) @import("web_bridge.zig") else struct {};
+pub const windows_bridge = if (builtin.os.tag == .windows)
+    @import("windows_bridge.zig")
+else
+    struct {};
 
 // Re-export commonly used types at top level
 pub const Role = types.Role;
@@ -82,10 +85,10 @@ pub const TestBridge = bridge.TestBridge;
 
 // Platform-specific bridge types
 pub const MacBridge = if (builtin.os.tag == .macos) mac_bridge.MacBridge else void;
-pub const LinuxBridge = if (builtin.os.tag == .linux) linux_bridge.LinuxBridge else void;
 pub const WebBridge = if (builtin.os.tag == .freestanding) web_bridge.WebBridge else void;
+pub const WindowsBridge = if (builtin.os.tag == .windows) windows_bridge.WindowsBridge else void;
 
-// Integration tests (Phase 1)
+// Integration tests
 const integration_test = @import("integration_test.zig");
 
 // Constants re-exported for convenience
@@ -97,17 +100,20 @@ pub const MAX_ANNOUNCEMENTS = constants.MAX_ANNOUNCEMENTS;
 /// Use `createPlatformBridge()` to initialize the appropriate bridge.
 pub const PlatformBridge = union(enum) {
     mac: if (builtin.os.tag == .macos) MacBridge else void,
-    linux: if (builtin.os.tag == .linux) LinuxBridge else void,
     web: if (builtin.os.tag == .freestanding) WebBridge else void,
+    windows: if (builtin.os.tag == .windows) WindowsBridge else void,
     null_bridge: void,
 };
 
 /// Create the appropriate platform bridge for the current OS.
 /// On macOS: Creates MacBridge with VoiceOver support
-/// On other platforms: Creates NullBridge (no-op)
+/// On Windows: Creates WindowsBridge with UI Automation support
+/// On other platforms, Linux included, creates NullBridge (no-op): Linux
+/// AT-SPI is shelved past 0.4.0 (contract decision 12).
 ///
 /// Parameters:
-///   window: Platform window object (objc.Object on macOS, ignored on others)
+///   window: Platform window object (objc.Object on macOS, the window's
+///     `uia.Host` on Windows, ignored on others)
 ///   view: Platform view object for coordinate conversion (objc.Object on macOS, ignored on others)
 ///
 /// Returns a Bridge interface that can be used platform-agnostically.
@@ -120,9 +126,9 @@ pub noinline fn createPlatformBridge(
     if (builtin.os.tag == .macos) {
         platform_bridge.* = .{ .mac = MacBridge.init(window, view) };
         return platform_bridge.mac.bridge();
-    } else if (builtin.os.tag == .linux) {
-        platform_bridge.* = .{ .linux = LinuxBridge.init() };
-        return platform_bridge.linux.bridge();
+    } else if (builtin.os.tag == .windows) {
+        platform_bridge.* = .{ .windows = WindowsBridge.init(window) };
+        return platform_bridge.windows.bridge();
     } else if (builtin.os.tag == .freestanding) {
         // Web/WASM: field-by-field init avoids ~26KB stack temp from struct literal
         platform_bridge.* = .{ .web = undefined };

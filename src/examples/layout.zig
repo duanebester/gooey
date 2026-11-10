@@ -1,126 +1,142 @@
-//! Layout System Demo - Minimal Floating Example
+//! Layout: a header with a floating dropdown menu over a content card, on
+//! the core.
 //!
-//! Simplified to debug floating dropdown behavior
+//! The menu is a `.popover` layer anchored 4 px below its trigger, as 0.3.1's
+//! `Floating.dropdown()` placed it. A click outside the trigger and menu
+//! closes it, and so does Escape, through a keymap action. The layout,
+//! colours, and text match the 0.3.1 example.
 
+const std = @import("std");
 const gooey = @import("gooey");
 const components = @import("gooey-components");
-const std = @import("std");
 
-/// WASM-compatible logging - redirect std.log to console.log via JS imports
-pub const std_options = gooey.std_options;
-const platform = gooey.platform;
 const ui = gooey.ui;
 const Cx = gooey.Cx;
-
+const Key = gooey.Key;
+const Color = ui.Color;
 const Button = components.Button;
 
-// =============================================================================
-// State
-// =============================================================================
+const assert = std.debug.assert;
 
-const AppState = struct {
+const CloseMenu = struct {};
+
+pub const State = struct {
     show_dropdown: bool = false,
 
-    pub fn toggleDropdown(self: *AppState) void {
+    pub fn toggleDropdown(self: *State) void {
         self.show_dropdown = !self.show_dropdown;
     }
 
-    pub fn closeDropdown(self: *AppState) void {
+    pub fn closeDropdown(self: *State) void {
         self.show_dropdown = false;
+        assert(!self.show_dropdown);
     }
 };
 
-var state = AppState{};
-
-// =============================================================================
-// Entry Points
-// =============================================================================
-
-// For WASM: WebApp with @export; For Native: struct with main()
-const App = gooey.App(AppState, &state, render, .{
+pub const App = gooey.App(State, render, .{
     .title = "Floating Dropdown Test",
     .width = 600,
     .height = 400,
-    .on_event = onEvent,
+    .limits = .nano,
+    .keymap = &.{.{ .keys = "escape", .action = ui.action(CloseMenu) }},
 });
 
-// Force type analysis - triggers @export on WASM
-comptime {
-    _ = App;
-}
+/// The generated entry point (contract §7).
+pub const main = App.main;
 
-// Native entry point
-pub fn main(init: std.process.Init) !void {
-    if (platform.is_wasm) unreachable;
-    return App.main(init);
-}
+/// The gap between the trigger and the menu, from `Floating.dropdown()`.
+const menu_gap: f32 = 4;
+const menu_width: f32 = 160;
+/// The core `Button`'s medium vertical padding, top plus bottom.
+const button_padding_vertical: f32 = 20;
 
-// =============================================================================
-// Render Function
-// =============================================================================
+const text_dark: Color = .rgb(0.2, 0.2, 0.2);
+const text_bullet: Color = .rgb(0.4, 0.4, 0.4);
+const text_muted: Color = .rgb(0.5, 0.5, 0.5);
+const hover_gray: Color = .rgb(0.95, 0.95, 0.95);
+const divider_gray: Color = .rgb(0.9, 0.9, 0.9);
 
-fn render(cx: *Cx) void {
-    cx.render(ui.root(.{
-        .background = ui.Color.rgb(0.95, 0.95, 0.95),
-        .direction = .column,
-        .padding = .{ .all = 20 },
-        .gap = 20,
+pub fn render(cx: *Cx) void {
+    cx.render(ui.box(.{
+        .actions = &.{.{
+            .action = ui.action(CloseMenu),
+            .handler = cx.on(State.closeDropdown, .{}),
+        }},
+        .style = .{
+            .width = .{ .grow = 1 },
+            .height = .{ .grow = 1 },
+            .background = .{ .rgba = .rgb(0.95, 0.95, 0.95) },
+            .padding = .all(20),
+            .gap = 20,
+        },
     }, .{
         Header{},
         ContentArea{},
     }));
 }
 
-// =============================================================================
-// Components
-// =============================================================================
-
 const Header = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        cx.render(ui.box(.{
-            .fill_width = true,
-            .padding = .{ .all = 16 },
-            .background = ui.Color.white,
-            .corner_radius = 8,
+    pub fn render(_: Header, cx: *Cx) void {
+        cx.render(ui.box(.{ .style = .{
+            .width = .{ .grow = 1 },
+            .padding = .all(16),
+            .background = .{ .rgba = .white },
+            .corner_radius = .all(8),
             .direction = .row,
             .alignment = .{ .main = .space_between, .cross = .center },
-        }, .{
+        } }, .{
             ui.text("Floating Dropdown Test", .{ .size = 24 }),
             DropdownTrigger{},
         }));
     }
 };
 
+/// The button and, while open, the menu it anchors. The click-outside
+/// handler sits on their shared box, so pressing the button while the menu
+/// is open toggles it closed instead of closing and reopening it.
 const DropdownTrigger = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        const s = cx.state(AppState);
-
-        // The button acts as the anchor for the floating menu
-        cx.render(ui.box(.{}, .{
+    pub fn render(_: DropdownTrigger, cx: *Cx) void {
+        const s = cx.state(State);
+        const metrics = cx.fontMetrics();
+        assert(metrics.point_size > 0);
+        // The button's label is one line at the base size.
+        const font_size: f32 = @floatFromInt(cx.theme().font_size_base);
+        const label_height = metrics.line_height * font_size / metrics.point_size;
+        const button_height = label_height + button_padding_vertical;
+        assert(button_height > button_padding_vertical);
+        cx.render(ui.box(.{
+            .key = .{ .name = "dropdown" },
+            .on_click_outside = if (s.show_dropdown) cx.on(State.closeDropdown, .{}) else null,
+        }, .{
             Button{
+                .key = "menu",
                 .label = if (s.show_dropdown) "Close ▲" else "Menu ▼",
-                .on_click_handler = cx.update(AppState.toggleDropdown),
+                .on_click = cx.on(State.toggleDropdown, .{}),
             },
-            DropdownMenu{},
+            if (s.show_dropdown) DropdownMenu{ .offset_y = button_height + menu_gap } else null,
         }));
     }
 };
 
 const DropdownMenu = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        const s = cx.state(AppState);
-        if (!s.show_dropdown) return;
+    offset_y: f32,
 
+    pub fn render(self: DropdownMenu, cx: *Cx) void {
+        assert(self.offset_y > menu_gap);
         cx.render(ui.box(.{
-            .width = 160,
-            .padding = .{ .all = 8 },
-            .background = ui.Color.white,
-            .corner_radius = 8,
-            .direction = .column,
-            .gap = 2,
-            .shadow = .{ .blur_radius = 12, .offset_y = 4, .color = ui.Color.rgba(0, 0, 0, 0.15) },
-            .floating = ui.Floating.dropdown(),
-            .on_click_outside_handler = cx.update(AppState.closeDropdown),
+            .layer = .{
+                .kind = .popover,
+                .anchor = .{ .parent = .{ .y = self.offset_y } },
+                .clip = .escape,
+            },
+            .style = .{
+                .width = .{ .fixed = menu_width },
+                .padding = .all(8),
+                .background = .{ .rgba = .white },
+                .corner_radius = .all(8),
+                .gap = 2,
+                .shadow = .{ .blur = 12, .offset_y = 4 },
+            },
         }, .{
             MenuItem{ .label = "Profile" },
             MenuItem{ .label = "Settings" },
@@ -134,52 +150,65 @@ const DropdownMenu = struct {
 const MenuItem = struct {
     label: []const u8,
 
-    pub fn render(self: @This(), cx: *Cx) void {
+    pub fn render(self: MenuItem, cx: *Cx) void {
+        assert(self.label.len > 0);
+        const key = Key{ .name = self.label };
+        const hovered = cx.hovered(cx.id(key));
         cx.render(ui.box(.{
-            .fill_width = true,
-            .padding = .{ .symmetric = .{ .x = 12, .y = 8 } },
-            .corner_radius = 4,
-            .background = ui.Color.white,
-            .hover_background = ui.Color.rgb(0.95, 0.95, 0.95),
+            .key = key,
+            .style = .{
+                .width = .{ .grow = 1 },
+                .padding = .symmetric(12, 8),
+                .corner_radius = .all(4),
+                .background = .{ .rgba = if (hovered) hover_gray else .white },
+            },
         }, .{
-            ui.text(self.label, .{ .size = 14, .color = ui.Color.rgb(0.2, 0.2, 0.2) }),
+            ui.text(self.label, .{ .size = 14, .color = .{ .rgba = text_dark } }),
         }));
     }
 };
 
 const MenuDivider = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        cx.render(ui.box(.{
-            .fill_width = true,
-            .height = 1,
-            .background = ui.Color.rgb(0.9, 0.9, 0.9),
-        }, .{}));
+    pub fn render(_: MenuDivider, cx: *Cx) void {
+        cx.render(ui.box(.{ .style = .{
+            .width = .{ .grow = 1 },
+            .height = .{ .fixed = 1 },
+            .background = .{ .rgba = divider_gray },
+        } }, .{}));
     }
 };
 
+const bullets = [_][]const u8{
+    "Appear below the button",
+    "Have a white background",
+    "Show a subtle shadow",
+    "Not gray out other content",
+    "Close when clicking outside",
+    "Close with Escape key",
+};
+
 const ContentArea = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        cx.render(ui.box(.{
-            .fill_width = true,
-            .grow = true,
-            .padding = .{ .all = 20 },
-            .background = ui.Color.white,
-            .corner_radius = 8,
-            .direction = .column,
+    pub fn render(_: ContentArea, cx: *Cx) void {
+        var points: [bullets.len]BulletPoint = undefined;
+        for (&points, bullets) |*point, text| point.* = .{ .text = text };
+        cx.render(ui.box(.{ .style = .{
+            .width = .{ .grow = 1 },
+            .height = .{ .grow = 1 },
+            .padding = .all(20),
+            .background = .{ .rgba = .white },
+            .corner_radius = .all(8),
             .gap = 16,
-        }, .{
+        } }, .{
             ui.text("Content Area", .{ .size = 20 }),
             ui.text("Click the Menu button above to toggle the dropdown.", .{
                 .size = 14,
-                .color = ui.Color.rgb(0.5, 0.5, 0.5),
+                .color = .{ .rgba = text_muted },
             }),
-            ui.text("The dropdown should:", .{ .size = 14, .color = ui.Color.rgb(0.3, 0.3, 0.3) }),
-            BulletPoint{ .text = "Appear below the button" },
-            BulletPoint{ .text = "Have a white background" },
-            BulletPoint{ .text = "Show a subtle shadow" },
-            BulletPoint{ .text = "Not gray out other content" },
-            BulletPoint{ .text = "Close when clicking outside" },
-            BulletPoint{ .text = "Close with Escape key" },
+            ui.text("The dropdown should:", .{
+                .size = 14,
+                .color = .{ .rgba = .rgb(0.3, 0.3, 0.3) },
+            }),
+            points,
         }));
     }
 };
@@ -187,29 +216,11 @@ const ContentArea = struct {
 const BulletPoint = struct {
     text: []const u8,
 
-    pub fn render(self: @This(), cx: *Cx) void {
-        cx.render(ui.box(.{
-            .direction = .row,
-            .gap = 8,
-        }, .{
-            ui.text("•", .{ .size = 14, .color = ui.Color.rgb(0.4, 0.4, 0.4) }),
-            ui.text(self.text, .{ .size = 14, .color = ui.Color.rgb(0.4, 0.4, 0.4) }),
+    pub fn render(self: BulletPoint, cx: *Cx) void {
+        assert(self.text.len > 0);
+        cx.render(ui.box(.{ .style = .{ .direction = .row, .gap = 8 } }, .{
+            ui.text("•", .{ .size = 14, .color = .{ .rgba = text_bullet } }),
+            ui.text(self.text, .{ .size = 14, .color = .{ .rgba = text_bullet } }),
         }));
     }
 };
-
-// =============================================================================
-// Event Handling
-// =============================================================================
-
-fn onEvent(cx: *Cx, event: gooey.input.InputEvent) bool {
-    if (event == .key_down) {
-        const key = event.key_down;
-        const s = cx.state(AppState);
-        if (key.key == .escape and s.show_dropdown) {
-            state.show_dropdown = false;
-            return true;
-        }
-    }
-    return false;
-}

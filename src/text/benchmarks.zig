@@ -8,12 +8,11 @@
 //! Quick tests only:  zig build test (validates outputs, doesn't time)
 //!
 //! Categories:
-//!   - Atlas reserve       — skyline bin-packing throughput at various glyph sizes
-//!   - Atlas set           — pixel data copy bandwidth (memory-bound)
-//!   - Atlas reserve + set — combined cost per glyph (the real caching hot path)
-//!   - Atlas grow          — atlas size doubling with data preservation
-//!   - Reserve scaling     — ns/op vs glyph count to detect skyline degradation
-//!   - Atlas utilization   — skyline fill efficiency at various glyph counts
+//!   - Atlas insert        — shelf placement throughput at various glyph sizes
+//!   - Atlas insert+pixels — placement plus the CPU renderer's bordered pixel write
+//!   - Atlas evict         — insert into a full atlas (LRU scan + shelf eviction)
+//!   - Insert scaling      — ns/op vs glyph count to detect shelf-table degradation
+//!   - Atlas utilization   — glyph area against the shelf area holding it
 //!   - Text shaping        — CoreText/HarfBuzz shaping cold + warm cache paths
 //!   - Text shaping arena  — warm cache with arena allocator (eliminates GPA overhead)
 //!   - Text measurement    — measureText / measureTextEx with wrapping
@@ -64,7 +63,7 @@ const CachedGlyph = text.CachedGlyph;
 const renderText = text.renderText;
 const RenderTextOptions = text.RenderTextOptions;
 
-const scene_mod = gooey.scene;
+const scene_mod = gooey.internals.scene;
 const Scene = scene_mod.Scene;
 const Hsla = scene_mod.Hsla;
 
@@ -318,337 +317,220 @@ fn extractUniqueGlyphIds(shaped_glyphs: []const text.ShapedGlyph) UniqueGlyphIds
 }
 
 // =============================================================================
-// Benchmark Runners — Atlas Reserve
+// Benchmark Runners — Atlas Insert
 // =============================================================================
 
-/// Benchmark skyline bin-packing for uniform glyph sizes.
-/// Operation count = number of reserve calls per iteration.
-/// Each iteration clears the atlas (resets skyline), then reserves `count` glyphs.
-fn benchAtlasReserve(
+/// Side of the benchmark atlas: the `.standard` glyph atlas.
+const bench_atlas_size: u32 = 1024;
+
+/// A fixed glyph atlas over its own journal. `.cpu_texture` writes pixels into
+/// the atlas (the CPU renderer's path); `.gpu_upload` with no consumer measures
+/// placement alone, since a journal without renderers stages nothing.
+const BenchAtlas = struct {
+    uploads: text.AtlasUploads,
+    atlas: Atlas,
+
+    fn init(self: *BenchAtlas, allocator: std.mem.Allocator, storage: text.AtlasStorage) void {
+        self.uploads.init(allocator, time.benchIo(), .{
+            .storage = storage,
+            .upload_bytes_frame_max = 64,
+        }) catch unreachable;
+        self.atlas.init(allocator, .{
+            .kind = .text,
+            .size = bench_atlas_size,
+            .uploads = &self.uploads,
+        }) catch unreachable;
+        std.debug.assert(self.atlas.size == bench_atlas_size);
+        std.debug.assert(self.atlas.rows_active == 0);
+    }
+
+    fn deinit(self: *BenchAtlas) void {
+        self.atlas.deinit();
+        self.uploads.deinit();
+    }
+
+    /// Start a new frame, so items placed earlier become evictable.
+    fn nextFrame(self: *BenchAtlas) void {
+        _ = self.uploads.beginFrame(1);
+        std.debug.assert(self.uploads.frameCurrent() > 1);
+    }
+
+    /// Condemn every item and evict them all, leaving an empty atlas.
+    fn reset(self: *BenchAtlas) void {
+        self.atlas.clear();
+        self.nextFrame();
+        var evicted: u32 = 0;
+        while (self.atlas.evictOne()) evicted += 1;
+        std.debug.assert(self.atlas.rows_active == 0);
+        std.debug.assert(evicted <= self.atlas.shelves.len);
+    }
+};
+
+/// Insert `count` glyphs of one size into an empty atlas per iteration.
+fn benchAtlasInsert(
     allocator: std.mem.Allocator,
     comptime name: []const u8,
+    storage: text.AtlasStorage,
     comptime glyph_width: u32,
     comptime glyph_height: u32,
     comptime count: u32,
 ) BenchmarkResult {
     std.debug.assert(glyph_width > 0);
     std.debug.assert(glyph_height > 0);
+    const bench_atlas = allocator.create(BenchAtlas) catch unreachable;
+    defer allocator.destroy(bench_atlas);
+    bench_atlas.init(allocator, storage);
+    defer bench_atlas.deinit();
+    const pixel_data = comptime generatePixelData(glyph_width, glyph_height);
 
-    var atlas = Atlas.init(allocator, .grayscale) catch unreachable;
-    defer atlas.deinit();
-
-    const warmup_iters = getWarmupIterations(count);
-    const min_iters = getMinSampleIterations(count);
-
-    // Warmup.
-    for (0..warmup_iters) |_| {
-        atlas.clear();
-        for (0..count) |_| {
-            _ = (atlas.reserve(glyph_width, glyph_height) catch unreachable) orelse unreachable;
-        }
+    for (0..getWarmupIterations(count)) |_| {
+        bench_atlas.reset();
+        insertUniformBatch(&bench_atlas.atlas, glyph_width, glyph_height, &pixel_data, count);
     }
-
-    // Timed sampling: measure skyline packing throughput.
     var total_time_ns: u64 = 0;
     var iterations: u32 = 0;
     var samples = IterationSamples.init();
-    var last_region_x: u16 = 0;
-
-    while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iters) {
-        atlas.clear();
-
+    while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < getMinSampleIterations(count)) {
+        bench_atlas.reset();
         const start = time.Instant.now();
-        for (0..count) |_| {
-            const region = (atlas.reserve(glyph_width, glyph_height) catch unreachable) orelse unreachable;
-            last_region_x = region.x;
-        }
-        const end = time.Instant.now();
-
-        const elapsed = end.since(start);
+        insertUniformBatch(&bench_atlas.atlas, glyph_width, glyph_height, &pixel_data, count);
+        const elapsed = time.Instant.now().since(start);
         total_time_ns += elapsed;
         samples.record(elapsed);
         iterations += 1;
     }
-
-    // Prevent dead-code elimination.
-    std.debug.assert(last_region_x < atlas.size);
-    const percentiles = samples.computePercentiles(count);
-
-    return .{
-        .name = name,
-        .operation_count = count,
-        .total_time_ns = total_time_ns,
-        .iterations = iterations,
-        .min_per_op_ns = percentiles.min_per_op_ns,
-        .p50_per_op_ns = percentiles.p50_per_op_ns,
-        .p99_per_op_ns = percentiles.p99_per_op_ns,
-    };
+    std.debug.assert(bench_atlas.atlas.rows_active > 0);
+    return atlasResult(name, count, total_time_ns, iterations, samples.computePercentiles(count));
 }
 
-/// Benchmark skyline bin-packing with varying glyph sizes.
-/// Alternates between small (8x12), medium (16x20), and large (24x28) to
-/// simulate a realistic workload where different characters produce different
-/// rasterized bitmap sizes.
-fn benchAtlasReserveMixed(
+/// Insert `count` same-size glyphs. Standalone so the hot loop has no `self`
+/// indirection (CLAUDE.md rule #20).
+fn insertUniformBatch(atlas: *Atlas, width: u32, height: u32, pixels: []const u8, count: u32) void {
+    var index: u32 = 0;
+    while (index < count) : (index += 1) {
+        _ = atlas.insert(width, height, pixels) orelse unreachable;
+    }
+    std.debug.assert(atlas.rows_active <= atlas.size);
+}
+
+/// Insert a mix of small (8x12), medium (16x20), and large (24x28) glyphs.
+fn benchAtlasInsertMixed(
     allocator: std.mem.Allocator,
     comptime name: []const u8,
     comptime count: u32,
 ) BenchmarkResult {
     std.debug.assert(count > 0);
-    std.debug.assert(count <= 500); // Stay within 512x512 atlas capacity.
+    std.debug.assert(count <= 1000); // Fits the 1024² atlas without eviction.
+    const bench_atlas = allocator.create(BenchAtlas) catch unreachable;
+    defer allocator.destroy(bench_atlas);
+    bench_atlas.init(allocator, .gpu_upload);
+    defer bench_atlas.deinit();
 
-    var atlas = Atlas.init(allocator, .grayscale) catch unreachable;
-    defer atlas.deinit();
-
-    const warmup_iters = getWarmupIterations(count);
-    const min_iters = getMinSampleIterations(count);
-
-    // Warmup.
-    for (0..warmup_iters) |_| {
-        atlas.clear();
-        reserveMixedBatch(&atlas, count);
+    for (0..getWarmupIterations(count)) |_| {
+        bench_atlas.reset();
+        _ = insertMixedBatch(&bench_atlas.atlas, count);
     }
-
-    // Timed sampling.
     var total_time_ns: u64 = 0;
     var iterations: u32 = 0;
     var samples = IterationSamples.init();
-
-    while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iters) {
-        atlas.clear();
-
+    while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < getMinSampleIterations(count)) {
+        bench_atlas.reset();
         const start = time.Instant.now();
-        reserveMixedBatch(&atlas, count);
-        const end = time.Instant.now();
-
-        const elapsed = end.since(start);
+        _ = insertMixedBatch(&bench_atlas.atlas, count);
+        const elapsed = time.Instant.now().since(start);
         total_time_ns += elapsed;
         samples.record(elapsed);
         iterations += 1;
     }
-
-    std.debug.assert(atlas.generation > 0);
-    const percentiles = samples.computePercentiles(count);
-
-    return .{
-        .name = name,
-        .operation_count = count,
-        .total_time_ns = total_time_ns,
-        .iterations = iterations,
-        .min_per_op_ns = percentiles.min_per_op_ns,
-        .p50_per_op_ns = percentiles.p50_per_op_ns,
-        .p99_per_op_ns = percentiles.p99_per_op_ns,
-    };
+    return atlasResult(name, count, total_time_ns, iterations, samples.computePercentiles(count));
 }
 
-/// Reserve a batch of mixed-size glyphs.  Extracted as a standalone helper
-/// so the hot loop has no `self`/struct indirection (CLAUDE.md rule #20).
-fn reserveMixedBatch(atlas: *Atlas, comptime count: u32) void {
-    for (0..count) |i| {
-        const variant: u32 = @intCast(i % 3);
+/// Insert a batch of mixed-size glyphs; returns the pixel area inserted.
+fn insertMixedBatch(atlas: *Atlas, count: u32) u64 {
+    const pixels = comptime generatePixelData(24, 28);
+    var area: u64 = 0;
+    var index: u32 = 0;
+    while (index < count) : (index += 1) {
+        const variant: u32 = index % 3;
         const glyph_width: u32 = 8 + variant * 8; // 8, 16, 24
         const glyph_height: u32 = 12 + variant * 8; // 12, 20, 28
-        _ = (atlas.reserve(glyph_width, glyph_height) catch unreachable) orelse unreachable;
+        _ = atlas.insert(glyph_width, glyph_height, &pixels) orelse unreachable;
+        area += glyph_width * glyph_height;
     }
-    std.debug.assert(atlas.node_count > 0);
-    std.debug.assert(atlas.node_count <= Atlas.MAX_SKYLINE_NODES);
+    std.debug.assert(atlas.rows_active > 0);
+    return area;
 }
 
 // =============================================================================
-// Benchmark Runners — Atlas Set (Pixel Copy)
+// Benchmark Runners — Atlas Evict
 // =============================================================================
 
-/// Benchmark pixel data copy into pre-reserved atlas regions.
-/// Isolates memcpy bandwidth by reserving all regions once during setup,
-/// then timing only the set() calls.
-fn benchAtlasSet(
+/// Insert into a full atlas: every insert first evicts the least recently used
+/// shelf. Each iteration refills the atlas in one frame and times `count`
+/// inserts in the next, so every timed insert pays a full-atlas eviction scan.
+fn benchAtlasEvict(
     allocator: std.mem.Allocator,
     comptime name: []const u8,
-    comptime glyph_width: u32,
-    comptime glyph_height: u32,
     comptime count: u32,
 ) BenchmarkResult {
-    std.debug.assert(glyph_width > 0);
-    std.debug.assert(glyph_height > 0);
-
-    var atlas = Atlas.init(allocator, .grayscale) catch unreachable;
-    defer atlas.deinit();
-
-    // Pre-reserve all regions (setup, not timed).
-    var regions: [count]Region = undefined;
-    for (&regions) |*region| {
-        const maybe = atlas.reserve(glyph_width, glyph_height) catch unreachable;
-        region.* = maybe orelse unreachable;
-    }
-
+    const glyph_width: u32 = 30;
+    const glyph_height: u32 = 30;
+    // 32x32 outer items: 32 shelves of 32 items fill the atlas exactly.
+    const shelf_count = bench_atlas_size / 32;
+    const per_shelf = bench_atlas_size / 32;
+    comptime std.debug.assert(count <= shelf_count);
+    const bench_atlas = allocator.create(BenchAtlas) catch unreachable;
+    defer allocator.destroy(bench_atlas);
+    bench_atlas.init(allocator, .gpu_upload);
+    defer bench_atlas.deinit();
     const pixel_data = comptime generatePixelData(glyph_width, glyph_height);
-    const warmup_iters = getWarmupIterations(count);
-    const min_iters = getMinSampleIterations(count);
 
-    // Warmup.
-    for (0..warmup_iters) |_| {
-        for (regions) |region| {
-            atlas.set(region, &pixel_data);
-        }
-    }
-
-    // Timed sampling: measure pixel copy throughput only.
     var total_time_ns: u64 = 0;
     var iterations: u32 = 0;
     var samples = IterationSamples.init();
-
-    while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iters) {
+    while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < getMinSampleIterations(count)) {
+        bench_atlas.reset();
+        insertUniformBatch(
+            &bench_atlas.atlas,
+            glyph_width,
+            glyph_height,
+            &pixel_data,
+            shelf_count * per_shelf,
+        );
+        std.debug.assert(bench_atlas.atlas.rows_active == bench_atlas_size);
+        bench_atlas.nextFrame();
+        // One item per evicted shelf: a 31-px-wide item leaves no room for a second.
         const start = time.Instant.now();
-        for (regions) |region| {
-            atlas.set(region, &pixel_data);
-        }
-        const end = time.Instant.now();
-
-        const elapsed = end.since(start);
+        insertUniformBatch(
+            &bench_atlas.atlas,
+            bench_atlas_size - 2,
+            glyph_height,
+            &pixel_data_wide,
+            count,
+        );
+        const elapsed = time.Instant.now().since(start);
         total_time_ns += elapsed;
         samples.record(elapsed);
         iterations += 1;
     }
+    return atlasResult(name, count, total_time_ns, iterations, samples.computePercentiles(count));
+}
 
-    // Anti-DCE: generation incremented by each set() call.
-    std.debug.assert(atlas.generation > 0);
-    const percentiles = samples.computePercentiles(count);
+/// Full-width rows for `benchAtlasEvict`, so each insert needs its own shelf.
+const pixel_data_wide: [(bench_atlas_size - 2) * 30]u8 = @splat(0x80);
 
+fn atlasResult(
+    comptime name: []const u8,
+    count: u32,
+    total_time_ns: u64,
+    iterations: u32,
+    percentiles: anytype,
+) BenchmarkResult {
+    std.debug.assert(count > 0);
+    std.debug.assert(iterations > 0);
     return .{
         .name = name,
         .operation_count = count,
-        .total_time_ns = total_time_ns,
-        .iterations = iterations,
-        .min_per_op_ns = percentiles.min_per_op_ns,
-        .p50_per_op_ns = percentiles.p50_per_op_ns,
-        .p99_per_op_ns = percentiles.p99_per_op_ns,
-    };
-}
-
-// =============================================================================
-// Benchmark Runners — Atlas Reserve + Set (Combined)
-// =============================================================================
-
-/// Benchmark the combined reserve-then-set path that runs when caching a new
-/// glyph.  This is the actual hot path in GlyphCache.renderGlyphSubpixel:
-/// reserve atlas space, then copy rasterized bitmap data.
-fn benchAtlasReserveAndSet(
-    allocator: std.mem.Allocator,
-    comptime name: []const u8,
-    comptime glyph_width: u32,
-    comptime glyph_height: u32,
-    comptime count: u32,
-) BenchmarkResult {
-    std.debug.assert(glyph_width > 0);
-    std.debug.assert(glyph_height > 0);
-
-    var atlas = Atlas.init(allocator, .grayscale) catch unreachable;
-    defer atlas.deinit();
-
-    const pixel_data = comptime generatePixelData(glyph_width, glyph_height);
-    const warmup_iters = getWarmupIterations(count);
-    const min_iters = getMinSampleIterations(count);
-
-    // Warmup.
-    for (0..warmup_iters) |_| {
-        atlas.clear();
-        for (0..count) |_| {
-            const region = (atlas.reserve(glyph_width, glyph_height) catch unreachable) orelse unreachable;
-            atlas.set(region, &pixel_data);
-        }
-    }
-
-    // Timed sampling: reserve + set together.
-    var total_time_ns: u64 = 0;
-    var iterations: u32 = 0;
-    var samples = IterationSamples.init();
-    var last_generation: u32 = 0;
-
-    while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iters) {
-        atlas.clear();
-
-        const start = time.Instant.now();
-        for (0..count) |_| {
-            const region = (atlas.reserve(glyph_width, glyph_height) catch unreachable) orelse unreachable;
-            atlas.set(region, &pixel_data);
-        }
-        const end = time.Instant.now();
-
-        last_generation = atlas.generation;
-        const elapsed = end.since(start);
-        total_time_ns += elapsed;
-        samples.record(elapsed);
-        iterations += 1;
-    }
-
-    std.debug.assert(last_generation > 0);
-    const percentiles = samples.computePercentiles(count);
-
-    return .{
-        .name = name,
-        .operation_count = count,
-        .total_time_ns = total_time_ns,
-        .iterations = iterations,
-        .min_per_op_ns = percentiles.min_per_op_ns,
-        .p50_per_op_ns = percentiles.p50_per_op_ns,
-        .p99_per_op_ns = percentiles.p99_per_op_ns,
-    };
-}
-
-// =============================================================================
-// Benchmark Runners — Atlas Grow
-// =============================================================================
-
-/// Benchmark atlas growth from 512->1024.  Each iteration allocates a fresh
-/// 512x512 atlas, then times the grow() call which:
-///   1. Allocates a 1024x1024 buffer (1 MB for grayscale)
-///   2. Zeroes the new buffer
-///   3. Copies old data row by row (512 rows x 512 bytes)
-///   4. Frees the old buffer
-///   5. Extends skyline to cover new space
-///
-/// This is memory-bandwidth-bound and measures reallocation cost.
-fn benchAtlasGrow(
-    allocator: std.mem.Allocator,
-    comptime name: []const u8,
-) BenchmarkResult {
-    // Warmup.
-    for (0..5) |_| {
-        var atlas = Atlas.init(allocator, .grayscale) catch unreachable;
-        atlas.grow() catch unreachable;
-        atlas.deinit();
-    }
-
-    // Timed sampling: one grow per iteration.
-    var total_time_ns: u64 = 0;
-    var iterations: u32 = 0;
-    var samples = IterationSamples.init();
-    var last_size: u32 = 0;
-
-    while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < 10) {
-        var atlas = Atlas.init(allocator, .grayscale) catch unreachable;
-        std.debug.assert(atlas.size == Atlas.INITIAL_SIZE);
-
-        const start = time.Instant.now();
-        atlas.grow() catch unreachable;
-        const end = time.Instant.now();
-
-        last_size = atlas.size;
-        atlas.deinit();
-
-        const elapsed = end.since(start);
-        total_time_ns += elapsed;
-        samples.record(elapsed);
-        iterations += 1;
-    }
-
-    // Grow doubles size: 512 -> 1024.
-    std.debug.assert(last_size == Atlas.INITIAL_SIZE * 2);
-    const percentiles = samples.computePercentiles(1);
-
-    return .{
-        .name = name,
-        .operation_count = 1,
         .total_time_ns = total_time_ns,
         .iterations = iterations,
         .min_per_op_ns = percentiles.min_per_op_ns,
@@ -674,12 +556,12 @@ fn benchShapeCold(
 
     const warmup_iters = getWarmupIterations(1);
     const min_iters = getMinSampleIterations(1);
-    const allocator = text_sys.allocator;
+    const allocator = text_sys.run_allocator;
 
     // Warmup: verify shaping works, populate platform shaper internals.
     for (0..warmup_iters) |_| {
-        text_sys.shape_cache.current_font_ptr = 0;
-        var run = text_sys.shapeText(bench_text, null) catch unreachable;
+        text_sys.shape_cache.clear();
+        var run = text_sys.shapeText(.app, bench_text, .regular, null) catch unreachable;
         run.deinit(allocator);
     }
 
@@ -691,10 +573,10 @@ fn benchShapeCold(
 
     while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iters) {
         // Invalidate shape cache so the next shapeText call always misses.
-        text_sys.shape_cache.current_font_ptr = 0;
+        text_sys.shape_cache.clear();
 
         const start = time.Instant.now();
-        var run = text_sys.shapeText(bench_text, null) catch unreachable;
+        var run = text_sys.shapeText(.app, bench_text, .regular, null) catch unreachable;
         const end = time.Instant.now();
 
         last_width = run.width;
@@ -735,18 +617,18 @@ fn benchShapeWarm(
 
     const warmup_iters = getWarmupIterations(count);
     const min_iters = getMinSampleIterations(count);
-    const allocator = text_sys.allocator;
+    const allocator = text_sys.run_allocator;
 
     // Prime the shape cache with this text.
     {
-        var run = text_sys.shapeText(bench_text, null) catch unreachable;
+        var run = text_sys.shapeText(.app, bench_text, .regular, null) catch unreachable;
         run.deinit(allocator);
     }
 
     // Warmup.
     for (0..warmup_iters) |_| {
         for (0..count) |_| {
-            var run = text_sys.shapeText(bench_text, null) catch unreachable;
+            var run = text_sys.shapeText(.app, bench_text, .regular, null) catch unreachable;
             run.deinit(allocator);
         }
     }
@@ -760,7 +642,7 @@ fn benchShapeWarm(
     while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iters) {
         const start = time.Instant.now();
         for (0..count) |_| {
-            var run = text_sys.shapeText(bench_text, null) catch unreachable;
+            var run = text_sys.shapeText(.app, bench_text, .regular, null) catch unreachable;
             last_width = run.width;
             run.deinit(allocator);
         }
@@ -789,7 +671,7 @@ fn benchShapeWarm(
 
 /// Benchmark warm text shaping with an arena allocator instead of GPA.
 /// On a shape cache hit, shapeText allocates only the glyph array copy
-/// from self.allocator.  Swapping the allocator to an arena makes alloc a
+/// from self.run_allocator.  Swapping it to an arena makes alloc a
 /// pointer bump and free a no-op — isolating the true cache lookup cost from
 /// the GPA alloc/free overhead that dominates the warm GPA path.
 fn benchShapeWarmArena(
@@ -801,13 +683,13 @@ fn benchShapeWarmArena(
     std.debug.assert(bench_text.len > 0);
     std.debug.assert(count > 0);
 
-    const gpa = text_sys.allocator;
+    const gpa = text_sys.run_allocator;
     const warmup_iters = getWarmupIterations(count);
     const min_iters = getMinSampleIterations(count);
 
     // Prime the shape cache so every call in the timed section is a hit.
     {
-        var run = text_sys.shapeText(bench_text, null) catch unreachable;
+        var run = text_sys.shapeText(.app, bench_text, .regular, null) catch unreachable;
         run.deinit(gpa);
     }
 
@@ -817,12 +699,12 @@ fn benchShapeWarmArena(
 
     // Warmup.
     for (0..warmup_iters) |_| {
-        text_sys.allocator = arena_alloc;
+        text_sys.run_allocator = arena_alloc;
         for (0..count) |_| {
-            var run = text_sys.shapeText(bench_text, null) catch unreachable;
+            var run = text_sys.shapeText(.app, bench_text, .regular, null) catch unreachable;
             run.deinit(arena_alloc);
         }
-        text_sys.allocator = gpa;
+        text_sys.run_allocator = gpa;
         _ = arena.reset(.retain_capacity);
     }
 
@@ -833,15 +715,15 @@ fn benchShapeWarmArena(
     var last_width: f32 = 0;
 
     while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iters) {
-        text_sys.allocator = arena_alloc;
+        text_sys.run_allocator = arena_alloc;
         const start = time.Instant.now();
         for (0..count) |_| {
-            var run = text_sys.shapeText(bench_text, null) catch unreachable;
+            var run = text_sys.shapeText(.app, bench_text, .regular, null) catch unreachable;
             last_width = run.width;
             run.deinit(arena_alloc);
         }
         const end = time.Instant.now();
-        text_sys.allocator = gpa;
+        text_sys.run_allocator = gpa;
 
         const elapsed = end.since(start);
         total_time_ns += elapsed;
@@ -877,13 +759,13 @@ fn benchShapeWarmInto(
     std.debug.assert(bench_text.len > 0);
     std.debug.assert(count > 0);
 
-    const allocator = text_sys.allocator;
+    const allocator = text_sys.run_allocator;
     const warmup_iters = getWarmupIterations(count);
     const min_iters = getMinSampleIterations(count);
 
     // Prime the shape cache so every call in the timed section is a hit.
     {
-        var run = text_sys.shapeText(bench_text, null) catch unreachable;
+        var run = text_sys.shapeText(.app, bench_text, .regular, null) catch unreachable;
         run.deinit(allocator);
     }
 
@@ -891,7 +773,8 @@ fn benchShapeWarmInto(
     for (0..warmup_iters) |_| {
         for (0..count) |_| {
             var buf: [ShapedRunCache.MAX_GLYPHS_PER_ENTRY]ShapedGlyph = undefined;
-            var run = text_sys.shapeTextInto(bench_text, null, &buf) catch unreachable;
+            var run = text_sys.shapeTextInto(.app, bench_text, .regular, null, &buf) catch
+                unreachable;
             if (run.owned) run.deinit(allocator);
         }
     }
@@ -906,7 +789,8 @@ fn benchShapeWarmInto(
         const start = time.Instant.now();
         for (0..count) |_| {
             var buf: [ShapedRunCache.MAX_GLYPHS_PER_ENTRY]ShapedGlyph = undefined;
-            var run = text_sys.shapeTextInto(bench_text, null, &buf) catch unreachable;
+            var run = text_sys.shapeTextInto(.app, bench_text, .regular, null, &buf) catch
+                unreachable;
             last_width = run.width;
             if (run.owned) run.deinit(allocator);
         }
@@ -954,7 +838,7 @@ fn benchMeasureText(
     // Warmup.
     for (0..warmup_iters) |_| {
         for (0..count) |_| {
-            _ = text_sys.measureText(bench_text) catch unreachable;
+            _ = text_sys.measureText(.app, bench_text, .regular) catch unreachable;
         }
     }
 
@@ -967,7 +851,7 @@ fn benchMeasureText(
     while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iters) {
         const start = time.Instant.now();
         for (0..count) |_| {
-            last_width = text_sys.measureText(bench_text) catch unreachable;
+            last_width = text_sys.measureText(.app, bench_text, .regular) catch unreachable;
         }
         const end = time.Instant.now();
 
@@ -1012,7 +896,7 @@ fn benchMeasureTextWrapped(
     // Warmup.
     for (0..warmup_iters) |_| {
         for (0..count) |_| {
-            _ = text_sys.measureTextEx(bench_text, max_width) catch unreachable;
+            _ = text_sys.measureTextEx(.app, bench_text, .regular, max_width) catch unreachable;
         }
     }
 
@@ -1025,7 +909,8 @@ fn benchMeasureTextWrapped(
     while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iters) {
         const start = time.Instant.now();
         for (0..count) |_| {
-            const measurement = text_sys.measureTextEx(bench_text, max_width) catch unreachable;
+            const measurement = text_sys.measureTextEx(.app, bench_text, .regular, max_width) catch
+                unreachable;
             last_line_count = measurement.line_count;
         }
         const end = time.Instant.now();
@@ -1072,6 +957,8 @@ fn benchGlyphRasterCold(
 
     // Warmup: exercises the rasterizer and platform font backend.
     for (0..3) |_| {
+        // A new frame: a cleared atlas reclaims space only from past frames.
+        _ = text_sys.cache.grayscale_atlas.uploads.beginFrame(0);
         text_sys.cache.clear();
         for (glyph_ids) |glyph_id| {
             _ = text_sys.getGlyphSubpixel(glyph_id, font_size, 0, 0) catch unreachable;
@@ -1085,6 +972,8 @@ fn benchGlyphRasterCold(
     var last_advance_x: f32 = 0;
 
     while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iters) {
+        // A new frame: a cleared atlas reclaims space only from past frames.
+        _ = text_sys.cache.grayscale_atlas.uploads.beginFrame(0);
         text_sys.cache.clear();
 
         const start = time.Instant.now();
@@ -1400,7 +1289,9 @@ fn benchGlyphRasterWarmBatch(
     for (0..3) |_| {
         for (0..repetitions) |_| {
             text_sys.resolveGlyphBatch(
+                .app,
                 shaped_glyphs[0..glyph_count],
+                .regular,
                 font_size,
                 subpixel_xs[0..glyph_count],
                 out_cached[0..glyph_count],
@@ -1418,7 +1309,9 @@ fn benchGlyphRasterWarmBatch(
         const start = time.Instant.now();
         for (0..repetitions) |_| {
             text_sys.resolveGlyphBatch(
+                .app,
                 shaped_glyphs[0..glyph_count],
+                .regular,
                 font_size,
                 subpixel_xs[0..glyph_count],
                 out_cached[0..glyph_count],
@@ -1479,7 +1372,8 @@ fn benchRenderText(
     const baseline_y: f32 = 20.0;
 
     // Pre-allocate scene capacity so append is a pointer bump, not an alloc.
-    var scene = Scene.initCapacity(allocator, &gooey.scene.SceneLimits.ceiling) catch |err| {
+    const limits = &gooey.internals.scene.SceneLimits.ceiling;
+    var scene = Scene.initCapacity(allocator, limits) catch |err| {
         std.debug.print("  !! {s}: Scene.initCapacity failed: {s} — skipping benchmark\n", .{ name, @errorName(err) });
         return .{
             .name = name,
@@ -1544,71 +1438,31 @@ fn benchRenderText(
 // Validation Tests — Atlas
 // =============================================================================
 
-test "validate: atlas reserve small fills without error" {
+test "validate: atlas insert fills shelves without eviction" {
     const allocator = std.testing.allocator;
-    var atlas = try Atlas.init(allocator, .grayscale);
-    defer atlas.deinit();
-
-    var count: u32 = 0;
-    for (0..100) |_| {
-        const region = (try atlas.reserve(8, 12)) orelse return error.TestUnexpectedResult;
-        try std.testing.expect(region.width == 8);
-        try std.testing.expect(region.height == 12);
-        count += 1;
-    }
-    try std.testing.expectEqual(@as(u32, 100), count);
-}
-
-test "validate: atlas reserve mixed fills without error" {
-    const allocator = std.testing.allocator;
-    var atlas = try Atlas.init(allocator, .grayscale);
-    defer atlas.deinit();
-
-    for (0..100) |i| {
-        const variant: u32 = @intCast(i % 3);
-        const w: u32 = 8 + variant * 8;
-        const h: u32 = 12 + variant * 8;
-        _ = (try atlas.reserve(w, h)) orelse return error.TestUnexpectedResult;
-    }
-    try std.testing.expect(atlas.node_count > 0);
-}
-
-test "validate: atlas set writes pixel data" {
-    const allocator = std.testing.allocator;
-    var atlas = try Atlas.init(allocator, .grayscale);
-    defer atlas.deinit();
-
-    const region = (try atlas.reserve(4, 4)) orelse return error.TestUnexpectedResult;
-    const pixel_data: [16]u8 = @splat(0xFF);
-    atlas.set(region, &pixel_data);
-
-    // set() marks dirty region and increments generation.
-    try std.testing.expect(atlas.has_dirty);
-    try std.testing.expect(atlas.generation > 0);
-}
-
-test "validate: atlas grow doubles size" {
-    const allocator = std.testing.allocator;
-    var atlas = try Atlas.init(allocator, .grayscale);
-    defer atlas.deinit();
-
-    try std.testing.expectEqual(@as(u32, 512), atlas.size);
-    try atlas.grow();
-    try std.testing.expectEqual(@as(u32, 1024), atlas.size);
-}
-
-test "validate: atlas reserve and set round-trip" {
-    const allocator = std.testing.allocator;
-    var atlas = try Atlas.init(allocator, .grayscale);
-    defer atlas.deinit();
+    const bench_atlas = try allocator.create(BenchAtlas);
+    defer allocator.destroy(bench_atlas);
+    bench_atlas.init(allocator, .cpu_texture);
+    defer bench_atlas.deinit();
 
     const pixel_data = comptime generatePixelData(8, 12);
-    const region = (try atlas.reserve(8, 12)) orelse return error.TestUnexpectedResult;
-    atlas.set(region, &pixel_data);
+    insertUniformBatch(&bench_atlas.atlas, 8, 12, &pixel_data, 100);
+    // 10x14 outer items, 102 per 1024-px shelf of 16 rows: 100 fit in one shelf.
+    try std.testing.expectEqual(@as(u32, 16), bench_atlas.atlas.rows_active);
+    try std.testing.expectEqual(@as(u8, pixel_data[0]), bench_atlas.atlas.getData()[1024 + 1]);
+}
 
-    try std.testing.expect(region.width == 8);
-    try std.testing.expect(region.height == 12);
-    try std.testing.expect(atlas.has_dirty);
+test "validate: atlas mixed insert and reset round-trip" {
+    const allocator = std.testing.allocator;
+    const bench_atlas = try allocator.create(BenchAtlas);
+    defer allocator.destroy(bench_atlas);
+    bench_atlas.init(allocator, .gpu_upload);
+    defer bench_atlas.deinit();
+
+    const area = insertMixedBatch(&bench_atlas.atlas, 99);
+    try std.testing.expectEqual(@as(u64, 33 * (8 * 12 + 16 * 20 + 24 * 28)), area);
+    bench_atlas.reset();
+    try std.testing.expectEqual(@as(u32, 0), bench_atlas.atlas.rows_active);
 }
 
 test "validate: generatePixelData produces non-zero output" {
@@ -1678,19 +1532,33 @@ test "validate: IterationSamples divides by operation count" {
 /// allowing tests to skip gracefully on unsupported environments.
 fn createTestTextSystem(allocator: std.mem.Allocator) ?*TextSystem {
     const ts = allocator.create(TextSystem) catch return null;
+    // Freed by `destroyTestTextSystem`, which reaches it through the atlas.
+    const uploads = allocator.create(text.AtlasUploads) catch {
+        allocator.destroy(ts);
+        return null;
+    };
+    uploads.initHeadless(allocator, std.testing.io) catch {
+        allocator.destroy(uploads);
+        allocator.destroy(ts);
+        return null;
+    };
 
-    ts.initInPlace(allocator, 1.0) catch {
+    ts.initInPlace(allocator, 1.0, std.testing.io, &text.FontLimits.nano, .{
+        .size = 1024,
+        .uploads = uploads,
+    }) catch {
+        uploads.deinit();
+        allocator.destroy(uploads);
         allocator.destroy(ts);
         return null;
     };
 
     ts.loadSystemFont(.monospace, BENCH_FONT_SIZE) catch {
-        ts.deinit();
-        allocator.destroy(ts);
+        destroyTestTextSystem(allocator, ts);
         return null;
     };
 
-    std.debug.assert(ts.current_face != null);
+    std.debug.assert(ts.getMetrics() != null);
     std.debug.assert(ts.scale_factor == 1.0);
 
     return ts;
@@ -1700,8 +1568,11 @@ fn createTestTextSystem(allocator: std.mem.Allocator) ?*TextSystem {
 fn destroyTestTextSystem(allocator: std.mem.Allocator, ts: *TextSystem) void {
     std.debug.assert(ts.scale_factor > 0);
     std.debug.assert(ts.scale_factor <= 4.0);
+    const uploads = ts.cache.grayscale_atlas.uploads;
     ts.deinit();
     allocator.destroy(ts);
+    uploads.deinit();
+    allocator.destroy(uploads);
 }
 
 test "validate: text shaping produces glyphs" {
@@ -1709,7 +1580,7 @@ test "validate: text shaping produces glyphs" {
     const ts = createTestTextSystem(allocator) orelse return;
     defer destroyTestTextSystem(allocator, ts);
 
-    var run = ts.shapeText("Hello", null) catch return;
+    var run = ts.shapeText(.app, "Hello", .regular, null) catch return;
     defer run.deinit(allocator);
 
     try std.testing.expect(run.glyphs.len > 0);
@@ -1722,12 +1593,12 @@ test "validate: text shaping warm path returns consistent width" {
     defer destroyTestTextSystem(allocator, ts);
 
     // First call populates the shape cache.
-    var run_first = ts.shapeText(TEXT_SHORT, null) catch return;
+    var run_first = ts.shapeText(.app, TEXT_SHORT, .regular, null) catch return;
     const first_width = run_first.width;
     run_first.deinit(allocator);
 
     // Second call should hit the cache and return the same width.
-    var run_second = ts.shapeText(TEXT_SHORT, null) catch return;
+    var run_second = ts.shapeText(.app, TEXT_SHORT, .regular, null) catch return;
     defer run_second.deinit(allocator);
 
     try std.testing.expectApproxEqAbs(first_width, run_second.width, 0.01);
@@ -1740,14 +1611,14 @@ test "validate: shapeTextInto warm path returns owned=false with correct glyphs"
     defer destroyTestTextSystem(allocator, ts);
 
     // Prime the shape cache.
-    var prime = ts.shapeText(TEXT_SHORT, null) catch return;
+    var prime = ts.shapeText(.app, TEXT_SHORT, .regular, null) catch return;
     const expected_width = prime.width;
     const expected_count = prime.glyphs.len;
     prime.deinit(allocator);
 
     // Warm hit via shapeTextInto — should copy into our buffer, owned=false.
     var buf: [ShapedRunCache.MAX_GLYPHS_PER_ENTRY]ShapedGlyph = undefined;
-    var into_run = ts.shapeTextInto(TEXT_SHORT, null, &buf) catch return;
+    var into_run = ts.shapeTextInto(.app, TEXT_SHORT, .regular, null, &buf) catch return;
     defer if (into_run.owned) into_run.deinit(allocator);
 
     try std.testing.expect(!into_run.owned);
@@ -1767,7 +1638,7 @@ test "validate: text measurement returns positive width" {
     const ts = createTestTextSystem(allocator) orelse return;
     defer destroyTestTextSystem(allocator, ts);
 
-    const width = ts.measureText(TEXT_SHORT) catch return;
+    const width = ts.measureText(.app, TEXT_SHORT, .regular) catch return;
     try std.testing.expect(width > 0);
     try std.testing.expect(width < 10000); // Sanity bound.
 }
@@ -1778,7 +1649,7 @@ test "validate: text measurement with wrapping produces multiple lines" {
     defer destroyTestTextSystem(allocator, ts);
 
     // Use a narrow max_width to force wrapping on medium text.
-    const measurement = ts.measureTextEx(TEXT_MEDIUM, 50.0) catch return;
+    const measurement = ts.measureTextEx(.app, TEXT_MEDIUM, .regular, 50.0) catch return;
     try std.testing.expect(measurement.line_count >= 1);
     try std.testing.expect(measurement.width > 0);
 }
@@ -1789,7 +1660,7 @@ test "validate: glyph rasterization produces cached glyph" {
     defer destroyTestTextSystem(allocator, ts);
 
     // Shape a short string to get a valid glyph ID.
-    var run = ts.shapeText("A", null) catch return;
+    var run = ts.shapeText(.app, "A", .regular, null) catch return;
     defer run.deinit(allocator);
 
     if (run.glyphs.len == 0) return;
@@ -1807,7 +1678,7 @@ test "validate: resolveGlyphBatch matches per-glyph lookups" {
     defer destroyTestTextSystem(allocator, ts);
 
     // Shape a short string to get valid glyph IDs.
-    var run = ts.shapeText("Hello", null) catch return;
+    var run = ts.shapeText(.app, "Hello", .regular, null) catch return;
     defer run.deinit(allocator);
 
     if (run.glyphs.len == 0) return;
@@ -1825,7 +1696,9 @@ test "validate: resolveGlyphBatch matches per-glyph lookups" {
     var subpixel_xs: [MAX_UNIQUE_GLYPHS]u8 = @splat(0);
     var batch: [MAX_UNIQUE_GLYPHS]CachedGlyph = undefined;
     ts.resolveGlyphBatch(
+        .app,
         run.glyphs,
+        .regular,
         BENCH_FONT_SIZE,
         subpixel_xs[0..glyph_count],
         batch[0..glyph_count],
@@ -1849,7 +1722,7 @@ test "validate: renderText produces glyphs in scene" {
     const ts = createTestTextSystem(allocator) orelse return;
     defer destroyTestTextSystem(allocator, ts);
 
-    var scene = try Scene.initCapacity(allocator, &gooey.scene.SceneLimits.standard);
+    var scene = try Scene.initCapacity(allocator, &gooey.internals.scene.SceneLimits.standard);
     defer scene.deinit();
 
     var options = RenderTextOptions{};
@@ -1942,107 +1815,63 @@ fn printHeader() void {
 
 /// Print all atlas benchmarks (no platform dependencies, pure data structures).
 fn runAtlasBenchmarks(gpa: std.mem.Allocator, reporter: *bench.Reporter) void {
-    // Verify atlas initial size matches our benchmark assumptions.
-    comptime std.debug.assert(Atlas.INITIAL_SIZE == 512);
-    comptime std.debug.assert(Atlas.INITIAL_SIZE * Atlas.INITIAL_SIZE <= 1024 * 1024);
+    comptime std.debug.assert(bench_atlas_size == 1024);
 
-    // Atlas Reserve — Skyline Bin-Packing.
-    printSectionHeader("Gooey Text Benchmarks \u{2014} Atlas Reserve (skyline bin-packing)");
-    collect(reporter, benchAtlasReserve(gpa, "reserve_8x12_x100", 8, 12, 100));
-    collect(reporter, benchAtlasReserve(gpa, "reserve_16x20_x100", 16, 20, 100));
-    collect(reporter, benchAtlasReserveMixed(gpa, "reserve_mixed_x100", 100));
+    printSectionHeader("Gooey Text Benchmarks \u{2014} Atlas Insert (shelf placement)");
+    collect(reporter, benchAtlasInsert(gpa, "insert_8x12_x100", .gpu_upload, 8, 12, 100));
+    collect(reporter, benchAtlasInsert(gpa, "insert_16x20_x100", .gpu_upload, 16, 20, 100));
+    collect(reporter, benchAtlasInsertMixed(gpa, "insert_mixed_x100", 100));
     std.debug.print(&@as([TABLE_WIDTH]u8, @splat('=')) ++ "\n", .{});
 
-    // Atlas Set + Combined — Pixel Copy Bandwidth.
-    printSectionHeader("Gooey Text Benchmarks \u{2014} Atlas Set + Combined (pixel copy)");
-    collect(reporter, benchAtlasSet(gpa, "set_8x12_x100", 8, 12, 100));
-    collect(reporter, benchAtlasReserveAndSet(gpa, "reserve_and_set_8x12_x100", 8, 12, 100));
+    printSectionHeader("Gooey Text Benchmarks \u{2014} Atlas Insert + Pixels (CPU texture)");
+    collect(reporter, benchAtlasInsert(gpa, "insert_pixels_8x12_x100", .cpu_texture, 8, 12, 100));
     std.debug.print(&@as([TABLE_WIDTH]u8, @splat('=')) ++ "\n", .{});
 
-    // Atlas Grow — Reallocation Cost.
-    printSectionHeader("Gooey Text Benchmarks \u{2014} Atlas Grow (512 -> 1024 reallocation)");
-    collect(reporter, benchAtlasGrow(gpa, "grow_512_to_1024"));
+    printSectionHeader("Gooey Text Benchmarks \u{2014} Atlas Evict (insert into a full atlas)");
+    collect(reporter, benchAtlasEvict(gpa, "evict_full_x16", 16));
     std.debug.print(&@as([TABLE_WIDTH]u8, @splat('=')) ++ "\n", .{});
 
-    // Atlas Reserve Scaling — ns/op vs Glyph Count.
-    printSectionHeader("Gooey Text Benchmarks \u{2014} Atlas Reserve Scaling (8x12, varying count)");
-    collect(reporter, benchAtlasReserve(gpa, "scaling_reserve_x50", 8, 12, 50));
-    collect(reporter, benchAtlasReserve(gpa, "scaling_reserve_x100", 8, 12, 100));
-    collect(reporter, benchAtlasReserve(gpa, "scaling_reserve_x200", 8, 12, 200));
-    collect(reporter, benchAtlasReserve(gpa, "scaling_reserve_x400", 8, 12, 400));
+    printSectionHeader("Gooey Text Benchmarks \u{2014} Atlas Insert Scaling (8x12, varying count)");
+    collect(reporter, benchAtlasInsert(gpa, "scaling_insert_x50", .gpu_upload, 8, 12, 50));
+    collect(reporter, benchAtlasInsert(gpa, "scaling_insert_x100", .gpu_upload, 8, 12, 100));
+    collect(reporter, benchAtlasInsert(gpa, "scaling_insert_x200", .gpu_upload, 8, 12, 200));
+    collect(reporter, benchAtlasInsert(gpa, "scaling_insert_x400", .gpu_upload, 8, 12, 400));
     std.debug.print(&@as([TABLE_WIDTH]u8, @splat('=')) ++ "\n", .{});
 
-    // Atlas utilization — fill efficiency.
     printAtlasUtilization(gpa);
-
     printAtlasNotes();
 }
 
-/// Print atlas fill efficiency at various glyph counts.
-/// Shows the ratio of reserved pixel area to total atlas area, revealing
-/// how much space the skyline packer wastes on fragmentation.
+/// Print shelf occupancy for the mixed workload: rows held by active shelves
+/// against the pixel area the glyphs need.
 fn printAtlasUtilization(gpa: std.mem.Allocator) void {
-    const glyph_width: u32 = 8;
-    const glyph_height: u32 = 12;
-    const counts = [_]u32{ 50, 100, 200, 400 };
-    const atlas_area: u64 = @as(u64, Atlas.INITIAL_SIZE) * @as(u64, Atlas.INITIAL_SIZE);
+    const bench_atlas = gpa.create(BenchAtlas) catch unreachable;
+    defer gpa.destroy(bench_atlas);
+    bench_atlas.init(gpa, .gpu_upload);
+    defer bench_atlas.deinit();
 
-    std.debug.print("\n  Atlas utilization ({d}x{d} glyphs in {d}x{d} atlas):\n", .{
-        glyph_width, glyph_height, Atlas.INITIAL_SIZE, Atlas.INITIAL_SIZE,
+    const area = insertMixedBatch(&bench_atlas.atlas, 900);
+    const shelf_area: u64 = @as(u64, bench_atlas.atlas.rows_active) * bench_atlas_size;
+    const utilization = @as(f64, @floatFromInt(area)) / @as(f64, @floatFromInt(shelf_area)) * 100.0;
+    std.debug.print("\n  Atlas utilization (900 mixed glyphs, {d}x{d} atlas):\n", .{
+        bench_atlas_size, bench_atlas_size,
     });
-
-    for (counts) |count| {
-        var atlas = Atlas.init(gpa, .grayscale) catch unreachable;
-        defer atlas.deinit();
-
-        for (0..count) |_| {
-            _ = (atlas.reserve(glyph_width, glyph_height) catch unreachable) orelse unreachable;
-        }
-
-        const reserved_area: u64 = @as(u64, count) * glyph_width * glyph_height;
-        const utilization = @as(f64, @floatFromInt(reserved_area)) /
-            @as(f64, @floatFromInt(atlas_area)) * 100.0;
-
-        std.debug.print("    {d:>3} glyphs: {d:>7} / {d:>7} px = {d:>5.1}% fill\n", .{
-            count, reserved_area, atlas_area, utilization,
-        });
-    }
-
-    // Mixed-size utilization for comparison.
-    {
-        var atlas = Atlas.init(gpa, .grayscale) catch unreachable;
-        defer atlas.deinit();
-
-        var reserved_area: u64 = 0;
-        for (0..100) |i| {
-            const variant: u32 = @intCast(i % 3);
-            const w: u32 = 8 + variant * 8;
-            const h: u32 = 12 + variant * 8;
-            _ = (atlas.reserve(w, h) catch unreachable) orelse unreachable;
-            reserved_area += @as(u64, w) * @as(u64, h);
-        }
-        const utilization = @as(f64, @floatFromInt(reserved_area)) /
-            @as(f64, @floatFromInt(atlas_area)) * 100.0;
-
-        std.debug.print("    100 mixed:  {d:>7} / {d:>7} px = {d:>5.1}% fill\n", .{
-            reserved_area, atlas_area, utilization,
-        });
-    }
+    std.debug.print("    {d} rows held; glyph area {d} / shelf area {d} px = {d:>5.1}% fill\n", .{
+        bench_atlas.atlas.rows_active, area, shelf_area, utilization,
+    });
 }
 
 fn printAtlasNotes() void {
     std.debug.print(
         \\
         \\Notes:
-        \\  - Reserve = skyline bin-packing only (CPU-bound, no pixel data involved).
-        \\  - Set = row-by-row memcpy into atlas buffer (memory bandwidth bound).
-        \\  - Reserve + Set = combined per-glyph cost (the real GlyphCache hot path).
-        \\  - Grow = atlas size doubling: alloc new buffer + zero + copy old rows + free.
-        \\  - Scaling: if reserve ns/op grows with count, skyline search degrades under
-        \\    fragmentation.  With effective merging, ns/op should be roughly constant.
-        \\  - Utilization: reserved pixel area / total atlas area.  Higher = less waste.
+        \\  - Insert = shelf placement; with no renderer registered nothing is staged.
+        \\  - Insert + Pixels = placement plus the bordered pixel write of the CPU renderer.
+        \\  - Evict = insert into a full atlas: an LRU scan and a shelf eviction per insert.
+        \\  - Scaling: ns/op should stay flat as the shelf table fills.
+        \\  - Utilization: glyph pixel area / area of the shelves holding it.
         \\  - p50/p99 show per-iteration percentiles (tail latency for frame budgets).
-        \\  - All atlas benchmarks use a 512x512 grayscale atlas (256 KB backing buffer).
+        \\  - All atlas benchmarks use the `.standard` 1024x1024 grayscale glyph atlas.
         \\  - Iterations are adaptive: at least 50 ms wall-clock or minimum sample count.
         \\
     , .{});
@@ -2050,7 +1879,7 @@ fn printAtlasNotes() void {
 
 /// Print text shaping benchmarks (cold = cache miss FFI, warm = cache hit).
 fn printShapingBenchmarks(text_sys: *TextSystem, reporter: *bench.Reporter) void {
-    std.debug.assert(text_sys.current_face != null);
+    std.debug.assert(text_sys.getMetrics() != null);
     std.debug.assert(text_sys.scale_factor > 0);
 
     printSectionHeader("Gooey Text Benchmarks \u{2014} Text Shaping (cold = cache miss, warm = cache hit)");
@@ -2073,7 +1902,7 @@ fn printShapingBenchmarks(text_sys: *TextSystem, reporter: *bench.Reporter) void
 
 /// Print text measurement benchmarks (simple width + wrapped with max_width).
 fn printMeasurementBenchmarks(text_sys: *TextSystem, reporter: *bench.Reporter) void {
-    std.debug.assert(text_sys.current_face != null);
+    std.debug.assert(text_sys.getMetrics() != null);
     std.debug.assert(text_sys.scale_factor > 0);
 
     printSectionHeader("Gooey Text Benchmarks \u{2014} Text Measurement (measureText + measureTextEx)");
@@ -2085,15 +1914,16 @@ fn printMeasurementBenchmarks(text_sys: *TextSystem, reporter: *bench.Reporter) 
 
     // Regression guard for the shape-cache insert boundary.  `ShapedRunCache.put`
     // refuses runs longer than MAX_GLYPHS_PER_ENTRY, while the `measureText`
-    // lookup gate admits anything up to MAX_TEXT_LEN.  Text in between used to
-    // shape through CoreText on *every* call and never warm up -- a permanent
-    // miss that cost ~35us per measurement versus ~160ns for a hit (~220x).
-    // `MeasureCache` closes that gap by caching width without glyphs.
+    // lookup gate admits anything up to MAX_TEXT_LEN.  Text in between is never
+    // stored, so without another cache it would shape through CoreText on *every*
+    // call -- a permanent miss that costs ~35us per measurement versus ~160ns for
+    // a hit (~220x).  `MeasureCache` closes that gap by caching width without
+    // glyphs.
     //
     // These two cases straddle the boundary with otherwise-identical ASCII text
-    // (1 byte = 1 glyph), so they should now report the *same* cost.  If the
-    // 129ch row ever diverges sharply from the 128ch row again, the width cache
-    // has stopped covering the over-limit band.
+    // (1 byte = 1 glyph), so they should report the *same* cost.  If the 129ch
+    // row diverges sharply from the 128ch row, the width cache has stopped
+    // covering the over-limit band.
     std.debug.assert(ShapedRunCache.MAX_GLYPHS_PER_ENTRY == 128);
     std.debug.assert(ShapedRunCache.MAX_TEXT_LEN >= 129);
     collect(reporter, benchMeasureText(text_sys, "measure_at_shape_limit_128ch_x100", SCALING_TEXT_BASE[0..128], 100));
@@ -2104,7 +1934,7 @@ fn printMeasurementBenchmarks(text_sys: *TextSystem, reporter: *bench.Reporter) 
 /// Print glyph rasterization benchmarks (cold = rasterize, warm = cache hit).
 fn printGlyphBenchmarks(text_sys: *TextSystem, glyph_ids: []const u16, reporter: *bench.Reporter) void {
     std.debug.assert(glyph_ids.len > 0);
-    std.debug.assert(text_sys.current_face != null);
+    std.debug.assert(text_sys.getMetrics() != null);
 
     printSectionHeader("Gooey Text Benchmarks \u{2014} Glyph Rasterization (cold = render, warm = cache hit)");
     collect(reporter, benchGlyphRasterCold(text_sys, "glyph_raster_cold_ascii", glyph_ids, BENCH_FONT_SIZE));
@@ -2121,7 +1951,7 @@ fn printGlyphBenchmarks(text_sys: *TextSystem, glyph_ids: []const u16, reporter:
 /// Exercises the full pipeline: shape (warm) → device positions → batch glyph
 /// resolve → scene emission.  Scene is pre-allocated; measures steady-state cost.
 fn printRenderTextBenchmarks(text_sys: *TextSystem, allocator: std.mem.Allocator, reporter: *bench.Reporter) void {
-    std.debug.assert(text_sys.current_face != null);
+    std.debug.assert(text_sys.getMetrics() != null);
     std.debug.assert(text_sys.scale_factor > 0);
 
     printSectionHeader("Gooey Text Benchmarks \u{2014} renderText End-to-End (warm cache, full pipeline)");
@@ -2133,7 +1963,7 @@ fn printRenderTextBenchmarks(text_sys: *TextSystem, allocator: std.mem.Allocator
 
 /// Print shaping scaling analysis (cold shaping at increasing text lengths).
 fn printScalingBenchmarks(text_sys: *TextSystem, reporter: *bench.Reporter) void {
-    std.debug.assert(text_sys.current_face != null);
+    std.debug.assert(text_sys.getMetrics() != null);
     std.debug.assert(SCALING_TEXT_BASE.len >= 200);
 
     printSectionHeader("Gooey Text Benchmarks \u{2014} Shaping Scaling (cold shape at varying text length)");
@@ -2195,11 +2025,17 @@ fn runTextPipelineBenchmarks(gpa: std.mem.Allocator, reporter: *bench.Reporter) 
     const text_sys = try gpa.create(TextSystem);
     defer gpa.destroy(text_sys);
 
-    // `TextSystem.initInPlace` now requires an `Io` so the embedded
-    // shape/glyph cache mutexes (migrated to `std.Io.Mutex` in Phase 5)
-    // have a process-lifetime vtable to lock against.  Forward the `Io`
+    // `TextSystem.initInPlace` requires an `Io` so the embedded
+    // shape/glyph cache mutexes (`std.Io.Mutex`) have a process-lifetime
+    // vtable to lock against.  Forward the `Io`
     // supplied by the process entry point.
-    try text_sys.initInPlace(gpa, 1.0, reporter.io);
+    var uploads: text.AtlasUploads = undefined;
+    try uploads.initHeadless(gpa, reporter.io);
+    defer uploads.deinit();
+    try text_sys.initInPlace(gpa, 1.0, reporter.io, &text.FontLimits.nano, .{
+        .size = 1024,
+        .uploads = &uploads,
+    });
     defer text_sys.deinit();
 
     try text_sys.loadSystemFont(.monospace, BENCH_FONT_SIZE);
@@ -2213,7 +2049,7 @@ fn runTextPipelineBenchmarks(gpa: std.mem.Allocator, reporter: *bench.Reporter) 
     // --- Glyph rasterization benchmarks ---
     // Shape printable ASCII to extract glyph IDs for the rasterization benchmarks.
     const printable_ascii = comptime generatePrintableAscii();
-    var ascii_run = try text_sys.shapeText(&printable_ascii, null);
+    var ascii_run = try text_sys.shapeText(.app, &printable_ascii, .regular, null);
 
     std.debug.assert(ascii_run.glyphs.len > 0);
     const unique_glyphs = extractUniqueGlyphIds(ascii_run.glyphs);

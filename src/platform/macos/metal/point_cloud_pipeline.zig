@@ -4,16 +4,23 @@
 //! anti-aliased rendering. Optimized for scatter plots and data markers
 //! with thousands of points.
 //!
-//! Each point is rendered as a quad (4 vertices), with the fragment shader
-//! computing a smooth circle using SDF. This provides high-quality rendering
-//! without tessellation overhead.
+//! The GPU buffer holds source positions only. The vertex shader expands each
+//! point (one instance) into a quad of half-size `radius`, and the fragment
+//! shader computes a smooth circle with an SDF. Corners are `position ± radius`,
+//! bit for bit what the former CPU expansion wrote, so the buffer stores 8 B per
+//! point rather than 88 B (4 vertices and 6 indices).
 
 const std = @import("std");
-const builtin = @import("builtin");
+const assert = std.debug.assert;
 
 const objc = @import("objc");
 const mtl = @import("api.zig");
+const pipelines = @import("pipelines.zig");
 const scene = @import("../../../scene/mod.zig");
+const GeometryCounts = scene.GeometryCounts;
+const GeometryPool = scene.GeometryPool;
+const SceneLimits = scene.SceneLimits;
+const ResourceLimits = @import("../../../core/limits.zig").ResourceLimits;
 const PointCloud = @import("../../../scene/point_cloud.zig").PointCloud;
 
 // =============================================================================
@@ -24,14 +31,6 @@ pub const point_cloud_shader_source =
     \\#include <metal_stdlib>
     \\using namespace metal;
     \\
-    \\// Per-vertex data (quad corner with UV for SDF)
-    \\struct PointVertex {
-    \\    float x;
-    \\    float y;
-    \\    float u;  // UV for SDF (-1 to 1)
-    \\    float v;
-    \\};
-    \\
     \\// Per-instance uniforms
     \\struct PointCloudUniforms {
     \\    float4 color;       // HSLA color
@@ -40,6 +39,13 @@ pub const point_cloud_shader_source =
     \\    float _pad0;
     \\    float _pad1;
     \\    float _pad2;
+    \\};
+    \\
+    \\// SDF UV corner of each vertex of triangles 0-1-2 and 0-2-3 of the quad
+    \\// (-1,-1)--(1,-1) over (-1,1)--(1,1): the former CPU index order.
+    \\constant float2 quad_corners[6] = {
+    \\    float2(-1.0, -1.0), float2(1.0, -1.0), float2(1.0, 1.0),
+    \\    float2(-1.0, -1.0), float2(1.0, 1.0), float2(-1.0, 1.0),
     \\};
     \\
     \\struct VertexOut {
@@ -68,16 +74,21 @@ pub const point_cloud_shader_source =
     \\    return float4(rgb + m, a);
     \\}
     \\
+    \\// One instance per point. The quad reaches one logical pixel past the
+    \\// radius so the fragment falloff can straddle the circle's edge; uv stays
+    \\// 1.0 at the radius. Multiplying by a +-1 corner is exact, so even a fused
+    \\// multiply-add yields `position +- extent` correctly rounded.
     \\vertex VertexOut point_cloud_vertex(
     \\    uint vid [[vertex_id]],
-    \\    constant PointVertex *vertices [[buffer(0)]],
+    \\    uint point [[instance_id]],
+    \\    device const float2 *positions [[buffer(0)]],
     \\    constant PointCloudUniforms *uniforms [[buffer(1)]],
     \\    constant float2 *viewport_size [[buffer(2)]]
     \\) {
-    \\    PointVertex v = vertices[vid];
     \\    PointCloudUniforms u = *uniforms;
-    \\
-    \\    float2 pos = float2(v.x, v.y);
+    \\    float2 corner = quad_corners[vid];
+    \\    float extent = u.radius + 1.0;
+    \\    float2 pos = positions[point] + corner * extent;
     \\
     \\    // Convert to NDC
     \\    float2 ndc = pos / *viewport_size * float2(2.0, -2.0) + float2(-1.0, 1.0);
@@ -87,11 +98,14 @@ pub const point_cloud_shader_source =
     \\    out.color = hsla_to_rgba(u.color);
     \\    out.clip_bounds = u.clip_bounds;
     \\    out.screen_pos = pos;
-    \\    out.uv = float2(v.u, v.v);
+    \\    out.uv = corner * (extent / u.radius);
     \\    return out;
     \\}
     \\
     \\fragment float4 point_cloud_fragment(VertexOut in [[stage_in]]) {
+    \\    // Derivatives first: they are undefined after a non-uniform discard.
+    \\    float uv_pixel = length(float2(dfdx(in.uv.x), dfdy(in.uv.x)));
+    \\
     \\    // Clip test
     \\    float2 clip_min = in.clip_bounds.xy;
     \\    float2 clip_max = clip_min + in.clip_bounds.zw;
@@ -100,11 +114,20 @@ pub const point_cloud_shader_source =
     \\        discard_fragment();
     \\    }
     \\
-    \\    // SDF circle: distance from center
+    \\    // Shared point falloff (cpu/mesh.zig `pointFalloff`, Vulkan mesh.frag).
+    \\    // From a 6.7 device pixel radius up it is the historical falloff over
+    \\    // the outer 15% of the radius. Smaller points get a one-pixel band that
+    \\    // moves outward to straddle the edge, so a sub-pixel dot keeps about
+    \\    // its area.
+    \\    float radius_px = 1.0 / max(uv_pixel, 1e-6);
     \\    float dist = length(in.uv);
-    \\
-    \\    // Smooth anti-aliased edge
-    \\    float alpha = 1.0 - smoothstep(0.85, 1.0, dist);
+    \\    float alpha;
+    \\    if (radius_px >= 1.0 / 0.15) {
+    \\        alpha = 1.0 - smoothstep(0.85, 1.0, dist);
+    \\    } else {
+    \\        float end_px = radius_px + 0.5 * (1.0 - 0.15 * radius_px);
+    \\        alpha = 1.0 - smoothstep(end_px - 1.0, end_px, dist * radius_px);
+    \\    }
     \\
     \\    if (alpha < 0.001) discard_fragment();
     \\
@@ -117,257 +140,146 @@ pub const point_cloud_shader_source =
 ;
 
 // =============================================================================
-// Constants
-// =============================================================================
-
-const FRAME_COUNT = 3;
-const INITIAL_VERTEX_CAPACITY: u32 = 16384; // Enough for ~4000 points
-const INITIAL_INDEX_CAPACITY: u32 = 24576; // 6 indices per point
-
-// =============================================================================
 // GPU Types
 // =============================================================================
-
-/// Vertex for point quad (matches shader)
-pub const PointVertex = extern struct {
-    x: f32,
-    y: f32,
-    u: f32, // UV for SDF (-1 to 1)
-    v: f32,
-};
 
 /// Per-point-cloud uniforms (matches shader)
 pub const PointCloudUniforms = extern struct {
     color: [4]f32, // HSLA
     clip_bounds: [4]f32, // x, y, width, height
     radius: f32,
-    _pad0: f32 = 0,
-    _pad1: f32 = 0,
-    _pad2: f32 = 0,
+    _pad: [3]f32 = @splat(0),
 };
+
+comptime {
+    assert(@sizeOf(PointCloudUniforms) == 48);
+    assert(@sizeOf(scene.Point) == 8);
+}
 
 // =============================================================================
 // Pipeline
 // =============================================================================
 
+/// Uniform-color point clouds, one SDF quad per point expanded in the vertex
+/// shader from the source positions (one instance per point), one draw per cloud.
+///
+/// Resource sketch (CLAUDE.md §7): each frame in flight owns one buffer of
+/// `point_count_frame_max` × 8 B source positions, sized in `init` from
+/// `ResourceLimits.scene` and never replaced. `.standard`: 131,072 B per frame,
+/// 393,216 B per window for three frames. Per cloud: one claim, one copy of its positions, and
+/// one draw of 6 vertices × points instances. Every cloud is claimed against the
+/// same `GeometryCounts` as the Vulkan and CPU renderers before it is written, so
+/// an over-budget frame panics with the pool name.
 pub const PointCloudPipeline = struct {
-    device: objc.Object,
     pipeline_state: objc.Object,
-
-    // Triple-buffered vertex/index data
-    vertex_buffers: [FRAME_COUNT]objc.Object,
-    index_buffers: [FRAME_COUNT]objc.Object,
-    vertex_capacities: [FRAME_COUNT]u32,
-    index_capacities: [FRAME_COUNT]u32,
+    position_buffers: pipelines.FrameBuffers,
     frame_index: u32,
-
-    // Per-frame tracking for batched uploads
-    frame_vertex_offset: u32,
-    frame_index_offset: u32,
-
-    allocator: std.mem.Allocator,
+    /// The window's aggregate geometry budget (`ResourceLimits.scene`).
+    geometry_budget: GeometryCounts,
+    /// Points claimed this frame; also the slot's write offset.
+    geometry_usage: GeometryCounts,
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, device: objc.Object, sample_count: u32) !Self {
-        const pipeline = try createPipeline(device, sample_count);
+    /// Bytes of one frame's position buffer for `scene_limits`.
+    pub fn frameBytes(scene_limits: *const SceneLimits) u64 {
+        return @as(u64, scene_limits.point_count_frame_max) * @sizeOf(scene.Point);
+    }
 
-        var self = Self{
-            .device = device,
-            .pipeline_state = pipeline,
-            .vertex_buffers = undefined,
-            .index_buffers = undefined,
-            .vertex_capacities = undefined,
-            .index_capacities = undefined,
+    pub fn init(device: objc.Object, limits: *const ResourceLimits) !Self {
+        const scene_limits = &limits.scene;
+        assert(device.value != null);
+        assert(scene_limits.check() == null);
+        const pipeline_state = try createPipeline(device);
+        errdefer pipeline_state.release();
+
+        const position_buffers = try pipelines.createFrameBuffers(
+            device,
+            frameBytes(scene_limits),
+            "point_positions",
+            limits.frame.in_flight_count,
+        );
+        errdefer position_buffers.release();
+
+        return .{
+            .pipeline_state = pipeline_state,
+            .position_buffers = position_buffers,
             .frame_index = 0,
-            .frame_vertex_offset = 0,
-            .frame_index_offset = 0,
-            .allocator = allocator,
+            .geometry_budget = GeometryCounts.from_limits(scene_limits),
+            .geometry_usage = .{},
         };
-
-        // Create triple-buffered vertex/index buffers
-        for (0..FRAME_COUNT) |i| {
-            self.vertex_buffers[i] = try createBuffer(device, INITIAL_VERTEX_CAPACITY * @sizeOf(PointVertex));
-            self.index_buffers[i] = try createBuffer(device, INITIAL_INDEX_CAPACITY * @sizeOf(u32));
-            self.vertex_capacities[i] = INITIAL_VERTEX_CAPACITY;
-            self.index_capacities[i] = INITIAL_INDEX_CAPACITY;
-        }
-
-        return self;
     }
 
     pub fn deinit(self: *Self) void {
-        for (0..FRAME_COUNT) |i| {
-            self.vertex_buffers[i].release();
-            self.index_buffers[i].release();
-        }
+        self.position_buffers.release();
         self.pipeline_state.release();
+        self.* = undefined;
     }
 
-    /// Advance to next frame (call at start of frame)
+    /// Advance to the next frame-in-flight slot and release the previous frame's
+    /// geometry claims. Call once per rendered frame, before any batch is drawn.
     pub fn nextFrame(self: *Self) void {
-        self.frame_index = (self.frame_index + 1) % FRAME_COUNT;
-        self.frame_vertex_offset = 0;
-        self.frame_index_offset = 0;
+        self.frame_index = self.position_buffers.nextIndex(self.frame_index);
+        self.geometry_usage = .{};
     }
 
-    /// Render a batch of point clouds
+    /// Render a batch of point clouds.
     pub fn renderBatch(
         self: *Self,
         encoder: objc.Object,
         point_clouds: []const PointCloud,
-        viewport_size: [2]f32,
-    ) !void {
-        if (point_clouds.len == 0) return;
+        options: struct { viewport_size: [2]f32, frame: u64 },
+    ) void {
+        assert(point_clouds.len <= scene.MAX_POINT_CLOUDS_PER_FRAME);
+        assert(options.viewport_size[0] > 0);
+        assert(options.viewport_size[1] > 0);
+        const position_buffer = self.position_buffers.at(self.frame_index);
+        const positions_target = pipelines.frameBufferContents(scene.Point, position_buffer);
 
-        // Calculate total vertices and indices needed
-        var total_vertices: u32 = 0;
-        var total_indices: u32 = 0;
-        for (point_clouds) |pc| {
-            total_vertices += pc.vertexCount();
-            total_indices += pc.indexCount();
-        }
+        encoder.msgSend(void, "setRenderPipelineState:", .{self.pipeline_state.value});
+        encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
+            @as(*const anyopaque, @ptrCast(&options.viewport_size)),
+            @as(c_ulong, @sizeOf([2]f32)),
+            @as(c_ulong, 2),
+        });
 
-        if (total_vertices == 0 or total_indices == 0) return;
+        for (point_clouds) |*cloud| {
+            cloud.validate();
+            const positions = cloud.getPositions();
+            const point_first = self.geometry_usage.counts[@backingInt(GeometryPool.points)];
+            // Same pool and per-draw granularity as the Vulkan and CPU renderers.
+            self.geometry_usage.claim(&self.geometry_budget, .{
+                .pool = .points,
+                .requested = @intCast(positions.len),
+                .frame = options.frame,
+            });
+            @memcpy(positions_target[point_first..][0..positions.len], positions);
 
-        const fi = self.frame_index;
-
-        // Grow buffers if needed
-        if (self.frame_vertex_offset + total_vertices > self.vertex_capacities[fi]) {
-            try self.growVertexBuffer(fi, self.frame_vertex_offset + total_vertices);
-        }
-        if (self.frame_index_offset + total_indices > self.index_capacities[fi]) {
-            try self.growIndexBuffer(fi, self.frame_index_offset + total_indices);
-        }
-
-        // Get buffer pointers
-        const vb = self.vertex_buffers[fi];
-        const ib = self.index_buffers[fi];
-
-        const vb_ptr: [*]PointVertex = @ptrCast(@alignCast(vb.msgSend(*anyopaque, "contents", .{})));
-        const ib_ptr: [*]u32 = @ptrCast(@alignCast(ib.msgSend(*anyopaque, "contents", .{})));
-
-        // Expand all point clouds to quads
-        var vertex_offset = self.frame_vertex_offset;
-        var index_offset = self.frame_index_offset;
-
-        for (point_clouds) |pc| {
-            const positions = pc.getPositions();
-            if (positions.len == 0) continue;
-
-            const radius = pc.radius;
-            const base_vertex = vertex_offset;
-            const base_index = index_offset;
-
-            // Generate quad vertices for each point
-            for (positions) |pos| {
-                const pt_base = vertex_offset;
-
-                // Quad corners with UV for SDF
-                // 0--1
-                // |  |
-                // 3--2
-                vb_ptr[vertex_offset] = .{
-                    .x = pos.x - radius,
-                    .y = pos.y - radius,
-                    .u = -1.0,
-                    .v = -1.0,
-                };
-                vertex_offset += 1;
-
-                vb_ptr[vertex_offset] = .{
-                    .x = pos.x + radius,
-                    .y = pos.y - radius,
-                    .u = 1.0,
-                    .v = -1.0,
-                };
-                vertex_offset += 1;
-
-                vb_ptr[vertex_offset] = .{
-                    .x = pos.x + radius,
-                    .y = pos.y + radius,
-                    .u = 1.0,
-                    .v = 1.0,
-                };
-                vertex_offset += 1;
-
-                vb_ptr[vertex_offset] = .{
-                    .x = pos.x - radius,
-                    .y = pos.y + radius,
-                    .u = -1.0,
-                    .v = 1.0,
-                };
-                vertex_offset += 1;
-
-                // Two triangles: 0-1-2 and 0-2-3
-                ib_ptr[index_offset] = pt_base;
-                index_offset += 1;
-                ib_ptr[index_offset] = pt_base + 1;
-                index_offset += 1;
-                ib_ptr[index_offset] = pt_base + 2;
-                index_offset += 1;
-                ib_ptr[index_offset] = pt_base;
-                index_offset += 1;
-                ib_ptr[index_offset] = pt_base + 2;
-                index_offset += 1;
-                ib_ptr[index_offset] = pt_base + 3;
-                index_offset += 1;
-            }
-
-            // Draw this point cloud
             const uniforms = PointCloudUniforms{
-                .color = .{ pc.color.h, pc.color.s, pc.color.l, pc.color.a },
-                .clip_bounds = .{ pc.clip_x, pc.clip_y, pc.clip_width, pc.clip_height },
-                .radius = radius,
+                .color = .{ cloud.color.h, cloud.color.s, cloud.color.l, cloud.color.a },
+                .clip_bounds = .{ cloud.clip_x, cloud.clip_y, cloud.clip_width, cloud.clip_height },
+                .radius = cloud.radius,
             };
-
-            const index_count = pc.indexCount();
-
-            encoder.msgSend(void, "setRenderPipelineState:", .{self.pipeline_state.value});
-
+            // The shader reads `device` memory, so an 8 B-aligned offset suffices.
             encoder.msgSend(void, "setVertexBuffer:offset:atIndex:", .{
-                vb.value,
-                @as(c_ulong, base_vertex * @sizeOf(PointVertex)),
+                position_buffer.value,
+                @as(c_ulong, point_first) * @sizeOf(scene.Point),
                 @as(c_ulong, 0),
             });
-
             encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
                 @as(*const anyopaque, @ptrCast(&uniforms)),
                 @as(c_ulong, @sizeOf(PointCloudUniforms)),
                 @as(c_ulong, 1),
             });
-
-            encoder.msgSend(void, "setVertexBytes:length:atIndex:", .{
-                @as(*const anyopaque, @ptrCast(&viewport_size)),
-                @as(c_ulong, @sizeOf([2]f32)),
-                @as(c_ulong, 2),
-            });
-
-            encoder.msgSend(void, "drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:", .{
+            // Instances draw in order, so points blend in the order the former
+            // indexed draw emitted them.
+            encoder.msgSend(void, "drawPrimitives:vertexStart:vertexCount:instanceCount:", .{
                 @backingInt(mtl.MTLPrimitiveType.triangle),
-                @as(c_ulong, index_count),
-                @backingInt(mtl.MTLIndexType.uint32),
-                ib.value,
-                @as(c_ulong, base_index * @sizeOf(u32)),
+                @as(c_ulong, 0),
+                @as(c_ulong, 6),
+                @as(c_ulong, positions.len),
             });
         }
-
-        self.frame_vertex_offset = vertex_offset;
-        self.frame_index_offset = index_offset;
-    }
-
-    fn growVertexBuffer(self: *Self, frame: usize, min_capacity: u32) !void {
-        const new_capacity = @max(min_capacity, self.vertex_capacities[frame] * 2);
-        self.vertex_buffers[frame].release();
-        self.vertex_buffers[frame] = try createBuffer(self.device, new_capacity * @sizeOf(PointVertex));
-        self.vertex_capacities[frame] = new_capacity;
-    }
-
-    fn growIndexBuffer(self: *Self, frame: usize, min_capacity: u32) !void {
-        const new_capacity = @max(min_capacity, self.index_capacities[frame] * 2);
-        self.index_buffers[frame].release();
-        self.index_buffers[frame] = try createBuffer(self.device, new_capacity * @sizeOf(u32));
-        self.index_capacities[frame] = new_capacity;
     }
 };
 
@@ -375,7 +287,7 @@ pub const PointCloudPipeline = struct {
 // Helper Functions
 // =============================================================================
 
-fn createPipeline(device: objc.Object, sample_count: u32) !objc.Object {
+fn createPipeline(device: objc.Object) !objc.Object {
     const NSString = objc.getClass("NSString") orelse return error.ClassNotFound;
     const source_str = NSString.msgSend(
         objc.Object,
@@ -426,15 +338,17 @@ fn createPipeline(device: objc.Object, sample_count: u32) !objc.Object {
 
     desc.msgSend(void, "setVertexFunction:", .{vertex_fn.value});
     desc.msgSend(void, "setFragmentFunction:", .{fragment_fn.value});
-    desc.msgSend(void, "setSampleCount:", .{@as(c_ulong, sample_count)});
+    desc.msgSend(void, "setSampleCount:", .{@as(c_ulong, pipelines.sample_count)});
 
     const color_attachments = desc.msgSend(objc.Object, "colorAttachments", .{});
     const attachment0 = color_attachments.msgSend(objc.Object, "objectAtIndexedSubscript:", .{@as(c_ulong, 0)});
 
-    // Configure blending
+    // The fragment shader outputs premultiplied alpha, so source RGB blends
+    // with ONE, as Vulkan's mesh pipelines do. With SOURCE_ALPHA the point
+    // falloff would apply twice (rgb * a * a).
     attachment0.msgSend(void, "setPixelFormat:", .{@backingInt(mtl.MTLPixelFormat.bgra8unorm)});
     attachment0.msgSend(void, "setBlendingEnabled:", .{true});
-    attachment0.msgSend(void, "setSourceRGBBlendFactor:", .{@backingInt(mtl.MTLBlendFactor.source_alpha)});
+    attachment0.msgSend(void, "setSourceRGBBlendFactor:", .{@backingInt(mtl.MTLBlendFactor.one)});
     attachment0.msgSend(void, "setDestinationRGBBlendFactor:", .{@backingInt(mtl.MTLBlendFactor.one_minus_source_alpha)});
     attachment0.msgSend(void, "setSourceAlphaBlendFactor:", .{@backingInt(mtl.MTLBlendFactor.one)});
     attachment0.msgSend(void, "setDestinationAlphaBlendFactor:", .{@backingInt(mtl.MTLBlendFactor.one_minus_source_alpha)});
@@ -458,27 +372,4 @@ fn createPipeline(device: objc.Object, sample_count: u32) !objc.Object {
 
     std.debug.print("Point cloud pipeline created successfully\n", .{});
     return objc.Object.fromId(pipeline_ptr);
-}
-
-fn createBuffer(device: objc.Object, size: u32) !objc.Object {
-    const unified_memory = device.msgSend(bool, "hasUnifiedMemory", .{});
-    const storage: mtl.MTLResourceOptions = if (unified_memory)
-        .{ .storage_mode = .shared }
-    else
-        .{ .storage_mode = .managed };
-
-    const buffer_ptr = device.msgSend(
-        ?*anyopaque,
-        "newBufferWithLength:options:",
-        .{
-            @as(c_ulong, size),
-            @as(c_ulong, @bitCast(storage)),
-        },
-    );
-
-    if (buffer_ptr == null) {
-        return error.BufferCreationFailed;
-    }
-
-    return objc.Object.fromId(buffer_ptr);
 }

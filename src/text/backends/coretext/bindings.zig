@@ -121,6 +121,26 @@ pub extern "c" fn CFStringCreateWithCString(
 ) ?CFStringRef;
 
 pub extern "c" fn CFStringGetLength(theString: CFStringRef) CFIndex;
+pub extern "c" fn CFEqual(cf1: CFTypeRef, cf2: CFTypeRef) bool;
+
+// CFNumberType values used to build font trait dictionaries.
+pub const CFNumberType = CFIndex;
+pub const kCFNumberSInt32Type: CFNumberType = 3;
+pub const kCFNumberSInt64Type: CFNumberType = 4;
+pub const kCFNumberFloat64Type: CFNumberType = 6;
+
+pub extern "c" fn CFNumberCreate(
+    allocator: CFAllocatorRef,
+    theType: CFNumberType,
+    valuePtr: *const anyopaque,
+) ?CFNumberRef;
+
+/// Returns false when the conversion to `theType` is lossy (CF `Boolean`).
+pub extern "c" fn CFNumberGetValue(
+    number: CFNumberRef,
+    theType: CFNumberType,
+    valuePtr: *anyopaque,
+) u8;
 
 pub extern "c" fn CFStringGetCharacters(
     theString: CFStringRef,
@@ -208,6 +228,42 @@ pub extern "c" fn CTFontCreateWithName(
     name: CFStringRef,
     size: CGFloat,
     matrix: ?*const CGAffineTransform,
+) ?CTFontRef;
+
+// Font descriptor attributes and traits, for matching a weight and slant
+// within a family.
+pub extern "c" var kCTFontFamilyNameAttribute: CFStringRef;
+pub extern "c" var kCTFontTraitsAttribute: CFStringRef;
+pub extern "c" var kCTFontWeightTrait: CFStringRef;
+pub extern "c" var kCTFontSymbolicTrait: CFStringRef;
+pub extern "c" var kCTFontWidthTrait: CFStringRef;
+
+pub extern "c" fn CTFontDescriptorCreateWithAttributes(
+    attributes: CFDictionaryRef,
+) ?CTFontDescriptorRef;
+pub extern "c" fn CTFontCopyFamilyName(font: CTFontRef) ?CFStringRef;
+pub extern "c" fn CTFontCopyTraits(font: CTFontRef) CFDictionaryRef;
+pub extern "c" fn CTFontCopyFontDescriptor(font: CTFontRef) CTFontDescriptorRef;
+pub extern "c" fn CTFontDescriptorCopyAttribute(
+    descriptor: CTFontDescriptorRef,
+    attribute: CFStringRef,
+) ?CFTypeRef;
+pub extern "c" fn CTFontDescriptorCreateCopyWithAttributes(
+    original: CTFontDescriptorRef,
+    attributes: CFDictionaryRef,
+) CTFontDescriptorRef;
+/// Every installed face matching `descriptor`; with only a family name set
+/// and a null `mandatoryAttributes`, that is the family's face list.
+pub extern "c" fn CTFontDescriptorCreateMatchingFontDescriptors(
+    descriptor: CTFontDescriptorRef,
+    mandatoryAttributes: ?*anyopaque,
+) ?CFArrayRef;
+pub extern "c" fn CTFontCreateCopyWithSymbolicTraits(
+    font: CTFontRef,
+    size: CGFloat,
+    matrix: ?*const CGAffineTransform,
+    symTraitValue: CTFontSymbolicTraits,
+    symTraitMask: CTFontSymbolicTraits,
 ) ?CTFontRef;
 
 pub extern "c" fn CTFontCreateWithFontDescriptor(

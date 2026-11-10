@@ -1,69 +1,1294 @@
-//! Gooey Components
+//! Gooey Components: library controls (`Button`, `Checkbox`, `Select`,
+//! `Modal`, `List`, `TextInput`, `TextArea`, `CodeEditor`) and the Lucide icon
+//! set. Each control composes `ui.box`, `ui.text`, and `ui.paint`; only
+//! `List` reaches into `gooey.internals`, for the scroll state its box keeps.
 //!
-//! High-level components built exclusively on Gooey's public API.
+//! Their geometry and colours match the 0.3.1 components, so the core's
+//! counter and todo goldens can be compared with the 0.3.1 goldens.
 
 const std = @import("std");
+const gooey = @import("gooey");
 
-pub const Button = @import("button.zig").Button;
-pub const Checkbox = @import("checkbox.zig").Checkbox;
-pub const TextInput = @import("text_input.zig").TextInput;
-pub const TextArea = @import("text_area.zig").TextArea;
-pub const CodeEditor = @import("code_editor.zig").CodeEditor;
-pub const ProgressBar = @import("progress_bar.zig").ProgressBar;
-pub const RadioGroup = @import("radio_group.zig").RadioGroup;
-pub const RadioButton = @import("radio_group.zig").RadioButton;
-pub const Tab = @import("tabs.zig").Tab;
-pub const TabBar = @import("tabs.zig").TabBar;
-pub const Svg = @import("svg.zig").Svg;
-pub const Icons = @import("svg.zig").Icons;
-pub const Lucide = @import("svg.zig").Lucide;
-pub const Select = @import("select.zig").Select;
-pub const Image = @import("image.zig").Image;
-pub const AspectRatio = @import("image.zig").AspectRatio;
-pub const Tooltip = @import("tooltip.zig").Tooltip;
-pub const Modal = @import("modal.zig").Modal;
-pub const ContextMenu = @import("context_menu.zig").ContextMenu;
-pub const MenuItem = @import("context_menu.zig").MenuItem;
-pub const ValidatedTextInput = @import("validated_text_input.zig").ValidatedTextInput;
+const assert = std.debug.assert;
+
+const ui = gooey.ui;
+const Cx = gooey.Cx;
+const Handler = gooey.Handler;
+const Key = gooey.Key;
+const Color = ui.Color;
+const InputEngine = gooey.InputEngine;
+const AreaEngine = gooey.AreaEngine;
+const EditorEngine = gooey.EditorEngine;
+
+/// Lucide icon data for `Painter.svg`.
+pub const Lucide = @import("lucide.zig").Lucide;
+
+// =============================================================================
+// Button
+// =============================================================================
+
+pub const Button = struct {
+    label: []const u8,
+    /// The button's key under its parent; defaults to the label, so sibling
+    /// buttons need distinct labels or explicit keys.
+    key: ?[]const u8 = null,
+    variant: Variant = .primary,
+    size: Size = .medium,
+    disabled: bool = false,
+    on_click: ?Handler = null,
+    /// The screen-reader name; defaults to the label.
+    accessible_name: ?[]const u8 = null,
+
+    pub const Variant = enum { primary, secondary, danger };
+    pub const Size = enum { small, medium, large };
+
+    pub fn render(self: Button, cx: *Cx) void {
+        assert(self.label.len > 0);
+        const theme = cx.theme();
+        const key = Key{ .name = self.key orelse self.label };
+        const hovered = !self.disabled and cx.hovered(cx.id(key));
+        const colors = variantColors(self.variant, theme);
+        var background = if (hovered) colors.background.withAlpha(0.85) else colors.background;
+        var foreground = colors.foreground;
+        if (self.disabled) {
+            background = background.withAlpha(0.5);
+            foreground = foreground.withAlpha(0.7);
+        }
+        cx.render(ui.box(.{
+            .key = key,
+            .style = .{
+                .padding = padding(self.size),
+                .background = .{ .rgba = background },
+                .corner_radius = .all(theme.radius_md),
+                .alignment = .center,
+                .cursor = .pointer,
+            },
+            .on_click = if (self.disabled) null else self.on_click,
+            .a11y = .{
+                .role = .button,
+                .label = self.accessible_name orelse self.label,
+                .disabled = self.disabled,
+            },
+        }, .{
+            ui.text(self.label, .{
+                .size = fontSize(self.size, theme.font_size_base),
+                .color = .{ .rgba = foreground },
+            }),
+        }));
+    }
+
+    fn padding(size: Size) ui.Edges {
+        return switch (size) {
+            .small => .symmetric(12, 6),
+            .medium => .symmetric(24, 10),
+            .large => .symmetric(32, 14),
+        };
+    }
+
+    fn fontSize(size: Size, base: u16) u16 {
+        assert(base > 2);
+        return switch (size) {
+            .small => base - 2,
+            .medium => base,
+            .large => base + 2,
+        };
+    }
+
+    const Colors = struct { background: Color, foreground: Color };
+
+    fn variantColors(variant: Variant, theme: *const gooey.Theme) Colors {
+        return switch (variant) {
+            .primary => .{ .background = theme.primary, .foreground = Color.white },
+            .secondary => .{ .background = theme.secondary, .foreground = theme.text },
+            .danger => .{ .background = theme.danger, .foreground = Color.white },
+        };
+    }
+};
+
+// =============================================================================
+// Checkbox
+// =============================================================================
+
+pub const Checkbox = struct {
+    checked: bool,
+    on_click: ?Handler = null,
+    key: ?Key = null,
+    size: f32 = 18,
+    /// Text beside the box, which clicks it too.
+    label: ?[]const u8 = null,
+    /// The screen-reader name; defaults to the label.
+    accessible_name: ?[]const u8 = null,
+    accessible_description: ?[]const u8 = null,
+
+    pub fn render(self: Checkbox, cx: *Cx) void {
+        assert(self.size > 0);
+        const theme = cx.theme();
+        const mark_size = self.size * 0.7;
+        cx.render(ui.box(.{
+            .key = self.key,
+            .style = .{ .direction = .row, .gap = 8, .alignment = .center_cross },
+            .on_click = self.on_click,
+            .a11y = .{
+                .role = .checkbox,
+                .label = self.accessible_name orelse self.label,
+                .description = self.accessible_description,
+                .checked = self.checked,
+            },
+        }, .{
+            ui.box(.{ .style = .{
+                .width = .{ .fixed = self.size },
+                .height = .{ .fixed = self.size },
+                .background = if (self.checked) .primary else .surface,
+                .border = .{ .width = 1, .color = .border },
+                .corner_radius = .all(theme.radius_sm),
+                .alignment = .center,
+            } }, .{
+                if (self.checked) ui.paint(Checkmark, &checkmark, Checkmark.paint, .{
+                    .width = .{ .fixed = mark_size },
+                    .height = .{ .fixed = mark_size },
+                }) else null,
+            }),
+            if (self.label) |label| ui.text(label, .{
+                .size = theme.font_size_base,
+                .color = .text,
+            }) else null,
+        }));
+    }
+
+    const Checkmark = struct {
+        path: []const u8,
+
+        fn paint(self: *const Checkmark, painter: *ui.Painter) void {
+            painter.svg(self.path, painter.bounds, .{ .fill = Color.white });
+        }
+    };
+
+    /// The Material "check" icon, as the 0.3.1 checkbox draws it.
+    const checkmark = Checkmark{ .path = "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" };
+};
+
+// =============================================================================
+// Select
+// =============================================================================
+
+/// A dropdown of options, as the 0.3.1 `Select` draws it, with its menu on a
+/// `.popover` layer. The app owns `selected` and `open`: the trigger calls
+/// `on_toggle`, a click outside calls `on_close`, and option `i` calls
+/// `on_select[i]`, typically `cx.on(State.choose, .{ .arg = i })`.
+pub const Select = struct {
+    key: []const u8,
+    options: []const []const u8,
+    /// One handler per option.
+    on_select: []const Handler,
+    on_toggle: Handler,
+    on_close: Handler,
+    selected: ?usize = null,
+    open: bool = false,
+    placeholder: []const u8 = "Select...",
+    disabled: bool = false,
+    width: f32 = 200,
+    padding: f32 = 10,
+    /// The combobox's screen-reader name; defaults to the placeholder.
+    accessible_name: ?[]const u8 = null,
+    accessible_description: ?[]const u8 = null,
+
+    pub fn render(self: Select, cx: *Cx) void {
+        assert(self.key.len > 0);
+        assert(self.on_select.len == self.options.len);
+        if (self.selected) |index| assert(index < self.options.len);
+        const theme = cx.theme();
+        const key = Key{ .name = self.key };
+        const trigger_height = @as(f32, @floatFromInt(theme.font_size_base)) +
+            self.padding * 2 + 4;
+        cx.render(ui.box(.{
+            .key = key,
+            .style = .{ .width = .{ .fixed = self.width } },
+            .on_click_outside = if (self.open) self.on_close else null,
+            .a11y = .{
+                .role = .combobox,
+                .label = self.accessible_name orelse self.placeholder,
+                .description = self.accessible_description,
+                .value = self.displayText(),
+                .expanded = self.open,
+                .has_popup = true,
+                .disabled = self.disabled,
+            },
+        }, .{
+            SelectTrigger{ .select = &self, .height = trigger_height },
+            if (self.open) SelectMenu{ .select = &self, .offset_y = trigger_height } else null,
+        }));
+    }
+
+    fn displayText(self: *const Select) []const u8 {
+        const index = self.selected orelse return self.placeholder;
+        return self.options[index];
+    }
+};
+
+const SelectTrigger = struct {
+    select: *const Select,
+    height: f32,
+
+    pub fn render(self: SelectTrigger, cx: *Cx) void {
+        const select = self.select;
+        assert(self.height > 0);
+        const theme = cx.theme();
+        const key = Key{ .name = "trigger" };
+        const hovered = !select.disabled and cx.hovered(cx.id(key));
+        const opacity: f32 = if (select.disabled) 0.6 else 1;
+        const background = if (hovered) theme.overlay else theme.surface;
+        const text_color = if (select.selected == null) theme.muted else theme.text;
+        const chevron = &chevrons[@intFromBool(select.open)][@intFromBool(select.disabled)];
+        cx.render(ui.box(.{
+            .key = key,
+            .style = .{
+                .width = .{ .grow = 1 },
+                .height = .{ .fixed = self.height },
+                .padding = .symmetric(select.padding, select.padding / 2),
+                .background = .{ .rgba = background.withAlpha(opacity) },
+                .border = .{ .width = 1, .color = if (select.open) .border_focus else .border },
+                .corner_radius = .all(theme.radius_md),
+                .direction = .row,
+                .alignment = .{ .main = .space_between, .cross = .center },
+                .cursor = .pointer,
+            },
+            .on_click = if (select.disabled) null else select.on_toggle,
+        }, .{
+            ui.text(select.displayText(), .{
+                .size = theme.font_size_base,
+                .color = .{ .rgba = text_color.withAlpha(opacity) },
+            }),
+            ui.paint(SelectIcon, chevron, SelectIcon.paint, .{
+                .width = .{ .fixed = 10 },
+                .height = .{ .fixed = 10 },
+            }),
+        }));
+    }
+};
+
+const SelectMenu = struct {
+    select: *const Select,
+    offset_y: f32,
+
+    pub fn render(self: SelectMenu, cx: *Cx) void {
+        const select = self.select;
+        assert(select.open);
+        const theme = cx.theme();
+        cx.render(ui.box(.{
+            .layer = .{
+                .kind = .popover,
+                .anchor = .{ .parent = .{ .y = self.offset_y } },
+                .clip = .escape,
+            },
+            .style = .{
+                .width_min = select.width,
+                .padding = .all(4),
+                .background = .surface,
+                .border = .{ .width = 1, .color = .border },
+                .corner_radius = .all(theme.radius_md),
+                .gap = 2,
+                .shadow = .{ .blur = 12, .offset_y = 4 },
+            },
+        }, .{SelectOptions{ .select = select }}));
+    }
+};
+
+const SelectOptions = struct {
+    select: *const Select,
+
+    pub fn render(self: SelectOptions, cx: *Cx) void {
+        const select = self.select;
+        const theme = cx.theme();
+        assert(select.options.len == select.on_select.len);
+        for (select.options, select.on_select, 0..) |label, handler, index| {
+            const key = Key{ .index = index };
+            const chosen = select.selected == index;
+            const hovered = cx.hovered(cx.id(key));
+            const background: ?Color = if (hovered)
+                theme.overlay
+            else if (chosen) theme.primary.withAlpha(0.15) else null;
+            cx.render(ui.box(.{
+                .key = key,
+                .style = .{
+                    .width = .{ .grow = 1 },
+                    .padding = .symmetric(select.padding, select.padding * 0.7),
+                    .background = if (background) |color| .{ .rgba = color } else null,
+                    .corner_radius = .all(theme.radius_md - 2),
+                    .direction = .row,
+                    .gap = 8,
+                    .alignment = .{ .main = .space_between, .cross = .center },
+                    .cursor = .pointer,
+                },
+                .on_click = handler,
+            }, .{
+                ui.text(label, .{ .size = theme.font_size_base, .color = .text }),
+                ui.box(.{ .style = .{
+                    .width = .{ .fixed = 16 },
+                    .height = .{ .fixed = 16 },
+                    .alignment = .center,
+                } }, .{
+                    if (chosen) ui.paint(SelectIcon, &select_check, SelectIcon.paint, .{
+                        .width = .{ .fixed = 14 },
+                        .height = .{ .fixed = 14 },
+                    }) else null,
+                }),
+            }));
+        }
+    }
+};
+
+/// A Material icon tinted by a theme colour at paint time, so one constant
+/// serves every theme.
+const SelectIcon = struct {
+    path: []const u8,
+    color: enum { text, primary },
+    opacity: f32,
+
+    fn paint(self: *const SelectIcon, painter: *ui.Painter) void {
+        const theme = painter.theme();
+        const color = switch (self.color) {
+            .text => theme.text,
+            .primary => theme.primary,
+        };
+        painter.svg(self.path, painter.bounds, .{ .fill = color.withAlpha(self.opacity) });
+    }
+};
+
+const chevron_down = "M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6z";
+const chevron_up = "M7.41 15.41L12 10.83l4.59 4.58L18 14l-6-6-6 6z";
+
+/// Indexed by `open`, then `disabled`.
+const chevrons = [2][2]SelectIcon{
+    .{
+        .{ .path = chevron_down, .color = .text, .opacity = 1 },
+        .{ .path = chevron_down, .color = .text, .opacity = 0.6 },
+    },
+    .{
+        .{ .path = chevron_up, .color = .text, .opacity = 1 },
+        .{ .path = chevron_up, .color = .text, .opacity = 0.6 },
+    },
+};
+
+const select_check = SelectIcon{ .path = Checkbox.checkmark.path, .color = .primary, .opacity = 1 };
+
+// =============================================================================
+// Modal
+// =============================================================================
+
+/// A dialog over a dimmed backdrop, as 0.3.1's `Modal`, on a `.modal` layer:
+/// nothing opened before it receives the pointer (contract §6), and layers
+/// its child opens, such as a `Select`'s menu, sit above it. The app owns
+/// `open`; with `close_on_backdrop`, a press outside the panel calls
+/// `on_close`. 0.3.1's fade and scale wait for the animation cluster.
+pub fn Modal(comptime Child: type) type {
+    return struct {
+        key: []const u8,
+        open: bool,
+        child: Child,
+        on_close: ?Handler = null,
+        close_on_backdrop: bool = true,
+        backdrop: Color = Color.rgba(0, 0, 0, 0.5),
+        content_max_width: ?f32 = 500,
+        content_padding: f32 = 24,
+        /// Defaults to the theme's surface.
+        content_background: ?Color = null,
+        /// Defaults to the theme's `radius_lg`.
+        content_corner_radius: ?f32 = null,
+        content_shadow: ?ui.Shadow = .{
+            .blur = 24,
+            .offset_y = 8,
+            .color = .{ .rgba = Color.rgba(0, 0, 0, 0.25) },
+        },
+        /// The dialog's screen-reader name; defaults to the key.
+        accessible_name: ?[]const u8 = null,
+        accessible_description: ?[]const u8 = null,
+
+        const Self = @This();
+
+        pub fn render(self: Self, cx: *Cx) void {
+            assert(self.key.len > 0);
+            if (self.close_on_backdrop) assert(self.on_close != null);
+            if (!self.open) return;
+            const theme = cx.theme();
+            const background = self.content_background orelse theme.surface;
+            cx.render(ui.box(.{
+                .key = .{ .name = self.key },
+                .layer = .{ .kind = .modal, .anchor = .{ .window = .{} }, .clip = .escape },
+                .style = .{
+                    .width = .{ .grow = 1 },
+                    .height = .{ .grow = 1 },
+                    .background = .{ .rgba = self.backdrop },
+                    .alignment = .center,
+                },
+                .a11y = .{
+                    .role = .dialog,
+                    .label = self.accessible_name orelse self.key,
+                    .description = self.accessible_description,
+                },
+            }, .{ui.box(.{
+                .key = .{ .name = "panel" },
+                .style = .{
+                    .width_max = self.content_max_width,
+                    .padding = .all(self.content_padding),
+                    .background = .{ .rgba = background },
+                    .corner_radius = .all(self.content_corner_radius orelse theme.radius_lg),
+                    .shadow = self.content_shadow,
+                },
+                .on_click_outside = if (self.close_on_backdrop) self.on_close else null,
+            }, .{self.child})}));
+        }
+    };
+}
+
+// =============================================================================
+// List
+// =============================================================================
+
+/// A vertical list of `count` rows that builds only the rows in view
+/// (contract §1): a keyed scroll box whose retained offset and last measured
+/// viewport pick the rows, with spacers above and below standing in for the
+/// rest so the wheel and scrollbar see every row. `Row` has an `index: u32`
+/// field and a `render`, and declares its heights one of two ways:
+///
+/// - `row_height: f32`, one height for every row, as 0.3.1's uniform list.
+///   The rows in view follow from the offset in constant time.
+/// - `fn height(cx: *Cx, index: u32) f32` and `count_max: u32`, a height per
+///   row, as 0.3.1's virtual list. Each render sums every row's height, so
+///   `count_max` bounds that work; a longer list fails fast.
+///
+/// Each row sits in a box keyed by its index, so state a row keys survives
+/// scrolling. `gap` separates rows, and `style` dresses the scroll box
+/// (background, border, corners, padding). The list grows to fill its
+/// parent: a viewport sized by its rows would add one row per frame.
+pub fn List(comptime Row: type) type {
+    comptime {
+        assert(@FieldType(Row, "index") == u32);
+        assert(@hasDecl(Row, "row_height") != @hasDecl(Row, "height"));
+        if (@hasDecl(Row, "row_height")) assert(Row.row_height >= 1);
+        if (@hasDecl(Row, "height")) assert(Row.count_max <= list_count_max);
+    }
+    return struct {
+        key: []const u8,
+        count: u32,
+        gap: f32 = 0,
+        style: ui.Style = .{},
+
+        const Self = @This();
+        const ScrollState = gooey.internals.window.ScrollState;
+        const uniform = @hasDecl(Row, "row_height");
+
+        pub fn render(self: Self, cx: *Cx) void {
+            assert(self.key.len > 0);
+            assert(self.gap >= 0);
+            self.checkStyle();
+            if (!uniform) self.checkCount();
+            const key = Key{ .name = self.key };
+            // The box retains this state by its key; retaining it first
+            // reads the offset and viewport the router and last emit left.
+            const handle = cx.retain(ScrollState, cx.id(key), .frame, ScrollState.init);
+            const range = self.visibleRows(cx, cx.get(ScrollState, handle));
+            assert(range.start <= range.end);
+            assert(range.end <= self.count);
+            var style = self.style;
+            style.width = .{ .grow = 1 };
+            style.height = .{ .grow = 1 };
+            style.scroll = .{};
+            cx.render(ui.box(.{ .key = key, .style = style }, .{
+                spacer(range.above),
+                ListRows(Row){
+                    .start = range.start,
+                    .end = range.end,
+                    .count = self.count,
+                    .gap = self.gap,
+                },
+                spacer(range.below),
+            }));
+        }
+
+        /// The list owns the scroll box's size, scrolling, and row spacing.
+        fn checkStyle(self: Self) void {
+            assert(self.style.width == .fit);
+            assert(self.style.height == .fit);
+            assert(self.style.scroll == null);
+            assert(self.style.gap == 0);
+            assert(self.style.direction == .column);
+        }
+
+        fn checkCount(self: Self) void {
+            if (self.count <= Row.count_max) return;
+            std.debug.panic("List \"{s}\" of {d} rows: capacity {d}. Raise {s}.count_max.", .{
+                self.key, self.count, Row.count_max, @typeName(Row),
+            });
+        }
+
+        /// The rows from the first one the offset reaches through the last
+        /// one the viewport shows, partial rows included, and the heights
+        /// above and below them. An unmeasured viewport shows one row; the
+        /// emit that measures it requests the render that fills it.
+        fn visibleRows(self: Self, cx: *Cx, state: *const ScrollState) ListRange {
+            const padding = self.style.padding;
+            const rows_height = self.contentHeight(cx);
+            const content_height = rows_height + padding.top + padding.bottom;
+            const offset_max = @max(0, content_height - state.viewport.height);
+            const offset = std.math.clamp(state.offset_y, 0, offset_max);
+            const view_top = offset - padding.top;
+            const range = if (uniform)
+                uniformRows(view_top, state.viewport.height, self.count, self.gap)
+            else
+                variableRows(cx, view_top, state.viewport.height, self.count, self.gap);
+            const end_top = if (uniform)
+                pitch(self.gap) * @as(f32, @floatFromInt(range.end))
+            else
+                range.below;
+            const below = if (range.end == self.count) 0 else rows_height - end_top;
+            assert(range.above >= 0);
+            assert(below >= 0);
+            var result = range;
+            result.below = below;
+            return result;
+        }
+
+        /// Every row's height and the gaps between them.
+        fn contentHeight(self: Self, cx: *Cx) f32 {
+            if (self.count == 0) return 0;
+            const gaps = self.gap * @as(f32, @floatFromInt(self.count - 1));
+            if (uniform) return Row.row_height * @as(f32, @floatFromInt(self.count)) + gaps;
+            var total: f32 = gaps;
+            var index: u32 = 0;
+            while (index < self.count) : (index += 1) total += listRowHeight(Row, cx, index);
+            return total;
+        }
+
+        fn pitch(gap: f32) f32 {
+            return Row.row_height + gap;
+        }
+
+        /// The first row the view's top reaches through the last its height
+        /// covers, plus one for a partial row. `below` is unset.
+        fn uniformRows(view_top: f32, view_height: f32, count: u32, gap: f32) ListRange {
+            const row_pitch = pitch(gap);
+            const first: u32 = @intFromFloat(@floor(@max(0, view_top) / row_pitch));
+            const shown: u32 = @intFromFloat(@ceil(view_height / row_pitch));
+            assert(shown <= list_rows_visible_max);
+            const start = @min(first, count);
+            const end = @min(count, start + shown + 1);
+            const above = row_pitch * @as(f32, @floatFromInt(start));
+            return .{ .start = start, .end = end, .above = above, .below = 0 };
+        }
+
+        /// One scan from the first row: rows whose bottoms stay above the
+        /// view are skipped, then rows are taken until one starts at or past
+        /// the view's bottom, and always one. `below` carries the end row's
+        /// top for `visibleRows` to subtract.
+        fn variableRows(cx: *Cx, view_top: f32, view_height: f32, count: u32, gap: f32) ListRange {
+            assert(count <= Row.count_max);
+            assert(view_height >= 0);
+            var top: f32 = 0;
+            var index: u32 = 0;
+            while (index < count) : (index += 1) {
+                const height = listRowHeight(Row, cx, index);
+                if (top + height > view_top) break;
+                top += height + gap;
+            }
+            const start = index;
+            const above = top;
+            const view_bottom = view_top + view_height;
+            while (index < count) : (index += 1) {
+                if (index > start and top >= view_bottom) break;
+                if (index - start > list_rows_visible_max) break;
+                top += listRowHeight(Row, cx, index) + gap;
+            }
+            return .{ .start = start, .end = index, .above = above, .below = top };
+        }
+
+        fn spacer(height: f32) ui.Box.Element(@TypeOf(.{})) {
+            assert(height >= 0);
+            return ui.box(.{ .style = .{ .height = .{ .fixed = height } } }, .{});
+        }
+    };
+}
+
+const ListRange = struct { start: u32, end: u32, above: f32, below: f32 };
+
+/// Rows a viewport can show: one as tall as the tallest framebuffer, of
+/// 1 px rows. A taller viewport (a list inside a taller scrolled box) fails
+/// fast rather than building rows past any screen.
+const list_rows_visible_max: u32 = gooey.internals.limits.MAX_FRAMEBUFFER_HEIGHT;
+
+/// The longest list of per-row heights: each render sums them all, and
+/// 65,536 calls stay well inside a frame.
+pub const list_count_max: u32 = 65_536;
+
+fn listRowHeight(comptime Row: type, cx: *Cx, index: u32) f32 {
+    const height: f32 = if (@hasDecl(Row, "row_height")) Row.row_height else Row.height(cx, index);
+    assert(height >= 0);
+    return height;
+}
+
+/// The rows in view, each in a box keyed by its index and as tall as the
+/// row plus the gap below it; the last row has no gap below.
+fn ListRows(comptime Row: type) type {
+    return struct {
+        start: u32,
+        end: u32,
+        count: u32,
+        gap: f32,
+
+        pub fn render(self: @This(), cx: *Cx) void {
+            assert(self.start <= self.end);
+            assert(self.end <= self.count);
+            assert(self.end - self.start <= list_rows_visible_max + 1);
+            var index = self.start;
+            while (index < self.end) : (index += 1) {
+                const gap: f32 = if (index + 1 < self.count) self.gap else 0;
+                const height = listRowHeight(Row, cx, index);
+                cx.render(ui.box(.{ .key = .{ .index = index }, .style = .{
+                    .width = .{ .grow = 1 },
+                    .height = .{ .fixed = height + gap },
+                    .padding = .{ .bottom = gap },
+                } }, .{Row{ .index = index }}));
+            }
+        }
+    };
+}
+
+// =============================================================================
+// TextInput
+// =============================================================================
+
+/// A single-line input bound to an app field. The engine is retained under
+/// the input's key and lives while the input is rendered; `bind` points into
+/// the engine's buffer after an edit, so the app reads the text there and
+/// assigns `""` (or any other slice) to replace it.
+pub const TextInput = struct {
+    key: []const u8,
+    bind: *[]const u8,
+    placeholder: []const u8 = "",
+    /// Null fills the parent's free width, as `CodeEditor.width` does.
+    width: ?f32 = 200,
+    padding: f32 = 8,
+    border_width: f32 = 1,
+    /// The unfocused border, such as an error colour; defaults to the theme's.
+    border_color: ?Color = null,
+    /// The screen-reader name; defaults to the placeholder.
+    accessible_name: ?[]const u8 = null,
+    accessible_description: ?[]const u8 = null,
+
+    pub fn render(self: TextInput, cx: *Cx) void {
+        assert(self.key.len > 0);
+        const theme = cx.theme();
+        const key = Key{ .name = self.key };
+        const id = cx.id(key);
+        const handle = cx.retain(InputEngine, id, .{ .scope = id }, initEngine);
+        const engine = cx.get(InputEngine, handle);
+        engine.syncBound(self.bind);
+        const focused = cx.focused(id);
+        setView(&engine.view, theme, id, self.placeholder);
+        engine.blink(cx, focused);
+        const inset = self.padding + self.border_width;
+        const metrics = cx.fontMetrics();
+        cx.render(ui.box(.{
+            .key = key,
+            .focusable = true,
+            .on_key = cx.on(InputEngine.onKey, .{ .entity = handle }),
+            .style = .{
+                .width = if (self.width) |width| .{ .fixed = width } else .{ .grow = 1 },
+                .height = .{ .fixed = metrics.line_height + inset * 2 },
+                .padding = .all(inset),
+                .background = .surface,
+                .border = .{
+                    .width = self.border_width,
+                    .color = if (focused)
+                        .border_focus
+                    else if (self.border_color) |color| .{ .rgba = color } else .border,
+                },
+                .corner_radius = .all(theme.radius_md),
+                .cursor = .text,
+            },
+            .a11y = .{
+                .role = .textbox,
+                .label = self.accessible_name orelse self.placeholder,
+                .description = self.accessible_description,
+                .value = if (engine.len > 0) engine.text() else null,
+            },
+        }, .{
+            ui.paint(InputEngine, engine, paintInput, .{
+                .width = .{ .grow = 1 },
+                .height = .{ .grow = 1 },
+            }),
+        }));
+    }
+
+    fn initEngine(engine: *InputEngine) void {
+        assert(engine.len == 0);
+    }
+
+    /// The selection, under the text, while focused.
+    fn paintSelection(engine: *const InputEngine, painter: *ui.Painter, size: u16) void {
+        assert(engine.view.focused);
+        if (!engine.hasSelection()) return;
+        const bounds = painter.bounds;
+        const line_height = painter.fontMetrics().line_height;
+        const style = ui.PaintText{ .size = size, .color = engine.view.text_color };
+        const text = engine.text();
+        const start = painter.measureText(text[0..engine.selectionStart()], style);
+        const end = painter.measureText(text[0..engine.selectionEnd()], style);
+        assert(end >= start);
+        painter.fill(.{
+            .x = bounds.x + start,
+            .y = bounds.y + (bounds.height - line_height) / 2,
+            .width = end - start,
+            .height = line_height,
+        }, engine.view.selection_color);
+    }
+
+    /// Placeholder, or the selection and text with the preedit at the caret;
+    /// then the caret in its blink phase.
+    fn paintInput(engine: *const InputEngine, painter: *ui.Painter) void {
+        const view = &engine.view;
+        const bounds = painter.bounds;
+        const metrics = painter.fontMetrics();
+        const size: u16 = @intFromFloat(metrics.point_size);
+        const baseline = metrics.calcBaseline(bounds.y, bounds.height);
+        painter.pushClip(bounds);
+        defer painter.popClip();
+        if (view.focused) paintSelection(engine, painter, size);
+        const text = engine.text();
+        const preedit = engine.preeditText();
+        if (text.len == 0 and preedit.len == 0) {
+            const style = ui.PaintText{ .size = size, .color = view.placeholder_color };
+            _ = painter.textOnBaseline(view.placeholder, bounds.x, baseline, style);
+        } else {
+            const style = ui.PaintText{ .size = size, .color = view.text_color };
+            const before = text[0..engine.cursor];
+            var pen = bounds.x + painter.textOnBaseline(before, bounds.x, baseline, style);
+            if (preedit.len > 0) {
+                const width = painter.textOnBaseline(preedit, pen, baseline, style);
+                const underline = ui.Rect{
+                    .x = pen,
+                    .y = baseline + 2,
+                    .width = width,
+                    .height = 1,
+                };
+                painter.fill(underline, view.preedit_underline_color);
+                pen += width;
+            }
+            _ = painter.textOnBaseline(text[engine.cursor..], pen, baseline, style);
+        }
+        if (!view.focused) return;
+        const caret_style = ui.PaintText{ .size = size, .color = view.caret_color };
+        const caret_x = bounds.x + painter.measureText(text[0..engine.cursor], caret_style);
+        const preedit_width = painter.measureText(preedit, caret_style);
+        const caret = ui.Rect{
+            .x = caret_x,
+            .y = bounds.y + (bounds.height - metrics.line_height) / 2,
+            .width = 1.5,
+            .height = metrics.line_height,
+        };
+        if (preedit.len == 0 and view.caret_visible) painter.fill(caret, view.caret_color);
+        var ime_rect = caret;
+        ime_rect.x += preedit_width;
+        painter.imeCursor(.{
+            .owner = view.id,
+            .cursor_rect = ime_rect,
+            .selected_start = engine.selectionStart(),
+            .selected_end = engine.selectionEnd(),
+        });
+    }
+};
+
+/// What both text components draw with, from the theme.
+fn setView(
+    view: *InputEngine.View,
+    theme: *const gooey.Theme,
+    id: gooey.ElementId,
+    placeholder: []const u8,
+) void {
+    assert(id.isKeyed());
+    view.id = id;
+    view.placeholder = placeholder;
+    view.text_color = theme.text;
+    view.placeholder_color = theme.muted;
+    view.selection_color = theme.primary.withAlpha(0.3);
+    view.caret_color = theme.text;
+    view.preedit_underline_color = Color.rgb(0.3, 0.3, 0.3);
+    view.scrollbar_track_color = theme.muted.withAlpha(0.1);
+    view.scrollbar_thumb_color = theme.muted.withAlpha(0.4);
+    assert(view.placeholder.len == placeholder.len);
+}
+
+// =============================================================================
+// TextArea
+// =============================================================================
+
+/// A multi-line input bound to an app field, `rows` lines tall. Lines split
+/// on '\n' without soft wrap, and the lines scroll to keep the caret in view,
+/// as in 0.3.1. The app reserves areas with `limits.text.area`.
+pub const TextArea = struct {
+    key: []const u8,
+    bind: *[]const u8,
+    placeholder: []const u8 = "",
+    width: f32 = 300,
+    rows: u16 = 4,
+    padding: f32 = 8,
+    border_width: f32 = 1,
+
+    /// The scrollbar's width at the right edge, as in 0.3.1.
+    const scrollbar_width: f32 = 8;
+
+    pub fn render(self: TextArea, cx: *Cx) void {
+        assert(self.key.len > 0);
+        assert(self.rows > 0);
+        const theme = cx.theme();
+        const key = Key{ .name = self.key };
+        const id = cx.id(key);
+        const handle = cx.retain(AreaEngine, id, .{ .scope = id }, initEngine);
+        const engine = cx.get(AreaEngine, handle);
+        engine.syncBound(self.bind);
+        const focused = cx.focused(id);
+        setView(&engine.view, theme, id, self.placeholder);
+        const inset = self.padding + self.border_width;
+        const line_height = cx.fontMetrics().line_height;
+        const viewport_height = line_height * @as(f32, @floatFromInt(self.rows));
+        engine.resolveClick(cx, .{ .text_x = inset, .text_y = inset, .gutter_end = 0 });
+        engine.follow(line_height, viewport_height);
+        engine.blink(cx, focused);
+        cx.render(ui.box(.{
+            .key = key,
+            .focusable = true,
+            .on_key = cx.on(AreaEngine.onKey, .{ .entity = handle }),
+            .on_click = cx.on(AreaEngine.onClick, .{ .entity = handle }),
+            .style = .{
+                .width = .{ .fixed = self.width },
+                .height = .{ .fixed = viewport_height + inset * 2 },
+                .padding = .all(inset),
+                .background = .surface,
+                .border = .{
+                    .width = self.border_width,
+                    .color = if (focused) .border_focus else .border,
+                },
+                .corner_radius = .all(theme.radius_md),
+                .cursor = .text,
+            },
+            .a11y = .{
+                .role = .textarea,
+                .label = self.placeholder,
+                .value = if (engine.len > 0) engine.text() else null,
+            },
+        }, .{
+            ui.paint(AreaEngine, engine, paintArea, .{
+                .width = .{ .grow = 1 },
+                .height = .{ .grow = 1 },
+            }),
+        }));
+    }
+
+    fn initEngine(engine: *AreaEngine) void {
+        assert(engine.len == 0);
+    }
+
+    /// The visible lines with the selection under them and the preedit at
+    /// the caret, then the caret and the scrollbar. Lines above the viewport
+    /// are skipped and drawing stops below it, so paint work is bounded by
+    /// `rows` + 1 lines; finding them scans the text once.
+    fn paintArea(engine: *const AreaEngine, painter: *ui.Painter) void {
+        paintText(engine, painter);
+    }
+
+    /// `paintArea` for any multi-line engine; the editor draws its text so.
+    fn paintText(engine: anytype, painter: *ui.Painter) void {
+        const bounds = painter.bounds;
+        const metrics = painter.fontMetrics();
+        const size: u16 = @intFromFloat(metrics.point_size);
+        painter.pushClip(bounds);
+        defer painter.popClip();
+        if (engine.len == 0 and engine.preedit_len == 0) {
+            const style = ui.PaintText{ .size = size, .color = engine.view.placeholder_color };
+            const baseline = metrics.calcBaseline(bounds.y, metrics.line_height);
+            _ = painter.textOnBaseline(engine.view.placeholder, bounds.x, baseline, style);
+        } else {
+            paintLines(engine, painter, size);
+        }
+        if (engine.view.focused) paintCaret(engine, painter, size);
+        paintScrollbar(engine, painter);
+    }
+
+    fn paintLines(engine: anytype, painter: *ui.Painter, size: u16) void {
+        const bounds = painter.bounds;
+        const line_height = painter.fontMetrics().line_height;
+        var start: u32 = 0;
+        var top = bounds.y - engine.scroll_y;
+        var line_count: u32 = 0;
+        while (line_count <= engine.len) : (line_count += 1) {
+            const end = engine.lineEnd(start);
+            if (top > bounds.y + bounds.height) break;
+            if (top + line_height >= bounds.y) paintLine(engine, painter, size, start, end, top);
+            if (end == engine.len) break;
+            start = end + 1;
+            top += line_height;
+        }
+        assert(line_count <= engine.len);
+    }
+
+    /// One line: its part of the selection, then its text, with the
+    /// preedit underlined at the caret when the caret is on this line.
+    fn paintLine(
+        engine: anytype,
+        painter: *ui.Painter,
+        size: u16,
+        start: u32,
+        end: u32,
+        top: f32,
+    ) void {
+        assert(start <= end);
+        const metrics = painter.fontMetrics();
+        const style = ui.PaintText{ .size = size, .color = engine.view.text_color };
+        const line = engine.text()[start..end];
+        const left = painter.bounds.x;
+        if (engine.view.focused and engine.hasSelection()) {
+            const from = @max(engine.selectionStart(), start);
+            const to = @min(engine.selectionEnd(), end);
+            if (from <= to and engine.selectionEnd() > start) {
+                const x0 = painter.measureText(line[0 .. from - start], style);
+                const x1 = painter.measureText(line[0 .. to - start], style);
+                // A selected newline shows as a sliver past the line's end.
+                const newline: f32 = if (engine.selectionEnd() > end) 4 else 0;
+                painter.fill(.{
+                    .x = left + x0,
+                    .y = top,
+                    .width = x1 - x0 + newline,
+                    .height = metrics.line_height,
+                }, engine.view.selection_color);
+            }
+        }
+        const baseline = metrics.calcBaseline(top, metrics.line_height);
+        const preedit = engine.preeditText();
+        const caret_here = engine.cursor >= start and engine.cursor <= end;
+        if (preedit.len == 0 or !caret_here) {
+            _ = painter.textOnBaseline(line, left, baseline, style);
+            return;
+        }
+        const split = engine.cursor - start;
+        var pen = left + painter.textOnBaseline(line[0..split], left, baseline, style);
+        const width = painter.textOnBaseline(preedit, pen, baseline, style);
+        painter.fill(
+            .{ .x = pen, .y = baseline + 2, .width = width, .height = 1 },
+            engine.view.preedit_underline_color,
+        );
+        pen += width;
+        _ = painter.textOnBaseline(line[split..], pen, baseline, style);
+    }
+
+    /// The caret in its blink phase, and the IME's answer at the caret.
+    fn paintCaret(engine: anytype, painter: *ui.Painter, size: u16) void {
+        assert(engine.view.focused);
+        const line_height = painter.fontMetrics().line_height;
+        const style = ui.PaintText{ .size = size, .color = engine.view.caret_color };
+        const start = engine.lineStart(engine.cursor);
+        const row: f32 = @floatFromInt(engine.lineOf(engine.cursor));
+        const caret = ui.Rect{
+            .x = painter.bounds.x + painter.measureText(engine.text()[start..engine.cursor], style),
+            .y = painter.bounds.y + row * line_height - engine.scroll_y,
+            .width = 1.5,
+            .height = line_height,
+        };
+        const preedit = engine.preeditText();
+        if (preedit.len == 0 and engine.view.caret_visible) {
+            painter.fill(caret, engine.view.caret_color);
+        }
+        var ime_rect = caret;
+        ime_rect.x += painter.measureText(preedit, style);
+        painter.imeCursor(.{
+            .owner = engine.view.id,
+            .cursor_rect = ime_rect,
+            .selected_start = engine.selectionStart(),
+            .selected_end = engine.selectionEnd(),
+        });
+    }
+
+    /// A track and thumb at the right edge while the lines overflow.
+    fn paintScrollbar(engine: anytype, painter: *ui.Painter) void {
+        const bounds = painter.bounds;
+        const line_height = painter.fontMetrics().line_height;
+        const lines: f32 = @floatFromInt(std.mem.count(u8, engine.text(), "\n") + 1);
+        const content_height = lines * line_height;
+        if (content_height <= bounds.height) return;
+        const track = ui.Rect{
+            .x = bounds.x + bounds.width - scrollbar_width,
+            .y = bounds.y,
+            .width = scrollbar_width,
+            .height = bounds.height,
+        };
+        painter.fill(track, engine.view.scrollbar_track_color);
+        const thumb_height = @max(20, bounds.height * bounds.height / content_height);
+        const travel = bounds.height - thumb_height;
+        const scroll_max = content_height - bounds.height;
+        assert(scroll_max > 0);
+        var thumb = track;
+        thumb.y += travel * engine.scroll_y / scroll_max;
+        thumb.height = thumb_height;
+        painter.fill(thumb, engine.view.scrollbar_thumb_color);
+    }
+};
+
+// =============================================================================
+// CodeEditor
+// =============================================================================
+
+/// A TextArea with line numbers, a highlighted current line, Tab indenting,
+/// and a status bar, as 0.3.1's CodeEditor. Clicking a line number selects
+/// the line. The app reserves editors with `limits.text.editor`.
+pub const CodeEditor = struct {
+    key: []const u8,
+    bind: *[]const u8,
+    placeholder: []const u8 = "",
+    /// Null fills the parent's width, as 0.3.1's editor did.
+    width: ?f32 = 500,
+    /// Null fills the parent's height: the rows are what fit in the height
+    /// the editor was laid out at last frame, so a resized window reflows on
+    /// the next frame. Its first frame, before any layout, shows one row.
+    rows: ?u16 = 10,
+    padding: f32 = 8,
+    border_width: f32 = 1,
+    show_line_numbers: bool = true,
+    gutter_width: f32 = 50,
+    show_status_bar: bool = true,
+    status_bar_height: f32 = 22,
+    language_mode: []const u8 = "Plain Text",
+    encoding: []const u8 = "UTF-8",
+    tab_size: u8 = 4,
+    use_hard_tabs: bool = false,
+
+    pub fn render(self: CodeEditor, cx: *Cx) void {
+        assert(self.key.len > 0);
+        if (self.rows) |rows| assert(rows > 0);
+        const theme = cx.theme();
+        const key = Key{ .name = self.key };
+        const id = cx.id(key);
+        const handle = cx.retain(EditorEngine, id, .{ .scope = id }, initEngine);
+        const engine = cx.get(EditorEngine, handle);
+        engine.syncBound(self.bind);
+        const focused = cx.focused(id);
+        setView(&engine.view, theme, id, self.placeholder);
+        engine.indent = .{ .size = self.tab_size, .hard_tabs = self.use_hard_tabs };
+        const gutter = if (self.show_line_numbers) self.gutter_width else 0;
+        const line_height = cx.fontMetrics().line_height;
+        const viewport_height = if (self.rows) |rows|
+            line_height * @as(f32, @floatFromInt(rows))
+        else
+            self.filledViewportHeight(cx, id, line_height);
+        // The separator after the gutter is one pixel wide.
+        const separator: f32 = if (gutter > 0) 1 else 0;
+        engine.resolveClick(cx, .{
+            .text_x = self.border_width + gutter + separator + self.padding,
+            .text_y = self.border_width + self.padding,
+            .gutter_end = self.border_width + gutter,
+        });
+        engine.follow(line_height, viewport_height);
+        engine.blink(cx, focused);
+        cx.render(ui.box(.{
+            .key = key,
+            .focusable = true,
+            .on_key = cx.on(EditorEngine.onKey, .{ .entity = handle }),
+            .on_click = cx.on(EditorEngine.onClick, .{ .entity = handle }),
+            .style = .{
+                .width = if (self.width) |width| .{ .fixed = width } else .{ .grow = 1 },
+                .height = if (self.rows == null) .{ .grow = 1 } else .fit,
+                .padding = .all(self.border_width),
+                .background = .surface,
+                .border = .{
+                    .width = self.border_width,
+                    .color = if (focused) .border_focus else .border,
+                },
+                .corner_radius = .all(theme.radius_md),
+                .cursor = .text,
+            },
+            .a11y = .{
+                .role = .textarea,
+                .label = if (self.placeholder.len > 0) self.placeholder else "Code editor",
+                .value = if (engine.len > 0) engine.text() else null,
+            },
+        }, .{
+            ui.box(.{ .style = .{
+                .direction = .row,
+                .width = .{ .grow = 1 },
+                .height = if (self.rows == null)
+                    .{ .grow = 1 }
+                else
+                    .{ .fixed = viewport_height + self.padding * 2 },
+            } }, .{
+                if (gutter > 0) ui.box(.{ .style = .{
+                    .width = .{ .fixed = gutter },
+                    .height = .{ .grow = 1 },
+                    .padding = .symmetric(0, self.padding),
+                } }, .{
+                    ui.paint(EditorEngine, engine, paintGutter, .{
+                        .width = .{ .grow = 1 },
+                        .height = .{ .grow = 1 },
+                    }),
+                }) else null,
+                if (gutter > 0) separatorBox(.vertical) else null,
+                ui.box(.{ .style = .{
+                    .width = .{ .grow = 1 },
+                    .height = .{ .grow = 1 },
+                    .padding = .all(self.padding),
+                } }, .{
+                    ui.paint(EditorEngine, engine, paintEditorText, .{
+                        .width = .{ .grow = 1 },
+                        .height = .{ .grow = 1 },
+                    }),
+                }),
+            }),
+            if (self.show_status_bar) separatorBox(.horizontal) else null,
+            if (self.show_status_bar) StatusBar{ .editor = &self, .engine = engine } else null,
+        }));
+    }
+
+    /// The text's height when filling: the editor's laid-out height last
+    /// frame less its border, padding, and status bar, in whole lines so no
+    /// row draws past the border. One line before the first layout.
+    ///
+    /// The box's own size never depends on its rows (it grows), so this
+    /// cannot oscillate. A build after a resize, or before any layout, reads
+    /// a stale height, so it asks for exactly one more render: the next
+    /// build reads the frame laid out at the new size and asks for none.
+    fn filledViewportHeight(
+        self: *const CodeEditor,
+        cx: *Cx,
+        id: gooey.ElementId,
+        line_height: f32,
+    ) f32 {
+        assert(self.rows == null);
+        assert(line_height > 0);
+        const window = cx.window;
+        const frame = window.rendered();
+        const stale = frame.viewport_width != window.width or
+            frame.viewport_height != window.height;
+        if (stale) cx.requestRenderAfter(0);
+        const bounds = for (frame.hits[0..frame.hit_count]) |*hit| {
+            if (hit.id == id) break hit.bounds;
+        } else {
+            if (!stale) cx.requestRenderAfter(0);
+            return line_height;
+        };
+        var chrome = self.border_width * 2 + self.padding * 2;
+        if (self.show_status_bar) chrome += self.status_bar_height + 1;
+        const lines = @floor(@max(0, bounds.height - chrome) / line_height);
+        return @max(1, lines) * line_height;
+    }
+
+    fn initEngine(engine: *EditorEngine) void {
+        assert(engine.len == 0);
+    }
+
+    /// The caret's line under the text while focused, then the text.
+    fn paintEditorText(engine: *const EditorEngine, painter: *ui.Painter) void {
+        if (engine.view.focused) {
+            const line_height = painter.fontMetrics().line_height;
+            const row: f32 = @floatFromInt(engine.lineOf(engine.cursor));
+            painter.pushClip(painter.bounds);
+            painter.fill(.{
+                .x = painter.bounds.x,
+                .y = painter.bounds.y + row * line_height - engine.scroll_y,
+                .width = painter.bounds.width,
+                .height = line_height,
+            }, engine.view.selection_color.withAlpha(0.08));
+            painter.popClip();
+        }
+        TextArea.paintText(engine, painter);
+    }
+
+    /// A one-pixel rule in the border colour.
+    fn separatorBox(direction: enum { vertical, horizontal }) ui.Box.Element(@TypeOf(.{})) {
+        const thickness = ui.Sizing{ .fixed = 1 };
+        const span = ui.Sizing{ .grow = 1 };
+        return ui.box(.{ .style = .{
+            .width = if (direction == .vertical) thickness else span,
+            .height = if (direction == .vertical) span else thickness,
+            .background = .border,
+        } }, .{});
+    }
+
+    /// Line numbers for the visible lines, right-aligned 8 px from the
+    /// separator, the caret's line in the text colour. The gutter is inset
+    /// like the text beside it, so a number's row is the text line's row.
+    fn paintGutter(engine: *const EditorEngine, painter: *ui.Painter) void {
+        const bounds = painter.bounds;
+        const metrics = painter.fontMetrics();
+        const line_height = metrics.line_height;
+        const size: u16 = @intFromFloat(metrics.point_size);
+        painter.pushClip(bounds);
+        defer painter.popClip();
+        const line_count: u32 = @intCast(std.mem.count(u8, engine.text(), "\n") + 1);
+        const caret_line = engine.lineOf(engine.cursor);
+        const first: u32 = @intFromFloat(engine.scroll_y / line_height);
+        const visible: u32 = @intFromFloat(@ceil(bounds.height / line_height) + 1);
+        var line = first;
+        while (line < @min(line_count, first + visible)) : (line += 1) {
+            var buffer: [10]u8 = undefined;
+            // Ten digits hold any u32 line number.
+            const label = std.fmt.bufPrint(&buffer, "{d}", .{line + 1}) catch unreachable;
+            const view = &engine.view;
+            const color = if (line == caret_line) view.text_color else view.placeholder_color;
+            const style = ui.PaintText{ .size = size, .color = color };
+            const x = bounds.x + bounds.width - 8 - painter.measureText(label, style);
+            const row: f32 = @floatFromInt(line);
+            const top = bounds.y + row * line_height - engine.scroll_y;
+            _ = painter.textOnBaseline(label, x, metrics.calcBaseline(top, line_height), style);
+        }
+    }
+
+    /// "Ln 3, Col 7" on the left; the indent, encoding, and language on the
+    /// right, as 0.3.1's status bar.
+    const StatusBar = struct {
+        editor: *const CodeEditor,
+        engine: *const EditorEngine,
+
+        pub fn render(self: StatusBar, cx: *Cx) void {
+            const engine = self.engine;
+            const line = engine.lineOf(engine.cursor) + 1;
+            const column = engine.cursor - engine.lineStart(engine.cursor) + 1;
+            var position_buffer: [32]u8 = undefined;
+            var indent_buffer: [16]u8 = undefined;
+            // 32 bytes hold "Ln " and ", Col " with two u32s; 16 hold the indent.
+            const position = std.fmt.bufPrint(&position_buffer, "Ln {d}, Col {d}", .{
+                line,
+                column,
+            }) catch unreachable;
+            const indent_name = if (self.editor.use_hard_tabs) "Tab" else "Spaces";
+            const indent = std.fmt.bufPrint(&indent_buffer, "{s}: {d}", .{
+                indent_name,
+                self.editor.tab_size,
+            }) catch unreachable;
+            const style = ui.Text{ .size = 12, .color = .muted };
+            cx.render(ui.box(.{ .style = .{
+                .direction = .row,
+                .width = .{ .grow = 1 },
+                .height = .{ .fixed = self.editor.status_bar_height },
+                .padding = .symmetric(10, 0),
+                .gap = 16,
+                .alignment = .center_cross,
+            } }, .{
+                ui.text(position, style),
+                ui.box(.{ .style = .{ .width = .{ .grow = 1 } } }, .{}),
+                ui.text(indent, style),
+                ui.text(self.editor.encoding, style),
+                ui.text(self.editor.language_mode, style),
+            }));
+        }
+    };
+};
 
 test {
     std.testing.refAllDecls(@This());
 }
 
-test "public component surface compiles" {
+test "components compile against the gooey surface" {
     comptime {
         _ = Button;
         _ = Checkbox;
         _ = TextInput;
         _ = TextArea;
         _ = CodeEditor;
-        _ = ProgressBar;
-        _ = RadioGroup;
-        _ = RadioButton;
-        _ = Tab;
-        _ = TabBar;
-        _ = Svg;
-        _ = Icons;
-        _ = Lucide;
-        _ = Select;
-        _ = Image;
-        _ = AspectRatio;
-        _ = Tooltip;
-        _ = Modal;
-        _ = ContextMenu;
-        _ = MenuItem;
-        _ = ValidatedTextInput;
     }
-}
-
-test "documented component literals compile" {
-    const button = Button{ .label = "Save" };
-    const checkbox = Checkbox{ .selected = false, .label = "Remember me" };
-    const text_input = TextInput{ .id = "email", .placeholder = "Email" };
-
-    std.debug.assert(button.label.len > 0);
-    std.debug.assert(text_input.id.len > 0);
-    _ = checkbox;
-    _ = Image{ .src = "logo.png" };
-    _ = Svg{ .path = "M0 0" };
 }

@@ -24,9 +24,9 @@ const gooey = @import("gooey");
 
 // The fuzz module compiles standalone (separate root from `src/root.zig`)
 // so it can't peer-import `engine.zig`; types must come through the public
-// `gooey.layout.*` surface. This also pins us to the supported public API —
+// `gooey.internals.layout.*` surface. This also pins us to the supported public API —
 // if a name disappears the fuzzer is forced to stay in sync.
-const layout = gooey.layout;
+const layout = gooey.internals.layout;
 const engine_mod = layout.engine;
 const types = layout.types;
 const layout_id_mod = layout.layout_id;
@@ -68,7 +68,7 @@ pub fn fuzzLayoutTree(_: void, smith: *std.testing.Smith) anyerror!void {
     defer arena.deinit();
     const gpa = std.testing.allocator;
 
-    var engine = LayoutEngine.init(gpa);
+    var engine = try LayoutEngine.init(gpa);
     defer engine.deinit();
     engine.setMeasureTextFn(fuzzMeasureText, null);
 
@@ -94,7 +94,7 @@ pub fn fuzzLayoutTree(_: void, smith: *std.testing.Smith) anyerror!void {
 pub fn fuzzTextWrapping(_: void, smith: *std.testing.Smith) anyerror!void {
     const gpa = std.testing.allocator;
 
-    var engine = LayoutEngine.init(gpa);
+    var engine = try LayoutEngine.init(gpa);
     defer engine.deinit();
     engine.setMeasureTextFn(fuzzMeasureText, null);
 

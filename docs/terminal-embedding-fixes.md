@@ -41,8 +41,8 @@ four style flags (`src/ui/builder.zig:1251`):
 `current_face: ?PlatformFace` (`src/text/text_system.zig:504`) which
 `loadFont` replaces wholesale, clearing the glyph and shape caches — there is
 no face registry, so there is nothing for a weight to select. `.weight = .bold`
-renders identically to regular everywhere it appears today (`a11y_demo.zig`,
-`code_editor.zig`, `form_validation.zig`).
+renders identically to regular everywhere it appears today
+(`accessible_form.zig`, `code_editor.zig`, `data_table_example.zig`).
 
 **Booey workaround.** A 0.5 px double-draw (`booey/src/terminal.zig`,
 `drawGlyph` + `bold_overdraw_px`). It smears rather than embolds, and it costs

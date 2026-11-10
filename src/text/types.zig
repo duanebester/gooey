@@ -26,6 +26,138 @@ pub const SystemFont = enum {
     system,
 };
 
+/// Font weight, ordered from lightest to heaviest. `TextStyle.weight` uses this type.
+pub const FontWeight = enum(u8) {
+    thin,
+    light,
+    regular,
+    medium,
+    semibold,
+    bold,
+    black,
+
+    /// CSS `font-weight` number, the shared scale every backend maps from.
+    pub fn cssWeight(self: FontWeight) u16 {
+        const result: u16 = switch (self) {
+            .thin => 100,
+            .light => 300,
+            .regular => 400,
+            .medium => 500,
+            .semibold => 600,
+            .bold => 700,
+            .black => 900,
+        };
+        std.debug.assert(result >= 100);
+        std.debug.assert(result <= 900);
+        return result;
+    }
+};
+
+/// One loadable face of a font family: a weight, upright or italic. Each text
+/// system loads one face per variant in its `FontLimits.variants` during init.
+///
+/// The tag value is the layout `font_id`. `regular` is 0 so the layout default
+/// (`TextConfig.font_id = 0`) selects the regular upright face.
+pub const FontVariant = enum(u8) {
+    regular,
+    italic,
+    thin,
+    thin_italic,
+    light,
+    light_italic,
+    medium,
+    medium_italic,
+    semibold,
+    semibold_italic,
+    bold,
+    bold_italic,
+    black,
+    black_italic,
+
+    pub const count: u8 = @typeInfo(FontVariant).@"enum".field_names.len;
+
+    /// Weight of each tag pair, in tag order: tag `2k` is upright, `2k + 1` italic.
+    const weight_by_pair = [_]FontWeight{
+        .regular, .thin, .light, .medium, .semibold, .bold, .black,
+    };
+
+    comptime {
+        std.debug.assert(count == weight_by_pair.len * 2);
+        std.debug.assert(@backingInt(FontVariant.regular) == 0);
+        std.debug.assert(count == @typeInfo(FontWeight).@"enum".field_names.len * 2);
+    }
+
+    pub fn init(font_weight: FontWeight, italic_style: bool) FontVariant {
+        const pair: u8 = for (weight_by_pair, 0..) |candidate, index| {
+            if (candidate == font_weight) break @intCast(index);
+        } else unreachable;
+        const tag: u8 = pair * 2 + @intFromBool(italic_style);
+        const result: FontVariant = @fromBackingInt(tag);
+        std.debug.assert(result.weight() == font_weight);
+        std.debug.assert(result.isItalic() == italic_style);
+        return result;
+    }
+
+    /// The variant a layout `font_id` names. An id outside the enum is a
+    /// programmer error: only `FontVariant.fontId` produces font ids.
+    pub fn fromFontId(font_id: u16) FontVariant {
+        if (font_id < count) {
+            return @fromBackingInt(@intCast(font_id));
+        } else {
+            std.debug.panic("font_id {d} is not a FontVariant (valid ids are 0..{d})", .{
+                font_id,
+                count - 1,
+            });
+        }
+    }
+
+    pub fn fontId(self: FontVariant) u16 {
+        const result: u16 = @backingInt(self);
+        std.debug.assert(result < count);
+        return result;
+    }
+
+    pub fn weight(self: FontVariant) FontWeight {
+        return weight_by_pair[@backingInt(self) / 2];
+    }
+
+    pub fn isItalic(self: FontVariant) bool {
+        return @backingInt(self) % 2 == 1;
+    }
+};
+
+/// Which loaded family a run draws with (contract decision 8). `app` is the
+/// app's font (`Config.font`); `mono` is the optional second family
+/// (`Config.fonts.mono`), with its own faces from `FontLimits.mono_variants`.
+pub const FontFamily = enum(u1) {
+    app,
+    mono,
+
+    /// The layout `font_id` of `variant` in this family. App ids equal
+    /// `FontVariant.fontId`, so 0.3.1 layout ids keep their meaning; mono ids
+    /// follow them.
+    pub fn fontId(family: FontFamily, variant: FontVariant) u16 {
+        const result: u16 = @as(u16, @backingInt(family)) * FontVariant.count + variant.fontId();
+        std.debug.assert(result < font_id_count);
+        return result;
+    }
+
+    /// The family a layout `font_id` names. Ids come only from `fontId`.
+    pub fn fromFontId(font_id: u16) FontFamily {
+        std.debug.assert(font_id < font_id_count);
+        return @fromBackingInt(@intCast(font_id / FontVariant.count));
+    }
+
+    /// The variant a layout `font_id` names, in either family.
+    pub fn variantFromFontId(font_id: u16) FontVariant {
+        std.debug.assert(font_id < font_id_count);
+        return FontVariant.fromFontId(font_id % FontVariant.count);
+    }
+
+    pub const count: u8 = 2;
+    pub const font_id_count: u16 = @as(u16, count) * FontVariant.count;
+};
+
 /// Text decoration style
 pub const TextDecoration = packed struct {
     underline: bool = false,
@@ -214,7 +346,14 @@ pub const TextMeasurement = struct {
 ///   wrapping, so the returned width is the full unwrapped advance.
 /// - `font_size == null` means measure at the currently loaded font's
 ///   size, so the caller does not have to restate it.
+///
+/// `weight` and `italic` select the face exactly as `TextStyle` does for
+/// rendering, with the same defaults, so a measured width matches the drawn
+/// text. A combination outside the text system's `FontLimits.variants`
+/// panics, as it does when rendered.
 pub const MeasureTextOptions = struct {
     max_width: ?f32 = null,
     font_size: ?f32 = null,
+    weight: FontWeight = .regular,
+    italic: bool = false,
 };

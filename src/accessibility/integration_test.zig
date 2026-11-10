@@ -1,8 +1,8 @@
-//! Integration tests for Gooey A11Y (Phase 1 & 2)
+//! Integration tests for Gooey A11Y
 //!
 //! Tests the accessibility tree integration with Gooey context
 //! and Builder API. Uses TestBridge to verify correct behavior.
-//! Phase 2 adds MacBridge tests for VoiceOver integration.
+//! The platform bridge tests cover MacBridge for VoiceOver integration.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -455,7 +455,7 @@ test "zero overhead pattern" {
 }
 
 // ============================================================================
-// Phase 2: Platform Bridge Tests
+// Platform Bridge Tests
 // ============================================================================
 
 test "platform bridge creation" {

@@ -1,21 +1,21 @@
 //! Vulkan graphics pipeline creation.
 //!
-//! Replaces four copy-pasted pipeline creation functions (createUnifiedPipeline,
-//! createTextPipeline, createSvgPipeline, createImagePipeline) with a single
-//! generic helper parameterized by shader SPV, pipeline layout, and blend mode.
+//! One generic helper creates every pipeline (unified, text, SVG, image),
+//! parameterized by shader SPV, pipeline layout, and blend mode, so the
+//! pipelines cannot drift apart.
 //!
-//! Axes of variation across the four original functions:
+//! Axes of variation across the four pipelines:
 //!   1. Shader SPIR-V bytecode (vert + frag)
 //!   2. Pipeline layout (caller pre-creates from descriptor set layout)
 //!   3. Blend mode — only SVG uses premultiplied; the rest use standard SRC_ALPHA
 //!
 //! Everything else (vertex input, topology, rasterizer, dynamic state) is identical.
 //!
-//! Pipeline cache support (improvement #8): callers pass a `VkPipelineCache`
+//! Pipeline cache support: callers pass a `VkPipelineCache`
 //! handle to amortize shader compilation across pipelines within a session and
 //! across sessions when the cache is serialized to disk.
 //!
-//! Shared pipeline layouts (improvement #9): `createPipelineLayout` is public
+//! Shared pipeline layouts: `createPipelineLayout` is public
 //! so the coordinator can pre-create layouts once and share them across
 //! pipelines that use the same descriptor set layout (e.g. text/SVG/image
 //! all share `textured_pipeline_layout`).
@@ -55,7 +55,7 @@ pub const PipelineError = error{
 /// Create a `VkPipelineLayout` from a single descriptor set layout.
 ///
 /// Exposed publicly so the coordinator can pre-create shared layouts
-/// (improvement #9: 4 layouts → 2 by sharing across text/SVG/image).
+/// (2 layouts in total because text/SVG/image share one).
 /// Caller owns the returned handle and must destroy it via
 /// `vkDestroyPipelineLayout` when no longer needed.
 pub fn createPipelineLayout(device: vk.Device, descriptor_layout: vk.DescriptorSetLayout) PipelineError!vk.PipelineLayout {
@@ -110,14 +110,13 @@ pub fn createPipelineCache(
 
 /// Create a complete graphics pipeline from a config and pre-created layout.
 ///
-/// One call replaces what was previously four 160-line copy-pasted functions.
+/// One generic function serves every pipeline instead of one copy per pipeline.
 /// The caller provides both the pipeline layout (via `config.pipeline_layout`)
 /// and an optional pipeline cache. The caller owns the layout and cache;
 /// this function only creates and returns the `VkPipeline` handle.
 pub fn createGraphicsPipeline(
     device: vk.Device,
     render_pass: vk.RenderPass,
-    sample_count: vk.SampleCountFlagBits,
     config: PipelineConfig,
     pipeline_cache: vk.PipelineCache,
 ) PipelineError!vk.Pipeline {
@@ -139,7 +138,7 @@ pub fn createGraphicsPipeline(
     const input_assembly = inputAssemblyState();
     const viewport = viewportState();
     const rasterizer = rasterizationState();
-    const multisampling = multisampleState(sample_count);
+    const multisampling = multisampleState();
     const blend_attachment = blendAttachment(config.blend_mode);
     const color_blending = colorBlendState(&blend_attachment);
     const dynamic_states = [_]vk.DynamicState{
@@ -340,12 +339,15 @@ fn rasterizationState() vk.PipelineRasterizationStateCreateInfo {
     };
 }
 
-fn multisampleState(sample_count: vk.SampleCountFlagBits) vk.PipelineMultisampleStateCreateInfo {
+/// One sample per pixel at every profile: quads, text, SVGs and images
+/// anti-alias in their fragment shaders, and the mesh shaders compute analytic
+/// edge coverage (see `vk_mesh.zig`), so no pipeline needs a multisampled target.
+fn multisampleState() vk.PipelineMultisampleStateCreateInfo {
     return .{
         .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
         .pNext = null,
         .flags = 0,
-        .rasterizationSamples = sample_count,
+        .rasterizationSamples = vk.VK_SAMPLE_COUNT_1_BIT,
         .sampleShadingEnable = vk.FALSE,
         .minSampleShading = 1.0,
         .pSampleMask = null,

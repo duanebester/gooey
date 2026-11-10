@@ -50,6 +50,7 @@ pub fn promptForPaths(
     allocator: std.mem.Allocator,
     options: PathPromptOptions,
 ) ?PathPromptResult {
+    std.debug.assert(options.files or options.directories);
     return promptForPathsInternal(allocator, options) catch |err| {
         logError("promptForPaths failed", err);
         return null;
@@ -94,24 +95,14 @@ fn promptForPathsInternal(
     // Parent window identifier (empty for Wayland)
     if (!iter.appendString("")) return error.AppendFailed;
 
-    // Title/message
-    const title = options.message orelse "Open";
-    var title_buf: [256:0]u8 = undefined;
-    const title_z = toSentinelSlice(title, &title_buf) orelse return error.TitleTooLong;
-    if (!iter.appendString(title_z)) return error.AppendFailed;
+    // The portal requires a title; decision 11 drops the app's, so it is fixed.
+    if (!iter.appendString("Open")) return error.AppendFailed;
 
     // Options dictionary a{sv}
     var dict_iter = iter.openContainer(dbus.TYPE_ARRAY, "{sv}") orelse return error.ContainerFailed;
 
     // handle_token
     try appendDictEntryString(&dict_iter, "handle_token", token);
-
-    // accept_label (button text)
-    if (options.prompt) |prompt| {
-        var prompt_buf: [128:0]u8 = undefined;
-        const prompt_z = toSentinelSlice(prompt, &prompt_buf) orelse return error.PromptTooLong;
-        try appendDictEntryString(&dict_iter, "accept_label", prompt_z);
-    }
 
     // multiple selection
     try appendDictEntryBool(&dict_iter, "multiple", options.multiple);
@@ -122,28 +113,14 @@ fn promptForPathsInternal(
     // modal
     try appendDictEntryBool(&dict_iter, "modal", true);
 
-    // current_folder (starting directory as byte array)
-    if (options.starting_directory) |dir| {
-        try appendDictEntryBytes(&dict_iter, "current_folder", dir);
-    }
-
-    // File filters
-    if (options.allowed_extensions) |extensions| {
-        try appendFileFilters(&dict_iter, extensions);
-    }
-
     if (!iter.closeContainer(&dict_iter)) return error.ContainerFailed;
 
     // Send request and get response (contains request handle)
     var reply = try conn.callMethod(&msg, dbus.TIMEOUT_USE_DEFAULT);
     defer reply.deinit();
 
-    // Wait for Response signal
-    const uris = try waitForResponse(&conn, handle_path) orelse return null;
-    defer allocator.free(uris);
-
-    // Convert URIs to paths
-    return urisToPathResult(allocator, uris);
+    // Wait for the Response signal; its paths come from `allocator`.
+    return waitForResponse(allocator, &conn, handle_path);
 }
 
 // =============================================================================
@@ -157,6 +134,7 @@ pub fn promptForNewPath(
     allocator: std.mem.Allocator,
     options: SavePromptOptions,
 ) ?[]const u8 {
+    if (options.suggested_name) |name| std.debug.assert(name.len > 0);
     return promptForNewPathInternal(allocator, options) catch |err| {
         logError("promptForNewPath failed", err);
         return null;
@@ -200,24 +178,14 @@ fn promptForNewPathInternal(
     // Parent window identifier (empty for Wayland)
     if (!iter.appendString("")) return error.AppendFailed;
 
-    // Title/message
-    const title = options.message orelse "Save";
-    var title_buf: [256:0]u8 = undefined;
-    const title_z = toSentinelSlice(title, &title_buf) orelse return error.TitleTooLong;
-    if (!iter.appendString(title_z)) return error.AppendFailed;
+    // The portal requires a title; decision 11 drops the app's, so it is fixed.
+    if (!iter.appendString("Save")) return error.AppendFailed;
 
     // Options dictionary a{sv}
     var dict_iter = iter.openContainer(dbus.TYPE_ARRAY, "{sv}") orelse return error.ContainerFailed;
 
     // handle_token
     try appendDictEntryString(&dict_iter, "handle_token", token);
-
-    // accept_label (button text)
-    if (options.prompt) |prompt| {
-        var prompt_buf: [128:0]u8 = undefined;
-        const prompt_z = toSentinelSlice(prompt, &prompt_buf) orelse return error.PromptTooLong;
-        try appendDictEntryString(&dict_iter, "accept_label", prompt_z);
-    }
 
     // modal
     try appendDictEntryBool(&dict_iter, "modal", true);
@@ -234,36 +202,33 @@ fn promptForNewPathInternal(
         try appendDictEntryString(&dict_iter, "current_name", name_z);
     }
 
-    // File filters
-    if (options.allowed_extensions) |extensions| {
-        try appendFileFilters(&dict_iter, extensions);
-    }
-
     if (!iter.closeContainer(&dict_iter)) return error.ContainerFailed;
 
     // Send request
     var reply = try conn.callMethod(&msg, dbus.TIMEOUT_USE_DEFAULT);
     defer reply.deinit();
 
-    // Wait for Response signal
-    const uris = try waitForResponse(&conn, handle_path) orelse return null;
-    defer allocator.free(uris);
-
-    // Convert first URI to path
-    if (uris.len == 0) return null;
-
-    return uriToPath(allocator, uris[0]);
+    // Wait for the Response signal and keep the first path. A save dialog
+    // returns one URI; any others and the array are freed.
+    const result = try waitForResponse(allocator, &conn, handle_path) orelse return null;
+    std.debug.assert(result.paths.len > 0);
+    defer allocator.free(result.paths);
+    for (result.paths[1..]) |path| allocator.free(path);
+    return result.paths[0];
 }
 
 // =============================================================================
 // Response Handling
 // =============================================================================
 
-/// Wait for the portal Response signal and extract URIs
+/// Wait for the portal Response signal and convert its URIs to paths. The
+/// strings belong to the signal message, so they are converted into
+/// `allocator` before the message is freed; nothing else is allocated.
 fn waitForResponse(
+    allocator: std.mem.Allocator,
     conn: *dbus.Connection,
     handle_path: [:0]const u8,
-) !?[][]const u8 {
+) !?PathPromptResult {
     var iterations: u32 = 0;
 
     while (iterations < MAX_SIGNAL_WAIT_ITERATIONS) : (iterations += 1) {
@@ -290,13 +255,11 @@ fn waitForResponse(
             if (iter.getArgType() != dbus.TYPE_UINT32) return error.InvalidResponse;
             const response_code = iter.getUint32();
 
-            if (response_code == 1) {
-                // User cancelled
-                return null;
-            } else if (response_code != 0) {
-                // Error
-                return error.PortalError;
-            }
+            // The portal's codes: 0 success, 1 cancelled by the user, 2 the
+            // interaction ended some other way, which GNOME's portal sends
+            // for Escape. Both 1 and 2 are a cancel, not an error.
+            if (response_code == 1 or response_code == 2) return null;
+            if (response_code != 0) return error.PortalError;
 
             // Second argument: results dict a{sv}
             if (!iter.next()) return error.InvalidResponse;
@@ -324,33 +287,7 @@ fn waitForResponse(
 
                     var variant_iter = entry_iter.recurse();
                     if (variant_iter.getArgType() != dbus.TYPE_ARRAY) return error.InvalidResponse;
-
-                    // Count URIs first
-                    var count_iter = variant_iter.recurse();
-                    var count: usize = 0;
-                    while (count_iter.getArgType() == dbus.TYPE_STRING) {
-                        count += 1;
-                        if (!count_iter.next()) break;
-                    }
-
-                    if (count == 0) return null;
-                    if (count > MAX_URIS) count = MAX_URIS;
-
-                    // Allocate and fill URI array
-                    var uris = std.heap.page_allocator.alloc([]const u8, count) catch return error.OutOfMemory;
-                    errdefer std.heap.page_allocator.free(uris);
-
-                    var array_iter = variant_iter.recurse();
-                    var i: usize = 0;
-                    while (array_iter.getArgType() == dbus.TYPE_STRING and i < count) {
-                        if (array_iter.getString()) |uri| {
-                            uris[i] = std.heap.page_allocator.dupe(u8, uri) catch return error.OutOfMemory;
-                            i += 1;
-                        }
-                        if (!array_iter.next()) break;
-                    }
-
-                    return uris[0..i];
+                    return urisToPathResult(allocator, &variant_iter);
                 }
 
                 _ = dict_iter.next();
@@ -405,29 +342,35 @@ fn uriToPath(allocator: std.mem.Allocator, uri: []const u8) ?[]const u8 {
     return result;
 }
 
-/// Convert array of URIs to PathPromptResult
-fn urisToPathResult(allocator: std.mem.Allocator, uris: [][]const u8) ?PathPromptResult {
-    if (uris.len == 0) return null;
-
-    var paths = allocator.alloc([]const u8, uris.len) catch return null;
-    var valid_count: usize = 0;
-
-    for (uris) |uri| {
-        if (uriToPath(allocator, uri)) |path| {
-            paths[valid_count] = path;
-            valid_count += 1;
-        }
+/// Convert the response's `as` URI array to paths in `allocator`, keeping
+/// at most `MAX_URIS`. Returns null when there are none or one fails to
+/// convert (out of scratch).
+fn urisToPathResult(allocator: std.mem.Allocator, array: *dbus.MessageIter) ?PathPromptResult {
+    std.debug.assert(array.getArgType() == dbus.TYPE_ARRAY);
+    var count_iter = array.recurse();
+    var count: usize = 0;
+    while (count_iter.getArgType() == dbus.TYPE_STRING and count < MAX_URIS) {
+        count += 1;
+        if (!count_iter.next()) break;
     }
+    if (count == 0) return null;
 
-    if (valid_count == 0) {
-        allocator.free(paths);
-        return null;
+    // Every URI must convert: the result owns exactly `count` paths, so
+    // `PathPromptResult.deinit` frees the array at the size it was allocated.
+    const paths = allocator.alloc([]const u8, count) catch return null;
+    var converted: usize = 0;
+    var uri_iter = array.recurse();
+    while (converted < count) : (converted += 1) {
+        const path = if (uri_iter.getString()) |uri| uriToPath(allocator, uri) else null;
+        paths[converted] = path orelse {
+            for (paths[0..converted]) |done| allocator.free(done);
+            allocator.free(paths);
+            return null;
+        };
+        _ = uri_iter.next();
     }
-
-    return .{
-        .paths = paths[0..valid_count],
-        .allocator = allocator,
-    };
+    std.debug.assert(converted == count);
+    return .{ .paths = paths, .allocator = allocator };
 }
 
 // =============================================================================
@@ -532,52 +475,6 @@ fn appendDictEntryBytes(dict_iter: *dbus.MessageIter, key: [:0]const u8, value: 
     if (!dict_iter.closeContainer(&entry)) return error.ContainerFailed;
 }
 
-/// Append file filters as a(sa(us))
-fn appendFileFilters(dict_iter: *dbus.MessageIter, extensions: []const []const u8) !void {
-    var entry = dict_iter.openContainer(dbus.TYPE_DICT_ENTRY, null) orelse return error.ContainerFailed;
-
-    if (!entry.appendString("filters")) return error.AppendFailed;
-
-    // variant containing array of filters
-    var variant = entry.openContainer(dbus.TYPE_VARIANT, "a(sa(us))") orelse return error.ContainerFailed;
-
-    // Array of filter tuples
-    var filters_array = variant.openContainer(dbus.TYPE_ARRAY, "(sa(us))") orelse return error.ContainerFailed;
-
-    // Single filter tuple: ("Files", [(0, "*.ext"), ...])
-    var filter_tuple = filters_array.openContainer(dbus.TYPE_STRUCT, null) orelse return error.ContainerFailed;
-
-    // Filter name
-    if (!filter_tuple.appendString("Allowed files")) return error.AppendFailed;
-
-    // Array of (type, pattern) tuples
-    var patterns_array = filter_tuple.openContainer(dbus.TYPE_ARRAY, "(us)") orelse return error.ContainerFailed;
-
-    for (extensions) |ext| {
-        var pattern_tuple = patterns_array.openContainer(dbus.TYPE_STRUCT, null) orelse return error.ContainerFailed;
-
-        // Type 0 = glob pattern
-        if (!pattern_tuple.appendUint32(0)) return error.AppendFailed;
-
-        // Pattern string: "*.ext"
-        var pattern_buf: [128:0]u8 = undefined;
-        if (ext.len + 2 >= 128) continue; // Skip if too long
-        pattern_buf[0] = '*';
-        pattern_buf[1] = '.';
-        @memcpy(pattern_buf[2 .. 2 + ext.len], ext);
-        pattern_buf[2 + ext.len] = 0;
-        if (!pattern_tuple.appendString(pattern_buf[0 .. 2 + ext.len :0])) return error.AppendFailed;
-
-        if (!patterns_array.closeContainer(&pattern_tuple)) return error.ContainerFailed;
-    }
-
-    if (!filter_tuple.closeContainer(&patterns_array)) return error.ContainerFailed;
-    if (!filters_array.closeContainer(&filter_tuple)) return error.ContainerFailed;
-    if (!variant.closeContainer(&filters_array)) return error.ContainerFailed;
-    if (!entry.closeContainer(&variant)) return error.ContainerFailed;
-    if (!dict_iter.closeContainer(&entry)) return error.ContainerFailed;
-}
-
 // =============================================================================
 // Utilities
 // =============================================================================
@@ -635,18 +532,4 @@ test "token generation produces valid identifier" {
 
     try std.testing.expect(token.len > 0);
     try std.testing.expect(std.mem.startsWith(u8, token, "gooey_"));
-}
-
-test "PathPromptOptions defaults" {
-    const opts = PathPromptOptions{};
-    try std.testing.expect(opts.files == true);
-    try std.testing.expect(opts.directories == false);
-    try std.testing.expect(opts.multiple == false);
-}
-
-test "SavePromptOptions defaults" {
-    const opts = SavePromptOptions{};
-    try std.testing.expect(opts.can_create_directories == true);
-    try std.testing.expect(opts.directory == null);
-    try std.testing.expect(opts.suggested_name == null);
 }

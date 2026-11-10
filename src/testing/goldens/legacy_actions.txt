@@ -1,0 +1,246 @@
+trace actions 800x600@2.00
+
+== step 0: initial frame
+packed 1600x1200@2.00 clear=#f2f2f2ff
+  quad (0.00 0.00 377.60 218.00) fill=#00000000
+  glyphs n=12 (24.00 26.00 144.00 17.00) color=#4c4f69ff hash=a7decc66
+  quad (24.00 101.60 200.00 37.20) fill=#f2f2f2ff
+  quad (24.00 101.60 200.00 37.20) fill=#ffffffff radius=4.00,4.00,4.00,4.00
+  quad (24.00 101.60 200.00 37.20) fill=#00000000 border=1.00,1.00,1.00,1.00 #ccccccff radius=4.00,4.00,4.00,4.00
+  quad (24.00 154.80 329.60 39.20) fill=#00000000
+  quad (24.00 154.80 140.00 39.20) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=12 (48.00 166.00 90.50 11.50) color=#ffffffff hash=a99e6ead
+  quad (172.00 154.80 181.60 39.20) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=18 (196.00 166.00 132.50 11.50) color=#ffffffff hash=0f7f33b1
+  glyphs n=28 (33.00 113.50 199.50 11.50) color=#999999ff hash=f4f7c7a2 clip=(33.00 110.60 182.00 19.20)
+hits
+  hit (24.00 101.60 200.00 37.20) focus
+  hit (24.00 154.80 140.00 39.20) click
+  hit (172.00 154.80 181.60 39.20) click
+a11y
+  button (24.00 154.80 140.00 39.20) name="Undo (cmd+z)"
+  button (172.00 154.80 181.60 39.20) name="Redo (cmd+shift+z)"
+
+== step 1: cmd-z, nothing focused
+packed 1600x1200@2.00 clear=#f2f2f2ff
+  quad (0.00 0.00 377.60 218.00) fill=#00000000
+  glyphs n=12 (24.00 26.00 144.00 17.00) color=#4c4f69ff hash=a7decc66
+  glyphs n=5 (24.00 70.00 34.00 10.00) color=#4c4f69ff hash=f24d84e8
+  quad (24.00 101.60 200.00 37.20) fill=#f2f2f2ff
+  quad (24.00 101.60 200.00 37.20) fill=#ffffffff radius=4.00,4.00,4.00,4.00
+  quad (24.00 101.60 200.00 37.20) fill=#00000000 border=1.00,1.00,1.00,1.00 #ccccccff radius=4.00,4.00,4.00,4.00
+  quad (24.00 154.80 329.60 39.20) fill=#00000000
+  quad (24.00 154.80 140.00 39.20) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=12 (48.00 166.00 90.50 11.50) color=#ffffffff hash=a99e6ead
+  quad (172.00 154.80 181.60 39.20) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=18 (196.00 166.00 132.50 11.50) color=#ffffffff hash=0f7f33b1
+  glyphs n=28 (33.00 113.50 199.50 11.50) color=#999999ff hash=f4f7c7a2 clip=(33.00 110.60 182.00 19.20)
+hits
+  hit (24.00 101.60 200.00 37.20) focus
+  hit (24.00 154.80 140.00 39.20) click
+  hit (172.00 154.80 181.60 39.20) click
+a11y
+  button (24.00 154.80 140.00 39.20) name="Undo (cmd+z)"
+  button (172.00 154.80 181.60 39.20) name="Redo (cmd+shift+z)"
+
+== step 2: cmd-shift-z
+packed 1600x1200@2.00 clear=#f2f2f2ff
+  quad (0.00 0.00 377.60 218.00) fill=#00000000
+  glyphs n=12 (24.00 26.00 144.00 17.00) color=#4c4f69ff hash=a7decc66
+  glyphs n=5 (24.00 70.00 34.00 10.00) color=#4c4f69ff hash=5191e996
+  quad (24.00 101.60 200.00 37.20) fill=#f2f2f2ff
+  quad (24.00 101.60 200.00 37.20) fill=#ffffffff radius=4.00,4.00,4.00,4.00
+  quad (24.00 101.60 200.00 37.20) fill=#00000000 border=1.00,1.00,1.00,1.00 #ccccccff radius=4.00,4.00,4.00,4.00
+  quad (24.00 154.80 329.60 39.20) fill=#00000000
+  quad (24.00 154.80 140.00 39.20) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=12 (48.00 166.00 90.50 11.50) color=#ffffffff hash=a99e6ead
+  quad (172.00 154.80 181.60 39.20) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=18 (196.00 166.00 132.50 11.50) color=#ffffffff hash=0f7f33b1
+  glyphs n=28 (33.00 113.50 199.50 11.50) color=#999999ff hash=f4f7c7a2 clip=(33.00 110.60 182.00 19.20)
+hits
+  hit (24.00 101.60 200.00 37.20) focus
+  hit (24.00 154.80 140.00 39.20) click
+  hit (172.00 154.80 181.60 39.20) click
+a11y
+  button (24.00 154.80 140.00 39.20) name="Undo (cmd+z)"
+  button (172.00 154.80 181.60 39.20) name="Redo (cmd+shift+z)"
+
+== step 3: escape
+packed 1600x1200@2.00 clear=#f2f2f2ff
+  quad (0.00 0.00 377.60 218.00) fill=#00000000
+  glyphs n=12 (24.00 26.00 144.00 17.00) color=#4c4f69ff hash=a7decc66
+  glyphs n=10 (24.00 70.00 62.00 10.00) color=#4c4f69ff hash=2a4c67a4
+  quad (24.00 101.60 200.00 37.20) fill=#f2f2f2ff
+  quad (24.00 101.60 200.00 37.20) fill=#ffffffff radius=4.00,4.00,4.00,4.00
+  quad (24.00 101.60 200.00 37.20) fill=#00000000 border=1.00,1.00,1.00,1.00 #ccccccff radius=4.00,4.00,4.00,4.00
+  quad (24.00 154.80 329.60 39.20) fill=#00000000
+  quad (24.00 154.80 140.00 39.20) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=12 (48.00 166.00 90.50 11.50) color=#ffffffff hash=a99e6ead
+  quad (172.00 154.80 181.60 39.20) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=18 (196.00 166.00 132.50 11.50) color=#ffffffff hash=0f7f33b1
+  glyphs n=28 (33.00 113.50 199.50 11.50) color=#999999ff hash=f4f7c7a2 clip=(33.00 110.60 182.00 19.20)
+hits
+  hit (24.00 101.60 200.00 37.20) focus
+  hit (24.00 154.80 140.00 39.20) click
+  hit (172.00 154.80 181.60 39.20) click
+a11y
+  button (24.00 154.80 140.00 39.20) name="Undo (cmd+z)"
+  button (172.00 154.80 181.60 39.20) name="Redo (cmd+shift+z)"
+
+== step 4: cmd-s outside the editor
+packed 1600x1200@2.00 clear=#f2f2f2ff
+  quad (0.00 0.00 377.60 218.00) fill=#00000000
+  glyphs n=12 (24.00 26.00 144.00 17.00) color=#4c4f69ff hash=a7decc66
+  glyphs n=10 (24.00 70.00 62.00 10.00) color=#4c4f69ff hash=2a4c67a4
+  quad (24.00 101.60 200.00 37.20) fill=#f2f2f2ff
+  quad (24.00 101.60 200.00 37.20) fill=#ffffffff radius=4.00,4.00,4.00,4.00
+  quad (24.00 101.60 200.00 37.20) fill=#00000000 border=1.00,1.00,1.00,1.00 #ccccccff radius=4.00,4.00,4.00,4.00
+  quad (24.00 154.80 329.60 39.20) fill=#00000000
+  quad (24.00 154.80 140.00 39.20) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=12 (48.00 166.00 90.50 11.50) color=#ffffffff hash=a99e6ead
+  quad (172.00 154.80 181.60 39.20) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=18 (196.00 166.00 132.50 11.50) color=#ffffffff hash=0f7f33b1
+  glyphs n=28 (33.00 113.50 199.50 11.50) color=#999999ff hash=f4f7c7a2 clip=(33.00 110.60 182.00 19.20)
+hits
+  hit (24.00 101.60 200.00 37.20) focus
+  hit (24.00 154.80 140.00 39.20) click
+  hit (172.00 154.80 181.60 39.20) click
+a11y
+  button (24.00 154.80 140.00 39.20) name="Undo (cmd+z)"
+  button (172.00 154.80 181.60 39.20) name="Redo (cmd+shift+z)"
+
+== step 5: click the editor input
+packed 1600x1200@2.00 clear=#f2f2f2ff
+  quad (0.00 0.00 377.60 218.00) fill=#00000000
+  glyphs n=12 (24.00 26.00 144.00 17.00) color=#4c4f69ff hash=a7decc66
+  glyphs n=10 (24.00 70.00 62.00 10.00) color=#4c4f69ff hash=2a4c67a4
+  quad (24.00 101.60 200.00 37.20) fill=#f2f2f2ff
+  quad (24.00 101.60 200.00 37.20) fill=#ffffffff radius=4.00,4.00,4.00,4.00
+  quad (24.00 101.60 200.00 37.20) fill=#00000000 border=1.00,1.00,1.00,1.00 #4c7fffff radius=4.00,4.00,4.00,4.00
+  quad (24.00 154.80 329.60 39.20) fill=#00000000
+  quad (24.00 154.80 140.00 39.20) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=12 (48.00 166.00 90.50 11.50) color=#ffffffff hash=a99e6ead
+  quad (172.00 154.80 181.60 39.20) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=18 (196.00 166.00 132.50 11.50) color=#ffffffff hash=0f7f33b1
+  glyphs n=28 (33.00 113.50 199.50 11.50) color=#999999ff hash=f4f7c7a2 clip=(33.00 110.60 182.00 19.20)
+  quad (33.00 110.60 1.50 19.20) fill=#000000ff
+hits
+  hit (24.00 101.60 200.00 37.20) focus
+  hit (24.00 154.80 140.00 39.20) click
+  hit (172.00 154.80 181.60 39.20) click
+a11y
+  button (24.00 154.80 140.00 39.20) name="Undo (cmd+z)"
+  button (172.00 154.80 181.60 39.20) name="Redo (cmd+shift+z)"
+
+== step 6: type "hi"
+packed 1600x1200@2.00 clear=#f2f2f2ff
+  quad (0.00 0.00 377.60 218.00) fill=#00000000
+  glyphs n=12 (24.00 26.00 144.00 17.00) color=#4c4f69ff hash=a7decc66
+  glyphs n=10 (24.00 70.00 62.00 10.00) color=#4c4f69ff hash=2a4c67a4
+  quad (24.00 101.60 200.00 37.20) fill=#f2f2f2ff
+  quad (24.00 101.60 200.00 37.20) fill=#ffffffff radius=4.00,4.00,4.00,4.00
+  quad (24.00 101.60 200.00 37.20) fill=#00000000 border=1.00,1.00,1.00,1.00 #4c7fffff radius=4.00,4.00,4.00,4.00
+  quad (24.00 154.80 329.60 39.20) fill=#00000000
+  quad (24.00 154.80 140.00 39.20) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=12 (48.00 166.00 90.50 11.50) color=#ffffffff hash=a99e6ead
+  quad (172.00 154.80 181.60 39.20) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=18 (196.00 166.00 132.50 11.50) color=#ffffffff hash=0f7f33b1
+  glyphs n=2 (33.00 113.50 11.50 11.50) color=#000000ff hash=cd6c9ee5 clip=(33.00 110.60 182.00 19.20)
+  quad (45.00 110.60 1.50 19.20) fill=#000000ff
+hits
+  hit (24.00 101.60 200.00 37.20) focus
+  hit (24.00 154.80 140.00 39.20) click
+  hit (172.00 154.80 181.60 39.20) click
+a11y
+  button (24.00 154.80 140.00 39.20) name="Undo (cmd+z)"
+  button (172.00 154.80 181.60 39.20) name="Redo (cmd+shift+z)"
+
+== step 7: cmd-s in the editor
+packed 1600x1200@2.00 clear=#f2f2f2ff
+  quad (0.00 0.00 377.60 218.00) fill=#00000000
+  glyphs n=12 (24.00 26.00 144.00 17.00) color=#4c4f69ff hash=a7decc66
+  glyphs n=6 (24.00 70.00 41.00 10.00) color=#4c4f69ff hash=614f066a
+  quad (24.00 101.60 200.00 37.20) fill=#f2f2f2ff
+  quad (24.00 101.60 200.00 37.20) fill=#ffffffff radius=4.00,4.00,4.00,4.00
+  quad (24.00 101.60 200.00 37.20) fill=#00000000 border=1.00,1.00,1.00,1.00 #4c7fffff radius=4.00,4.00,4.00,4.00
+  quad (24.00 154.80 329.60 39.20) fill=#00000000
+  quad (24.00 154.80 140.00 39.20) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=12 (48.00 166.00 90.50 11.50) color=#ffffffff hash=a99e6ead
+  quad (172.00 154.80 181.60 39.20) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=18 (196.00 166.00 132.50 11.50) color=#ffffffff hash=0f7f33b1
+  glyphs n=2 (33.00 113.50 11.50 11.50) color=#000000ff hash=cd6c9ee5 clip=(33.00 110.60 182.00 19.20)
+  quad (45.00 110.60 1.50 19.20) fill=#000000ff
+hits
+  hit (24.00 101.60 200.00 37.20) focus
+  hit (24.00 154.80 140.00 39.20) click
+  hit (172.00 154.80 181.60 39.20) click
+a11y
+  button (24.00 154.80 140.00 39.20) name="Undo (cmd+z)"
+  button (172.00 154.80 181.60 39.20) name="Redo (cmd+shift+z)"
+
+== step 8: cmd-z in the editor
+packed 1600x1200@2.00 clear=#f2f2f2ff
+  quad (0.00 0.00 377.60 218.00) fill=#00000000
+  glyphs n=12 (24.00 26.00 144.00 17.00) color=#4c4f69ff hash=a7decc66
+  glyphs n=5 (24.00 70.00 34.00 10.00) color=#4c4f69ff hash=f24d84e8
+  quad (24.00 101.60 200.00 37.20) fill=#f2f2f2ff
+  quad (24.00 101.60 200.00 37.20) fill=#ffffffff radius=4.00,4.00,4.00,4.00
+  quad (24.00 101.60 200.00 37.20) fill=#00000000 border=1.00,1.00,1.00,1.00 #4c7fffff radius=4.00,4.00,4.00,4.00
+  quad (24.00 154.80 329.60 39.20) fill=#00000000
+  quad (24.00 154.80 140.00 39.20) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=12 (48.00 166.00 90.50 11.50) color=#ffffffff hash=a99e6ead
+  quad (172.00 154.80 181.60 39.20) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=18 (196.00 166.00 132.50 11.50) color=#ffffffff hash=0f7f33b1
+  glyphs n=2 (33.00 113.50 11.50 11.50) color=#000000ff hash=cd6c9ee5 clip=(33.00 110.60 182.00 19.20)
+  quad (45.00 110.60 1.50 19.20) fill=#000000ff
+hits
+  hit (24.00 101.60 200.00 37.20) focus
+  hit (24.00 154.80 140.00 39.20) click
+  hit (172.00 154.80 181.60 39.20) click
+a11y
+  button (24.00 154.80 140.00 39.20) name="Undo (cmd+z)"
+  button (172.00 154.80 181.60 39.20) name="Redo (cmd+shift+z)"
+
+== step 9: click Undo
+packed 1600x1200@2.00 clear=#f2f2f2ff
+  quad (0.00 0.00 377.60 218.00) fill=#00000000
+  glyphs n=12 (24.00 26.00 144.00 17.00) color=#4c4f69ff hash=a7decc66
+  glyphs n=5 (24.00 70.00 34.00 10.00) color=#4c4f69ff hash=f24d84e8
+  quad (24.00 101.60 200.00 37.20) fill=#f2f2f2ff
+  quad (24.00 101.60 200.00 37.20) fill=#ffffffff radius=4.00,4.00,4.00,4.00
+  quad (24.00 101.60 200.00 37.20) fill=#00000000 border=1.00,1.00,1.00,1.00 #ccccccff radius=4.00,4.00,4.00,4.00
+  quad (24.00 154.80 329.60 39.20) fill=#00000000
+  quad (24.00 154.80 140.00 39.20) fill=#1e66f5d9 radius=8.00,8.00,8.00,8.00
+  glyphs n=12 (48.00 166.00 90.50 11.50) color=#ffffffff hash=a99e6ead
+  quad (172.00 154.80 181.60 39.20) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=18 (196.00 166.00 132.50 11.50) color=#ffffffff hash=0f7f33b1
+  glyphs n=2 (33.00 113.50 11.50 11.50) color=#000000ff hash=cd6c9ee5 clip=(33.00 110.60 182.00 19.20)
+hits
+  hit (24.00 101.60 200.00 37.20) focus
+  hit (24.00 154.80 140.00 39.20) click
+  hit (172.00 154.80 181.60 39.20) click
+a11y
+  button (24.00 154.80 140.00 39.20) name="Undo (cmd+z)"
+  button (172.00 154.80 181.60 39.20) name="Redo (cmd+shift+z)"
+
+== step 10: click Redo
+packed 1600x1200@2.00 clear=#f2f2f2ff
+  quad (0.00 0.00 377.60 218.00) fill=#00000000
+  glyphs n=12 (24.00 26.00 144.00 17.00) color=#4c4f69ff hash=a7decc66
+  glyphs n=5 (24.00 70.00 34.00 10.00) color=#4c4f69ff hash=5191e996
+  quad (24.00 101.60 200.00 37.20) fill=#f2f2f2ff
+  quad (24.00 101.60 200.00 37.20) fill=#ffffffff radius=4.00,4.00,4.00,4.00
+  quad (24.00 101.60 200.00 37.20) fill=#00000000 border=1.00,1.00,1.00,1.00 #ccccccff radius=4.00,4.00,4.00,4.00
+  quad (24.00 154.80 329.60 39.20) fill=#00000000
+  quad (24.00 154.80 140.00 39.20) fill=#1e66f5ff radius=8.00,8.00,8.00,8.00
+  glyphs n=12 (48.00 166.00 90.50 11.50) color=#ffffffff hash=a99e6ead
+  quad (172.00 154.80 181.60 39.20) fill=#1e66f5d9 radius=8.00,8.00,8.00,8.00
+  glyphs n=18 (196.00 166.00 132.50 11.50) color=#ffffffff hash=0f7f33b1
+  glyphs n=2 (33.00 113.50 11.50 11.50) color=#000000ff hash=cd6c9ee5 clip=(33.00 110.60 182.00 19.20)
+hits
+  hit (24.00 101.60 200.00 37.20) focus
+  hit (24.00 154.80 140.00 39.20) click
+  hit (172.00 154.80 181.60 39.20) click
+a11y
+  button (24.00 154.80 140.00 39.20) name="Undo (cmd+z)"
+  button (172.00 154.80 181.60 39.20) name="Redo (cmd+shift+z)"

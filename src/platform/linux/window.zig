@@ -1,33 +1,59 @@
 //! LinuxWindow - Window implementation for Linux/Wayland
 //!
 //! Provides window creation and management using Wayland's XDG shell protocol,
-//! with GPU rendering via Vulkan.
+//! with GPU rendering via Vulkan, or CPU rendering into shared memory when the
+//! build selects `-Dlinux-backend=wayland_cpu`. The window never draws: once
+//! the core host binds it (`CoreBinding`), the host's render thread owns the
+//! renderer.
 
 const std = @import("std");
 const wayland = @import("wayland.zig");
-const VulkanRenderer = @import("vk_renderer.zig").VulkanRenderer;
-const vk_atlas = @import("vk_atlas.zig");
+const vk_renderer = @import("vk_renderer.zig");
+const VulkanRenderer = vk_renderer.VulkanRenderer;
+const ShmRenderer = @import("shm_renderer.zig").ShmRenderer;
+const linux_backend = @import("../linux_backend.zig");
 const LinuxPlatform = @import("platform.zig").LinuxPlatform;
 const interface_mod = @import("../interface.zig");
 const WindowId = interface_mod.WindowId;
-const geometry = @import("../../core/geometry.zig");
+const geometry = @import("../../geometry/geometry.zig");
 const Size = geometry.Size(f64);
-const scene_mod = @import("../../scene/mod.zig");
-const text_mod = @import("../../text/mod.zig");
-const svg_mod = @import("../../svg/atlas.zig");
 const input = @import("../../input/events.zig");
 const linux_input = @import("input.zig");
 
 const Allocator = std.mem.Allocator;
 const WindowOptions = interface_mod.WindowOptions;
+const ResourceLimits = @import("../../core/limits.zig").ResourceLimits;
+const core_events = @import("../../core/events.zig");
+const core_router = @import("../../core/router.zig");
+const core_clipboard = @import("../../core/clipboard.zig");
+const core_text_engine = @import("../../core/text_engine.zig");
 
-/// Monotonic milliseconds for timed-redraw deadlines.
-///
-/// `.awake` rather than wall-clock time so deadlines survive NTP and manual
-/// clock changes; it is the same clock the caret blink timer reads. The
-/// event loop carries no `Io`, so this uses the process-lifetime global,
-/// which is a pair of pointers and costs nothing to obtain.
-pub fn awakeTimeMs() i64 {
+/// How the core host drives this window (contract §9), as on macOS: the
+/// window pushes input and configures into the core's queue and asks the
+/// host for a tick. The window never draws on the main thread; the host's
+/// render thread draws.
+pub const CoreBinding = struct {
+    queue: *core_events.EventQueue,
+    query: *const core_router.Query,
+    context: *anyopaque,
+    /// Ask the host for a main-thread tick. Called on the main thread after
+    /// every push.
+    schedule_tick: *const fn (context: *anyopaque) void,
+};
+
+/// The renderer is fixed per build. Selecting it at comptime keeps the
+/// unselected renderer out of the binary, so a CPU build neither links nor
+/// loads Vulkan.
+const use_cpu_renderer = switch (linux_backend.selected) {
+    .wayland_vulkan => false,
+    .wayland_cpu => true,
+    .fbdev => @compileError("the fbdev backend does not use the Wayland window"),
+};
+const Renderer = if (use_cpu_renderer) ShmRenderer else VulkanRenderer;
+
+/// Monotonic milliseconds for `Window.requestRenderAfter`. The callers carry
+/// no `Io`, so this uses the process-lifetime global.
+fn awakeTimeMs() i64 {
     const io = std.Io.Threaded.global_single_threaded.io();
     const now_ms = std.Io.Timestamp.now(io, .awake).toMilliseconds();
     std.debug.assert(now_ms >= 0);
@@ -57,11 +83,6 @@ const toplevel_listener = wayland.XdgToplevelListener{
     .wm_capabilities = Window.xdgToplevelWmCapabilities,
 };
 
-// Frame callback listener - must be static to persist across scheduleFrame() calls
-const frame_callback_listener = wayland.CallbackListener{
-    .done = Window.frameCallback,
-};
-
 pub const Window = struct {
     allocator: Allocator,
     platform: *LinuxPlatform,
@@ -71,18 +92,13 @@ pub const Window = struct {
     xdg_surface: ?*wayland.XdgSurface = null,
     xdg_toplevel: ?*wayland.XdgToplevel = null,
     decoration: ?*wayland.ZxdgToplevelDecorationV1 = null,
-    frame_callback: ?*wayland.Callback = null,
     viewport: ?*wayland.WpViewport = null,
 
-    // Window state.
-    //
-    // These carry the `_px` suffix because `width`/`height` are taken by the
-    // contract's accessor methods, and Zig puts fields and declarations in one
-    // struct namespace. Both are *logical* pixels; multiply by `scale_factor`
-    // for the physical swapchain extent.
+    // Window state. Both are *logical* pixels; multiply by `scale_factor` for
+    // the physical swapchain extent.
     width_px: u32 = 800,
     height_px: u32 = 600,
-    /// Size in logical pixels (for API compatibility with other platforms)
+    /// `width_px` and `height_px` as floats, which `context/window.zig` reads.
     size: Size = .{ .width = 800, .height = 600 },
     scale_factor: f64 = 1.0,
     configured: bool = false,
@@ -96,60 +112,11 @@ pub const Window = struct {
     pending_width: u32 = 0,
     pending_height: u32 = 0,
 
-    // Input state
-    mouse_x: f64 = 0,
-    mouse_y: f64 = 0,
-    mouse_inside: bool = false,
-
     // Decoration state
     has_server_decorations: bool = false,
 
-    // Rendering (Vulkan)
-    renderer: VulkanRenderer,
-    background_color: geometry.Color = geometry.Color.rgba(0.2, 0.2, 0.25, 1.0),
-
-    /// Translucent-background style requested by the application.
-    ///
-    /// Stored but ignored at render time: Wayland has no portable window-blur
-    /// protocol, which is why `LinuxPlatform.capabilities.glass_effects` is
-    /// false. Only `getClearColor` consults it, so that a compositor which
-    /// does composite behind the surface has something to show through.
-    glass_style: interface_mod.GlassStyle = .none,
-
-    /// Last appearance requested via `setAppearance`. Advisory only; see there.
-    dark_appearance: bool = false,
-
-    needs_redraw: bool = true,
-    has_presented_frame: bool = false,
-
-    /// Render every vsync even when nothing changed.
-    ///
-    /// Off by default: frames are drawn on demand, when `requestRender` or a
-    /// due `render_deadline_ms` asks for one. Everything that changes the
-    /// view already asks — input dispatch, animations while active, async
-    /// image loads, deferred SVG rasterization — and views that change with
-    /// the clock alone arm a timed redraw through `requestRenderAfter`, so an
-    /// idle window commits no frames at all. Continuous rendering cost a full
-    /// frame of CPU and GPU work per vsync for unchanged pixels.
-    continuous_render: bool = false,
-
-    /// Earliest time, on the `awakeTimeMs` clock, at which the event loop
-    /// must request a frame for this window. `null` while none is armed.
-    ///
-    /// Frame-scoped: `renderFrame` clears it before running application code,
-    /// and render code re-arms it for the frame it just built. The deadline
-    /// therefore always describes when the latest frame goes stale, and a
-    /// caret that loses focus stops waking the window from its next frame on.
-    render_deadline_ms: ?i64 = null,
-
-    // Scene reference (set externally)
-    scene: ?*const scene_mod.Scene = null,
-    text_atlas: ?*const text_mod.Atlas = null,
-    last_atlas_generation: u32 = 0,
-    svg_atlas: ?*const text_mod.Atlas = null,
-    last_svg_atlas_generation: u32 = 0,
-    image_atlas: ?*const text_mod.Atlas = null,
-    last_image_atlas_generation: u32 = 0,
+    // Rendering (Vulkan, or CPU into shared memory; see `Renderer`)
+    renderer: Renderer,
 
     // Title storage. `xdg_toplevel.set_title` takes a C string, so the buffer
     // holds `title_bytes_max` payload bytes plus the terminating NUL.
@@ -162,20 +129,13 @@ pub const Window = struct {
 
     /// Marked (composing) text from IME
     marked_text: []const u8 = "",
-    marked_text_buffer: [256]u8 = undefined,
-
-    /// Inserted text from IME (committed)
-    inserted_text: []const u8 = "",
-    inserted_text_buffer: [256]u8 = undefined,
+    marked_text_buffer: [marked_text_bytes_max]u8 = undefined,
 
     /// Whether IME is currently active for this window
     ime_active: bool = false,
 
-    /// IME cursor rect in window coordinates (for candidate window positioning)
-    ime_cursor_rect: geometry.RectF = .{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = 1, .height = 20 } },
-
     // =========================================================================
-    // Input State & Callbacks
+    // Input state
     // =========================================================================
 
     /// Click tracker for multi-click detection
@@ -187,53 +147,26 @@ pub const Window = struct {
     /// Currently pressed mouse button (for drag detection)
     pressed_button: ?input.MouseButton = null,
 
-    /// Called for input events. Return true if handled.
-    on_input: ?InputCallback = null,
-
-    /// Called each frame when rendering is needed.
-    on_render: ?RenderCallback = null,
-
     /// Called when window is about to close. Return false to prevent close.
     on_close: ?CloseCallback = null,
-
-    /// Called when window size changes.
-    on_resize: ?ResizeCallback = null,
-
-    /// Called after input handling completes.
-    /// Use this for operations that may run nested event loops (e.g., modal dialogs).
-    on_post_input: ?PostInputCallback = null,
 
     /// User data pointer for callbacks
     user_data: ?*anyopaque = null,
 
-    // =========================================================================
-    // GPU Timing (reported to profiler at start of next frame)
-    // =========================================================================
+    /// Set once the core host binds the window; see `CoreBinding`.
+    core: ?CoreBinding = null,
 
-    /// Time spent in Vulkan command recording + submit + present (ns)
-    last_gpu_submit_ns: u64 = 0,
-    /// Time spent uploading atlas textures to GPU (ns)
-    last_atlas_upload_ns: u64 = 0,
-
-    /// Input callback type: return true if the event was handled
-    pub const InputCallback = *const fn (*Self, input.InputEvent) bool;
-
-    /// Render callback type: called each frame before drawing
-    pub const RenderCallback = *const fn (*Self) void;
+    // Written only by the section of 0.3.1 calls below.
+    dark_appearance: bool = false,
+    needs_redraw: bool = false,
+    render_deadline_ms: ?i64 = null,
 
     /// Close callback: called when window is about to close. Return false to prevent close.
     pub const CloseCallback = *const fn (*Self) bool;
 
-    /// Resize callback: called when window size changes
-    pub const ResizeCallback = *const fn (*Self, f64, f64) void;
-
-    /// Post-input callback: called after input handling.
-    /// Safe for operations that run nested event loops (modal dialogs, etc).
-    pub const PostInputCallback = *const fn (*Self) void;
-
     const Self = @This();
 
-    /// Longest window title, in bytes, that `setTitle` accepts.
+    /// Longest window title, in bytes, that `init` accepts.
     ///
     /// The bound exists because the title is stored inline (no allocation after
     /// initialization, `CLAUDE.md` §2) and must reach the compositor as a C
@@ -257,13 +190,11 @@ pub const Window = struct {
             .height_px = @intFromFloat(options.height),
             .size = .{ .width = options.width, .height = options.height },
             .scale_factor = initial_scale,
-            .background_color = options.background_color,
-            .glass_style = options.glass_style,
-            .renderer = VulkanRenderer.init(allocator),
+            .renderer = if (use_cpu_renderer) .{} else VulkanRenderer.init(allocator),
         };
 
-        // Store title. Same contract as `setTitle`: over-long is a programmer
-        // error, and the clamp is what keeps a release build in bounds.
+        // Store title. Over-long is a programmer error, and the clamp is what
+        // keeps a release build in bounds.
         std.debug.assert(options.title.len <= title_bytes_max);
         const title_len = @min(options.title.len, title_bytes_max);
         @memcpy(self.title_buf[0..title_len], options.title[0..title_len]);
@@ -393,17 +324,7 @@ pub const Window = struct {
         wayland.surfaceCommit(self.wl_surface.?);
         _ = wayland.wl_display_roundtrip(plat.display.?);
 
-        // Initialize Vulkan renderer with Wayland surface
-        // Swapchain will be created at physical pixel resolution
-        const wl_display = plat.getDisplay() orelse return error.NoDisplay;
-        try self.renderer.initWithWaylandSurface(
-            wl_display,
-            @ptrCast(self.wl_surface),
-            self.width_px,
-            self.height_px,
-            self.scale_factor,
-            &options.limits.scene,
-        );
+        try self.initRenderer(plat, options);
 
         // Final commit after Vulkan initialization
         wayland.surfaceCommit(self.wl_surface.?);
@@ -421,6 +342,35 @@ pub const Window = struct {
         std.debug.assert(self.window_id.isValid());
         std.debug.assert(self.wl_surface != null);
         return self;
+    }
+
+    /// Bind the renderer to the Wayland surface. Both renderers create their
+    /// frames at physical pixel resolution.
+    fn initRenderer(self: *Self, plat: *LinuxPlatform, options: *const WindowOptions) !void {
+        std.debug.assert(self.wl_surface != null);
+        std.debug.assert(self.width_px > 0);
+        std.debug.assert(self.height_px > 0);
+        if (use_cpu_renderer) {
+            const shm = plat.getShm() orelse return error.NoShm;
+            try self.renderer.initWithSurface(
+                self.allocator,
+                shm,
+                self.wl_surface.?,
+                self.width_px,
+                self.height_px,
+                self.scale_factor,
+                &options.limits,
+            );
+        } else {
+            const wl_display = plat.getDisplay() orelse return error.NoDisplay;
+            try self.renderer.initWithNativeSurface(
+                .{ .display = @ptrCast(wl_display), .surface = self.wl_surface.? },
+                self.width_px,
+                self.height_px,
+                self.scale_factor,
+                &options.limits,
+            );
+        }
     }
 
     pub fn deinit(self: *Self) void {
@@ -450,11 +400,6 @@ pub const Window = struct {
             self.viewport = null;
         }
 
-        // Cancel any pending frame callback
-        if (self.frame_callback) |cb| {
-            wayland.callbackDestroy(cb);
-        }
-
         // Clean up renderer
         self.renderer.deinit();
 
@@ -469,117 +414,18 @@ pub const Window = struct {
     }
 
     // =========================================================================
-    // Public Interface
-    // =========================================================================
-
-    /// Window width in logical pixels.
-    pub fn width(self: *const Self) u32 {
-        return self.width_px;
-    }
-
-    /// Window height in logical pixels.
-    pub fn height(self: *const Self) u32 {
-        return self.height_px;
-    }
-
-    /// Window width in logical pixels (convenience alias for `width`)
-    pub fn widthPx(self: *const Self) u32 {
-        return self.width_px;
-    }
-
-    /// Window height in logical pixels (convenience alias for `height`)
-    pub fn heightPx(self: *const Self) u32 {
-        return self.height_px;
-    }
-
-    pub fn getSize(self: *const Self) geometry.Size(f64) {
-        return .{
-            .width = @floatFromInt(self.width_px),
-            .height = @floatFromInt(self.height_px),
-        };
-    }
-
-    pub fn getScaleFactor(self: *const Self) f64 {
-        return self.scale_factor;
-    }
-
-    /// Copy `title` into the fixed title buffer and publish it to the
-    /// compositor.
-    ///
-    /// An over-long title is a programmer error here, exactly as it is on web
-    /// (`title.len <= title_bytes_max`) and in the test backend. This used to
-    /// truncate silently, so the same call that trips an assertion on two
-    /// targets quietly produced a different window title on the third.
-    ///
-    /// The clamp is kept as well, and is not a second policy: with assertions
-    /// elided in release builds it is what keeps the `@memcpy` inside
-    /// `title_buf` instead of overrunning it.
-    pub fn setTitle(self: *Self, title: []const u8) void {
-        std.debug.assert(title.len <= title_bytes_max);
-        std.debug.assert(self.title_buf.len == title_bytes_max + 1);
-
-        const len = @min(title.len, title_bytes_max);
-        @memcpy(self.title_buf[0..len], title[0..len]);
-        // NUL-terminate, and zero nothing else: the tail beyond the terminator
-        // is never read, and `xdgToplevelSetTitle` stops at the first zero.
-        self.title_buf[len] = 0;
-        self.title_len = len;
-
-        std.debug.assert(self.title_len <= title_bytes_max);
-
-        if (self.xdg_toplevel) |tl| {
-            wayland.xdgToplevelSetTitle(tl, @ptrCast(&self.title_buf));
-        }
-    }
-
-    // =========================================================================
     // Window Operations
     // =========================================================================
 
-    /// Request focus for this window.
-    ///
-    /// Wayland gives the compositor sole authority over activation: a client
-    /// cannot raise itself, and there is no protocol error to report when the
-    /// request is declined. Without `xdg-activation-v1` there is nothing to
-    /// send, so this schedules a redraw and nothing more.
-    ///
-    /// The previous comment claimed it "request[s] a render", but the body was
-    /// `_ = self;` and did not. Callers such as `WindowHandle.focus` publish a
-    /// new active window id immediately afterwards, so a silent no-op here left
-    /// `getActiveWindowId()` reporting a window the compositor had never been
-    /// asked about. Redrawing is the only honest action available, and
-    /// `capabilities` carries no `can_raise_window` flag yet to express the
-    /// rest.
-    pub fn focus(self: *Self) void {
-        std.debug.assert(!self.closed);
-
-        self.requestRender();
-
-        std.debug.assert(self.needs_redraw);
-    }
-
-    /// Close this window programmatically.
-    ///
-    /// The veto callback runs first and may decline the close. Otherwise the
-    /// window records `closed = true`, stops presenting, and returns. It is
-    /// deliberately neither torn down here nor allowed to stop the host loop.
-    ///
-    /// Teardown cannot happen here: `close()` is reachable from inside this
-    /// window's own input dispatch, where the `Cx` being dispatched lives in
-    /// the `WindowContext` that teardown would free. The owning `App` reclaims
-    /// the window from a safe point (`App.drainClosedWindows`, which polls
-    /// `isClosed()`), and `App.checkQuitCondition` decides whether losing the
-    /// last window should quit.
-    ///
-    /// This used to end with `platform.quit()`, which made closing any single
-    /// window terminate the whole application — Linux multi-window was
-    /// effectively single-window. macOS has always routed through the delegate
-    /// to the owning `App` instead; this now matches.
+    /// Close this window: the core host's close handler runs first and may
+    /// decline. Otherwise the window records `closed = true` and returns;
+    /// teardown waits for `deinit`, because `close()` is reachable from inside
+    /// this window's own input dispatch.
     pub fn close(self: *Self) void {
         std.debug.assert(@intFromPtr(self) != 0);
 
-        // Idempotent: `App.closeWindowById` and the compositor can both reach
-        // a window, and re-running the veto would ask the application twice.
+        // Idempotent: the compositor and a key chord can both reach a window,
+        // and running the handler twice would ask the application twice.
         if (self.closed) return;
 
         if (self.on_close) |callback| {
@@ -591,25 +437,13 @@ pub const Window = struct {
         std.debug.assert(self.isClosed());
     }
 
-    /// Record the close and stop this window from presenting further frames.
-    ///
-    /// Shared by the programmatic `close()` and the compositor-initiated
-    /// `xdg_toplevel.close`, so a titlebar click and an application call
-    /// converge on one state transition exactly as they do on macOS, where
-    /// both arrive at `handleClose`.
-    ///
-    /// An outstanding `wl_callback` is left in place rather than destroyed:
-    /// `deinit` owns exactly one destroy of it, and when it fires `renderFrame`
-    /// returns immediately while neither `continuous_render` nor `needs_redraw`
-    /// asks for a successor, so the callback chain retires by itself.
+    /// Record the close. Shared by the programmatic `close()` and the
+    /// compositor-initiated `xdg_toplevel.close`.
     fn markClosed(self: *Self) void {
         std.debug.assert(!self.closed);
         std.debug.assert(self.window_id.isValid());
 
         self.closed = true;
-        self.needs_redraw = false;
-        self.continuous_render = false;
-        self.render_deadline_ms = null;
 
         // A closed window stays registered until its owner reclaims it, but it
         // is no longer a legal input target, so focus must move on now rather
@@ -621,10 +455,22 @@ pub const Window = struct {
         std.debug.assert(self.platform.active_window != self);
     }
 
-    pub fn setBackgroundColor(self: *Self, color: geometry.Color) void {
-        self.background_color = color;
-        self.requestRender();
+    pub fn isClosed(self: *const Self) bool {
+        return self.closed;
     }
+
+    pub fn setCursorShape(self: *Self, shape: interface_mod.CursorShape) void {
+        std.debug.assert(self.platform.pointer == null or self.platform.seat != null);
+        std.debug.assert(self.platform.cursor_shape_device == null or self.platform.pointer != null);
+        self.platform.setCursorShape(shape);
+    }
+
+    // =========================================================================
+    // Calls from the 0.3.1 `context/window.zig`
+    // =========================================================================
+    //
+    // The core never makes these calls. They stay only while that file
+    // compiles, and go when phase 6 deletes it.
 
     /// Record the requested light/dark appearance.
     ///
@@ -638,81 +484,18 @@ pub const Window = struct {
         std.debug.assert(self.dark_appearance == dark);
     }
 
-    /// Effective framebuffer clear color.
-    ///
-    /// Applied by `renderFrame` through `VulkanRenderer.setClearColor`, which
-    /// records it into the next render pass.
-    ///
-    /// A glass style needs a transparent clear so a host-composited backdrop
-    /// shows through. Wayland cannot produce the blur itself (see
-    /// `glass_style`), so on this backend the transparent clear is the whole
-    /// of the effect, and it only shows if the compositor honours the
-    /// surface's alpha.
-    pub fn getClearColor(self: *const Self) geometry.Color {
-        std.debug.assert(self.background_color.a >= 0.0);
-        std.debug.assert(self.background_color.a <= 1.0);
-
-        if (self.glass_style.needsTransparentClear()) return geometry.Color.transparent;
-        return self.background_color;
-    }
-
-    pub fn getMousePosition(self: *const Self) geometry.Point(f64) {
-        return .{
-            .x = self.mouse_x,
-            .y = self.mouse_y,
-        };
-    }
-
-    pub fn isMouseInside(self: *const Self) bool {
-        return self.mouse_inside;
-    }
-
-    /// Get the unique identifier for this window.
-    pub fn getWindowId(self: *const Self) WindowId {
-        return self.window_id;
-    }
-
-    /// The platform that owns this window.
-    ///
-    /// Contract-pinned so shared code can reach the host without spelling a
-    /// per-backend field name; see `contract.verifyWindowLifecycle`.
     pub fn getPlatform(self: *Self) *LinuxPlatform {
         std.debug.assert(@intFromPtr(self.platform) != 0);
         return self.platform;
     }
 
-    pub fn isClosed(self: *const Self) bool {
-        return self.closed;
-    }
-
     pub fn requestRender(self: *Self) void {
-        // A closed window never presents again (`renderFrame` returns at once),
-        // so arming a `wl_callback` here would start a chain that re-schedules
-        // itself every vsync on a window that can only ever drop the frame.
-        // Setters such as `setBackgroundColor` still reach a closed window
-        // between the close and the owner's reclaim, so this must be checked
-        // here and not only at the call sites.
         if (self.closed) return;
-
         self.needs_redraw = true;
-        self.scheduleFrame();
-
         std.debug.assert(self.needs_redraw);
-        std.debug.assert(!self.closed);
     }
 
-    /// Ask for a frame no later than `delay_ms` from now.
-    ///
-    /// For views that change with the clock alone, such as a caret blink or a
-    /// countdown: no input arrives to request their next frame, and
-    /// rendering every vsync to catch it is what on-demand mode removed. The
-    /// event loop shortens its poll timeout to the earliest armed deadline
-    /// and calls `requestRender` once it passes (`LinuxPlatform.run`).
-    ///
-    /// Only the earliest deadline is kept. That loses nothing because the
-    /// deadline is frame-scoped (see `render_deadline_ms`): the frame drawn at
-    /// the earlier deadline runs every view again, and each one that still
-    /// depends on the clock re-arms its own delay.
+    /// Keeps only the earliest deadline.
     pub fn requestRenderAfter(self: *Self, delay_ms: u32) void {
         std.debug.assert(delay_ms <= interface_mod.render_delay_ms_max);
 
@@ -731,63 +514,26 @@ pub const Window = struct {
         std.debug.assert(self.render_deadline_ms.? <= deadline_ms);
     }
 
-    /// Request the frame a passed `render_deadline_ms` asked for.
-    ///
-    /// Called by the event loop once per iteration, before it renders. The
-    /// deadline is disarmed here, not only when the frame renders: a hidden
-    /// window's compositor callback can be withheld indefinitely, and a
-    /// passed deadline left armed would hold the poll timeout at zero and
-    /// spin the loop until the frame finally ran.
-    pub fn fireRenderDeadline(self: *Self, now_ms: i64) void {
-        std.debug.assert(now_ms >= 0);
-
-        const deadline_ms = self.render_deadline_ms orelse return;
-        if (now_ms < deadline_ms) return;
-
-        self.render_deadline_ms = null;
-        self.requestRender();
-
-        std.debug.assert(self.render_deadline_ms == null);
-        if (!self.closed) std.debug.assert(self.needs_redraw);
-    }
-
-    pub fn setCursorShape(self: *Self, shape: interface_mod.CursorShape) void {
-        std.debug.assert(self.platform.pointer == null or self.platform.seat != null);
-        std.debug.assert(self.platform.cursor_shape_device == null or self.platform.pointer != null);
-        self.platform.setCursorShape(shape);
-    }
-
-    pub fn setScene(self: *Self, scene: *const scene_mod.Scene) void {
-        self.scene = scene;
-    }
-
-    pub fn setTextAtlas(self: *Self, atlas: *const text_mod.Atlas) void {
-        self.text_atlas = atlas;
-    }
-
-    /// Set the SVG atlas for icon rendering
-    pub fn setSvgAtlas(self: *Self, atlas: *const text_mod.Atlas) void {
-        self.svg_atlas = atlas;
-    }
-
-    /// Set the image atlas for raster image rendering
-    pub fn setImageAtlas(self: *Self, atlas: *const text_mod.Atlas) void {
-        self.image_atlas = atlas;
-    }
-
     // =========================================================================
     // IME Support
     // =========================================================================
 
-    /// Set the marked (composing) text for IME
+    /// The composition the window keeps, as long as the text engines'
+    /// preedit, which shows no more.
+    pub const marked_text_bytes_max = core_text_engine.preedit_bytes_max;
+
+    /// Set the marked (composing) text for IME. A longer composition is
+    /// external input, so it is cut at a codepoint boundary, never inside a
+    /// UTF-8 sequence, and the cut logged.
     pub fn setMarkedText(self: *Self, text: []const u8) void {
-        if (text.len > self.marked_text_buffer.len) {
-            @memcpy(self.marked_text_buffer[0..], text[0..self.marked_text_buffer.len]);
-            self.marked_text = self.marked_text_buffer[0..self.marked_text_buffer.len];
-        } else {
-            @memcpy(self.marked_text_buffer[0..text.len], text);
-            self.marked_text = self.marked_text_buffer[0..text.len];
+        const kept = core_clipboard.prefixFitting(text, marked_text_bytes_max);
+        if (kept < text.len) {
+            std.log.warn("IME composition of {d} bytes cut to {d}", .{ text.len, kept });
         }
+        @memcpy(self.marked_text_buffer[0..kept], text[0..kept]);
+        self.marked_text = self.marked_text_buffer[0..kept];
+        std.debug.assert(self.marked_text.len <= marked_text_bytes_max);
+        if (kept > 0 and kept < text.len) std.debug.assert(text[kept] & 0xC0 != 0x80);
     }
 
     /// Clear the marked text (composition ended or cancelled)
@@ -795,22 +541,11 @@ pub const Window = struct {
         self.marked_text = "";
     }
 
-    /// Set the inserted text for IME (copies to window-owned buffer)
-    pub fn setInsertedText(self: *Self, text: []const u8) void {
-        if (text.len > self.inserted_text_buffer.len) {
-            @memcpy(self.inserted_text_buffer[0..], text[0..self.inserted_text_buffer.len]);
-            self.inserted_text = self.inserted_text_buffer[0..self.inserted_text_buffer.len];
-        } else {
-            @memcpy(self.inserted_text_buffer[0..text.len], text);
-            self.inserted_text = self.inserted_text_buffer[0..text.len];
-        }
-    }
-
-    /// Set the IME cursor rect (call from TextInput during render)
+    /// Place the IME's candidate window against the caret, in window
+    /// coordinates. The core host calls it when the focused field's caret moves.
     pub fn setImeCursorRect(self: *Self, x: f32, y: f32, w: f32, h: f32) void {
-        self.ime_cursor_rect = geometry.RectF.init(x, y, w, h);
-
-        // Update the platform's text input cursor rectangle
+        std.debug.assert(w >= 0);
+        std.debug.assert(h >= 0);
         self.platform.setImeCursorRect(
             @intFromFloat(x),
             @intFromFloat(y),
@@ -835,32 +570,12 @@ pub const Window = struct {
     }
 
     // =========================================================================
-    // Input Callback Management
+    // Core host binding
     // =========================================================================
-
-    /// Set the input callback
-    pub fn setInputCallback(self: *Self, callback: ?InputCallback) void {
-        self.on_input = callback;
-    }
-
-    /// Set the render callback
-    pub fn setRenderCallback(self: *Self, callback: ?RenderCallback) void {
-        self.on_render = callback;
-    }
 
     /// Set the close callback. Return false from callback to prevent window close.
     pub fn setCloseCallback(self: *Self, callback: ?CloseCallback) void {
         self.on_close = callback;
-    }
-
-    /// Set the resize callback
-    pub fn setResizeCallback(self: *Self, callback: ?ResizeCallback) void {
-        self.on_resize = callback;
-    }
-
-    /// Set the post-input callback (called after input handling completes)
-    pub fn setPostInputCallback(self: *Self, callback: ?PostInputCallback) void {
-        self.on_post_input = callback;
     }
 
     /// Set user data pointer
@@ -880,30 +595,11 @@ pub const Window = struct {
     // Input Handling
     // =========================================================================
 
-    /// Handle an input event and dispatch to callback
-    /// Note: Wayland and Vulkan framebuffer space are both Y-down (0 at top), matching
-    /// our scene coordinate system, so no coordinate flipping is needed anywhere.
+    /// Route one input event to the core. Events before `bindCore` reach
+    /// nothing. Wayland and Vulkan framebuffer space are both Y-down (0 at
+    /// top), matching the scene coordinate system, so no flipping is needed.
     pub fn handleInput(self: *Self, event: input.InputEvent) bool {
-        // Track mouse position and inside state
-        switch (event) {
-            .mouse_down, .mouse_up, .mouse_moved, .mouse_dragged => |m| {
-                self.mouse_x = m.position.x;
-                self.mouse_y = m.position.y;
-            },
-            .mouse_entered => |m| {
-                self.mouse_x = m.position.x;
-                self.mouse_y = m.position.y;
-                self.mouse_inside = true;
-            },
-            .mouse_exited => |m| {
-                self.mouse_x = m.position.x;
-                self.mouse_y = m.position.y;
-                self.mouse_inside = false;
-            },
-            else => {},
-        }
-
-        // Track pressed button for drag detection
+        // Track the pressed button for the platform's drag detection.
         switch (event) {
             .mouse_down => |m| {
                 self.pressed_button = m.button;
@@ -914,31 +610,66 @@ pub const Window = struct {
             else => {},
         }
 
-        // Dispatch to user callback
-        var handled = false;
-        if (self.on_input) |callback| {
-            handled = callback(self, event);
-        }
-
-        // Call post-input callback after input handling.
-        // This is safe for operations that run nested event loops (modal dialogs).
-        if (self.on_post_input) |post_callback| {
-            post_callback(self);
-        }
-
-        // Request redraw after input
-        self.requestRender();
-        return handled;
+        const binding = self.core orelse return false;
+        return pushCoreInput(binding, event, self.hasMarkedText());
     }
 
-    /// Get current modifier state from platform
-    pub fn getModifiers(self: *const Self) input.Modifiers {
-        return linux_input.modifiersFromFlags(
-            self.platform.modifier_shift,
-            self.platform.modifier_ctrl,
-            self.platform.modifier_alt,
-            self.platform.modifier_super,
-        );
+    /// Queue `event` for the core's next drain. Only a key the keymap claims
+    /// counts as handled, so every other key still reaches the IME. While the
+    /// IME holds marked text it owns every key (Escape cancels the
+    /// composition, Return accepts a candidate), so a key down is neither
+    /// queued nor claimed: no binding or `on_key` handler may act on a
+    /// keystroke that only edited the composition. Windows drops
+    /// `VK_PROCESSKEY` for the same reason.
+    fn pushCoreInput(binding: CoreBinding, event: input.InputEvent, composing: bool) bool {
+        if (composing) {
+            if (event == .key_down) return false;
+        }
+        binding.queue.push(.{ .input = event });
+        binding.schedule_tick(binding.context);
+        return switch (event) {
+            .key_down => |key| binding.query.keymapClaims(key),
+            else => false,
+        };
+    }
+
+    /// Bind a core app. Call once, before the host's render thread starts.
+    pub fn bindCore(self: *Self, binding: CoreBinding) void {
+        std.debug.assert(self.core == null);
+        std.debug.assert(self.wl_surface != null);
+        // The first configure arrived before the core existed; the host
+        // reads `size` once bound and tells the core.
+        if (self.pending_resize) self.applyPendingSize();
+        self.core = binding;
+        std.debug.assert(!self.pending_resize);
+    }
+
+    fn applyPendingSize(self: *Self) void {
+        std.debug.assert(self.pending_resize);
+        std.debug.assert(self.pending_width > 0);
+        std.debug.assert(self.pending_height > 0);
+        self.pending_resize = false;
+        self.width_px = self.pending_width;
+        self.height_px = self.pending_height;
+        self.size = .{
+            .width = @floatFromInt(self.pending_width),
+            .height = @floatFromInt(self.pending_height),
+        };
+    }
+
+    /// A core app resizes through its queue: the next built frame carries the
+    /// new viewport, and the render thread resizes the swapchain and the
+    /// surface's viewport before it presents that frame, so the new size and
+    /// the buffer drawn for it reach the compositor in one commit.
+    fn resizeCore(self: *Self, binding: CoreBinding) void {
+        std.debug.assert(self.scale_factor > 0);
+        self.applyPendingSize();
+        binding.queue.push(.{ .window = .{ .resized = .{
+            .width = @floatFromInt(self.pending_width),
+            .height = @floatFromInt(self.pending_height),
+            .scale_factor = @floatCast(self.scale_factor),
+        } } });
+        binding.schedule_tick(binding.context);
     }
 
     // =========================================================================
@@ -997,207 +728,19 @@ pub const Window = struct {
         return y < title_bar_height;
     }
 
-    /// Schedule a frame callback for the next vsync
-    fn scheduleFrame(self: *Self) void {
-        if (self.frame_callback != null) return; // Already scheduled
-        if (self.wl_surface == null) return;
-
-        self.frame_callback = wayland.surfaceFrame(self.wl_surface.?);
-        if (self.frame_callback) |cb| {
-            // Use static listener - local variables would be dangling pointers!
-            _ = wayland.callbackAddListener(cb, &frame_callback_listener, self);
-        }
-        wayland.surfaceCommit(self.wl_surface.?);
-    }
-
-    /// Adopt the size from the last `xdg_surface.configure` and rebuild the
-    /// swapchain for it, notifying `on_resize` when the size really changed.
-    fn applyPendingResize(self: *Self) void {
-        std.debug.assert(self.pending_resize);
-        std.debug.assert(!self.closed);
-
-        const old_width = self.size.width;
-        const old_height = self.size.height;
-
-        self.width_px = self.pending_width;
-        self.height_px = self.pending_height;
-        self.size = .{
-            .width = @floatFromInt(self.pending_width),
-            .height = @floatFromInt(self.pending_height),
-        };
-        // Update viewport destination size for HiDPI scaling
-        if (self.viewport) |vp| {
-            wayland.viewportSetDestination(
-                vp,
-                @intCast(self.width_px),
-                @intCast(self.height_px),
-            );
-        } else if (self.wl_surface) |surface| {
-            // Fallback to buffer scale
-            const scale_int: i32 = @intFromFloat(self.scale_factor);
-            wayland.surfaceSetBufferScale(surface, scale_int);
-        }
-        if (self.xdg_surface) |xdg| {
-            wayland.xdgSurfaceSetWindowGeometry(
-                xdg,
-                0,
-                0,
-                @intCast(self.width_px),
-                @intCast(self.height_px),
-            );
-        }
-        // Commit surface state (viewport, geometry) before recreating swapchain
-        // This ensures Wayland compositor picks up the new viewport destination
-        // so pointer coordinates are correctly mapped to logical pixel space
-        if (self.wl_surface) |surface| {
-            wayland.surfaceCommit(surface);
-        }
-        self.renderer.resize(self.width_px, self.height_px, self.scale_factor);
-        self.pending_resize = false;
-        // Notify user of resize if size actually changed
-        const size_changed = (old_width != self.size.width or old_height != self.size.height);
-        if (size_changed) {
-            if (self.on_resize) |callback| {
-                callback(self, self.size.width, self.size.height);
-            }
-        }
-
-        std.debug.assert(!self.pending_resize);
-    }
-
-    /// Render the current frame
-    pub fn renderFrame(self: *Self) void {
-        // A closed window holds its Vulkan resources until its owner reclaims
-        // it, but must never present again: its `WindowContext` may already be
-        // on the way out. This also retires an in-flight frame callback rather
-        // than letting it drive a zombie render chain (see `markClosed`).
-        if (self.closed) return;
-        if (!self.configured) return;
-        if (!self.needs_redraw and !self.pending_resize) return;
-
-        // Clear before invoking application code so requestRender() calls made
-        // while building an animation survive for the following frame. The
-        // timed-redraw deadline is cleared for the same reason: this frame's
-        // views re-arm whatever they still need (see `render_deadline_ms`).
-        self.needs_redraw = false;
-        self.render_deadline_ms = null;
-
-        // Apply the configure before the render callback runs, so the
-        // application lays out against the new size.
-        if (self.pending_resize) self.applyPendingResize();
-
-        // Call render callback to let app update scene before drawing
-        if (self.on_render) |callback| {
-            callback(self);
-        }
-
-        // Republish every frame: `setBackgroundColor` may have run since the
-        // last record, and the renderer only reads this when recording.
-        self.renderer.setClearColor(self.getClearColor());
-
-        // Stage atlas uploads — stores data pointers only, no memcpy.
-        // Actual staging + GPU transfer happens inside render() after
-        // the frame fence wait, eliminating the synchronous GPU stall.
-        self.stageAtlasUploads();
-
-        // Time GPU command recording + atlas transfers + submit + present.
-        // Atlas transfers are now folded into the render command buffer,
-        // so this timing covers everything.
-        //
-        // `render_io` is intentionally the process-lifetime single-threaded
-        // `Io` — the render path runs on the Wayland event thread and does
-        // not carry a `*Cx`/`Gooey`. `std.Io` is a pair of pointers into a
-        // static vtable, so copying it here costs nothing. Same escape hatch
-        // as the render mutex (see phase-5 option 3 in the migration doc).
-        const render_io = std.Io.Threaded.global_single_threaded.io();
-        const gpu_start = std.Io.Timestamp.now(render_io, .awake);
-
-        // Render scene if available
-        if (self.scene) |scene| {
-            self.renderer.render(scene);
-        } else {
-            // Create empty scene for clear
-            // Zero-capacity: presenting a clear needs no primitive storage.
-            var empty_scene = scene_mod.Scene.initEmpty(self.allocator);
-            defer empty_scene.deinit();
-            self.renderer.render(&empty_scene);
-        }
-        self.has_presented_frame = true;
-
-        const gpu_end = std.Io.Timestamp.now(render_io, .awake);
-        const gpu_ns: i96 = gpu_start.durationTo(gpu_end).toNanoseconds();
-        std.debug.assert(gpu_ns >= 0);
-        self.last_gpu_submit_ns = @intCast(gpu_ns);
-        self.last_atlas_upload_ns = 0; // Atlas transfers are now async (inside render cmd buf)
-
-    }
-
     // =========================================================================
     // Wayland Callbacks
     // =========================================================================
-
-    /// Stage all pending atlas uploads to the renderer. Only stores data
-    /// pointers and dirty regions — the actual memcpy + GPU transfer is
-    /// deferred to render() after the frame fence wait.
-    fn stageAtlasUploads(self: *Self) void {
-        // Text atlas — R8 format, dirty region from skyline packer
-        if (self.text_atlas) |atlas| {
-            if (atlas.generation != self.last_atlas_generation) {
-                const dirty: ?vk_atlas.DirtyRegion = if (atlas.getDirtyRegion()) |d| .{
-                    .x = @as(u32, d.x),
-                    .y = @as(u32, d.y),
-                    .width = @as(u32, d.width),
-                    .height = @as(u32, d.height),
-                } else null;
-                self.renderer.stageTextAtlas(atlas.data, atlas.size, atlas.size, dirty);
-                self.last_atlas_generation = atlas.generation;
-            }
-        }
-
-        // SVG atlas — RGBA format; also upload on first frame when view is null
-        if (self.svg_atlas) |atlas| {
-            const needs_upload = (atlas.generation != self.last_svg_atlas_generation) or
-                (self.last_svg_atlas_generation == 0 and self.renderer.svg_atlas.view == null);
-            if (needs_upload) {
-                const dirty: ?vk_atlas.DirtyRegion = if (atlas.getDirtyRegion()) |d| .{
-                    .x = @as(u32, d.x),
-                    .y = @as(u32, d.y),
-                    .width = @as(u32, d.width),
-                    .height = @as(u32, d.height),
-                } else null;
-                self.renderer.stageSvgAtlas(atlas.data, atlas.size, atlas.size, dirty);
-                self.last_svg_atlas_generation = atlas.generation;
-            }
-        }
-
-        // Image atlas — RGBA format; also upload on first frame when view is null
-        if (self.image_atlas) |atlas| {
-            const needs_upload = (atlas.generation != self.last_image_atlas_generation) or
-                (self.last_image_atlas_generation == 0 and self.renderer.image_atlas.view == null);
-            if (needs_upload) {
-                const dirty: ?vk_atlas.DirtyRegion = if (atlas.getDirtyRegion()) |d| .{
-                    .x = @as(u32, d.x),
-                    .y = @as(u32, d.y),
-                    .width = @as(u32, d.width),
-                    .height = @as(u32, d.height),
-                } else null;
-                self.renderer.stageImageAtlas(atlas.data, atlas.size, atlas.size, dirty);
-                self.last_image_atlas_generation = atlas.generation;
-            }
-        }
-    }
 
     fn surfaceEnter(
         data: ?*anyopaque,
         surface: *wayland.Surface,
         output: *wayland.Output,
     ) callconv(.c) void {
+        _ = data;
         _ = surface;
         _ = output;
-        const self: *Self = @ptrCast(@alignCast(data));
-        // Output membership can change scale/configure state when moving a
-        // window between workspaces or displays, so rebuild layout once.
-        self.requestRender();
+        // A scale change arrives as `preferred_buffer_scale`.
     }
 
     fn surfaceLeave(
@@ -1205,10 +748,9 @@ pub const Window = struct {
         surface: *wayland.Surface,
         output: *wayland.Output,
     ) callconv(.c) void {
+        _ = data;
         _ = surface;
         _ = output;
-        const self: *Self = @ptrCast(@alignCast(data));
-        self.requestRender();
     }
 
     fn surfacePreferredScale(
@@ -1230,8 +772,8 @@ pub const Window = struct {
             self.pending_resize = true;
             self.pending_width = self.width_px;
             self.pending_height = self.height_px;
+            if (self.core) |binding| self.resizeCore(binding);
         }
-        self.requestRender();
     }
 
     fn surfacePreferredTransform(
@@ -1258,14 +800,12 @@ pub const Window = struct {
         // Apply pending size changes
         if (self.pending_width > 0 and self.pending_height > 0) {
             self.pending_resize = true;
+            if (self.core) |binding| self.resizeCore(binding);
         }
 
         self.configured = true;
-        self.requestRender();
     }
 
-    // Parameters are suffixed `_px` because `width`/`height` are declarations
-    // on this struct, and a parameter may not shadow one.
     fn xdgToplevelConfigure(
         data: ?*anyopaque,
         xdg_toplevel: *wayland.XdgToplevel,
@@ -1317,10 +857,9 @@ pub const Window = struct {
     /// menu, or a session request).
     ///
     /// Routed through `close()` so the compositor request and a programmatic
-    /// close run the same veto and the same state transition; the application
-    /// cannot tell the two apart, which is the macOS behaviour. Destroying the
-    /// window here would free it underneath the Wayland dispatch calling us,
-    /// and quitting here would take every other window down with it.
+    /// close run the same handler and the same state transition. Destroying
+    /// the window here would free it underneath the Wayland dispatch calling
+    /// us.
     fn xdgToplevelClose(
         data: ?*anyopaque,
         xdg_toplevel: *wayland.XdgToplevel,
@@ -1360,63 +899,5 @@ pub const Window = struct {
                 self.has_server_decorations = false;
             },
         }
-    }
-
-    fn frameCallback(
-        data: ?*anyopaque,
-        callback: *wayland.Callback,
-        callback_data: u32,
-    ) callconv(.c) void {
-        _ = callback_data;
-        const self: *Self = @ptrCast(@alignCast(data));
-
-        // Destroy the callback
-        wayland.callbackDestroy(callback);
-        self.frame_callback = null;
-
-        // DEBUG: FPS counter. Wayland frame callbacks fire on the main
-        // event thread which does not carry a `*Cx`, so we reach for the
-        // single-threaded global `Io` here (same escape hatch as the
-        // render-mutex strategy in the Phase 5 migration doc).
-        const static = struct {
-            var count: u32 = 0;
-            var last_print_ms: i64 = 0;
-        };
-        static.count += 1;
-        const fps_io = std.Io.Threaded.global_single_threaded.io();
-        const now_ms = std.Io.Timestamp.now(fps_io, .awake).toMilliseconds();
-        if (now_ms - static.last_print_ms > 1000) {
-            std.debug.print("Wayland frame callbacks/sec: {}\n", .{static.count});
-            static.count = 0;
-            static.last_print_ms = now_ms;
-        }
-
-        // In continuous mode, always render (like macOS benchmark_mode).
-        // On demand, the frame renders only if something requested it.
-        if (self.continuous_render) {
-            self.needs_redraw = true;
-        }
-
-        // Render the frame
-        self.renderFrame();
-
-        // Schedule next frame:
-        // - In continuous mode: always schedule (vsync-driven like macOS DisplayLink)
-        // - In on-demand mode: only if needs_redraw is still true
-        if (self.continuous_render or self.needs_redraw) {
-            self.scheduleFrame();
-        }
-    }
-
-    /// Get renderer capabilities
-    pub fn getRendererCapabilities(self: *const Self) interface_mod.RendererCapabilities {
-        _ = self;
-        return .{
-            .max_texture_size = 4096,
-            .msaa = true,
-            .msaa_sample_count = 4,
-            .unified_memory = false,
-            .name = "Vulkan",
-        };
     }
 };

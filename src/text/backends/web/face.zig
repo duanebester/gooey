@@ -11,6 +11,7 @@ const Metrics = types.Metrics;
 const GlyphMetrics = types.GlyphMetrics;
 const RasterizedGlyph = types.RasterizedGlyph;
 const SystemFont = types.SystemFont;
+const FontVariant = types.FontVariant;
 const FontFace = font_face_mod.FontFace;
 
 // JS imports
@@ -63,7 +64,10 @@ extern "env" fn rasterizeGlyphSubpixel(
 
 /// Web-backed font face (matches CoreTextFace API)
 pub const WebFontFace = struct {
-    /// Font name stored inline (no allocation needed)
+    /// Font spec stored inline (no allocation needed): `"<style> <weight>
+    /// <family>"`, such as `"italic 700 Inter"`. The JS `getFont` inserts the
+    /// pixel size between weight and family, as the CSS `font` shorthand
+    /// requires. Style and weight never contain spaces, so the split is exact.
     font_name_buf: [128]u8,
     font_name_len: u8,
     /// Cached metrics
@@ -77,8 +81,15 @@ pub const WebFontFace = struct {
 
     const Self = @This();
 
-    /// Load a font by name (CSS font-family)
-    pub fn init(name: []const u8, size: f32) !Self {
+    /// Load one variant of a font by name (CSS font-family).
+    ///
+    /// Fallback policy: the browser matches the CSS weight and style. When the
+    /// family has no such face, the browser synthesizes bold and oblique (its
+    /// default `font-synthesis`), which canvas text cannot opt out of.
+    pub fn init(name: []const u8, size: f32, variant: FontVariant) !Self {
+        std.debug.assert(name.len > 0);
+        std.debug.assert(size > 0);
+
         var self = Self{
             .font_name_buf = undefined,
             .font_name_len = 0,
@@ -87,21 +98,25 @@ pub const WebFontFace = struct {
             .advance_cache_valid = @as([256]u8, @splat(0)),
         };
 
-        // Copy font name to internal buffer
-        const copy_len = @min(name.len, self.font_name_buf.len);
-        @memcpy(self.font_name_buf[0..copy_len], name[0..copy_len]);
-        self.font_name_len = @intCast(copy_len);
+        const style = if (variant.isItalic()) "italic" else "normal";
+        const spec = std.fmt.bufPrint(&self.font_name_buf, "{s} {d} {s}", .{
+            style,
+            variant.weight().cssWeight(),
+            name,
+        }) catch return error.FontNameTooLong;
+        self.font_name_len = @intCast(spec.len);
+        std.debug.assert(self.font_name_len == spec.len);
 
         // Get font metrics from JS
         var ascent: f32 = 0;
         var descent: f32 = 0;
         var line_height: f32 = 0;
 
-        getFontMetrics(name.ptr, @intCast(name.len), size, &ascent, &descent, &line_height);
+        getFontMetrics(spec.ptr, @intCast(spec.len), size, &ascent, &descent, &line_height);
 
         // Measure cell width (for monospace detection)
-        const m_width = measureText(name.ptr, @intCast(name.len), size, "M", 1);
-        const i_width = measureText(name.ptr, @intCast(name.len), size, "i", 1);
+        const m_width = measureText(spec.ptr, @intCast(spec.len), size, "M", 1);
+        const i_width = measureText(spec.ptr, @intCast(spec.len), size, "i", 1);
         const is_monospace = @abs(m_width - i_width) < 0.1;
 
         self.metrics = .{
@@ -122,15 +137,15 @@ pub const WebFontFace = struct {
         return self;
     }
 
-    /// Load a system font
-    pub fn initSystem(style: SystemFont, size: f32) !Self {
+    /// Load one variant of a system font, with the same policy as `init`.
+    pub fn initSystem(style: SystemFont, size: f32, variant: FontVariant) !Self {
         const font_name = switch (style) {
             .monospace => "monospace",
             .sans_serif => "system-ui, -apple-system, sans-serif",
             .serif => "Georgia, serif",
             .system => "system-ui, -apple-system, sans-serif",
         };
-        return init(font_name, size);
+        return init(font_name, size, variant);
     }
 
     pub fn deinit(self: *Self) void {

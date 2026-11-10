@@ -10,10 +10,6 @@
 //!
 //! // Platform detection
 //! if (platform.is_wasm) { ... }
-//!
-//! // Capabilities
-//! const caps = platform.getCapabilities();
-//! if (caps.can_close_window) { ... }
 //! ```
 
 const std = @import("std");
@@ -25,37 +21,26 @@ const builtin = @import("builtin");
 
 pub const interface = @import("interface.zig");
 
-/// Exact compile-time verification of the platform boundary.
+/// Exact compile-time verification of backend signatures.
 pub const contract = @import("contract.zig");
 
-// PR 7b.1a — `platform.Window` was renamed to `platform.PlatformWindow`
-// to free up the `Window` name for the upcoming `Gooey → Window` rename
-// in PR 7b.1b. The two are very different things — `PlatformWindow` is
-// the OS-level handle (NSWindow on macOS, wl_surface on Linux, canvas
-// on web); the framework-level `Window` will hold per-window frame
-// state. Keeping them under one name was always going to bite once the
-// `Gooey` god object split landed; this PR pre-empts the collision.
+// `platform.PlatformWindow` and the framework-level `Window` are distinct
+// names because they are very different things — `PlatformWindow` is the
+// OS-level handle (NSWindow on macOS, wl_surface on Linux, canvas on web);
+// the framework-level `Window` holds per-window frame state. One name for
+// both would collide.
 //
-// See `docs/cleanup-implementation-plan.md` PR 7b for the broader
-// App/Window split, and `architectural-cleanup-plan.md` §10 for the
-// GPUI mapping where `platform_window: PlatformWindow` is the pattern
-// being adopted.
-
-/// Platform capabilities
-pub const PlatformCapabilities = interface.PlatformCapabilities;
+// See `docs/cleanup-implementation-plan.md` for the broader App/Window
+// split, and `architectural-cleanup-plan.md` §10 for the GPUI mapping where
+// `platform_window: PlatformWindow` is the adopted pattern.
 
 /// Window creation options (platform-agnostic)
 pub const WindowOptions = interface.WindowOptions;
-
-/// How the selected backend's host hands control to Gooey.
-pub const DriveModel = interface.DriveModel;
 
 /// Cursor shapes selected by framework widgets.
 pub const CursorShape = interface.CursorShape;
 
 /// Translucent-background style, shared by every backend.
-pub const GlassStyle = interface.GlassStyle;
-
 /// Renderer capabilities
 pub const RendererCapabilities = interface.RendererCapabilities;
 
@@ -84,10 +69,8 @@ pub const is_wasm = builtin.cpu.arch == .wasm32 or builtin.cpu.arch == .wasm64;
 // Backend Selection
 // =============================================================================
 //
-// Note: Time utilities previously lived here as `platform.time`. As of the
-// Zig 0.16 `std.Io` migration, callers sample timestamps via
-// `std.Io.Timestamp.now(io, .awake)` directly (see `docs/zig-0.16-io-migration.md`,
-// phase 5.4/5.6). The `platform/time.zig` shim has been retired.
+// Note: There are no platform time utilities. Callers sample timestamps via
+// `std.Io.Timestamp.now(io, .awake)` directly (see `docs/zig-0.16-io-migration.md`).
 
 pub const is_linux = builtin.os.tag == .linux;
 
@@ -95,20 +78,40 @@ pub const is_linux = builtin.os.tag == .linux;
 /// by backend selection, which goes through `backend` below.
 pub const is_macos = builtin.os.tag == .macos;
 
+pub const is_windows = builtin.os.tag == .windows;
+
 pub const backend = if (is_wasm)
     @import("web/mod.zig")
 else switch (builtin.os.tag) {
     .macos => @import("macos/mod.zig"),
-    .linux => @import("linux/mod.zig"),
+    // `-Dlinux-backend` picks Wayland (GPU or CPU rendered) or the
+    // display-server-free framebuffer backend; see `linux_backend.zig`.
+    .linux => switch (@import("linux_backend.zig").selected) {
+        .wayland_vulkan, .wayland_cpu => @import("linux/mod.zig"),
+        .fbdev => @import("fbdev/mod.zig"),
+    },
+    .windows => @import("windows/mod.zig"),
     else => @compileError("Unsupported platform: " ++ @tagName(builtin.os.tag)),
 };
 
-// Every backend namespace declares `Platform`, `PlatformWindow`, and
-// `drive_model`, and pins itself with `contract.verifyBackend`. Deriving the
-// public aliases from those canonical names — rather than switching on each
-// backend's own spelling (`MacPlatform`, `LinuxPlatform`, `WebPlatform`) —
-// means adding a backend cannot silently skip the contract, and the selection
-// logic no longer has to know what any backend calls its own types.
+// Every backend namespace declares `Platform` and `PlatformWindow`, so the
+// aliases below do not have to know what any backend calls its own types.
+
+/// Where atlas pixels live for the selected renderer. The CPU renderer samples
+/// its atlases in place, so they are its textures; GPU renderers keep atlas
+/// pixels only in their textures and receive them through `AtlasUploads`.
+/// Synthetic-text builds draw with the `NullRenderer`, which reads the glyph
+/// atlas in place like the CPU renderer, so they keep CPU pixels too.
+pub const atlas_storage: @import("../text/atlas_uploads.zig").AtlasStorage = if (text_is_synthetic)
+    .cpu_texture
+else if (is_wasm)
+    .gpu_upload
+else switch (builtin.os.tag) {
+    .linux => if (@import("linux_backend.zig").uses_cpu_renderer) .cpu_texture else .gpu_upload,
+    else => .gpu_upload,
+};
+
+const text_is_synthetic = @import("../text/mod.zig").is_synthetic;
 
 /// Platform type for the current target (compile-time selected).
 pub const Platform = backend.Platform;
@@ -122,45 +125,17 @@ pub const Platform = backend.Platform;
 /// (the framework-level wrapper, see `context/gooey.zig`) rather than
 /// here.
 ///
-/// Renamed from `Window` in PR 7b.1a so the framework wrapper can
-/// claim that name in PR 7b.1b without a `platform.Window` collision.
+/// Named `PlatformWindow` so the framework wrapper can own the name `Window`
+/// without a `platform.Window` collision.
 pub const PlatformWindow = backend.PlatformWindow;
-
-/// Host drive model of the selected backend.
-///
-/// `blocking_event_loop` on macOS and Linux, `host_callback` on web. This is a
-/// comptime constant, so reading it costs nothing at runtime.
-///
-/// Its consumer is `runCx` in `src/runtime/runner.zig`, which guards every
-/// teardown `defer` on an ownership flag and, once `plat.run()` has returned,
-/// recomputes that flag from this value via `ownsTeardownAfterRun`:
-/// `blocking_event_loop` returns from `run` only after quit, so the frame tears
-/// everything down; `host_callback` returns immediately with the host still
-/// holding `&plat`, so teardown is suppressed and the host owns the state.
-/// `contract.verifyBackend` pins the type here and additionally requires
-/// `isRunning` on the `host_callback` arm, which is exactly what `runCx`
-/// samples to cross-check the handoff.
-///
-/// The `host_callback` arm keeps `runCx`'s heap state alive; it does not make
-/// `runCx` a usable entry point for a host-driven backend, because `plat` is a
-/// local of that frame. See `docs/platform_interface_design.md`, "Known gaps".
-pub const drive_model: DriveModel = backend.drive_model;
-
-/// DisplayLink for vsync (native only, not available on Linux)
-pub const DisplayLink = if (is_wasm)
-    void // Not applicable on web
-else if (is_linux)
-    void // Linux uses Wayland frame callbacks
-else
-    backend.DisplayLink;
 
 // =============================================================================
 // Platform-specific modules (for advanced usage)
 // =============================================================================
 
-pub const macos = if (!is_wasm and !is_linux) @import("macos/mod.zig") else struct {};
+pub const macos = if (is_macos) @import("macos/mod.zig") else struct {};
 
-// Legacy alias for backwards compatibility
+// Short alias for `macos`, kept so existing callers compile.
 pub const mac = macos;
 
 pub const linux = if (is_linux) struct {
@@ -173,57 +148,16 @@ pub const linux = if (is_linux) struct {
     pub const clipboard = @import("linux/clipboard.zig");
     pub const dbus = @import("linux/dbus.zig");
     pub const file_dialog = @import("linux/file_dialog.zig");
+    /// CPU renderer shared by the `wayland_cpu` and `fbdev` backends.
+    pub const cpu = @import("cpu/renderer.zig");
     // Type aliases
     pub const LinuxPlatform = platform.LinuxPlatform;
     pub const Window = window.Window;
     pub const VulkanRenderer = vk_renderer.VulkanRenderer;
 } else struct {};
 
-// PR 9 Task 2.5 — `image_loader` moved from `root.wasm_image_loader`
-// (and the duplicate private `runtime/render.zig::wasm_loader` shim) into
-// `platform.web.image_loader`. The conditional-stub lived in two places
-// historically; consolidating it here puts the platform-conditional logic
-// next to the rest of the `web` namespace (`platform`, `window`,
-// `imports`, `file_dialog`) and lets non-WASM callers resolve through the
-// same path without each call site rolling its own stub.
 pub const web = if (is_wasm) struct {
     pub const platform = @import("web/platform.zig");
     pub const window = @import("web/window.zig");
     pub const imports = @import("web/imports.zig");
-    pub const file_dialog = @import("web/file_dialog.zig");
-    pub const image_loader = @import("web/image_loader.zig");
-} else struct {
-    // Stub mirroring `web/image_loader.zig`'s public surface so non-WASM
-    // call sites compile against the same names. All entry points are
-    // no-ops on native — runtime image loading on native goes through
-    // `image.ImageLoader` instead (the native-only async loader landed
-    // in PR 1; the WASM async path remains separate because browser
-    // `createImageBitmap` requires a JS round-trip).
-    pub const image_loader = struct {
-        pub const DecodedImage = struct {
-            width: u32,
-            height: u32,
-            pixels: []u8,
-            owned: bool,
-            pub fn deinit(_: *@This(), _: std.mem.Allocator) void {}
-        };
-        pub const DecodeCallback = *const fn (u32, ?DecodedImage) void;
-        pub fn init(_: std.mem.Allocator) void {}
-        pub fn deinit() void {}
-        pub fn loadFromUrlAsync(_: []const u8, _: DecodeCallback) ?u32 {
-            return null;
-        }
-        pub fn loadFromMemoryAsync(_: []const u8, _: DecodeCallback) ?u32 {
-            return null;
-        }
-    };
-};
-
-// =============================================================================
-// Helpers
-// =============================================================================
-
-/// Get the capabilities of the current platform.
-pub fn getCapabilities() PlatformCapabilities {
-    return Platform.capabilities;
-}
+} else struct {};

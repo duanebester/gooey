@@ -5,7 +5,8 @@
 //! Write (copy): Uses navigator.clipboard.writeText() via JS import.
 //! Read (paste): Handled by JS paste event -> appendText flow.
 //!               The browser's paste event gives synchronous access to
-//!               clipboardData, which is then injected as text input.
+//!               clipboardData, which is then injected as text input, so
+//!               there is no read function.
 
 const imports = @import("imports.zig");
 
@@ -16,13 +17,4 @@ pub fn setText(text: []const u8) bool {
     if (text.len == 0) return true;
     imports.clipboardWriteText(text.ptr, @intCast(text.len));
     return true;
-}
-
-/// Read text from the system clipboard.
-/// On web, this returns null because paste is handled differently:
-/// The browser's paste event on the hidden input element captures
-/// the clipboard text synchronously and injects it via appendText().
-/// This avoids the async permission issues with navigator.clipboard.readText().
-pub fn getText(_: anytype) ?[]const u8 {
-    return null;
 }

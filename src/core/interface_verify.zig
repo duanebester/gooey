@@ -2,15 +2,14 @@
 //!
 //! Duck-typed `@hasDecl` checks for the subsystem shapes that have no single
 //! authoritative contract: renderers, clipboards, SVG rasterizers, image
-//! loaders, file dialogs, and focusable widgets. These verify that a
+//! loaders, and file dialogs. These verify that a
 //! declaration exists, not that its type matches, because the backends
 //! legitimately differ in signature (see `verifyRendererInterface`).
 //!
-//! This module does NOT cover the platform boundary. `Platform` and
-//! `PlatformWindow` are verified by `src/platform/contract.zig`, which checks
-//! complete function types rather than mere presence, and which each backend
-//! pins on itself from its own `mod.zig`. Adding a weaker duck-typed check
-//! beside it would form a second, drifting contract.
+//! This module does NOT cover the renderer the core draws through:
+//! `core/backend.zig` verifies that with complete function types
+//! (`platform/contract.zig`) rather than mere presence. Adding a weaker
+//! duck-typed check beside it would form a second, drifting contract.
 //!
 //! Usage in a backend file:
 //!   const interface_verify = @import("../../core/interface_verify.zig");
@@ -71,6 +70,7 @@ pub fn verifySvgRasterizerInterface(comptime T: type) void {
 ///   - RasterizedSvg type
 ///   - RasterizeError type
 ///   - StrokeOptions type
+///   - RasterBudget type and scratchBytes fn
 pub fn verifySvgRasterizerModule(comptime M: type) void {
     comptime {
         // Required function exports
@@ -82,6 +82,8 @@ pub fn verifySvgRasterizerModule(comptime M: type) void {
         assertHasDecl(M, "RasterizedSvg", "SvgRasterizer module");
         assertHasDecl(M, "RasterizeError", "SvgRasterizer module");
         assertHasDecl(M, "StrokeOptions", "SvgRasterizer module");
+        assertHasDecl(M, "RasterBudget", "SvgRasterizer module");
+        assertHasDecl(M, "scratchBytes", "SvgRasterizer module");
     }
 }
 
@@ -116,18 +118,6 @@ pub fn verifyImageLoaderModule(comptime M: type) void {
     }
 }
 
-/// Verify a type implements the Clipboard interface
-///
-/// Required methods:
-///   - getText(*Self, Allocator) ?[]const u8
-///   - setText(*Self, []const u8) bool
-pub fn verifyClipboardInterface(comptime T: type) void {
-    comptime {
-        assertHasDecl(T, "getText", "Clipboard");
-        assertHasDecl(T, "setText", "Clipboard");
-    }
-}
-
 /// Verify a type implements the FileDialog interface
 ///
 /// Required methods:
@@ -137,27 +127,6 @@ pub fn verifyFileDialogInterface(comptime T: type) void {
     comptime {
         assertHasDecl(T, "promptForPaths", "FileDialog");
         assertHasDecl(T, "promptForNewPath", "FileDialog");
-    }
-}
-
-/// Verify a widget type implements the `Focusable` trait shape so it can
-/// register a `context.focus.Focusable` vtable with the `FocusManager`.
-///
-/// Required instance methods:
-///   - `focus(*Self) void`          — set the widget's focused flag
-///   - `blur(*Self) void`           — clear the focused flag and IME state
-///   - `isFocused(...) bool`        — read the focused flag
-///   - `focusable(*Self) Focusable` — bundle pointer + vtable for the trait
-///
-/// The compile-time pin (per CLAUDE.md §3): instantiate from `widgets/mod.zig`
-/// so a widget dropping a method fails the build rather than becoming a silent
-/// runtime no-op. See PR 4 in `docs/cleanup-implementation-plan.md`.
-pub fn verifyFocusableInterface(comptime T: type) void {
-    comptime {
-        assertHasDecl(T, "focus", "Focusable");
-        assertHasDecl(T, "blur", "Focusable");
-        assertHasDecl(T, "isFocused", "Focusable");
-        assertHasDecl(T, "focusable", "Focusable");
     }
 }
 
@@ -208,22 +177,6 @@ test "verifyRendererInterface with web-style mock (no resize)" {
     }
 }
 
-test "verifyClipboardInterface with mock" {
-    const MockClipboard = struct {
-        pub fn getText(_: *@This(), _: std.mem.Allocator) ?[]const u8 {
-            return null;
-        }
-        pub fn setText(_: *@This(), _: []const u8) bool {
-            return false;
-        }
-    };
-
-    // Should not cause compile error
-    comptime {
-        verifyClipboardInterface(MockClipboard);
-    }
-}
-
 test "verifySvgRasterizerModule with mock" {
     const MockSvgModule = struct {
         pub const RasterizedSvg = struct {
@@ -243,6 +196,15 @@ test "verifySvgRasterizerModule with mock" {
             width: f32 = 1.0,
         };
 
+        pub const RasterBudget = struct {
+            path_bytes_max: u32,
+            vertex_count_max: u32,
+        };
+
+        pub fn scratchBytes(_: RasterBudget, _: u32) u32 {
+            return 0;
+        }
+
         pub fn rasterize(
             _: std.mem.Allocator,
             _: []const u8,
@@ -261,6 +223,7 @@ test "verifySvgRasterizerModule with mock" {
             _: []u8,
             _: bool,
             _: StrokeOptions,
+            _: RasterBudget,
         ) RasterizeError!RasterizedSvg {
             return error.EmptyPath;
         }

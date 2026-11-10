@@ -14,7 +14,7 @@ const mtl = @import("api.zig");
 const scene_mod = @import("../../../scene/mod.zig");
 const batch_iter = @import("../../../scene/batch_iterator.zig");
 const text_pipeline = @import("text.zig");
-const render_stats = @import("../../../debug/render_stats.zig");
+const render_stats = @import("../../../scene/render_stats.zig");
 const unified = @import("../../unified.zig");
 const limits = @import("../../../core/limits.zig");
 const svg_pipeline = @import("svg_pipeline.zig");
@@ -24,9 +24,6 @@ const polyline_pipeline = @import("polyline_pipeline.zig");
 const point_cloud_pipeline = @import("point_cloud_pipeline.zig");
 const colored_point_cloud_pipeline = @import("colored_point_cloud_pipeline.zig");
 const mesh_pool_mod = @import("../../../scene/mesh_pool.zig");
-const Polyline = @import("../../../scene/polyline.zig").Polyline;
-const PointCloud = @import("../../../scene/point_cloud.zig").PointCloud;
-const ColoredPointCloud = @import("../../../scene/colored_point_cloud.zig").ColoredPointCloud;
 
 /// Pipeline references for batch rendering
 pub const Pipelines = struct {
@@ -84,6 +81,12 @@ pub fn drawSceneWithStats(
         });
     }
 
+    // Path edges are classified over the whole frame before the first path
+    // draw, as on Vulkan (`mesh_edges.classify`).
+    if (pipelines.path) |pp| {
+        if (pipelines.mesh_pool != null) pp.classifyEdges(scene);
+    }
+
     var iter = batch_iter.BatchIterator.init(scene);
     var batch_num: u32 = 0;
     while (iter.next()) |batch| : (batch_num += 1) {
@@ -119,18 +122,54 @@ fn drawPipelineBatch(
 ) void {
     switch (batch) {
         .shadow, .quad => unreachable, // Appended to the unified ring by the caller.
-        .glyph => |glyphs| drawGlyphBatch(encoder, glyphs, pipelines.*, viewport_size, stats),
-        .svg => |svgs| drawSvgBatch(encoder, svgs, pipelines.*, viewport_size, stats),
-        .image => |images| drawImageBatch(encoder, images, pipelines.*, viewport_size, stats),
+        // Instances are claimed against the window budget like mesh geometry.
+        .glyph => |glyphs| drawGlyphBatch(
+            encoder,
+            glyphs,
+            pipelines.*,
+            viewport_size,
+            scene.frame_count_finished,
+            stats,
+        ),
+        .svg => |svgs| drawSvgBatch(
+            encoder,
+            svgs,
+            pipelines.*,
+            viewport_size,
+            scene.frame_count_finished,
+            stats,
+        ),
+        .image => |images| drawImageBatch(
+            encoder,
+            images,
+            pipelines.*,
+            viewport_size,
+            scene.frame_count_finished,
+            stats,
+        ),
         .path => |paths| drawPathBatch(encoder, paths, scene, pipelines.*, viewport_size, stats),
-        .polyline => |polylines| {
-            drawPolylineBatch(encoder, polylines, pipelines.*, viewport_size, stats);
+        // Mesh geometry is claimed against the window budget; the frame number
+        // names the failing frame if a claim exceeds it.
+        .polyline => |polylines| if (pipelines.polyline) |plp| {
+            plp.renderBatch(encoder, polylines, .{
+                .viewport_size = viewport_size,
+                .frame = scene.frame_count_finished,
+            });
+            if (stats) |s| s.recordDrawCall();
         },
-        .point_cloud => |point_clouds| {
-            drawPointCloudBatch(encoder, point_clouds, pipelines.*, viewport_size, stats);
+        .point_cloud => |point_clouds| if (pipelines.point_cloud) |pcp| {
+            pcp.renderBatch(encoder, point_clouds, .{
+                .viewport_size = viewport_size,
+                .frame = scene.frame_count_finished,
+            });
+            if (stats) |s| s.recordDrawCall();
         },
-        .colored_point_cloud => |clouds| {
-            drawColoredPointCloudBatch(encoder, clouds, pipelines.*, viewport_size, stats);
+        .colored_point_cloud => |clouds| if (pipelines.colored_point_cloud) |cpcp| {
+            cpcp.renderBatch(encoder, clouds, .{
+                .viewport_size = viewport_size,
+                .frame = scene.frame_count_finished,
+            });
+            if (stats) |s| s.recordDrawCall();
         },
     }
 }
@@ -173,18 +212,14 @@ fn drawGlyphBatch(
     glyphs: []const scene_mod.GlyphInstance,
     pipelines: Pipelines,
     viewport_size: [2]f32,
+    frame: u64,
     stats: ?*render_stats.RenderStats,
 ) void {
     if (glyphs.len == 0) return;
     const tp = pipelines.text orelse return;
 
-    // Use renderBatch which copies data inline via setVertexBytes,
-    // safe for multiple calls per frame (unlike render which uses shared buffer)
-    tp.renderBatch(encoder, glyphs, viewport_size) catch |err| {
-        if (builtin.mode == .debug) {
-            std.debug.print("drawGlyphBatch failed: {}\n", .{err});
-        }
-    };
+    // Appends to this frame's instance slot; claimed against the window budget.
+    tp.renderBatch(encoder, glyphs, .{ .viewport_size = viewport_size, .frame = frame });
 
     if (stats) |s| {
         s.recordDrawCall();
@@ -198,18 +233,14 @@ fn drawSvgBatch(
     svgs: []const @import("../../../scene/svg_instance.zig").SvgInstance,
     pipelines: Pipelines,
     viewport_size: [2]f32,
+    frame: u64,
     stats: ?*render_stats.RenderStats,
 ) void {
     if (svgs.len == 0) return;
     const sp = pipelines.svg orelse return;
 
-    // Use renderBatch which copies data inline via setVertexBytes,
-    // safe for multiple calls per frame (unlike render which uses shared buffer)
-    sp.renderBatch(encoder, svgs, viewport_size) catch |err| {
-        if (builtin.mode == .debug) {
-            std.debug.print("drawSvgBatch failed: {}\n", .{err});
-        }
-    };
+    // Appends to this frame's instance slot; claimed against the window budget.
+    sp.renderBatch(encoder, svgs, .{ .viewport_size = viewport_size, .frame = frame });
 
     if (stats) |s| {
         s.recordDrawCall();
@@ -223,18 +254,14 @@ fn drawImageBatch(
     images: []const @import("../../../scene/image_instance.zig").ImageInstance,
     pipelines: Pipelines,
     viewport_size: [2]f32,
+    frame: u64,
     stats: ?*render_stats.RenderStats,
 ) void {
     if (images.len == 0) return;
     const ip = pipelines.image orelse return;
 
-    // Use renderBatch which copies data inline via setVertexBytes,
-    // safe for multiple calls per frame (unlike render which uses shared buffer)
-    ip.renderBatch(encoder, images, viewport_size) catch |err| {
-        if (builtin.mode == .debug) {
-            std.debug.print("drawImageBatch failed: {}\n", .{err});
-        }
-    };
+    // Appends to this frame's instance slot; claimed against the window budget.
+    ip.renderBatch(encoder, images, .{ .viewport_size = viewport_size, .frame = frame });
 
     if (stats) |s| {
         s.recordDrawCall();
@@ -271,83 +298,15 @@ fn drawPathBatch(
     // Slice gradients to match the path batch (parallel arrays must stay aligned)
     const gradients = all_gradients[batch_offset..][0..paths.len];
 
-    pp.renderBatchWithGradients(encoder, paths, gradients, pool, viewport_size) catch |err| {
-        if (builtin.mode == .debug) {
-            std.debug.print("drawPathBatch failed: {}\n", .{err});
-        }
-    };
+    pp.renderBatchWithGradients(encoder, paths, gradients, pool, .{
+        .viewport_size = viewport_size,
+        .frame = scene.frame_count_finished,
+        .path_first = @intCast(batch_offset),
+    });
 
     if (stats) |s| {
         s.recordDrawCall();
         s.recordPaths(@intCast(paths.len));
-    }
-}
-
-/// Draw a batch of polylines using the polyline pipeline
-fn drawPolylineBatch(
-    encoder: objc.Object,
-    polylines: []const Polyline,
-    pipelines: Pipelines,
-    viewport_size: [2]f32,
-    stats: ?*render_stats.RenderStats,
-) void {
-    if (polylines.len == 0) return;
-    const plp = pipelines.polyline orelse return;
-
-    plp.renderBatch(encoder, polylines, viewport_size) catch |err| {
-        if (builtin.mode == .debug) {
-            std.debug.print("drawPolylineBatch failed: {}\n", .{err});
-        }
-    };
-
-    if (stats) |s| {
-        s.recordDrawCall();
-        // TODO: Add recordPolylines to stats if needed
-    }
-}
-
-/// Draw a batch of point clouds using the point cloud pipeline
-fn drawPointCloudBatch(
-    encoder: objc.Object,
-    point_clouds: []const PointCloud,
-    pipelines: Pipelines,
-    viewport_size: [2]f32,
-    stats: ?*render_stats.RenderStats,
-) void {
-    if (point_clouds.len == 0) return;
-    const pcp = pipelines.point_cloud orelse return;
-
-    pcp.renderBatch(encoder, point_clouds, viewport_size) catch |err| {
-        if (builtin.mode == .debug) {
-            std.debug.print("drawPointCloudBatch failed: {}\n", .{err});
-        }
-    };
-
-    if (stats) |s| {
-        s.recordDrawCall();
-        // TODO: Add recordPointClouds to stats if needed
-    }
-}
-
-fn drawColoredPointCloudBatch(
-    encoder: objc.Object,
-    colored_point_clouds: []const ColoredPointCloud,
-    pipelines: Pipelines,
-    viewport_size: [2]f32,
-    stats: ?*render_stats.RenderStats,
-) void {
-    if (colored_point_clouds.len == 0) return;
-    const cpcp = pipelines.colored_point_cloud orelse return;
-
-    cpcp.renderBatch(encoder, colored_point_clouds, viewport_size) catch |err| {
-        if (builtin.mode == .debug) {
-            std.debug.print("drawColoredPointCloudBatch failed: {}\n", .{err});
-        }
-    };
-
-    if (stats) |s| {
-        s.recordDrawCall();
-        // TODO: Add recordColoredPointClouds to stats if needed
     }
 }
 
@@ -419,10 +378,12 @@ fn convertShadows(source: []const scene_mod.Shadow, target: []unified.Primitive)
 ///
 /// Resource sketch (CLAUDE.md §7):
 /// - Slot capacity: the app budget's `quad_count_frame_max + shadow_count_frame_max`
-///   (`SceneLimits.unifiedPrimitiveCountMax`) primitives of 128 B, three slots, allocated
-///   once in `init` and never grown. `ResourceLimits.standard` gives 8,704 primitives:
-///   1.06 MiB per slot, 3.19 MiB total; the framework ceiling gives 25.5 MiB. The scene
-///   is reserved from the same budget, so a frame's quads and shadows always fit.
+///   (`SceneLimits.unifiedPrimitiveCountMax`) primitives of 128 B, one slot per frame in
+///   flight (`ResourceLimits.frame`), allocated once in `init` and never grown.
+///   `ResourceLimits.standard` gives 4,608 primitives: 576 KiB per slot, 1.69 MiB for
+///   three slots; `.nano` gives 272 primitives, 68 KiB for two; the framework ceiling
+///   gives 25.5 MiB. The scene is reserved from the same budget, so a frame's quads and
+///   shadows always fit.
 /// - Per quad/shadow batch: one sequential n × 128 B conversion write into the slot. No
 ///   staging copy, no heap allocation, no `setVertexBytes` payload.
 /// - Per run of consecutive quad/shadow batches: one pipeline bind, two buffer binds, one
@@ -430,13 +391,17 @@ fn convertShadows(source: []const scene_mod.Shadow, target: []unified.Primitive)
 ///
 /// In-flight safety: slot `frame_index` is rewritten `frame_count` frames after it was last
 /// used. Every frame that writes the ring first holds a drawable from the layer, and the
-/// renderer asserts `maximumDrawableCount <= frame_count` at init. If the frame that last
-/// used this slot were still executing, so would every later frame on the same in-order
-/// command queue: `frame_count` frames each holding a drawable, leaving none for this frame.
+/// renderer sets `maximumDrawableCount` to `frame_count` at init and asserts it took. If
+/// the frame that last used this slot were still executing, so would every later frame on
+/// the same in-order command queue: `frame_count` frames each holding a drawable, leaving
+/// none for this frame.
 pub const UnifiedPrimitiveRing = struct {
-    buffers: [frame_count]objc.Object,
+    /// Declared at the ceiling; entries past `frame_count` are never created.
+    buffers: [frame_count_max]objc.Object,
     /// CPU-visible `contents` of each buffer; stable for the buffer's lifetime.
-    slots: [frame_count][*]unified.Primitive,
+    slots: [frame_count_max][*]unified.Primitive,
+    /// The window budget's `ResourceLimits.frame.in_flight_count`.
+    frame_count: u32,
     frame_index: u32,
     /// Slot capacity in primitives, from the window's `ResourceLimits.scene`.
     primitive_count_max: u32,
@@ -445,7 +410,7 @@ pub const UnifiedPrimitiveRing = struct {
     /// Prefix of `primitive_count` already submitted by a draw call.
     primitive_count_drawn: u32,
 
-    pub const frame_count: u32 = 3;
+    pub const frame_count_max: u32 = limits.MAX_FRAMES_IN_FLIGHT;
     /// Largest slot any valid budget can request.
     pub const primitive_count_ceiling: u32 =
         limits.MAX_QUADS_PER_FRAME + limits.MAX_SHADOWS_PER_FRAME;
@@ -468,9 +433,12 @@ pub const UnifiedPrimitiveRing = struct {
         assert(@as(u64, primitive_count_ceiling) * @sizeOf(unified.Primitive) < 1 << 32);
     }
 
-    /// Reserve three slots of `scene_limits.unifiedPrimitiveCountMax()` primitives.
-    pub fn init(device: objc.Object, scene_limits: *const limits.SceneLimits) !Self {
-        assert(scene_limits.check() == null);
+    /// Reserve one slot of `unifiedPrimitiveCountMax()` primitives per frame in flight.
+    pub fn init(device: objc.Object, resource_limits: *const limits.ResourceLimits) !Self {
+        assert(resource_limits.check() == null);
+        const scene_limits = &resource_limits.scene;
+        const frame_count = resource_limits.frame.in_flight_count;
+        assert(frame_count <= frame_count_max);
         const primitive_count_max = scene_limits.unifiedPrimitiveCountMax();
         assert(primitive_count_max > 0);
         assert(primitive_count_max <= primitive_count_ceiling);
@@ -480,6 +448,7 @@ pub const UnifiedPrimitiveRing = struct {
         var self: Self = .{
             .buffers = undefined,
             .slots = undefined,
+            .frame_count = frame_count,
             .frame_index = 0,
             .primitive_count_max = primitive_count_max,
             .primitive_count = 0,
@@ -508,16 +477,16 @@ pub const UnifiedPrimitiveRing = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        for (self.buffers) |buffer| buffer.release();
+        for (self.buffers[0..self.frame_count]) |buffer| buffer.release();
         self.* = undefined;
     }
 
     /// Advance to the next slot. Call once per rendered frame, before any batch is drawn.
     pub fn nextFrame(self: *Self) void {
-        assert(self.frame_index < frame_count);
+        assert(self.frame_index < self.frame_count);
         // The previous frame drew everything it wrote.
         assert(self.primitive_count_drawn == self.primitive_count);
-        self.frame_index = (self.frame_index + 1) % frame_count;
+        self.frame_index = (self.frame_index + 1) % self.frame_count;
         self.primitive_count = 0;
         self.primitive_count_drawn = 0;
     }

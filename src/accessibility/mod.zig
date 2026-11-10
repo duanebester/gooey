@@ -11,8 +11,9 @@
 //! ## Platform Support
 //!
 //! - **macOS**: NSAccessibility protocol via mac_bridge
-//! - **Linux**: AT-SPI2 D-Bus protocol via linux_bridge
+//! - **Linux**: none; AT-SPI is shelved past 0.4.0 (contract decision 12)
 //! - **Web**: ARIA attributes via web_bridge
+//! - **Windows**: UI Automation via windows_bridge
 //!
 //! ## Usage
 //!
@@ -74,15 +75,15 @@ pub const mac_bridge = if (!is_wasm and builtin.os.tag == .macos)
 else
     struct {};
 
-/// Linux accessibility bridge (AT-SPI2 via D-Bus)
-pub const linux_bridge = if (!is_wasm and builtin.os.tag == .linux)
-    @import("linux_bridge.zig")
-else
-    struct {};
-
 /// Web accessibility bridge (ARIA attributes)
 pub const web_bridge = if (is_wasm)
     @import("web_bridge.zig")
+else
+    struct {};
+
+/// Windows accessibility bridge (UI Automation)
+pub const windows_bridge = if (!is_wasm and builtin.os.tag == .windows)
+    @import("windows_bridge.zig")
 else
     struct {};
 
@@ -105,3 +106,6 @@ pub const Role = types.Role;
 
 /// Common state flags
 pub const State = types.State;
+
+/// Live-region politeness: the type of `ui.A11y.live`.
+pub const Live = types.Live;

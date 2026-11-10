@@ -52,7 +52,7 @@ void main() {
 
         vec2 size = in_quad_size;
         vec2 half_size = size / 2.0;
-        vec2 pos = in_quad_coord * size;
+        vec2 pos = in_quad_coord;  // Pixels from the quad origin, fringe included.
         vec2 centered = pos - half_size;
 
         float radius = pick_corner_radius(centered, in_corner_radii);
@@ -89,6 +89,7 @@ void main() {
         }
 
         float alpha = 1.0 - smoothstep(-0.5, 0.5, outer_dist);
+        if (alpha <= 0.0) { discard; }
         out_color = color * vec4(1.0, 1.0, 1.0, alpha);
     } else {
         // Shadow primitive

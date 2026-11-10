@@ -3,11 +3,11 @@
 //! Routes to platform-specific image loading backends:
 //! - CoreGraphics (macOS) - ImageIO/CoreGraphics
 //! - libpng (Linux) - PNG decoding via libpng
+//! - WIC (Windows) - Windows Imaging Component
 //! - null (other platforms) - Returns UnsupportedSource
 //!
-//! Note: WASM image loading is async and handled separately in
-//! `platform/web/image_loader.zig`. The sync API here returns
-//! UnsupportedSource on WASM.
+//! WASM has no image loader yet: the sync API here returns UnsupportedSource
+//! there.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -24,6 +24,7 @@ const backend = if (is_wasm)
 else switch (builtin.os.tag) {
     .macos => @import("backends/coregraphics.zig"),
     .linux => @import("backends/libpng.zig"),
+    .windows => @import("backends/wic/decoder.zig"),
     else => @import("backends/null.zig"),
 };
 
@@ -40,7 +41,7 @@ pub const DecodedImage = backend.DecodedImage;
 pub const LoadError = backend.LoadError;
 
 // =============================================================================
-// Async Image Loading Types (Phase 4)
+// Async Image Loading Types
 // =============================================================================
 
 /// Maximum response body size for URL image fetches (256 MiB).
@@ -50,7 +51,7 @@ const MAX_URL_RESPONSE_BYTES: usize = 256 * 1024 * 1024;
 pub const MAX_URL_LENGTH: u32 = 8192;
 
 // =============================================================================
-// Retry/Backoff Policy (Task 4.5b)
+// Retry/Backoff Policy
 // =============================================================================
 //
 // Retry lives in the background fetch task — never in the render path, which
@@ -127,12 +128,12 @@ pub const ImageLoadResult = union(enum) {
 //
 // Rationale: a single struct that owns the fixed-capacity result queue, the
 // in-flight `Io.Group`, and the de-dup / failure sets for URL image loads.
-// Encapsulates the prototype pattern used by every later subsystem extraction
-// (PR 1 — `image/`; PR 2 — `svg/`; PR 3 — `a11y/`; ...): a single struct, a
-// single fixed-capacity queue, a single `Io.Group`, no back-pointer to the
-// parent context. See `docs/cleanup-implementation-plan.md` PR 1.
+// Encapsulates the prototype pattern shared by the subsystem modules
+// (`image/`, `svg/`, `a11y/`, ...): a single struct, a single fixed-capacity
+// queue, a single `Io.Group`, no back-pointer to the parent context. See
+// `docs/cleanup-implementation-plan.md`.
 //
-// Lifetime: created once per `Gooey` (or `Window` after PR 7), `initInPlace`
+// Lifetime: created once per `App`, `initInPlace`
 // at the parent's final heap address so the embedded `Io.Queue`'s pointer
 // to `result_buffer` is stable. `deinit` cancels in-flight fetches and
 // closes the queue — blocking is acceptable on the teardown path.
@@ -159,8 +160,9 @@ pub const MAX_PENDING_IMAGE_LOADS: u32 = 64;
 /// fetch. Without this, a single 404 would kick off a new fetch every frame
 /// (60 req/s) — a quick way to get the user's IP rate-limited.
 ///
-/// Hard cap; if exceeded we fail fast rather than evicting. Retry/backoff
-/// policy and LRU eviction are deferred (Task 4.5b).
+/// Hard cap; if exceeded we fail fast rather than evicting. Retries happen
+/// only inside the background fetch (see the retry policy above); a URL in
+/// this set is not re-fetched, and there is no LRU eviction.
 pub const MAX_FAILED_IMAGE_LOADS: u32 = 128;
 
 /// Async image loader — fetches URL images in the background, drains
@@ -194,7 +196,7 @@ pub const ImageLoader = struct {
     failed_count: u32,
 
     /// Atlas that decoded pixels are written into on `drain`.
-    /// Borrowed reference; `Gooey` (or `App` after PR 7) owns the atlas.
+    /// Borrowed reference; the `App` owns the atlas.
     image_atlas: *atlas.ImageAtlas,
 
     /// `Io` interface for queue/group ops + background task dispatch.
@@ -288,7 +290,7 @@ pub const ImageLoader = struct {
     /// Check whether a URL has previously failed to fetch.
     ///
     /// Callers should consult this before launching a fetch — a failed URL
-    /// stays failed for the session (retry/backoff is Task 4.5b). This
+    /// stays failed for the session (retries happen only inside the fetch). This
     /// prevents 60 req/s retry storms for broken URLs at frame rate.
     pub fn isFailed(self: *const Self, url_hash: u64) bool {
         for (self.failed_hashes[0..self.failed_count]) |hash| {
@@ -482,7 +484,7 @@ pub fn loadFromImageData(allocator: std.mem.Allocator, data: ImageData) LoadErro
 }
 
 // =============================================================================
-// Async URL Loading (Phase 4)
+// Async URL Loading
 // =============================================================================
 
 /// Fetch an image from a URL and decode it.
@@ -547,7 +549,7 @@ pub fn loadFromUrl(
 /// close / cancel group fire) propagates through the backoff sleep as
 /// `std.Io.Cancelable` — callers must handle both error unions.
 ///
-/// Retry budget (hardcoded — see Task 4.5b rationale above):
+/// Retry budget (hardcoded — see the retry policy rationale above):
 ///   attempt 0: fetch, on transient fail sleep ~500ms ± jitter
 ///   attempt 1: fetch, on transient fail sleep ~1000ms ± jitter
 ///   attempt 2: fetch, on any fail give up
@@ -612,7 +614,7 @@ fn fetchWithRetry(
 /// Returns owned bytes; caller must free with `allocator`.
 ///
 /// All errors are classified as `Transient` (retry-worthy) or `Permanent`
-/// (deterministic failure). See Task 4.5b retry policy above.
+/// (deterministic failure). See the retry policy above.
 fn fetchHttpBody(
     io: std.Io,
     allocator: std.mem.Allocator,
@@ -840,9 +842,17 @@ pub fn createCheckerboard(
 test "ImageLoader: pending and failed bookkeeping" {
     const testing = std.testing;
     const ImageAtlas = atlas.ImageAtlas;
+    const AtlasUploads = @import("../text/atlas_uploads.zig").AtlasUploads;
 
     // Set up a real ImageAtlas — `ImageLoader` borrows it for `drain`.
-    var image_atlas: ImageAtlas = try ImageAtlas.init(testing.allocator, 1.0, testing.io);
+    var atlas_uploads: AtlasUploads = undefined;
+    try atlas_uploads.initHeadless(testing.allocator, testing.io);
+    defer atlas_uploads.deinit();
+    var image_atlas: ImageAtlas = undefined;
+    try image_atlas.initInPlace(testing.allocator, 1.0, testing.io, .{
+        .size = 1024,
+        .uploads = &atlas_uploads,
+    });
     defer image_atlas.deinit();
 
     var loader: ImageLoader = undefined;
@@ -879,8 +889,16 @@ test "ImageLoader: pending and failed bookkeeping" {
 test "ImageLoader: hasRoom flips at capacity" {
     const testing = std.testing;
     const ImageAtlas = atlas.ImageAtlas;
+    const AtlasUploads = @import("../text/atlas_uploads.zig").AtlasUploads;
 
-    var image_atlas: ImageAtlas = try ImageAtlas.init(testing.allocator, 1.0, testing.io);
+    var atlas_uploads: AtlasUploads = undefined;
+    try atlas_uploads.initHeadless(testing.allocator, testing.io);
+    defer atlas_uploads.deinit();
+    var image_atlas: ImageAtlas = undefined;
+    try image_atlas.initInPlace(testing.allocator, 1.0, testing.io, .{
+        .size = 1024,
+        .uploads = &atlas_uploads,
+    });
     defer image_atlas.deinit();
 
     var loader: ImageLoader = undefined;
@@ -904,22 +922,27 @@ test "ImageLoader: hasRoom flips at capacity" {
 test "ImageLoader: fixupQueue restores the queue pointer after a copy" {
     const testing = std.testing;
     const ImageAtlas = atlas.ImageAtlas;
+    const AtlasUploads = @import("../text/atlas_uploads.zig").AtlasUploads;
 
-    var image_atlas: ImageAtlas = try ImageAtlas.init(testing.allocator, 1.0, testing.io);
+    var atlas_uploads: AtlasUploads = undefined;
+    try atlas_uploads.initHeadless(testing.allocator, testing.io);
+    defer atlas_uploads.deinit();
+    var image_atlas: ImageAtlas = undefined;
+    try image_atlas.initInPlace(testing.allocator, 1.0, testing.io, .{
+        .size = 1024,
+        .uploads = &atlas_uploads,
+    });
     defer image_atlas.deinit();
 
     // Build a loader at one address …
     var stack_loader: ImageLoader = undefined;
     stack_loader.initInPlace(testing.io, testing.allocator, &image_atlas);
 
-    // … then copy by value to its "real" home. Pre-7b.5 this was the
-    // exact pattern `Window.initOwned` exercised before calling
-    // `Window.fixupImageLoadQueue`. PR 7b.5 retired both — the loader
-    // lives on `App` now, which is always heap-allocated and runs
-    // `initInPlace` directly at its final address. `fixupQueue` is
-    // preserved on `ImageLoader` because it remains a useful primitive
-    // for any future caller that needs by-value construction; this
-    // test pins that primitive's contract.
+    // … then copy by value to its "real" home. Production code does not
+    // do this: the loader lives on `App`, which is always heap-allocated
+    // and runs `initInPlace` directly at its final address. `fixupQueue`
+    // stays on `ImageLoader` as the primitive for any caller that needs
+    // by-value construction; this test pins that primitive's contract.
     const heap_loader = try testing.allocator.create(ImageLoader);
     defer testing.allocator.destroy(heap_loader);
     heap_loader.* = stack_loader;

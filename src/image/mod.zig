@@ -20,7 +20,7 @@ pub const ObjectFit = @import("atlas.zig").ObjectFit;
 
 pub const loader = @import("loader.zig");
 
-// Async URL loading subsystem (PR 1 — extracted from `Gooey`).
+// Async URL loading subsystem, owned separately from `Gooey`.
 //
 // Re-exported at the module root so callers can write
 // `image_mod.ImageLoader` / `image_mod.MAX_PENDING_IMAGE_LOADS` instead
@@ -32,8 +32,8 @@ pub const MAX_IMAGE_LOAD_RESULTS = loader.MAX_IMAGE_LOAD_RESULTS;
 pub const MAX_PENDING_IMAGE_LOADS = loader.MAX_PENDING_IMAGE_LOADS;
 pub const MAX_FAILED_IMAGE_LOADS = loader.MAX_FAILED_IMAGE_LOADS;
 
-// Generic asset cache skeleton — fleshed out in PR 2 (SVG consolidation).
-// Re-exported here so PR 2's call sites can `image_mod.AssetCache(...)` without
+// Generic asset cache skeleton (bodies not implemented yet).
+// Re-exported here so call sites can write `image_mod.AssetCache(...)` without
 // reaching into a sibling module.
 pub const asset_cache = @import("asset_cache.zig");
 pub const AssetCache = asset_cache.AssetCache;

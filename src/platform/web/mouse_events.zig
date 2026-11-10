@@ -127,7 +127,7 @@ const InputEvent = input.InputEvent;
 const MouseEvent = input.MouseEvent;
 
 /// Convert raw mouse event to InputEvent
-fn toInputEvent(raw: RawMouseEvent) InputEvent {
+pub fn toInputEvent(raw: RawMouseEvent) InputEvent {
     const mouse_event = MouseEvent{
         .position = .{ .x = raw.position_x, .y = raw.position_y },
         .button = raw.button.toInput(),
@@ -143,18 +143,4 @@ fn toInputEvent(raw: RawMouseEvent) InputEvent {
         .mouse_entered => .{ .mouse_entered = mouse_event },
         .mouse_exited => .{ .mouse_exited = mouse_event },
     };
-}
-
-/// Process all pending mouse events
-/// Returns number of events processed
-pub fn processEvents(handler: *const fn (InputEvent) bool) u32 {
-    var processed: u32 = 0;
-
-    while (@as(*volatile MouseEventRing, &g_mouse_ring).pop()) |raw| {
-        const event = toInputEvent(raw);
-        _ = handler(event);
-        processed += 1;
-    }
-
-    return processed;
 }

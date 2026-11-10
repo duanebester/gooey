@@ -1,15 +1,18 @@
 # Gooey Components
 
-High-level controls built on Gooey's public declarative UI API.
+Library controls (`components.Button`, `components.TextInput`, ...) and the
+Lucide icon set (`components.Lucide`).
 
 ```zig
 const gooey = @import("gooey");
 const components = @import("gooey-components");
 
+const Button = components.Button;
+
 fn render(cx: *gooey.Cx) void {
-    cx.render(components.Button{
+    cx.render(Button{
         .label = "Save",
-        .on_click_handler = cx.update(State.save),
+        .on_click = cx.on(State.save, .{}),
     });
 }
 ```

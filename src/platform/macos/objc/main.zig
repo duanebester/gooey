@@ -1,10 +1,10 @@
 //! Local, zero-dependency Objective-C runtime wrapper.
 //!
 //! This is a trimmed in-tree port of the subset of `mitchellh/zig-objc` that
-//! Gooey actually used, written so the project has no external package
+//! Gooey actually uses, written so the project has no external package
 //! dependencies and no `translate-c` / xcrun / Apple-SDK-path build steps. The
-//! public surface below matches the upstream `objc` module's shape, so the
-//! files that `@import("objc")` compile unchanged.
+//! public surface below matches the upstream `objc` module's shape, so files
+//! that `@import("objc")` are written exactly as they would be against upstream.
 //!
 //! Intentionally omitted (unused by Gooey): blocks, fast-enumeration
 //! iterators, properties, the superclass message-send path, metaclasses,

@@ -1,430 +1,172 @@
-//! Image Example
+//! Images on the 0.4.0 core: sizing, fit modes, rounding, and effects.
 //!
-//! Demonstrates the Image component with various styling options:
-//! - Basic image loading from file
-//! - Sizing (explicit, uniform, fit modes)
-//! - Corner radius and rounded images
-//! - Tinting and grayscale effects
-//! - Opacity
+//! Every image is a `ui.paint` element whose paint function calls
+//! `Painter.image`. The first frame queues the logo's decode on the image
+//! worker and draws only the panels; the decoded logo lands a few frames
+//! later and every cell draws it from the one atlas entry.
 
 const std = @import("std");
 const gooey = @import("gooey");
-const components = @import("gooey-components");
+
 const ui = gooey.ui;
-
-const Color = gooey.Color;
 const Cx = gooey.Cx;
+const Color = ui.Color;
 
-const AppState = struct {
-    hovered_index: ?usize = null,
-};
+const assert = std.debug.assert;
 
-var state = AppState{};
+pub const State = struct {};
 
-const App = gooey.App(AppState, &state, render, .{
+pub const App = gooey.App(State, render, .{
     .title = "Image Component Example",
     .width = 900,
     .height = 700,
-    .background_color = Color.fromHex("#1a1a2e"),
+    .limits = .large,
 });
 
-fn render(cx: *Cx) void {
-    cx.render(ui.box(.{
-        .padding = .{ .all = 24 },
+/// The generated entry point (contract §7).
+pub const main = App.main;
+
+pub const logo_path = "assets/ziglang_logo.png";
+
+const background = Color.hex(0x1a1a2e);
+const panel = Color.hex(0x16213e);
+const heading_color = Color.hex(0x888888);
+const label_color = Color.hex(0x666666);
+
+/// One image cell: the image box and the label under it.
+pub const Item = struct {
+    label: []const u8,
+    width: f32,
+    height: f32,
+    style: ui.PaintImage,
+
+    fn square(label: []const u8, size: f32, style: ui.PaintImage) Item {
+        return .{ .label = label, .width = size, .height = size, .style = style };
+    }
+};
+
+/// 0.3.1's `Image` default: fit inside the box.
+const plain: ui.PaintImage = .{ .fit = .contain };
+
+fn rounded(radius: f32) ui.PaintImage {
+    return .{ .fit = .contain, .corners = .all(radius) };
+}
+
+pub const sizing = [_]Item{
+    .square("32x32", 32, plain),
+    .square("64x64", 64, plain),
+    .square("128x128", 128, plain),
+    .{ .label = "200x80", .width = 200, .height = 80, .style = plain },
+};
+
+pub const fit_modes = [_]Item{
+    .square("contain", 100, .{ .fit = .contain }),
+    .square("cover", 100, .{ .fit = .cover }),
+    .square("fill", 100, .{ .fit = .fill }),
+    .square("none", 100, .{ .fit = .none }),
+};
+
+pub const corner_radius = [_]Item{
+    .square("none", 80, plain),
+    .square("8px", 80, rounded(8)),
+    .square("20px", 80, rounded(20)),
+    // `rounded = true` in 0.3.1: half the side.
+    .square("circle", 80, rounded(40)),
+};
+
+pub const effects = [_]Item{
+    .square("normal", 80, rounded(8)),
+    // Tint multiplies each pixel, so blue over the orange logo reads olive.
+    .square("tint (multiply)", 80, .{
+        .fit = .contain,
+        .corners = .all(8),
+        .tint = Color.hex(0x4488ff),
+    }),
+    .square("grayscale", 80, .{ .fit = .contain, .corners = .all(8), .grayscale = 1 }),
+    .square("50% gray", 80, .{ .fit = .contain, .corners = .all(8), .grayscale = 0.5 }),
+    .square("50% opacity", 80, .{ .fit = .contain, .corners = .all(8), .opacity = 0.5 }),
+    .square("combined", 80, .{
+        .fit = .contain,
+        .corners = .all(40),
+        .tint = Color.hex(0xff6644),
+        .grayscale = 0.8,
+        .opacity = 0.9,
+    }),
+};
+
+pub fn render(cx: *Cx) void {
+    cx.render(ui.box(.{ .style = .{
+        .width = .{ .grow = 1 },
+        .height = .{ .grow = 1 },
+        .padding = .all(24),
         .gap = 16,
-        .background = Color.fromHex("#1a1a2e"),
-    }, .{
+        .background = .{ .rgba = background },
+    } }, .{
         ui.text("Image Component Demo", .{
             .size = 24,
-            .color = Color.white,
             .weight = .bold,
+            .color = .{ .rgba = Color.white },
         }),
-        ScrollContent{},
+        ui.box(.{ .key = .{ .name = "images-scroll" }, .style = .{
+            .width = .{ .fixed = 852 },
+            .height = .{ .grow = 1 },
+            .padding = .all(4),
+            .gap = 24,
+            .background = .{ .rgba = background },
+            .scroll = .{},
+        } }, .{
+            Section{ .title = "Sizing", .items = &sizing },
+            Section{ .title = "Object Fit Modes", .items = &fit_modes },
+            Section{ .title = "Corner Radius", .items = &corner_radius },
+            Section{ .title = "Visual Effects", .items = &effects },
+        }),
     }));
 }
 
-// =============================================================================
-// Scroll Container
-// =============================================================================
+const Section = struct {
+    title: []const u8,
+    items: []const Item,
 
-const ScrollContent = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        cx.render(ui.scroll("images_scroll", .{
-            .width = 852,
-            .height = 610,
-            .background = Color.fromHex("#1a1a2e"),
-            .padding = .{ .all = 4 },
-            .gap = 24,
-            .content_height = 900,
-            .track_color = Color.fromHex("#16213e"),
-            .thumb_color = Color.fromHex("#4a4a6a"),
-        }, .{
-            SectionSizing{},
-            SectionFitModes{},
-            SectionCornerRadius{},
-            SectionEffects{},
-        }));
-    }
-};
-
-// =============================================================================
-// Section: Sizing
-// =============================================================================
-
-const SectionSizing = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        cx.render(ui.box(.{ .gap = 12, .fill_width = true }, .{
-            ui.text("Sizing", .{
+    pub fn render(self: Section, cx: *Cx) void {
+        assert(self.items.len > 0);
+        assert(self.title.len > 0);
+        cx.render(ui.box(.{ .style = .{ .gap = 12, .width = .{ .grow = 1 } } }, .{
+            ui.text(self.title, .{
                 .size = 16,
-                .color = Color.fromHex("#888888"),
                 .weight = .medium,
+                .color = .{ .rgba = heading_color },
             }),
-            SizingRow{},
+            ui.box(.{ .style = .{
+                .direction = .row,
+                .gap = 16,
+                .padding = .all(16),
+                .background = .{ .rgba = panel },
+                .corner_radius = .all(8),
+            } }, .{Cells{ .items = self.items }}),
         }));
     }
 };
 
-const SizingRow = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        cx.render(ui.box(.{
-            .direction = .row,
-            .gap = 16,
-            .padding = .{ .all = 16 },
-            .background = Color.fromHex("#16213e"),
-            .corner_radius = 8,
-        }, .{
-            SizeItem{ .size = 32, .label = "32x32" },
-            SizeItem{ .size = 64, .label = "64x64" },
-            SizeItem{ .size = 128, .label = "128x128" },
-            CustomSizeItem{},
-        }));
+const Cells = struct {
+    items: []const Item,
+
+    pub fn render(self: Cells, cx: *Cx) void {
+        assert(self.items.len > 0);
+        assert(self.items.len <= effects.len);
+        for (self.items) |*item| {
+            cx.render(ui.box(.{ .style = .{ .gap = 8, .alignment = .center_cross } }, .{
+                ui.paint(Item, item, paintImage, .{
+                    .width = .{ .fixed = item.width },
+                    .height = .{ .fixed = item.height },
+                }),
+                ui.text(item.label, .{ .size = 12, .color = .{ .rgba = label_color } }),
+            }));
+        }
     }
 };
 
-const SizeItem = struct {
-    size: f32,
-    label: []const u8,
-
-    pub fn render(self: @This(), cx: *Cx) void {
-        cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
-            components.Image{
-                .src = "assets/ziglang_logo.png",
-                .size = self.size,
-            },
-            ui.text(self.label, .{ .size = 12, .color = Color.fromHex("#666666") }),
-        }));
-    }
-};
-
-const CustomSizeItem = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
-            components.Image{
-                .src = "assets/ziglang_logo.png",
-                .width = 200,
-                .height = 80,
-            },
-            ui.text("200x80", .{ .size = 12, .color = Color.fromHex("#666666") }),
-        }));
-    }
-};
-
-// =============================================================================
-// Section: Object Fit Modes
-// =============================================================================
-
-const SectionFitModes = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        cx.render(ui.box(.{ .gap = 12, .fill_width = true }, .{
-            ui.text("Object Fit Modes", .{
-                .size = 16,
-                .color = Color.fromHex("#888888"),
-                .weight = .medium,
-            }),
-            FitModesRow{},
-        }));
-    }
-};
-
-const FitModesRow = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        cx.render(ui.box(.{
-            .direction = .row,
-            .gap = 16,
-            .padding = .{ .all = 16 },
-            .background = Color.fromHex("#16213e"),
-            .corner_radius = 8,
-        }, .{
-            FitContainItem{},
-            FitCoverItem{},
-            FitFillItem{},
-            FitNoneItem{},
-        }));
-    }
-};
-
-const FitContainItem = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
-            components.Image{
-                .src = "assets/ziglang_logo.png",
-                .width = 100,
-                .height = 100,
-                .fit = .contain,
-            },
-            ui.text("contain", .{ .size = 12, .color = Color.fromHex("#666666") }),
-        }));
-    }
-};
-
-const FitCoverItem = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
-            components.Image{
-                .src = "assets/ziglang_logo.png",
-                .width = 100,
-                .height = 100,
-                .fit = .cover,
-            },
-            ui.text("cover", .{ .size = 12, .color = Color.fromHex("#666666") }),
-        }));
-    }
-};
-
-const FitFillItem = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
-            components.Image{
-                .src = "assets/ziglang_logo.png",
-                .width = 100,
-                .height = 100,
-                .fit = .fill,
-            },
-            ui.text("fill", .{ .size = 12, .color = Color.fromHex("#666666") }),
-        }));
-    }
-};
-
-const FitNoneItem = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
-            components.Image{
-                .src = "assets/ziglang_logo.png",
-                .width = 100,
-                .height = 100,
-                .fit = .none,
-            },
-            ui.text("none", .{ .size = 12, .color = Color.fromHex("#666666") }),
-        }));
-    }
-};
-
-// =============================================================================
-// Section: Corner Radius
-// =============================================================================
-
-const SectionCornerRadius = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        cx.render(ui.box(.{ .gap = 12, .fill_width = true }, .{
-            ui.text("Corner Radius", .{
-                .size = 16,
-                .color = Color.fromHex("#888888"),
-                .weight = .medium,
-            }),
-            CornerRadiusRow{},
-        }));
-    }
-};
-
-const CornerRadiusRow = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        cx.render(ui.box(.{
-            .direction = .row,
-            .gap = 16,
-            .padding = .{ .all = 16 },
-            .background = Color.fromHex("#16213e"),
-            .corner_radius = 8,
-        }, .{
-            RadiusNoneItem{},
-            RadiusSmallItem{},
-            RadiusLargeItem{},
-            RadiusCircleItem{},
-        }));
-    }
-};
-
-const RadiusNoneItem = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
-            components.Image{
-                .src = "assets/ziglang_logo.png",
-                .size = 80,
-            },
-            ui.text("none", .{ .size = 12, .color = Color.fromHex("#666666") }),
-        }));
-    }
-};
-
-const RadiusSmallItem = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
-            components.Image{
-                .src = "assets/ziglang_logo.png",
-                .size = 80,
-                .corner_radius = 8,
-            },
-            ui.text("8px", .{ .size = 12, .color = Color.fromHex("#666666") }),
-        }));
-    }
-};
-
-const RadiusLargeItem = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
-            components.Image{
-                .src = "assets/ziglang_logo.png",
-                .size = 80,
-                .corner_radius = 20,
-            },
-            ui.text("20px", .{ .size = 12, .color = Color.fromHex("#666666") }),
-        }));
-    }
-};
-
-const RadiusCircleItem = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
-            components.Image{
-                .src = "assets/ziglang_logo.png",
-                .size = 80,
-                .rounded = true,
-            },
-            ui.text("circle", .{ .size = 12, .color = Color.fromHex("#666666") }),
-        }));
-    }
-};
-
-// =============================================================================
-// Section: Visual Effects
-// =============================================================================
-
-const SectionEffects = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        cx.render(ui.box(.{ .gap = 12, .fill_width = true }, .{
-            ui.text("Visual Effects", .{
-                .size = 16,
-                .color = Color.fromHex("#888888"),
-                .weight = .medium,
-            }),
-            EffectsRow{},
-        }));
-    }
-};
-
-const EffectsRow = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        cx.render(ui.box(.{
-            .direction = .row,
-            .gap = 16,
-            .padding = .{ .all = 16 },
-            .background = Color.fromHex("#16213e"),
-            .corner_radius = 8,
-        }, .{
-            EffectNormalItem{},
-            EffectTintItem{},
-            EffectGrayscaleItem{},
-            EffectPartialGrayItem{},
-            EffectOpacityItem{},
-            EffectCombinedItem{},
-        }));
-    }
-};
-
-const EffectNormalItem = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
-            components.Image{
-                .src = "assets/ziglang_logo.png",
-                .size = 80,
-                .corner_radius = 8,
-            },
-            ui.text("normal", .{ .size = 12, .color = Color.fromHex("#666666") }),
-        }));
-    }
-};
-
-const EffectTintItem = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
-            components.Image{
-                .src = "assets/ziglang_logo.png",
-                .size = 80,
-                .corner_radius = 8,
-                .tint = Color.fromHex("#4488ff"),
-            },
-            ui.text("tint", .{ .size = 12, .color = Color.fromHex("#666666") }),
-        }));
-    }
-};
-
-const EffectGrayscaleItem = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
-            components.Image{
-                .src = "assets/ziglang_logo.png",
-                .size = 80,
-                .corner_radius = 8,
-                .grayscale = 1.0,
-            },
-            ui.text("grayscale", .{ .size = 12, .color = Color.fromHex("#666666") }),
-        }));
-    }
-};
-
-const EffectPartialGrayItem = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
-            components.Image{
-                .src = "assets/ziglang_logo.png",
-                .size = 80,
-                .corner_radius = 8,
-                .grayscale = 0.5,
-            },
-            ui.text("50% gray", .{ .size = 12, .color = Color.fromHex("#666666") }),
-        }));
-    }
-};
-
-const EffectOpacityItem = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
-            components.Image{
-                .src = "assets/ziglang_logo.png",
-                .size = 80,
-                .corner_radius = 8,
-                .opacity = 0.5,
-            },
-            ui.text("50% opacity", .{ .size = 12, .color = Color.fromHex("#666666") }),
-        }));
-    }
-};
-
-const EffectCombinedItem = struct {
-    pub fn render(_: @This(), cx: *Cx) void {
-        cx.render(ui.box(.{ .gap = 8, .alignment = .{ .cross = .center } }, .{
-            components.Image{
-                .src = "assets/ziglang_logo.png",
-                .size = 80,
-                .rounded = true,
-                .grayscale = 0.8,
-                .tint = Color.fromHex("#ff6644"),
-                .opacity = 0.9,
-            },
-            ui.text("combined", .{ .size = 12, .color = Color.fromHex("#666666") }),
-        }));
-    }
-};
-
-pub fn main(init: std.process.Init) !void {
-    return App.main(init);
+fn paintImage(item: *const Item, painter: *ui.Painter) void {
+    assert(item.width > 0);
+    assert(item.height > 0);
+    painter.image(logo_path, painter.bounds, item.style);
 }

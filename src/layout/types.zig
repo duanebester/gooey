@@ -429,7 +429,7 @@ pub const ShadowConfig = struct {
 // Color
 // ============================================================================
 
-pub const Color = @import("../core/geometry.zig").Color;
+pub const Color = @import("../geometry/geometry.zig").Color;
 
 // ============================================================================
 // Layout Config

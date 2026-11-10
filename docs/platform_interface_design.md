@@ -130,8 +130,9 @@ Other gaps:
   `PlatformWindow.setGlassStyle` declaration it implies is now verified conditionally by
   `contract.verifyPlatformWindow` instead of being an unchecked assumption of `src/cx.zig`
   and `src/examples/glass.zig`.
-- Web `capabilities.custom_cursors` is `false` because `imports.zig` has no cursor binding, and
-  `capabilities.clipboard` is write-only there (`clipboard.getText` always returns null).
+- Web `capabilities.custom_cursors` is `true`: `WebWindow.setCursorShape` sets the canvas's CSS
+  `cursor` through the `setCanvasCursor` import. `capabilities.clipboard` is write-only there
+  (`clipboard.getText` always returns null).
 
 ## Decision summary
 
