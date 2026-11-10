@@ -21,6 +21,31 @@ const linux_backend = @import("../linux_backend.zig");
 // Static listeners - must persist for lifetime of Wayland objects
 const fractional_scale_manager_name = wayland.WP_FRACTIONAL_SCALE_MANAGER_V1_INTERFACE_NAME;
 
+/// The highest `wl_compositor` version to bind. `wl_surface` events are demarshaled with
+/// the linked libwayland's `wl_surface` table, not the compositor's, so that table caps the
+/// compositor too: libwayland 1.21 knows `wl_surface` 5, without `preferred_buffer_scale`.
+fn compositorVersionMax() u32 {
+    const surface_version = wayland.tableVersion(&wayland.wl_surface_interface);
+    const version = @min(wayland.compositor_version_max, surface_version);
+    std.debug.assert(version >= 1);
+    std.debug.assert(version <= surface_version);
+    return version;
+}
+
+/// The highest `wl_seat` version to bind, capped by the linked libwayland's tables for the
+/// pointer, keyboard, and touch objects the seat creates, for the same reason.
+fn seatVersionMax() u32 {
+    const version = @min(
+        wayland.seat_version_max,
+        wayland.tableVersion(&wayland.wl_pointer_interface),
+        wayland.tableVersion(&wayland.wl_keyboard_interface),
+        wayland.tableVersion(&wayland.wl_touch_interface),
+    );
+    std.debug.assert(version >= 1);
+    std.debug.assert(version <= wayland.seat_version_max);
+    return version;
+}
+
 const registry_listener = wayland.RegistryListener{
     .global = LinuxPlatform.registryGlobal,
     .global_remove = LinuxPlatform.registryGlobalRemove,
@@ -345,7 +370,24 @@ pub const LinuxPlatform = struct {
         // Destroy in reverse order of creation, flushing between major objects
         // Clipboard first (depends on seat and manager)
         self.clipboard_state.deinit();
+        self.destroySeatObjects();
 
+        // Flush to ensure destroy requests are sent before destroying seat
+        _ = wayland.wl_display_flush(self.display.?);
+        self.destroyGlobals();
+
+        // Final flush before disconnect
+        _ = wayland.wl_display_flush(self.display.?);
+
+        // Disconnect last
+        wayland.wl_display_disconnect(self.display.?);
+        self.display = null;
+    }
+
+    /// Destroy the objects created from the seat and its managers, which must
+    /// go before the seat itself.
+    fn destroySeatObjects(self: *Self) void {
+        std.debug.assert(self.display != null);
         // Text input (depends on seat and manager)
         if (self.text_input) |ti| {
             wayland.zwpTextInputV3Destroy(ti);
@@ -369,10 +411,14 @@ pub const LinuxPlatform = struct {
             wayland.pointerDestroy(ptr);
             self.pointer = null;
         }
+        std.debug.assert(self.pointer == null);
+        std.debug.assert(self.keyboard == null);
+    }
 
-        // Flush to ensure destroy requests are sent before destroying seat
-        _ = wayland.wl_display_flush(self.display.?);
-
+    /// Destroy the bound globals, the seat first and the registry last.
+    fn destroyGlobals(self: *Self) void {
+        std.debug.assert(self.display != null);
+        std.debug.assert(self.pointer == null);
         if (self.seat) |seat| {
             wayland.seatDestroy(seat);
             self.seat = null;
@@ -411,13 +457,8 @@ pub const LinuxPlatform = struct {
             wayland.registryDestroy(reg);
             self.registry = null;
         }
-
-        // Final flush before disconnect
-        _ = wayland.wl_display_flush(self.display.?);
-
-        // Disconnect last
-        wayland.wl_display_disconnect(self.display.?);
-        self.display = null;
+        std.debug.assert(self.compositor == null);
+        std.debug.assert(self.registry == null);
     }
 
     /// Get the Wayland display pointer (for wgpu surface creation)
@@ -515,28 +556,28 @@ pub const LinuxPlatform = struct {
                 registry,
                 name,
                 &wayland.wl_compositor_interface,
-                @min(version, 6),
+                .{ .advertised = version, .supported_max = compositorVersionMax() },
             )));
         } else if (std.mem.eql(u8, interface_name, wayland.XDG_WM_BASE_INTERFACE_NAME)) {
             self.xdg_wm_base = @ptrCast(@alignCast(wayland.registryBind(
                 registry,
                 name,
                 &wayland.xdg_wm_base_interface,
-                @min(version, 6),
+                .{ .advertised = version, .supported_max = 6 },
             )));
         } else if (std.mem.eql(u8, interface_name, wayland.ZXDG_DECORATION_MANAGER_V1_INTERFACE_NAME)) {
             self.decoration_manager = @ptrCast(@alignCast(wayland.registryBind(
                 registry,
                 name,
                 &wayland.zxdg_decoration_manager_v1_interface,
-                @min(version, 1),
+                .{ .advertised = version, .supported_max = 1 },
             )));
         } else if (std.mem.eql(u8, interface_name, wayland.WL_SEAT_INTERFACE_NAME)) {
             self.seat = @ptrCast(@alignCast(wayland.registryBind(
                 registry,
                 name,
                 &wayland.wl_seat_interface,
-                @min(version, 8),
+                .{ .advertised = version, .supported_max = seatVersionMax() },
             )));
 
             if (self.seat) |seat| {
@@ -548,7 +589,7 @@ pub const LinuxPlatform = struct {
                 registry,
                 name,
                 &wayland.zwp_text_input_manager_v3_interface,
-                @min(version, 1),
+                .{ .advertised = version, .supported_max = 1 },
             )));
 
             // Create text input object if we have both manager and seat
@@ -573,7 +614,7 @@ pub const LinuxPlatform = struct {
                 registry,
                 name,
                 &wayland.wp_cursor_shape_manager_v1_interface,
-                @min(version, 2),
+                .{ .advertised = version, .supported_max = 2 },
             )));
             self.ensureCursorShapeDevice();
         } else if (std.mem.eql(u8, interface_name, wayland.WL_OUTPUT_INTERFACE_NAME)) {
@@ -583,7 +624,7 @@ pub const LinuxPlatform = struct {
                     registry,
                     name,
                     wayland.getOutputInterface(),
-                    @min(version, 4),
+                    .{ .advertised = version, .supported_max = 4 },
                 )));
                 if (self.output) |output| {
                     _ = wayland.outputAddListener(output, &output_listener, self);

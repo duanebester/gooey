@@ -10,6 +10,7 @@
 //! - fractional-scale-v1 (fractional output scales, with wp_viewporter)
 
 const std = @import("std");
+const assert = std.debug.assert;
 
 // =============================================================================
 // Basic Types
@@ -830,18 +831,103 @@ pub fn registryAddListener(registry: *Registry, listener: *const RegistryListene
     return wl_proxy_add_listener(@ptrCast(registry), @ptrCast(listener), data) == 0;
 }
 
-pub fn registryBind(registry: *Registry, name: u32, interface: *const Interface, version: u32) ?*anyopaque {
-    return wl_proxy_marshal_flags(
+/// The versions `bindVersion` chooses between, named so that the two cannot be swapped.
+pub const BindVersion = struct {
+    /// The version the compositor advertised in `wl_registry.global`.
+    advertised: u32,
+    /// The highest version whose events Gooey's listeners handle and whose requests it sends.
+    supported_max: u32,
+};
+
+/// The highest `wl_compositor` version Gooey binds. Version 6 adds the `wl_surface` events
+/// `preferred_buffer_scale` and `preferred_buffer_transform`, which complete the four that
+/// `SurfaceListener` handles.
+pub const compositor_version_max: u32 = 6;
+
+/// The highest `wl_seat` version Gooey binds. At version 8 `wl_pointer` has ten events, the
+/// last `axis_value120`; `PointerListener` handles those and version 9's eleventh.
+pub const seat_version_max: u32 = 8;
+
+comptime {
+    assert(@typeInfo(SurfaceListener).@"struct".field_names.len == 4);
+    assert(@typeInfo(PointerListener).@"struct".field_names.len >= 10);
+    // wl_keyboard has six events from version 4 on; wl_touch has seven from version 6 on.
+    assert(@typeInfo(KeyboardListener).@"struct".field_names.len == 6);
+    assert(@typeInfo(TouchListener).@"struct".field_names.len == 7);
+}
+
+/// The version of an interface table: the newest version whose events libwayland can
+/// demarshal with it. For the core interfaces the table is the linked libwayland's, so this
+/// is known only at run time: libwayland 1.21's `wl_surface` is version 5.
+pub fn tableVersion(interface: *const Interface) u32 {
+    assert(interface.version >= 1);
+    assert(interface.event_count >= 0);
+    return @intCast(interface.version);
+}
+
+/// The version to bind a global at: the highest that the compositor advertises, Gooey
+/// supports, and `interface` describes. libwayland demarshals each event with the table of
+/// the object it arrives on, and an event past the table ends the connection ("wl_surface
+/// has no event 2"), so the linked library's tables cap the version as much as Gooey does.
+/// Zero only when the compositor advertised version zero, which the protocol forbids.
+pub fn bindVersion(interface: *const Interface, version: BindVersion) u32 {
+    assert(version.supported_max >= 1);
+    const bound = @min(version.advertised, version.supported_max, tableVersion(interface));
+    assert(bound <= version.advertised);
+    assert(bound <= version.supported_max);
+    assert(bound <= tableVersion(interface));
+    return bound;
+}
+
+/// Bind a global at `bindVersion`. Null when the compositor advertised version zero or
+/// libwayland cannot create the proxy; every caller treats the global as absent.
+pub fn registryBind(
+    registry: *Registry,
+    name: u32,
+    interface: *const Interface,
+    version: BindVersion,
+) ?*anyopaque {
+    const bound = bindVersion(interface, version);
+    if (bound == 0) {
+        std.log.warn("wayland: {s} is advertised at version 0; not binding it", .{
+            interface.name,
+        });
+        return null;
+    }
+    const proxy = wl_proxy_marshal_flags(
         @ptrCast(registry),
         0, // WL_REGISTRY_BIND
         interface,
-        version,
+        bound,
         0,
         name,
         interface.name,
-        version,
+        bound,
         @as(?*anyopaque, null),
-    );
+    ) orelse return null;
+    assert(wl_proxy_get_version(proxy) == bound);
+    return proxy;
+}
+
+test "bindVersion is capped by the linked interface table" {
+    // Goal: pin the libwayland 1.21 crash. Methodology: a compositor advertising
+    // wl_compositor 6 to a client whose table is version 5 must bind 5, and each of the
+    // three caps must win when it alone is lowest; the inputs differ so a cap that is
+    // ignored or swapped gives another answer.
+    var table = Interface{
+        .name = "wl_test",
+        .version = 5,
+        .method_count = 0,
+        .methods = null,
+        .event_count = 0,
+        .events = null,
+    };
+    try std.testing.expectEqual(5, bindVersion(&table, .{ .advertised = 6, .supported_max = 6 }));
+    try std.testing.expectEqual(4, bindVersion(&table, .{ .advertised = 4, .supported_max = 6 }));
+    try std.testing.expectEqual(3, bindVersion(&table, .{ .advertised = 9, .supported_max = 3 }));
+    table.version = 7;
+    try std.testing.expectEqual(6, bindVersion(&table, .{ .advertised = 9, .supported_max = 6 }));
+    try std.testing.expectEqual(0, bindVersion(&table, .{ .advertised = 0, .supported_max = 6 }));
 }
 
 pub fn registryDestroy(registry: *Registry) void {
@@ -958,7 +1044,7 @@ pub fn bindViewporter(registry: *Registry, name: u32, version: u32) ?*WpViewport
         registry,
         name,
         &wp_viewporter_interface,
-        @min(version, 1),
+        .{ .advertised = version, .supported_max = 1 },
     )));
 }
 
@@ -1023,12 +1109,11 @@ pub fn bindFractionalScaleManager(
     name: u32,
     version: u32,
 ) ?*WpFractionalScaleManagerV1 {
-    std.debug.assert(version >= 1);
     return @ptrCast(@alignCast(registryBind(
         registry,
         name,
         &wp_fractional_scale_manager_v1_interface,
-        @min(version, 1),
+        .{ .advertised = version, .supported_max = 1 },
     )));
 }
 
@@ -1121,7 +1206,12 @@ pub fn callbackDestroy(callback: *Callback) void {
 pub const WL_SHM_FORMAT_XRGB8888: u32 = 1;
 
 pub fn bindShm(registry: *Registry, name: u32, version: u32) ?*Shm {
-    return @ptrCast(@alignCast(registryBind(registry, name, &wl_shm_interface, @min(version, 1))));
+    return @ptrCast(@alignCast(registryBind(
+        registry,
+        name,
+        &wl_shm_interface,
+        .{ .advertised = version, .supported_max = 1 },
+    )));
 }
 
 pub fn shmCreatePool(shm: *Shm, fd: i32, size: i32) ?*ShmPool {
