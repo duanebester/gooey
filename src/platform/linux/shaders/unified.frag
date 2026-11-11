@@ -1,22 +1,16 @@
 #version 450
 
-// Constants
-const uint PRIM_QUAD = 0u;
-const uint PRIM_SHADOW = 1u;
-
-// Inputs from vertex shader
-layout(location = 0) flat in uint in_primitive_type;
+// The quad pipeline (unified.vert). Clipping is the draw's scissor.
+layout(location = 0) flat in uint in_shadow;
 layout(location = 1) in vec4 in_color;
 layout(location = 2) in vec4 in_border_color;
 layout(location = 3) in vec2 in_quad_coord;
 layout(location = 4) in vec2 in_quad_size;
 layout(location = 5) in vec4 in_corner_radii;
 layout(location = 6) in vec4 in_border_widths;
-layout(location = 7) in vec4 in_clip_bounds;
-layout(location = 8) in vec2 in_screen_pos;
-layout(location = 9) in vec2 in_content_size;
-layout(location = 10) in vec2 in_local_pos;
-layout(location = 11) in float in_blur_radius;
+layout(location = 7) in vec2 in_content_size;
+layout(location = 8) in vec2 in_local_pos;
+layout(location = 9) in float in_blur_radius;
 
 // Output color
 layout(location = 0) out vec4 out_color;
@@ -41,15 +35,7 @@ float shadow_falloff(float distance, float blur) {
 }
 
 void main() {
-    if (in_primitive_type == PRIM_QUAD) {
-        // Clip test
-        vec2 clip_min = in_clip_bounds.xy;
-        vec2 clip_max = clip_min + in_clip_bounds.zw;
-        if (in_screen_pos.x < clip_min.x || in_screen_pos.x > clip_max.x ||
-            in_screen_pos.y < clip_min.y || in_screen_pos.y > clip_max.y) {
-            discard;
-        }
-
+    if (in_shadow == 0u) {
         vec2 size = in_quad_size;
         vec2 half_size = size / 2.0;
         vec2 pos = in_quad_coord;  // Pixels from the quad origin, fringe included.
@@ -92,7 +78,6 @@ void main() {
         if (alpha <= 0.0) { discard; }
         out_color = color * vec4(1.0, 1.0, 1.0, alpha);
     } else {
-        // Shadow primitive
         vec2 half_size = in_content_size / 2.0;
         float radius = pick_corner_radius(in_local_pos, in_corner_radii);
         float dist = rounded_rect_sdf(in_local_pos, half_size, radius);

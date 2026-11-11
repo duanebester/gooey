@@ -1,5 +1,3 @@
-// Shared std430 contract: vk_types.MeshHeader, then tightly packed float payload.
-//
 // Analytic anti-aliasing contract (the render pass has one sample per pixel).
 // Every mesh vertex shader writes, besides uv, color and screen_pos:
 //   edge_distance: signed distances in logical pixels from the fragment to up
@@ -15,49 +13,10 @@
 //   logical pixels outward: triangles.vert adds a fringe quad outside each
 //   such edge and never moves a triangle's corners; strip and point vertex
 //   shaders grow their quads.
-// Triangle records are { x, y, u, v, edge_modes } with the three edge modes of
-// the triangle (v0->v1, v1->v2, v2->v0) as an integral float. Polyline strips
-// carry their segment count in params.x so only the line's ends are capped.
-layout(std430, set = 0, binding = 0) readonly buffer Mesh {
-    vec4 transform;
-    vec4 color;
-    vec4 clip;
-    vec4 params;
-    uint gradient_type;
-    uint stop_count;
-    float radius;
-    uint colored;
-    float stop_offsets[16];
-    float stop_h[16];
-    float stop_s[16];
-    float stop_l[16];
-    float stop_a[16];
-    float data[];
-} mesh;
-
-layout(set = 0, binding = 1) uniform Viewport { vec2 size; } viewport;
-
-vec4 hsla_to_rgba(vec4 hsla) {
-    float h = hsla.x * 6.0;
-    float c = (1.0 - abs(2.0 * hsla.z - 1.0)) * hsla.y;
-    float x = c * (1.0 - abs(mod(h, 2.0) - 1.0));
-    vec3 rgb;
-    if (h < 1.0) { rgb = vec3(c, x, 0); }
-    else {
-        if (h < 2.0) { rgb = vec3(x, c, 0); }
-        else {
-            if (h < 3.0) { rgb = vec3(0, c, x); }
-            else {
-                if (h < 4.0) { rgb = vec3(0, x, c); }
-                else {
-                    if (h < 5.0) { rgb = vec3(x, 0, c); }
-                    else { rgb = vec3(c, 0, x); }
-                }
-            }
-        }
-    }
-    return vec4(rgb + hsla.z - c * 0.5, hsla.w);
-}
+// Mesh draws read `meshes[draw.mesh]` (packed.glsl): its points from
+// `mesh_points` and, for triangles, one edge-modes word per triangle from
+// `triangle_edge_modes`, which pack classified for the whole frame.
+#include "packed.glsl"
 
 // One logical pixel is at least one device pixel at every supported scale.
 const float aa_fringe = 1.0;

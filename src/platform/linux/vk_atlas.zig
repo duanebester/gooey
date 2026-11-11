@@ -3,14 +3,13 @@
 //! One generic implementation, parameterized by pixel format, serves all three
 //! atlases (text, SVG, image). Each atlas image is created once at init at its
 //! `AtlasLimits` size and never recreated (CLAUDE.md §2). The renderer keeps no
-//! CPU copy of atlas pixels: each frame it copies the records its window has not
-//! uploaded from the shared `AtlasUploads` journal into its staging lane, and
-//! records one barrier, one batched copy, and one barrier per changed atlas.
+//! CPU copy of atlas pixels: `uploadAtlas` copies each region into the frame's
+//! staging lane, and the frame's command buffer records one barrier, one
+//! batched copy, and one barrier per batch of regions of one atlas.
 //!
 //! Axes of variation across the three atlases:
-//!   1. Pixel format — R8 (text) vs RGBA8 (SVG, image)
+//!   1. Pixel format — R8 (glyph) vs RGBA8 (SVG, image)
 //!   2. Which AtlasResources instance to target
-//!   3. Which descriptor set / storage buffer to bind
 
 const std = @import("std");
 const vk = @import("vulkan.zig");
@@ -20,7 +19,9 @@ const vk = @import("vulkan.zig");
 // =============================================================================
 
 /// Regions recorded per `vkCmdCopyBufferToImage` call; larger batches split.
-pub const copy_region_count_max: u32 = 64;
+/// The renderer holds one batch of this many per atlas (56 B a region), so 16
+/// keeps the three batches under 3 KiB of the window that embeds the renderer.
+pub const copy_region_count_max: u32 = 16;
 
 // =============================================================================
 // Public Types
@@ -80,51 +81,6 @@ pub const AtlasError = error{
 // =============================================================================
 // Public API
 // =============================================================================
-
-/// Update a textured pipeline's descriptor set (storage + uniform + atlas + sampler).
-///
-/// Serves the text, SVG, and image pipelines, which differ only in which
-/// descriptor set, storage buffer, and atlas view to use.
-pub fn updateAtlasDescriptorSet(
-    device: vk.Device,
-    descriptor_set: vk.DescriptorSet,
-    storage_buffer: vk.Buffer,
-    storage_range: vk.DeviceSize,
-    uniform_buffer: vk.Buffer,
-    atlas_view: vk.ImageView,
-    sampler: vk.Sampler,
-) void {
-    std.debug.assert(device != null);
-    std.debug.assert(atlas_view != null and sampler != null);
-
-    const buffer_infos = [_]vk.DescriptorBufferInfo{
-        .{
-            .buffer = storage_buffer,
-            .offset = 0,
-            .range = storage_range,
-        },
-        .{
-            .buffer = uniform_buffer,
-            .offset = 0,
-            .range = @sizeOf(@import("vk_types.zig").Uniforms),
-        },
-    };
-
-    const image_info = vk.DescriptorImageInfo{
-        .sampler = null,
-        .imageView = atlas_view,
-        .imageLayout = vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-    };
-
-    const sampler_info = vk.DescriptorImageInfo{
-        .sampler = sampler,
-        .imageView = null,
-        .imageLayout = vk.VK_IMAGE_LAYOUT_UNDEFINED,
-    };
-
-    const writes = descriptorWrites(descriptor_set, &buffer_infos, &image_info, &sampler_info);
-    vk.vkUpdateDescriptorSets(device, writes.len, &writes, 0, null);
-}
 
 // =============================================================================
 // Public API — Atlas images and batched uploads
@@ -412,71 +368,4 @@ fn recordBarrier(
         .subresourceRange = color_range,
     };
     vk.vkCmdPipelineBarrier(cmd, from.stage, to.stage, 0, 0, null, 0, null, 1, (&barrier)[0..1]);
-}
-
-// =============================================================================
-// Internal — Descriptor Writes
-// =============================================================================
-
-/// Build the 4-write descriptor update array. Shared layout:
-///   binding 0: storage buffer (glyph/svg/image instance data)
-///   binding 1: uniform buffer (viewport dimensions)
-///   binding 2: sampled image  (atlas texture)
-///   binding 3: sampler
-fn descriptorWrites(
-    set: vk.DescriptorSet,
-    buffer_infos: *const [2]vk.DescriptorBufferInfo,
-    image_info: *const vk.DescriptorImageInfo,
-    sampler_info: *const vk.DescriptorImageInfo,
-) [4]vk.WriteDescriptorSet {
-    return .{
-        .{
-            .sType = vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .pNext = null,
-            .dstSet = set,
-            .dstBinding = 0,
-            .dstArrayElement = 0,
-            .descriptorCount = 1,
-            .descriptorType = vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            .pImageInfo = null,
-            .pBufferInfo = buffer_infos[0..1],
-            .pTexelBufferView = null,
-        },
-        .{
-            .sType = vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .pNext = null,
-            .dstSet = set,
-            .dstBinding = 1,
-            .dstArrayElement = 0,
-            .descriptorCount = 1,
-            .descriptorType = vk.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            .pImageInfo = null,
-            .pBufferInfo = buffer_infos[1..2],
-            .pTexelBufferView = null,
-        },
-        .{
-            .sType = vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .pNext = null,
-            .dstSet = set,
-            .dstBinding = 2,
-            .dstArrayElement = 0,
-            .descriptorCount = 1,
-            .descriptorType = vk.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-            .pImageInfo = image_info[0..1],
-            .pBufferInfo = null,
-            .pTexelBufferView = null,
-        },
-        .{
-            .sType = vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .pNext = null,
-            .dstSet = set,
-            .dstBinding = 3,
-            .dstArrayElement = 0,
-            .descriptorCount = 1,
-            .descriptorType = vk.VK_DESCRIPTOR_TYPE_SAMPLER,
-            .pImageInfo = sampler_info[0..1],
-            .pBufferInfo = null,
-            .pTexelBufferView = null,
-        },
-    };
 }

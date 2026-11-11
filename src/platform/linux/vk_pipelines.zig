@@ -1,24 +1,20 @@
 //! Vulkan graphics pipeline creation.
 //!
-//! One generic helper creates every pipeline (unified, text, SVG, image),
-//! parameterized by shader SPV, pipeline layout, and blend mode, so the
-//! pipelines cannot drift apart.
+//! One generic helper creates every pipeline (one per packed-frame pipeline:
+//! quad, glyph, SVG, image, and the three mesh topologies), parameterized by
+//! shader SPV and blend mode, so the pipelines cannot drift apart.
 //!
-//! Axes of variation across the four pipelines:
+//! Axes of variation across the pipelines:
 //!   1. Shader SPIR-V bytecode (vert + frag)
-//!   2. Pipeline layout (caller pre-creates from descriptor set layout)
-//!   3. Blend mode — only SVG uses premultiplied; the rest use standard SRC_ALPHA
+//!   2. Blend mode — SVG and meshes output premultiplied colour; the rest
+//!      use standard SRC_ALPHA
 //!
-//! Everything else (vertex input, topology, rasterizer, dynamic state) is identical.
+//! Everything else (vertex input, topology, rasterizer, dynamic viewport and
+//! scissor, and the one pipeline layout) is identical.
 //!
 //! Pipeline cache support: callers pass a `VkPipelineCache`
 //! handle to amortize shader compilation across pipelines within a session and
 //! across sessions when the cache is serialized to disk.
-//!
-//! Shared pipeline layouts: `createPipelineLayout` is public
-//! so the coordinator can pre-create layouts once and share them across
-//! pipelines that use the same descriptor set layout (e.g. text/SVG/image
-//! all share `textured_pipeline_layout`).
 
 const std = @import("std");
 const vk = @import("vulkan.zig");
@@ -28,9 +24,9 @@ const vk = @import("vulkan.zig");
 // =============================================================================
 
 pub const BlendMode = enum {
-    /// srcAlpha / oneMinusSrcAlpha — used by unified, text, and image pipelines.
+    /// srcAlpha / oneMinusSrcAlpha — used by the quad, glyph, and image pipelines.
     standard,
-    /// one / oneMinusSrcAlpha — used by SVG pipeline (shader outputs pre-multiplied RGB).
+    /// one / oneMinusSrcAlpha — SVG and mesh shaders output pre-multiplied RGB.
     premultiplied,
 };
 
@@ -52,10 +48,8 @@ pub const PipelineError = error{
 // Public API
 // =============================================================================
 
-/// Create a `VkPipelineLayout` from a single descriptor set layout.
-///
-/// Exposed publicly so the coordinator can pre-create shared layouts
-/// (2 layouts in total because text/SVG/image share one).
+/// Create the `VkPipelineLayout` every pipeline shares: the frame's descriptor
+/// set and the vertex-stage push constants (`vk_types.PushConstants`).
 /// Caller owns the returned handle and must destroy it via
 /// `vkDestroyPipelineLayout` when no longer needed.
 pub fn createPipelineLayout(device: vk.Device, descriptor_layout: vk.DescriptorSetLayout) PipelineError!vk.PipelineLayout {
@@ -63,14 +57,19 @@ pub fn createPipelineLayout(device: vk.Device, descriptor_layout: vk.DescriptorS
     std.debug.assert(descriptor_layout != null);
 
     const layouts = [_]vk.DescriptorSetLayout{descriptor_layout};
+    const push_constants = vk.PushConstantRange{
+        .stageFlags = vk.VK_SHADER_STAGE_VERTEX_BIT,
+        .offset = 0,
+        .size = @sizeOf(@import("vk_types.zig").PushConstants),
+    };
     const layout_info = vk.PipelineLayoutCreateInfo{
         .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
         .pNext = null,
         .flags = 0,
         .setLayoutCount = 1,
         .pSetLayouts = &layouts,
-        .pushConstantRangeCount = 0,
-        .pPushConstantRanges = null,
+        .pushConstantRangeCount = 1,
+        .pPushConstantRanges = (&push_constants)[0..1],
     };
 
     var layout: vk.PipelineLayout = null;
@@ -341,7 +340,7 @@ fn rasterizationState() vk.PipelineRasterizationStateCreateInfo {
 
 /// One sample per pixel at every profile: quads, text, SVGs and images
 /// anti-alias in their fragment shaders, and the mesh shaders compute analytic
-/// edge coverage (see `vk_mesh.zig`), so no pipeline needs a multisampled target.
+/// edge coverage (see `shaders/mesh.frag`), so no pipeline needs a multisampled target.
 fn multisampleState() vk.PipelineMultisampleStateCreateInfo {
     return .{
         .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,

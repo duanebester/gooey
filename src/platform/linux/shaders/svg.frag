@@ -4,26 +4,16 @@
 layout(location = 0) in vec2 in_tex_coord;
 layout(location = 1) in vec4 in_fill_color;
 layout(location = 2) in vec4 in_stroke_color;
-layout(location = 3) in vec4 in_clip_bounds;
-layout(location = 4) in vec2 in_screen_pos;
 
 // SVG atlas texture (RGBA format)
 // R channel = fill alpha, G channel = stroke alpha
-layout(set = 0, binding = 2) uniform texture2D svg_atlas;
-layout(set = 0, binding = 3) uniform sampler svg_sampler;
+layout(set = 0, binding = 7) uniform texture2D svg_atlas;
+layout(set = 0, binding = 9) uniform sampler svg_sampler;
 
 // Output color
 layout(location = 0) out vec4 out_color;
 
 void main() {
-    // Clip test
-    vec2 clip_min = in_clip_bounds.xy;
-    vec2 clip_max = clip_min + in_clip_bounds.zw;
-    if (in_screen_pos.x < clip_min.x || in_screen_pos.x > clip_max.x ||
-        in_screen_pos.y < clip_min.y || in_screen_pos.y > clip_max.y) {
-        discard;
-    }
-
     // Sample from RGBA atlas
     vec4 sample_value = texture(sampler2D(svg_atlas, svg_sampler), in_tex_coord);
 

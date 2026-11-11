@@ -64,6 +64,32 @@ pub const Viewport = struct {
             .scale_factor = scale_factor,
         };
     }
+
+    /// `fromLogical` at the largest scale up to `scale_factor` whose
+    /// framebuffer fits `window`: a window past the budget renders at a lower
+    /// device scale, uniformly, and the compositor scales it up. Never empty.
+    pub fn fitLogical(
+        width: f32,
+        height: f32,
+        scale_factor: f32,
+        window: *const limits_mod.WindowLimits,
+    ) Viewport {
+        assert(width > 0);
+        assert(height > 0);
+        assert(scale_factor > 0);
+        const width_max: f32 = @floatFromInt(window.framebuffer_width_max);
+        const height_max: f32 = @floatFromInt(window.framebuffer_height_max);
+        const scale = @min(scale_factor, width_max / width, height_max / height);
+        var viewport = fromLogical(width, height, scale);
+        // Rounding a product at the budget can land one pixel past it.
+        viewport.size_px = .{
+            .width = std.math.clamp(viewport.size_px.width, 1, window.framebuffer_width_max),
+            .height = std.math.clamp(viewport.size_px.height, 1, window.framebuffer_height_max),
+        };
+        assert(viewport.scale_factor <= scale_factor);
+        assert(viewport.size_px.width <= window.framebuffer_width_max);
+        return viewport;
+    }
 };
 
 /// The surface a renderer draws to. `native` is the platform object (a
@@ -211,4 +237,24 @@ test "RenderLimits carries the profile's window budget" {
         limits_mod.WindowLimits.nano.framebuffer_width_max,
         render_limits.window.framebuffer_width_max,
     );
+}
+
+test "fitLogical keeps the scale within the budget and lowers it past" {
+    // Goal: a window that fits keeps its scale and exact size; one past the
+    // budget renders at the largest scale that fits, uniformly on both axes.
+    const window = limits_mod.WindowLimits{
+        .framebuffer_width_max = 2000,
+        .framebuffer_height_max = 900,
+    };
+    const fits = Viewport.fitLogical(1000, 450, 2, &window);
+    try std.testing.expectEqual(@as(f32, 2), fits.scale_factor);
+    try std.testing.expectEqual(SizePx{ .width = 2000, .height = 900 }, fits.size_px);
+    // One logical pixel taller: height limits the scale to 900 / 451.
+    const past = Viewport.fitLogical(1000, 451, 2, &window);
+    try std.testing.expect(past.scale_factor < 2);
+    try std.testing.expectEqual(@as(u32, 900), past.size_px.height);
+    try std.testing.expectEqual(@as(u32, 1996), past.size_px.width);
+    // A fractional scale keeps a fractional logical size exact.
+    const fractional = Viewport.fitLogical(667.333, 400, 1.5, &window);
+    try std.testing.expectEqual(SizePx{ .width = 1001, .height = 600 }, fractional.size_px);
 }

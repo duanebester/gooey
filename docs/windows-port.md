@@ -163,13 +163,9 @@ the bindings. Validation layers ship with the SDK, so without it Debug builds lo
   (which hung the next `render` or `resize`); the core host draws the frame again on the
   rebuilt swapchain. `VK_ERROR_DEVICE_LOST` and `VK_ERROR_SURFACE_LOST_KHR` panic
   with the result code instead of reaching `unreachable`. Shared with Linux.
-- **Fractional scale.** The swapchain matches the client area exactly, but the shared
-  renderer takes the viewport as whole logical pixels, so the window passes
-  `ceil(size)`. At 150% a 1001 px client draws 668 logical px rather than 667.33
-  (effective scale 1.4985): content shrinks by under one logical pixel, leaving a sliver
-  at the right and bottom edges. Fixing it needs the shared `VulkanRenderer` to take a
-  fractional logical viewport (or derive it from the swapchain extent and scale); there
-  is no exact answer through its current API.
+- **Fractional scale.** The swapchain matches the client area exactly, and the shared
+  renderer takes the frame's exact logical size at its scale (`backend.Viewport`), so at
+  150% a 1001 px client draws 667.33 logical px across it.
 - **Close.** `WM_CLOSE` runs the core host's close handler, records the close, and hides
   the window. The `HWND` is destroyed in `deinit`, never from inside its own dispatch.
 - **Appearance.** `setAppearance` stores the request and does nothing else: the frame
@@ -199,8 +195,8 @@ do (contract rule 1). `gooey.App.main` selects it with one `.windows` arm in
   Mailbox presentation still never blocks.
 - **Sizes.** The host reads the window's logical size and scale once per tick and pushes
   a resize when they changed, so a live resize queues one event per tick. The render
-  thread rebuilds the swapchain for the viewport the frame was built at, rounded up to
-  whole logical pixels as before. A minimized or zero-area window skips its frames;
+  thread rebuilds the swapchain for the viewport the frame was built at, fitted to
+  `ResourceLimits.window`. A minimized or zero-area window skips its frames;
   restoring it pushes a resize so the next frame is drawn.
 - **Live move and resize.** The modal loop's timer runs the host's turn, so the app keeps
   ticking during the drag.

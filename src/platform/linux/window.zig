@@ -22,7 +22,9 @@ const linux_input = @import("input.zig");
 
 const Allocator = std.mem.Allocator;
 const WindowOptions = interface_mod.WindowOptions;
-const ResourceLimits = @import("../../core/limits.zig").ResourceLimits;
+const limits_mod = @import("../../core/limits.zig");
+const ResourceLimits = limits_mod.ResourceLimits;
+const backend = @import("../../core/backend.zig");
 const core_events = @import("../../core/events.zig");
 const core_router = @import("../../core/router.zig");
 const core_clipboard = @import("../../core/clipboard.zig");
@@ -198,7 +200,7 @@ pub const Window = struct {
             .size = .{ .width = options.width, .height = options.height },
             // Surface events may update the output's scale later.
             .scale_factor = plat.getScaleFactor(),
-            .renderer = if (use_cpu_renderer) .{} else VulkanRenderer.init(allocator),
+            .renderer = .{},
         };
         self.storeTitle(options.title);
 
@@ -415,7 +417,11 @@ pub const Window = struct {
         // The core host starts from `scale_factor`, so a scale that arrived in
         // that roundtrip must reach the renderer's buffers here.
         if (self.scale_factor != renderer_scale) {
-            self.renderer.resize(self.width_px, self.height_px, self.scale_factor);
+            if (use_cpu_renderer) {
+                self.renderer.resize(self.width_px, self.height_px, self.scale_factor);
+            } else {
+                self.renderer.resize(self.rendererViewport(&options.limits.window).size_px);
+            }
         }
     }
 
@@ -465,14 +471,34 @@ pub const Window = struct {
             );
         } else {
             const wl_display = plat.getDisplay() orelse return error.NoDisplay;
-            try self.renderer.initWithNativeSurface(
-                .{ .display = @ptrCast(wl_display), .surface = self.wl_surface.? },
-                self.width_px,
-                self.height_px,
-                self.scale_factor,
-                &options.limits,
-            );
+            const native = vk_renderer.NativeSurface{
+                .display = @ptrCast(wl_display),
+                .surface = self.wl_surface.?,
+            };
+            const viewport = self.rendererViewport(&options.limits.window);
+            const render_limits = backend.RenderLimits.fromResourceLimits(&options.limits);
+            try self.renderer.initInPlace(&.{
+                .native = @ptrCast(@constCast(&native)),
+                .size_px = viewport.size_px,
+                .scale_factor = viewport.scale_factor,
+            }, &render_limits);
         }
+    }
+
+    /// The Vulkan framebuffer for the window's logical size and scale, fitted
+    /// to the budget as the core host fits every frame's (`applyViewport`).
+    fn rendererViewport(
+        self: *const Self,
+        window: *const limits_mod.WindowLimits,
+    ) backend.Viewport {
+        std.debug.assert(self.width_px > 0);
+        std.debug.assert(self.scale_factor > 0);
+        return backend.Viewport.fitLogical(
+            @floatFromInt(self.width_px),
+            @floatFromInt(self.height_px),
+            @floatCast(self.scale_factor),
+            window,
+        );
     }
 
     pub fn deinit(self: *Self) void {
