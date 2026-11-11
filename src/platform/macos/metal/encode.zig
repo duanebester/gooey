@@ -33,6 +33,9 @@ pub fn encodeDraws(
     var bound: ?Pipeline = null;
     for (frame.drawList()) |*draw| {
         assert(draw.clip < frame.clip_count);
+        // Pack emits no draw under a zero-area clip (contract §9).
+        assert(frame.clips[draw.clip][2] > 0);
+        assert(frame.clips[draw.clip][3] > 0);
         if (bound != draw.pipeline) {
             encoder.msgSend(void, "setRenderPipelineState:", .{
                 pipelines.state(draw.pipeline).value,

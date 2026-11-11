@@ -629,15 +629,16 @@ fn draw(
     clear: records.Color,
 ) void {
     const host: *Host = @ptrCast(@alignCast(context));
+    assert(frame.scale_factor > 0);
+    assert(host.core.render_phase == .draw);
+    // A minimized window draws nothing, so its scene is not filled either.
+    if (!host.presentable.load(.acquire)) return;
     // This renderer draws the 0.3.1 scene until it moves onto the contract.
     const scene: *const scene_mod.Scene = host.core.scene;
     pack_legacy.fillScene(packed_frame, host.core.scene, .{
         .width = frame.viewport_width,
         .height = frame.viewport_height,
     });
-    assert(frame.scale_factor > 0);
-    assert(host.core.render_phase == .draw);
-    if (!host.presentable.load(.acquire)) return;
     host.applyViewport(frame);
     const renderer = &host.window.renderer;
     if (!window_mod.rendererSwapchainUsable(renderer)) {

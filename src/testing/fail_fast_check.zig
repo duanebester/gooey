@@ -28,6 +28,12 @@
 //! - `core-image-requests`: one more image path than `nano`'s image request entries.
 //! - `core-pack-polylines`: one polyline more than `nano`'s polyline limit, which
 //!   pack checks: emit bounds only their points.
+//! - `core-pack-draws`: packs nine records that each start a draw into a packed
+//!   frame reserved for eight paint records.
+//! - `core-pack-clips`: packs nine clip pushes into the same frame, one past its
+//!   nine clips (eight plus the unbounded clip).
+//! - `core-capabilities-meshes`: checks a frame holding a polyline against a
+//!   renderer that reports no mesh support.
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -51,6 +57,9 @@ const Mode = enum {
     @"core-mesh-points",
     @"core-image-requests",
     @"core-pack-polylines",
+    @"core-pack-draws",
+    @"core-pack-clips",
+    @"core-capabilities-meshes",
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -77,6 +86,9 @@ pub fn main(init: std.process.Init) !void {
         .@"core-mesh-points" => coreTick(init.gpa, init.io, CoreApp.longPolyline),
         .@"core-image-requests" => coreTick(init.gpa, init.io, CoreApp.manyImages),
         .@"core-pack-polylines" => coreTick(init.gpa, init.io, CoreApp.manyPolylines),
+        .@"core-pack-draws" => corePackRecords(init.gpa, .draws),
+        .@"core-pack-clips" => corePackRecords(init.gpa, .clips),
+        .@"core-capabilities-meshes" => coreCapabilitiesMeshes(init.gpa),
     }
     std.debug.print("unreachable: {s} did not panic\n", .{@tagName(mode)});
 }
@@ -401,4 +413,105 @@ fn coreDeinitRunning(gpa: std.mem.Allocator, io: std.Io) void {
 fn coreTick(gpa: std.mem.Allocator, io: std.Io, comptime render: fn (*gooey.Cx) void) void {
     const app = initCoreApp(gooey.App(CoreState, render, core_config), gpa, io);
     app.tick(1);
+}
+
+/// Pack one record more than the packed frame's draws or clips hold. The
+/// records frame is reserved larger, the mismatch pack's check names.
+fn corePackRecords(gpa: std.mem.Allocator, pool: enum { draws, clips }) void {
+    const internals = gooey.internals;
+    const records = internals.records;
+    const record_count_max: u32 = 8;
+    const frame = gpa.create(records.Frame) catch |err| {
+        std.debug.panic("setup: records.Frame allocation failed: {s}", .{@errorName(err)});
+    };
+    frame.initInPlace(gpa, &.{
+        .paint_record_count_max = 4 * record_count_max,
+        .hit_record_count_max = 1,
+        .handler_count_max = 1,
+        .a11y_node_count_max = 1,
+        .text_bytes_max = 1,
+        .mesh_point_count_max = 1,
+    }) catch |err| {
+        std.debug.panic("setup: records.Frame.initInPlace failed: {s}", .{@errorName(err)});
+    };
+    const target = gpa.create(internals.packed_frame.PackedFrame) catch |err| {
+        std.debug.panic("setup: PackedFrame allocation failed: {s}", .{@errorName(err)});
+    };
+    target.initInPlace(&.{
+        .scene = internals.limits.SceneLimits.nano,
+        .paint_record_count_max = record_count_max,
+    }) catch |err| {
+        std.debug.panic("setup: PackedFrame.initInPlace failed: {s}", .{@errorName(err)});
+    };
+    frame.reset(1, .{ .width = 100, .height = 100, .scale_factor = 1 });
+    for (0..record_count_max + 1) |index| {
+        const offset: f32 = @floatFromInt(index);
+        const bounds: records.Rect = .{ .x = offset, .y = 0, .width = 4, .height = 4 };
+        const white: records.Color = .{ .r = 1, .g = 1, .b = 1, .a = 1 };
+        switch (pool) {
+            // Alternating pipelines: every record starts a draw.
+            .draws => frame.appendPaint(if (index % 2 == 0) .{ .quad = .{
+                .bounds = bounds,
+                .fill = white,
+                .border = .none,
+                .corners = .zero,
+                .blur = 0,
+            } } else .{ .sprite = .{
+                .bounds = bounds,
+                .atlas = .glyph,
+                .uv = .{ .x = 0, .y = 0, .width = 0.5, .height = 0.5 },
+                .tint = white,
+                .secondary = white,
+                .corners = .zero,
+                .grayscale = 0,
+                .opacity = 1,
+            } }),
+            .clips => {
+                frame.appendPaint(.{ .clip_push = bounds });
+                frame.appendPaint(.clip_pop);
+            },
+        }
+    }
+    internals.pack.pack(frame, target);
+}
+
+/// Pack one polyline and check the frame against a renderer without meshes.
+fn coreCapabilitiesMeshes(gpa: std.mem.Allocator) void {
+    const internals = gooey.internals;
+    const records = internals.records;
+    const frame = gpa.create(records.Frame) catch |err| {
+        std.debug.panic("setup: records.Frame allocation failed: {s}", .{@errorName(err)});
+    };
+    frame.initInPlace(gpa, &.{
+        .paint_record_count_max = 4,
+        .hit_record_count_max = 1,
+        .handler_count_max = 1,
+        .a11y_node_count_max = 1,
+        .text_bytes_max = 1,
+        .mesh_point_count_max = 2,
+    }) catch |err| {
+        std.debug.panic("setup: records.Frame.initInPlace failed: {s}", .{@errorName(err)});
+    };
+    const target = gpa.create(internals.packed_frame.PackedFrame) catch |err| {
+        std.debug.panic("setup: PackedFrame allocation failed: {s}", .{@errorName(err)});
+    };
+    target.initInPlace(&.{
+        .scene = internals.limits.SceneLimits.nano,
+        .paint_record_count_max = 4,
+    }) catch |err| {
+        std.debug.panic("setup: PackedFrame.initInPlace failed: {s}", .{@errorName(err)});
+    };
+    frame.reset(1, .{ .width = 100, .height = 100, .scale_factor = 1 });
+    const range = frame.claimMeshPoints(2);
+    frame.meshPoints(range)[0] = .{ .x = 0, .y = 0 };
+    frame.meshPoints(range)[1] = .{ .x = 50, .y = 50 };
+    frame.mesh_point_counts[@backingInt(records.Mesh.Topology.strip_expanded)] += 2;
+    frame.appendPaint(.{ .mesh = .{
+        .range = range,
+        .topology = .strip_expanded,
+        .fill = .{ .r = 0, .g = 0, .b = 0, .a = 1 },
+        .width = 2,
+    } });
+    internals.pack.pack(frame, target);
+    internals.backend.checkCapabilities(.{ .meshes = false }, target);
 }

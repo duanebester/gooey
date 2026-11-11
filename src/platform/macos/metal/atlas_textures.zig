@@ -7,10 +7,16 @@
 //! there into the texture, ahead of the frame's render pass in the same
 //! command buffer.
 //!
-//! Ordering: the textures use tracked hazards, so Metal orders a blit after
-//! every earlier frame's reads and before this frame's. The atlas never
-//! reuses a region until every renderer has uploaded the records written into
-//! it, so regions in one frame never overlap.
+//! Ordering (contract §9): an upload reaches a texture only on the GPU
+//! timeline, never as a CPU write. The textures are private, so the CPU
+//! cannot write them; the CPU writes only the frame slot's staging buffer,
+//! after the command buffer that last read that slot completed. The blit is
+//! encoded into the frame's command buffer, committed to the renderer's one
+//! queue after every earlier frame's, and the textures track hazards
+//! (`createTexture` sets and asserts it), so Metal runs the blit after every
+//! earlier submitted draw that samples the texture and before this frame's.
+//! The atlas may therefore evict a region an in-flight frame still samples:
+//! that frame reads the old pixels before the new ones land.
 //!
 //! Resource sketch (CLAUDE.md §7), `.standard`: private textures of 1 MiB (R8
 //! 1024²) + 4 MiB + 4 MiB. Staging is the renderer's (`frame_slots.zig`).
@@ -118,10 +124,14 @@ fn createTexture(device: objc.Object, size: u32, format: mtl.MTLPixelFormat) !ob
     const usage = mtl.MTLTextureUsage.shader_read_only;
     descriptor.msgSend(void, "setUsage:", .{@as(c_ulong, @bitCast(usage))});
     descriptor.msgSend(void, "setStorageMode:", .{@backingInt(mtl.MTLStorageMode.private)});
+    const tracked = mtl.MTLResourceOptions.HazardTrackingMode.tracked;
+    descriptor.msgSend(void, "setHazardTrackingMode:", .{@as(c_ulong, @backingInt(tracked))});
     const texture_ptr = device.msgSend(?*anyopaque, "newTextureWithDescriptor:", .{
         descriptor.value,
     }) orelse return error.TextureCreationFailed;
     const texture = objc.Object.fromId(texture_ptr);
     assert(texture.msgSend(c_ulong, "width", .{}) == size);
+    // The upload ordering above relies on Metal tracking this texture.
+    assert(texture.msgSend(c_ulong, "hazardTrackingMode", .{}) == @backingInt(tracked));
     return texture;
 }

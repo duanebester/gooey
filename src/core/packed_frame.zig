@@ -47,10 +47,11 @@ pub const Quad = extern struct {
     corners: [4]f32,
     /// Widths: top, right, bottom, left. Ignored by shadows.
     border_widths: [4]f32,
+    /// A shadow's offset from `bounds`. At byte 80, so a `vec2`/`float2`
+    /// (8-byte aligned in std430, MSL, and WGSL) declares it in place.
+    offset: [2]f32,
     /// Shadow blur radius; 0 draws a plain quad.
     blur: f32,
-    /// A shadow's offset from `bounds`.
-    offset: [2]f32,
     _pad: f32 = 0,
 };
 
@@ -153,17 +154,18 @@ pub const Pool = enum {
         };
     }
 
+    /// The app's limit for this pool: the `SceneLimits` field `limitName`
+    /// names, which `SceneLimits.check` keeps in 1..ceiling.
     pub fn capacity(self: Pool, scene: *const limits_mod.SceneLimits) u32 {
-        return switch (self) {
-            .quads => scene.quad_count_frame_max,
-            .shadows => scene.shadow_count_frame_max,
-            .glyphs => scene.glyph_count_frame_max,
-            .svgs => scene.svg_count_frame_max,
-            .images => scene.image_count_frame_max,
-            .triangle_meshes => scene.path_count_frame_max,
-            .polylines => scene.polyline_count_frame_max,
-            .point_clouds => scene.point_cloud_count_frame_max,
-        };
+        switch (self) {
+            inline else => |pool| {
+                const field = comptime pool.limitName();
+                const result: u32 = @field(scene, field);
+                assert(result > 0);
+                assert(result <= @field(limits_mod.SceneLimits.ceiling, field));
+                return result;
+            },
+        }
     }
 };
 
@@ -244,6 +246,7 @@ pub const PackedFrame = struct {
 
     pub fn deinit(self: *PackedFrame) void {
         assert(self.quad_count <= self.quads.len);
+        assert(self.clip_count >= 1);
         self.noteHighWater();
         const high = &self.high_water;
         self.edge_table.deinit();
@@ -276,6 +279,9 @@ pub const PackedFrame = struct {
     }
 
     fn noteHighWater(self: *PackedFrame) void {
+        assert(self.quad_count <= self.quads.len);
+        assert(self.draw_count <= self.draws.len);
+        assert(self.clip_count <= self.clips.len);
         const high = &self.high_water;
         high.quads = @max(high.quads, self.quad_count);
         high.sprites = @max(high.sprites, self.sprite_count);
@@ -287,26 +293,35 @@ pub const PackedFrame = struct {
 
     pub fn drawList(self: *const PackedFrame) []const Draw {
         assert(self.draw_count <= self.draws.len);
+        // Every draw covers at least one instance.
+        assert(self.draw_count <= self.quad_count + self.sprite_count + self.mesh_count);
         return self.draws[0..self.draw_count];
     }
 
     pub fn quadList(self: *const PackedFrame) []const Quad {
         assert(self.quad_count <= self.quads.len);
+        assert(self.quad_count == self.counts[@backingInt(Pool.quads)] +
+            self.counts[@backingInt(Pool.shadows)]);
         return self.quads[0..self.quad_count];
     }
 
     pub fn spriteList(self: *const PackedFrame) []const Sprite {
         assert(self.sprite_count <= self.sprites.len);
+        assert(self.sprite_count == self.counts[@backingInt(Pool.glyphs)] +
+            self.counts[@backingInt(Pool.svgs)] + self.counts[@backingInt(Pool.images)]);
         return self.sprites[0..self.sprite_count];
     }
 
     pub fn meshList(self: *const PackedFrame) []const Mesh {
         assert(self.mesh_count <= self.meshes.len);
+        assert(self.mesh_count == self.counts[@backingInt(Pool.triangle_meshes)] +
+            self.counts[@backingInt(Pool.polylines)] + self.counts[@backingInt(Pool.point_clouds)]);
         return self.meshes[0..self.mesh_count];
     }
 
     pub fn edgeModeList(self: *const PackedFrame) []const EdgeModes {
         assert(self.triangle_count <= self.edge_modes.len);
+        if (self.triangle_count > 0) assert(self.counts[@backingInt(Pool.triangle_meshes)] > 0);
         return self.edge_modes[0..self.triangle_count];
     }
 
@@ -368,19 +383,28 @@ pub fn spriteCapacity(scene: *const limits_mod.SceneLimits) u32 {
 pub fn meshCapacity(scene: *const limits_mod.SceneLimits) u32 {
     const count = @as(u64, scene.path_count_frame_max) + scene.polyline_count_frame_max +
         scene.point_cloud_count_frame_max;
+    assert(count > 0);
     assert(count <= std.math.maxInt(u32));
-    return @max(@as(u32, @intCast(count)), 1);
+    return @intCast(count);
 }
 
 /// Triangle points are bounded by the path vertex budget, three per triangle.
+/// At least one entry, so a budget below one triangle still reserves storage.
 pub fn triangleCapacity(scene: *const limits_mod.SceneLimits) u32 {
-    return @max(@divFloor(scene.path_vertex_count_frame_max, 3), 1);
+    const vertex_count = scene.path_vertex_count_frame_max;
+    assert(vertex_count > 0);
+    const count = @max(@divFloor(vertex_count, 3), 1);
+    if (vertex_count >= 3) assert(count * 3 <= vertex_count);
+    return count;
 }
 
 /// Points every mesh of a frame may hold: one pool for all three topologies.
+/// The records frame reserves the same sum (`Window`), and renderers size
+/// their point buffers from it.
 pub fn meshPointCapacity(scene: *const limits_mod.SceneLimits) u32 {
     const count = @as(u64, scene.path_vertex_count_frame_max) +
         scene.polyline_point_count_frame_max + scene.point_count_frame_max;
+    assert(count > 0);
     assert(count <= std.math.maxInt(u32));
     return @intCast(count);
 }
@@ -392,7 +416,9 @@ comptime {
     assert(@sizeOf(Mesh) == 32);
     assert(@sizeOf(Draw) == 16);
     assert(@sizeOf(MeshPoint) == 8);
-    assert(@offsetOf(Quad, "blur") == 80);
+    assert(@offsetOf(Quad, "offset") == 80);
+    assert(@offsetOf(Quad, "offset") % 8 == 0);
+    assert(@offsetOf(Quad, "blur") == 88);
     assert(@offsetOf(Sprite, "grayscale") == 80);
     assert(@offsetOf(Mesh, "first") == 16);
 }

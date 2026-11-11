@@ -4,8 +4,10 @@
 //! Phase 5 moves one backend at a time onto the `Renderer` contract; until a
 //! backend moves, its host calls `fillScene` before drawing. The result is the
 //! scene 0.3.1's pack wrote from the same records: clips intersect from the
-//! scene's own root, shadows stay unclipped, and quads outside their clip are
-//! culled again by the scene. Phase 6 deletes this file with the scene.
+//! scene's own root, shadows stay unclipped (the 0.3.1 `Shadow` has no clip;
+//! the packed frame clips them, a known difference these renderers keep until
+//! they move), and quads outside their clip are culled again by the scene.
+//! Phase 6 deletes this file with the scene.
 //!
 //! Performance sketch (CLAUDE.md §7): one pass over the draws and one scene
 //! insert per instance, the work 0.3.1's pack did; triangle meshes copy their

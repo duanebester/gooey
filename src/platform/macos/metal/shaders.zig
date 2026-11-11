@@ -44,7 +44,8 @@ comptime {
     // The source hard-codes these layouts and counts.
     assert(mesh_edges.triangle_draw_vertex_count == triangle_draw_vertex_count);
     assert(@sizeOf(packed_frame.Quad) == 96);
-    assert(@offsetOf(packed_frame.Quad, "offset") == 84);
+    assert(@offsetOf(packed_frame.Quad, "offset") == 80);
+    assert(@offsetOf(packed_frame.Quad, "blur") == 88);
     assert(@sizeOf(packed_frame.Sprite) == 96);
     assert(@offsetOf(packed_frame.Sprite, "opacity") == 84);
     assert(@sizeOf(packed_frame.Mesh) == 32);
@@ -66,9 +67,8 @@ const common =
     \\    float4 border_color;
     \\    float4 corners;
     \\    float4 border_widths;
+    \\    float2 offset;
     \\    float blur;
-    \\    float offset_x;
-    \\    float offset_y;
     \\    float _pad;
     \\};
     \\
@@ -197,7 +197,7 @@ const quad =
     \\        out.local_pos = float2(0, 0);
     \\    } else {
     \\        float expand = q.blur * 2.0;
-    \\        float2 offset = float2(q.offset_x, q.offset_y);
+    \\        float2 offset = q.offset;
     \\        float2 shadow_origin = origin + offset - expand;
     \\        float2 shadow_size = size + expand * 2.0;
     \\        float2 pos = shadow_origin + unit * shadow_size;

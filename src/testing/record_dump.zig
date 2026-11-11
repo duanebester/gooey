@@ -114,14 +114,18 @@ pub fn writePacked(
 
 fn writeQuad(out: *TextBuffer, quad: *const packed_mod.Quad, clip: packed_mod.Rect) void {
     if (quad.blur > 0) {
-        // Shadows print without their clip, as goldens recorded them.
-        out.print("  shadow {f} blur={d:.2} offset={d:.2},{d:.2} {f}\n", .{
+        // Shadows print their clip: the packed frame clips them like every
+        // other draw. A known difference from 0.3.1's dumps, which drew and
+        // printed shadows unclipped; no golden holds a shadow today.
+        out.print("  shadow {f} blur={d:.2} offset={d:.2},{d:.2} {f}", .{
             rect(quad.bounds),
             quad.blur,
             quad.offset[0],
             quad.offset[1],
             Rgba{ .color = quad.fill },
         });
+        writeClip(out, clip);
+        out.print("\n", .{});
         return;
     }
     out.print("  quad {f} fill={f}", .{ rect(quad.bounds), Rgba{ .color = quad.fill } });
@@ -317,4 +321,28 @@ test "TextBuffer formats rects and colours deterministically" {
         Rgba{ .color = .{ 1, 0, 0, 0.5 } },
     });
     try std.testing.expectEqualStrings("(1.00 2.00 3.50 0.00) #ff000080", out.slice());
+}
+
+test "a shadow prints the clip it is drawn under" {
+    // Goal: shadow clipping is visible to goldens. Method: dump a shadow
+    // under a real clip and one under the unbounded clip.
+    var storage: [256]u8 = undefined;
+    var out = TextBuffer.init(&storage, "test");
+    const shadow = packed_mod.Quad{
+        .bounds = .{ 10, 10, 20, 20 },
+        .fill = .{ 0, 0, 0, 0.5 },
+        .border_color = .{ 0, 0, 0, 0 },
+        .corners = .{ 0, 0, 0, 0 },
+        .border_widths = .{ 0, 0, 0, 0 },
+        .offset = .{ 0, 2 },
+        .blur = 4,
+    };
+    writeQuad(&out, &shadow, .{ 0, 0, 25, 25 });
+    writeQuad(&out, &shadow, packed_mod.clip_unbounded);
+    try std.testing.expectEqualStrings(
+        "  shadow (10.00 10.00 20.00 20.00) blur=4.00 offset=0.00,2.00 #00000080 " ++
+            "clip=(0.00 0.00 25.00 25.00)\n" ++
+            "  shadow (10.00 10.00 20.00 20.00) blur=4.00 offset=0.00,2.00 #00000080\n",
+        out.slice(),
+    );
 }

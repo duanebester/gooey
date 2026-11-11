@@ -448,6 +448,7 @@ fn draw(
     if (size_px.width != renderer.size_px.width or size_px.height != renderer.size_px.height) {
         renderer.resize(size_px);
     }
+    core_backend.checkCapabilities(renderer.capabilities(), packed_frame);
     const uploads = host.core.resources.atlas_uploads;
     core_backend.uploadPendingAtlases(renderer, uploads, host.core.atlas_consumer_key);
     renderer.draw(packed_frame, viewport, clear);

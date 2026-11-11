@@ -15,6 +15,7 @@ const std = @import("std");
 
 const geometry = @import("../geometry/geometry.zig");
 const core_backend = @import("../core/backend.zig");
+const packed_frame = @import("../core/packed_frame.zig");
 const record_dump = @import("record_dump.zig");
 
 const assert = std.debug.assert;
@@ -204,6 +205,7 @@ test "NullRenderer records the packed frame it is asked to draw" {
         .offset = .{ 0, 0 },
     };
     frame.quad_count = 1;
+    frame.counts[@backingInt(packed_frame.Pool.quads)] = 1;
     frame.draws[0] = .{ .pipeline = .quad, .clip = 0, .first = 0, .count = 1 };
     frame.draw_count = 1;
     renderer.draw(&frame, .{ .size_px = surface.size_px, .scale_factor = 2 }, geometry.Color.white);
