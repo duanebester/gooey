@@ -37,7 +37,7 @@ const posix = std.posix;
 const wayland = @import("wayland.zig");
 const geometry = @import("../../geometry/geometry.zig");
 const limits_mod = @import("../../core/limits.zig");
-const scene_mod = @import("../../scene/mod.zig");
+const PackedFrame = @import("../../core/packed_frame.zig").PackedFrame;
 const text_mod = @import("../../text/mod.zig");
 const cpu = @import("../cpu/renderer.zig");
 const devicePxFromLogical = @import("../interface.zig").devicePxFromLogical;
@@ -256,9 +256,9 @@ pub const ShmRenderer = struct {
         return self.freeSlotIndex() != null;
     }
 
-    /// Draw `scene` into a free slot and commit it. Returns false when every
+    /// Draw `frame` into a free slot and commit it. Returns false when every
     /// slot is still held by the compositor and the frame was not drawn.
-    pub fn render(self: *Self, scene: *const scene_mod.Scene) bool {
+    pub fn render(self: *Self, frame: *const PackedFrame) bool {
         assert(self.pool != null);
         assert(self.width_px > 0);
         assert(self.height_px > 0);
@@ -281,7 +281,7 @@ pub const ShmRenderer = struct {
         };
         self.last_stats = self.renderer.draw(
             target,
-            scene,
+            frame,
             .{ .scale_factor = self.effective_scale },
             self.clear_color,
         );

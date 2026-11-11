@@ -11,8 +11,9 @@
 //! keeps queueing (pointer moves coalesce in the queue).
 //!
 //! The software cursor is drawn over each frame. A pointer move that renders
-//! nothing new re-presents the last packed scene under the moved cursor; the
-//! scene stays untouched until the next pack, which only this thread runs.
+//! nothing new re-presents the last packed frame under the moved cursor; the
+//! frame and the records frame whose mesh points it borrows stay untouched
+//! until the next build and pack, which only this thread runs.
 //!
 //! Without a display server there is no input method (the IME query is never
 //! asked), no file dialog (a request completes as `error.FileDialogUnsupported`),
@@ -34,9 +35,7 @@ const window_mod = @import("window.zig");
 const clipboard = @import("clipboard.zig");
 const evdev = @import("evdev.zig");
 const input = @import("../../input/events.zig");
-const scene_mod = @import("../../scene/mod.zig");
 const core_window = @import("../../core/window.zig");
-const pack_legacy = @import("../../core/pack_legacy.zig");
 const core_router = @import("../../core/router.zig");
 const core_events = @import("../../core/events.zig");
 const core_handler = @import("../../core/handler.zig");
@@ -99,8 +98,8 @@ pub const Host = struct {
     tick_scheduled: std.atomic.Value(bool),
     /// When the last frame reached the panel; null before the first.
     presented_ns: ?u64,
-    /// A tick has packed a scene, so `core.scene` holds a whole frame.
-    scene_packed: bool,
+    /// A tick has packed a frame, so `core.packed_frame` holds a whole one.
+    frame_packed: bool,
     /// The pointer moved since the cursor was last drawn.
     cursor_moved: bool,
 
@@ -121,7 +120,7 @@ pub const Host = struct {
         self.wake_fd = try eventFd();
         self.tick_scheduled = .init(true);
         self.presented_ns = null;
-        self.scene_packed = false;
+        self.frame_packed = false;
         self.cursor_moved = false;
         self.bindWindow();
         assert(self.core.presenter != null);
@@ -210,17 +209,17 @@ pub const Host = struct {
     }
 
     /// The pointer moved the software cursor. A tick that presented has
-    /// drawn it already; otherwise re-present the last scene under it, at
+    /// drawn it already; otherwise re-present the last frame under it, at
     /// most once per frame period.
     fn presentCursor(self: *Host, now_ns: u64) void {
         assert(self.cursor_moved);
-        if (!self.window.cursor_visible or !self.scene_packed) {
+        if (!self.window.cursor_visible or !self.frame_packed) {
             self.cursor_moved = false;
             return;
         }
         if (!self.frameDue(now_ns)) return;
         self.cursor_moved = false;
-        self.window.presentScene(self.core.scene, self.core.clear_color);
+        self.window.presentFrame(&self.core.packed_frame, self.core.clear_color);
         self.presented_ns = now_ns;
     }
 
@@ -295,18 +294,13 @@ fn draw(
     clear: records.Color,
 ) void {
     const host: *Host = @ptrCast(@alignCast(context));
-    // This renderer draws the 0.3.1 scene until it moves onto the contract.
-    const scene: *const scene_mod.Scene = host.core.scene;
-    pack_legacy.fillScene(packed_frame, host.core.scene, .{
-        .width = frame.viewport_width,
-        .height = frame.viewport_height,
-    });
     assert(frame.scale_factor > 0);
+    assert(packed_frame == &host.core.packed_frame);
     assert(host.core.render_phase == .draw);
-    host.window.presentScene(scene, clear);
+    host.window.presentFrame(packed_frame, clear);
     // The frame drew the cursor where it is now.
     host.cursor_moved = false;
-    host.scene_packed = true;
+    host.frame_packed = true;
     host.presented_ns = platform_mod.nowNanoseconds();
 }
 

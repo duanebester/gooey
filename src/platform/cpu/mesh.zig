@@ -1,8 +1,8 @@
 //! Mesh rasterization for the CPU renderer: path triangles, polyline strips,
 //! and point clouds.
 //!
-//! These reproduce the Vulkan mesh pipelines (`linux/vk_mesh.zig` and the
-//! `triangles`, `strip_expanded`, `point_instanced`, and `mesh` shaders):
+//! These draw the packed frame's three mesh pipelines (`triangles`,
+//! `strip_expanded`, and `point_instanced`), each in one solid colour:
 //!
 //! - Triangles and strip segments are convex polygons. The Vulkan renderer
 //!   draws them with 4x MSAA, so coverage here is the share of the four
@@ -37,18 +37,14 @@
 //!   covered pixel. Work is O(polygons + rows + covered samples); a polygon is
 //!   visited only on the rows it spans (an active edge table).
 //! - Points: one shade per pixel inside each point's square.
-//! - The scene's aggregate geometry budgets (`SceneLimits.path_index_count_
-//!   frame_max` and friends, claimed in `renderer.zig`) bound the polygons
-//!   and points per frame, and the framebuffer bounds the pixels per polygon.
+//! - The scene's mesh point budgets (`SceneLimits.path_vertex_count_frame_max`
+//!   and friends, enforced when the frame is built) bound the polygons and
+//!   points per frame, and the framebuffer bounds the pixels per polygon.
 
 const std = @import("std");
-const geometry = @import("../../geometry/geometry.zig");
-const scene_mod = @import("../../scene/mod.zig");
-const GradientUniforms = @import("../../scene/gradient_uniforms.zig").GradientUniforms;
 const raster = @import("raster.zig");
 
 const assert = std.debug.assert;
-const Color = geometry.Color;
 const Premul = raster.Premul;
 const Span = raster.Span;
 const Target = raster.Target;
@@ -195,134 +191,21 @@ pub const Scratch = struct {
     }
 };
 
-/// How a draw's covered pixels are colored, mirroring `mesh.frag`.
-pub const Fill = union(enum) {
-    solid: Premul,
-    gradient: Gradient,
-};
-
-/// A path's linear or radial gradient, evaluated per pixel center.
-pub const Gradient = struct {
-    uniforms: *const GradientUniforms,
-    /// 1 for linear, 2 for radial, as `PathInstance.gradient_type`.
-    kind: u32,
-    /// Linear: start and end in uv. Radial: center, radius, inner radius.
-    params: [4]f32,
-    /// Affine map from device position to the mesh's uv.
-    uv: UvMap,
-
-    fn color(self: *const Gradient, x: f32, y: f32) Premul {
-        assert(self.kind == 1 or self.kind == 2);
-        assert(self.uniforms.stop_count >= 2);
-        const u = self.uv.u0 + self.uv.du_dx * x + self.uv.du_dy * y;
-        const v = self.uv.v0 + self.uv.dv_dx * x + self.uv.dv_dy * y;
-        const p = self.params;
-        var t: f32 = undefined;
-        if (self.kind == 1) {
-            const dx = p[2] - p[0];
-            const dy = p[3] - p[1];
-            const length_squared = dx * dx + dy * dy;
-            t = if (length_squared < 0.0001) 0 else ((u - p[0]) * dx + (v - p[1]) * dy) /
-                length_squared;
-        } else {
-            const distance = @sqrt((u - p[0]) * (u - p[0]) + (v - p[1]) * (v - p[1]));
-            t = if (p[2] <= p[3]) 1 else (distance - p[3]) / (p[2] - p[3]);
-        }
-        const rgba = gradientColor(self.uniforms, t);
-        if (rgba.a < 0.001) return Premul.transparent;
-        return raster.premulFromStraight(rgba);
-    }
-};
-
-/// `uv = (u0 + du_dx * x + du_dy * y, v0 + dv_dx * x + dv_dy * y)`.
-pub const UvMap = struct {
-    u0: f32,
-    du_dx: f32,
-    du_dy: f32,
-    v0: f32,
-    dv_dx: f32,
-    dv_dy: f32,
-
-    /// The plane through three device-space vertices and their uvs. Gooey
-    /// meshes carry uv normalized to their bounds (`path_mesh.zig`), an
-    /// affine function of position, so any non-degenerate triangle of the
-    /// mesh gives the plane the GPU interpolates on every triangle.
-    pub fn fromTriangle(x: [3]f32, y: [3]f32, u: [3]f32, v: [3]f32) UvMap {
-        const ex1 = x[1] - x[0];
-        const ey1 = y[1] - y[0];
-        const ex2 = x[2] - x[0];
-        const ey2 = y[2] - y[0];
-        const determinant = ex1 * ey2 - ex2 * ey1;
-        assert(determinant != 0);
-        assert(!std.math.isNan(determinant));
-        const du_dx = ((u[1] - u[0]) * ey2 - (u[2] - u[0]) * ey1) / determinant;
-        const du_dy = ((u[2] - u[0]) * ex1 - (u[1] - u[0]) * ex2) / determinant;
-        const dv_dx = ((v[1] - v[0]) * ey2 - (v[2] - v[0]) * ey1) / determinant;
-        const dv_dy = ((v[2] - v[0]) * ex1 - (v[1] - v[0]) * ex2) / determinant;
-        return .{
-            .u0 = u[0] - du_dx * x[0] - du_dy * y[0],
-            .du_dx = du_dx,
-            .du_dy = du_dy,
-            .v0 = v[0] - dv_dx * x[0] - dv_dy * y[0],
-            .dv_dx = dv_dx,
-            .dv_dy = dv_dy,
-        };
-    }
-};
-
-/// `gradient_color` from `mesh.frag`: interpolate HSLA stops with the hue
-/// taking the short way around, then convert to RGB.
-fn gradientColor(uniforms: *const GradientUniforms, value: f32) Color {
-    assert(uniforms.stop_count >= 2);
-    assert(uniforms.stop_count <= uniforms.stop_offsets.len);
-    const t = std.math.clamp(value, 0.0, 1.0);
-    const offsets = &uniforms.stop_offsets;
-    var first: u32 = 0;
-    var second: u32 = 1;
-    var index: u32 = 0;
-    while (index + 1 < uniforms.stop_count) : (index += 1) {
-        if (t >= offsets[index] and t <= offsets[index + 1]) {
-            first = index;
-            second = index + 1;
-            break;
-        }
-    }
-    const range = offsets[second] - offsets[first];
-    const factor = if (range > 0.0001) (t - offsets[first]) / range else 0;
-    var hue_a = uniforms.stop_h[first];
-    var hue_b = uniforms.stop_h[second];
-    if (@abs(hue_b - hue_a) > 0.5) {
-        if (hue_a < hue_b) hue_a += 1 else hue_b += 1;
-    }
-    const hue = hue_a + (hue_b - hue_a) * factor;
-    const hsla = scene_mod.Hsla{
-        .h = hue - @floor(hue),
-        .s = mix(uniforms.stop_s[first], uniforms.stop_s[second], factor),
-        .l = mix(uniforms.stop_l[first], uniforms.stop_l[second], factor),
-        .a = mix(uniforms.stop_a[first], uniforms.stop_a[second], factor),
-    };
-    return hsla.toColor();
-}
-
-fn mix(a: f32, b: f32, t: f32) f32 {
-    assert(t >= 0.0);
-    assert(t <= 1.0);
-    return a + (b - a) * t;
-}
-
-/// Fill the union of `polygons` (one draw) clipped to `clip`, with each pixel
-/// shaded once at its center and weighted by its covered-sample count.
+/// Fill the union of `polygons` (one draw) clipped to `clip` with `color`,
+/// each pixel weighted by its covered-sample count.
 pub fn fillPolygons(
     target: Target,
     scratch: *const Scratch,
     polygon_count: u32,
     clip: raster.DeviceRect,
-    fill: *const Fill,
+    color: Premul,
 ) void {
     assert(polygon_count <= scratch.polygons.len);
     assert(target.width <= scratch.mask.len);
     assert(target.height <= scratch.heads.len);
+    assert(color.r <= color.a);
     if (polygon_count == 0) return;
+    if (color.a == 0) return;
     const rows = raster.centerSpanClosed(clip.y, clip.y + clip.height, target.height);
     const columns = raster.centerSpanClosed(clip.x, clip.x + clip.width, target.width);
     if (rows.isEmpty() or columns.isEmpty()) return;
@@ -336,7 +219,7 @@ pub fn fillPolygons(
         active_count = activateRow(scratch, y, active_count, polygon_count);
         const covered = coverRow(scratch, y, &active_count, columns);
         if (covered.isEmpty()) continue;
-        shadeRow(target.row(y), y, covered, scratch.mask, fill);
+        shadeRow(target.row(y), covered, scratch.mask, color);
         @memset(scratch.mask[covered.start..covered.end], 0);
     }
 }
@@ -423,20 +306,15 @@ fn coverPolygonRow(
     }
 }
 
-fn shadeRow(row: []u32, y: u32, covered: Span, mask: []const u8, fill: *const Fill) void {
+fn shadeRow(row: []u32, covered: Span, mask: []const u8, color: Premul) void {
     assert(covered.end <= row.len);
     assert(covered.end <= mask.len);
-    const center_y = @as(f32, @floatFromInt(y)) + 0.5;
     var x = covered.start;
     while (x < covered.end) : (x += 1) {
         const bits = mask[x];
         if (bits == 0) continue;
         assert(bits < (@as(u8, 1) << sample_count));
         const coverage = coverage_bytes[@popCount(bits)];
-        const color = switch (fill.*) {
-            .solid => |solid| solid,
-            .gradient => |*gradient| gradient.color(@as(f32, @floatFromInt(x)) + 0.5, center_y),
-        };
         const source = raster.premulScale(color, coverage);
         if (source.a != 0) row[x] = raster.blendPixel(row[x], source);
     }
@@ -537,7 +415,7 @@ const TestScratch = struct {
 
 const test_background: u32 = 0xFF00_0000;
 const open_clip = raster.DeviceRect{ .x = -1e6, .y = -1e6, .width = 2e6, .height = 2e6 };
-const red_fill = Fill{ .solid = .{ .r = 255, .g = 0, .b = 0, .a = 255 } };
+const red = Premul{ .r = 255, .g = 0, .b = 0, .a = 255 };
 
 fn testTarget(pixels: []u32, width: u32, height: u32) Target {
     assert(pixels.len == @as(usize, width) * height);
@@ -556,7 +434,7 @@ test "two triangles sharing a diagonal fill their square with no seam" {
     scratch.polygons[1] = Polygon.triangle(.{ 1, 7, 1 }, .{ 1, 7, 7 });
     var pixels: [8 * 8]u32 = undefined;
     const target = testTarget(&pixels, 8, 8);
-    fillPolygons(target, &scratch, 2, open_clip, &red_fill);
+    fillPolygons(target, &scratch, 2, open_clip, red);
     var y: u32 = 1;
     while (y < 7) : (y += 1) {
         var x: u32 = 1;
@@ -576,7 +454,7 @@ test "a half-pixel edge covers the samples on its side only" {
     scratch.polygons[0] = Polygon.quad(.{ 1.5, 4, 4, 1.5 }, .{ 0, 0, 1, 1 });
     var pixels: [5 * 1]u32 = undefined;
     const target = testTarget(&pixels, 5, 1);
-    fillPolygons(target, &scratch, 1, open_clip, &red_fill);
+    fillPolygons(target, &scratch, 1, open_clip, red);
     try testing.expectEqual(test_background, pixels[0]);
     try testing.expectEqual(@as(u32, 0xFF80_0000), pixels[1]);
     try testing.expectEqual(@as(u32, 0xFFFF_0000), pixels[2]);
@@ -595,7 +473,7 @@ test "clip discards pixels by center, and polygons outside the clip are skipped"
     var pixels: [5 * 4]u32 = undefined;
     const target = testTarget(&pixels, 5, 4);
     const clip = raster.DeviceRect{ .x = 0, .y = 0, .width = 2.5, .height = 2 };
-    fillPolygons(target, &scratch, 2, clip, &red_fill);
+    fillPolygons(target, &scratch, 2, clip, red);
     try testing.expectEqual(@as(u32, 0xFFFF_0000), target.row(1)[2]);
     try testing.expectEqual(test_background, target.row(1)[3]);
     try testing.expectEqual(test_background, target.row(3)[0]);
@@ -615,11 +493,11 @@ test "samples exactly on an edge follow the top-left rule" {
     var pixels: [2 * 1]u32 = undefined;
     const target = testTarget(&pixels, 2, 1);
     scratch.polygons[0] = Polygon.quad(.{ -1, 3, 3, -1 }, .{ 0.375, 0.375, 0.875, 0.875 });
-    fillPolygons(target, &scratch, 1, open_clip, &red_fill);
+    fillPolygons(target, &scratch, 1, open_clip, red);
     try testing.expectEqual(@as(u32, 0xFF80_0000), pixels[0]);
     @memset(&pixels, test_background);
     scratch.polygons[0] = Polygon.quad(.{ 0.375, 0.875, 0.875, 0.375 }, .{ -1, -1, 2, 2 });
-    fillPolygons(target, &scratch, 1, open_clip, &red_fill);
+    fillPolygons(target, &scratch, 1, open_clip, red);
     try testing.expectEqual(@as(u32, 0xFF80_0000), pixels[0]);
 }
 
@@ -632,12 +510,12 @@ test "rows reuse the mask without leaking coverage downward" {
     scratch.polygons[0] = Polygon.triangle(.{ 0, 8, 4 }, .{ 0, 0, 4 });
     var pixels: [8 * 6]u32 = undefined;
     const target = testTarget(&pixels, 8, 6);
-    fillPolygons(target, &scratch, 1, open_clip, &red_fill);
+    fillPolygons(target, &scratch, 1, open_clip, red);
     try testing.expectEqual(@as(u32, 0xFFFF_0000), target.row(0)[4]);
     try testing.expectEqual(test_background, target.row(3)[0]);
     try testing.expectEqual(test_background, target.row(4)[4]);
     scratch.polygons[0] = Polygon.triangle(.{ 0, 1, 0 }, .{ 5, 5, 6 });
-    fillPolygons(target, &scratch, 1, open_clip, &red_fill);
+    fillPolygons(target, &scratch, 1, open_clip, red);
     try testing.expectEqual(test_background, target.row(5)[7]);
     try testing.expectEqualSlices(u8, &(@as([16]u8, @splat(0))), &storage.mask);
 }
@@ -653,53 +531,8 @@ test "degenerate polygons draw nothing" {
     scratch.polygons[1] = Polygon.triangle(.{ 0, 2, 4 }, .{ 0.125, 0.125, 0.125 });
     var pixels: [4 * 2]u32 = undefined;
     const target = testTarget(&pixels, 4, 2);
-    fillPolygons(target, &scratch, 2, open_clip, &red_fill);
+    fillPolygons(target, &scratch, 2, open_clip, red);
     for (pixels) |pixel| try testing.expectEqual(test_background, pixel);
-}
-
-test "linear gradient interpolates hue the short way at each pixel center" {
-    // Goal: pin the gradient math against hand-computed values. Stops go
-    // from hue 0.9 to hue 0.1 across uv u in [0, 1]; the short way passes
-    // through hue 0 (red) at u = 0.5, not through cyan as the long way would.
-    var uniforms = GradientUniforms{};
-    uniforms.stop_count = 2;
-    uniforms.stop_offsets[0] = 0;
-    uniforms.stop_offsets[1] = 1;
-    uniforms.stop_h[0] = 0.9;
-    uniforms.stop_h[1] = 0.1;
-    uniforms.stop_s = @splat(1);
-    uniforms.stop_l = @splat(0.5);
-    const gradient = Gradient{
-        .uniforms = &uniforms,
-        .kind = 1,
-        .params = .{ 0, 0, 1, 0 },
-        // u = x / 4 across a 4-pixel-wide row.
-        .uv = .{ .u0 = 0, .du_dx = 0.25, .du_dy = 0, .v0 = 0, .dv_dx = 0, .dv_dy = 0 },
-    };
-    const middle = gradient.color(2, 0.5);
-    try testing.expectEqual(@as(u8, 255), middle.r);
-    try testing.expectEqual(@as(u8, 0), middle.g);
-    try testing.expectEqual(@as(u8, 0), middle.b);
-    // At u = 0 the hue is 0.9 (magenta-red): red full, blue 153.
-    const start = gradient.color(0, 0.5);
-    try testing.expectEqual(@as(u8, 255), start.r);
-    try testing.expectEqual(@as(u8, 153), start.b);
-}
-
-test "uv plane reproduces the vertex uvs it was fitted to" {
-    // Goal: an asymmetric triangle with uv normalized to its bounds must map
-    // each vertex back to its own uv, catching a swapped derivative.
-    const x = [3]f32{ 10, 30, 14 };
-    const y = [3]f32{ 5, 9, 25 };
-    const u = [3]f32{ 0, 1, 0.2 };
-    const v = [3]f32{ 0, 0.2, 1 };
-    const map = UvMap.fromTriangle(x, y, u, v);
-    for (0..3) |index| {
-        const mapped_u = map.u0 + map.du_dx * x[index] + map.du_dy * y[index];
-        const mapped_v = map.v0 + map.dv_dx * x[index] + map.dv_dy * y[index];
-        try testing.expectApproxEqAbs(u[index], mapped_u, 1e-5);
-        try testing.expectApproxEqAbs(v[index], mapped_v, 1e-5);
-    }
 }
 
 test "large point alpha keeps the historical falloff" {

@@ -61,9 +61,7 @@ const window_mod = @import("window.zig");
 const file_dialog = @import("file_dialog.zig");
 const clipboard = @import("clipboard.zig");
 const linux_backend = @import("../linux_backend.zig");
-const scene_mod = @import("../../scene/mod.zig");
 const core_window = @import("../../core/window.zig");
-const pack_legacy = @import("../../core/pack_legacy.zig");
 const core_element = @import("../../core/element.zig");
 const core_tick = @import("../../core/tick.zig");
 const core_router = @import("../../core/router.zig");
@@ -802,15 +800,9 @@ fn draw(
     host.applyViewport(frame);
     const renderer = &host.window.renderer;
     if (cpu_renderer) {
-        // This renderer draws the 0.3.1 scene until it moves onto the contract.
-        const scene: *const scene_mod.Scene = host.core.scene;
-        pack_legacy.fillScene(packed_frame, host.core.scene, .{
-            .width = frame.viewport_width,
-            .height = frame.viewport_height,
-        });
         renderer.setClearColor(clear);
         // `presentDue` waited for a released buffer; only this thread takes one.
-        const drawn = renderer.render(scene);
+        const drawn = renderer.render(packed_frame);
         assert(drawn);
     } else {
         const uploads = host.core.resources.atlas_uploads;

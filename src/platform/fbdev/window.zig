@@ -7,7 +7,7 @@
 //! result is copied to the framebuffer by `Framebuffer.present`.
 //!
 //! The core host (`core_host.zig`) owns the loop: it routes input through
-//! `handleInput` and presents each frame it packs with `presentScene`.
+//! `handleInput` and presents each frame it packs with `presentFrame`.
 //!
 //! ## Memory (CLAUDE.md §2)
 //!
@@ -19,7 +19,7 @@
 const std = @import("std");
 const interface_mod = @import("../interface.zig");
 const geometry = @import("../../geometry/geometry.zig");
-const scene_mod = @import("../../scene/mod.zig");
+const PackedFrame = @import("../../core/packed_frame.zig").PackedFrame;
 const text_mod = @import("../../text/mod.zig");
 const input = @import("../../input/events.zig");
 const cpu = @import("../cpu/renderer.zig");
@@ -148,28 +148,24 @@ pub const Window = struct {
         };
     }
 
-    /// Rasterize `scene` (or only `clear` without one) into the back buffer,
-    /// draw the cursor over it, and copy the frame to the panel. The core
-    /// host calls it as its presenter, and again when only the cursor moved.
-    pub fn presentScene(self: *Self, scene: ?*const scene_mod.Scene, clear: geometry.Color) void {
+    /// Rasterize `frame` into the back buffer, draw the cursor over it, and
+    /// copy the result to the panel. The core host calls it as its presenter,
+    /// and again when only the cursor moved.
+    pub fn presentFrame(self: *Self, frame: *const PackedFrame, clear: geometry.Color) void {
         assert(!self.closed);
         assert(clear.a >= 0);
         const target = self.frameTarget();
-        if (scene) |frame_scene| {
-            self.renderer.bindAtlases(.{
-                .text = self.text_atlas,
-                .svg = self.svg_atlas,
-                .image = self.image_atlas,
-            });
-            _ = self.renderer.draw(
-                target,
-                frame_scene,
-                .{ .scale_factor = @floatCast(self.scale_factor) },
-                clear,
-            );
-        } else {
-            cpu.raster.clear(target, clear);
-        }
+        self.renderer.bindAtlases(.{
+            .text = self.text_atlas,
+            .svg = self.svg_atlas,
+            .image = self.image_atlas,
+        });
+        _ = self.renderer.draw(
+            target,
+            frame,
+            .{ .scale_factor = @floatCast(self.scale_factor) },
+            clear,
+        );
         if (self.cursor_visible) drawCursor(target, self.mouse_x, self.mouse_y, self.scale_factor);
         self.platform.framebuffer.present(target);
     }

@@ -122,12 +122,22 @@ fn cpuMissingAtlas(gpa: std.mem.Allocator) !void {
             .text = gooey.ResourceLimits.nano.text,
             .entities = gooey.ResourceLimits.nano.entities,
         };
-        var scene = try Scene.initCapacity(gpa, &limits.scene);
-        defer scene.deinit();
-        scene.finish();
-        scene.clear();
-        const glyph = gooey.internals.scene.GlyphInstance.init(0, 0, 4, 4, 0, 0, 1, 1, Hsla.black);
-        try scene.insertGlyph(glyph);
+        var frame: gooey.internals.packed_frame.PackedFrame = undefined;
+        try frame.initInPlace(&.{ .scene = limits.scene, .paint_record_count_max = 1 });
+        defer frame.deinit();
+        frame.reset(1, &.{});
+        frame.sprites[0] = .{
+            .bounds = .{ 0, 0, 4, 4 },
+            .uv = .{ 0, 0, 1, 1 },
+            .tint = .{ 0, 0, 0, 1 },
+            .secondary = .{ 0, 0, 0, 0 },
+            .corners = @splat(0),
+            .grayscale = 0,
+            .opacity = 1,
+        };
+        frame.sprite_count = 1;
+        frame.draws[0] = .{ .pipeline = .glyph, .clip = 0, .first = 0, .count = 1 };
+        frame.draw_count = 1;
 
         var renderer: cpu.Renderer = undefined;
         try renderer.initInPlace(gpa, &limits);
@@ -136,7 +146,7 @@ fn cpuMissingAtlas(gpa: std.mem.Allocator) !void {
         const target = cpu.raster.Target{ .pixels = &pixels, .width = 8, .height = 8, .stride = 8 };
         const clear = gooey.internals.geometry.Color.rgba(0, 0, 0, 1);
         // No atlas is bound: must panic inside `draw`.
-        _ = renderer.draw(target, &scene, .{ .scale_factor = 1 }, clear);
+        _ = renderer.draw(target, &frame, .{ .scale_factor = 1 }, clear);
     } else {
         std.debug.panic("cpu-atlas mode exists only on Linux", .{});
     }
