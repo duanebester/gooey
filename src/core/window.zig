@@ -10,7 +10,9 @@
 //! 2,048 handlers, and 64 KiB of text (≈1.9 MiB); 128 queued events; 16
 //! input engines × 4 KiB; a 176 KiB layout arena for text copies and 4,096
 //! wrapped lines, resident only as far as a frame writes; 256 KiB of text
-//! scratch; and the 0.3.1 scene at `limits.scene`, which pack fills. The layout
+//! scratch; the packed frame at `limits.scene` (`packed_frame.zig`), resident only as
+//! far as frames write; and, until phase 6, the 0.3.1 scene that hosts of
+//! renderers not on the contract fill from it. The layout
 //! engine keeps its fixed 16,384-element reservation until phase 4 ports
 //! layout, so `build.element_count_frame_max` is checked against it.
 
@@ -46,6 +48,7 @@ pub const ResourceLimits = limits_mod.ResourceLimits;
 pub const AppResources = app_resources.AppResources;
 pub const LayoutEngine = layout_mod.LayoutEngine;
 pub const Scene = scene_mod.Scene;
+pub const PackedFrame = @import("packed_frame.zig").PackedFrame;
 
 pub const Phase = enum { idle, drain, build, layout, emit, pack, draw };
 
@@ -459,9 +462,11 @@ pub const Presenter = struct {
     context: *anyopaque,
     /// Runs on the render side. Reads only its arguments: the main thread
     /// may be draining events into the window meanwhile.
+    /// `frame` is the records frame `packed_frame` was packed from, for its
+    /// viewport and frame number.
     draw: *const fn (
         context: *anyopaque,
-        scene: *const Scene,
+        packed_frame: *const PackedFrame,
         frame: *const Frame,
         clear: records.Color,
     ) void,
@@ -525,6 +530,10 @@ pub const Window = struct {
     /// returns so they outlive the handler's frame
     /// (`limits.events.dialog_path_bytes_max` bytes).
     dialog_request_bytes: []u8,
+    /// What pack writes and the presenter draws; render side only.
+    packed_frame: PackedFrame,
+    /// The 0.3.1 scene hosts whose renderers are not on the contract yet fill
+    /// from `packed_frame` (`pack_legacy.zig`); render side only.
     scene: *Scene,
     text_scratch: []u8,
     text_scratch_allocator: std.heap.FixedBufferAllocator,
@@ -950,6 +959,12 @@ fn initRuntimeStorage(self: *Window, gpa: std.mem.Allocator, limits: *const Reso
     self.clipboard = .init(self.clipboard_bytes);
     self.dialog_request_bytes = try gpa.alloc(u8, limits.events.dialog_path_bytes_max);
     errdefer gpa.free(self.dialog_request_bytes);
+    const reserved = debugger_mod.reservedLimits(limits);
+    try self.packed_frame.initInPlace(&.{
+        .scene = reserved.scene,
+        .paint_record_count_max = reserved.records.paint_record_count_frame_max,
+    });
+    errdefer self.packed_frame.deinit();
     self.scene = try initScene(gpa, limits);
     errdefer deinitScene(gpa, self.scene);
     self.text_scratch = try gpa.alloc(u8, text_scratch_bytes);
@@ -1000,6 +1015,7 @@ fn deinitRuntimeStorage(self: *Window, gpa: std.mem.Allocator) void {
     gpa.destroy(self.screen_reader);
     gpa.free(self.text_scratch);
     deinitScene(gpa, self.scene);
+    self.packed_frame.deinit();
     gpa.free(self.dialog_request_bytes);
     gpa.free(self.clipboard_bytes);
     if (self.editors_reserved) self.editors.deinit(gpa);

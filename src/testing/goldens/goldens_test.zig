@@ -132,6 +132,18 @@ test "the core counter draws, hits, and announces what 0.3.1 does" {
     try std.testing.expectEqual(@as(u32, 0), unexplained);
 }
 
+/// 0.3.1 converted every colour to HSLA and back, which moves a channel on a
+/// half level (0.1 × 255 = 25.5) down by one; the packed frame keeps the
+/// theme's RGBA as written. One 8-bit level, in two text colours.
+fn packedColour(legacy_line: []const u8, core_line: []const u8) compare.KnownDifference {
+    return .{
+        .step = null,
+        .legacy_line = legacy_line,
+        .core_line = core_line,
+        .reason = "the packed frame keeps RGBA; 0.3.1's HSLA round trip moved a half level down",
+    };
+}
+
 test "the core todo draws, hits, and announces what 0.3.1 does" {
     const unexplained = try compare.compare(
         std.testing.allocator,
@@ -143,6 +155,14 @@ test "the core todo draws, hits, and announces what 0.3.1 does" {
 }
 
 const todo_known_differences = [_]compare.KnownDifference{
+    packedColour(
+        "glyphs n=5 (24.00 26.00 71.50 20.00) color=#191926ff hash=1b671a6b",
+        "glyphs n=5 (24.00 26.00 71.50 20.00) color=#1a1a26ff hash=1b671a6b",
+    ),
+    packedColour(
+        "glyphs n=40 (24.00 174.50 250.00 10.00) color=#7f7f8cff hash=db63eebf",
+        "glyphs n=40 (24.00 174.50 250.00 10.00) color=#80808cff hash=db63eebf",
+    ),
     .{
         .step = 18,
         .legacy_line = "fill (83.70 507.20 124.80 28.80) #839496ff 8.00,8.00,8.00,8.00",

@@ -5,20 +5,22 @@
 //! renderer that drifts fails to compile with the offending declaration's
 //! name instead of silently losing a feature.
 //!
-//! `PackedFrame` is the 0.3.1 `Scene` until phase 5: the pack stage turns
-//! paint records into the input the existing Metal, Vulkan, and web renderers
-//! already draw. Only this alias changes when the four-kind Scene lands.
+//! `PackedFrame` is the four-kind packed frame (`packed_frame.zig`): the pack stage
+//! turns paint records into it, and every renderer on the contract draws it.
+//! Renderers not yet on the contract draw a 0.3.1 `Scene` their host fills
+//! from it (`pack_legacy.zig`) until phase 6 deletes the scene.
 
 const std = @import("std");
 const contract = @import("../platform/contract.zig");
 const geometry = @import("../geometry/geometry.zig");
-const scene_mod = @import("../scene/mod.zig");
+const packed_mod = @import("packed_frame.zig");
 const limits_mod = @import("limits.zig");
+const atlas_uploads = @import("../text/atlas_uploads.zig");
 
 const assert = std.debug.assert;
 
 /// Renderer input produced by the pack stage. See the file comment.
-pub const PackedFrame = scene_mod.Scene;
+pub const PackedFrame = packed_mod.PackedFrame;
 
 pub const Color = geometry.Color;
 
@@ -39,11 +41,27 @@ pub const SizePx = struct {
     height: u32,
 };
 
-/// What `draw` renders into: the framebuffer extent and its scale.
+/// What `draw` renders into: the framebuffer extent and its scale. Packed
+/// positions are logical pixels; a renderer maps `size_px / scale_factor`
+/// logical pixels onto the framebuffer.
 pub const Viewport = struct {
     size_px: SizePx,
     /// Device pixels per logical pixel.
     scale_factor: f32,
+
+    /// The framebuffer a frame of `width` x `height` logical pixels needs,
+    /// rounded to whole device pixels.
+    pub fn fromLogical(width: f32, height: f32, scale_factor: f32) Viewport {
+        assert(scale_factor > 0);
+        assert(width >= 0 and height >= 0);
+        const width_px = @round(width * scale_factor);
+        const height_px = @round(height * scale_factor);
+        assert(width_px < 4_294_967_296.0 and height_px < 4_294_967_296.0);
+        return .{
+            .size_px = .{ .width = @intFromFloat(width_px), .height = @intFromFloat(height_px) },
+            .scale_factor = scale_factor,
+        };
+    }
 };
 
 /// The surface a renderer draws to. `native` is the platform object (a
@@ -80,7 +98,25 @@ pub const Capabilities = struct {
     meshes: bool,
 };
 
-/// Verify `Renderer` against contract §9.
+/// Verify `Renderer` against contract §9:
+///
+/// - `initInPlace` reserves everything the renderer will use for `limits`:
+///   instance and geometry buffers at the scene limits, atlas textures at the
+///   atlas limits, and nothing window-sized past `limits.window`. It takes no
+///   allocator. A device that cannot hold the budget is an init error.
+/// - `uploadAtlas` copies `pixels`, tightly packed rows of `dirty.width`
+///   pixels (1 byte for `.glyph`, 4 bytes RGBA for the others), before it
+///   returns; the region is written into the atlas before the next `draw`
+///   samples it.
+/// - `draw` renders every draw of the packed frame in order into a
+///   framebuffer of `viewport.size_px`, cleared to `clear`, and presents it.
+///   Each draw writes only pixels whose centres lie inside its clip
+///   rectangle, inclusive of its edges. The frame is read only during the
+///   call. An operating failure (no drawable) skips the frame and is logged
+///   once; it is never a silent drop of part of a frame.
+/// - `resize` happens before a `draw` at a new size, and asserts the size is
+///   within `limits.window`; it reuses reserved storage.
+/// - `capabilities` reports features a renderer lacks; callers gate on them.
 pub fn verifyRenderer(comptime Renderer: type) void {
     comptime {
         contract.verifyFn(Renderer, "initInPlace", .{
@@ -108,6 +144,34 @@ pub fn verifyRenderer(comptime Renderer: type) void {
             .params = &.{*Renderer},
             .returns = void,
         });
+    }
+}
+
+/// Hand `renderer` every atlas record its window has not uploaded, through
+/// `uploadAtlas`, and mark them uploaded. Call on the render side before
+/// `draw`; the journal stays locked only while the renderer copies.
+pub fn uploadPendingAtlases(
+    renderer: anytype,
+    uploads: *atlas_uploads.AtlasUploads,
+    key: usize,
+) void {
+    assert(key != 0);
+    const pending = uploads.consumeBegin(key);
+    defer uploads.consumeEnd(key);
+    for (pending.records) |record| {
+        const byte_count = record.byteCount();
+        assert(record.offset + byte_count <= pending.bytes.len);
+        const kind: AtlasKind = switch (record.kind) {
+            .text => .glyph,
+            .svg => .svg,
+            .image => .image,
+        };
+        renderer.uploadAtlas(kind, .{
+            .x = record.x,
+            .y = record.y,
+            .width = record.width,
+            .height = record.height,
+        }, pending.bytes[record.offset..][0..byte_count]);
     }
 }
 

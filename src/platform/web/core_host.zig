@@ -32,6 +32,7 @@ const text_buffer = @import("text_buffer.zig");
 const composition_buffer = @import("composition_buffer.zig");
 const scene_mod = @import("../../scene/mod.zig");
 const core_window = @import("../../core/window.zig");
+const pack_legacy = @import("../../core/pack_legacy.zig");
 const core_element = @import("../../core/element.zig");
 const core_router = @import("../../core/router.zig");
 const core_events = @import("../../core/events.zig");
@@ -300,11 +301,17 @@ fn hasRoom(queue: *const core_events.EventQueue) bool {
 /// what the build placed in the atlases, then draw the packed scene.
 fn draw(
     context: *anyopaque,
-    scene: *const scene_mod.Scene,
+    packed_frame: *const core_window.PackedFrame,
     frame: *const records.Frame,
     clear: records.Color,
 ) void {
     const host: *Host = @ptrCast(@alignCast(context));
+    // This renderer draws the 0.3.1 scene until it moves onto the contract.
+    const scene: *const scene_mod.Scene = host.core.scene;
+    pack_legacy.fillScene(packed_frame, host.core.scene, .{
+        .width = frame.viewport_width,
+        .height = frame.viewport_height,
+    });
     assert(frame.viewport_width >= 0);
     assert(frame.viewport_height >= 0);
     host.renderer.uploadAtlasRegions();

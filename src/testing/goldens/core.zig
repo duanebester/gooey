@@ -90,19 +90,18 @@ pub fn CoreDriver(comptime App: type) type {
 
 fn present(
     context: *anyopaque,
-    scene: *const core_backend.PackedFrame,
+    packed_frame: *const core_backend.PackedFrame,
     frame: *const records.Frame,
     clear: records.Color,
 ) void {
     const renderer: *NullRenderer = @ptrCast(@alignCast(context));
     assert(frame.scale_factor > 0);
-    renderer.draw(scene, .{
-        .size_px = .{
-            .width = @intFromFloat(frame.viewport_width * frame.scale_factor),
-            .height = @intFromFloat(frame.viewport_height * frame.scale_factor),
-        },
-        .scale_factor = frame.scale_factor,
-    }, clear);
+    const viewport = core_backend.Viewport.fromLogical(
+        frame.viewport_width,
+        frame.viewport_height,
+        frame.scale_factor,
+    );
+    renderer.draw(packed_frame, viewport, clear);
 }
 
 /// Interactive hit records in tree order, in the 0.3.1 dump's format. Keyed

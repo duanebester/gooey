@@ -33,6 +33,7 @@ const input = @import("../input/mod.zig");
 const render_stats = @import("../scene/render_stats.zig");
 const layout_types = @import("../layout/types.zig");
 const scene_mod = @import("../scene/mod.zig");
+const packed_mod = @import("packed_frame.zig");
 
 const assert = std.debug.assert;
 
@@ -91,22 +92,24 @@ pub fn appPaintCount(frame: *const records.Frame) u32 {
     return frame.overlay_start;
 }
 
-/// After pack has inserted the app's records, before the overlay's: the app
-/// stays within the scene limits it declared, which the scene's reserved
-/// headroom would otherwise hide. The panic matches the scene's own.
-pub fn checkAppPacked(scene: *const scene_mod.Scene, frame_number: u64) void {
+/// After pack has packed the app's records, before the overlay's: the app
+/// stays within the scene limits it declared, which the packed frame's
+/// reserved headroom would otherwise hide. The panic matches pack's own.
+pub fn checkAppPacked(target: *const packed_mod.PackedFrame) void {
     if (comptime !enabled) return;
-    assert(scene.limits.quad_count_frame_max > overlay_quad_count_max);
-    assert(scene.limits.glyph_count_frame_max > overlay_glyph_count_max);
-    const quads_declared = scene.limits.quad_count_frame_max - overlay_quad_count_max;
-    const glyphs_declared = scene.limits.glyph_count_frame_max - overlay_glyph_count_max;
-    const quads_used: u32 = @intCast(scene.quads.items.len);
-    const glyphs_used: u32 = @intCast(scene.glyphs.items.len);
+    assert(target.limits.quad_count_frame_max > overlay_quad_count_max);
+    assert(target.limits.glyph_count_frame_max > overlay_glyph_count_max);
+    const quads_declared = target.limits.quad_count_frame_max - overlay_quad_count_max;
+    const glyphs_declared = target.limits.glyph_count_frame_max - overlay_glyph_count_max;
+    const quads_used = target.counts[@backingInt(packed_mod.Pool.quads)];
+    const glyphs_used = target.counts[@backingInt(packed_mod.Pool.glyphs)];
     if (quads_used > quads_declared) {
-        appExhausted("Scene pool 'quads'", "scene", quads_declared, quads_used, frame_number);
+        const frame = target.frame_number;
+        appExhausted("Packed pool 'quads'", "scene", quads_declared, quads_used, frame);
     }
     if (glyphs_used > glyphs_declared) {
-        appExhausted("Scene pool 'glyphs'", "scene", glyphs_declared, glyphs_used, frame_number);
+        const frame = target.frame_number;
+        appExhausted("Packed pool 'glyphs'", "scene", glyphs_declared, glyphs_used, frame);
     }
 }
 

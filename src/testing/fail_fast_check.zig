@@ -26,6 +26,8 @@
 //! - `core-list-count`: a `List` of per-row heights one row past its `count_max`.
 //! - `core-mesh-points`: a polyline one point past `nano`'s polyline point limit.
 //! - `core-image-requests`: one more image path than `nano`'s image request entries.
+//! - `core-pack-polylines`: one polyline more than `nano`'s polyline limit, which
+//!   pack checks: emit bounds only their points.
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -48,6 +50,7 @@ const Mode = enum {
     @"core-list-count",
     @"core-mesh-points",
     @"core-image-requests",
+    @"core-pack-polylines",
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -73,6 +76,7 @@ pub fn main(init: std.process.Init) !void {
         .@"core-list-count" => coreTick(init.gpa, init.io, CoreApp.longList),
         .@"core-mesh-points" => coreTick(init.gpa, init.io, CoreApp.longPolyline),
         .@"core-image-requests" => coreTick(init.gpa, init.io, CoreApp.manyImages),
+        .@"core-pack-polylines" => coreTick(init.gpa, init.io, CoreApp.manyPolylines),
     }
     std.debug.print("unreachable: {s} did not panic\n", .{@tagName(mode)});
 }
@@ -282,6 +286,18 @@ const CoreApp = struct {
             break :blk result;
         };
         painter.polyline(&points, 1, gooey.ui.Color.rgb(1, 1, 1));
+    }
+
+    fn manyPolylines(cx: *gooey.Cx) void {
+        const nothing: u8 = 0;
+        cx.render(gooey.ui.paint(u8, &nothing, paintManyPolylines, .{}));
+    }
+
+    /// Exactly `nano`'s polylines, then one more.
+    fn paintManyPolylines(_: *const u8, painter: *gooey.ui.Painter) void {
+        const count = gooey.ResourceLimits.nano.scene.polyline_count_frame_max + 1;
+        const points = [2][2]f32{ .{ 0, 0 }, .{ 10, 10 } };
+        for (0..count) |_| painter.polyline(&points, 1, gooey.ui.Color.rgb(1, 1, 1));
     }
 
     /// One distinct image path more than `nano`'s request entries, in one

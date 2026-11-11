@@ -34,6 +34,7 @@ const appkit = @import("appkit.zig");
 const geometry = @import("../../geometry/geometry.zig");
 const scene_mod = @import("../../scene/mod.zig");
 const core_window = @import("../../core/window.zig");
+const pack_legacy = @import("../../core/pack_legacy.zig");
 const core_element = @import("../../core/element.zig");
 const core_tick = @import("../../core/tick.zig");
 const core_router = @import("../../core/router.zig");
@@ -423,11 +424,17 @@ fn displayLinkTick(_: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) void 
 /// viewport it was built for; the drawable follows it before the draw.
 fn draw(
     context: *anyopaque,
-    scene: *const scene_mod.Scene,
+    packed_frame: *const core_window.PackedFrame,
     frame: *const records.Frame,
     clear: records.Color,
 ) void {
     const host: *Host = @ptrCast(@alignCast(context));
+    // This renderer draws the 0.3.1 scene until it moves onto the contract.
+    const scene: *const scene_mod.Scene = host.core.scene;
+    pack_legacy.fillScene(packed_frame, host.core.scene, .{
+        .width = frame.viewport_width,
+        .height = frame.viewport_height,
+    });
     assert(frame.scale_factor > 0);
     const renderer = &host.window.renderer;
     const width: f64 = frame.viewport_width;

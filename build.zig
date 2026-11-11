@@ -1427,6 +1427,9 @@ fn addFailFastChecks(
         .{ .mode = "core-image-requests", .stderr = "image loader pool 'requests' exhausted: " ++
             "capacity 4 images waiting or failed, 1 requested (\"assets/missing-4.png\") in " ++
             "frame 1. Raise ResourceLimits.atlas.image_request_count_max." },
+        .{ .mode = "core-pack-polylines", .stderr = "Packed pool 'polylines' exhausted: " ++
+            "capacity 4 (ResourceLimits.scene.polyline_count_frame_max), 4 in use, " ++
+            "1 requested, frame 1." },
     };
     for (checks) |check| {
         const run = b.addRunArtifact(exe);
