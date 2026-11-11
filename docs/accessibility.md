@@ -348,7 +348,7 @@ Each role maps to a platform role in `Role.toNSRole`, `Role.toUiaControlType`, a
 
 `State` is a 16-bit packed struct: `focused`, `selected`, `checked`, `pressed`, `expanded`,
 `disabled`, `readonly`, `required`, `invalid`, `busy`, `hidden`, `has_popup`. The core sets
-`focused` from keyboard focus and copies `selected` (0.4.1), `checked`, `disabled`,
+`focused` from keyboard focus and copies `selected` (0.4.2), `checked`, `disabled`,
 `expanded`, and `has_popup` from `ui.A11y`. `ui.A11y` has no field for the other six, so
 they are always false.
 
