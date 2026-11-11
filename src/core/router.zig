@@ -14,7 +14,7 @@
 //! on release, over a record the press also landed in (decision 7).
 //!
 //! A key no handler stopped has a default, as in a browser: Tab moves focus,
-//! and Enter or Space runs the focused record's `on_click` (0.4.1), one more
+//! and Enter or Space runs the focused record's `on_click` (0.4.2), one more
 //! handler per key. `effects.click` adds one record search and one handler
 //! per handler that asks. Focus the keyboard moved is `focus_visible`, which
 //! draws the focus ring in emit.

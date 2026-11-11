@@ -20,13 +20,13 @@
 //! 6. Accessibility drops 0.3.1's `presentation` nodes, which its `Svg`
 //!    component adds around the checkbox's checkmark; the core paints it.
 //! 7. Buttons and checkboxes take focus in the core, as 0.3.1's did not, so
-//!    Tab reaches them (0.4.1): a clickable hit record drops its `focus`
+//!    Tab reaches them (0.4.2): a clickable hit record drops its `focus`
 //!    flag, and a button or checkbox node its `focused` state, which a click
 //!    gives it. A text field's focus is still compared. This and rule 8
 //!    remove differences in behaviour; each is one kind, everywhere, and the
 //!    core checks test what they remove.
 //! 8. A checkbox node drops its `name=`: todo names each row's checkbox by
-//!    its todo's text (0.4.1), where 0.3.1 left it unnamed.
+//!    its todo's text (0.4.2), where 0.3.1 left it unnamed.
 //!
 //! A remaining difference must be listed in `known_differences` with why.
 
