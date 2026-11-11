@@ -14,8 +14,8 @@
 const std = @import("std");
 
 const geometry = @import("../geometry/geometry.zig");
-const scene_mod = @import("../scene/mod.zig");
 const core_backend = @import("../core/backend.zig");
+const packed_frame = @import("../core/packed_frame.zig");
 const record_dump = @import("record_dump.zig");
 
 const assert = std.debug.assert;
@@ -40,7 +40,7 @@ pub const null_renderer_dump_bytes_max: u32 = 64 * 1024;
 ///
 /// It satisfies the contract §9 `Renderer` signatures, so the core's pack and
 /// draw stages run end to end on `TestBackend`. `draw` writes the packed frame
-/// as text (`record_dump.writeScene`), which is what goldens compare. Every
+/// as text (`record_dump.writePacked`), which is what goldens compare. Every
 /// buffer is inline: `initInPlace` takes no allocator by contract, so the
 /// renderer cannot allocate at all.
 pub const NullRenderer = struct {
@@ -131,9 +131,9 @@ pub const NullRenderer = struct {
             viewport.size_px.width,
             viewport.size_px.height,
             viewport.scale_factor,
-            record_dump.Rgba{ .color = scene_mod.Hsla.fromColor(clear) },
+            record_dump.Rgba{ .color = .{ clear.r, clear.g, clear.b, clear.a } },
         });
-        record_dump.writeScene(&out, frame, if (self.glyph_atlas) |*view| view else null);
+        record_dump.writePacked(&out, frame, if (self.glyph_atlas) |*view| view else null);
         self.dump_len = out.len;
         assert(self.dump_len <= self.dump_bytes.len);
     }
@@ -191,10 +191,23 @@ test "NullRenderer records the packed frame it is asked to draw" {
     try renderer.initInPlace(&surface, &render_limits);
     defer renderer.deinit();
 
-    var frame = try scene_mod.Scene.initCapacity(testing.allocator, &render_limits.scene);
+    var frame: core_backend.PackedFrame = undefined;
+    try frame.initInPlace(&.{ .scene = render_limits.scene, .paint_record_count_max = 4 });
     defer frame.deinit();
-    try frame.insertQuad(scene_mod.Quad.filled(1, 2, 30, 40, scene_mod.Hsla.fromRgba(1, 0, 0, 1)));
-    frame.finish();
+    frame.reset(1, &.{});
+    frame.quads[0] = .{
+        .bounds = .{ 1, 2, 30, 40 },
+        .fill = .{ 1, 0, 0, 1 },
+        .border_color = .{ 0, 0, 0, 0 },
+        .corners = @splat(0),
+        .border_widths = @splat(0),
+        .blur = 0,
+        .offset = .{ 0, 0 },
+    };
+    frame.quad_count = 1;
+    frame.counts[@backingInt(packed_frame.Pool.quads)] = 1;
+    frame.draws[0] = .{ .pipeline = .quad, .clip = 0, .first = 0, .count = 1 };
+    frame.draw_count = 1;
     renderer.draw(&frame, .{ .size_px = surface.size_px, .scale_factor = 2 }, geometry.Color.white);
 
     try testing.expectEqualStrings(

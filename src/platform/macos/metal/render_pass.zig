@@ -1,12 +1,12 @@
-//! Render Pass Utilities - Common render pass setup and CATransaction handling
-//!
-//! This module provides helpers for creating Metal render passes and managing
-//! synchronous rendering with CATransaction for smooth resize handling.
+//! Render pass helpers: the single-sample pass over a drawable, its encoder,
+//! its viewport, and the present.
 
 const std = @import("std");
+const assert = std.debug.assert;
 const objc = @import("objc");
 const mtl = @import("api.zig");
 const geometry = @import("../../../geometry/geometry.zig");
+const backend = @import("../../../core/backend.zig");
 
 /// Configuration for a single-sample render pass (`pipelines.sample_count`).
 pub const SimpleRenderPassConfig = struct {
@@ -18,6 +18,8 @@ pub const SimpleRenderPassConfig = struct {
 
 /// Create a single-sample render pass descriptor that draws into `texture`.
 pub fn createSimpleRenderPass(config: SimpleRenderPassConfig) ?objc.Object {
+    assert(config.texture.value != null);
+    if (config.load_action == .clear) assert(config.clear_color != null);
     const MTLRenderPassDescriptor = objc.getClass("MTLRenderPassDescriptor") orelse return null;
     const render_pass = MTLRenderPassDescriptor.msgSend(objc.Object, "renderPassDescriptor", .{});
 
@@ -41,6 +43,8 @@ pub fn createSimpleRenderPass(config: SimpleRenderPassConfig) ?objc.Object {
 
 /// Create a render command encoder from a render pass
 pub fn createEncoder(command_buffer: objc.Object, render_pass: objc.Object) ?objc.Object {
+    assert(command_buffer.value != null);
+    assert(render_pass.value != null);
     const encoder_ptr = command_buffer.msgSend(
         ?*anyopaque,
         "renderCommandEncoderWithDescriptor:",
@@ -50,24 +54,9 @@ pub fn createEncoder(command_buffer: objc.Object, render_pass: objc.Object) ?obj
     return objc.Object.fromId(encoder_ptr);
 }
 
-/// RAII wrapper for CATransaction - ensures commit on scope exit
-pub const CATransactionScope = struct {
-    ca_class: objc.Class,
-
-    pub fn begin() ?CATransactionScope {
-        const CATransaction = objc.getClass("CATransaction") orelse return null;
-        CATransaction.msgSend(void, "begin", .{});
-        CATransaction.msgSend(void, "setDisableActions:", .{true});
-        return .{ .ca_class = CATransaction };
-    }
-
-    pub fn commit(self: CATransactionScope) void {
-        self.ca_class.msgSend(void, "commit", .{});
-    }
-};
-
 /// Get the next drawable from a layer
 pub fn getNextDrawable(layer: objc.Object) ?struct { drawable: objc.Object, texture: objc.Object } {
+    assert(layer.value != null);
     const drawable_ptr = layer.msgSend(?*anyopaque, "nextDrawable", .{});
     if (drawable_ptr == null) return null;
     const drawable = objc.Object.fromId(drawable_ptr);
@@ -79,37 +68,30 @@ pub fn getNextDrawable(layer: objc.Object) ?struct { drawable: objc.Object, text
     return .{ .drawable = drawable, .texture = texture };
 }
 
-/// Setup viewport on encoder
-pub fn setViewport(encoder: objc.Object, width: f64, height: f64, scale_factor: f64) void {
+/// Map the render pass onto the whole framebuffer of `size_px`.
+pub fn setViewport(encoder: objc.Object, size_px: backend.SizePx) void {
+    assert(size_px.width > 0);
+    assert(size_px.height > 0);
     const viewport = mtl.MTLViewport{
         .x = 0,
         .y = 0,
-        .width = width * scale_factor,
-        .height = height * scale_factor,
+        .width = @floatFromInt(size_px.width),
+        .height = @floatFromInt(size_px.height),
         .znear = 0,
         .zfar = 1,
     };
     encoder.msgSend(void, "setViewport:", .{viewport});
 }
 
-/// Finish encoding and present (async)
-pub fn finishAndPresent(encoder: objc.Object, command_buffer: objc.Object, drawable: objc.Object) void {
+/// Finish encoding, schedule the present, and commit.
+pub fn finishAndPresent(
+    encoder: objc.Object,
+    command_buffer: objc.Object,
+    drawable: objc.Object,
+) void {
+    assert(command_buffer.value != null);
+    assert(drawable.value != null);
     encoder.msgSend(void, "endEncoding", .{});
     command_buffer.msgSend(void, "presentDrawable:", .{drawable.value});
     command_buffer.msgSend(void, "commit", .{});
-}
-
-/// Finish encoding and present synchronously (for live resize)
-pub fn finishAndPresentSync(encoder: objc.Object, command_buffer: objc.Object, drawable: objc.Object) void {
-    encoder.msgSend(void, "endEncoding", .{});
-    command_buffer.msgSend(void, "commit", .{});
-    command_buffer.msgSend(void, "waitUntilScheduled", .{});
-    drawable.msgSend(void, "present", .{});
-}
-
-/// Finish encoding, commit, and wait for completion
-pub fn finishAndWait(encoder: objc.Object, command_buffer: objc.Object) void {
-    encoder.msgSend(void, "endEncoding", .{});
-    command_buffer.msgSend(void, "commit", .{});
-    command_buffer.msgSend(void, "waitUntilCompleted", .{});
 }

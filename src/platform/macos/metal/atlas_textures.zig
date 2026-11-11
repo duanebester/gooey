@@ -2,162 +2,112 @@
 //!
 //! The glyph, SVG, and image atlas textures are created once at init at their
 //! `AtlasLimits` sizes and never recreated (memory-budget decision 6). The
-//! renderer keeps no CPU copy of atlas pixels (decision 8): each frame it copies
-//! the records its window has not uploaded from the shared `AtlasUploads`
-//! journal into this frame's staging buffer and encodes one blit pass that
-//! writes them into the textures before the frame's render pass.
+//! renderer keeps no CPU copy of atlas pixels (decision 8): `uploadAtlas`
+//! copies each region into the frame's staging buffer and encodes a blit from
+//! there into the texture, ahead of the frame's render pass in the same
+//! command buffer.
 //!
-//! Ordering: the blit runs in the same command buffer as the frame's draws, and
-//! the textures use tracked hazards, so Metal orders it after every earlier
-//! frame's reads and before this frame's reads. The atlas never reuses a region
-//! until every renderer has uploaded the records written into it, so records in
-//! one pass never overlap.
+//! Ordering (contract §9): an upload reaches a texture only on the GPU
+//! timeline, never as a CPU write. The textures are private, so the CPU
+//! cannot write them; the CPU writes only the frame slot's staging buffer,
+//! after the command buffer that last read that slot completed. The blit is
+//! encoded into the frame's command buffer, committed to the renderer's one
+//! queue after every earlier frame's, and the textures track hazards
+//! (`createTexture` sets and asserts it), so Metal runs the blit after every
+//! earlier submitted draw that samples the texture and before this frame's.
+//! The atlas may therefore evict a region an in-flight frame still samples:
+//! that frame reads the old pixels before the new ones land.
 //!
 //! Resource sketch (CLAUDE.md §7), `.standard`: private textures of 1 MiB (R8
-//! 1024²) + 4 MiB + 4 MiB, plus `in_flight_count` × `upload_bytes_frame_max`
-//! (3 × 1 MiB) of shared staging. Per frame: one memcpy of at most 1 MiB and at
-//! most `upload_bytes_frame_max / 64` blit copies.
+//! 1024²) + 4 MiB + 4 MiB. Staging is the renderer's (`frame_slots.zig`).
 
 const std = @import("std");
 const assert = std.debug.assert;
 
 const objc = @import("objc");
 const mtl = @import("api.zig");
-const pipelines = @import("pipelines.zig");
-const ResourceLimits = @import("../../../core/limits.zig").ResourceLimits;
-const text_mod = @import("../../../text/mod.zig");
-const AtlasUploads = text_mod.AtlasUploads;
-const AtlasKind = text_mod.AtlasKind;
+const limits_mod = @import("../../../core/limits.zig");
+const backend = @import("../../../core/backend.zig");
 
 pub const AtlasTextures = struct {
-    text: objc.Object,
+    glyph: objc.Object,
     svg: objc.Object,
     image: objc.Object,
-    /// One shared staging buffer per frame in flight.
-    staging_buffers: pipelines.FrameBuffers,
-    staging_bytes: u32,
-    frame_index: u32,
-    /// The journal this renderer consumes and its consumer key (`bind`).
-    uploads: ?*AtlasUploads,
-    key: usize,
+    limits: limits_mod.AtlasLimits,
 
     const Self = @This();
 
-    pub fn init(device: objc.Object, resource_limits: *const ResourceLimits) !Self {
-        assert(resource_limits.check() == null);
-        const limits = &resource_limits.atlas;
-        assert(limits.upload_bytes_frame_max > 0);
-        const text = try createTexture(device, limits.text_size, .r8unorm);
-        errdefer text.release();
+    pub fn init(device: objc.Object, limits: *const limits_mod.AtlasLimits) !Self {
+        assert(limits.text_size > 0);
+        assert(limits.image_size > 0);
+        const glyph = try createTexture(device, limits.text_size, .r8unorm);
+        errdefer glyph.release();
         const svg = try createTexture(device, limits.svg_size, .rgba8unorm);
         errdefer svg.release();
         const image = try createTexture(device, limits.image_size, .rgba8unorm);
-        errdefer image.release();
-        const staging_buffers = try pipelines.createFrameBuffers(
-            device,
-            limits.upload_bytes_frame_max,
-            "atlas_staging",
-            resource_limits.frame.in_flight_count,
-        );
-        return .{
-            .text = text,
-            .svg = svg,
-            .image = image,
-            .staging_buffers = staging_buffers,
-            .staging_bytes = limits.upload_bytes_frame_max,
-            .frame_index = 0,
-            .uploads = null,
-            .key = 0,
-        };
+        return .{ .glyph = glyph, .svg = svg, .image = image, .limits = limits.* };
     }
 
     pub fn deinit(self: *Self) void {
-        self.staging_buffers.release();
+        assert(self.glyph.value != null);
         self.image.release();
         self.svg.release();
-        self.text.release();
+        self.glyph.release();
         self.* = undefined;
     }
 
-    /// Bind the journal this renderer consumes, keyed by its platform window.
-    pub fn bind(self: *Self, uploads: *AtlasUploads, key: usize) void {
-        assert(key != 0);
-        assert(uploads.storage == .gpu_upload);
-        assert(uploads.bytes.len <= self.staging_bytes);
-        self.uploads = uploads;
-        self.key = key;
-    }
-
-    /// True when the bound journal holds records this renderer has not uploaded.
-    pub fn hasPending(self: *const Self) bool {
-        const uploads = self.uploads orelse return false;
-        assert(self.key != 0);
-        return uploads.hasPending(self.key);
-    }
-
-    /// Advance to the next frame-in-flight staging buffer. The ring's safety
-    /// proof is `UnifiedPrimitiveRing`'s: at most `in_flight_count` frames in flight.
-    pub fn nextFrame(self: *Self) void {
-        self.frame_index = self.staging_buffers.nextIndex(self.frame_index);
-    }
-
-    /// Copy this window's pending records into the frame's staging buffer and
-    /// encode their blits into `command_buffer`. Call after a drawable was
-    /// acquired, so the command buffer is committed and no record is lost.
-    pub fn encodeUploads(self: *Self, command_buffer: objc.Object) void {
-        const uploads = self.uploads orelse return;
-        assert(self.key != 0);
-        const pending = uploads.consumeBegin(self.key);
-        defer uploads.consumeEnd(self.key);
-        if (pending.records.len == 0) return;
-
-        const staging = self.staging_buffers.at(self.frame_index);
-        assert(pending.bytes.len <= self.staging_bytes);
-        const target = pipelines.frameBufferContents(u8, staging);
-        @memcpy(target[0..pending.bytes.len], pending.bytes);
-
-        const blit_ptr = command_buffer.msgSend(?*anyopaque, "blitCommandEncoder", .{}) orelse {
-            std.debug.panic("Metal blitCommandEncoder failed with {d} atlas uploads pending.", .{
-                pending.records.len,
-            });
+    /// Bytes per pixel of `kind`'s texture: R8 glyph coverage, RGBA8 otherwise.
+    pub fn bytesPerPixel(kind: backend.AtlasKind) u32 {
+        return switch (kind) {
+            .glyph => 1,
+            .svg, .image => 4,
+            .glyph_color => unsupported(kind),
         };
-        const blit = objc.Object.fromId(blit_ptr);
-        for (pending.records) |record| {
-            self.encodeCopy(blit, staging, record);
-        }
-        blit.msgSend(void, "endEncoding", .{});
     }
 
-    fn encodeCopy(
+    /// Encode the copy of `dirty`, staged at `offset` in `staging`, into the
+    /// texture of `kind`.
+    pub fn encodeCopy(
         self: *const Self,
         blit: objc.Object,
         staging: objc.Object,
-        record: text_mod.AtlasUpload,
+        upload: struct { kind: backend.AtlasKind, dirty: backend.RectPx, offset: u32 },
     ) void {
-        const texture = switch (record.kind) {
-            .text => self.text,
-            .svg => self.svg,
-            .image => self.image,
+        const texture, const size = switch (upload.kind) {
+            .glyph => .{ self.glyph, self.limits.text_size },
+            .svg => .{ self.svg, self.limits.svg_size },
+            .image => .{ self.image, self.limits.image_size },
+            .glyph_color => unsupported(upload.kind),
         };
-        const bytes_per_pixel = record.kind.bytesPerPixel();
-        assert(record.offset % bytes_per_pixel == 0);
-        assert(record.offset + record.byteCount() <= self.staging_bytes);
-        const row_bytes = @as(c_ulong, record.width) * bytes_per_pixel;
+        const dirty = upload.dirty;
+        assert(dirty.x <= size);
+        assert(dirty.width <= size - dirty.x);
+        assert(dirty.y <= size);
+        assert(dirty.height <= size - dirty.y);
+        const bytes_per_pixel = bytesPerPixel(upload.kind);
+        assert(upload.offset % bytes_per_pixel == 0);
+        const row_bytes = @as(c_ulong, dirty.width) * bytes_per_pixel;
         blit.msgSend(void, "copyFromBuffer:sourceOffset:sourceBytesPerRow:" ++
             "sourceBytesPerImage:sourceSize:toTexture:destinationSlice:destinationLevel:" ++
             "destinationOrigin:", .{
             staging.value,
-            @as(c_ulong, record.offset),
+            @as(c_ulong, upload.offset),
             row_bytes,
-            row_bytes * record.height,
-            mtl.MTLSize{ .width = record.width, .height = record.height, .depth = 1 },
+            row_bytes * dirty.height,
+            mtl.MTLSize{ .width = dirty.width, .height = dirty.height, .depth = 1 },
             texture.value,
             @as(c_ulong, 0),
             @as(c_ulong, 0),
-            mtl.MTLOrigin{ .x = record.x, .y = record.y, .z = 0 },
+            mtl.MTLOrigin{ .x = dirty.x, .y = dirty.y, .z = 0 },
         });
     }
 };
+
+/// No atlas writes colour glyphs yet (`pack` rejects them too); a caller that
+/// sends one has drifted from the contract.
+fn unsupported(kind: backend.AtlasKind) noreturn {
+    std.debug.panic("Metal has no {t} atlas texture; nothing uploads it yet.", .{kind});
+}
 
 /// A private, shader-read atlas texture. Its contents start undefined: every
 /// uploaded item carries its own zero border and nothing else is sampled.
@@ -174,10 +124,14 @@ fn createTexture(device: objc.Object, size: u32, format: mtl.MTLPixelFormat) !ob
     const usage = mtl.MTLTextureUsage.shader_read_only;
     descriptor.msgSend(void, "setUsage:", .{@as(c_ulong, @bitCast(usage))});
     descriptor.msgSend(void, "setStorageMode:", .{@backingInt(mtl.MTLStorageMode.private)});
+    const tracked = mtl.MTLResourceOptions.HazardTrackingMode.tracked;
+    descriptor.msgSend(void, "setHazardTrackingMode:", .{@as(c_ulong, @backingInt(tracked))});
     const texture_ptr = device.msgSend(?*anyopaque, "newTextureWithDescriptor:", .{
         descriptor.value,
     }) orelse return error.TextureCreationFailed;
     const texture = objc.Object.fromId(texture_ptr);
     assert(texture.msgSend(c_ulong, "width", .{}) == size);
+    // The upload ordering above relies on Metal tracking this texture.
+    assert(texture.msgSend(c_ulong, "hazardTrackingMode", .{}) == @backingInt(tracked));
     return texture;
 }

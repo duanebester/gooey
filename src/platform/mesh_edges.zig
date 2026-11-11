@@ -3,7 +3,7 @@
 //! The Vulkan and Metal renderers draw one sample per pixel. Their triangle
 //! vertex shaders anti-alias a path by pushing chosen triangle edges outward by
 //! a pixel and fading coverage across them (Vulkan `shaders/triangles.vert` and
-//! `shaders/mesh.frag`, Metal `path_pipeline.zig`). Fading every edge of every
+//! `shaders/mesh.frag`, Metal `shaders.zig`). Fading every edge of every
 //! triangle would draw a visible seam wherever two triangles meet: each covers
 //! about half of the pixels on the shared edge, and blending two half-covered
 //! draws leaves a quarter of the background showing. That happens inside one
@@ -63,7 +63,7 @@ const path_mesh = @import("../scene/path_mesh.zig");
 
 /// How the triangle shader treats one edge. Two bits per edge in the vertex
 /// record; the values are part of the shader contract in Vulkan's `mesh.glsl`
-/// and Metal's `path_pipeline.zig`.
+/// and Metal's `shaders.zig`.
 pub const EdgeMode = enum(u2) {
     interior = 0,
     fade = 1,
@@ -103,7 +103,7 @@ pub const TriangleVertex = extern struct {
 };
 
 /// Vertices the triangle shaders draw per path triangle (Vulkan
-/// `triangles.vert`, Metal `path_pipeline.zig`): the triangle at its exact
+/// `triangles.vert`, Metal `shaders.zig`): the triangle at its exact
 /// corners, then a fringe quad of two triangles outside each of its three
 /// edges. A quad whose edge is interior collapses to a point.
 pub const triangle_draw_vertex_count: u32 = 3 + 3 * 6;

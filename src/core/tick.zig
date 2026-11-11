@@ -131,18 +131,18 @@ fn buildFrame(comptime App: type, window: *Window) void {
 
 /// The render side: pack the published frame, draw it, and hand it back.
 /// Reads only the built frame, which the main thread leaves alone while it is
-/// in flight, and writes only the scene and the presenter's renderer.
+/// in flight, and writes only the packed frame and the presenter's renderer.
 pub fn presentBuilt(window: *Window) void {
     assert(window.frame_in_flight.load(.acquire));
     assert(window.render_phase == .idle);
     const frame = &window.frames[window.built_index];
     window.render_phase = .pack;
     const pack_ns = debugger.stamp(window);
-    pack_mod.pack(frame, window.scene);
+    pack_mod.pack(frame, &window.packed_frame);
     window.render_phase = .draw;
     const draw_ns = debugger.stamp(window);
     if (window.presenter) |presenter| {
-        presenter.draw(presenter.context, window.scene, frame, window.clear_color);
+        presenter.draw(presenter.context, &window.packed_frame, frame, window.clear_color);
     }
     debugger.notePresent(window, pack_ns, draw_ns);
     window.render_phase = .idle;

@@ -1427,6 +1427,17 @@ fn addFailFastChecks(
         .{ .mode = "core-image-requests", .stderr = "image loader pool 'requests' exhausted: " ++
             "capacity 4 images waiting or failed, 1 requested (\"assets/missing-4.png\") in " ++
             "frame 1. Raise ResourceLimits.atlas.image_request_count_max." },
+        .{ .mode = "core-pack-polylines", .stderr = "Packed pool 'polylines' exhausted: " ++
+            "capacity 4 (ResourceLimits.scene.polyline_count_frame_max), 4 in use, " ++
+            "1 requested, frame 1." },
+        .{ .mode = "core-pack-draws", .stderr = "Packed pool 'draws' exhausted: capacity 8 " ++
+            "(ResourceLimits.records.paint_record_count_frame_max + 0), 8 in use, 1 requested, " ++
+            "frame 1." },
+        .{ .mode = "core-pack-clips", .stderr = "Packed pool 'clips' exhausted: capacity 9 " ++
+            "(ResourceLimits.records.paint_record_count_frame_max + 1), 9 in use, 1 requested, " ++
+            "frame 1." },
+        .{ .mode = "core-capabilities-meshes", .stderr = "Packed frame 1 holds 1 meshes, but " ++
+            "its renderer reports Capabilities.meshes = false." },
     };
     for (checks) |check| {
         const run = b.addRunArtifact(exe);

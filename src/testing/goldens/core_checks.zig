@@ -2576,7 +2576,7 @@ fn meshPaint(_: *const u8, painter: *ui.Painter) void {
     painter.pointCloud(&.{ .{ 10, 190 }, .{ 20, 190 }, .{ 30, 190 }, .{ 40, 190 } }, 3, mesh_red);
 }
 
-test "Painter meshes pack into the scene's paths, polylines, and point clouds" {
+test "Painter meshes pack into triangle, polyline, and point meshes" {
     // Goal: paint meshes end to end on TestBackend, under the lifecycle
     // guard (packing triangles must not allocate the scene's frame meshes
     // after init). Methodology: the paint function draws two touching red
@@ -2627,11 +2627,14 @@ test "Painter meshes pack into the scene's paths, polylines, and point clouds" {
     try testing.expectApproxEqAbs(@as(f32, 100 + 10 * @cos(std.math.pi / 6.0)), fan[1].x, 1e-4);
     try testing.expectApproxEqAbs(@as(f32, 105), fan[1].y, 1e-4);
 
-    const scene = app.window.scene;
-    try testing.expectEqual(@as(usize, 3), scene.pathCount());
-    try testing.expectEqual(@as(usize, 1), scene.polylineCount());
-    try testing.expectEqual(@as(usize, 1), scene.pointCloudCount());
-    try testing.expectEqual(@as(u32, 3), scene.getPolylines()[0].point_count);
+    const packed_frame = &app.window.packed_frame;
+    const Pool = internals.packed_frame.Pool;
+    try testing.expectEqual(@as(u32, 3), packed_frame.counts[@backingInt(Pool.triangle_meshes)]);
+    try testing.expectEqual(@as(u32, 1), packed_frame.counts[@backingInt(Pool.polylines)]);
+    try testing.expectEqual(@as(u32, 1), packed_frame.counts[@backingInt(Pool.point_clouds)]);
+    // Meshes keep record order: three triangle meshes, the line, the points.
+    try testing.expectEqual(@as(u32, 3), packed_frame.meshList()[3].count);
+    try testing.expectEqual(@as(u32, 14), packed_frame.triangle_count);
     try testing.expectEqual(internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
 }
 
@@ -3162,13 +3165,15 @@ test "the debugger opens over an app filled to exactly its limits" {
     defer app.deinitHeadless();
     var now: u64 = 0;
     app.tick(now);
-    const scene = app.window.scene;
+    const counts = &app.window.packed_frame.counts;
+    const quads = &counts[@backingInt(internals.packed_frame.Pool.quads)];
+    const glyphs = &counts[@backingInt(internals.packed_frame.Pool.glyphs)];
     const scene_limits = full_limits.scene;
     const app_counts = paintCounts(app.window.rendered());
     try testing.expectEqual(full_limits.records.paint_record_count_frame_max, app_counts.records);
     try testing.expectEqual(scene_limits.quad_count_frame_max, app_counts.quads);
-    try testing.expectEqual(scene_limits.quad_count_frame_max, scene.quads.items.len);
-    try testing.expectEqual(scene_limits.glyph_count_frame_max, scene.glyphs.items.len);
+    try testing.expectEqual(scene_limits.quad_count_frame_max, quads.*);
+    try testing.expectEqual(scene_limits.glyph_count_frame_max, glyphs.*);
 
     const toggle = gooey.input.InputEvent{ .key_down = chord(.i, .{ .cmd = true, .shift = true }) };
     scrollMouse(app, &now, toggle);
@@ -3178,15 +3183,15 @@ test "the debugger opens over an app filled to exactly its limits" {
     try testing.expect(app.window.debugger.info != null);
     const inspected = paintCounts(app.window.rendered());
     try testing.expect(inspected.records > app_counts.records);
-    try testing.expect(scene.quads.items.len > scene_limits.quad_count_frame_max);
-    try testing.expect(scene.glyphs.items.len > scene_limits.glyph_count_frame_max);
+    try testing.expect(quads.* > scene_limits.quad_count_frame_max);
+    try testing.expect(glyphs.* > scene_limits.glyph_count_frame_max);
 
     scrollMouse(app, &now, toggle);
     try testing.expectEqual(.profiler, app.window.debugger.mode);
     const profiled = paintCounts(app.window.rendered());
     // The panel, the graph, its target line, and at least one bar.
     try testing.expect(profiled.quads >= app_counts.quads + 4);
-    try testing.expect(scene.glyphs.items.len > scene_limits.glyph_count_frame_max);
+    try testing.expect(glyphs.* > scene_limits.glyph_count_frame_max);
 }
 
 /// The bounds of the first button named `name`, or null when none is built.

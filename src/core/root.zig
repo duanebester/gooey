@@ -19,6 +19,7 @@ pub const tick = @import("tick.zig");
 pub const app = @import("app.zig");
 pub const emit = @import("emit.zig");
 pub const pack = @import("pack.zig");
+pub const packed_frame = @import("packed_frame.zig");
 pub const window = @import("window.zig");
 pub const lifecycle = @import("lifecycle.zig");
 pub const text_engine = @import("text_engine.zig");

@@ -63,6 +63,7 @@ const clipboard = @import("clipboard.zig");
 const linux_backend = @import("../linux_backend.zig");
 const scene_mod = @import("../../scene/mod.zig");
 const core_window = @import("../../core/window.zig");
+const pack_legacy = @import("../../core/pack_legacy.zig");
 const core_element = @import("../../core/element.zig");
 const core_tick = @import("../../core/tick.zig");
 const core_router = @import("../../core/router.zig");
@@ -739,11 +740,17 @@ fn frameCallbackDone(
 /// The core's presenter, on the render thread.
 fn draw(
     context: *anyopaque,
-    scene: *const scene_mod.Scene,
+    packed_frame: *const core_window.PackedFrame,
     frame: *const records.Frame,
     clear: records.Color,
 ) void {
     const host: *Host = @ptrCast(@alignCast(context));
+    // This renderer draws the 0.3.1 scene until it moves onto the contract.
+    const scene: *const scene_mod.Scene = host.core.scene;
+    pack_legacy.fillScene(packed_frame, host.core.scene, .{
+        .width = frame.viewport_width,
+        .height = frame.viewport_height,
+    });
     assert(frame.scale_factor > 0);
     host.applyViewport(frame);
     const renderer = &host.window.renderer;

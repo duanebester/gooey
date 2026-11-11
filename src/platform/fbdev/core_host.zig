@@ -36,6 +36,7 @@ const evdev = @import("evdev.zig");
 const input = @import("../../input/events.zig");
 const scene_mod = @import("../../scene/mod.zig");
 const core_window = @import("../../core/window.zig");
+const pack_legacy = @import("../../core/pack_legacy.zig");
 const core_router = @import("../../core/router.zig");
 const core_events = @import("../../core/events.zig");
 const core_handler = @import("../../core/handler.zig");
@@ -289,14 +290,19 @@ fn onInput(window: *FbdevWindow, event: input.InputEvent) bool {
 /// The core's presenter, inside the tick's draw phase on this thread.
 fn draw(
     context: *anyopaque,
-    scene: *const scene_mod.Scene,
+    packed_frame: *const core_window.PackedFrame,
     frame: *const records.Frame,
     clear: records.Color,
 ) void {
     const host: *Host = @ptrCast(@alignCast(context));
+    // This renderer draws the 0.3.1 scene until it moves onto the contract.
+    const scene: *const scene_mod.Scene = host.core.scene;
+    pack_legacy.fillScene(packed_frame, host.core.scene, .{
+        .width = frame.viewport_width,
+        .height = frame.viewport_height,
+    });
     assert(frame.scale_factor > 0);
     assert(host.core.render_phase == .draw);
-    assert(scene == host.core.scene);
     host.window.presentScene(scene, clear);
     // The frame drew the cursor where it is now.
     host.cursor_moved = false;

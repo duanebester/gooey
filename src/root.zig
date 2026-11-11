@@ -148,6 +148,7 @@ pub const internals = struct {
     pub const app = core.app;
     pub const emit = core.emit;
     pub const pack = core.pack;
+    pub const packed_frame = core.packed_frame;
     pub const window = core.window;
     pub const lifecycle = core.lifecycle;
     pub const text_engine = core.text_engine;

@@ -9,6 +9,8 @@ const objc = @import("objc");
 const geometry = @import("../../geometry/geometry.zig");
 const platform = @import("platform.zig");
 const metal = @import("metal/metal.zig");
+const backend = @import("../../core/backend.zig");
+const limits_mod = @import("../../core/limits.zig");
 const input_view = @import("input_view.zig");
 const input = @import("../../input/events.zig");
 const appkit = @import("appkit.zig");
@@ -60,6 +62,15 @@ pub const Window = struct {
     renderer: metal.Renderer,
     size: geometry.Size(f64),
     scale_factor: f64,
+    /// The budget's framebuffer, which caps the content size (`applySizeLimits`).
+    window_limits: limits_mod.WindowLimits,
+    /// `WindowOptions.min_size` and `max_size`: frame sizes in points, as
+    /// `setMinSize:` and `setMaxSize:` take them.
+    min_size: ?geometry.Size(f64),
+    max_size: ?geometry.Size(f64),
+    /// The backing scale the content size limits were last applied for; 0
+    /// until `createNSWindow` applies them.
+    size_limits_scale: f64,
     /// NUL-terminated window title storage.
     ///
     /// `-[NSString stringWithUTF8String:]` requires a NUL-terminated C string,
@@ -132,19 +143,23 @@ pub const Window = struct {
         // Enable mouse tracking for mouseMoved events
         try self.setupTrackingArea();
 
-        // The Retina backing scale must be known before the Metal layer is
-        // sized, or the first frame is drawn at the wrong drawable resolution.
-        self.scale_factor = self.ns_window.msgSend(f64, "backingScaleFactor", .{});
+        // `createNSWindow` read the backing scale and capped the size, so the
+        // Metal layer and the renderer are sized for the first frame's drawable.
         assert(self.scale_factor > 0.0);
+        assert(self.size_limits_scale == self.scale_factor);
 
         try self.setupMetalLayer();
-        self.renderer = try metal.Renderer.init(
-            allocator,
-            self.metal_layer,
-            self.size,
-            self.scale_factor,
-            &options.limits,
-        );
+        const render_limits = backend.RenderLimits.fromResourceLimits(&options.limits);
+        const viewport = framebufferViewport(.{
+            .width = self.size.width,
+            .height = self.size.height,
+            .scale_factor = self.scale_factor,
+        }, &render_limits.window);
+        try self.renderer.initInPlace(&.{
+            .native = self.metal_layer.value,
+            .size_px = viewport.size_px,
+            .scale_factor = viewport.scale_factor,
+        }, &render_limits);
 
         self.ns_window.msgSend(void, "makeKeyAndOrderFront:", .{@as(?*anyopaque, null)});
 
@@ -179,6 +194,10 @@ pub const Window = struct {
             .renderer = undefined,
             .size = geometry.Size(f64).init(options.width, options.height),
             .scale_factor = 1.0,
+            .window_limits = options.limits.window,
+            .min_size = options.min_size,
+            .max_size = options.max_size,
+            .size_limits_scale = 0,
             // Zeroed rather than seeded from `options.title`: `init` calls
             // `setTitle` once the NSWindow exists, which is the one place that
             // owns the copy and the NUL termination.
@@ -231,17 +250,13 @@ pub const Window = struct {
 
         self.setTitle(options.title);
 
-        if (options.min_size) |min| {
-            self.ns_window.msgSend(void, "setMinSize:", .{
-                NSSize{ .width = min.width, .height = min.height },
-            });
-        }
-
-        if (options.max_size) |max| {
-            self.ns_window.msgSend(void, "setMaxSize:", .{
-                NSSize{ .width = max.width, .height = max.height },
-            });
-        }
+        // The backing scale of the screen the window opened on decides the
+        // cap, which must shrink an oversized request before `center` places it.
+        // No delegate is installed yet, so the shrink is read back here.
+        self.scale_factor = self.ns_window.msgSend(f64, "backingScaleFactor", .{});
+        assert(self.scale_factor > 0.0);
+        self.applySizeLimits(self.scale_factor);
+        self.size = self.contentSize();
 
         if (options.centered) {
             self.ns_window.msgSend(void, "center", .{});
@@ -386,6 +401,13 @@ pub const Window = struct {
 
     /// Called by delegate when window is resized
     pub fn handleResize(self: *Self) void {
+        const new_scale = self.ns_window.msgSend(f64, "backingScaleFactor", .{});
+        assert(new_scale > 0);
+        // A display with another backing scale changes how many points the
+        // budget allows; a shrink re-enters here first (`applySizeLimits`).
+        if (new_scale != self.size_limits_scale) self.applySizeLimits(new_scale);
+        assert(self.size_limits_scale == new_scale);
+
         const bounds: NSRect = self.ns_view.msgSend(NSRect, "bounds", .{});
 
         const new_width = bounds.size.width;
@@ -394,8 +416,6 @@ pub const Window = struct {
         if (new_width < 1 or new_height < 1) {
             return;
         }
-
-        const new_scale = self.ns_window.msgSend(f64, "backingScaleFactor", .{});
 
         if (new_width == self.size.width and
             new_height == self.size.height and
@@ -413,6 +433,84 @@ pub const Window = struct {
             self.scale_factor = new_scale;
             self.metal_layer.msgSend(void, "setContentsScale:", .{new_scale});
         }
+    }
+
+    /// Cap the content size at the largest the budget's framebuffer holds at
+    /// `scale_factor`, within the app's `min_size` and `max_size`, and shrink a
+    /// window already past it. The framebuffer a window can reach is then the
+    /// one the budget reserved (CLAUDE.md §2), never a reduced drawing scale.
+    /// A `min_size` past the cap yields to it, as on Windows. AppKit holds
+    /// live resizes and zoom to the cap. The shrink posts `windowDidResize:`,
+    /// which re-enters `handleResize`; `size_limits_scale` is set first, so
+    /// that call reads the capped bounds without reapplying the limits.
+    fn applySizeLimits(self: *Self, scale_factor: f64) void {
+        assert(scale_factor > 0);
+        assert(self.ns_window.value != null);
+        var content_max = contentSizeMax(&self.window_limits, scale_factor);
+        if (self.max_size) |max_size| {
+            const content = self.contentSizeForFrame(max_size);
+            content_max.width = @min(content_max.width, content.width);
+            content_max.height = @min(content_max.height, content.height);
+        }
+        self.ns_window.msgSend(void, "setContentMaxSize:", .{
+            NSSize{ .width = content_max.width, .height = content_max.height },
+        });
+        if (self.min_size) |min_size| {
+            const content = self.contentSizeForFrame(min_size);
+            self.ns_window.msgSend(void, "setContentMinSize:", .{NSSize{
+                .width = @min(content.width, content_max.width),
+                .height = @min(content.height, content_max.height),
+            }});
+        }
+        self.size_limits_scale = scale_factor;
+
+        const current = self.contentSize();
+        if (current.width > content_max.width or current.height > content_max.height) {
+            std.log.info("window: content {d}x{d} pt capped at {d}x{d} pt, the " ++
+                "ResourceLimits.window framebuffer at scale {d:.2}", .{
+                current.width,
+                current.height,
+                content_max.width,
+                content_max.height,
+                scale_factor,
+            });
+            self.ns_window.msgSend(void, "setContentSize:", .{NSSize{
+                .width = @min(current.width, content_max.width),
+                .height = @min(current.height, content_max.height),
+            }});
+        }
+        const capped = self.contentSize();
+        assert(capped.width <= content_max.width);
+        assert(capped.height <= content_max.height);
+    }
+
+    /// The window's content size in points, from its frame.
+    fn contentSize(self: *const Self) geometry.Size(f64) {
+        assert(self.ns_window.value != null);
+        const frame: NSRect = self.ns_window.msgSend(NSRect, "frame", .{});
+        const content: NSRect =
+            self.ns_window.msgSend(NSRect, "contentRectForFrameRect:", .{frame});
+        assert(content.size.width >= 0);
+        assert(content.size.height >= 0);
+        return geometry.Size(f64).init(content.size.width, content.size.height);
+    }
+
+    /// The content size a frame of `frame_size` points holds, for converting
+    /// the frame-sized `min_size` and `max_size` into content limits.
+    fn contentSizeForFrame(self: *const Self, frame_size: geometry.Size(f64)) geometry.Size(f64) {
+        assert(self.ns_window.value != null);
+        assert(frame_size.width >= 0);
+        assert(frame_size.height >= 0);
+        const frame = NSRect{
+            .origin = .{ .x = 0, .y = 0 },
+            .size = .{ .width = frame_size.width, .height = frame_size.height },
+        };
+        const content: NSRect =
+            self.ns_window.msgSend(NSRect, "contentRectForFrameRect:", .{frame});
+        return geometry.Size(f64).init(
+            @max(content.size.width, 0),
+            @max(content.size.height, 0),
+        );
     }
 
     /// A core app resizes through its queue: the next built frame carries the
@@ -591,3 +689,114 @@ pub const Window = struct {
         self.metal_layer.msgSend(void, "setDrawableSize:", .{drawable_size});
     }
 };
+
+/// The largest content size, in whole points, whose framebuffer at
+/// `scale_factor` fits `ResourceLimits.window`. Flooring keeps the pixel size
+/// a window rounds to within the limits.
+pub fn contentSizeMax(
+    window_limits: *const limits_mod.WindowLimits,
+    scale_factor: f64,
+) geometry.Size(f64) {
+    assert(scale_factor > 0);
+    assert(window_limits.framebuffer_width_max > 0);
+    assert(window_limits.framebuffer_height_max > 0);
+    const width_max: f64 = @floatFromInt(window_limits.framebuffer_width_max);
+    const height_max: f64 = @floatFromInt(window_limits.framebuffer_height_max);
+    const size = geometry.Size(f64).init(
+        @floor(width_max / scale_factor),
+        @floor(height_max / scale_factor),
+    );
+    assert(size.width * scale_factor <= width_max);
+    assert(size.height * scale_factor <= height_max);
+    return size;
+}
+
+/// The framebuffer a logical window needs, within the budget's framebuffer
+/// limits. `applySizeLimits` keeps resizes, zoom and display changes within
+/// them. Should full screen size a window past its `contentMaxSize`, it draws
+/// at the largest scale that fits, which the layer stretches to fill: sharper
+/// pixels would need drawables the budget did not provide for (CLAUDE.md §2).
+pub fn framebufferViewport(
+    logical: struct { width: f64, height: f64, scale_factor: f64 },
+    window_limits: *const limits_mod.WindowLimits,
+) backend.Viewport {
+    assert(logical.scale_factor > 0);
+    assert(logical.width >= 0 and logical.height >= 0);
+    const width_max: f64 = @floatFromInt(window_limits.framebuffer_width_max);
+    const height_max: f64 = @floatFromInt(window_limits.framebuffer_height_max);
+    var scale = logical.scale_factor;
+    if (logical.width * scale > width_max) scale = width_max / logical.width;
+    if (logical.height * scale > height_max) scale = height_max / logical.height;
+    var viewport = backend.Viewport.fromLogical(
+        @floatCast(logical.width),
+        @floatCast(logical.height),
+        @floatCast(scale),
+    );
+    // Rounding to whole pixels can land one past a limit the scale meets exactly.
+    viewport.size_px.width = @min(viewport.size_px.width, window_limits.framebuffer_width_max);
+    viewport.size_px.height = @min(viewport.size_px.height, window_limits.framebuffer_height_max);
+    assert(viewport.scale_factor <= logical.scale_factor);
+    return viewport;
+}
+
+test "contentSizeMax floors the budget's framebuffer to whole points at each scale" {
+    // Goal: the cap is the largest whole-point size whose framebuffer fits. At
+    // scale 1.75, 2560 px allows 1462.86 pt: 1463 pt would round to 2561 px.
+    const window_limits = limits_mod.WindowLimits{
+        .framebuffer_width_max = 2560,
+        .framebuffer_height_max = 1600,
+    };
+    const retina = contentSizeMax(&window_limits, 2);
+    try std.testing.expectEqual(@as(f64, 1280), retina.width);
+    try std.testing.expectEqual(@as(f64, 800), retina.height);
+
+    const standard = contentSizeMax(&window_limits, 1);
+    try std.testing.expectEqual(@as(f64, 2560), standard.width);
+    try std.testing.expectEqual(@as(f64, 1600), standard.height);
+
+    const fractional = contentSizeMax(&window_limits, 1.75);
+    try std.testing.expectEqual(@as(f64, 1462), fractional.width);
+    try std.testing.expectEqual(@as(f64, 914), fractional.height);
+    const viewport = framebufferViewport(.{
+        .width = fractional.width,
+        .height = fractional.height,
+        .scale_factor = 1.75,
+    }, &window_limits);
+    try std.testing.expectEqual(@as(f32, 1.75), viewport.scale_factor);
+    try std.testing.expect(viewport.size_px.width <= 2560);
+    try std.testing.expect(viewport.size_px.height <= 1600);
+}
+
+test "framebufferViewport keeps the scale within the limits and clamps past them" {
+    // Goal: a window that fits keeps its backing scale exactly; one a pixel past
+    // either limit drops to the largest scale that fits, never past the limit.
+    const window_limits = limits_mod.WindowLimits{
+        .framebuffer_width_max = 2560,
+        .framebuffer_height_max = 1600,
+    };
+    const fits = framebufferViewport(.{
+        .width = 1280,
+        .height = 800,
+        .scale_factor = 2,
+    }, &window_limits);
+    try std.testing.expectEqual(@as(f32, 2), fits.scale_factor);
+    try std.testing.expectEqual(@as(u32, 2560), fits.size_px.width);
+    try std.testing.expectEqual(@as(u32, 1600), fits.size_px.height);
+
+    const wide = framebufferViewport(.{
+        .width = 1281,
+        .height = 400,
+        .scale_factor = 2,
+    }, &window_limits);
+    try std.testing.expect(wide.scale_factor < 2);
+    try std.testing.expectEqual(@as(u32, 2560), wide.size_px.width);
+    try std.testing.expectEqual(@as(u32, 799), wide.size_px.height);
+
+    const tall = framebufferViewport(.{
+        .width = 100,
+        .height = 1601,
+        .scale_factor = 1,
+    }, &window_limits);
+    try std.testing.expect(tall.size_px.height <= 1600);
+    try std.testing.expect(tall.scale_factor < 1);
+}

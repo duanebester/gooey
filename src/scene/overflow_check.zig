@@ -16,7 +16,8 @@
 //!   quad batch and a shadow batch (as `drawScene` does), and claims one more.
 //!   Linux only; it needs no GPU because the capacity check is pure.
 //! - `instances-<pool>`: fills a renderer's glyph, SVG or image instance budget
-//!   (`gooey.internals.scene.InstanceCounts`, used by Metal) with two batches and claims one
+//!   (`gooey.internals.scene.InstanceCounts`; Metal claimed it until it moved to the
+//!   packed frame in phase 5, and phase 6 deletes it) with two batches and claims one
 //!   more. Every OS.
 //! - `cpu-atlas`: draws a frame holding one glyph through the CPU renderer with
 //!   no glyph atlas bound, which must panic rather than drop the glyph. Linux.

@@ -18,13 +18,11 @@
 //! with the buffer's name and capacity (CLAUDE.md §2, §4).
 
 const std = @import("std");
-const scene_mod = @import("../scene/mod.zig");
+const packed_mod = @import("../core/packed_frame.zig");
 
 const assert = std.debug.assert;
 
-const Scene = scene_mod.Scene;
-const Hsla = scene_mod.Hsla;
-const BatchIterator = scene_mod.BatchIterator;
+const PackedFrame = packed_mod.PackedFrame;
 
 /// Fixed-capacity text sink. `bytes` is borrowed storage the owner reserved.
 pub const TextBuffer = struct {
@@ -62,19 +60,19 @@ pub const TextBuffer = struct {
     }
 };
 
-/// Write every primitive of a finished scene in draw order.
 /// A read-only view of a single-channel glyph atlas, `size` pixels square.
 pub const GlyphAtlasView = struct {
     pixels: []const u8,
     size: u32,
 
-    /// Coverage at the centre of a glyph's UV rectangle.
-    fn sample(self: *const GlyphAtlasView, glyph: *const scene_mod.GlyphInstance) u8 {
+    /// Coverage at the centre of a glyph's atlas rectangle (left, top, right,
+    /// bottom in 0..1).
+    fn sample(self: *const GlyphAtlasView, uv: [4]f32) u8 {
         assert(self.size > 0);
         assert(self.pixels.len >= @as(u64, self.size) * self.size);
         const size: f32 = @floatFromInt(self.size);
-        const u = (glyph.uv_left + glyph.uv_right) * 0.5;
-        const v = (glyph.uv_top + glyph.uv_bottom) * 0.5;
+        const u = (uv[0] + uv[2]) * 0.5;
+        const v = (uv[1] + uv[3]) * 0.5;
         assert(u >= 0 and u <= 1);
         assert(v >= 0 and v <= 1);
         const x: u32 = @min(self.size - 1, @as(u32, @intFromFloat(u * size)));
@@ -83,163 +81,193 @@ pub const GlyphAtlasView = struct {
     }
 };
 
-pub fn writeScene(out: *TextBuffer, scene: *const Scene, atlas: ?*const GlyphAtlasView) void {
-    assert(scene.viewport_width >= 0);
-    var iterator = BatchIterator.init(scene);
-    var batch_count: u32 = 0;
-    while (iterator.next()) |batch| : (batch_count += 1) {
-        assert(batch_count < scene_limit_batches);
-        switch (batch) {
-            .shadow => |shadows| for (shadows) |*shadow| writeShadow(out, shadow),
-            .quad => |quads| for (quads) |*quad| writeQuad(out, quad),
-            .glyph => |glyphs| writeGlyphRuns(out, glyphs, atlas),
-            .svg => |svgs| for (svgs) |*svg| writeSvg(out, svg),
-            .image => |images| for (images) |*image| writeImage(out, image),
-            .path => |paths| out.print("  path count={d}\n", .{paths.len}),
-            .polyline => |lines| out.print("  polyline count={d}\n", .{lines.len}),
-            .point_cloud => |clouds| out.print("  points count={d}\n", .{clouds.len}),
-            .colored_point_cloud => |clouds| out.print("  colored_points count={d}\n", .{
-                clouds.len,
-            }),
+/// Write every instance of a packed frame in draw order: one line per quad,
+/// shadow, SVG, and image, one per glyph run, and one per run of consecutive
+/// meshes of one topology.
+pub fn writePacked(
+    out: *TextBuffer,
+    frame: *const PackedFrame,
+    atlas: ?*const GlyphAtlasView,
+) void {
+    assert(frame.clip_count >= 1);
+    var glyphs: GlyphRun = .{};
+    var meshes: MeshRun = .{};
+    for (frame.drawList()) |*draw| {
+        const clip = frame.clips[draw.clip];
+        if (draw.pipeline != .glyph) glyphs.flush(out);
+        if (draw.pipeline != meshes.pipeline) meshes.flush(out);
+        switch (draw.pipeline) {
+            .quad => for (frame.drawRange(draw, .quad)) |*quad| writeQuad(out, quad, clip),
+            .glyph => for (frame.drawRange(draw, .sprite)) |*sprite| {
+                glyphs.add(out, sprite, clip, atlas);
+            },
+            .svg => for (frame.drawRange(draw, .sprite)) |*sprite| writeSvg(out, sprite, clip),
+            .image => for (frame.drawRange(draw, .sprite)) |*sprite| {
+                writeImage(out, sprite, clip);
+            },
+            .triangles, .strip_expanded, .point_instanced => meshes.add(draw),
         }
     }
+    glyphs.flush(out);
+    meshes.flush(out);
 }
 
-/// Batches alternate kinds at most once per primitive, so this bounds the
-/// loop by the scene's largest possible primitive count.
-const scene_limit_batches: u32 = 1 << 20;
-
-fn writeQuad(out: *TextBuffer, quad: *const scene_mod.Quad) void {
-    out.print("  quad {f} fill={f}", .{
-        Rect{
-            .x = quad.bounds_origin_x,
-            .y = quad.bounds_origin_y,
-            .w = quad.bounds_size_width,
-            .h = quad.bounds_size_height,
-        },
-        Rgba{ .color = quad.background },
-    });
+fn writeQuad(out: *TextBuffer, quad: *const packed_mod.Quad, clip: packed_mod.Rect) void {
+    if (quad.blur > 0) {
+        // Shadows print their clip: the packed frame clips them like every
+        // other draw. A known difference from 0.3.1's dumps, which drew and
+        // printed shadows unclipped; no golden holds a shadow today.
+        out.print("  shadow {f} blur={d:.2} offset={d:.2},{d:.2} {f}", .{
+            rect(quad.bounds),
+            quad.blur,
+            quad.offset[0],
+            quad.offset[1],
+            Rgba{ .color = quad.fill },
+        });
+        writeClip(out, clip);
+        out.print("\n", .{});
+        return;
+    }
+    out.print("  quad {f} fill={f}", .{ rect(quad.bounds), Rgba{ .color = quad.fill } });
     const borders = quad.border_widths;
-    if (borders.top + borders.right + borders.bottom + borders.left > 0) {
+    if (borders[0] + borders[1] + borders[2] + borders[3] > 0) {
         out.print(" border={d:.2},{d:.2},{d:.2},{d:.2} {f}", .{
-            borders.top,
-            borders.right,
-            borders.bottom,
-            borders.left,
+            borders[0],
+            borders[1],
+            borders[2],
+            borders[3],
             Rgba{ .color = quad.border_color },
         });
     }
-    const radii = quad.corner_radii;
-    if (radii.top_left + radii.top_right + radii.bottom_left + radii.bottom_right > 0) {
+    const radii = quad.corners;
+    if (radii[0] + radii[1] + radii[2] + radii[3] > 0) {
         out.print(" radius={d:.2},{d:.2},{d:.2},{d:.2}", .{
-            radii.top_left,
-            radii.top_right,
-            radii.bottom_right,
-            radii.bottom_left,
+            radii[0],
+            radii[1],
+            radii[2],
+            radii[3],
         });
     }
-    writeClip(
-        out,
-        quad.clip_origin_x,
-        quad.clip_origin_y,
-        quad.clip_size_width,
-        quad.clip_size_height,
-    );
+    writeClip(out, clip);
     out.print("\n", .{});
 }
 
-fn writeShadow(out: *TextBuffer, shadow: *const scene_mod.Shadow) void {
-    out.print("  shadow {f} blur={d:.2} offset={d:.2},{d:.2} {f}\n", .{
-        Rect{
-            .x = shadow.content_origin_x,
-            .y = shadow.content_origin_y,
-            .w = shadow.content_size_width,
-            .h = shadow.content_size_height,
-        },
-        shadow.blur_radius,
-        shadow.offset_x,
-        shadow.offset_y,
-        Rgba{ .color = shadow.color },
-    });
-}
-
-fn writeSvg(out: *TextBuffer, svg: *const scene_mod.SvgInstance) void {
+fn writeSvg(out: *TextBuffer, svg: *const packed_mod.Sprite, clip: packed_mod.Rect) void {
     out.print("  svg {f} fill={f} stroke={f}", .{
-        Rect{ .x = svg.pos_x, .y = svg.pos_y, .w = svg.size_x, .h = svg.size_y },
-        Rgba{ .color = svg.color },
-        Rgba{ .color = svg.stroke_color },
+        rect(svg.bounds),
+        Rgba{ .color = svg.tint },
+        Rgba{ .color = svg.secondary },
     });
-    writeClip(out, svg.clip_x, svg.clip_y, svg.clip_width, svg.clip_height);
+    writeClip(out, clip);
     out.print("\n", .{});
 }
 
-fn writeImage(out: *TextBuffer, image: *const scene_mod.ImageInstance) void {
-    out.print("  image {f} tint={f}", .{
-        Rect{ .x = image.pos_x, .y = image.pos_y, .w = image.dest_width, .h = image.dest_height },
-        Rgba{ .color = image.tint },
-    });
-    writeClip(out, image.clip_x, image.clip_y, image.clip_width, image.clip_height);
+fn writeImage(out: *TextBuffer, image: *const packed_mod.Sprite, clip: packed_mod.Rect) void {
+    out.print("  image {f} tint={f}", .{ rect(image.bounds), Rgba{ .color = image.tint } });
+    writeClip(out, clip);
     out.print("\n", .{});
 }
 
-/// Fold consecutive glyphs into runs; see the file comment.
-fn writeGlyphRuns(
-    out: *TextBuffer,
-    glyphs: []const scene_mod.GlyphInstance,
-    atlas: ?*const GlyphAtlasView,
-) void {
-    assert(glyphs.len > 0);
-    var start: usize = 0;
-    while (start < glyphs.len) {
-        var end = start + 1;
-        while (end < glyphs.len and sameRun(&glyphs[start], &glyphs[end])) end += 1;
-        assert(end > start);
-        writeGlyphRun(out, glyphs[start..end], atlas);
-        start = end;
+/// Consecutive glyphs folded into runs that share a colour, clip, and top
+/// edge; see the file comment. A run ends at any other draw.
+const GlyphRun = struct {
+    count: u32 = 0,
+    first: packed_mod.Sprite = undefined,
+    clip: packed_mod.Rect = undefined,
+    left: f32 = 0,
+    top: f32 = 0,
+    right: f32 = 0,
+    bottom: f32 = 0,
+    hasher: std.hash.Fnv1a_32 = undefined,
+
+    fn add(
+        self: *GlyphRun,
+        out: *TextBuffer,
+        glyph: *const packed_mod.Sprite,
+        clip: packed_mod.Rect,
+        atlas: ?*const GlyphAtlasView,
+    ) void {
+        if (self.count > 0 and !self.joins(glyph, clip)) self.flush(out);
+        const b = glyph.bounds;
+        if (self.count == 0) {
+            self.* = .{
+                .first = glyph.*,
+                .clip = clip,
+                .left = b[0],
+                .top = b[1],
+                .right = b[0] + b[2],
+                .bottom = b[1] + b[3],
+                .hasher = std.hash.Fnv1a_32.init(),
+            };
+        }
+        self.count += 1;
+        self.left = @min(self.left, b[0]);
+        self.top = @min(self.top, b[1]);
+        self.right = @max(self.right, b[0] + b[2]);
+        self.bottom = @max(self.bottom, b[1] + b[3]);
+        const quantized = [4]i32{ quantize(b[0]), quantize(b[1]), quantize(b[2]), quantize(b[3]) };
+        self.hasher.update(std.mem.asBytes(&quantized));
+        if (atlas) |view| self.hasher.update(&.{view.sample(glyph.uv)});
     }
-}
 
-fn sameRun(first: *const scene_mod.GlyphInstance, next: *const scene_mod.GlyphInstance) bool {
-    if (first.pos_y != next.pos_y) return false;
-    if (first.clip_x != next.clip_x or first.clip_y != next.clip_y) return false;
-    if (first.clip_width != next.clip_width) return false;
-    return std.meta.eql(first.color, next.color);
-}
+    fn joins(self: *const GlyphRun, next: *const packed_mod.Sprite, clip: packed_mod.Rect) bool {
+        assert(self.count > 0);
+        if (self.first.bounds[1] != next.bounds[1]) return false;
+        if (self.clip[0] != clip[0] or self.clip[1] != clip[1] or self.clip[2] != clip[2]) {
+            return false;
+        }
+        return std.mem.eql(f32, &self.first.tint, &next.tint);
+    }
 
-fn writeGlyphRun(
-    out: *TextBuffer,
-    run: []const scene_mod.GlyphInstance,
-    atlas: ?*const GlyphAtlasView,
-) void {
-    assert(run.len > 0);
-    var hasher = std.hash.Fnv1a_32.init();
-    var left: f32 = run[0].pos_x;
-    var top: f32 = run[0].pos_y;
-    var right: f32 = run[0].pos_x + run[0].size_x;
-    var bottom: f32 = run[0].pos_y + run[0].size_y;
-    for (run) |*glyph| {
-        left = @min(left, glyph.pos_x);
-        top = @min(top, glyph.pos_y);
-        right = @max(right, glyph.pos_x + glyph.size_x);
-        bottom = @max(bottom, glyph.pos_y + glyph.size_y);
-        const quantized = [4]i32{
-            quantize(glyph.pos_x),
-            quantize(glyph.pos_y),
-            quantize(glyph.size_x),
-            quantize(glyph.size_y),
+    fn flush(self: *GlyphRun, out: *TextBuffer) void {
+        if (self.count == 0) return;
+        assert(self.right >= self.left);
+        const bounds = Rect{
+            .x = self.left,
+            .y = self.top,
+            .w = self.right - self.left,
+            .h = self.bottom - self.top,
         };
-        hasher.update(std.mem.asBytes(&quantized));
-        if (atlas) |view| hasher.update(&.{view.sample(glyph)});
+        out.print("  glyphs n={d} {f} color={f} hash={x:0>8}", .{
+            self.count,
+            bounds,
+            Rgba{ .color = self.first.tint },
+            self.hasher.final(),
+        });
+        writeClip(out, self.clip);
+        out.print("\n", .{});
+        self.count = 0;
     }
-    assert(right >= left);
-    out.print("  glyphs n={d} {f} color={f} hash={x:0>8}", .{
-        run.len,
-        Rect{ .x = left, .y = top, .w = right - left, .h = bottom - top },
-        Rgba{ .color = run[0].color },
-        hasher.final(),
-    });
-    writeClip(out, run[0].clip_x, run[0].clip_y, run[0].clip_width, run[0].clip_height);
-    out.print("\n", .{});
+};
+
+/// Consecutive meshes of one topology print as one count, whatever their
+/// clips.
+const MeshRun = struct {
+    pipeline: ?packed_mod.Pipeline = null,
+    count: u32 = 0,
+
+    fn add(self: *MeshRun, draw: *const packed_mod.Draw) void {
+        assert(draw.pipeline.kind() == .mesh);
+        assert(self.pipeline == null or self.pipeline.? == draw.pipeline);
+        self.pipeline = draw.pipeline;
+        self.count += draw.count;
+    }
+
+    fn flush(self: *MeshRun, out: *TextBuffer) void {
+        const pipeline = self.pipeline orelse return;
+        const name = switch (pipeline) {
+            .triangles => "path",
+            .strip_expanded => "polyline",
+            .point_instanced => "points",
+            else => unreachable,
+        };
+        out.print("  {s} count={d}\n", .{ name, self.count });
+        self.* = .{};
+    }
+};
+
+fn rect(bounds: packed_mod.Rect) Rect {
+    return .{ .x = bounds[0], .y = bounds[1], .w = bounds[2], .h = bounds[3] };
 }
 
 /// Hundredths of a pixel, the precision every other field prints at.
@@ -248,11 +276,11 @@ fn quantize(value: f32) i32 {
     return @intFromFloat(@round(value * 100));
 }
 
-/// Primitives default to an unbounded clip (±1e9 or 99999 wide), which is
-/// noise in a golden, so only a real clip prints.
-fn writeClip(out: *TextBuffer, x: f32, y: f32, w: f32, h: f32) void {
-    if (w >= 99999 or h >= 99999) return;
-    out.print(" clip={f}", .{Rect{ .x = x, .y = y, .w = w, .h = h }});
+/// The unbounded clip (`packed.clip_unbounded`) is noise in a golden, so
+/// only a real clip prints.
+fn writeClip(out: *TextBuffer, clip: packed_mod.Rect) void {
+    if (clip[2] >= 99999 or clip[3] >= 99999) return;
+    out.print(" clip={f}", .{rect(clip)});
 }
 
 pub const Rect = struct {
@@ -267,15 +295,15 @@ pub const Rect = struct {
 };
 
 pub const Rgba = struct {
-    color: Hsla,
+    color: packed_mod.Rgba,
 
     pub fn format(self: Rgba, writer: *std.Io.Writer) std.Io.Writer.Error!void {
-        const rgba = self.color.toColor();
+        const rgba = self.color;
         try writer.print("#{x:0>2}{x:0>2}{x:0>2}{x:0>2}", .{
-            channel(rgba.r),
-            channel(rgba.g),
-            channel(rgba.b),
-            channel(rgba.a),
+            channel(rgba[0]),
+            channel(rgba[1]),
+            channel(rgba[2]),
+            channel(rgba[3]),
         });
     }
 
@@ -290,7 +318,31 @@ test "TextBuffer formats rects and colours deterministically" {
     var out = TextBuffer.init(&storage, "test");
     out.print("{f} {f}", .{
         Rect{ .x = 1, .y = 2.004, .w = 3.5, .h = 0 },
-        Rgba{ .color = Hsla.fromRgba(1, 0, 0, 0.5) },
+        Rgba{ .color = .{ 1, 0, 0, 0.5 } },
     });
     try std.testing.expectEqualStrings("(1.00 2.00 3.50 0.00) #ff000080", out.slice());
+}
+
+test "a shadow prints the clip it is drawn under" {
+    // Goal: shadow clipping is visible to goldens. Method: dump a shadow
+    // under a real clip and one under the unbounded clip.
+    var storage: [256]u8 = undefined;
+    var out = TextBuffer.init(&storage, "test");
+    const shadow = packed_mod.Quad{
+        .bounds = .{ 10, 10, 20, 20 },
+        .fill = .{ 0, 0, 0, 0.5 },
+        .border_color = .{ 0, 0, 0, 0 },
+        .corners = .{ 0, 0, 0, 0 },
+        .border_widths = .{ 0, 0, 0, 0 },
+        .offset = .{ 0, 2 },
+        .blur = 4,
+    };
+    writeQuad(&out, &shadow, .{ 0, 0, 25, 25 });
+    writeQuad(&out, &shadow, packed_mod.clip_unbounded);
+    try std.testing.expectEqualStrings(
+        "  shadow (10.00 10.00 20.00 20.00) blur=4.00 offset=0.00,2.00 #00000080 " ++
+            "clip=(0.00 0.00 25.00 25.00)\n" ++
+            "  shadow (10.00 10.00 20.00 20.00) blur=4.00 offset=0.00,2.00 #00000080\n",
+        out.slice(),
+    );
 }
