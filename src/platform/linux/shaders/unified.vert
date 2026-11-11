@@ -43,7 +43,7 @@ void main() {
         out_local_pos = vec2(0.0);
     } else {
         float expand = q.blur * 2.0;
-        vec2 offset = vec2(q.offset_x, q.offset_y);
+        vec2 offset = q.offset;
         vec2 shadow_size = size + expand * 2.0;
         vec2 pos = origin + offset - expand + unit * shadow_size;
         gl_Position = clip_position(pos);

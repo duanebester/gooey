@@ -180,8 +180,8 @@ comptime {
     assert(@offsetOf(Quad, "border_color") == 32);
     assert(@offsetOf(Quad, "corners") == 48);
     assert(@offsetOf(Quad, "border_widths") == 64);
-    assert(@offsetOf(Quad, "blur") == 80);
-    assert(@offsetOf(Quad, "offset") == 84);
+    assert(@offsetOf(Quad, "offset") == 80);
+    assert(@offsetOf(Quad, "blur") == 88);
     assert(@sizeOf(Quad) == 96);
     const Sprite = packed_mod.Sprite;
     assert(@offsetOf(Sprite, "uv") == 16);

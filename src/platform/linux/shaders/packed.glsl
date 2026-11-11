@@ -3,8 +3,8 @@
 // The renderer copies each instance array into its storage buffer as is, so
 // these structs are the Zig `extern` structs field for field: std430 places
 // every vec4 at a 16-byte boundary and the trailing scalars after it, which
-// is the Zig layout (asserted in vk_types.zig). `Quad.offset` is two floats
-// rather than a vec2 because std430 would align a vec2 to 8 bytes.
+// is the Zig layout (asserted in vk_types.zig). `Quad.offset` sits at byte 80,
+// so std430's 8-byte vec2 alignment places it where Zig does.
 //
 // Colours are straight RGBA and positions are logical pixels from the top
 // left; `viewport.size` is the framebuffer in logical pixels. Clipping is the
@@ -21,9 +21,8 @@ struct Quad {
     vec4 border_color;
     vec4 corners;       // top left, top right, bottom right, bottom left
     vec4 border_widths; // top, right, bottom, left
+    vec2 offset;        // a shadow's offset from bounds
     float blur;         // > 0: a shadow
-    float offset_x;
-    float offset_y;
     float pad;
 };
 

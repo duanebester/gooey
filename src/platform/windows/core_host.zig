@@ -646,6 +646,7 @@ fn draw(
     // Pending atlas regions stay in the journal while frames are skipped.
     const uploads = host.core.resources.atlas_uploads;
     backend.uploadPendingAtlases(renderer, uploads, host.core.atlas_consumer_key);
+    backend.checkCapabilities(renderer.capabilities(), packed_frame);
     renderer.draw(packed_frame, host.viewport, clear);
     // An out-of-date swapchain skips the frame and is rebuilt by the next
     // draw; draw this frame again rather than leave a stale one on screen.

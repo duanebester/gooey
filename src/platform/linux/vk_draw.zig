@@ -104,7 +104,11 @@ pub fn recordDraws(target: *const Target, frame: *const PackedFrame) u32 {
     for (frame.drawList()) |*draw| {
         assert(draw.count > 0);
         assert(draw.clip < frame.clip_count);
-        // A clip that covers no pixel centre draws nothing.
+        // Pack emits no draw under a zero-area clip (contract §9).
+        assert(frame.clips[draw.clip][2] > 0);
+        assert(frame.clips[draw.clip][3] > 0);
+        // A clip that covers no pixel centre (off the framebuffer, or between
+        // centres) draws nothing.
         const scissor = scissorRect(frame.clips[draw.clip], target) orelse continue;
         if (bound_clip != draw.clip) {
             vk.vkCmdSetScissor(target.command, 0, 1, (&scissor)[0..1]);
@@ -191,7 +195,9 @@ const Span = struct { first: u32, count: u32 };
 
 /// Device pixels `i` in `0..limit` whose centre `(i + 0.5) / scale` lies in
 /// `[start, start + size]`: `i >= start * scale - 0.5` and
-/// `i <= (start + size) * scale - 0.5`. Null when none does.
+/// `i <= (start + size) * scale - 0.5`. Null when none does. Both ends clamp
+/// to the framebuffer in float before converting, so the unbounded clip's
+/// ±1e9 never reaches an integer at any scale.
 fn centreSpan(start: f32, size: f32, scale: f32, limit: u32) ?Span {
     assert(!std.math.isNan(start));
     assert(size >= 0);

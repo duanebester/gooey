@@ -172,6 +172,9 @@ pub const VulkanRenderer = struct {
 
     // Largest framebuffer, from `ResourceLimits.window`; `resize` asserts it.
     window_limits: WindowLimits = undefined,
+    // The framebuffer size of the last `resize` (or init), which `draw`
+    // asserts. Zero on either axis while the window is minimised.
+    size_px: backend.SizePx = .{ .width = 0, .height = 0 },
 
     // Pipelines: one layout and one descriptor layout for all of them.
     pipeline_cache: vk.PipelineCache = null,
@@ -233,7 +236,10 @@ pub const VulkanRenderer = struct {
         assert(!self.initialized);
         assert(self.native_surface == null);
         const native: *const NativeSurface = @ptrCast(@alignCast(surface.native.?));
+        assert(surface.size_px.width > 0);
+        assert(surface.size_px.height > 0);
         assertFits(surface.size_px, &limits.window);
+        self.size_px = surface.size_px;
         // Every per-frame buffer and the staging lanes are sized from the
         // window's budget here, once, before the first frame (CLAUDE.md §2).
         self.capacity = FrameCapacity.fromSceneLimits(&limits.scene);
@@ -348,7 +354,8 @@ pub const VulkanRenderer = struct {
 
     /// Render every draw of `frame` into the next swapchain image, cleared to
     /// `clear`, and present it. `viewport.size_px / viewport.scale_factor` is
-    /// the frame's logical size.
+    /// the frame's logical size. A zero-size viewport (a minimised window)
+    /// draws and presents nothing, but the staged atlas uploads are submitted.
     pub fn draw(
         self: *Self,
         frame: *const PackedFrame,
@@ -357,13 +364,16 @@ pub const VulkanRenderer = struct {
     ) void {
         assert(self.initialized);
         assert(viewport.scale_factor > 0);
-        assert(clear.a >= 0 and clear.a <= 1);
+        assert(clear.a >= 0);
+        assert(clear.a <= 1);
+        assert(std.meta.eql(viewport.size_px, self.size_px));
         self.frame_number = frame.frame_number;
         const resources = self.beginCommands();
         const cmd = resources.command_buffer;
         for (std.enums.values(AtlasSlot)) |slot| self.flushUploads(cmd, slot);
 
-        const image_index = self.acquireImage(resources);
+        const visible = viewport.size_px.width > 0 and viewport.size_px.height > 0;
+        const image_index = if (visible) self.acquireImage(resources) else null;
         if (image_index) |index| {
             const uniforms = Uniforms{
                 .viewport_width = logicalSize(viewport.size_px.width, viewport.scale_factor),
@@ -390,9 +400,12 @@ pub const VulkanRenderer = struct {
 
     /// Rebuild the swapchain at `size_px`, within the window budget. A failed
     /// rebuild is logged; `draw` retries it and skips frames until it works.
+    /// A zero-size window keeps its swapchain until it has an extent again.
     pub fn resize(self: *Self, size_px: backend.SizePx) void {
         assert(self.initialized);
         assertFits(size_px, &self.window_limits);
+        self.size_px = size_px;
+        if (size_px.width == 0 or size_px.height == 0) return;
         self.waitAllFrames();
         self.recreateSwapchain(.{ .width = size_px.width, .height = size_px.height }) catch |err| {
             std.log.err("Vulkan: swapchain rebuild for {d}x{d} px failed: {t}", .{
@@ -1008,8 +1021,7 @@ fn atlasSlot(atlas: backend.AtlasKind) AtlasSlot {
 
 /// A framebuffer size the window budget allows (`resize` and `initInPlace`).
 fn assertFits(size_px: backend.SizePx, window: *const WindowLimits) void {
-    assert(size_px.width > 0);
-    assert(size_px.height > 0);
+    assert(window.framebuffer_width_max > 0);
     assert(size_px.width <= window.framebuffer_width_max);
     assert(size_px.height <= window.framebuffer_height_max);
 }
