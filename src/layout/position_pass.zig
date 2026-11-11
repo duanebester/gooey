@@ -364,6 +364,23 @@ pub fn computeFloatingSizesWithText(
     }
 }
 
+/// A parent-attached floating element that runs past the viewport's top or
+/// bottom opens on its parent's other side when it fits there, as a native
+/// menu opens upward near the screen's bottom: its span is mirrored about
+/// the parent's vertical centre, so a menu below its trigger lands above
+/// it with the same gap. Otherwise it keeps `y` for the clamp, which may
+/// cover the parent.
+fn flipIntoViewport(y: f32, height: f32, parent: BoundingBox, viewport_height: f32) f32 {
+    std.debug.assert(height >= 0);
+    std.debug.assert(parent.height >= 0);
+    const overflows = y < 0 or y + height > viewport_height;
+    if (!overflows) return y;
+    const mirrored = parent.y + parent.height - (y - parent.y) - height;
+    if (mirrored < 0) return y;
+    if (mirrored + height > viewport_height) return y;
+    return mirrored;
+}
+
 /// Position a floating element and its children, clamping to the viewport
 /// so floating elements don't render off-screen.
 fn positionFloatingElement(
@@ -385,6 +402,10 @@ fn positionFloatingElement(
     // Final position (before clamping).
     var final_x = parent_x - elem_offset_x + floating.offset.x;
     var final_y = parent_y - elem_offset_y + floating.offset.y;
+    if (floating.attach_to_parent) {
+        const height = elem.computed.sized_height;
+        final_y = flipIntoViewport(final_y, height, parent_bbox, engine.viewport_height);
+    }
 
     // Clamp to viewport bounds (keep floating elements on-screen).
     if (final_x < 0) final_x = 0;

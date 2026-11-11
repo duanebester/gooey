@@ -336,6 +336,10 @@ const ContactPreferencesSection = struct {
     }
 };
 
+/// A radio group as a native one behaves: Tab enters it at the selected
+/// option and leaves it in one press, because only that option is a tab
+/// stop, and the arrow keys select the next or previous option, wrapping,
+/// with focus following (see `RadioKeys`).
 const RadioGroup = struct {
     label: []const u8,
     selected: State.ContactMethod,
@@ -343,8 +347,13 @@ const RadioGroup = struct {
     const labels = [_][]const u8{ "Email", "Phone", "Postal Mail" };
 
     pub fn render(self: RadioGroup, cx: *Cx) void {
+        const key = gooey.Key{ .name = "contact-method" };
+        const id = cx.id(key);
+        const keys = cx.retain(RadioKeys, id, .frame, RadioKeys.init);
+        cx.get(RadioKeys, keys).group = id;
         // A radio group maps to a group role, as in 0.3.1.
         cx.render(ui.box(.{
+            .key = key,
             .style = .{ .gap = 12, .padding = .{ .top = 8 } },
             .a11y = .{ .role = .group, .label = self.label },
         }, .{
@@ -353,13 +362,55 @@ const RadioGroup = struct {
                 .weight = .medium,
                 .color = .{ .rgba = label_color },
             }),
-            ui.box(.{ .style = .{ .gap = 8 } }, .{RadioOptions{ .selected = self.selected }}),
+            ui.box(.{
+                // `RadioKeys.option` derives the options' ids from this key.
+                .key = .{ .name = "options" },
+                .style = .{ .gap = 8 },
+            }, .{RadioOptions{ .selected = self.selected, .keys = keys }}),
         }));
+    }
+};
+
+/// The radio group's arrow keys, retained under its key so the options'
+/// key handlers have state to run on; only the group's id is kept.
+const RadioKeys = struct {
+    group: gooey.ElementId,
+
+    fn init(self: *RadioKeys) void {
+        self.group = .root;
+    }
+
+    fn option(self: *const RadioKeys, index: u32) gooey.ElementId {
+        assert(self.group.isKeyed());
+        assert(index < RadioGroup.labels.len);
+        const options = self.group.child(.{ .name = "options" });
+        return options.child(.{ .name = RadioGroup.labels[index] });
+    }
+
+    /// Down and Right select the next option, Up and Left the previous,
+    /// wrapping at the ends, by clicking it, and focus follows.
+    fn onKey(self: *RadioKeys, index: u32, effects: *Effects) void {
+        const count: u32 = RadioGroup.labels.len;
+        assert(index < count);
+        const event = effects.inputEvent() orelse return;
+        if (event.* != .key_down) return;
+        const modifiers = event.key_down.modifiers;
+        if (modifiers.cmd or modifiers.ctrl or modifiers.alt) return;
+        const target = switch (event.key_down.key) {
+            .down, .right => (index + 1) % count,
+            .up, .left => (index + count - 1) % count,
+            else => return,
+        };
+        assert(target != index);
+        effects.click(self.option(target));
+        effects.focus(self.option(target));
+        effects.stopPropagation();
     }
 };
 
 const RadioOptions = struct {
     selected: State.ContactMethod,
+    keys: gooey.Handle(RadioKeys),
 
     pub fn render(self: RadioOptions, cx: *Cx) void {
         const methods = std.enums.values(State.ContactMethod);
@@ -371,6 +422,10 @@ const RadioOptions = struct {
                 .pos_in_set = @intCast(index + 1),
                 .set_size = @intCast(methods.len),
                 .on_select = cx.on(State.setContact, .{ .arg = method }),
+                .on_key = cx.on(RadioKeys.onKey, .{
+                    .entity = self.keys,
+                    .arg = @as(u32, @intCast(index)),
+                }),
             });
         }
     }
@@ -382,6 +437,7 @@ const RadioOption = struct {
     pos_in_set: u16,
     set_size: u16,
     on_select: Handler,
+    on_key: Handler,
 
     const accent = ui.Color.rgb(0.2, 0.5, 0.9);
     const unselected = ui.Color.rgb(0.7, 0.7, 0.7);
@@ -392,9 +448,12 @@ const RadioOption = struct {
         cx.render(ui.box(.{
             .key = .{ .name = self.label },
             .style = .{ .direction = .row, .gap = 8, .alignment = .center_cross },
-            // Tab reaches each option, and Enter or Space selects it.
+            // Tab reaches the selected option, the arrows the others, and
+            // Enter or Space selects the focused one.
             .focusable = true,
+            .tab_stop = self.selected,
             .on_click = self.on_select,
+            .on_key = self.on_key,
             .a11y = .{
                 .role = .radio,
                 .label = self.label,

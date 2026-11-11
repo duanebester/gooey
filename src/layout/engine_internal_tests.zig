@@ -443,6 +443,55 @@ test "floating element resolved_floating_parent is cached at creation" {
     _ = try engine.endFrame();
 }
 
+/// The y of a 100 px wide, `float_height` tall element floating below a
+/// 40 px parent at `parent_y` in a 600 px viewport, attached as a dropdown
+/// menu is: at the parent's top left, offset by the parent's height.
+fn dropdownY(parent_y: u16, float_height: f32) !f32 {
+    var engine = try LayoutEngine.init(std.testing.allocator);
+    defer engine.deinit();
+    engine.beginFrame(800, 600);
+    try engine.openElement(.{
+        .id = LayoutId.init("root"),
+        .layout = .{
+            .sizing = Sizing.fixed(800, 600),
+            .padding = .{ .top = parent_y },
+            .layout_direction = .top_to_bottom,
+        },
+    });
+    try engine.openElement(.{
+        .id = LayoutId.init("trigger"),
+        .layout = .{ .sizing = Sizing.fixed(100, 40) },
+    });
+    try engine.openElement(.{
+        .id = LayoutId.init("menu"),
+        .layout = .{ .sizing = Sizing.fixed(100, float_height) },
+        .floating = .{ .attach_to_parent = true, .offset = .{ .y = 40 } },
+    });
+    engine.closeElement();
+    engine.closeElement();
+    engine.closeElement();
+    _ = try engine.endFrame();
+    const trigger = engine.getBoundingBox(LayoutId.init("trigger").id).?;
+    try std.testing.expectEqual(@as(f32, @floatFromInt(parent_y)), trigger.y);
+    return engine.getBoundingBox(LayoutId.init("menu").id).?.y;
+}
+
+test "a parent-attached float opens above its parent when only that side fits" {
+    // Goal: a dropdown near the viewport's bottom opens upward instead of
+    // being clamped over its trigger, and only then. Methodology: a 150 px
+    // menu below a 40 px trigger stays below while it fits, exactly at the
+    // bottom edge too, and one pixel further down flips to end at the
+    // trigger's top. A 450 px menu flips when it fits above exactly, and
+    // one pixel short of that fits on neither side, so the clamp keeps it on
+    // screen over the trigger as before.
+    try std.testing.expectEqual(@as(f32, 440), try dropdownY(400, 150));
+    try std.testing.expectEqual(@as(f32, 450), try dropdownY(410, 150));
+    try std.testing.expectEqual(@as(f32, 261), try dropdownY(411, 150));
+    try std.testing.expectEqual(@as(f32, 350), try dropdownY(500, 150));
+    try std.testing.expectEqual(@as(f32, 0), try dropdownY(450, 450));
+    try std.testing.expectEqual(@as(f32, 600 - 450), try dropdownY(449, 450));
+}
+
 test "floating expand.width makes element match parent width" {
     var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();

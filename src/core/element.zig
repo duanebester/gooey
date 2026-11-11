@@ -175,6 +175,9 @@ pub const A11y = struct {
     label: ?[]const u8 = null,
     value: ?[]const u8 = null,
     checked: bool = false,
+    /// Chosen in a collection, such as a listbox's chosen option or the
+    /// current tab; `checked` is for checkboxes, radios, and switches.
+    selected: bool = false,
     disabled: bool = false,
     heading_level: HeadingLevel = .none,
     /// How a screen reader reports changes inside this element.
@@ -197,6 +200,10 @@ pub const Box = struct {
     style: Style = .{},
     layer: ?Layer = null,
     focusable: bool = false,
+    /// Whether Tab and Shift+Tab stop on this focusable box. False leaves it
+    /// to the keys of the control around it, as a listbox's arrow keys move
+    /// between its options, while a click or `effects.focus` still focuses it.
+    tab_stop: bool = true,
     key_context: ?KeyContext = null,
     on_click: ?Handler = null,
     on_click_outside: ?Handler = null,

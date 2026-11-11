@@ -66,7 +66,8 @@ field shown in the table.
 `TextArea` and `CodeEditor` have no `accessible_name`; `CodeEditor` says "Code editor"
 when its placeholder is empty. `Select` also sets `has_popup` and `disabled`, and its value
 is the chosen option, or the placeholder when nothing is chosen. Its open menu is a
-`listbox` of `option` nodes, each with its label and set position. `List`
+`listbox` of `option` nodes, each with its label and set position, and the chosen one
+`selected`; near the window's bottom it opens above the combobox. `List`
 adds no node of its own; each row annotates itself. The charts package adds no node
 either: `accessible_title`, `accessible_description`, `describe(buf)`, and
 `summarize(buf)` produce text, and the app puts that text on a box's `a11y`.
@@ -142,6 +143,7 @@ target. `role` is required; every other field has a default.
 | `value`         | `?[]const u8`  | Current value, such as a field's text or a choice. |
 | `description`   | `?[]const u8`  | Help text read after the name.                     |
 | `checked`       | `bool`         | A checkbox, radio, or switch is on.                |
+| `selected`      | `bool`         | Chosen in a collection, such as a listbox option.  |
 | `disabled`      | `bool`         | The element does not respond to input.             |
 | `expanded`      | `bool`         | A disclosure, such as a combobox, is open.         |
 | `has_popup`     | `bool`         | Activating the element opens a popup.              |
@@ -194,7 +196,10 @@ A radio option with its state and set position, from `src/examples/accessible_fo
 cx.render(ui.box(.{
     .key = .{ .name = self.label },
     .style = .{ .direction = .row, .gap = 8, .alignment = .center_cross },
+    .focusable = true,
+    .tab_stop = self.selected,
     .on_click = self.on_select,
+    .on_key = self.on_key,
     .a11y = .{
         .role = .radio,
         .label = self.label,
@@ -208,22 +213,36 @@ cx.render(ui.box(.{
 ```
 
 The enclosing radio group is a box with `.a11y = .{ .role = .group, .label = self.label }`.
+Only the selected option is a Tab stop, so Tab enters the group there and leaves it in one
+press, and each option's `on_key` handler (`RadioKeys` in the example) selects the next or
+previous option on the arrow keys, wrapping, and moves focus to it, as a native radio group
+does.
 
 Keyboard access is separate from the annotation. Tab and Shift+Tab move focus in tree
-order among boxes with `focusable = true`, and Enter or Space clicks the focused box: its
+order among boxes with `focusable = true`, skipping those that also set `tab_stop = false`,
+which a click or `effects.focus` still focuses and the control's own keys reach, as a
+listbox's arrow keys reach its options. Enter or Space clicks the focused box: its
 `on_click` runs as a pointer click's would. Both happen only when no `on_key` handler on the
 focus path stopped the key, so a text field keeps Space and an editor keeps Tab. A held key's
 repeats and Cmd, Ctrl, or Alt chords do not click. A custom control that keyboard users must
-reach needs only `focusable = true` beside its `on_click`; the radio options above have both.
+reach needs only `focusable = true` beside its `on_click`.
 
 While a modal is open, Tab cycles through the modal's controls only, and focus left behind
 it is dropped, so a key cannot reach what the pointer cannot.
 
+When the focused element stops rendering or stops taking focus, such as a deleted row's
+button or an option chosen with the pointer, focus passes to its nearest focusable
+ancestor, such as the option's combobox; else to the next Tab stop after it in the frame
+it left, such as the next row's control; else to the previous one. The next Tab continues
+from there, and keyboard focus keeps its ring.
+
 Focus that the keyboard moved, by Tab or by a handler reacting to a key, draws a focus ring:
 2 px of the theme's `border_focus`, 2 px outside the focused box and following its corners.
 A pointer press focuses too, but draws no ring, as a browser's `:focus-visible` does. The
-keyboard's move also scrolls the innermost scroll box around the focused box, once, so the
-box and its ring are in view.
+keyboard's move also scrolls the innermost scroll box around the focused box, so the box
+and its ring are in view, and so does a later layout change that moves or resizes the box
+within that scroll box's content, such as error text appearing above it. A wheel scroll
+does not move the box within the content, so it scrolls keyboard focus away freely.
 
 A control with keys of its own, such as `Select`, gives its box an `on_key` handler bound
 to state it retained with `cx.retain`, and presses its own parts with `effects.click(id)`,
@@ -236,7 +255,8 @@ opens, then on the highlighted option, so a screen reader follows the highlight:
 | combobox  | Enter, Space (open)     | closes                                            |
 | option    | Down, Up, Home, End     | moves to the next, previous, first, or last       |
 | option    | Enter, Space            | chooses it and returns to the combobox            |
-| either    | Esc, Tab (open)         | closes and returns to the combobox                |
+| either    | Esc (open)              | closes and returns to the combobox                |
+| either    | Tab, Shift+Tab (open)   | closes and moves to the next or previous control  |
 
 ## Announcements and live regions
 
@@ -328,9 +348,9 @@ Each role maps to a platform role in `Role.toNSRole`, `Role.toUiaControlType`, a
 
 `State` is a 16-bit packed struct: `focused`, `selected`, `checked`, `pressed`, `expanded`,
 `disabled`, `readonly`, `required`, `invalid`, `busy`, `hidden`, `has_popup`. The core sets
-`focused` from keyboard focus and copies `checked`, `disabled`, `expanded`, and
-`has_popup` from `ui.A11y`. `ui.A11y` has no field for the other six, so they are always
-false in 0.4.0.
+`focused` from keyboard focus and copies `selected` (0.4.1), `checked`, `disabled`,
+`expanded`, and `has_popup` from `ui.A11y`. `ui.A11y` has no field for the other six, so
+they are always false.
 
 `Live`: `off`, `polite`, `assertive`.
 
@@ -350,10 +370,11 @@ All bridges live in `src/accessibility/`.
 
 **macOS.** The bridge keeps a pool of `NSAccessibilityElement` objects keyed by
 fingerprint. It sets role, label, value (a toggle without a value reports `checked` as 0 or
-1), enabled, focused, screen frame, parent, and children. Text fields also answer the
-selected range, character count, and line and range queries. It posts focus-changed,
-value-changed, and selected-text-changed notifications, and sends announcements with high
-priority for `.assertive` and medium for `.polite`. It does not expose `description`,
+1), enabled, focused, `selected` for options, tabs, and tree items, screen frame, parent,
+and children. Text fields also answer the selected range, character count, and line and
+range queries. It posts focus-changed, value-changed, and selected-text-changed
+notifications, and sends announcements with high priority for `.assertive` and medium
+for `.polite`. It does not expose `description`,
 `heading_level`, `expanded`, `has_popup`, or set positions. It runs only while
 `NSWorkspace.isVoiceOverEnabled` is true.
 
@@ -467,13 +488,11 @@ this repository but is not API.
 
 ## Known gaps
 
-- Only the innermost scroll box scrolls to keyboard focus, and only when focus moves: a
-  focused control that a layout change pushes out of view stays there.
-- Focus on an element that stops rendering, such as a deleted row's button, is dropped, and
-  the next Tab starts from the first control.
-- Arrow keys do not move between radio options; each option is its own Tab stop.
-- `Select` has no type-ahead, and choosing an option with the pointer blurs it, as before.
-- An option's chosen state is not exported: `ui.A11y` has no `selected` field (see below).
+- Only the innermost scroll box scrolls to keyboard focus. Focus the pointer gave, which
+  draws no ring, is not scrolled to when a layout change moves it.
+- Focus that leaves tries the nearest 32 Tab stops on each side; past those, or when a modal
+  covers it, it is dropped and the next Tab starts from the first control.
+- `Select` has no type-ahead.
 - No bridge supports actions (press, toggle, set value, expand, focus).
 - Linux has no screen-reader support (contract decision 12).
 - macOS: VoiceOver reports a 0x0 frame for many elements, including headings and radio
@@ -484,10 +503,9 @@ this repository but is not API.
 - Web: value, `description`, heading level, and set positions are not exported, and no
   web build of `accessible_form` exists.
 - `href` reaches the rendered frame but no bridge reads it.
-- `State.selected`, `pressed`, `readonly`, `required`, `invalid`, `busy`, and `hidden` have
-  no `ui.A11y` field, so the core never sets them.
+- `State.pressed`, `readonly`, `required`, `invalid`, `busy`, and `hidden` have no
+  `ui.A11y` field, so the core never sets them.
 - There is no public query for whether a screen reader is running (contract C8, deferred).
-- The todo example's row checkbox has no name.
 
 ## References
 

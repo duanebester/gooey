@@ -206,7 +206,7 @@ a11y
   button (24.00 128.80 40.10 28.80) name="All"
   button (72.10 128.80 64.60 28.80) name="Active"
   button (144.70 128.80 54.10 28.80) name="Done"
-  checkbox (34.00 189.00 18.00 18.00)
+  checkbox (34.00 189.00 18.00 18.00) name="buy milk"
   button (381.40 183.60 64.60 28.80) name="Delete"
   button (83.70 507.20 124.80 28.80) name="Clear completed"
 
@@ -248,7 +248,7 @@ a11y
   button (24.00 128.80 40.10 28.80) name="All"
   button (72.10 128.80 64.60 28.80) name="Active"
   button (144.70 128.80 54.10 28.80) name="Done"
-  checkbox (34.00 189.00 18.00 18.00)
+  checkbox (34.00 189.00 18.00 18.00) name="buy milk"
   button (381.40 183.60 64.60 28.80) name="Delete"
   button (83.70 507.20 124.80 28.80) name="Clear completed"
 
@@ -290,7 +290,7 @@ a11y
   button (24.00 128.80 40.10 28.80) name="All"
   button (72.10 128.80 64.60 28.80) name="Active"
   button (144.70 128.80 54.10 28.80) name="Done"
-  checkbox (34.00 189.00 18.00 18.00)
+  checkbox (34.00 189.00 18.00 18.00) name="buy milk"
   button (381.40 183.60 64.60 28.80) name="Delete"
   button (83.70 507.20 124.80 28.80) name="Clear completed"
 
@@ -332,7 +332,7 @@ a11y
   button (24.00 128.80 40.10 28.80) name="All"
   button (72.10 128.80 64.60 28.80) name="Active"
   button (144.70 128.80 54.10 28.80) name="Done"
-  checkbox (34.00 189.00 18.00 18.00)
+  checkbox (34.00 189.00 18.00 18.00) name="buy milk"
   button (381.40 183.60 64.60 28.80) name="Delete"
   button (83.70 507.20 124.80 28.80) name="Clear completed"
 
@@ -374,7 +374,7 @@ a11y
   button (24.00 128.80 40.10 28.80) name="All"
   button (72.10 128.80 64.60 28.80) name="Active"
   button (144.70 128.80 54.10 28.80) name="Done"
-  checkbox (34.00 189.00 18.00 18.00)
+  checkbox (34.00 189.00 18.00 18.00) name="buy milk"
   button (381.40 183.60 64.60 28.80) name="Delete"
   button (83.70 507.20 124.80 28.80) name="Clear completed"
 
@@ -416,7 +416,7 @@ a11y
   button (24.00 128.80 40.10 28.80) name="All"
   button (72.10 128.80 64.60 28.80) name="Active"
   button (144.70 128.80 54.10 28.80) name="Done"
-  checkbox (34.00 189.00 18.00 18.00)
+  checkbox (34.00 189.00 18.00 18.00) name="buy milk"
   button (381.40 183.60 64.60 28.80) name="Delete"
   button (83.70 507.20 124.80 28.80) name="Clear completed"
 
@@ -464,9 +464,9 @@ a11y
   button (24.00 128.80 40.10 28.80) name="All"
   button (72.10 128.80 64.60 28.80) name="Active"
   button (144.70 128.80 54.10 28.80) name="Done"
-  checkbox (34.00 189.00 18.00 18.00)
+  checkbox (34.00 189.00 18.00 18.00) name="buy milk"
   button (381.40 183.60 64.60 28.80) name="Delete"
-  checkbox (34.00 245.80 18.00 18.00)
+  checkbox (34.00 245.80 18.00 18.00) name="café"
   button (381.40 240.40 64.60 28.80) name="Delete"
   button (83.70 507.20 124.80 28.80) name="Clear completed"
 
@@ -515,9 +515,9 @@ a11y
   button (24.00 128.80 40.10 28.80) name="All"
   button (72.10 128.80 64.60 28.80) name="Active"
   button (144.70 128.80 54.10 28.80) name="Done"
-  checkbox (34.00 189.00 18.00 18.00) focused checked
+  checkbox (34.00 189.00 18.00 18.00) name="buy milk" focused checked
   button (381.40 183.60 64.60 28.80) name="Delete"
-  checkbox (34.00 245.80 18.00 18.00)
+  checkbox (34.00 245.80 18.00 18.00) name="café"
   button (381.40 240.40 64.60 28.80) name="Delete"
   button (83.70 507.20 124.80 28.80) name="Clear completed"
 
@@ -558,7 +558,7 @@ a11y
   button (24.00 128.80 40.10 28.80) name="All"
   button (72.10 128.80 64.60 28.80) name="Active" focused
   button (144.70 128.80 54.10 28.80) name="Done"
-  checkbox (34.00 189.00 18.00 18.00)
+  checkbox (34.00 189.00 18.00 18.00) name="café"
   button (381.40 183.60 64.60 28.80) name="Delete"
   button (83.70 507.20 124.80 28.80) name="Clear completed"
 
@@ -600,7 +600,7 @@ a11y
   button (24.00 128.80 40.10 28.80) name="All"
   button (72.10 128.80 64.60 28.80) name="Active"
   button (144.70 128.80 54.10 28.80) name="Done" focused
-  checkbox (34.00 189.00 18.00 18.00) checked
+  checkbox (34.00 189.00 18.00 18.00) name="buy milk" checked
   button (381.40 183.60 64.60 28.80) name="Delete"
   button (83.70 507.20 124.80 28.80) name="Clear completed"
 
@@ -649,9 +649,9 @@ a11y
   button (24.00 128.80 40.10 28.80) name="All" focused
   button (72.10 128.80 64.60 28.80) name="Active"
   button (144.70 128.80 54.10 28.80) name="Done"
-  checkbox (34.00 189.00 18.00 18.00) checked
+  checkbox (34.00 189.00 18.00 18.00) name="buy milk" checked
   button (381.40 183.60 64.60 28.80) name="Delete"
-  checkbox (34.00 245.80 18.00 18.00)
+  checkbox (34.00 245.80 18.00 18.00) name="café"
   button (381.40 240.40 64.60 28.80) name="Delete"
   button (83.70 507.20 124.80 28.80) name="Clear completed"
 
@@ -700,9 +700,9 @@ a11y
   button (24.00 128.80 40.10 28.80) name="All" focused
   button (72.10 128.80 64.60 28.80) name="Active"
   button (144.70 128.80 54.10 28.80) name="Done"
-  checkbox (34.00 189.00 18.00 18.00) checked
+  checkbox (34.00 189.00 18.00 18.00) name="buy milk" checked
   button (381.40 183.60 64.60 28.80) name="Delete"
-  checkbox (34.00 245.80 18.00 18.00)
+  checkbox (34.00 245.80 18.00 18.00) name="café"
   button (381.40 240.40 64.60 28.80) name="Delete"
   button (83.70 507.20 124.80 28.80) name="Clear completed"
 
@@ -744,7 +744,7 @@ a11y
   button (24.00 128.80 40.10 28.80) name="All"
   button (72.10 128.80 64.60 28.80) name="Active"
   button (144.70 128.80 54.10 28.80) name="Done"
-  checkbox (34.00 189.00 18.00 18.00) checked
+  checkbox (34.00 189.00 18.00 18.00) name="buy milk" checked
   button (381.40 183.60 64.60 28.80) name="Delete"
   button (83.70 507.20 124.80 28.80) name="Clear completed"
 

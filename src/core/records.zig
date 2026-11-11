@@ -145,6 +145,8 @@ pub const HitRecord = struct {
     fragment: u8,
     parent: u32,
     focusable: bool,
+    /// Tab and Shift+Tab stop here (`Box.tab_stop`); implies `focusable`.
+    tab_stop: bool,
     /// A `Style.scroll` box: the wheel scrolls its retained `ScrollState`.
     scroll: bool,
     /// `Style.cursor`; null defers to the parent record's.
@@ -364,6 +366,7 @@ pub const Frame = struct {
     pub fn appendHit(self: *Frame, record: HitRecord) u32 {
         assert(self.hit_count <= self.hits.len);
         assert(record.bounds.width >= 0);
+        if (record.tab_stop) assert(record.focusable);
         if (self.hit_count == self.hits.len) self.exhausted("hit records", self.hits.len);
         const index = self.hit_count;
         self.hits[index] = record;
