@@ -438,7 +438,8 @@ fn draw(
     if (viewport.scale_factor < frame.scale_factor and !host.viewport_clamp_logged) {
         host.viewport_clamp_logged = true;
         std.log.warn("core frame {d}: the window exceeds ResourceLimits.window's " ++
-            "framebuffer; drawing at scale {d:.2} instead of {d:.2}.", .{
+            "framebuffer despite its content size cap (full screen?); drawing at scale " ++
+            "{d:.2} instead of {d:.2}.", .{
             frame.frame_number,
             viewport.scale_factor,
             frame.scale_factor,
