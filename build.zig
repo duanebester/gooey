@@ -1291,9 +1291,9 @@ fn addImportBan(b: *std.Build, test_step: *std.Build.Step) void {
 /// A full pool must abort with the pool, capacity, counts, and frame (CLAUDE.md
 /// §2). A panic cannot be caught in-process, so `src/scene/overflow_check.zig`
 /// overflows a pool in a child process and each run step asserts the abort and
-/// its exact message (CLAUDE.md §24). The scene pool is checked everywhere; the
-/// CPU renderer's missing-atlas panic is checked on Linux. The Vulkan buffers
-/// are sized from the packed pools, whose overflow `fail_fast_check` covers.
+/// its exact message (CLAUDE.md §24). The scene pool is checked everywhere. The
+/// renderers' buffers are sized from the packed pools, whose overflow
+/// `fail_fast_check` covers.
 /// Returns the executable so the caller can add platform link steps.
 fn addOverflowChecks(
     b: *std.Build,
@@ -1333,15 +1333,6 @@ fn addOverflowChecks(
         test_step.dependOn(&run_profile.step);
     }
     add_geometry_overflow_checks(b, exe, test_step);
-
-    if (target.result.os.tag == .linux) {
-        const run_cpu_atlas = b.addRunArtifact(exe);
-        run_cpu_atlas.addArg("cpu-atlas");
-        run_cpu_atlas.addCheck(.{ .expect_stderr_match = "CPU renderer: 1 glyph instance(s) " ++
-            "in frame 1 but no glyph atlas is bound;" });
-        run_cpu_atlas.addCheck(.{ .expect_term = .{ .signal = .ABRT } });
-        test_step.dependOn(&run_cpu_atlas.step);
-    }
     return exe;
 }
 

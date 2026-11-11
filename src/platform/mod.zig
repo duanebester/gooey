@@ -97,19 +97,15 @@ else switch (builtin.os.tag) {
 // Every backend namespace declares `Platform` and `PlatformWindow`, so the
 // aliases below do not have to know what any backend calls its own types.
 
-/// Where atlas pixels live for the selected renderer. The CPU renderer samples
-/// its atlases in place, so they are its textures; GPU renderers keep atlas
-/// pixels only in their textures and receive them through `AtlasUploads`.
-/// Synthetic-text builds draw with the `NullRenderer`, which reads the glyph
-/// atlas in place like the CPU renderer, so they keep CPU pixels too.
+/// Where atlas pixels live for the selected renderer. Every renderer, the CPU
+/// renderer included, keeps atlas pixels only in its own textures and receives
+/// them through `AtlasUploads` (`Renderer.uploadAtlas`). Synthetic-text builds
+/// draw with the `NullRenderer`, which reads the glyph atlas in place, so they
+/// keep CPU pixels.
 pub const atlas_storage: @import("../text/atlas_uploads.zig").AtlasStorage = if (text_is_synthetic)
     .cpu_texture
-else if (is_wasm)
-    .gpu_upload
-else switch (builtin.os.tag) {
-    .linux => if (@import("linux_backend.zig").uses_cpu_renderer) .cpu_texture else .gpu_upload,
-    else => .gpu_upload,
-};
+else
+    .gpu_upload;
 
 const text_is_synthetic = @import("../text/mod.zig").is_synthetic;
 

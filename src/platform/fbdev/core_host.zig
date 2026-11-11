@@ -36,6 +36,7 @@ const clipboard = @import("clipboard.zig");
 const evdev = @import("evdev.zig");
 const input = @import("../../input/events.zig");
 const core_window = @import("../../core/window.zig");
+const backend = @import("../../core/backend.zig");
 const core_router = @import("../../core/router.zig");
 const core_events = @import("../../core/events.zig");
 const core_handler = @import("../../core/handler.zig");
@@ -127,13 +128,11 @@ pub const Host = struct {
     }
 
     fn bindWindow(self: *Host) void {
-        const resources = self.core.resources;
-        // The CPU renderer samples the atlases in place while it draws. The
-        // render side runs on this thread between builds, so the atlases have
-        // one writer at a time and no upload journal is consumed.
-        self.window.setTextAtlas(resources.text_system.getAtlas());
-        self.window.setSvgAtlas(&resources.svg_atlas.atlas);
-        self.window.setImageAtlas(&resources.image_atlas.atlas);
+        // The renderer consumes the upload journal as this window: `draw`
+        // feeds it this consumer's records before each frame.
+        const key = @intFromPtr(self.window);
+        self.core.resources.registerAtlasConsumer(key);
+        self.core.atlas_consumer_key = key;
         self.window.setUserData(self);
         self.window.setInputCallback(onInput);
         self.core.presenter = .{ .context = self, .draw = draw };
@@ -156,6 +155,8 @@ pub const Host = struct {
     /// Unbind what `bindWindow` bound, after the loop has stopped.
     pub fn deinit(self: *Host) void {
         assert(self.core.phase == .idle);
+        assert(self.core.atlas_consumer_key == @intFromPtr(self.window));
+        self.core.resources.unregisterAtlasConsumer(self.core.atlas_consumer_key);
         self.window.setInputCallback(null);
         self.window.setUserData(null);
         self.core.presenter = null;
@@ -297,6 +298,10 @@ fn draw(
     assert(frame.scale_factor > 0);
     assert(packed_frame == &host.core.packed_frame);
     assert(host.core.render_phase == .draw);
+    const renderer = &host.window.renderer;
+    const uploads = host.core.resources.atlas_uploads;
+    backend.uploadPendingAtlases(renderer, uploads, host.core.atlas_consumer_key);
+    backend.checkCapabilities(renderer.capabilities(), packed_frame);
     host.window.presentFrame(packed_frame, clear);
     // The frame drew the cursor where it is now.
     host.cursor_moved = false;

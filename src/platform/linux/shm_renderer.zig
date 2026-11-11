@@ -17,34 +17,32 @@
 //!   mapped once. A frame touches only the first `width * height * 4` bytes
 //!   of its slot, so resident memory follows the window size although the
 //!   mapping is sized for the budget (63.3 MiB of mapping at `.standard`).
-//! - The CPU renderer's raster scratch (`cpu.Renderer.initInPlace`).
+//! - The CPU renderer's raster scratch and atlases (`cpu.Renderer.initInPlace`).
 //!
-//! A window larger than the budget renders at a reduced device scale, logged
-//! once per transition, and the compositor scales the buffer to the window's
-//! logical size. `wl_buffer` protocol objects are recreated when a slot is
-//! next drawn at a new size; they describe a region of the existing pool and
-//! own no Gooey memory.
+//! `ShmRenderer` is a contract `Renderer` (`backend.verifyRenderer`): the host
+//! feeds atlas records through `uploadAtlas`, sizes it with `resize`, and
+//! draws with `draw`. A window larger than the budget renders at a reduced
+//! device scale the host chooses (`backend.Viewport.fitLogical`), and the
+//! compositor scales the buffer to the window's logical size. `wl_buffer`
+//! protocol objects are recreated when a slot is next drawn at a new size;
+//! they describe a region of the existing pool and own no Gooey memory.
 //!
 //! ## Pacing
 //!
 //! Each slot is busy from `attach` until the compositor's `release`. With two
-//! slots, the window's frame callback pacing leaves one free in steady state.
-//! If both are busy the frame is not drawn and the caller keeps its redraw
-//! request pending for the next frame callback.
+//! slots, the window's frame callback pacing leaves one free in steady state,
+//! and the host draws only once one is free (`hasFreeSlot`). If both are busy
+//! anyway the frame is skipped and logged once.
 
 const std = @import("std");
 const posix = std.posix;
 const wayland = @import("wayland.zig");
-const geometry = @import("../../geometry/geometry.zig");
+const backend = @import("../../core/backend.zig");
 const limits_mod = @import("../../core/limits.zig");
 const PackedFrame = @import("../../core/packed_frame.zig").PackedFrame;
-const text_mod = @import("../../text/mod.zig");
 const cpu = @import("../cpu/renderer.zig");
-const devicePxFromLogical = @import("../interface.zig").devicePxFromLogical;
 
 const assert = std.debug.assert;
-const Allocator = std.mem.Allocator;
-const Atlas = text_mod.Atlas;
 
 /// One slot the compositor may still be reading, one being drawn. The CPU
 /// renderer draws synchronously and has no GPU frames in flight, so it keeps
@@ -79,8 +77,14 @@ const Slot = struct {
     }
 };
 
+/// What `initInPlace` takes as `Surface.native`: the compositor's `wl_shm`
+/// and the window's surface, both of which must outlive the renderer.
+pub const NativeSurface = struct {
+    shm: *wayland.Shm,
+    surface: *wayland.Surface,
+};
+
 pub const ShmRenderer = struct {
-    gpa: Allocator = undefined,
     surface: ?*wayland.Surface = null,
     pool: ?*wayland.ShmPool = null,
     pool_fd: posix.fd_t = -1,
@@ -90,44 +94,39 @@ pub const ShmRenderer = struct {
     slots: [buffer_count]Slot = @splat(.{}),
     /// Valid while `pool` is set.
     renderer: cpu.Renderer = undefined,
-
-    /// Size of the frame being drawn, in physical pixels.
-    width_px: u32 = 0,
-    height_px: u32 = 0,
-    /// Device pixels per logical pixel actually used. Equals the window's
-    /// scale factor unless the window exceeds the framebuffer budget.
-    effective_scale: f32 = 1.0,
-    /// The current size renders below the window's scale factor.
-    downscaled: bool = false,
-
-    clear_color: geometry.Color = geometry.Color.rgba(0.1, 0.1, 0.12, 1.0),
+    /// The framebuffer size of the last `resize` (or init), which `draw`
+    /// asserts. Zero on either axis while the window has no extent.
+    size_px: backend.SizePx = .{ .width = 0, .height = 0 },
+    window_limits: limits_mod.WindowLimits = undefined,
 
     /// Primitive counts of the last presented frame.
     last_stats: cpu.RenderStats = .{},
-    /// Frames deferred because the compositor still held every slot.
+    /// Frames skipped because the compositor still held every slot.
     frames_deferred: u64 = 0,
+    /// A skipped frame was logged and no frame has been drawn since.
+    skip_logged: bool = false,
 
     const Self = @This();
 
-    /// Reserve the raster scratch and the shared-memory pool for the budget's
-    /// largest frame, then size the first frame.
-    pub fn initWithSurface(
+    comptime {
+        backend.verifyRenderer(Self);
+    }
+
+    /// Reserve the raster scratch, the atlases, and the shared-memory pool for
+    /// the budget's largest frame, and size the first frame. `surface.native`
+    /// points at a `NativeSurface`.
+    pub fn initInPlace(
         self: *Self,
-        gpa: Allocator,
-        shm: *wayland.Shm,
-        surface: *wayland.Surface,
-        logical_width: u32,
-        logical_height: u32,
-        scale_factor: f64,
-        limits: *const limits_mod.ResourceLimits,
+        surface: *const backend.Surface,
+        limits: *const backend.RenderLimits,
     ) !void {
         assert(self.pool == null);
-        assert(logical_width > 0);
-        assert(logical_height > 0);
-        assert(limits.check() == null);
+        assert(surface.size_px.width > 0);
+        assert(surface.size_px.height > 0);
+        const native: *const NativeSurface = @ptrCast(@alignCast(surface.native.?));
 
-        try self.renderer.initInPlace(gpa, limits);
-        errdefer self.renderer.deinit(gpa);
+        try self.renderer.initInPlace(limits);
+        errdefer self.renderer.deinit();
 
         const pixel_count_max = limits.window.framebufferPixelCountMax();
         const slot_bytes = std.mem.alignForward(
@@ -152,19 +151,18 @@ pub const ShmRenderer = struct {
         );
         errdefer posix.munmap(memory);
 
-        const pool = wayland.shmCreatePool(shm, fd, @intCast(pool_bytes)) orelse
+        const pool = wayland.shmCreatePool(native.shm, fd, @intCast(pool_bytes)) orelse
             return error.ShmPoolCreateFailed;
 
-        self.gpa = gpa;
-        self.surface = surface;
+        self.surface = native.surface;
         self.pool = pool;
         self.pool_fd = fd;
         self.pool_memory = memory;
         self.slot_bytes = slot_bytes;
-        self.resize(logical_width, logical_height, scale_factor);
+        self.window_limits = limits.window;
+        self.resize(surface.size_px);
         assert(self.pool_memory.len == pool_bytes);
-        assert(self.width_px > 0);
-        assert(self.height_px > 0);
+        assert(std.meta.eql(self.size_px, surface.size_px));
     }
 
     pub fn deinit(self: *Self) void {
@@ -181,61 +179,36 @@ pub const ShmRenderer = struct {
         self.slot_bytes = 0;
         _ = std.c.close(self.pool_fd);
         self.pool_fd = -1;
-        self.renderer.deinit(self.gpa);
+        self.renderer.deinit();
         assert(self.pool == null);
     }
 
-    /// Size the next frame for a window of the given logical size.
-    pub fn resize(self: *Self, logical_width: u32, logical_height: u32, scale_factor: f64) void {
-        assert(logical_width > 0);
-        assert(logical_height > 0);
-        assert(scale_factor > 0);
-        const width_max = self.renderer.width_max;
-        const height_max = self.renderer.height_max;
-        const width_f: f64 = @floatFromInt(logical_width);
-        const height_f: f64 = @floatFromInt(logical_height);
-        const budget_scale = @min(
-            @as(f64, @floatFromInt(width_max)) / width_f,
-            @as(f64, @floatFromInt(height_max)) / height_f,
-        );
-        const scale = @min(scale_factor, budget_scale, cpu.scale_factor_max);
-        // Round like the Vulkan swapchain extent so both backends agree.
-        self.width_px = @max(1, devicePxFromLogical(logical_width, scale));
-        self.height_px = @max(1, devicePxFromLogical(logical_height, scale));
-        self.effective_scale = @floatCast(scale);
-        const downscaled = scale < scale_factor;
-        if (downscaled and !self.downscaled) {
-            std.log.warn(
-                "wl_shm: a {d}x{d} window at scale {d} exceeds ResourceLimits.window " ++
-                    "({d}x{d} px, scale at most {d}); rendering at scale {d}",
-                .{
-                    logical_width, logical_height,       scale_factor, width_max,
-                    height_max,    cpu.scale_factor_max, scale,
-                },
-            );
-        }
-        self.downscaled = downscaled;
-        assert(self.width_px <= width_max);
-        assert(self.height_px <= height_max);
-    }
-
-    pub fn setClearColor(self: *Self, color: geometry.Color) void {
-        assert(!std.math.isNan(color.a));
-        assert(color.a >= 0);
-        assert(color.a <= 1);
-        self.clear_color = color;
-    }
-
-    /// Atlases are sampled in place each frame, so publishing them is only a
-    /// pointer store; there is no upload to stage.
-    pub fn setAtlases(
+    /// Copy an atlas region into the CPU renderer's atlas. Drawing is
+    /// synchronous, so no earlier frame still reads it.
+    pub fn uploadAtlas(
         self: *Self,
-        text_atlas: ?*const Atlas,
-        svg_atlas: ?*const Atlas,
-        image_atlas: ?*const Atlas,
+        kind: backend.AtlasKind,
+        dirty: backend.RectPx,
+        pixels: []const u8,
     ) void {
         assert(self.pool != null);
-        self.renderer.bindAtlases(.{ .text = text_atlas, .svg = svg_atlas, .image = image_atlas });
+        assert(pixels.len > 0);
+        self.renderer.uploadAtlas(kind, dirty, pixels);
+    }
+
+    /// Size the next frames at `size_px` device pixels, within the budget.
+    /// Slot buffers follow when each slot is next drawn.
+    pub fn resize(self: *Self, size_px: backend.SizePx) void {
+        assert(self.pool != null);
+        assert(size_px.width <= self.window_limits.framebuffer_width_max);
+        assert(size_px.height <= self.window_limits.framebuffer_height_max);
+        self.size_px = size_px;
+    }
+
+    pub fn capabilities(self: *const Self) backend.Capabilities {
+        assert(self.pool != null);
+        assert(self.slot_bytes > 0);
+        return self.renderer.capabilities();
     }
 
     /// Deliver the compositor's buffer releases on `queue` (null: the default
@@ -251,39 +224,52 @@ pub const ShmRenderer = struct {
         assert(self.slots.len == buffer_count);
     }
 
-    /// A slot the compositor has released, so `render` will draw.
+    /// A slot the compositor has released, so `draw` will present.
     pub fn hasFreeSlot(self: *const Self) bool {
         return self.freeSlotIndex() != null;
     }
 
-    /// Draw `frame` into a free slot and commit it. Returns false when every
-    /// slot is still held by the compositor and the frame was not drawn.
-    pub fn render(self: *Self, frame: *const PackedFrame) bool {
+    /// Draw `frame` into a free slot and commit it. A zero-size viewport
+    /// presents nothing; uploads already landed in `uploadAtlas`. When the
+    /// compositor holds every slot the frame is skipped and logged once.
+    pub fn draw(
+        self: *Self,
+        frame: *const PackedFrame,
+        viewport: backend.Viewport,
+        clear: backend.Color,
+    ) void {
         assert(self.pool != null);
-        assert(self.width_px > 0);
-        assert(self.height_px > 0);
+        assert(std.meta.eql(viewport.size_px, self.size_px));
+        if (self.size_px.width == 0 or self.size_px.height == 0) return;
         const index = self.freeSlotIndex() orelse {
             self.frames_deferred += 1;
-            return false;
+            if (!self.skip_logged) {
+                std.log.warn("wl_shm: frame {d} skipped: the compositor holds every buffer", .{
+                    frame.frame_number,
+                });
+            }
+            self.skip_logged = true;
+            return;
         };
+        self.skip_logged = false;
         const slot = &self.slots[index];
         self.prepareSlot(slot, index);
 
         const offset = index * self.slot_bytes;
-        const pixel_count = @as(usize, self.width_px) * self.height_px;
+        const pixel_count = @as(usize, self.size_px.width) * self.size_px.height;
         assert(pixel_count * bytes_per_pixel <= self.slot_bytes);
         const pixel_bytes = self.pool_memory[offset..][0 .. pixel_count * bytes_per_pixel];
         const target = cpu.raster.Target{
             .pixels = @alignCast(std.mem.bytesAsSlice(u32, pixel_bytes)),
-            .width = self.width_px,
-            .height = self.height_px,
-            .stride = self.width_px,
+            .width = self.size_px.width,
+            .height = self.size_px.height,
+            .stride = self.size_px.width,
         };
         self.last_stats = self.renderer.draw(
             target,
             frame,
-            .{ .scale_factor = self.effective_scale },
-            self.clear_color,
+            .{ .scale_factor = viewport.scale_factor },
+            clear,
         );
 
         const surface = self.surface.?;
@@ -291,7 +277,6 @@ pub const ShmRenderer = struct {
         wayland.surfaceDamageBuffer(surface, 0, 0, @intCast(slot.width), @intCast(slot.height));
         wayland.surfaceCommit(surface);
         slot.busy = true;
-        return true;
     }
 
     fn freeSlotIndex(self: *const Self) ?usize {
@@ -309,7 +294,7 @@ pub const ShmRenderer = struct {
         assert(!slot.busy);
         assert(index < buffer_count);
         if (slot.buffer != null) {
-            if (slot.width == self.width_px and slot.height == self.height_px) return;
+            if (slot.width == self.size_px.width and slot.height == self.size_px.height) return;
         }
         if (slot.buffer) |old| wayland.bufferDestroy(old);
         slot.* = .{};
@@ -319,18 +304,18 @@ pub const ShmRenderer = struct {
         const buffer = wayland.shmPoolCreateBuffer(
             self.pool.?,
             @intCast(index * self.slot_bytes),
-            @intCast(self.width_px),
-            @intCast(self.height_px),
-            @intCast(self.width_px * bytes_per_pixel),
+            @intCast(self.size_px.width),
+            @intCast(self.size_px.height),
+            @intCast(self.size_px.width * bytes_per_pixel),
             wayland.WL_SHM_FORMAT_XRGB8888,
         ) orelse std.debug.panic(
             "wl_shm_pool.create_buffer failed for slot {d} at {d}x{d}: libwayland is out of memory",
-            .{ index, self.width_px, self.height_px },
+            .{ index, self.size_px.width, self.size_px.height },
         );
         if (!wayland.bufferAddListener(buffer, &buffer_listener, slot)) {
             std.debug.panic("wl_buffer.add_listener failed for slot {d}", .{index});
         }
-        slot.* = .{ .buffer = buffer, .width = self.width_px, .height = self.height_px };
+        slot.* = .{ .buffer = buffer, .width = self.size_px.width, .height = self.size_px.height };
         assert(@as(usize, slot.width) * slot.height * bytes_per_pixel <= self.slot_bytes);
     }
 };

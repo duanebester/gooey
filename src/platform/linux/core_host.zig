@@ -196,9 +196,9 @@ pub const Host = struct {
     surface_width: u32,
     surface_height: u32,
     surface_scale: f32,
-    /// Vulkan: the framebuffer the renderer was last sized to, fitted to the
-    /// window budget, and whether that fit lowered the scale (logged once
-    /// per transition).
+    /// The framebuffer the renderer was last sized to, fitted to the window
+    /// budget, and whether that fit lowered the scale (logged once per
+    /// transition).
     viewport: backend.Viewport,
     downscaled: bool,
 
@@ -247,7 +247,7 @@ pub const Host = struct {
         self.viewport = backend.Viewport.fitLogical(
             @floatFromInt(self.surface_width),
             @floatFromInt(self.surface_height),
-            self.surface_scale,
+            @min(self.surface_scale, window_mod.renderer_scale_max),
             &options.core.limits.window,
         );
         self.downscaled = false;
@@ -319,24 +319,16 @@ pub const Host = struct {
         assert(self.window.core != null);
     }
 
-    /// Vulkan consumes the upload journal as this window. The CPU renderer
-    /// samples the atlases in place, so it registers no consumer; its buffer
-    /// releases move to the render queue before the first frame.
+    /// The renderer consumes the upload journal as this window: `draw` feeds
+    /// it this consumer's records before each frame. The CPU renderer's
+    /// buffer releases also move to the render queue before the first frame.
     fn bindAtlases(self: *Host) void {
         const resources = self.core.resources;
-        if (cpu_renderer) {
-            self.window.renderer.setAtlases(
-                resources.text_system.getAtlas(),
-                &resources.svg_atlas.atlas,
-                &resources.image_atlas.atlas,
-            );
-            self.window.renderer.setEventQueue(self.render_queue);
-        } else {
-            // `draw` feeds the renderer this consumer's records before each frame.
-            const key = @intFromPtr(self.window);
-            resources.registerAtlasConsumer(key);
-            self.core.atlas_consumer_key = key;
-        }
+        const key = @intFromPtr(self.window);
+        resources.registerAtlasConsumer(key);
+        self.core.atlas_consumer_key = key;
+        if (cpu_renderer) self.window.renderer.setEventQueue(self.render_queue);
+        assert(self.core.atlas_consumer_key != 0);
     }
 
     /// Stop the render thread and wait for it, then unbind what `bindWindow`
@@ -364,13 +356,10 @@ pub const Host = struct {
     /// before it is freed.
     fn unbindWindow(self: *Host) void {
         assert(self.thread == null);
-        if (cpu_renderer) {
-            // The render queue is destroyed next; the buffers outlive it.
-            self.window.renderer.setEventQueue(null);
-        } else {
-            assert(self.core.atlas_consumer_key == @intFromPtr(self.window));
-            self.core.resources.unregisterAtlasConsumer(self.core.atlas_consumer_key);
-        }
+        // The render queue is destroyed next; the buffers outlive it.
+        if (cpu_renderer) self.window.renderer.setEventQueue(null);
+        assert(self.core.atlas_consumer_key == @intFromPtr(self.window));
+        self.core.resources.unregisterAtlasConsumer(self.core.atlas_consumer_key);
         self.core.presenter = null;
         self.core.file_dialog = null;
         self.core.images.bindWake(null);
@@ -693,17 +682,13 @@ pub const Host = struct {
         if (window.xdg_surface) |xdg| {
             wayland.xdgSurfaceSetWindowGeometry(xdg, 0, 0, @intCast(width), @intCast(height));
         }
-        if (cpu_renderer) {
-            window.renderer.resize(width, height, frame.scale_factor);
-        } else {
-            self.fitViewport(width, height, frame.scale_factor);
-        }
+        self.fitViewport(width, height, frame.scale_factor);
     }
 
-    /// Size the Vulkan framebuffer for a window of `width` x `height` logical
+    /// Size the framebuffer for a window of `width` x `height` logical
     /// pixels: at `scale_factor`, or lower when that would pass the window
-    /// budget, and the compositor scales the smaller buffer up through the
-    /// surface's viewport, as the CPU backend does.
+    /// budget (or the renderer's highest scale), and the compositor scales
+    /// the smaller buffer up through the surface's viewport.
     fn fitViewport(self: *Host, width: u32, height: u32, scale_factor: f32) void {
         assert(width > 0);
         assert(height > 0);
@@ -712,13 +697,13 @@ pub const Host = struct {
         const viewport = backend.Viewport.fitLogical(
             @floatFromInt(width),
             @floatFromInt(height),
-            scale_factor,
+            @min(scale_factor, window_mod.renderer_scale_max),
             window_limits,
         );
         const downscaled = viewport.scale_factor < scale_factor;
         if (downscaled and !self.downscaled) {
             std.log.warn(
-                "Vulkan: a {d}x{d} window at scale {d} exceeds ResourceLimits.window " ++
+                "renderer: a {d}x{d} window at scale {d} exceeds ResourceLimits.window " ++
                     "({d}x{d} px); rendering at scale {d}",
                 .{
                     width,
@@ -799,18 +784,16 @@ fn draw(
     assert(frame.scale_factor > 0);
     host.applyViewport(frame);
     const renderer = &host.window.renderer;
-    if (cpu_renderer) {
-        renderer.setClearColor(clear);
-        // `presentDue` waited for a released buffer; only this thread takes one.
-        const drawn = renderer.render(packed_frame);
-        assert(drawn);
-    } else {
-        const uploads = host.core.resources.atlas_uploads;
-        backend.uploadPendingAtlases(renderer, uploads, host.core.atlas_consumer_key);
+    const uploads = host.core.resources.atlas_uploads;
+    backend.uploadPendingAtlases(renderer, uploads, host.core.atlas_consumer_key);
+    backend.checkCapabilities(renderer.capabilities(), packed_frame);
+    // CPU: `presentDue` waited for a released buffer; only this thread takes one.
+    if (cpu_renderer) assert(renderer.hasFreeSlot());
+    renderer.draw(packed_frame, host.viewport, clear);
+    // Vulkan: an out-of-date swapchain skips the frame and is recreated by
+    // the next draw; draw this frame again rather than leave a stale one.
+    if (!cpu_renderer and renderer.swapchain_needs_recreate) {
         renderer.draw(packed_frame, host.viewport, clear);
-        // An out-of-date swapchain skips the frame and is recreated by the
-        // next draw; draw this frame again rather than leave a stale one.
-        if (renderer.swapchain_needs_recreate) renderer.draw(packed_frame, host.viewport, clear);
     }
     assert(host.core.render_phase == .draw);
 }

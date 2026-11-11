@@ -15,11 +15,8 @@
 //!   (`gooey.internals.scene.InstanceCounts`; Metal claimed it until it moved to the
 //!   packed frame in phase 5, and phase 6 deletes it) with two batches and claims one
 //!   more. Every OS.
-//! - `cpu-atlas`: draws a frame holding one glyph through the CPU renderer with
-//!   no glyph atlas bound, which must panic rather than drop the glyph. Linux.
 
 const std = @import("std");
-const builtin = @import("builtin");
 const gooey = @import("gooey");
 
 const Scene = gooey.internals.scene.Scene;
@@ -60,7 +57,6 @@ const Mode = enum {
     @"instances-glyphs",
     @"instances-svgs",
     @"instances-images",
-    @"cpu-atlas",
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -83,7 +79,6 @@ pub fn main(init: std.process.Init) !void {
             const name = comptime @tagName(profile)["scene-".len..];
             try overflowScene(init.gpa, &@field(gooey.ResourceLimits, name).scene);
         },
-        .@"cpu-atlas" => try cpuMissingAtlas(init.gpa),
         .@"instances-glyphs", .@"instances-svgs", .@"instances-images" => overflow_instances(mode),
         else => overflow_geometry(mode),
     }
@@ -105,51 +100,6 @@ fn overflowScene(gpa: std.mem.Allocator, limits: *const gooey.internals.scene.Sc
 
     // One past the budget: must panic inside `insertQuad`.
     try scene.insertQuad(Quad.filled(0, 0, 10, 10, Hsla.red));
-}
-
-fn cpuMissingAtlas(gpa: std.mem.Allocator) !void {
-    if (builtin.os.tag == .linux) {
-        const cpu = gooey.internals.platform.linux.cpu;
-        const limits = gooey.ResourceLimits{
-            .scene = overflow_limits,
-            .window = .{ .framebuffer_width_max = 8, .framebuffer_height_max = 8 },
-            .frame = gooey.ResourceLimits.nano.frame,
-            .atlas = gooey.ResourceLimits.standard.atlas,
-            .build = gooey.ResourceLimits.nano.build,
-            .records = gooey.ResourceLimits.nano.records,
-            .retained = gooey.ResourceLimits.nano.retained,
-            .events = gooey.ResourceLimits.nano.events,
-            .text = gooey.ResourceLimits.nano.text,
-            .entities = gooey.ResourceLimits.nano.entities,
-        };
-        var frame: gooey.internals.packed_frame.PackedFrame = undefined;
-        try frame.initInPlace(&.{ .scene = limits.scene, .paint_record_count_max = 1 });
-        defer frame.deinit();
-        frame.reset(1, &.{});
-        frame.sprites[0] = .{
-            .bounds = .{ 0, 0, 4, 4 },
-            .uv = .{ 0, 0, 1, 1 },
-            .tint = .{ 0, 0, 0, 1 },
-            .secondary = .{ 0, 0, 0, 0 },
-            .corners = @splat(0),
-            .grayscale = 0,
-            .opacity = 1,
-        };
-        frame.sprite_count = 1;
-        frame.draws[0] = .{ .pipeline = .glyph, .clip = 0, .first = 0, .count = 1 };
-        frame.draw_count = 1;
-
-        var renderer: cpu.Renderer = undefined;
-        try renderer.initInPlace(gpa, &limits);
-        defer renderer.deinit(gpa);
-        var pixels: [8 * 8]u32 = undefined;
-        const target = cpu.raster.Target{ .pixels = &pixels, .width = 8, .height = 8, .stride = 8 };
-        const clear = gooey.internals.geometry.Color.rgba(0, 0, 0, 1);
-        // No atlas is bound: must panic inside `draw`.
-        _ = renderer.draw(target, &frame, .{ .scale_factor = 1 }, clear);
-    } else {
-        std.debug.panic("cpu-atlas mode exists only on Linux", .{});
-    }
 }
 
 fn overflow_geometry(mode: Mode) void {

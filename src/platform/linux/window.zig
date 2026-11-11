@@ -10,7 +10,8 @@ const std = @import("std");
 const wayland = @import("wayland.zig");
 const vk_renderer = @import("vk_renderer.zig");
 const VulkanRenderer = vk_renderer.VulkanRenderer;
-const ShmRenderer = @import("shm_renderer.zig").ShmRenderer;
+const shm_renderer = @import("shm_renderer.zig");
+const ShmRenderer = shm_renderer.ShmRenderer;
 const linux_backend = @import("../linux_backend.zig");
 const LinuxPlatform = @import("platform.zig").LinuxPlatform;
 const interface_mod = @import("../interface.zig");
@@ -52,6 +53,17 @@ const use_cpu_renderer = switch (linux_backend.selected) {
     .fbdev => @compileError("the fbdev backend does not use the Wayland window"),
 };
 const Renderer = if (use_cpu_renderer) ShmRenderer else VulkanRenderer;
+const NativeSurface = if (use_cpu_renderer)
+    shm_renderer.NativeSurface
+else
+    vk_renderer.NativeSurface;
+
+/// The highest device scale the selected renderer draws at; the CPU raster
+/// bounds it to keep device coordinates well inside `f32`.
+pub const renderer_scale_max: f32 = if (use_cpu_renderer)
+    @import("../cpu/renderer.zig").scale_factor_max
+else
+    std.math.floatMax(f32);
 
 /// Monotonic milliseconds for `Window.requestRenderAfter`. The callers carry
 /// no `Io`, so this uses the process-lifetime global.
@@ -417,11 +429,7 @@ pub const Window = struct {
         // The core host starts from `scale_factor`, so a scale that arrived in
         // that roundtrip must reach the renderer's buffers here.
         if (self.scale_factor != renderer_scale) {
-            if (use_cpu_renderer) {
-                self.renderer.resize(self.width_px, self.height_px, self.scale_factor);
-            } else {
-                self.renderer.resize(self.rendererViewport(&options.limits.window).size_px);
-            }
+            self.renderer.resize(self.rendererViewport(&options.limits.window).size_px);
         }
     }
 
@@ -453,40 +461,29 @@ pub const Window = struct {
     }
 
     /// Bind the renderer to the Wayland surface. Both renderers create their
-    /// frames at physical pixel resolution.
+    /// frames at physical pixel resolution, fitted to the window budget.
     fn initRenderer(self: *Self, plat: *LinuxPlatform, options: *const WindowOptions) !void {
         std.debug.assert(self.wl_surface != null);
         std.debug.assert(self.width_px > 0);
         std.debug.assert(self.height_px > 0);
-        if (use_cpu_renderer) {
-            const shm = plat.getShm() orelse return error.NoShm;
-            try self.renderer.initWithSurface(
-                self.allocator,
-                shm,
-                self.wl_surface.?,
-                self.width_px,
-                self.height_px,
-                self.scale_factor,
-                &options.limits,
-            );
-        } else {
-            const wl_display = plat.getDisplay() orelse return error.NoDisplay;
-            const native = vk_renderer.NativeSurface{
-                .display = @ptrCast(wl_display),
-                .surface = self.wl_surface.?,
-            };
-            const viewport = self.rendererViewport(&options.limits.window);
-            const render_limits = backend.RenderLimits.fromResourceLimits(&options.limits);
-            try self.renderer.initInPlace(&.{
-                .native = @ptrCast(@constCast(&native)),
-                .size_px = viewport.size_px,
-                .scale_factor = viewport.scale_factor,
-            }, &render_limits);
-        }
+        const native: NativeSurface = if (use_cpu_renderer) .{
+            .shm = plat.getShm() orelse return error.NoShm,
+            .surface = self.wl_surface.?,
+        } else .{
+            .display = @ptrCast(plat.getDisplay() orelse return error.NoDisplay),
+            .surface = self.wl_surface.?,
+        };
+        const viewport = self.rendererViewport(&options.limits.window);
+        const render_limits = backend.RenderLimits.fromResourceLimits(&options.limits);
+        try self.renderer.initInPlace(&.{
+            .native = @ptrCast(@constCast(&native)),
+            .size_px = viewport.size_px,
+            .scale_factor = viewport.scale_factor,
+        }, &render_limits);
     }
 
-    /// The Vulkan framebuffer for the window's logical size and scale, fitted
-    /// to the budget as the core host fits every frame's (`applyViewport`).
+    /// The framebuffer for the window's logical size and scale, fitted to the
+    /// budget as the core host fits every frame's (`applyViewport`).
     fn rendererViewport(
         self: *const Self,
         window: *const limits_mod.WindowLimits,
@@ -496,7 +493,7 @@ pub const Window = struct {
         return backend.Viewport.fitLogical(
             @floatFromInt(self.width_px),
             @floatFromInt(self.height_px),
-            @floatCast(self.scale_factor),
+            @min(@as(f32, @floatCast(self.scale_factor)), renderer_scale_max),
             window,
         );
     }
