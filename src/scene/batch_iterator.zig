@@ -319,7 +319,7 @@ test "BatchIterator - single type" {
 }
 
 test "BatchIterator - a scene holding one primitive kind yields that kind" {
-    // Goal: the Metal renderer draws exactly the batches yielded here, with no
+    // Goal: a scene renderer draws exactly the batches yielded here, with no
     // empty-scene shortcut, so a paths-only (or polyline-, point-cloud-only)
     // frame must still produce its batch. The switch is exhaustive, so a new
     // primitive kind cannot be added without being covered.

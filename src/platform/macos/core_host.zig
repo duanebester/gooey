@@ -31,10 +31,8 @@ const window_mod = @import("window.zig");
 const file_dialog = @import("file_dialog.zig");
 const clipboard = @import("clipboard.zig");
 const appkit = @import("appkit.zig");
-const geometry = @import("../../geometry/geometry.zig");
-const scene_mod = @import("../../scene/mod.zig");
 const core_window = @import("../../core/window.zig");
-const pack_legacy = @import("../../core/pack_legacy.zig");
+const core_backend = @import("../../core/backend.zig");
 const core_element = @import("../../core/element.zig");
 const core_tick = @import("../../core/tick.zig");
 const core_router = @import("../../core/router.zig");
@@ -137,8 +135,8 @@ pub const Host = struct {
     /// thread. A stale copy only schedules a tick that builds nothing.
     render_deadline_ns: std.atomic.Value(u64),
     stopping: std.atomic.Value(bool),
-    /// Renderer errors are logged once; later frames clear and retry.
-    render_error_logged: bool,
+    /// A window past the budget's framebuffer is reported once (`draw`).
+    viewport_clamp_logged: bool,
     /// The cursor last set on the window, main thread only.
     cursor: core_element.CursorShape,
     /// The IME caret rect of the last rendered frame `syncIme` saw, and the
@@ -174,7 +172,7 @@ pub const Host = struct {
         self.tick_scheduled = .init(false);
         self.render_deadline_ns = .init(core_window.deadline_none);
         self.stopping = .init(false);
-        self.render_error_logged = false;
+        self.viewport_clamp_logged = false;
         self.cursor = .default;
         self.ime_rect = null;
         self.built_frame_number = 0;
@@ -196,7 +194,6 @@ pub const Host = struct {
         const key = @intFromPtr(self.window);
         resources.registerAtlasConsumer(key);
         self.core.atlas_consumer_key = key;
-        self.window.renderer.bindAtlasUploads(resources.atlas_uploads, key);
         self.window.bindCore(.{
             .queue = &self.core.queue,
             .query = &self.query,
@@ -421,7 +418,8 @@ fn displayLinkTick(_: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) void 
 }
 
 /// The core's presenter, on the render thread. The frame carries the
-/// viewport it was built for; the drawable follows it before the draw.
+/// viewport it was built for; the drawable follows it before the draw, and
+/// the atlas regions the frame samples are uploaded first.
 fn draw(
     context: *anyopaque,
     packed_frame: *const core_window.PackedFrame,
@@ -429,30 +427,30 @@ fn draw(
     clear: records.Color,
 ) void {
     const host: *Host = @ptrCast(@alignCast(context));
-    // This renderer draws the 0.3.1 scene until it moves onto the contract.
-    const scene: *const scene_mod.Scene = host.core.scene;
-    pack_legacy.fillScene(packed_frame, host.core.scene, .{
+    assert(frame.scale_factor > 0);
+    assert(host.core.atlas_consumer_key == @intFromPtr(host.window));
+    const renderer = &host.window.renderer;
+    const viewport = window_mod.framebufferViewport(.{
         .width = frame.viewport_width,
         .height = frame.viewport_height,
-    });
-    assert(frame.scale_factor > 0);
-    const renderer = &host.window.renderer;
-    const width: f64 = frame.viewport_width;
-    const height: f64 = frame.viewport_height;
-    const scale: f64 = frame.scale_factor;
-    const resized = renderer.size.width != width or renderer.size.height != height;
-    if (resized or renderer.scale_factor != scale) {
-        renderer.resize(geometry.Size(f64).init(width, height), scale);
+        .scale_factor = frame.scale_factor,
+    }, &renderer.limits.window);
+    if (viewport.scale_factor < frame.scale_factor and !host.viewport_clamp_logged) {
+        host.viewport_clamp_logged = true;
+        std.log.warn("core frame {d}: the window exceeds ResourceLimits.window's " ++
+            "framebuffer; drawing at scale {d:.2} instead of {d:.2}.", .{
+            frame.frame_number,
+            viewport.scale_factor,
+            frame.scale_factor,
+        });
     }
-    renderer.renderScene(scene, clear) catch |err| {
-        // A frame the GPU could not take (no drawable, command buffer
-        // failure) is an operating error: clear, log once, and draw the next.
-        if (!host.render_error_logged) {
-            std.log.err("core frame {d} not drawn: {s}", .{ frame.frame_number, @errorName(err) });
-            host.render_error_logged = true;
-        }
-        renderer.clear(clear);
-    };
+    const size_px = viewport.size_px;
+    if (size_px.width != renderer.size_px.width or size_px.height != renderer.size_px.height) {
+        renderer.resize(size_px);
+    }
+    const uploads = host.core.resources.atlas_uploads;
+    core_backend.uploadPendingAtlases(renderer, uploads, host.core.atlas_consumer_key);
+    renderer.draw(packed_frame, viewport, clear);
 }
 
 // =============================================================================

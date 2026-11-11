@@ -10,9 +10,9 @@
 //! 2,048 handlers, and 64 KiB of text (≈1.9 MiB); 128 queued events; 16
 //! input engines × 4 KiB; a 176 KiB layout arena for text copies and 4,096
 //! wrapped lines, resident only as far as a frame writes; 256 KiB of text
-//! scratch; the packed frame at `limits.scene` (`packed_frame.zig`), resident only as
-//! far as frames write; and, until phase 6, the 0.3.1 scene that hosts of
-//! renderers not on the contract fill from it. The layout
+//! scratch; the packed frame at `limits.scene` (`packed_frame.zig`), resident
+//! only as far as frames write; and, until phase 6, the 0.3.1 scene that hosts
+//! of renderers not on the contract fill from it (not on macOS). The layout
 //! engine keeps its fixed 16,384-element reservation until phase 4 ports
 //! layout, so `build.element_count_frame_max` is checked against it.
 
@@ -48,6 +48,10 @@ pub const ResourceLimits = limits_mod.ResourceLimits;
 pub const AppResources = app_resources.AppResources;
 pub const LayoutEngine = layout_mod.LayoutEngine;
 pub const Scene = scene_mod.Scene;
+
+/// Whether this target's hosts draw the 0.3.1 scene (`Window.scene`): every
+/// host but macOS, whose Metal renderer is on the contract. Phase 6 removes it.
+pub const legacy_scene = builtin.os.tag != .macos;
 pub const PackedFrame = @import("packed_frame.zig").PackedFrame;
 
 pub const Phase = enum { idle, drain, build, layout, emit, pack, draw };
@@ -533,8 +537,9 @@ pub const Window = struct {
     /// What pack writes and the presenter draws; render side only.
     packed_frame: PackedFrame,
     /// The 0.3.1 scene hosts whose renderers are not on the contract yet fill
-    /// from `packed_frame` (`pack_legacy.zig`); render side only.
-    scene: *Scene,
+    /// from `packed_frame` (`pack_legacy.zig`); render side only. Metal draws
+    /// the packed frame, so macOS reserves none.
+    scene: if (legacy_scene) *Scene else void,
     text_scratch: []u8,
     text_scratch_allocator: std.heap.FixedBufferAllocator,
     cx: cx_mod.Cx,
@@ -959,14 +964,8 @@ fn initRuntimeStorage(self: *Window, gpa: std.mem.Allocator, limits: *const Reso
     self.clipboard = .init(self.clipboard_bytes);
     self.dialog_request_bytes = try gpa.alloc(u8, limits.events.dialog_path_bytes_max);
     errdefer gpa.free(self.dialog_request_bytes);
-    const reserved = debugger_mod.reservedLimits(limits);
-    try self.packed_frame.initInPlace(&.{
-        .scene = reserved.scene,
-        .paint_record_count_max = reserved.records.paint_record_count_frame_max,
-    });
-    errdefer self.packed_frame.deinit();
-    self.scene = try initScene(gpa, limits);
-    errdefer deinitScene(gpa, self.scene);
+    try initRenderTargets(self, gpa, limits);
+    errdefer deinitRenderTargets(self, gpa);
     self.text_scratch = try gpa.alloc(u8, text_scratch_bytes);
     errdefer gpa.free(self.text_scratch);
     self.text_scratch_allocator = std.heap.FixedBufferAllocator.init(self.text_scratch);
@@ -984,6 +983,27 @@ fn clipboardBytes(text: *const limits_mod.TextLimits) u32 {
     if (text.editor.count_max > 0) bytes = @max(bytes, text.editor.bytes_max);
     assert(bytes > 0);
     return bytes;
+}
+
+/// What the render side draws from: the packed frame, and the 0.3.1 scene
+/// on targets whose hosts still draw it. Both at the app's limits plus the
+/// debugger overlay's headroom in safe builds (`debugger.reservedLimits`).
+fn initRenderTargets(self: *Window, gpa: std.mem.Allocator, limits: *const ResourceLimits) !void {
+    const reserved = debugger_mod.reservedLimits(limits);
+    assert(reserved.check() == null);
+    try self.packed_frame.initInPlace(&.{
+        .scene = reserved.scene,
+        .paint_record_count_max = reserved.records.paint_record_count_frame_max,
+    });
+    errdefer self.packed_frame.deinit();
+    self.scene = if (legacy_scene) try initScene(gpa, limits) else {};
+    assert(self.packed_frame.draw_count == 0);
+}
+
+fn deinitRenderTargets(self: *Window, gpa: std.mem.Allocator) void {
+    assert(self.packed_frame.clip_count >= 1);
+    if (legacy_scene) deinitScene(gpa, self.scene);
+    self.packed_frame.deinit();
 }
 
 /// The scene pack fills: the app's scene budget plus the debugger overlay's
@@ -1014,8 +1034,7 @@ fn deinitRuntimeStorage(self: *Window, gpa: std.mem.Allocator) void {
     self.screen_reader.deinit();
     gpa.destroy(self.screen_reader);
     gpa.free(self.text_scratch);
-    deinitScene(gpa, self.scene);
-    self.packed_frame.deinit();
+    deinitRenderTargets(self, gpa);
     gpa.free(self.dialog_request_bytes);
     gpa.free(self.clipboard_bytes);
     if (self.editors_reserved) self.editors.deinit(gpa);

@@ -9,6 +9,8 @@ const objc = @import("objc");
 const geometry = @import("../../geometry/geometry.zig");
 const platform = @import("platform.zig");
 const metal = @import("metal/metal.zig");
+const backend = @import("../../core/backend.zig");
+const limits_mod = @import("../../core/limits.zig");
 const input_view = @import("input_view.zig");
 const input = @import("../../input/events.zig");
 const appkit = @import("appkit.zig");
@@ -138,13 +140,17 @@ pub const Window = struct {
         assert(self.scale_factor > 0.0);
 
         try self.setupMetalLayer();
-        self.renderer = try metal.Renderer.init(
-            allocator,
-            self.metal_layer,
-            self.size,
-            self.scale_factor,
-            &options.limits,
-        );
+        const render_limits = backend.RenderLimits.fromResourceLimits(&options.limits);
+        const viewport = framebufferViewport(.{
+            .width = self.size.width,
+            .height = self.size.height,
+            .scale_factor = self.scale_factor,
+        }, &render_limits.window);
+        try self.renderer.initInPlace(&.{
+            .native = self.metal_layer.value,
+            .size_px = viewport.size_px,
+            .scale_factor = viewport.scale_factor,
+        }, &render_limits);
 
         self.ns_window.msgSend(void, "makeKeyAndOrderFront:", .{@as(?*anyopaque, null)});
 
@@ -591,3 +597,65 @@ pub const Window = struct {
         self.metal_layer.msgSend(void, "setDrawableSize:", .{drawable_size});
     }
 };
+
+/// The framebuffer a logical window needs, within the budget's framebuffer
+/// limits. A window larger than the limits (full screen on a bigger display
+/// than the budget planned for) draws at the largest scale that fits, which
+/// the layer stretches to fill: sharper pixels would need drawables the
+/// budget did not provide for (CLAUDE.md §2).
+pub fn framebufferViewport(
+    logical: struct { width: f64, height: f64, scale_factor: f64 },
+    window_limits: *const limits_mod.WindowLimits,
+) backend.Viewport {
+    assert(logical.scale_factor > 0);
+    assert(logical.width >= 0 and logical.height >= 0);
+    const width_max: f64 = @floatFromInt(window_limits.framebuffer_width_max);
+    const height_max: f64 = @floatFromInt(window_limits.framebuffer_height_max);
+    var scale = logical.scale_factor;
+    if (logical.width * scale > width_max) scale = width_max / logical.width;
+    if (logical.height * scale > height_max) scale = height_max / logical.height;
+    var viewport = backend.Viewport.fromLogical(
+        @floatCast(logical.width),
+        @floatCast(logical.height),
+        @floatCast(scale),
+    );
+    // Rounding to whole pixels can land one past a limit the scale meets exactly.
+    viewport.size_px.width = @min(viewport.size_px.width, window_limits.framebuffer_width_max);
+    viewport.size_px.height = @min(viewport.size_px.height, window_limits.framebuffer_height_max);
+    assert(viewport.scale_factor <= logical.scale_factor);
+    return viewport;
+}
+
+test "framebufferViewport keeps the scale within the limits and clamps past them" {
+    // Goal: a window that fits keeps its backing scale exactly; one a pixel past
+    // either limit drops to the largest scale that fits, never past the limit.
+    const window_limits = limits_mod.WindowLimits{
+        .framebuffer_width_max = 2560,
+        .framebuffer_height_max = 1600,
+    };
+    const fits = framebufferViewport(.{
+        .width = 1280,
+        .height = 800,
+        .scale_factor = 2,
+    }, &window_limits);
+    try std.testing.expectEqual(@as(f32, 2), fits.scale_factor);
+    try std.testing.expectEqual(@as(u32, 2560), fits.size_px.width);
+    try std.testing.expectEqual(@as(u32, 1600), fits.size_px.height);
+
+    const wide = framebufferViewport(.{
+        .width = 1281,
+        .height = 400,
+        .scale_factor = 2,
+    }, &window_limits);
+    try std.testing.expect(wide.scale_factor < 2);
+    try std.testing.expectEqual(@as(u32, 2560), wide.size_px.width);
+    try std.testing.expectEqual(@as(u32, 799), wide.size_px.height);
+
+    const tall = framebufferViewport(.{
+        .width = 100,
+        .height = 1601,
+        .scale_factor = 1,
+    }, &window_limits);
+    try std.testing.expect(tall.size_px.height <= 1600);
+    try std.testing.expect(tall.scale_factor < 1);
+}
