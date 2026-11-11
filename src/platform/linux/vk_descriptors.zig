@@ -1,27 +1,45 @@
 //! Descriptor layout, pool, set creation and updates.
 //!
 //! Free functions with targeted parameters — each takes only what it needs,
-//! not the entire VulkanRenderer. Two distinct layout shapes exist:
+//! not the entire VulkanRenderer. Every pipeline reads one descriptor set per
+//! frame in flight, with the bindings `shaders/packed.glsl` declares:
 //!
-//!   - **Unified**: storage buffer (binding 0) + uniform buffer (binding 1)
-//!   - **Textured**: storage + uniform + sampled image (binding 2) + sampler (binding 3)
+//!   - 0 to 4: the packed frame's storage buffers (`vk_types.FrameBuffer`)
+//!   - 5: the viewport uniform
+//!   - 6 to 8: the glyph, SVG, and image atlases
+//!   - 9: the atlas sampler
 //!
-//! Text, SVG, and image pipelines all share a single textured layout handle.
-//! The renderer stores exactly 2 layout handles:
-//! `unified_descriptor_layout` and `textured_descriptor_layout`.
+//! So a frame binds its set once, whichever pipelines its draws use.
 
 const std = @import("std");
 const vk = @import("vulkan.zig");
 const vk_types = @import("vk_types.zig");
 
+const assert = std.debug.assert;
+
 // =============================================================================
 // Limits (CLAUDE.md Rule #4 — put a limit on everything)
 // =============================================================================
 
-/// Descriptor sets each frame in flight allocates: one per pipeline (unified,
-/// text, SVG, image). The pool holds this many per frame of the window budget,
-/// at most 12 at three frames.
-const descriptor_set_count_frame: u32 = 4;
+/// Descriptor sets each frame in flight allocates. The pool holds this many
+/// per frame of the window budget, at most three.
+const descriptor_set_count_frame: u32 = 1;
+
+/// Atlases the shaders sample, in binding order: glyph, SVG, image.
+pub const atlas_binding_count: u32 = 3;
+
+const storage_binding_count: u32 = vk_types.frame_buffer_count;
+const uniform_binding: u32 = storage_binding_count;
+const atlas_binding_first: u32 = uniform_binding + 1;
+const sampler_binding: u32 = atlas_binding_first + atlas_binding_count;
+const binding_count: u32 = sampler_binding + 1;
+
+comptime {
+    // `shaders/packed.glsl` and the sprite fragment shaders hard-code these.
+    assert(uniform_binding == 5);
+    assert(atlas_binding_first == 6);
+    assert(sampler_binding == 9);
+}
 
 // =============================================================================
 // Error Types
@@ -44,112 +62,80 @@ pub const SamplerError = error{
 };
 
 // =============================================================================
-// Public API — Layouts
+// Public API — Layout
 // =============================================================================
 
-/// Create the unified descriptor set layout: storage buffer + uniform buffer.
-///
-/// Used by the primitive/unified pipeline which has no texture sampling.
-///
-///   binding 0: VK_DESCRIPTOR_TYPE_STORAGE_BUFFER  (vertex stage)
-///   binding 1: VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER  (vertex + fragment stage)
-pub fn createUnifiedLayout(device: vk.Device) LayoutError!vk.DescriptorSetLayout {
-    std.debug.assert(device != null);
-
-    const bindings = [_]vk.DescriptorSetLayoutBinding{
-        .{
-            .binding = 0,
-            .descriptorType = vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+/// Create the frame's descriptor set layout (see the file comment). Storage
+/// buffers and the uniform are read by vertex shaders, atlases by fragment
+/// shaders.
+pub fn createFrameLayout(device: vk.Device) LayoutError!vk.DescriptorSetLayout {
+    assert(device != null);
+    var bindings: [binding_count]vk.DescriptorSetLayoutBinding = undefined;
+    for (&bindings, 0..) |*binding, index| {
+        const slot: u32 = @intCast(index);
+        const kind: vk.DescriptorType = if (slot < uniform_binding)
+            vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER
+        else if (slot == uniform_binding)
+            vk.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
+        else if (slot < sampler_binding)
+            vk.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE
+        else
+            vk.VK_DESCRIPTOR_TYPE_SAMPLER;
+        binding.* = .{
+            .binding = slot,
+            .descriptorType = kind,
             .descriptorCount = 1,
-            .stageFlags = vk.VK_SHADER_STAGE_VERTEX_BIT,
+            .stageFlags = if (slot <= uniform_binding)
+                vk.VK_SHADER_STAGE_VERTEX_BIT
+            else
+                vk.VK_SHADER_STAGE_FRAGMENT_BIT,
             .pImmutableSamplers = null,
-        },
-        .{
-            .binding = 1,
-            .descriptorType = vk.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            .descriptorCount = 1,
-            .stageFlags = vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_BIT,
-            .pImmutableSamplers = null,
-        },
+        };
+    }
+    const layout_info = vk.DescriptorSetLayoutCreateInfo{
+        .sType = vk.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .pNext = null,
+        .flags = 0,
+        .bindingCount = binding_count,
+        .pBindings = &bindings,
     };
-
-    return createLayout(device, &bindings, bindings.len);
-}
-
-/// Create the textured descriptor set layout: storage + uniform + image + sampler.
-///
-/// Used by text, SVG, and image pipelines — all three share this identical layout.
-/// The renderer creates one handle and shares it across all three pipelines.
-///
-///   binding 0: VK_DESCRIPTOR_TYPE_STORAGE_BUFFER   (vertex stage)
-///   binding 1: VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER   (vertex stage)
-///   binding 2: VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE    (fragment stage)
-///   binding 3: VK_DESCRIPTOR_TYPE_SAMPLER          (fragment stage)
-pub fn createTexturedLayout(device: vk.Device) LayoutError!vk.DescriptorSetLayout {
-    std.debug.assert(device != null);
-
-    const bindings = [_]vk.DescriptorSetLayoutBinding{
-        .{
-            .binding = 0,
-            .descriptorType = vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            .descriptorCount = 1,
-            .stageFlags = vk.VK_SHADER_STAGE_VERTEX_BIT,
-            .pImmutableSamplers = null,
-        },
-        .{
-            .binding = 1,
-            .descriptorType = vk.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            .descriptorCount = 1,
-            .stageFlags = vk.VK_SHADER_STAGE_VERTEX_BIT,
-            .pImmutableSamplers = null,
-        },
-        .{
-            .binding = 2,
-            .descriptorType = vk.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-            .descriptorCount = 1,
-            .stageFlags = vk.VK_SHADER_STAGE_FRAGMENT_BIT,
-            .pImmutableSamplers = null,
-        },
-        .{
-            .binding = 3,
-            .descriptorType = vk.VK_DESCRIPTOR_TYPE_SAMPLER,
-            .descriptorCount = 1,
-            .stageFlags = vk.VK_SHADER_STAGE_FRAGMENT_BIT,
-            .pImmutableSamplers = null,
-        },
-    };
-
-    return createLayout(device, &bindings, bindings.len);
+    var layout: vk.DescriptorSetLayout = null;
+    const result = vk.vkCreateDescriptorSetLayout(device, &layout_info, null, &layout);
+    if (!vk.succeeded(result)) return LayoutError.DescriptorSetLayoutCreationFailed;
+    assert(layout != null);
+    return layout;
 }
 
 // =============================================================================
 // Public API — Pool
 // =============================================================================
 
-/// Create a descriptor pool sized for all pipelines.
-///
-/// Pool sizes are budgeted for 4 pipelines (unified + text + SVG + image),
-/// each with their own descriptor set, for each of `frame_count` frames in
-/// flight (the window budget's `ResourceLimits.frame.in_flight_count`).
+/// Create a descriptor pool holding one frame set for each of `frame_count`
+/// frames in flight (the window budget's `ResourceLimits.frame.in_flight_count`).
 pub fn createDescriptorPool(device: vk.Device, frame_count: u32) PoolError!vk.DescriptorPool {
-    std.debug.assert(device != null);
-    std.debug.assert(frame_count >= 1);
-    std.debug.assert(frame_count <= vk_types.frame_count_max);
+    assert(device != null);
+    assert(frame_count >= 1);
+    assert(frame_count <= vk_types.frame_count_max);
 
-    // 4 pipelines × frame_count frames for storage + uniform;
-    // 3 textured pipelines × frame_count frames for image + sampler.
+    const sets = descriptor_set_count_frame * frame_count;
     const pool_sizes = [_]vk.DescriptorPoolSize{
-        .{ .type = vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 4 * frame_count },
-        .{ .type = vk.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 4 * frame_count },
-        .{ .type = vk.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .descriptorCount = 3 * frame_count },
-        .{ .type = vk.VK_DESCRIPTOR_TYPE_SAMPLER, .descriptorCount = 3 * frame_count },
+        .{
+            .type = vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .descriptorCount = storage_binding_count * sets,
+        },
+        .{ .type = vk.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = sets },
+        .{
+            .type = vk.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+            .descriptorCount = atlas_binding_count * sets,
+        },
+        .{ .type = vk.VK_DESCRIPTOR_TYPE_SAMPLER, .descriptorCount = sets },
     };
 
     const pool_info = vk.DescriptorPoolCreateInfo{
         .sType = vk.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
         .pNext = null,
         .flags = 0,
-        .maxSets = descriptor_set_count_frame * frame_count,
+        .maxSets = sets,
         .poolSizeCount = pool_sizes.len,
         .pPoolSizes = &pool_sizes,
     };
@@ -158,7 +144,7 @@ pub fn createDescriptorPool(device: vk.Device, frame_count: u32) PoolError!vk.De
     const result = vk.vkCreateDescriptorPool(device, &pool_info, null, &pool);
     if (!vk.succeeded(result)) return PoolError.DescriptorPoolCreationFailed;
 
-    std.debug.assert(pool != null);
+    assert(pool != null);
     return pool;
 }
 
@@ -167,17 +153,15 @@ pub fn createDescriptorPool(device: vk.Device, frame_count: u32) PoolError!vk.De
 // =============================================================================
 
 /// Allocate a single descriptor set from the pool for the given layout.
-///
-/// Caller is responsible for calling this once per pipeline that needs a set.
 /// The pool owns the memory; sets are freed implicitly when the pool is destroyed.
 pub fn allocateDescriptorSet(
     device: vk.Device,
     pool: vk.DescriptorPool,
     layout: vk.DescriptorSetLayout,
 ) AllocError!vk.DescriptorSet {
-    std.debug.assert(device != null);
-    std.debug.assert(pool != null);
-    std.debug.assert(layout != null);
+    assert(device != null);
+    assert(pool != null);
+    assert(layout != null);
 
     const layouts = [_]vk.DescriptorSetLayout{layout};
     const alloc_info = vk.DescriptorSetAllocateInfo{
@@ -192,7 +176,7 @@ pub fn allocateDescriptorSet(
     const result = vk.vkAllocateDescriptorSets(device, &alloc_info, (&descriptor_set)[0..1]);
     if (!vk.succeeded(result)) return AllocError.DescriptorSetAllocationFailed;
 
-    std.debug.assert(descriptor_set != null);
+    assert(descriptor_set != null);
     return descriptor_set;
 }
 
@@ -200,65 +184,78 @@ pub fn allocateDescriptorSet(
 // Public API — Descriptor Updates
 // =============================================================================
 
-/// Update the unified descriptor set with storage and uniform buffer bindings.
-///
-/// This writes both bindings in a single vkUpdateDescriptorSets call:
-///   binding 0 → primitive storage buffer
-///   binding 1 → uniform buffer (viewport dimensions)
-pub fn updateUnifiedDescriptorSet(
+/// Everything one frame's descriptor set points at. Written once at init:
+/// the buffers and atlas images are never recreated.
+pub const FrameBindings = struct {
+    /// Indexed by `vk_types.FrameBuffer`, each bound over its whole range.
+    storage: [storage_binding_count]vk.DescriptorBufferInfo,
+    uniform: vk.Buffer,
+    /// Glyph, SVG, and image atlas views, in the shader's binding order.
+    atlas_views: [atlas_binding_count]vk.ImageView,
+    sampler: vk.Sampler,
+};
+
+/// Write every binding of a frame's descriptor set in one call.
+pub fn updateFrameDescriptorSet(
     device: vk.Device,
     descriptor_set: vk.DescriptorSet,
-    primitive_buffer: vk.Buffer,
-    primitive_range: vk.DeviceSize,
-    uniform_buffer: vk.Buffer,
-    uniform_range: vk.DeviceSize,
+    bindings: *const FrameBindings,
 ) void {
-    std.debug.assert(device != null);
-    std.debug.assert(descriptor_set != null);
-    std.debug.assert(primitive_buffer != null);
-    std.debug.assert(uniform_buffer != null);
+    assert(device != null);
+    assert(descriptor_set != null);
+    assert(bindings.uniform != null);
+    assert(bindings.sampler != null);
 
-    const buffer_infos = [_]vk.DescriptorBufferInfo{
-        .{
-            .buffer = primitive_buffer,
-            .offset = 0,
-            .range = primitive_range,
-        },
-        .{
-            .buffer = uniform_buffer,
-            .offset = 0,
-            .range = uniform_range,
-        },
+    const uniform_info = vk.DescriptorBufferInfo{
+        .buffer = bindings.uniform,
+        .offset = 0,
+        .range = @sizeOf(vk_types.Uniforms),
+    };
+    var image_infos: [atlas_binding_count]vk.DescriptorImageInfo = undefined;
+    for (&image_infos, bindings.atlas_views) |*info, view| {
+        assert(view != null);
+        info.* = .{
+            .sampler = null,
+            .imageView = view,
+            .imageLayout = vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        };
+    }
+    const sampler_info = vk.DescriptorImageInfo{
+        .sampler = bindings.sampler,
+        .imageView = null,
+        .imageLayout = vk.VK_IMAGE_LAYOUT_UNDEFINED,
     };
 
-    const writes = [_]vk.WriteDescriptorSet{
-        .{
+    var writes: [binding_count]vk.WriteDescriptorSet = undefined;
+    for (&writes, 0..) |*write, index| {
+        const slot: u32 = @intCast(index);
+        write.* = .{
             .sType = vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
             .pNext = null,
             .dstSet = descriptor_set,
-            .dstBinding = 0,
+            .dstBinding = slot,
             .dstArrayElement = 0,
             .descriptorCount = 1,
             .descriptorType = vk.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
             .pImageInfo = null,
-            .pBufferInfo = buffer_infos[0..1],
+            .pBufferInfo = null,
             .pTexelBufferView = null,
-        },
-        .{
-            .sType = vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .pNext = null,
-            .dstSet = descriptor_set,
-            .dstBinding = 1,
-            .dstArrayElement = 0,
-            .descriptorCount = 1,
-            .descriptorType = vk.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            .pImageInfo = null,
-            .pBufferInfo = buffer_infos[1..2],
-            .pTexelBufferView = null,
-        },
-    };
-
-    vk.vkUpdateDescriptorSets(device, writes.len, &writes, 0, null);
+        };
+        if (slot < uniform_binding) {
+            assert(bindings.storage[slot].buffer != null);
+            write.pBufferInfo = bindings.storage[slot..][0..1];
+        } else if (slot == uniform_binding) {
+            write.descriptorType = vk.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            write.pBufferInfo = (&uniform_info)[0..1];
+        } else if (slot < sampler_binding) {
+            write.descriptorType = vk.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+            write.pImageInfo = image_infos[slot - atlas_binding_first ..][0..1];
+        } else {
+            write.descriptorType = vk.VK_DESCRIPTOR_TYPE_SAMPLER;
+            write.pImageInfo = (&sampler_info)[0..1];
+        }
+    }
+    vk.vkUpdateDescriptorSets(device, binding_count, &writes, 0, null);
 }
 
 // =============================================================================
@@ -270,7 +267,7 @@ pub fn updateUnifiedDescriptorSet(
 /// Shared across all atlas pipelines (text, SVG, image). A single sampler
 /// handle is sufficient since all atlases use the same filtering mode.
 pub fn createAtlasSampler(device: vk.Device) SamplerError!vk.Sampler {
-    std.debug.assert(device != null);
+    assert(device != null);
 
     const sampler_info = vk.SamplerCreateInfo{
         .sType = vk.VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
@@ -297,35 +294,6 @@ pub fn createAtlasSampler(device: vk.Device) SamplerError!vk.Sampler {
     const result = vk.vkCreateSampler(device, &sampler_info, null, &sampler);
     if (!vk.succeeded(result)) return SamplerError.SamplerCreationFailed;
 
-    std.debug.assert(sampler != null);
+    assert(sampler != null);
     return sampler;
-}
-
-// =============================================================================
-// Internal Helpers
-// =============================================================================
-
-/// Shared layout creation — all layouts use this path, only bindings differ.
-fn createLayout(
-    device: vk.Device,
-    bindings: [*]const vk.DescriptorSetLayoutBinding,
-    binding_count: u32,
-) LayoutError!vk.DescriptorSetLayout {
-    std.debug.assert(device != null);
-    std.debug.assert(binding_count >= 2); // All layouts have at least storage + uniform
-
-    const layout_info = vk.DescriptorSetLayoutCreateInfo{
-        .sType = vk.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-        .pNext = null,
-        .flags = 0,
-        .bindingCount = binding_count,
-        .pBindings = bindings,
-    };
-
-    var layout: vk.DescriptorSetLayout = null;
-    const result = vk.vkCreateDescriptorSetLayout(device, &layout_info, null, &layout);
-    if (!vk.succeeded(result)) return LayoutError.DescriptorSetLayoutCreationFailed;
-
-    std.debug.assert(layout != null);
-    return layout;
 }

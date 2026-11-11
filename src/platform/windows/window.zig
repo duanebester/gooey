@@ -32,6 +32,7 @@ const ime = @import("ime.zig");
 const windows_input = @import("input.zig");
 const windows_platform = @import("platform.zig");
 const limits_mod = @import("../../core/limits.zig");
+const backend = @import("../../core/backend.zig");
 const core_events = @import("../../core/events.zig");
 const core_router = @import("../../core/router.zig");
 const WindowsPlatform = windows_platform.WindowsPlatform;
@@ -186,13 +187,17 @@ pub const Window = struct {
 
         self.adoptWindowDpi(options);
         self.readClientSize();
-        try self.renderer.initWithNativeSurface(
-            .{ .hinstance = plat.hinstance, .hwnd = self.hwnd.? },
-            self.rendererWidth(),
-            self.rendererHeight(),
-            self.scale_factor,
-            &options.limits,
-        );
+        const native = vk_renderer.NativeSurface{
+            .hinstance = plat.hinstance,
+            .hwnd = self.hwnd.?,
+        };
+        const viewport = self.rendererViewport();
+        const render_limits = backend.RenderLimits.fromResourceLimits(&options.limits);
+        try self.renderer.initInPlace(&.{
+            .native = @ptrCast(@constCast(&native)),
+            .size_px = viewport.size_px,
+            .scale_factor = viewport.scale_factor,
+        }, &render_limits);
         assert(rendererSwapchainUsable(&self.renderer));
 
         // Shown only once the renderer exists. The host's first frame sizes
@@ -231,7 +236,7 @@ pub const Window = struct {
         self.max_size = options.max_size;
         self.window_limits = options.limits.window;
         self.modal_turn_active = false;
-        self.renderer = VulkanRenderer.init(allocator);
+        self.renderer = .{};
         self.cursor_shape = .default;
         self.closed = false;
         // Empty and terminated, so `CreateWindowExW` reads a valid string even
@@ -476,27 +481,18 @@ pub const Window = struct {
         });
     }
 
-    /// The renderer takes whole logical pixels and multiplies by the scale.
-    /// Rounding up makes the product cover the client area; the swapchain
-    /// clamps it to the surface's exact extent.
-    ///
-    /// The same whole number is the renderer's viewport uniform, so at a
-    /// fractional scale the scene is drawn at `client_px / ceil(size)` rather
-    /// than `scale_factor`: at 150% a 1001 px client renders 668 logical px
-    /// across it (scale 1.4985), shrinking content by under one logical pixel
-    /// and leaving that sliver at the right and bottom edges. Exact output
-    /// needs a fractional viewport from the shared renderer; see
-    /// `docs/windows-port.md`.
-    fn rendererWidth(self: *const Self) u32 {
+    /// The framebuffer for the client area at the window's scale, fitted to
+    /// the budget as the core host fits every frame's (`applyViewport`). The
+    /// swapchain then takes the surface's exact extent.
+    fn rendererViewport(self: *const Self) backend.Viewport {
         assert(self.size.width > 0);
-        assert(self.size.width <= client_px_max_u32);
-        return @intFromFloat(@ceil(self.size.width));
-    }
-
-    fn rendererHeight(self: *const Self) u32 {
         assert(self.size.height > 0);
-        assert(self.size.height <= client_px_max_u32);
-        return @intFromFloat(@ceil(self.size.height));
+        return backend.Viewport.fitLogical(
+            @floatCast(self.size.width),
+            @floatCast(self.size.height),
+            @floatCast(self.scale_factor),
+            &self.window_limits,
+        );
     }
 
     // =========================================================================
@@ -1165,7 +1161,7 @@ fn encodeTitle(target: *TitleBuffer, title: []const u8) bool {
 }
 
 comptime {
-    // About 11.5 KiB, the shared renderer 2.6 KiB of it: heap-allocated and
+    // About 13.1 KiB, the shared renderer 4.3 KiB of it: heap-allocated and
     // initialized in place, but under the 50 KiB WASM stack threshold
     // (CLAUDE.md §14). Revisit `initInPlace` if this bound has to grow.
     assert(@sizeOf(Window) <= 16 * 1024);

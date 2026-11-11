@@ -38,7 +38,7 @@ pub const vk_renderer = @import("vk_renderer.zig");
 pub const vk_types = @import("vk_types.zig");
 pub const vk_pipelines = @import("vk_pipelines.zig");
 pub const vulkan = @import("vulkan.zig");
-pub const scene_renderer = @import("scene_renderer.zig");
+pub const vk_draw = @import("vk_draw.zig");
 
 // D-Bus integration (for XDG portals)
 pub const dbus = @import("dbus.zig");

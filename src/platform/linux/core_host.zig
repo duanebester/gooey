@@ -61,15 +61,14 @@ const window_mod = @import("window.zig");
 const file_dialog = @import("file_dialog.zig");
 const clipboard = @import("clipboard.zig");
 const linux_backend = @import("../linux_backend.zig");
-const scene_mod = @import("../../scene/mod.zig");
 const core_window = @import("../../core/window.zig");
-const pack_legacy = @import("../../core/pack_legacy.zig");
 const core_element = @import("../../core/element.zig");
 const core_tick = @import("../../core/tick.zig");
 const core_router = @import("../../core/router.zig");
 const core_events = @import("../../core/events.zig");
 const core_handler = @import("../../core/handler.zig");
 const core_limits = @import("../../core/limits.zig");
+const backend = @import("../../core/backend.zig");
 const records = @import("../../core/records.zig");
 
 const assert = std.debug.assert;
@@ -197,6 +196,11 @@ pub const Host = struct {
     surface_width: u32,
     surface_height: u32,
     surface_scale: f32,
+    /// The framebuffer the renderer was last sized to, fitted to the window
+    /// budget, and whether that fit lowered the scale (logged once per
+    /// transition).
+    viewport: backend.Viewport,
+    downscaled: bool,
 
     pub const Options = struct {
         gpa: std.mem.Allocator,
@@ -240,6 +244,13 @@ pub const Host = struct {
         self.surface_width = self.window.width_px;
         self.surface_height = self.window.height_px;
         self.surface_scale = @floatCast(self.window.scale_factor);
+        self.viewport = backend.Viewport.fitLogical(
+            @floatFromInt(self.surface_width),
+            @floatFromInt(self.surface_height),
+            @min(self.surface_scale, window_mod.renderer_scale_max),
+            &options.core.limits.window,
+        );
+        self.downscaled = false;
         self.dialog_paths = try options.gpa.alloc(u8, path_bytes_max);
         errdefer options.gpa.free(self.dialog_paths);
 
@@ -308,24 +319,16 @@ pub const Host = struct {
         assert(self.window.core != null);
     }
 
-    /// Vulkan consumes the upload journal as this window. The CPU renderer
-    /// samples the atlases in place, so it registers no consumer; its buffer
-    /// releases move to the render queue before the first frame.
+    /// The renderer consumes the upload journal as this window: `draw` feeds
+    /// it this consumer's records before each frame. The CPU renderer's
+    /// buffer releases also move to the render queue before the first frame.
     fn bindAtlases(self: *Host) void {
         const resources = self.core.resources;
-        if (cpu_renderer) {
-            self.window.renderer.setAtlases(
-                resources.text_system.getAtlas(),
-                &resources.svg_atlas.atlas,
-                &resources.image_atlas.atlas,
-            );
-            self.window.renderer.setEventQueue(self.render_queue);
-        } else {
-            const key = @intFromPtr(self.window);
-            resources.registerAtlasConsumer(key);
-            self.core.atlas_consumer_key = key;
-            self.window.renderer.bindAtlasUploads(resources.atlas_uploads, key);
-        }
+        const key = @intFromPtr(self.window);
+        resources.registerAtlasConsumer(key);
+        self.core.atlas_consumer_key = key;
+        if (cpu_renderer) self.window.renderer.setEventQueue(self.render_queue);
+        assert(self.core.atlas_consumer_key != 0);
     }
 
     /// Stop the render thread and wait for it, then unbind what `bindWindow`
@@ -353,13 +356,10 @@ pub const Host = struct {
     /// before it is freed.
     fn unbindWindow(self: *Host) void {
         assert(self.thread == null);
-        if (cpu_renderer) {
-            // The render queue is destroyed next; the buffers outlive it.
-            self.window.renderer.setEventQueue(null);
-        } else {
-            assert(self.core.atlas_consumer_key == @intFromPtr(self.window));
-            self.core.resources.unregisterAtlasConsumer(self.core.atlas_consumer_key);
-        }
+        // The render queue is destroyed next; the buffers outlive it.
+        if (cpu_renderer) self.window.renderer.setEventQueue(null);
+        assert(self.core.atlas_consumer_key == @intFromPtr(self.window));
+        self.core.resources.unregisterAtlasConsumer(self.core.atlas_consumer_key);
         self.core.presenter = null;
         self.core.file_dialog = null;
         self.core.images.bindWake(null);
@@ -682,7 +682,43 @@ pub const Host = struct {
         if (window.xdg_surface) |xdg| {
             wayland.xdgSurfaceSetWindowGeometry(xdg, 0, 0, @intCast(width), @intCast(height));
         }
-        window.renderer.resize(width, height, frame.scale_factor);
+        self.fitViewport(width, height, frame.scale_factor);
+    }
+
+    /// Size the framebuffer for a window of `width` x `height` logical
+    /// pixels: at `scale_factor`, or lower when that would pass the window
+    /// budget (or the renderer's highest scale), and the compositor scales
+    /// the smaller buffer up through the surface's viewport.
+    fn fitViewport(self: *Host, width: u32, height: u32, scale_factor: f32) void {
+        assert(width > 0);
+        assert(height > 0);
+        assert(scale_factor > 0);
+        const window_limits = &self.core.limits.window;
+        const viewport = backend.Viewport.fitLogical(
+            @floatFromInt(width),
+            @floatFromInt(height),
+            @min(scale_factor, window_mod.renderer_scale_max),
+            window_limits,
+        );
+        const downscaled = viewport.scale_factor < scale_factor;
+        if (downscaled and !self.downscaled) {
+            std.log.warn(
+                "renderer: a {d}x{d} window at scale {d} exceeds ResourceLimits.window " ++
+                    "({d}x{d} px); rendering at scale {d}",
+                .{
+                    width,
+                    height,
+                    scale_factor,
+                    window_limits.framebuffer_width_max,
+                    window_limits.framebuffer_height_max,
+                    viewport.scale_factor,
+                },
+            );
+        }
+        self.downscaled = downscaled;
+        const same_size = std.meta.eql(viewport.size_px, self.viewport.size_px);
+        self.viewport = viewport;
+        if (!same_size) self.window.renderer.resize(viewport.size_px);
     }
 };
 
@@ -745,25 +781,19 @@ fn draw(
     clear: records.Color,
 ) void {
     const host: *Host = @ptrCast(@alignCast(context));
-    // This renderer draws the 0.3.1 scene until it moves onto the contract.
-    const scene: *const scene_mod.Scene = host.core.scene;
-    pack_legacy.fillScene(packed_frame, host.core.scene, .{
-        .width = frame.viewport_width,
-        .height = frame.viewport_height,
-    });
     assert(frame.scale_factor > 0);
     host.applyViewport(frame);
     const renderer = &host.window.renderer;
-    renderer.setClearColor(clear);
-    if (cpu_renderer) {
-        // `presentDue` waited for a released buffer; only this thread takes one.
-        const drawn = renderer.render(scene);
-        assert(drawn);
-    } else {
-        renderer.render(scene);
-        // An out-of-date swapchain skips the frame and is recreated by the
-        // next render; draw this frame again rather than leave a stale one.
-        if (renderer.swapchain_needs_recreate) renderer.render(scene);
+    const uploads = host.core.resources.atlas_uploads;
+    backend.uploadPendingAtlases(renderer, uploads, host.core.atlas_consumer_key);
+    backend.checkCapabilities(renderer.capabilities(), packed_frame);
+    // CPU: `presentDue` waited for a released buffer; only this thread takes one.
+    if (cpu_renderer) assert(renderer.hasFreeSlot());
+    renderer.draw(packed_frame, host.viewport, clear);
+    // Vulkan: an out-of-date swapchain skips the frame and is recreated by
+    // the next draw; draw this frame again rather than leave a stale one.
+    if (!cpu_renderer and renderer.swapchain_needs_recreate) {
+        renderer.draw(packed_frame, host.viewport, clear);
     }
     assert(host.core.render_phase == .draw);
 }

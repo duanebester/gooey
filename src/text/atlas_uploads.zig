@@ -1,6 +1,7 @@
 //! Atlas upload journal and frame clock, shared by the glyph, SVG, and image atlases.
 //!
-//! GPU backends keep no CPU copy of atlas pixels (memory-budget decision 8).
+//! The app keeps no copy of atlas pixels (memory-budget decision 8); each renderer
+//! holds them in its own textures, the CPU renderer included.
 //! When an atlas places a rasterized item, it writes the item's pixels, with a
 //! zeroed 1 px border, into this journal. Every renderer that draws from the
 //! atlases is a registered consumer: each frame it copies the records it has not
@@ -17,7 +18,7 @@
 //! `upload_bytes_frame_max` (1 MiB) and `records` 16,384 × 16 B (256 KiB). Both
 //! are reserved at init and touched only up to the peak per-frame upload. A
 //! frame that would stage more defers the remaining items to the next frame.
-//! The CPU renderer's atlases are their own textures, so it reserves neither.
+//! Synthetic-text builds, whose atlases are their own textures, reserve neither.
 //!
 //! Locking: an atlas holds its cache's mutex and then this journal's mutex.
 //! Consumers and `beginFrame` take only this mutex, so the order is acyclic.
@@ -41,7 +42,8 @@ pub const AtlasKind = enum(u8) {
 
 /// Where atlas pixels live.
 pub const AtlasStorage = enum {
-    /// The atlas pixels are the texture, in CPU memory (CPU renderer).
+    /// The atlas pixels are the texture, in CPU memory (the `NullRenderer`
+    /// of synthetic-text builds).
     cpu_texture,
     /// A GPU texture holds the only full copy; pixels travel through the journal.
     gpu_upload,

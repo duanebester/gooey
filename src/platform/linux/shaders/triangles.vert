@@ -9,7 +9,6 @@ layout(location = 3) flat out uint circle;
 layout(location = 4) out vec4 edge_distance;
 layout(location = 5) flat out uint edge_modes;
 
-const uint triangle_stride = 5u;
 // Draw vertices per triangle (mesh_edges.triangle_draw_vertex_count): the
 // triangle at its exact corners (0-2), then one fringe quad of two triangles
 // for each of its three edges (3-20).
@@ -18,17 +17,6 @@ const uint fringe_vertex_count = 6u;
 // A sharp corner's offset point is clamped; tips sharper than about 14 degrees
 // lose part of their fade band instead of producing long slivers.
 const float miter_max = 4.0 * aa_fringe;
-
-vec2 triangle_position(uint vertex) {
-    uint offset = vertex * triangle_stride;
-    return vec2(mesh.data[offset], mesh.data[offset + 1u]) * mesh.transform.zw +
-        mesh.transform.xy;
-}
-
-vec2 triangle_uv(uint vertex) {
-    uint offset = vertex * triangle_stride;
-    return vec2(mesh.data[offset + 2u], mesh.data[offset + 3u]);
-}
 
 // Offset of corner k, which lies on edge k (k -> k+1) and edge k-1: the
 // intersection of the two edges' offset lines, each pushed outward by
@@ -66,17 +54,21 @@ vec2 corner_shift(uint k, uint modes, vec2 normals[3]) {
 // triangle grown by `aa_fringe` across those edges. Interior edges get no
 // quad: their six vertices collapse onto one point and cover nothing.
 // Distances to the original edges and barycentric uv extrapolation keep
-// shading identical across the triangle and its quads.
+// shading identical across the triangle and its quads. Triangle `t` of the
+// mesh is its points 3t..3t+2, with modes `triangle_edge_modes[edge_first + t]`.
 void main() {
+    Mesh mesh = meshes[draw.mesh];
     uint triangle = uint(gl_VertexIndex) / triangle_draw_vertex_count;
     uint slot = uint(gl_VertexIndex) - triangle * triangle_draw_vertex_count;
-    uint first = triangle * 3u;
-    vec2 corners[3] = vec2[3](triangle_position(first), triangle_position(first + 1u),
-        triangle_position(first + 2u));
-    uint modes = uint(mesh.data[first * triangle_stride + 4u] + 0.5);
+    uint first = mesh.first + triangle * 3u;
+    vec2 corners[3] = vec2[3](mesh_points[first], mesh_points[first + 1u],
+        mesh_points[first + 2u]);
+    uint modes = triangle_edge_modes[mesh.edge_first + triangle];
     edge_modes = modes;
-    color = hsla_to_rgba(mesh.color);
+    color = mesh.fill;
     circle = 0u;
+    // Fills are solid, so triangles need no texture coordinates.
+    uv = vec2(0.0);
 
     float area = (corners[1].x - corners[0].x) * (corners[2].y - corners[0].y) -
         (corners[1].y - corners[0].y) * (corners[2].x - corners[0].x);
@@ -110,8 +102,7 @@ void main() {
     if (degenerate) {
         // Covers no pixel samples. Draw it at its corners, unfaded, without quads.
         screen_pos = corners[k];
-        gl_Position = vec4(screen_pos / viewport.size * 2.0 - 1.0, 0, 1);
-        uv = triangle_uv(first + k);
+        gl_Position = clip_position(screen_pos);
         edge_distance = vec4(1e4);
         edge_modes = 0u;
         return;
@@ -119,21 +110,11 @@ void main() {
 
     screen_pos = corners[k];
     if (outer) { screen_pos += corner_shift(k, modes, normals); }
-    gl_Position = vec4(screen_pos / viewport.size * 2.0 - 1.0, 0, 1);
+    gl_Position = clip_position(screen_pos);
 
     vec3 distances;
     for (uint edge = 0u; edge < 3u; ++edge) {
         distances[edge] = dot(screen_pos - corners[edge], normals[edge]);
     }
     edge_distance = vec4(distances, 1e4);
-    // Barycentric weight of corner j is the distance to its opposite edge
-    // (edge j+1) divided by the triangle's height over that edge.
-    vec3 weights;
-    for (uint j = 0u; j < 3u; ++j) {
-        uint opposite = (j + 1u) % 3u;
-        float height = abs(area) / lengths[opposite];
-        weights[j] = distances[opposite] / height;
-    }
-    uv = weights.x * triangle_uv(first) + weights.y * triangle_uv(first + 1u) +
-        weights.z * triangle_uv(first + 2u);
 }

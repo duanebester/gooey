@@ -525,7 +525,9 @@ pub fn build(b: *std.Build) void {
                 });
                 // Track input file - triggers recompilation when source changes
                 compile_cmd.addFileArg(b.path(shader_dir ++ "/" ++ shader.source));
-                // All mesh stages share this ABI and colour conversion implementation.
+                // Every stage shares the packed frame's layout; mesh stages also
+                // share the anti-aliasing helpers.
+                compile_cmd.addFileInput(b.path(shader_dir ++ "/packed.glsl"));
                 compile_cmd.addFileInput(b.path(shader_dir ++ "/mesh.glsl"));
                 compile_shaders_step.dependOn(&compile_cmd.step);
             }
@@ -1289,8 +1291,9 @@ fn addImportBan(b: *std.Build, test_step: *std.Build.Step) void {
 /// A full pool must abort with the pool, capacity, counts, and frame (CLAUDE.md
 /// §2). A panic cannot be caught in-process, so `src/scene/overflow_check.zig`
 /// overflows a pool in a child process and each run step asserts the abort and
-/// its exact message (CLAUDE.md §24). The scene pool is checked everywhere; the
-/// Vulkan instance buffers, sized from the same budget, are checked on Linux.
+/// its exact message (CLAUDE.md §24). The scene pool is checked everywhere. The
+/// renderers' buffers are sized from the packed pools, whose overflow
+/// `fail_fast_check` covers.
 /// Returns the executable so the caller can add platform link steps.
 fn addOverflowChecks(
     b: *std.Build,
@@ -1330,36 +1333,6 @@ fn addOverflowChecks(
         test_step.dependOn(&run_profile.step);
     }
     add_geometry_overflow_checks(b, exe, test_step);
-
-    if (target.result.os.tag == .linux) {
-        const run_cpu_atlas = b.addRunArtifact(exe);
-        run_cpu_atlas.addArg("cpu-atlas");
-        run_cpu_atlas.addCheck(.{ .expect_stderr_match = "CPU renderer: 1 glyph instance(s) " ++
-            "in frame 1 but no glyph atlas is bound;" });
-        run_cpu_atlas.addCheck(.{ .expect_term = .{ .signal = .ABRT } });
-        test_step.dependOn(&run_cpu_atlas.step);
-
-        const run_vulkan = b.addRunArtifact(exe);
-        run_vulkan.addArg("vulkan-instances");
-        run_vulkan.addCheck(.{ .expect_stderr_match = "Vulkan instance buffer 'primitives' " ++
-            "exhausted: capacity 8 (ResourceLimits.scene), 8 in use, 1 requested, frame 1." });
-        run_vulkan.addCheck(.{ .expect_term = .{ .signal = .ABRT } });
-        test_step.dependOn(&run_vulkan.step);
-        const mesh_pools = [_][]const u8{
-            "triangles", "strip_expanded", "points", "colored_points",
-        };
-        for (mesh_pools, 1..) |pool, count| {
-            const run_mesh = b.addRunArtifact(exe);
-            run_mesh.addArg(pool);
-            run_mesh.addCheck(.{ .expect_stderr_match = b.fmt(
-                "Vulkan mesh buffer '{s}' exhausted: capacity {d} (ResourceLimits.scene), " ++
-                    "{d} in use, 1 requested, frame 7.",
-                .{ pool, count, count },
-            ) });
-            run_mesh.addCheck(.{ .expect_term = .{ .signal = .ABRT } });
-            test_step.dependOn(&run_mesh.step);
-        }
-    }
     return exe;
 }
 

@@ -126,6 +126,9 @@ pub const QuadShape = struct {
 /// A blurred rounded rectangle drawn behind content.
 pub const ShadowShape = struct {
     content: DeviceRect,
+    /// Pixels whose centres lie outside are left alone (contract §9: shadows
+    /// are clipped like every other draw).
+    clip: DeviceRect,
     offset_x: f32,
     offset_y: f32,
     blur: f32,
@@ -587,8 +590,10 @@ pub fn drawShadow(target: Target, shape: *const ShadowShape, profile: []Premul) 
     const expand = shape.blur * 2.0;
     const left = content.x + shape.offset_x - expand;
     const top = content.y + shape.offset_y - expand;
-    const rows = centerSpanHalfOpen(top, top + content.height + expand * 2.0, target.height);
-    const columns = centerSpanHalfOpen(left, left + content.width + expand * 2.0, target.width);
+    const rows = centerSpanHalfOpen(top, top + content.height + expand * 2.0, target.height)
+        .intersect(clipRows(shape.clip, target.height));
+    const columns = centerSpanHalfOpen(left, left + content.width + expand * 2.0, target.width)
+        .intersect(clipColumns(shape.clip, target.width));
     if (rows.isEmpty() or columns.isEmpty()) return;
 
     assert(profile.len >= target.width);
@@ -1171,6 +1176,7 @@ test "shadow distance center sits at twice the offset, inside one-offset geometr
     var profile: [9]Premul = undefined;
     drawShadow(target, &.{
         .content = .{ .x = 2, .y = 1, .width = 4, .height = 4 },
+        .clip = .{ .x = 0, .y = 0, .width = 9, .height = 6 },
         .offset_x = 1,
         .offset_y = 0,
         .blur = 0,
@@ -1181,6 +1187,28 @@ test "shadow distance center sits at twice the offset, inside one-offset geometr
     try testing.expectEqual(@as(u32, 0xFF00_0000), testPixel(target, 4, 2));
     try testing.expectEqual(@as(u32, 0xFF00_0000), testPixel(target, 6, 2));
     try testing.expectEqual(@as(u32, 0xFFFF_FFFF), testPixel(target, 7, 2));
+}
+
+test "shadow keeps to its clip, edges included" {
+    // Goal: shadows are clipped like every other draw (contract §9). The same
+    // shaded box as above, pixels 4-6, clipped to x [0, 5.5]: pixel 5's centre
+    // lies on the clip edge and is drawn, pixel 6's lies past it and is not.
+    var pixels: [9 * 6]u32 = undefined;
+    const target = testTarget(&pixels, 9, 6);
+    @memset(&pixels, 0xFFFF_FFFF);
+    var profile: [9]Premul = undefined;
+    drawShadow(target, &.{
+        .content = .{ .x = 2, .y = 1, .width = 4, .height = 4 },
+        .clip = .{ .x = 0, .y = 0, .width = 5.5, .height = 6 },
+        .offset_x = 1,
+        .offset_y = 0,
+        .blur = 0,
+        .radii = .{},
+        .color = .{ .r = 0, .g = 0, .b = 0, .a = 1 },
+    }, &profile);
+    try testing.expectEqual(@as(u32, 0xFF00_0000), testPixel(target, 4, 2));
+    try testing.expectEqual(@as(u32, 0xFF00_0000), testPixel(target, 5, 2));
+    try testing.expectEqual(@as(u32, 0xFFFF_FFFF), testPixel(target, 6, 2));
 }
 
 test "glyph samples its atlas texels one-to-one when aligned" {
@@ -1337,6 +1365,12 @@ fn randomShadow(random: std.Random) ShadowShape {
             .width = width,
             .height = height,
         },
+        .clip = .{
+            .x = randomUnit(random) * 16,
+            .y = randomUnit(random) * 8,
+            .width = 20 + randomUnit(random) * 40,
+            .height = 40,
+        },
         .offset_x = randomUnit(random) * 4 - 2,
         .offset_y = randomUnit(random) * 4,
         .blur = randomUnit(random) * 6,
@@ -1369,8 +1403,10 @@ fn drawShadowReference(target: Target, shape: *const ShadowShape) void {
     const expand = shape.blur * 2.0;
     const left = content.x + shape.offset_x - expand;
     const top = content.y + shape.offset_y - expand;
-    const rows = centerSpanHalfOpen(top, top + content.height + expand * 2.0, target.height);
-    const columns = centerSpanHalfOpen(left, left + content.width + expand * 2.0, target.width);
+    const rows = centerSpanHalfOpen(top, top + content.height + expand * 2.0, target.height)
+        .intersect(clipRows(shape.clip, target.height));
+    const columns = centerSpanHalfOpen(left, left + content.width + expand * 2.0, target.width)
+        .intersect(clipColumns(shape.clip, target.width));
     if (rows.isEmpty() or columns.isEmpty()) return;
     const falloff = ShadowFalloff.init(shape);
     const base = premulFromStraight(shape.color);

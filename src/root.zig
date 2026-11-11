@@ -251,8 +251,8 @@ test {
     // part of the test binary once the file is reachable, which the
     // `@import` call below guarantees.
     inline for (.{
-        // Vulkan instance-buffer budget math. Pure Zig (no Vulkan headers), so
-        // its capacity tests run on every OS, not only where the renderer builds.
+        // Vulkan frame-buffer budget math. Pure Zig (no Vulkan calls), so its
+        // tests run on every OS, not only where the renderer builds.
         @import("platform/linux/vk_types.zig"),
         // Path edge classification for the Vulkan and Metal mesh shaders'
         // analytic anti-aliasing. Pure Zig, tested on every OS.
@@ -320,5 +320,7 @@ test {
         std.testing.refAllDecls(@import("platform/fbdev/clipboard.zig"));
         // Only the reservation-limit test: the rest of the file calls Vulkan.
         _ = @import("platform/linux/vk_buffers.zig");
+        // Only the clip-to-scissor test, for the same reason.
+        _ = @import("platform/linux/vk_draw.zig");
     }
 }

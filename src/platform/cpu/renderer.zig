@@ -1,99 +1,130 @@
-//! CPU scene renderer: draws a finished `Scene` into a caller-owned `Target`.
+//! CPU renderer: draws a packed frame (`core/packed_frame.zig`) into a
+//! caller-owned `Target`.
 //!
-//! This is the software counterpart of `linux/scene_renderer.zig` and
-//! `linux/vk_mesh.zig`. It walks the same `BatchIterator` draw-order stream
-//! and draws every primitive kind the Vulkan backend draws: shadows, quads,
-//! glyphs, SVG icons, images, paths (solid and gradient), polylines, point
-//! clouds, and colored point clouds. There is no kind it skips.
+//! The software counterpart of the Vulkan renderer: it walks the frame's
+//! draws in order and draws every pipeline the GPU renderers draw (quads and
+//! shadows, glyph, SVG and image sprites, triangle meshes, polylines, and
+//! point clouds). There is no pipeline it skips. Each draw writes only the
+//! pixels whose centres lie inside its clip rectangle, edges included
+//! (contract §9), shadows too.
 //!
 //! The pixels belong to the presenter (a Wayland shared-memory buffer or the
-//! fbdev back buffer), so `draw` takes the frame's `Target`. Atlases are read
-//! in place from their CPU-side storage; binding them is a pointer store. The
-//! renderer itself owns only raster scratch, reserved by `initInPlace` from the
-//! application's `ResourceLimits` and never resized (CLAUDE.md §2).
-//!
-//! The shape follows the kernel contract's §9 `Renderer` (`initInPlace` from
-//! limits, `draw` with a viewport and clear color, `capabilities`, `deinit`),
-//! so a presenter can wrap it in that contract without changing this file's
-//! responsibilities.
+//! fbdev back buffer), so `draw` takes the frame's `Target`; the presenters
+//! wrap this renderer in the contract's `Renderer` (`backend.verifyRenderer`).
+//! The renderer owns its raster scratch and its three atlases, which only
+//! `uploadAtlas` writes, all reserved by `initInPlace` from the window's
+//! `RenderLimits` and never resized (CLAUDE.md §2).
 //!
 //! ## Resource sketch (CLAUDE.md §7)
 //!
-//! - Memory: the shadow row profile (4 B per framebuffer column) and the mesh
-//!   scratch (`mesh.zig`), about 420 KiB at `.standard` limits. The target is
-//!   the presenter's (4 B per pixel) and the atlases are the text, SVG, and
-//!   image systems' own.
-//! - CPU: one clear pass, then one pass per primitive over its clipped
+//! - Memory: the shadow row profile (4 B per framebuffer column), the mesh
+//!   scratch (`mesh.zig`, about 420 KiB at `.standard` limits), and the glyph
+//!   (1 B per texel), SVG and image (4 B per texel) atlases at the atlas
+//!   limits, 0.75 MiB at `.nano`. All are fresh pages: an atlas is resident
+//!   only in the rows uploads wrote. The target is the presenter's (4 B per
+//!   pixel). `uploadAtlas` copies at most `atlas.upload_bytes_frame_max` per
+//!   frame, row by row.
+//! - CPU: one clear pass, then one pass per instance over its clipped
 //!   bounding box. Interior spans of quads and shadows are filled with
 //!   `@memset` or a single-color blend; only edge and corner pixels evaluate
-//!   the distance function, textured quads take one bilinear sample per
-//!   covered pixel, and meshes shade each covered pixel once per draw.
+//!   the distance function, sprites take one bilinear sample per covered
+//!   pixel, and meshes shade each covered pixel once per mesh.
 //! - Worst case per frame: `width * height * (1 + overdraw)` pixel writes for
-//!   the scene's primitive capacities, plus mesh work bounded by the scene's
-//!   aggregate geometry budgets, which `draw` claims exactly as the Vulkan
-//!   renderer does and which fail fast with the pool name when exceeded. A
-//!   1280x800 frame with 3x overdraw is roughly 4 M pixel writes, a few
-//!   milliseconds on one desktop core.
+//!   the packed frame's instance capacities, plus mesh work bounded by the
+//!   scene's mesh point budgets, which the frame build enforces. A 1280x800
+//!   frame with 3x overdraw is roughly 4 M pixel writes, a few milliseconds
+//!   on one desktop core.
 //! - GPU, disk, and network: none.
 
 const std = @import("std");
 const geometry = @import("../../geometry/geometry.zig");
 const limits_mod = @import("../../core/limits.zig");
+const packed_mod = @import("../../core/packed_frame.zig");
 const scene_mod = @import("../../scene/mod.zig");
-const batch_iterator = @import("../../scene/batch_iterator.zig");
-const text_atlas_mod = @import("../../text/atlas.zig");
-const SvgInstance = @import("../../scene/svg_instance.zig").SvgInstance;
-const ImageInstance = @import("../../scene/image_instance.zig").ImageInstance;
-const path_mesh = @import("../../scene/path_mesh.zig");
-const GradientUniforms = @import("../../scene/gradient_uniforms.zig").GradientUniforms;
+const backend = @import("../../core/backend.zig");
+const reservation = @import("../../core/reservation.zig");
 pub const raster = @import("raster.zig");
 pub const mesh = @import("mesh.zig");
 
 const assert = std.debug.assert;
-const Allocator = std.mem.Allocator;
-const Atlas = text_atlas_mod.Atlas;
 const Target = raster.Target;
-const GeometryCounts = scene_mod.GeometryCounts;
+const PackedFrame = packed_mod.PackedFrame;
 
 /// Device scale factors above this are treated as a programmer error. The
 /// bound keeps every logical-to-device product finite and well inside `f32`.
 pub const scale_factor_max: f32 = 8.0;
 
-/// Per-frame drawing parameters besides the scene and the target.
+/// Per-frame drawing parameters besides the frame and the target.
 pub const Viewport = struct {
     /// Device pixels per logical pixel.
     scale_factor: f32,
 };
 
-/// What this renderer can do beyond the scene's primitive kinds.
-pub const Capabilities = struct {
-    /// Triangle meshes (paths, polylines, point clouds), drawn by `mesh.zig`.
-    meshes: bool,
-};
-
-/// The atlases textured primitives sample. A frame whose scene holds glyphs,
-/// SVG icons, or images must have the matching atlas bound.
-pub const Atlases = struct {
-    /// Glyph coverage atlas (grayscale).
-    text: ?*const Atlas = null,
-    /// SVG fill and stroke coverage atlas (RGBA).
-    svg: ?*const Atlas = null,
-    /// Image atlas (straight-alpha RGBA).
-    image: ?*const Atlas = null,
-};
-
-/// Primitives drawn in one frame, for profiling and tests.
+/// Instances drawn in one frame, for profiling and tests.
 pub const RenderStats = struct {
     shadows: u32 = 0,
     quads: u32 = 0,
     glyphs: u32 = 0,
     svgs: u32 = 0,
     images: u32 = 0,
-    paths: u32 = 0,
+    triangle_meshes: u32 = 0,
     polylines: u32 = 0,
     point_clouds: u32 = 0,
-    colored_point_clouds: u32 = 0,
 };
+
+/// One atlas the renderer owns: a square of `size` texels, written only by
+/// `uploadAtlas` and sampled by sprites. Fresh pages, so only the rows an
+/// upload writes become resident.
+const AtlasTexture = struct {
+    data: []u8,
+    size: u32,
+    bytes_per_pixel: u8,
+    /// One past the lowest row any upload wrote: the prefix `deinit` zeroes.
+    rows_used: u32,
+
+    fn init(size: u32, bytes_per_pixel: u8) !AtlasTexture {
+        assert(size > 0);
+        assert(bytes_per_pixel == 1 or bytes_per_pixel == 4);
+        const byte_count = @as(u64, size) * size * bytes_per_pixel;
+        assert(byte_count <= std.math.maxInt(u32));
+        const data = try reservation.reserve(u8, @intCast(byte_count));
+        return .{ .data = data, .size = size, .bytes_per_pixel = bytes_per_pixel, .rows_used = 0 };
+    }
+
+    fn deinit(self: *AtlasTexture) void {
+        assert(self.rows_used <= self.size);
+        const row_bytes = @as(usize, self.size) * self.bytes_per_pixel;
+        reservation.release(u8, self.data, row_bytes * self.rows_used);
+        self.* = undefined;
+    }
+
+    /// Copy `pixels`, tightly packed rows of `dirty.width` texels, into the
+    /// region `dirty`.
+    fn write(self: *AtlasTexture, dirty: backend.RectPx, pixels: []const u8) void {
+        assert(dirty.x + dirty.width <= self.size);
+        assert(dirty.y + dirty.height <= self.size);
+        const source_row_bytes = @as(usize, dirty.width) * self.bytes_per_pixel;
+        assert(pixels.len == source_row_bytes * dirty.height);
+        const target_row_bytes = @as(usize, self.size) * self.bytes_per_pixel;
+        var row: u32 = 0;
+        while (row < dirty.height) : (row += 1) {
+            const target_start = (@as(usize, dirty.y) + row) * target_row_bytes +
+                @as(usize, dirty.x) * self.bytes_per_pixel;
+            const source = pixels[@as(usize, row) * source_row_bytes ..][0..source_row_bytes];
+            @memcpy(self.data[target_start..][0..source_row_bytes], source);
+        }
+        self.rows_used = @max(self.rows_used, dirty.y + dirty.height);
+    }
+
+    fn view(self: *const AtlasTexture) raster.AtlasView {
+        assert(self.data.len == @as(usize, self.size) * self.size * self.bytes_per_pixel);
+        assert(self.size > 0);
+        return .{ .data = self.data, .size = self.size, .bytes_per_pixel = self.bytes_per_pixel };
+    }
+};
+
+/// The atlases sprites sample, indexed like `Pipeline.glyph`, `.svg`, `.image`.
+const AtlasSlot = enum(u8) { glyph, svg, image };
 
 pub const Renderer = struct {
     width_max: u32,
@@ -101,88 +132,121 @@ pub const Renderer = struct {
     /// One straight-row shadow color per framebuffer column.
     shadow_profile: []raster.Premul,
     mesh_scratch: mesh.Scratch,
-    atlases: Atlases,
+    atlases: [3]AtlasTexture,
 
     /// Reserve every byte of raster scratch for the budget's largest
-    /// framebuffer and largest single mesh draw.
-    pub fn initInPlace(
-        self: *Renderer,
-        gpa: Allocator,
-        limits: *const limits_mod.ResourceLimits,
-    ) !void {
-        assert(limits.check() == null);
+    /// framebuffer and largest single mesh, and the three atlases at the
+    /// atlas limits. Fresh pages: nothing is resident until it is written.
+    pub fn initInPlace(self: *Renderer, limits: *const backend.RenderLimits) !void {
+        assert(limits.window.framebuffer_width_max > 0);
+        assert(limits.window.framebuffer_height_max > 0);
         const width_max = limits.window.framebuffer_width_max;
         const height_max = limits.window.framebuffer_height_max;
         const polygon_count_max = polygonCountMax(&limits.scene);
 
-        const shadow_profile = try gpa.alloc(raster.Premul, width_max);
-        errdefer gpa.free(shadow_profile);
-
-        const polygons = try gpa.alloc(mesh.Polygon, polygon_count_max);
-        errdefer gpa.free(polygons);
-
-        const next = try gpa.alloc(u32, polygon_count_max);
-        errdefer gpa.free(next);
-
-        const active = try gpa.alloc(u32, polygon_count_max);
-        errdefer gpa.free(active);
-
-        const heads = try gpa.alloc(u32, height_max);
-        errdefer gpa.free(heads);
-
-        const mask = try gpa.alloc(u8, width_max);
-        errdefer gpa.free(mask);
-
-        @memset(mask, 0);
-        self.* = .{
-            .width_max = width_max,
-            .height_max = height_max,
-            .shadow_profile = shadow_profile,
-            .mesh_scratch = .{
-                .polygons = polygons,
-                .next = next,
-                .active = active,
-                .heads = heads,
-                .mask = mask,
-            },
-            .atlases = .{},
-        };
+        self.width_max = width_max;
+        self.height_max = height_max;
+        self.shadow_profile = try reservation.reserve(raster.Premul, width_max);
+        errdefer reservation.release(raster.Premul, self.shadow_profile, width_max);
+        try self.initMeshScratch(polygon_count_max);
+        errdefer self.deinitMeshScratch();
+        try self.initAtlases(&limits.atlas);
+        // Fresh pages read zero, which is the mask's between-draws state.
         assert(self.mesh_scratch.mask.len == width_max);
         assert(self.mesh_scratch.heads.len == height_max);
     }
 
-    pub fn deinit(self: *Renderer, gpa: Allocator) void {
+    fn initMeshScratch(self: *Renderer, polygon_count_max: u32) !void {
+        assert(polygon_count_max > 0);
+        assert(self.width_max > 0);
+        const polygons = try reservation.reserve(mesh.Polygon, polygon_count_max);
+        errdefer reservation.release(mesh.Polygon, polygons, polygons.len);
+
+        const next = try reservation.reserve(u32, polygon_count_max);
+        errdefer reservation.release(u32, next, next.len);
+
+        const active = try reservation.reserve(u32, polygon_count_max);
+        errdefer reservation.release(u32, active, active.len);
+
+        const heads = try reservation.reserve(u32, self.height_max);
+        errdefer reservation.release(u32, heads, heads.len);
+
+        const mask = try reservation.reserve(u8, self.width_max);
+        self.mesh_scratch = .{
+            .polygons = polygons,
+            .next = next,
+            .active = active,
+            .heads = heads,
+            .mask = mask,
+        };
+    }
+
+    /// Scratch is rewritten every draw, so all of it counts as used.
+    fn deinitMeshScratch(self: *Renderer) void {
+        const scratch = &self.mesh_scratch;
+        assert(scratch.next.len == scratch.polygons.len);
+        assert(scratch.active.len == scratch.polygons.len);
+        reservation.release(u8, scratch.mask, scratch.mask.len);
+        reservation.release(u32, scratch.heads, scratch.heads.len);
+        reservation.release(u32, scratch.active, scratch.active.len);
+        reservation.release(u32, scratch.next, scratch.next.len);
+        reservation.release(mesh.Polygon, scratch.polygons, scratch.polygons.len);
+    }
+
+    fn initAtlases(self: *Renderer, limits: *const limits_mod.AtlasLimits) !void {
+        assert(limits.text_size > 0);
+        assert(limits.image_size > 0);
+        const glyph = &self.atlases[@backingInt(AtlasSlot.glyph)];
+        glyph.* = try AtlasTexture.init(limits.text_size, 1);
+        errdefer glyph.deinit();
+        const svg = &self.atlases[@backingInt(AtlasSlot.svg)];
+        svg.* = try AtlasTexture.init(limits.svg_size, 4);
+        errdefer svg.deinit();
+        self.atlases[@backingInt(AtlasSlot.image)] = try AtlasTexture.init(limits.image_size, 4);
+    }
+
+    pub fn deinit(self: *Renderer) void {
         assert(self.shadow_profile.len == self.width_max);
         assert(self.mesh_scratch.heads.len == self.height_max);
-        gpa.free(self.mesh_scratch.mask);
-        gpa.free(self.mesh_scratch.heads);
-        gpa.free(self.mesh_scratch.active);
-        gpa.free(self.mesh_scratch.next);
-        gpa.free(self.mesh_scratch.polygons);
-        gpa.free(self.shadow_profile);
+        for (&self.atlases) |*atlas| atlas.deinit();
+        self.deinitMeshScratch();
+        reservation.release(raster.Premul, self.shadow_profile, self.shadow_profile.len);
         self.* = undefined;
     }
 
-    /// Publish the atlases the next frames sample. They are read in place,
-    /// so there is nothing to upload.
-    pub fn bindAtlases(self: *Renderer, atlases: Atlases) void {
-        if (atlases.text) |atlas| assert(atlas.format == .grayscale);
-        if (atlases.svg) |atlas| assert(atlas.format == .rgba);
-        if (atlases.image) |atlas| assert(atlas.format == .rgba);
-        self.atlases = atlases;
+    /// Copy `pixels`, tightly packed rows of `dirty` (1 byte per texel for
+    /// `.glyph`, 4 bytes RGBA otherwise), into the atlas. The renderer draws
+    /// synchronously on the caller's thread, so every earlier draw has
+    /// finished reading the atlas and the next one sees the region.
+    pub fn uploadAtlas(
+        self: *Renderer,
+        kind: backend.AtlasKind,
+        dirty: backend.RectPx,
+        pixels: []const u8,
+    ) void {
+        assert(dirty.width > 0);
+        assert(dirty.height > 0);
+        const slot: AtlasSlot = switch (kind) {
+            .glyph => .glyph,
+            .svg => .svg,
+            .image => .image,
+            .glyph_color => std.debug.panic("CPU renderer: no colour glyph atlas; pack emits " ++
+                "no glyph_color sprites yet", .{}),
+        };
+        self.atlases[@backingInt(slot)].write(dirty, pixels);
     }
 
-    pub fn capabilities(self: *const Renderer) Capabilities {
+    pub fn capabilities(self: *const Renderer) backend.Capabilities {
         assert(self.width_max > 0);
         assert(self.height_max > 0);
         return .{ .meshes = true };
     }
 
-    /// Clear `target` and draw every primitive of `scene` in draw order.
+    /// Clear `target` and draw every draw of `frame` in order.
     pub fn draw(
         self: *Renderer,
         target: Target,
-        scene: *const scene_mod.Scene,
+        frame: *const PackedFrame,
         viewport: Viewport,
         clear: geometry.Color,
     ) RenderStats {
@@ -193,238 +257,151 @@ pub const Renderer = struct {
         assert(@as(usize, target.stride) * target.height <= target.pixels.len);
         raster.clear(target, clear);
 
-        var frame = Frame{
+        var walk = Walk{
             .renderer = self,
             .target = target,
-            .scene = scene,
+            .frame = frame,
             .scale = viewport.scale_factor,
-            .budget = GeometryCounts.from_limits(&scene.limits),
         };
-        var iterator = batch_iterator.BatchIterator.init(scene);
-        // Each batch is a non-empty run of the scene's arrays, so the batch
-        // count is bounded by the scene's total primitive count.
-        while (iterator.next()) |batch| {
-            assert(batch.len() > 0);
-            frame.drawBatch(batch);
-        }
-        return frame.stats;
+        // One iteration per draw; the draw list is bounded by the paint records.
+        for (frame.drawList()) |*packed_draw| walk.drawOne(packed_draw);
+        return walk.stats;
     }
 };
 
-/// Polygons one mesh draw can produce within the budget: a path's triangles
-/// or a polyline's segments, whichever is larger.
-fn polygonCountMax(limits: *const scene_mod.SceneLimits) u32 {
+/// Polygons one mesh can produce within the budget: a triangle mesh's
+/// triangles or a polyline's segments, whichever is larger. The frame build
+/// caps each by its per-mesh ceiling and by the frame's point budget.
+fn polygonCountMax(limits: *const limits_mod.SceneLimits) u32 {
     assert(limits.check() == null);
-    const index_count_max = @min(path_mesh.MAX_MESH_INDICES, limits.path_index_count_frame_max);
-    const triangle_count_max = @divFloor(index_count_max, 3);
-    const point_count_max = @min(
+    const triangle_points_max = @min(
+        scene_mod.MAX_MESH_VERTICES,
+        limits.path_vertex_count_frame_max,
+    );
+    const triangle_count_max = @divFloor(triangle_points_max, 3);
+    const polyline_points_max = @min(
         scene_mod.MAX_POLYLINE_POINTS,
         limits.polyline_point_count_frame_max,
     );
-    const segment_count_max = point_count_max -| 1;
+    const segment_count_max = polyline_points_max -| 1;
     const count_max = @max(triangle_count_max, segment_count_max, 1);
-    assert(count_max <= scene_mod.MAX_POLYLINE_POINTS);
+    assert(count_max <= @max(scene_mod.MAX_POLYLINE_POINTS, scene_mod.MAX_MESH_VERTICES));
     return count_max;
 }
 
-/// One frame's walk over the scene. Stack-owned by `Renderer.draw`.
-const Frame = struct {
+/// One frame's walk over the draws. Stack-owned by `Renderer.draw`.
+const Walk = struct {
     renderer: *Renderer,
     target: Target,
-    scene: *const scene_mod.Scene,
+    frame: *const PackedFrame,
     scale: f32,
-    budget: GeometryCounts,
-    usage: GeometryCounts = .{},
     stats: RenderStats = .{},
 
-    fn drawBatch(self: *Frame, batch: batch_iterator.PrimitiveBatch) void {
-        assert(batch.len() > 0);
-        assert(self.scale > 0);
-        const count: u32 = @intCast(batch.len());
-        switch (batch) {
-            .shadow => |shadows| for (shadows) |*shadow| {
-                const shape = shadowShape(shadow, self.scale);
-                raster.drawShadow(self.target, &shape, self.renderer.shadow_profile);
+    fn drawOne(self: *Walk, packed_draw: *const packed_mod.Draw) void {
+        assert(packed_draw.count > 0);
+        assert(packed_draw.clip < self.frame.clip_count);
+        const logical_clip = self.frame.clips[packed_draw.clip];
+        // Pack emits no draw under a zero-area clip (contract §9).
+        assert(logical_clip[2] > 0);
+        assert(logical_clip[3] > 0);
+        const clip = deviceRect(logical_clip, self.scale);
+        switch (packed_draw.pipeline.kind()) {
+            .quad => for (self.frame.drawRange(packed_draw, .quad)) |*quad| {
+                self.drawQuad(quad, clip);
             },
-            .quad => |quads| for (quads) |*quad| {
-                raster.drawQuad(self.target, &quadShape(quad, self.scale));
-            },
-            .glyph => |glyphs| {
-                const atlas = self.atlasView(self.renderer.atlases.text, "glyph", count);
-                for (glyphs) |*glyph| drawGlyph(self.target, glyph, atlas, self.scale);
-            },
-            .svg => |svgs| {
-                const atlas = self.atlasView(self.renderer.atlases.svg, "svg", count);
-                for (svgs) |*svg| drawSvg(self.target, svg, atlas, self.scale);
-            },
-            .image => |images| {
-                const atlas = self.atlasView(self.renderer.atlases.image, "image", count);
-                for (images) |*image| drawImage(self.target, image, atlas, self.scale);
-            },
-            .path => |paths| self.drawPaths(paths),
-            .polyline => |lines| for (lines) |*line| self.drawPolyline(line),
-            .point_cloud => |clouds| for (clouds) |*cloud| self.drawPointCloud(cloud),
-            .colored_point_cloud => |clouds| for (clouds) |*cloud| {
-                self.drawColoredPointCloud(cloud);
-            },
-        }
-        self.countBatch(batch, count);
-    }
-
-    fn countBatch(self: *Frame, batch: batch_iterator.PrimitiveBatch, count: u32) void {
-        assert(count > 0);
-        assert(count == batch.len());
-        const field = switch (batch) {
-            .shadow => &self.stats.shadows,
-            .quad => &self.stats.quads,
-            .glyph => &self.stats.glyphs,
-            .svg => &self.stats.svgs,
-            .image => &self.stats.images,
-            .path => &self.stats.paths,
-            .polyline => &self.stats.polylines,
-            .point_cloud => &self.stats.point_clouds,
-            .colored_point_cloud => &self.stats.colored_point_clouds,
-        };
-        field.* += count;
-    }
-
-    /// The bound atlas for a textured batch. Textured instances exist only
-    /// after their system rasterized into its atlas, and the window binds
-    /// every atlas before each frame, so a missing one is a programmer error;
-    /// drawing the frame without those primitives would hide it.
-    fn atlasView(
-        self: *const Frame,
-        atlas: ?*const Atlas,
-        comptime kind: []const u8,
-        count: u32,
-    ) raster.AtlasView {
-        assert(count > 0);
-        const bound = atlas orelse std.debug.panic(
-            "CPU renderer: {d} {s} instance(s) in frame {d} but no {s} atlas is bound; " ++
-                "the window must bind its atlases before rendering.",
-            .{ count, kind, self.scene.frame_count_finished, kind },
-        );
-        const bytes_per_pixel = bound.format.bytesPerPixel();
-        assert(bound.data.len >= @as(usize, bound.size) * bound.size * bytes_per_pixel);
-        return .{ .data = bound.data, .size = bound.size, .bytes_per_pixel = bytes_per_pixel };
-    }
-
-    fn claim(self: *Frame, pool: scene_mod.GeometryPool, requested: usize) void {
-        assert(requested <= std.math.maxInt(u32));
-        assert(self.budget.counts[@backingInt(pool)] > 0);
-        self.usage.claim(&self.budget, .{
-            .pool = pool,
-            .requested = @intCast(requested),
-            .frame = self.scene.frame_count_finished,
-        });
-    }
-
-    fn drawPaths(self: *Frame, instances: []const scene_mod.PathInstance) void {
-        assert(instances.len <= self.scene.limits.path_count_frame_max);
-        const all = self.scene.getPathInstances();
-        const first = @divExact(
-            @intFromPtr(instances.ptr) - @intFromPtr(all.ptr),
-            @sizeOf(scene_mod.PathInstance),
-        );
-        assert(first + instances.len <= all.len);
-        const gradients = self.scene.getPathGradients()[first..][0..instances.len];
-        for (instances, gradients) |*path, *gradient| {
-            const path_mesh_ref = self.scene.getMeshPool().getMesh(path.getMeshRef());
-            const indices = path_mesh_ref.indices.constSlice();
-            // An empty mesh has no triangles to draw, on the GPU as here.
-            if (indices.len == 0) continue;
-            assert(indices.len % 3 == 0);
-            self.claim(.path_vertices, path_mesh_ref.vertices.len);
-            self.claim(.path_indices, indices.len);
-            self.drawPath(path, gradient, path_mesh_ref);
+            .sprite => self.drawSprites(packed_draw, clip),
+            .mesh => self.drawMeshes(packed_draw, clip),
         }
     }
 
-    fn drawPath(
-        self: *Frame,
-        path: *const scene_mod.PathInstance,
-        gradient: *const GradientUniforms,
-        source: *const path_mesh.PathMesh,
-    ) void {
+    /// A quad, or a shadow when it is blurred.
+    fn drawQuad(self: *Walk, quad: *const packed_mod.Quad, clip: raster.DeviceRect) void {
+        assert(quad.blur >= 0);
+        assert(quad.bounds[2] >= 0);
+        if (quad.blur > 0) {
+            const shape = shadowShape(quad, clip, self.scale);
+            raster.drawShadow(self.target, &shape, self.renderer.shadow_profile);
+            self.stats.shadows += 1;
+        } else {
+            raster.drawQuad(self.target, &quadShape(quad, clip, self.scale));
+            self.stats.quads += 1;
+        }
+    }
+
+    fn drawSprites(self: *Walk, packed_draw: *const packed_mod.Draw, clip: raster.DeviceRect) void {
+        const sprites = self.frame.drawRange(packed_draw, .sprite);
+        const count = packed_draw.count;
+        assert(sprites.len == count);
+        const atlases = &self.renderer.atlases;
+        switch (packed_draw.pipeline) {
+            .glyph => {
+                const atlas = atlases[@backingInt(AtlasSlot.glyph)].view();
+                for (sprites) |*sprite| drawGlyph(self.target, sprite, atlas, clip, self.scale);
+                self.stats.glyphs += count;
+            },
+            .svg => {
+                const atlas = atlases[@backingInt(AtlasSlot.svg)].view();
+                for (sprites) |*sprite| drawSvg(self.target, sprite, atlas, clip, self.scale);
+                self.stats.svgs += count;
+            },
+            .image => {
+                const atlas = atlases[@backingInt(AtlasSlot.image)].view();
+                for (sprites) |*sprite| drawImage(self.target, sprite, atlas, clip, self.scale);
+                self.stats.images += count;
+            },
+            .quad, .triangles, .strip_expanded, .point_instanced => unreachable, // A sprite draw.
+        }
+    }
+
+    fn drawMeshes(self: *Walk, packed_draw: *const packed_mod.Draw, clip: raster.DeviceRect) void {
+        const meshes = self.frame.drawRange(packed_draw, .mesh);
+        const count = packed_draw.count;
+        assert(meshes.len == count);
+        switch (packed_draw.pipeline) {
+            .triangles => {
+                for (meshes) |*instance| self.drawTriangles(instance, clip);
+                self.stats.triangle_meshes += count;
+            },
+            .strip_expanded => {
+                for (meshes) |*instance| self.drawPolyline(instance, clip);
+                self.stats.polylines += count;
+            },
+            .point_instanced => {
+                for (meshes) |*instance| self.drawPointCloud(instance, clip);
+                self.stats.point_clouds += count;
+            },
+            .quad, .glyph, .svg, .image => unreachable, // A mesh draw.
+        }
+    }
+
+    /// A triangle list in one solid colour. The triangles of one mesh cover
+    /// each sample once, so a shared edge never blends twice.
+    fn drawTriangles(self: *Walk, instance: *const packed_mod.Mesh, clip: raster.DeviceRect) void {
+        const points = self.frame.meshPoints(instance);
         const scratch = &self.renderer.mesh_scratch;
-        const indices = source.indices.constSlice();
-        const vertices = source.vertices.constSlice();
-        const triangle_count: u32 = @intCast(@divExact(indices.len, 3));
+        const triangle_count: u32 = @intCast(@divExact(points.len, 3));
         assert(triangle_count <= scratch.polygons.len);
-        var best: ?u32 = null;
-        var best_area: f32 = 0;
+        const scale = self.scale;
         for (scratch.polygons[0..triangle_count], 0..) |*polygon, triangle| {
-            var x: [3]f32 = undefined;
-            var y: [3]f32 = undefined;
-            for (indices[triangle * 3 ..][0..3], &x, &y) |index, *vertex_x, *vertex_y| {
-                assert(index < vertices.len);
-                vertex_x.* = (vertices[index].x * path.scale_x + path.offset_x) * self.scale;
-                vertex_y.* = (vertices[index].y * path.scale_y + path.offset_y) * self.scale;
-            }
-            polygon.* = mesh.Polygon.triangle(x, y);
-            const area = @abs((x[1] - x[0]) * (y[2] - y[0]) - (x[2] - x[0]) * (y[1] - y[0]));
-            if (area > best_area) {
-                best = @intCast(triangle);
-                best_area = area;
-            }
+            const corners = points[triangle * 3 ..][0..3];
+            polygon.* = mesh.Polygon.triangle(
+                .{ corners[0].x * scale, corners[1].x * scale, corners[2].x * scale },
+                .{ corners[0].y * scale, corners[1].y * scale, corners[2].y * scale },
+            );
         }
-        // Every triangle is degenerate: the GPU covers no sample either.
-        const anchor = best orelse return;
-        const fill = self.pathFill(path, gradient, source, anchor) orelse return;
-        const clip = deviceRect(
-            path.clip_x,
-            path.clip_y,
-            path.clip_width,
-            path.clip_height,
-            self.scale,
-        );
-        mesh.fillPolygons(self.target, scratch, triangle_count, clip, &fill);
-    }
-
-    /// The fill `mesh.frag` computes for a path. Null when the solid color is
-    /// fully transparent, which the shader discards everywhere.
-    fn pathFill(
-        self: *const Frame,
-        path: *const scene_mod.PathInstance,
-        gradient: *const GradientUniforms,
-        source: *const path_mesh.PathMesh,
-        anchor: u32,
-    ) ?mesh.Fill {
-        assert(path.gradient_type <= 2);
-        assert(anchor * 3 + 3 <= source.indices.len);
-        if (path.gradient_type == 0) {
-            const color = raster.premulFromStraight(path.fill_color.toColor());
-            if (color.a == 0) return null;
-            return .{ .solid = color };
-        }
-        assert(gradient.stop_count >= 2);
-        assert(gradient.stop_count <= gradient.stop_offsets.len);
-        const polygon = &self.renderer.mesh_scratch.polygons[anchor];
-        const corners = source.indices.constSlice()[anchor * 3 ..][0..3];
-        var u: [3]f32 = undefined;
-        var v: [3]f32 = undefined;
-        for (corners, &u, &v) |index, *vertex_u, *vertex_v| {
-            vertex_u.* = source.vertices.constSlice()[index].u;
-            vertex_v.* = source.vertices.constSlice()[index].v;
-        }
-        return .{ .gradient = .{
-            .uniforms = gradient,
-            .kind = path.gradient_type,
-            .params = .{ path.grad_param0, path.grad_param1, path.grad_param2, path.grad_param3 },
-            .uv = mesh.UvMap.fromTriangle(polygon.x[0..3].*, polygon.y[0..3].*, u, v),
-        } };
+        const color = raster.premulFromStraight(straight(instance.fill));
+        mesh.fillPolygons(self.target, scratch, triangle_count, clip, color);
     }
 
     /// Independent butt-ended segments, as `strip_expanded.vert` expands them.
-    fn drawPolyline(self: *Frame, line: *const scene_mod.Polyline) void {
-        line.validate();
-        const points = line.getPoints();
+    fn drawPolyline(self: *Walk, instance: *const packed_mod.Mesh, clip: raster.DeviceRect) void {
+        assert(instance.width > 0);
+        const points = self.frame.meshPoints(instance);
         assert(points.len >= 2);
-        self.claim(.polyline_points, points.len);
         const scratch = &self.renderer.mesh_scratch;
         const segment_count: u32 = @intCast(points.len - 1);
         assert(segment_count <= scratch.polygons.len);
-        const radius = line.width * 0.5;
+        const radius = instance.width * 0.5;
         for (scratch.polygons[0..segment_count], points[0..segment_count], points[1..]) |
             *polygon,
             start,
@@ -432,54 +409,19 @@ const Frame = struct {
         | {
             polygon.* = segmentPolygon(start, end, radius, self.scale);
         }
-        const color = raster.premulFromStraight(line.color.toColor());
-        if (color.a == 0) return;
-        const clip = deviceRect(
-            line.clip_x,
-            line.clip_y,
-            line.clip_width,
-            line.clip_height,
-            self.scale,
-        );
-        mesh.fillPolygons(self.target, scratch, segment_count, clip, &.{ .solid = color });
+        const color = raster.premulFromStraight(straight(instance.fill));
+        mesh.fillPolygons(self.target, scratch, segment_count, clip, color);
     }
 
-    fn drawPointCloud(self: *Frame, cloud: *const scene_mod.PointCloud) void {
-        cloud.validate();
-        const positions = cloud.getPositions();
-        self.claim(.points, positions.len);
-        const color = raster.premulFromStraight(cloud.color.toColor());
-        const clip = deviceRect(
-            cloud.clip_x,
-            cloud.clip_y,
-            cloud.clip_width,
-            cloud.clip_height,
-            self.scale,
-        );
-        const radius = cloud.radius * self.scale;
-        for (positions) |position| {
-            const center = .{ position.x * self.scale, position.y * self.scale };
-            mesh.drawPoint(self.target, center, radius, clip, color);
-        }
-    }
-
-    fn drawColoredPointCloud(self: *Frame, cloud: *const scene_mod.ColoredPointCloud) void {
-        cloud.validate();
-        const positions = cloud.getPositions();
-        const colors = cloud.getColors();
-        assert(colors.len == positions.len);
-        self.claim(.colored_points, positions.len);
-        const clip = deviceRect(
-            cloud.clip_x,
-            cloud.clip_y,
-            cloud.clip_width,
-            cloud.clip_height,
-            self.scale,
-        );
-        const radius = cloud.radius * self.scale;
-        for (positions, colors) |position, hsla| {
-            const center = .{ position.x * self.scale, position.y * self.scale };
-            const color = raster.premulFromStraight(hsla.toColor());
+    /// Points of `instance.width` logical pixels radius, each its own circle.
+    fn drawPointCloud(self: *Walk, instance: *const packed_mod.Mesh, clip: raster.DeviceRect) void {
+        assert(instance.width > 0);
+        const points = self.frame.meshPoints(instance);
+        assert(points.len >= 1);
+        const color = raster.premulFromStraight(straight(instance.fill));
+        const radius = instance.width * self.scale;
+        for (points) |point| {
+            const center = .{ point.x * self.scale, point.y * self.scale };
             mesh.drawPoint(self.target, center, radius, clip, color);
         }
     }
@@ -488,8 +430,8 @@ const Frame = struct {
 /// One strip segment's quad in device pixels. A segment shorter than the
 /// shader's threshold keeps a vertical perpendicular, exactly as on the GPU.
 fn segmentPolygon(
-    start: scene_mod.Point,
-    end: scene_mod.Point,
+    start: packed_mod.MeshPoint,
+    end: packed_mod.MeshPoint,
     radius: f32,
     scale: f32,
 ) mesh.Polygon {
@@ -518,147 +460,140 @@ fn segmentPolygon(
 }
 
 // =============================================================================
-// Logical primitive to device shape
+// Packed instance to device shape
 // =============================================================================
 
-fn deviceRect(x: f32, y: f32, width: f32, height: f32, scale: f32) raster.DeviceRect {
+/// A logical rectangle (x, y, width, height) in device pixels.
+fn deviceRect(rect: packed_mod.Rect, scale: f32) raster.DeviceRect {
     assert(scale > 0);
-    assert(!std.math.isNan(x));
-    assert(!std.math.isNan(y));
+    assert(!std.math.isNan(rect[0]));
+    assert(!std.math.isNan(rect[1]));
     return .{
-        .x = x * scale,
-        .y = y * scale,
-        .width = @max(width, 0.0) * scale,
-        .height = @max(height, 0.0) * scale,
+        .x = rect[0] * scale,
+        .y = rect[1] * scale,
+        .width = @max(rect[2], 0.0) * scale,
+        .height = @max(rect[3], 0.0) * scale,
     };
 }
 
-fn deviceRadii(corners: scene_mod.Corners, scale: f32) raster.Radii {
+/// Radii in packed order (top left, top right, bottom right, bottom left).
+fn deviceRadii(corners: [4]f32, scale: f32) raster.Radii {
     assert(scale > 0);
-    assert(!std.math.isNan(corners.top_left));
+    assert(!std.math.isNan(corners[0]));
     return .{
-        .top_left = @max(corners.top_left, 0.0) * scale,
-        .top_right = @max(corners.top_right, 0.0) * scale,
-        .bottom_right = @max(corners.bottom_right, 0.0) * scale,
-        .bottom_left = @max(corners.bottom_left, 0.0) * scale,
+        .top_left = @max(corners[0], 0.0) * scale,
+        .top_right = @max(corners[1], 0.0) * scale,
+        .bottom_right = @max(corners[2], 0.0) * scale,
+        .bottom_left = @max(corners[3], 0.0) * scale,
     };
 }
 
-fn quadShape(quad: *const scene_mod.Quad, scale: f32) raster.QuadShape {
+fn straight(rgba: packed_mod.Rgba) geometry.Color {
+    assert(!std.math.isNan(rgba[3]));
+    assert(rgba[3] >= 0);
+    return .{ .r = rgba[0], .g = rgba[1], .b = rgba[2], .a = rgba[3] };
+}
+
+fn quadShape(
+    quad: *const packed_mod.Quad,
+    clip: raster.DeviceRect,
+    scale: f32,
+) raster.QuadShape {
     assert(scale > 0);
-    assert(quad.bounds_size_width >= 0);
-    assert(quad.bounds_size_height >= 0);
-    const borders = quad.border_widths;
+    assert(quad.blur == 0);
+    const widths = quad.border_widths;
     return .{
-        .bounds = deviceRect(
-            quad.bounds_origin_x,
-            quad.bounds_origin_y,
-            quad.bounds_size_width,
-            quad.bounds_size_height,
-            scale,
-        ),
-        .clip = deviceRect(
-            quad.clip_origin_x,
-            quad.clip_origin_y,
-            quad.clip_size_width,
-            quad.clip_size_height,
-            scale,
-        ),
-        .radii = deviceRadii(quad.corner_radii, scale),
+        .bounds = deviceRect(quad.bounds, scale),
+        .clip = clip,
+        .radii = deviceRadii(quad.corners, scale),
         .borders = .{
-            .top = @max(borders.top, 0.0) * scale,
-            .right = @max(borders.right, 0.0) * scale,
-            .bottom = @max(borders.bottom, 0.0) * scale,
-            .left = @max(borders.left, 0.0) * scale,
+            .top = @max(widths[0], 0.0) * scale,
+            .right = @max(widths[1], 0.0) * scale,
+            .bottom = @max(widths[2], 0.0) * scale,
+            .left = @max(widths[3], 0.0) * scale,
         },
-        .background = quad.background.toColor(),
-        .border_color = quad.border_color.toColor(),
+        .background = straight(quad.fill),
+        .border_color = straight(quad.border_color),
     };
 }
 
-fn shadowShape(shadow: *const scene_mod.Shadow, scale: f32) raster.ShadowShape {
+fn shadowShape(
+    quad: *const packed_mod.Quad,
+    clip: raster.DeviceRect,
+    scale: f32,
+) raster.ShadowShape {
     assert(scale > 0);
-    assert(shadow.content_size_width >= 0);
-    assert(shadow.content_size_height >= 0);
+    assert(quad.blur > 0);
     return .{
-        .content = deviceRect(
-            shadow.content_origin_x,
-            shadow.content_origin_y,
-            shadow.content_size_width,
-            shadow.content_size_height,
-            scale,
-        ),
-        .offset_x = shadow.offset_x * scale,
-        .offset_y = shadow.offset_y * scale,
-        .blur = @max(shadow.blur_radius, 0.0) * scale,
-        .radii = deviceRadii(shadow.corner_radii, scale),
-        .color = shadow.color.toColor(),
+        .content = deviceRect(quad.bounds, scale),
+        .clip = clip,
+        .offset_x = quad.offset[0] * scale,
+        .offset_y = quad.offset[1] * scale,
+        .blur = quad.blur * scale,
+        .radii = deviceRadii(quad.corners, scale),
+        .color = straight(quad.fill),
     };
 }
 
-/// The fields every textured instance shares, gathered by name so glyphs,
-/// SVG icons, and images convert through one function.
-fn texturedRect(instance: anytype, width: f32, height: f32, scale: f32) raster.TexturedRect {
+fn texturedRect(
+    sprite: *const packed_mod.Sprite,
+    clip: raster.DeviceRect,
+    scale: f32,
+) raster.TexturedRect {
     assert(scale > 0);
-    assert(width >= 0);
-    assert(height >= 0);
+    assert(sprite.bounds[2] >= 0);
+    assert(sprite.bounds[3] >= 0);
     return .{
-        .bounds = deviceRect(instance.pos_x, instance.pos_y, width, height, scale),
-        .clip = deviceRect(
-            instance.clip_x,
-            instance.clip_y,
-            instance.clip_width,
-            instance.clip_height,
-            scale,
-        ),
-        .uv_left = instance.uv_left,
-        .uv_top = instance.uv_top,
-        .uv_right = instance.uv_right,
-        .uv_bottom = instance.uv_bottom,
+        .bounds = deviceRect(sprite.bounds, scale),
+        .clip = clip,
+        .uv_left = sprite.uv[0],
+        .uv_top = sprite.uv[1],
+        .uv_right = sprite.uv[2],
+        .uv_bottom = sprite.uv[3],
     };
 }
 
 fn drawGlyph(
     target: Target,
-    glyph: *const scene_mod.GlyphInstance,
+    sprite: *const packed_mod.Sprite,
     atlas: raster.AtlasView,
+    clip: raster.DeviceRect,
     scale: f32,
 ) void {
-    assert(glyph.size_x >= 0);
-    assert(glyph.size_y >= 0);
     assert(atlas.bytes_per_pixel == 1);
-    const rect = texturedRect(glyph, glyph.size_x, glyph.size_y, scale);
-    raster.drawGlyph(target, &rect, atlas, glyph.color.toColor());
+    assert(scale > 0);
+    const rect = texturedRect(sprite, clip, scale);
+    raster.drawGlyph(target, &rect, atlas, straight(sprite.tint));
 }
 
-fn drawSvg(target: Target, svg: *const SvgInstance, atlas: raster.AtlasView, scale: f32) void {
-    assert(svg.size_x >= 0);
-    assert(svg.size_y >= 0);
+fn drawSvg(
+    target: Target,
+    sprite: *const packed_mod.Sprite,
+    atlas: raster.AtlasView,
+    clip: raster.DeviceRect,
+    scale: f32,
+) void {
     assert(atlas.bytes_per_pixel == 4);
-    const rect = texturedRect(svg, svg.size_x, svg.size_y, scale);
-    raster.drawSvg(target, &rect, atlas, svg.color.toColor(), svg.stroke_color.toColor());
+    assert(scale > 0);
+    const rect = texturedRect(sprite, clip, scale);
+    raster.drawSvg(target, &rect, atlas, straight(sprite.tint), straight(sprite.secondary));
 }
 
 fn drawImage(
     target: Target,
-    image: *const ImageInstance,
+    sprite: *const packed_mod.Sprite,
     atlas: raster.AtlasView,
+    clip: raster.DeviceRect,
     scale: f32,
 ) void {
-    assert(image.dest_width >= 0);
-    assert(image.dest_height >= 0);
     assert(atlas.bytes_per_pixel == 4);
-    const rect = texturedRect(image, image.dest_width, image.dest_height, scale);
+    assert(scale > 0);
+    const rect = texturedRect(sprite, clip, scale);
     const effects = raster.ImageEffects{
-        .tint = image.tint.toColor(),
-        .radii = .{
-            .top_left = @max(image.corner_tl, 0.0) * scale,
-            .top_right = @max(image.corner_tr, 0.0) * scale,
-            .bottom_right = @max(image.corner_br, 0.0) * scale,
-            .bottom_left = @max(image.corner_bl, 0.0) * scale,
-        },
-        .grayscale = std.math.clamp(image.grayscale, 0.0, 1.0),
-        .opacity = std.math.clamp(image.opacity, 0.0, 1.0),
+        .tint = straight(sprite.tint),
+        .radii = deviceRadii(sprite.corners, scale),
+        .grayscale = std.math.clamp(sprite.grayscale, 0.0, 1.0),
+        .opacity = std.math.clamp(sprite.opacity, 0.0, 1.0),
     };
     raster.drawImage(target, &rect, atlas, &effects);
 }
@@ -669,43 +604,109 @@ fn drawImage(
 
 const testing = std.testing;
 
-/// A small budget so test renderers reserve kilobytes, not megabytes.
-const test_limits = limits_mod.ResourceLimits{
-    .scene = scene_mod.SceneLimits.standard,
+/// A small framebuffer budget so test renderers write kilobytes.
+const test_limits = backend.RenderLimits{
+    .scene = limits_mod.SceneLimits.nano,
     .window = .{ .framebuffer_width_max = 16, .framebuffer_height_max = 16 },
     .frame = limits_mod.FrameLimits.nano,
-    .atlas = limits_mod.AtlasLimits.standard,
-    .build = limits_mod.BuildLimits.nano,
-    .records = limits_mod.RecordLimits.nano,
-    .retained = limits_mod.RetainedLimits.nano,
-    .events = limits_mod.EventLimits.nano,
-    .text = limits_mod.TextLimits.nano,
-    .entities = limits_mod.EntityLimits.nano,
+    .atlas = limits_mod.AtlasLimits.nano,
 };
 
 const black = geometry.Color.rgba(0, 0, 0, 1);
+const red: packed_mod.Rgba = .{ 1, 0, 0, 1 };
+const blue: packed_mod.Rgba = .{ 0, 0, 1, 1 };
 
 fn testRenderer() !Renderer {
     var renderer: Renderer = undefined;
-    try renderer.initInPlace(testing.allocator, &test_limits);
+    try renderer.initInPlace(&test_limits);
     return renderer;
 }
 
-test "draw scales logical bounds and draws later primitives on top" {
-    // Goal: exercise the scene walk end to end. At scale 2 a logical quad at
+/// A packed frame for frame 1 borrowing `points`, filled by the helpers
+/// below the way `pack` fills it: one draw per instance, in call order.
+fn testFrame(frame: *PackedFrame, points: []const packed_mod.MeshPoint) !void {
+    try frame.initInPlace(&.{ .scene = test_limits.scene, .paint_record_count_max = 16 });
+    frame.reset(1, points);
+}
+
+fn appendClip(frame: *PackedFrame, rect: packed_mod.Rect) u32 {
+    assert(frame.clip_count < frame.clips.len);
+    frame.clips[frame.clip_count] = rect;
+    frame.clip_count += 1;
+    return frame.clip_count - 1;
+}
+
+fn appendDraw(frame: *PackedFrame, pipeline: packed_mod.Pipeline, first: u32, clip: u32) void {
+    assert(frame.draw_count < frame.draws.len);
+    assert(clip < frame.clip_count);
+    frame.draws[frame.draw_count] = .{
+        .pipeline = pipeline,
+        .clip = clip,
+        .first = first,
+        .count = 1,
+    };
+    frame.draw_count += 1;
+}
+
+fn appendQuad(frame: *PackedFrame, quad: packed_mod.Quad, clip: u32) void {
+    const pool: packed_mod.Pool = if (quad.blur > 0) .shadows else .quads;
+    frame.counts[@backingInt(pool)] += 1;
+    frame.quads[frame.quad_count] = quad;
+    appendDraw(frame, .quad, frame.quad_count, clip);
+    frame.quad_count += 1;
+}
+
+fn appendMesh(
+    frame: *PackedFrame,
+    pipeline: packed_mod.Pipeline,
+    instance: packed_mod.Mesh,
+    clip: u32,
+) void {
+    assert(pipeline.kind() == .mesh);
+    const pool: packed_mod.Pool = switch (pipeline) {
+        .triangles => .triangle_meshes,
+        .strip_expanded => .polylines,
+        .point_instanced => .point_clouds,
+        .quad, .glyph, .svg, .image => unreachable, // Asserted a mesh pipeline.
+    };
+    frame.counts[@backingInt(pool)] += 1;
+    frame.meshes[frame.mesh_count] = instance;
+    appendDraw(frame, pipeline, frame.mesh_count, clip);
+    frame.mesh_count += 1;
+}
+
+fn testQuad(bounds: packed_mod.Rect, fill: packed_mod.Rgba, blur: f32) packed_mod.Quad {
+    return .{
+        .bounds = bounds,
+        .fill = fill,
+        .border_color = .{ 0, 0, 0, 0 },
+        .corners = @splat(0),
+        .border_widths = @splat(0),
+        .blur = blur,
+        .offset = .{ 0, 0 },
+    };
+}
+
+/// A mesh of `count` points from `first`; triangle edge modes are unused here.
+fn testMesh(fill: packed_mod.Rgba, first: u32, count: u32, width: f32) packed_mod.Mesh {
+    return .{ .fill = fill, .first = first, .count = count, .width = width, .edge_first = 0 };
+}
+
+test "draw scales logical bounds and draws later draws on top" {
+    // Goal: exercise the draw walk end to end. At scale 2 a logical quad at
     // (1, 1) of size 1 covers device pixels 2 and 3 only, and a later quad
-    // that overlaps it wins because batches are drawn in insertion order.
-    var scene = try scene_mod.Scene.initCapacity(testing.allocator, &test_limits.scene);
-    defer scene.deinit();
-    try scene.insertQuad(scene_mod.Quad.filled(1, 1, 1, 1, scene_mod.Hsla.red));
-    const blue = scene_mod.Hsla.init(2.0 / 3.0, 1, 0.5, 1);
-    try scene.insertQuad(scene_mod.Quad.filled(1.5, 1.5, 1, 1, blue));
+    // that overlaps it wins because draws are drawn in order.
+    var frame: PackedFrame = undefined;
+    try testFrame(&frame, &.{});
+    defer frame.deinit();
+    appendQuad(&frame, testQuad(.{ 1, 1, 1, 1 }, red, 0), packed_mod.clip_none);
+    appendQuad(&frame, testQuad(.{ 1.5, 1.5, 1, 1 }, blue, 0), packed_mod.clip_none);
 
     var renderer = try testRenderer();
-    defer renderer.deinit(testing.allocator);
+    defer renderer.deinit();
     var pixels: [6 * 6]u32 = undefined;
     const target = Target{ .pixels = &pixels, .width = 6, .height = 6, .stride = 6 };
-    const stats = renderer.draw(target, &scene, .{ .scale_factor = 2 }, black);
+    const stats = renderer.draw(target, &frame, .{ .scale_factor = 2 }, black);
     try testing.expectEqual(@as(u32, 2), stats.quads);
     try testing.expectEqual(@as(u32, 0xFF00_0000), target.row(1)[1]);
     try testing.expectEqual(@as(u32, 0xFFFF_0000), target.row(2)[2]);
@@ -714,45 +715,44 @@ test "draw scales logical bounds and draws later primitives on top" {
     try testing.expectEqual(@as(u32, 0xFF00_0000), target.row(5)[5]);
 }
 
-test "every mesh kind draws, in place, at the device scale" {
-    // Goal: paths, polylines, point clouds, and colored point clouds all
-    // reach pixels through the scene walk, none is skipped, and each honors
-    // the logical-to-device scale. Each primitive sits in its own quadrant
-    // of a 16x16 device target drawn at scale 2.
-    var scene = try scene_mod.Scene.initCapacity(testing.allocator, &test_limits.scene);
-    defer scene.deinit();
-    // Path: logical triangle (0, 0) (3, 0) (0, 3), device (0, 0) (6, 0) (0, 6).
-    try scene.insertTriangle(0, 0, 3, 0, 0, 3, scene_mod.Hsla.red);
-    // Polyline: logical y = 1.5, width 1, x 4.5 to 8; device y 2 to 4.
-    const line_points = [_]scene_mod.Point{ .{ .x = 4.5, .y = 1.5 }, .{ .x = 8, .y = 1.5 } };
-    try scene.insertPolyline(scene_mod.Polyline.init(&line_points, 1, scene_mod.Hsla.white));
-    // Point cloud: logical (2, 6), radius 1.5; device (4, 12), radius 3.
-    const gray = scene_mod.Hsla.init(0, 0, 0.5, 1);
-    const cloud_points = [_]scene_mod.Point{.{ .x = 2, .y = 6 }};
-    try scene.insertPointCloud(scene_mod.PointCloud.init(&cloud_points, 1.5, gray));
-    // Colored point cloud: one red point at logical (6, 6).
-    const colored_points = [_]scene_mod.Point{.{ .x = 6, .y = 6 }};
-    const colors = [_]scene_mod.Hsla{scene_mod.Hsla.red};
-    const colored = scene_mod.ColoredPointCloud.init(&colored_points, &colors, 1.5);
-    try scene.insertColoredPointCloud(colored);
+test "every mesh pipeline draws, in place, at the device scale" {
+    // Goal: triangles, polylines, and point clouds all reach pixels through
+    // the draw walk, none is skipped, and each honors the logical-to-device
+    // scale and its mesh's point range. Each sits in its own quadrant of a
+    // 16x16 device target drawn at scale 2.
+    const points = [_]packed_mod.MeshPoint{
+        // Triangle: logical (0, 0) (3, 0) (0, 3), device (0, 0) (6, 0) (0, 6).
+        .{ .x = 0, .y = 0 },     .{ .x = 3, .y = 0 },   .{ .x = 0, .y = 3 },
+        // Polyline: logical y = 1.5, width 1, x 4.5 to 8; device y 2 to 4.
+        .{ .x = 4.5, .y = 1.5 }, .{ .x = 8, .y = 1.5 },
+        // Point cloud: logical (2, 6), radius 1.5; device (4, 12), radius 3.
+        .{ .x = 2, .y = 6 },
+    };
+    var frame: PackedFrame = undefined;
+    try testFrame(&frame, &points);
+    defer frame.deinit();
+    const none = packed_mod.clip_none;
+    const white: packed_mod.Rgba = .{ 1, 1, 1, 1 };
+    const gray: packed_mod.Rgba = .{ 0.5, 0.5, 0.5, 1 };
+    appendMesh(&frame, .triangles, testMesh(red, 0, 3, 0), none);
+    appendMesh(&frame, .strip_expanded, testMesh(white, 3, 2, 1), none);
+    appendMesh(&frame, .point_instanced, testMesh(gray, 5, 1, 1.5), none);
 
     var renderer = try testRenderer();
-    defer renderer.deinit(testing.allocator);
+    defer renderer.deinit();
     var pixels: [16 * 16]u32 = undefined;
     const target = Target{ .pixels = &pixels, .width = 16, .height = 16, .stride = 16 };
-    const stats = renderer.draw(target, &scene, .{ .scale_factor = 2 }, black);
-    try testing.expectEqual(@as(u32, 1), stats.paths);
+    const stats = renderer.draw(target, &frame, .{ .scale_factor = 2 }, black);
+    try testing.expectEqual(@as(u32, 1), stats.triangle_meshes);
     try testing.expectEqual(@as(u32, 1), stats.polylines);
     try testing.expectEqual(@as(u32, 1), stats.point_clouds);
-    try testing.expectEqual(@as(u32, 1), stats.colored_point_clouds);
     try testing.expectEqual(@as(u32, 0xFFFF_0000), target.row(1)[1]);
     try testing.expectEqual(@as(u32, 0xFF00_0000), target.row(5)[5]);
     try testing.expectEqual(@as(u32, 0xFFFF_FFFF), target.row(2)[12]);
     try testing.expectEqual(@as(u32, 0xFFFF_FFFF), target.row(3)[12]);
     try testing.expectEqual(@as(u32, 0xFF00_0000), target.row(4)[12]);
     try testing.expectEqual(@as(u32, 0xFF80_8080), target.row(12)[4]);
-    try testing.expectEqual(@as(u32, 0xFFFF_0000), target.row(12)[12]);
-    try testing.expectEqual(@as(u32, 0xFF00_0000), target.row(15)[8]);
+    try testing.expectEqual(@as(u32, 0xFF00_0000), target.row(12)[12]);
 }
 
 test "a translucent polyline blends once where its segments overlap" {
@@ -760,66 +760,98 @@ test "a translucent polyline blends once where its segments overlap" {
     // so a V-shaped line at half alpha must not darken at its joint. Pixel
     // (3, 3) lies under both segments of (0, 0) (4, 4) (8, 0) at width 2;
     // blending each segment separately would lift its red byte above 128.
-    var scene = try scene_mod.Scene.initCapacity(testing.allocator, &test_limits.scene);
-    defer scene.deinit();
-    const points = [_]scene_mod.Point{
+    const points = [_]packed_mod.MeshPoint{
         .{ .x = 0, .y = 0 },
         .{ .x = 4, .y = 4 },
         .{ .x = 8, .y = 0 },
     };
-    const half_red = scene_mod.Hsla.init(0, 1, 0.5, 0.5);
-    try scene.insertPolyline(scene_mod.Polyline.init(&points, 2, half_red));
+    var frame: PackedFrame = undefined;
+    try testFrame(&frame, &points);
+    defer frame.deinit();
+    const half_red: packed_mod.Rgba = .{ 1, 0, 0, 0.5 };
+    const line = testMesh(half_red, 0, 3, 2);
+    appendMesh(&frame, .strip_expanded, line, packed_mod.clip_none);
 
     var renderer = try testRenderer();
-    defer renderer.deinit(testing.allocator);
+    defer renderer.deinit();
     var pixels: [8 * 8]u32 = undefined;
     const target = Target{ .pixels = &pixels, .width = 8, .height = 8, .stride = 8 };
-    _ = renderer.draw(target, &scene, .{ .scale_factor = 1 }, black);
+    _ = renderer.draw(target, &frame, .{ .scale_factor = 1 }, black);
     try testing.expectEqual(@as(u32, 0xFF80_0000), target.row(3)[3]);
     for (pixels) |pixel| try testing.expect((pixel >> 16) & 0xFF <= 128);
 }
 
-test "a gradient path takes its color from the mesh uv at each pixel" {
-    // Goal: the uv plane must come from the mesh, not from device position.
-    // A logical 8x2 rectangle at x = 4 with a horizontal red-to-blue
-    // gradient must be red at its left edge and blue at its right, wherever
-    // the path sits on the target.
-    var scene = try scene_mod.Scene.initCapacity(testing.allocator, &test_limits.scene);
-    defer scene.deinit();
-    const Vec2 = @import("../../geometry/vec2.zig").Vec2;
-    const corners = [_]Vec2{
-        .{ .x = 0, .y = 0 },
-        .{ .x = 8, .y = 0 },
-        .{ .x = 8, .y = 2 },
-        .{ .x = 0, .y = 2 },
+test "each draw keeps to its own clip, shadows and meshes included" {
+    // Goal: the contract's clip rule reaches every pipeline through
+    // `Draw.clip`, including shadows, which 0.3.1 never clipped. A blurred
+    // shadow and a triangle both span the whole 8x4 target; the shadow's clip
+    // is logical x [0, 2] and the triangle's x [6, 8] at scale 1, so pixels
+    // 2..5 of every row keep the clear colour, and pixel 1 (centre 1.5,
+    // inside) and pixel 6 (centre 6.5, inside) are drawn. A wrong clip index
+    // or an unclipped shadow fails.
+    const points = [_]packed_mod.MeshPoint{
+        .{ .x = -4, .y = -4 }, .{ .x = 20, .y = -4 }, .{ .x = -4, .y = 20 },
     };
-    const rectangle = try path_mesh.PathMesh.fromConvexPolygon(&corners);
-    var gradient = scene_mod.LinearGradient.init(0, 0, 1, 0);
-    _ = gradient.addStop(0, scene_mod.Hsla.red);
-    _ = gradient.addStop(1, scene_mod.Hsla.init(2.0 / 3.0, 1, 0.5, 1));
-    const reference = try scene.mesh_pool.allocateFrame(rectangle);
-    const instance = scene_mod.PathInstance.initWithBufferRanges(
-        reference,
-        4,
-        0,
-        scene_mod.Hsla.black,
-        0,
-        0,
-        @intCast(rectangle.indices.len),
-    ).withLinearGradient(0, 0, 1, 0, gradient.stop_count);
-    try scene.insertPathWithLinearGradient(instance, gradient);
+    var frame: PackedFrame = undefined;
+    try testFrame(&frame, &points);
+    defer frame.deinit();
+    const left = appendClip(&frame, .{ 0, 0, 2, 4 });
+    const right = appendClip(&frame, .{ 6, 0, 2, 4 });
+    appendQuad(&frame, testQuad(.{ -2, -2, 12, 8 }, red, 1), left);
+    appendMesh(&frame, .triangles, testMesh(blue, 0, 3, 0), right);
 
     var renderer = try testRenderer();
-    defer renderer.deinit(testing.allocator);
-    var pixels: [16 * 2]u32 = undefined;
-    const target = Target{ .pixels = &pixels, .width = 16, .height = 2, .stride = 16 };
-    _ = renderer.draw(target, &scene, .{ .scale_factor = 1 }, black);
-    const left = target.row(0)[4];
-    const right = target.row(0)[11];
-    try testing.expect((left >> 16) & 0xFF > 200);
-    try testing.expect(left & 0xFF < 40);
-    try testing.expect(right & 0xFF > 200);
-    try testing.expect((right >> 16) & 0xFF < 40);
-    try testing.expectEqual(@as(u32, 0xFF00_0000), target.row(0)[3]);
-    try testing.expectEqual(@as(u32, 0xFF00_0000), target.row(0)[12]);
+    defer renderer.deinit();
+    var pixels: [8 * 4]u32 = undefined;
+    const target = Target{ .pixels = &pixels, .width = 8, .height = 4, .stride = 8 };
+    const stats = renderer.draw(target, &frame, .{ .scale_factor = 1 }, black);
+    try testing.expectEqual(@as(u32, 1), stats.shadows);
+    try testing.expectEqual(@as(u32, 0), stats.quads);
+    var y: u32 = 0;
+    while (y < 4) : (y += 1) {
+        const row = target.row(y);
+        try testing.expect((row[1] >> 16) & 0xFF > 0);
+        for (row[2..6]) |pixel| try testing.expectEqual(@as(u32, 0xFF00_0000), pixel);
+        try testing.expectEqual(@as(u32, 0xFF00_00FF), row[6]);
+        try testing.expectEqual(@as(u32, 0xFF00_00FF), row[7]);
+    }
+}
+
+test "uploadAtlas places rows where sprites sample them" {
+    // Goal: an upload lands at its own x, y, and row stride in the owned
+    // atlas, and a glyph sprite samples it. A 4x4 opaque block uploaded at
+    // (8, 4) of the 512-texel glyph atlas; a 2x2 sprite samples its inner
+    // 2x2 texels, so every pixel is fully tinted. Swapped x and y, or a row
+    // stride of the upload's width instead of the atlas's, would sample the
+    // still-zero texels around it and leave the clear colour.
+    var frame: PackedFrame = undefined;
+    try testFrame(&frame, &.{});
+    defer frame.deinit();
+    var renderer = try testRenderer();
+    defer renderer.deinit();
+    const block: [16]u8 = @splat(255);
+    renderer.uploadAtlas(.glyph, .{ .x = 8, .y = 4, .width = 4, .height = 4 }, &block);
+
+    const texel: f32 = 1.0 / 512.0;
+    frame.sprites[0] = .{
+        .bounds = .{ 1, 1, 2, 2 },
+        .uv = .{ 9 * texel, 5 * texel, 11 * texel, 7 * texel },
+        .tint = red,
+        .secondary = .{ 0, 0, 0, 0 },
+        .corners = @splat(0),
+        .grayscale = 0,
+        .opacity = 1,
+    };
+    frame.sprite_count = 1;
+    frame.counts[@backingInt(packed_mod.Pool.glyphs)] = 1;
+    appendDraw(&frame, .glyph, 0, packed_mod.clip_none);
+
+    var pixels: [4 * 4]u32 = undefined;
+    const target = Target{ .pixels = &pixels, .width = 4, .height = 4, .stride = 4 };
+    const stats = renderer.draw(target, &frame, .{ .scale_factor = 1 }, black);
+    try testing.expectEqual(@as(u32, 1), stats.glyphs);
+    try testing.expectEqual(@as(u32, 0xFFFF_0000), target.row(1)[1]);
+    try testing.expectEqual(@as(u32, 0xFFFF_0000), target.row(2)[2]);
+    try testing.expectEqual(@as(u32, 0xFF00_0000), target.row(0)[0]);
+    try testing.expectEqual(@as(u32, 0xFF00_0000), target.row(3)[3]);
 }

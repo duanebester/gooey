@@ -46,9 +46,8 @@ const platform_mod = @import("platform.zig");
 const window_mod = @import("window.zig");
 const clipboard = @import("clipboard.zig");
 const file_dialog = @import("file_dialog.zig");
-const scene_mod = @import("../../scene/mod.zig");
 const core_window = @import("../../core/window.zig");
-const pack_legacy = @import("../../core/pack_legacy.zig");
+const backend = @import("../../core/backend.zig");
 const core_element = @import("../../core/element.zig");
 const core_tick = @import("../../core/tick.zig");
 const core_router = @import("../../core/router.zig");
@@ -172,11 +171,9 @@ pub const Host = struct {
     // Render thread only.
     /// When the next present may start, on `nowNs`.
     present_due_ns: u64,
-    /// The size, in whole logical pixels, and scale the swapchain was last
-    /// built for.
-    surface_width: u32,
-    surface_height: u32,
-    surface_scale: f32,
+    /// The framebuffer the swapchain was last built for: the frame's
+    /// viewport, fitted to `ResourceLimits.window`.
+    viewport: backend.Viewport,
     /// Set while the swapchain cannot be rebuilt, so that is logged once.
     swapchain_failure_logged: bool,
 
@@ -217,9 +214,7 @@ pub const Host = struct {
         // No size a frame can have, so the first frame sizes the swapchain to
         // its viewport: `WM_SIZE` may have changed the client area after
         // `Window.init` built the swapchain and before this host existed.
-        self.surface_width = 0;
-        self.surface_height = 0;
-        self.surface_scale = 0;
+        self.viewport = .{ .size_px = .{ .width = 0, .height = 0 }, .scale_factor = 0 };
         self.swapchain_failure_logged = false;
         try self.initHandles();
         errdefer self.deinitHandles();
@@ -254,7 +249,6 @@ pub const Host = struct {
         const key = @intFromPtr(self.window);
         resources.registerAtlasConsumer(key);
         self.core.atlas_consumer_key = key;
-        self.window.renderer.bindAtlasUploads(resources.atlas_uploads, key);
         self.window.bindCore(.{
             .queue = &self.core.queue,
             .query = &self.query,
@@ -590,21 +584,22 @@ pub const Host = struct {
 
     /// Bring the swapchain to the frame's viewport before drawing it, and
     /// rebuild a swapchain a failed rebuild left without framebuffers. The
-    /// renderer takes whole logical pixels, rounded up so the swapchain
-    /// covers the client area; see `Window.rendererWidth`.
+    /// framebuffer takes the frame's exact logical size at its scale, so a
+    /// fractional scale draws at that scale across the whole client area.
     fn applyViewport(self: *Host, frame: *const records.Frame) void {
-        assert(frame.viewport_width >= 1);
-        assert(frame.viewport_height >= 1);
-        const width: u32 = @intFromFloat(@ceil(frame.viewport_width));
-        const height: u32 = @intFromFloat(@ceil(frame.viewport_height));
+        assert(frame.viewport_width > 0);
+        assert(frame.viewport_height > 0);
+        const viewport = backend.Viewport.fitLogical(
+            frame.viewport_width,
+            frame.viewport_height,
+            frame.scale_factor,
+            &self.window.window_limits,
+        );
         const renderer = &self.window.renderer;
-        const same_size = width == self.surface_width and height == self.surface_height;
-        const same = same_size and frame.scale_factor == self.surface_scale;
+        const same = std.meta.eql(viewport, self.viewport);
         if (same and window_mod.rendererSwapchainUsable(renderer)) return;
-        self.surface_width = width;
-        self.surface_height = height;
-        self.surface_scale = frame.scale_factor;
-        renderer.resize(width, height, frame.scale_factor);
+        self.viewport = viewport;
+        renderer.resize(viewport.size_px);
     }
 };
 
@@ -631,14 +626,8 @@ fn draw(
     const host: *Host = @ptrCast(@alignCast(context));
     assert(frame.scale_factor > 0);
     assert(host.core.render_phase == .draw);
-    // A minimized window draws nothing, so its scene is not filled either.
+    // A minimized window draws nothing; its atlas records stay journaled.
     if (!host.presentable.load(.acquire)) return;
-    // This renderer draws the 0.3.1 scene until it moves onto the contract.
-    const scene: *const scene_mod.Scene = host.core.scene;
-    pack_legacy.fillScene(packed_frame, host.core.scene, .{
-        .width = frame.viewport_width,
-        .height = frame.viewport_height,
-    });
     host.applyViewport(frame);
     const renderer = &host.window.renderer;
     if (!window_mod.rendererSwapchainUsable(renderer)) {
@@ -646,19 +635,22 @@ fn draw(
         if (!host.swapchain_failure_logged) {
             std.log.err("core host: frame {d} not drawn: swapchain rebuild for {d}x{d} failed", .{
                 frame.frame_number,
-                host.surface_width,
-                host.surface_height,
+                host.viewport.size_px.width,
+                host.viewport.size_px.height,
             });
         }
         host.swapchain_failure_logged = true;
         return;
     }
     host.swapchain_failure_logged = false;
-    renderer.setClearColor(clear);
-    renderer.render(scene);
+    // Pending atlas regions stay in the journal while frames are skipped.
+    const uploads = host.core.resources.atlas_uploads;
+    backend.uploadPendingAtlases(renderer, uploads, host.core.atlas_consumer_key);
+    backend.checkCapabilities(renderer.capabilities(), packed_frame);
+    renderer.draw(packed_frame, host.viewport, clear);
     // An out-of-date swapchain skips the frame and is rebuilt by the next
-    // render; draw this frame again rather than leave a stale one on screen.
-    if (renderer.swapchain_needs_recreate) renderer.render(scene);
+    // draw; draw this frame again rather than leave a stale one on screen.
+    if (renderer.swapchain_needs_recreate) renderer.draw(packed_frame, host.viewport, clear);
 }
 
 /// The window's close callback, on the main thread during dispatch: leave

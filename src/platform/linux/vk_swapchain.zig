@@ -42,6 +42,8 @@ pub const SwapchainResult = struct {
 pub const SwapchainError = error{
     SwapchainCreationFailed,
     ImageViewCreationFailed,
+    /// The surface offers no 8-bit UNORM format; see `chooseFormat`.
+    NoUnormSurfaceFormat,
 };
 
 pub const RenderPassError = error{
@@ -78,7 +80,7 @@ pub fn createSwapchain(
     std.debug.assert(frame_count >= limits_mod.MIN_FRAMES_IN_FLIGHT);
     std.debug.assert(frame_count <= limits_mod.MAX_FRAMES_IN_FLIGHT);
 
-    const config = querySwapchainConfig(physical_device, surface, extent, frame_count);
+    const config = try querySwapchainConfig(physical_device, surface, extent, frame_count);
     const swapchain = try createSwapchainHandle(device, surface, config, old_swapchain);
     errdefer vk.vkDestroySwapchainKHR(device, swapchain, null);
 
@@ -230,11 +232,15 @@ fn querySwapchainConfig(
     surface: vk.Surface,
     extent_requested: vk.Extent2D,
     frame_count: u32,
-) SwapchainConfig {
+) SwapchainError!SwapchainConfig {
     var capabilities: vk.SurfaceCapabilitiesKHR = undefined;
     _ = vk.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_device, surface, &capabilities);
 
-    const format_result = chooseFormat(physical_device, surface);
+    const format_result = chooseFormat(physical_device, surface) orelse {
+        std.log.err("Vulkan: the surface offers no 8-bit UNORM format; Gooey blends " ++
+            "sRGB-encoded colours in gamma space and cannot present to an _SRGB format", .{});
+        return SwapchainError.NoUnormSurfaceFormat;
+    };
     const present_mode = choosePresentMode(physical_device, surface);
     const composite_alpha = chooseCompositeAlpha(capabilities);
     const extent = chooseExtent(capabilities, extent_requested);
@@ -253,7 +259,11 @@ fn querySwapchainConfig(
 
 const FormatChoice = struct { format: vk.Format, color_space: vk.ColorSpaceKHR };
 
-fn chooseFormat(physical_device: vk.PhysicalDevice, surface: vk.Surface) FormatChoice {
+/// An 8-bit UNORM format, preferring BGRA. Colours are sRGB-encoded and
+/// blended in gamma space (contract §9), so the framebuffer must store them
+/// as written: an `_SRGB` format would encode them a second time on write
+/// and blend in linear space. Null when the surface offers none.
+fn chooseFormat(physical_device: vk.PhysicalDevice, surface: vk.Surface) ?FormatChoice {
     var format_count: u32 = 0;
     _ = vk.vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device, surface, &format_count, null);
 
@@ -262,25 +272,17 @@ fn chooseFormat(physical_device: vk.PhysicalDevice, surface: vk.Surface) FormatC
     _ = vk.vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device, surface, &fmt_count, &formats);
 
     std.debug.assert(fmt_count > 0);
+    std.debug.assert(fmt_count <= MAX_SURFACE_FORMATS);
 
-    // Prefer UNORM — we write sRGB values directly, no hardware conversion needed
-    for (formats[0..fmt_count]) |f| {
-        if (f.format == vk.VK_FORMAT_B8G8R8A8_UNORM and
-            f.colorSpace == vk.VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
-        {
-            return .{ .format = f.format, .color_space = f.colorSpace };
+    const unorm_formats = [_]vk.Format{ vk.VK_FORMAT_B8G8R8A8_UNORM, vk.VK_FORMAT_R8G8B8A8_UNORM };
+    for (unorm_formats) |wanted| {
+        for (formats[0..fmt_count]) |f| {
+            if (f.format == wanted and f.colorSpace == vk.VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+                return .{ .format = f.format, .color_space = f.colorSpace };
+            }
         }
     }
-    // Fallback: accept any UNORM or SRGB variant
-    for (formats[0..fmt_count]) |f| {
-        if (f.format == vk.VK_FORMAT_B8G8R8A8_UNORM or
-            f.format == vk.VK_FORMAT_B8G8R8A8_SRGB)
-        {
-            return .{ .format = f.format, .color_space = f.colorSpace };
-        }
-    }
-    // Last resort: whatever the driver offers first
-    return .{ .format = formats[0].format, .color_space = formats[0].colorSpace };
+    return null;
 }
 
 fn choosePresentMode(physical_device: vk.PhysicalDevice, surface: vk.Surface) vk.PresentModeKHR {

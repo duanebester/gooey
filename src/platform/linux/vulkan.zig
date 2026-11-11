@@ -1817,6 +1817,14 @@ pub extern fn vkCmdSetScissor(
     scissorCount: u32,
     pScissors: ?[*]const Rect2D,
 ) callconv(.c) void;
+pub extern fn vkCmdPushConstants(
+    commandBuffer: CommandBuffer,
+    layout: PipelineLayout,
+    stageFlags: ShaderStageFlags,
+    offset: u32,
+    size: u32,
+    pValues: ?*const anyopaque,
+) callconv(.c) void;
 pub extern fn vkCmdDraw(
     commandBuffer: CommandBuffer,
     vertexCount: u32,
