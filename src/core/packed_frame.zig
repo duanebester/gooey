@@ -128,7 +128,7 @@ pub const Draw = extern struct {
 pub const clip_none: u32 = 0;
 pub const clip_unbounded: Rect = .{ -1e9, -1e9, 2e9, 2e9 };
 
-/// Per-kind counts, checked against the scene limits the window reserved.
+/// Per-kind counts, checked against the paint limits the window reserved.
 /// Pools share storage by kind (`quads` holds quads and shadows), but each
 /// keeps the limit the app declared for it.
 pub const Pool = enum {
@@ -154,15 +154,15 @@ pub const Pool = enum {
         };
     }
 
-    /// The app's limit for this pool: the `SceneLimits` field `limitName`
-    /// names, which `SceneLimits.check` keeps in 1..ceiling.
-    pub fn capacity(self: Pool, scene: *const limits_mod.SceneLimits) u32 {
+    /// The app's limit for this pool: the `PaintLimits` field `limitName`
+    /// names, which `PaintLimits.check` keeps in 1..ceiling.
+    pub fn capacity(self: Pool, paint: *const limits_mod.PaintLimits) u32 {
         switch (self) {
             inline else => |pool| {
                 const field = comptime pool.limitName();
-                const result: u32 = @field(scene, field);
+                const result: u32 = @field(paint, field);
                 assert(result > 0);
-                assert(result <= @field(limits_mod.SceneLimits.ceiling, field));
+                assert(result <= @field(limits_mod.PaintLimits.ceiling, field));
                 return result;
             },
         }
@@ -171,11 +171,11 @@ pub const Pool = enum {
 
 pub const pool_count = @typeInfo(Pool).@"enum".field_names.len;
 
-/// What a packed frame reserves: the window's scene limits (including the
+/// What a packed frame reserves: the window's paint limits (including the
 /// debugger's headroom in safe builds) and its paint record bound, which
 /// bounds draws and clips because each record starts at most one of each.
 pub const Capacity = struct {
-    scene: limits_mod.SceneLimits,
+    paint: limits_mod.PaintLimits,
     paint_record_count_max: u32,
 };
 
@@ -196,7 +196,7 @@ pub const PackedFrame = struct {
     draw_count: u32,
     /// Per-pool counts of this frame, against `limits`.
     counts: [pool_count]u32,
-    limits: limits_mod.SceneLimits,
+    limits: limits_mod.PaintLimits,
     /// The tick that built the frame; names the frame in failures.
     frame_number: u64,
     /// Pack's scratch for classifying triangle edges; not renderer input.
@@ -213,24 +213,24 @@ pub const PackedFrame = struct {
     };
 
     pub noinline fn initInPlace(self: *PackedFrame, capacity: *const Capacity) !void {
-        const scene = &capacity.scene;
-        assert(scene.check() == null);
+        const paint = &capacity.paint;
+        assert(paint.check() == null);
         assert(capacity.paint_record_count_max > 0);
-        self.quads = try reservation.reserve(Quad, quadCapacity(scene));
+        self.quads = try reservation.reserve(Quad, quadCapacity(paint));
         errdefer reservation.release(Quad, self.quads, 0);
-        self.sprites = try reservation.reserve(Sprite, spriteCapacity(scene));
+        self.sprites = try reservation.reserve(Sprite, spriteCapacity(paint));
         errdefer reservation.release(Sprite, self.sprites, 0);
-        self.meshes = try reservation.reserve(Mesh, meshCapacity(scene));
+        self.meshes = try reservation.reserve(Mesh, meshCapacity(paint));
         errdefer reservation.release(Mesh, self.meshes, 0);
-        self.edge_modes = try reservation.reserve(EdgeModes, triangleCapacity(scene));
+        self.edge_modes = try reservation.reserve(EdgeModes, triangleCapacity(paint));
         errdefer reservation.release(EdgeModes, self.edge_modes, 0);
         self.clips = try reservation.reserve(Rect, capacity.paint_record_count_max + 1);
         errdefer reservation.release(Rect, self.clips, 0);
         self.draws = try reservation.reserve(Draw, capacity.paint_record_count_max);
         errdefer reservation.release(Draw, self.draws, 0);
         self.edge_table = .{};
-        try self.edge_table.init(edgeCapacity(scene));
-        self.limits = scene.*;
+        try self.edge_table.init(edgeCapacity(paint));
+        self.limits = paint.*;
         self.high_water = .{};
         self.quad_count = 0;
         self.sprite_count = 0;
@@ -365,24 +365,24 @@ fn KindSlice(comptime kind: Kind) type {
 }
 
 /// Quads and shadows share the quad pipeline and its storage.
-pub fn quadCapacity(scene: *const limits_mod.SceneLimits) u32 {
-    const count = @as(u64, scene.quad_count_frame_max) + scene.shadow_count_frame_max;
+pub fn quadCapacity(paint: *const limits_mod.PaintLimits) u32 {
+    const count = @as(u64, paint.quad_count_frame_max) + paint.shadow_count_frame_max;
     assert(count > 0);
     assert(count <= std.math.maxInt(u32));
     return @intCast(count);
 }
 
-pub fn spriteCapacity(scene: *const limits_mod.SceneLimits) u32 {
-    const count = @as(u64, scene.glyph_count_frame_max) + scene.svg_count_frame_max +
-        scene.image_count_frame_max;
+pub fn spriteCapacity(paint: *const limits_mod.PaintLimits) u32 {
+    const count = @as(u64, paint.glyph_count_frame_max) + paint.svg_count_frame_max +
+        paint.image_count_frame_max;
     assert(count > 0);
     assert(count <= std.math.maxInt(u32));
     return @intCast(count);
 }
 
-pub fn meshCapacity(scene: *const limits_mod.SceneLimits) u32 {
-    const count = @as(u64, scene.path_count_frame_max) + scene.polyline_count_frame_max +
-        scene.point_cloud_count_frame_max;
+pub fn meshCapacity(paint: *const limits_mod.PaintLimits) u32 {
+    const count = @as(u64, paint.path_count_frame_max) + paint.polyline_count_frame_max +
+        paint.point_cloud_count_frame_max;
     assert(count > 0);
     assert(count <= std.math.maxInt(u32));
     return @intCast(count);
@@ -390,8 +390,8 @@ pub fn meshCapacity(scene: *const limits_mod.SceneLimits) u32 {
 
 /// Triangle points are bounded by the path vertex budget, three per triangle.
 /// At least one entry, so a budget below one triangle still reserves storage.
-pub fn triangleCapacity(scene: *const limits_mod.SceneLimits) u32 {
-    const vertex_count = scene.path_vertex_count_frame_max;
+pub fn triangleCapacity(paint: *const limits_mod.PaintLimits) u32 {
+    const vertex_count = paint.path_vertex_count_frame_max;
     assert(vertex_count > 0);
     const count = @max(@divFloor(vertex_count, 3), 1);
     if (vertex_count >= 3) assert(count * 3 <= vertex_count);
@@ -400,23 +400,23 @@ pub fn triangleCapacity(scene: *const limits_mod.SceneLimits) u32 {
 
 /// Edges the triangle edge table holds: the path vertex budget, at least one
 /// triangle's worth.
-pub fn edgeCapacity(scene: *const limits_mod.SceneLimits) u32 {
-    const count = @max(scene.path_vertex_count_frame_max, 3);
+pub fn edgeCapacity(paint: *const limits_mod.PaintLimits) u32 {
+    const count = @max(paint.path_vertex_count_frame_max, 3);
     assert(count >= 3);
-    assert(count >= scene.path_vertex_count_frame_max);
+    assert(count >= paint.path_vertex_count_frame_max);
     return count;
 }
 
-/// Bytes `PackedFrame.initInPlace` reserves for the pools `scene` sizes:
+/// Bytes `PackedFrame.initInPlace` reserves for the pools `paint` sizes:
 /// quads, sprites, meshes, edge modes and the edge table. Clips and draws
 /// follow the paint record budget instead (`Capacity`).
-pub fn sceneBytes(scene: *const limits_mod.SceneLimits) u64 {
+pub fn paintBytes(paint: *const limits_mod.PaintLimits) u64 {
     var bytes: u64 = 0;
-    bytes += @as(u64, quadCapacity(scene)) * @sizeOf(Quad);
-    bytes += @as(u64, spriteCapacity(scene)) * @sizeOf(Sprite);
-    bytes += @as(u64, meshCapacity(scene)) * @sizeOf(Mesh);
-    bytes += @as(u64, triangleCapacity(scene)) * @sizeOf(EdgeModes);
-    bytes += mesh_edges.table_bytes(edgeCapacity(scene));
+    bytes += @as(u64, quadCapacity(paint)) * @sizeOf(Quad);
+    bytes += @as(u64, spriteCapacity(paint)) * @sizeOf(Sprite);
+    bytes += @as(u64, meshCapacity(paint)) * @sizeOf(Mesh);
+    bytes += @as(u64, triangleCapacity(paint)) * @sizeOf(EdgeModes);
+    bytes += mesh_edges.table_bytes(edgeCapacity(paint));
     assert(bytes > 0);
     return bytes;
 }
@@ -424,9 +424,9 @@ pub fn sceneBytes(scene: *const limits_mod.SceneLimits) u64 {
 /// Points every mesh of a frame may hold: one pool for all three topologies.
 /// The records frame reserves the same sum (`Window`), and renderers size
 /// their point buffers from it.
-pub fn meshPointCapacity(scene: *const limits_mod.SceneLimits) u32 {
-    const count = @as(u64, scene.path_vertex_count_frame_max) +
-        scene.polyline_point_count_frame_max + scene.point_count_frame_max;
+pub fn meshPointCapacity(paint: *const limits_mod.PaintLimits) u32 {
+    const count = @as(u64, paint.path_vertex_count_frame_max) +
+        paint.polyline_point_count_frame_max + paint.point_count_frame_max;
     assert(count > 0);
     assert(count <= std.math.maxInt(u32));
     return @intCast(count);

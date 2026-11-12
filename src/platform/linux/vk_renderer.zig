@@ -196,7 +196,7 @@ pub const VulkanRenderer = struct {
 
     // Memory pool for per-frame buffer sub-allocation (one vkAllocateMemory).
     host_memory_pool: vk_buffers.MemoryPool = .{},
-    // Per-frame storage buffer capacities, from the window's scene limits.
+    // Per-frame storage buffer capacities, from the window's paint limits.
     // Set once in `initInPlace`; buffers never grow.
     capacity: FrameCapacity = undefined,
 
@@ -242,7 +242,7 @@ pub const VulkanRenderer = struct {
         self.size_px = surface.size_px;
         // Every per-frame buffer and the staging lanes are sized from the
         // window's budget here, once, before the first frame (CLAUDE.md §2).
-        self.capacity = FrameCapacity.fromSceneLimits(&limits.scene);
+        self.capacity = FrameCapacity.fromPaintLimits(&limits.paint);
         self.window_limits = limits.window;
         self.staging_lane_bytes = limits.atlas.upload_bytes_frame_max;
         self.frame_count = limits.frame.in_flight_count;
@@ -823,7 +823,7 @@ pub const VulkanRenderer = struct {
         assert(self.staging_lane_bytes > 0);
         assert(self.allocation_bytes_max > 0);
         if (self.capacity.bufferPastRange(self.storage_range_bytes_max)) |buffer| {
-            std.log.err("Vulkan: frame buffer '{t}' needs {d} B (ResourceLimits.scene), past " ++
+            std.log.err("Vulkan: frame buffer '{t}' needs {d} B (ResourceLimits.paint), past " ++
                 "this device's maxStorageBufferRange of {d} B", .{
                 buffer,
                 self.capacity.bufferBytes(buffer),

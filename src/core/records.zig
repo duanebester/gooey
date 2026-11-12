@@ -119,7 +119,7 @@ pub const MeshRange = struct { first: u32, count: u32 };
 pub const MeshPoint = geometry.GpuPoint;
 
 /// Points the frame's mesh pool holds: drawn triangles, polylines, and
-/// point clouds together. Painting checks each kind against its scene limit.
+/// point clouds together. Painting checks each kind against its paint limit.
 pub const Mesh = struct {
     range: MeshRange,
     /// `triangles`: a triangle list, three points each. `strip_expanded`: a
@@ -435,7 +435,7 @@ pub const Frame = struct {
         assert(self.mesh_point_count <= self.mesh_points.len);
         if (count > self.mesh_points.len - self.mesh_point_count) {
             std.debug.panic("record frame pool 'mesh points' exhausted: capacity {d}, " ++
-                "{d} in use, {d} requested, frame {d}. Raise the app's ResourceLimits.scene " ++
+                "{d} in use, {d} requested, frame {d}. Raise the app's ResourceLimits.paint " ++
                 "geometry counts.", .{
                 self.mesh_points.len,
                 self.mesh_point_count,

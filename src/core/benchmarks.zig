@@ -821,7 +821,7 @@ const PackFixture = struct {
         });
         errdefer self.frame.deinit(gpa);
         try self.target.initInPlace(&.{
-            .scene = limits.SceneLimits.standard,
+            .paint = limits.PaintLimits.standard,
             .paint_record_count_max = paint_record_count_max,
         });
         self.frame.reset(1, .{ .width = 1200, .height = 800, .scale_factor = 1 });

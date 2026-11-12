@@ -110,7 +110,7 @@ const Packer = struct {
         assert(self.clip_depth <= target.limits.clip_depth_max);
         if (self.clip_depth == target.limits.clip_depth_max) {
             std.debug.panic("Packed clip stack exhausted: capacity {d} " ++
-                "(ResourceLimits.scene.clip_depth_max), {d} in use, 1 requested, frame {d}. " ++
+                "(ResourceLimits.paint.clip_depth_max), {d} in use, 1 requested, frame {d}. " ++
                 "Raise the app's ResourceLimits.", .{
                 target.limits.clip_depth_max,
                 self.clip_depth,
@@ -257,7 +257,7 @@ fn claim(target: *PackedFrame, pool: Pool) void {
     if (used.* == capacity) {
         @branchHint(.cold);
         std.debug.panic("Packed pool '{t}' exhausted: capacity {d} " ++
-            "(ResourceLimits.scene.{s}), {d} in use, 1 requested, frame {d}. " ++
+            "(ResourceLimits.paint.{s}), {d} in use, 1 requested, frame {d}. " ++
             "Raise the app's ResourceLimits.", .{
             pool,
             capacity,
@@ -457,7 +457,7 @@ test "pack resolves clips into draws, culls, and classifies shared triangle edge
 
     var target: PackedFrame = undefined;
     try target.initInPlace(&.{
-        .scene = limits_mod.SceneLimits.nano,
+        .paint = limits_mod.PaintLimits.nano,
         .paint_record_count_max = 32,
     });
     defer target.deinit();
@@ -520,7 +520,7 @@ test "pack skips every instance under a clip with zero area" {
 
     var target: PackedFrame = undefined;
     try target.initInPlace(&.{
-        .scene = limits_mod.SceneLimits.nano,
+        .paint = limits_mod.PaintLimits.nano,
         .paint_record_count_max = 16,
     });
     defer target.deinit();
@@ -553,7 +553,7 @@ test "pack starts a draw at every pipeline change within one clip" {
 
     var target: PackedFrame = undefined;
     try target.initInPlace(&.{
-        .scene = limits_mod.SceneLimits.nano,
+        .paint = limits_mod.PaintLimits.nano,
         .paint_record_count_max = 8,
     });
     defer target.deinit();
@@ -584,7 +584,7 @@ test "pack fills its draws and clips exactly at the paint record budget" {
     defer frame.deinit(testing.allocator);
     var target: PackedFrame = undefined;
     try target.initInPlace(&.{
-        .scene = limits_mod.SceneLimits.nano,
+        .paint = limits_mod.PaintLimits.nano,
         .paint_record_count_max = record_count_max,
     });
     defer target.deinit();

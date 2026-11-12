@@ -121,7 +121,7 @@ pub const WebRenderer = struct {
     bind_group: u32,
     /// Indexed by `FrameBuffer`.
     buffers: [frame_buffer_count]u32,
-    /// Elements each buffer holds: what a packed frame at the same scene
+    /// Elements each buffer holds: what a packed frame at the same paint
     /// limits can hold, so a frame within the budget always fits.
     capacity: [frame_buffer_count]u32,
     /// Indexed by `Atlas`.
@@ -149,9 +149,9 @@ pub const WebRenderer = struct {
         render_limits: *const backend.RenderLimits,
     ) !void {
         assert(surface.scale_factor > 0);
-        assert(render_limits.scene.check() == null);
+        assert(render_limits.paint.check() == null);
         assertFits(surface.size_px, &render_limits.window);
-        self.capacity = frameCapacity(&render_limits.scene);
+        self.capacity = frameCapacity(&render_limits.paint);
         self.atlas_sizes = .{
             render_limits.atlas.text_size,
             render_limits.atlas.svg_size,
@@ -439,16 +439,16 @@ fn recordMeshes(frame: *const PackedFrame, packed_draw: *const packed_mod.Draw) 
     }
 }
 
-/// Element counts of the frame buffers at `scene` (`packed_frame.zig`
+/// Element counts of the frame buffers at `paint` (`packed_frame.zig`
 /// capacities). A zero-sized buffer is invalid; one unused point costs 8 B.
-fn frameCapacity(scene: *const limits_mod.SceneLimits) [frame_buffer_count]u32 {
-    assert(scene.check() == null);
+fn frameCapacity(paint: *const limits_mod.PaintLimits) [frame_buffer_count]u32 {
+    assert(paint.check() == null);
     const capacity = [frame_buffer_count]u32{
-        packed_mod.quadCapacity(scene),
-        packed_mod.spriteCapacity(scene),
-        packed_mod.meshCapacity(scene),
-        @max(packed_mod.meshPointCapacity(scene), 1),
-        packed_mod.triangleCapacity(scene),
+        packed_mod.quadCapacity(paint),
+        packed_mod.spriteCapacity(paint),
+        packed_mod.meshCapacity(paint),
+        @max(packed_mod.meshPointCapacity(paint), 1),
+        packed_mod.triangleCapacity(paint),
         1,
     };
     for (capacity) |count| assert(count > 0);
@@ -503,7 +503,7 @@ fn checkDevice(
     for (std.enums.values(FrameBuffer)) |buffer| {
         const bytes = bufferBytes(capacity, buffer);
         if (bytes > binding_bytes_max) {
-            imports.err("WebGPU: frame buffer '{t}' needs {d} B (ResourceLimits.scene), past " ++
+            imports.err("WebGPU: frame buffer '{t}' needs {d} B (ResourceLimits.paint), past " ++
                 "the device's maxStorageBufferBindingSize of {d} B", .{
                 buffer,
                 bytes,

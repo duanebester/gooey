@@ -1369,18 +1369,18 @@ fn addFailFastChecks(
         .{ .mode = "core-wrap-words", .stderr = "text run of 2049 codepoints exceeds " ++
             "text.run_codepoint_count_max 1024" },
         .{ .mode = "core-wrap-frame", .stderr = "wrapped lines exhausted: capacity 1024 " ++
-            "(scene.glyph_count_frame_max), 1000 in use, 25 requested" },
+            "(paint.glyph_count_frame_max), 1000 in use, 25 requested" },
         .{ .mode = "core-deinit-running", .stderr = "App.deinit on a running app: " ++
             "call App.stop first, before any teardown frees" },
         .{ .mode = "core-list-count", .stderr = "List \"rows\" of 65 rows: capacity 64. " ++
             "Raise fail_fast_check.CoreApp.TallRow.count_max." },
         .{ .mode = "core-mesh-points", .stderr = "mesh points exhausted: capacity 1024 " ++
-            "(scene.polyline_point_count_frame_max), 0 in use, 1025 requested, frame 1." },
+            "(paint.polyline_point_count_frame_max), 0 in use, 1025 requested, frame 1." },
         .{ .mode = "core-image-requests", .stderr = "image loader pool 'requests' exhausted: " ++
             "capacity 4 images waiting or failed, 1 requested (\"assets/missing-4.png\") in " ++
             "frame 1. Raise ResourceLimits.atlas.image_request_count_max." },
         .{ .mode = "core-pack-polylines", .stderr = "Packed pool 'polylines' exhausted: " ++
-            "capacity 4 (ResourceLimits.scene.polyline_count_frame_max), 4 in use, " ++
+            "capacity 4 (ResourceLimits.paint.polyline_count_frame_max), 4 in use, " ++
             "1 requested, frame 1." },
         .{ .mode = "core-pack-draws", .stderr = "Packed pool 'draws' exhausted: capacity 8 " ++
             "(ResourceLimits.records.paint_record_count_frame_max + 0), 8 in use, 1 requested, " ++

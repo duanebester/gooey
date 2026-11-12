@@ -221,7 +221,7 @@ pub const ImageStyle = struct {
     opacity: f32 = 1,
 };
 
-/// The scene's clip stack ceiling; `limits.scene.clip_depth_max` bounds box
+/// The paint clip stack's ceiling; `limits.paint.clip_depth_max` bounds box
 /// clips and paint-function clips together below it.
 const clip_depth_max: u32 = limits_mod.MAX_CLIP_STACK_DEPTH;
 
@@ -311,7 +311,7 @@ fn emitFragment(window: *Window, layers_open: *LayerQueue, root: *const LayerRoo
                 if (window.focus_visible and node.focusable and window.isFocused(node.id)) {
                     ring = focusRing(window, &clips, node, bounds);
                 }
-                if (node.kind == .paint) emitPaint(window, node, bounds, clips.sceneDepth());
+                if (node.kind == .paint) emitPaint(window, node, bounds, clips.paintDepth());
                 if (node.clip) clips.open(window, node, index, bounds);
             },
             .text => emitText(window, node, bounds, &elements[index].text_data.?),
@@ -327,7 +327,7 @@ fn emitFragment(window: *Window, layers_open: *LayerQueue, root: *const LayerRoo
             .frame_number = window.frame_number,
             .content = focused.content,
         };
-        emitFocusRing(window, &focused, clips.sceneDepth());
+        emitFocusRing(window, &focused, clips.paintDepth());
     }
     if (root.clip != null) window.built().appendPaint(.clip_pop);
 }
@@ -422,14 +422,14 @@ fn revealDelta(view_start: f32, view_size: f32, start: f32, size: f32) f32 {
 /// Drawn after the rest of its fragment, so later siblings do not cover
 /// it, inside the clip that encloses the box, so a scrolled-away box draws
 /// none outside its viewport. One quad and at most one clip per frame.
-fn emitFocusRing(window: *Window, ring: *const FocusRing, scene_depth: u32) void {
+fn emitFocusRing(window: *Window, ring: *const FocusRing, paint_depth: u32) void {
     assert(ring.bounds.width >= 0);
     assert(ring.bounds.height >= 0);
     const spread = focus_ring_offset + focus_ring_width;
     const corners = ring.corners;
     const frame = window.built();
     if (ring.clip) |clip| {
-        checkClipDepth(window, scene_depth);
+        checkClipDepth(window, paint_depth);
         frame.appendPaint(.{ .clip_push = clip });
     }
     frame.appendPaint(.{ .quad = .{
@@ -588,8 +588,8 @@ const Clips = struct {
         return bounds.intersect(rect);
     }
 
-    /// Clips open on the scene's stack, the inherited one included.
-    fn sceneDepth(self: *const Clips) u32 {
+    /// Clips open on the paint clip stack, the inherited one included.
+    fn paintDepth(self: *const Clips) u32 {
         assert(self.len <= clip_depth_max);
         return self.len + @intFromBool(self.base != null);
     }
@@ -597,7 +597,7 @@ const Clips = struct {
     fn open(self: *Clips, window: *Window, node: *const Node, index: u32, bounds: Rect) void {
         assert(node.clip);
         assert(self.len <= clip_depth_max);
-        checkClipDepth(window, self.sceneDepth());
+        checkClipDepth(window, self.paintDepth());
         var rect = bounds;
         if (node.scroll) |handle| {
             // Keep the scrollbar outside the clip, using the overflow the last
@@ -644,11 +644,11 @@ const Clips = struct {
 };
 
 fn checkClipDepth(window: *const Window, depth: u32) void {
-    const depth_max = window.limits.scene.clip_depth_max;
+    const depth_max = window.limits.paint.clip_depth_max;
     assert(depth_max <= clip_depth_max);
     if (depth < depth_max) return;
     std.debug.panic("clip depth {d}: capacity {d} (frame {d}). Raise " ++
-        "ResourceLimits.scene.clip_depth_max.", .{ depth + 1, depth_max, window.frame_number });
+        "ResourceLimits.paint.clip_depth_max.", .{ depth + 1, depth_max, window.frame_number });
 }
 
 // 0.3.1's scroll container scrollbar colours (`widgets/scroll_container.zig`).
@@ -796,7 +796,7 @@ fn emitA11y(window: *Window, node: *const Node, bounds: Rect, level: u8) u8 {
 }
 
 /// `box_clip_depth` is the box clips already open around the element, which
-/// share the scene's clip stack with the paint function's own.
+/// share the paint clip stack with the paint function's own.
 fn emitPaint(window: *Window, node: *const Node, bounds: Rect, box_clip_depth: u32) void {
     const paint_fn = node.paint_fn.?;
     assert(box_clip_depth < clip_depth_max);
@@ -1026,9 +1026,9 @@ fn emitTriangles(window: *Window, points: []const [2]f32, color: Color) void {
             }
         }
     }
-    const mesh_max = @min(window.limits.scene.path_count_frame_max, limits_mod.MAX_FRAME_MESHES);
+    const mesh_max = @min(window.limits.paint.path_count_frame_max, limits_mod.MAX_FRAME_MESHES);
     if (frame.triangle_mesh_count == mesh_max) {
-        std.debug.panic("triangle meshes exhausted: capacity {d} (scene.path_count_frame_max, " ++
+        std.debug.panic("triangle meshes exhausted: capacity {d} (paint.path_count_frame_max, " ++
             "at most {d}), {d} in use, 1 requested, frame {d}", .{
             mesh_max, limits_mod.MAX_FRAME_MESHES, mesh_max, window.frame_number,
         });
@@ -1078,14 +1078,14 @@ fn emitPointMesh(window: *Window, points: []const [2]f32, mesh: PointMesh) void 
     } });
 }
 
-/// The frame's points of one kind stay within that kind's scene limit, so
+/// The frame's points of one kind stay within that kind's paint limit, so
 /// the renderer's geometry budget holds; one pool serves all three kinds.
 fn checkMeshPoints(window: *Window, topology: records.Mesh.Topology, count: u32) void {
-    const scene_limits = &window.limits.scene;
+    const paint_limits = &window.limits.paint;
     const capacity = switch (topology) {
-        .triangles => scene_limits.path_vertex_count_frame_max,
-        .strip_expanded => scene_limits.polyline_point_count_frame_max,
-        .point_instanced => scene_limits.point_count_frame_max,
+        .triangles => paint_limits.path_vertex_count_frame_max,
+        .strip_expanded => paint_limits.polyline_point_count_frame_max,
+        .point_instanced => paint_limits.point_count_frame_max,
     };
     const name = switch (topology) {
         .triangles => "path_vertex_count_frame_max",
@@ -1095,8 +1095,8 @@ fn checkMeshPoints(window: *Window, topology: records.Mesh.Topology, count: u32)
     const used = &window.built().mesh_point_counts[@backingInt(topology)];
     assert(used.* <= capacity);
     if (count > capacity - used.*) {
-        std.debug.panic("mesh points exhausted: capacity {d} (scene.{s}), {d} in use, " ++
-            "{d} requested, frame {d}. Raise the app's ResourceLimits.scene.{s}.", .{
+        std.debug.panic("mesh points exhausted: capacity {d} (paint.{s}), {d} in use, " ++
+            "{d} requested, frame {d}. Raise the app's ResourceLimits.paint.{s}.", .{
             capacity, name, used.*, count, window.frame_number, name,
         });
     }

@@ -10,7 +10,7 @@
 //! 2,048 handlers, and 64 KiB of text (≈1.9 MiB); 128 queued events; 16
 //! input engines × 4 KiB; a 176 KiB layout arena for text copies and 4,096
 //! wrapped lines, resident only as far as a frame writes; 256 KiB of text
-//! scratch; and the packed frame at `limits.scene` (`packed_frame.zig`),
+//! scratch; and the packed frame at `limits.paint` (`packed_frame.zig`),
 //! resident only as far as frames write. The layout engine keeps its fixed 16,384-element reservation until phase 4 ports
 //! layout, so `build.element_count_frame_max` is checked against it.
 
@@ -838,7 +838,7 @@ comptime {
 /// From fresh pages, so only what a frame touches becomes resident.
 fn layoutArenaBytes(limits: *const ResourceLimits) u32 {
     const text_bytes: u64 = limits.build.text_bytes_frame_max;
-    const line_count: u64 = limits.scene.glyph_count_frame_max;
+    const line_count: u64 = limits.paint.glyph_count_frame_max;
     assert(text_bytes > 0);
     assert(line_count > 0);
     const line_bytes = @sizeOf(layout_mod.types.WrappedLine);
@@ -861,7 +861,7 @@ fn initBuildStorage(self: *Window, gpa: std.mem.Allocator, limits: *const Resour
     errdefer reservation.release(u8, self.layout_arena, 0);
     self.layout_arena_used_max = 0;
     self.layout.arena.useFixedBuffer(self.layout_arena);
-    self.layout.wrapped_line_count_frame_max = limits.scene.glyph_count_frame_max;
+    self.layout.wrapped_line_count_frame_max = limits.paint.glyph_count_frame_max;
     self.nodes = try gpa.alloc(Node, element_count);
     errdefer gpa.free(self.nodes);
     self.node_count = 0;
@@ -875,8 +875,8 @@ fn initBuildStorage(self: *Window, gpa: std.mem.Allocator, limits: *const Resour
         .handler_count_max = limits.records.handler_count_frame_max,
         .a11y_node_count_max = element_count,
         .text_bytes_max = limits.build.text_bytes_frame_max,
-        .mesh_point_count_max = limits.scene.path_vertex_count_frame_max +
-            limits.scene.polyline_point_count_frame_max + limits.scene.point_count_frame_max,
+        .mesh_point_count_max = limits.paint.path_vertex_count_frame_max +
+            limits.paint.polyline_point_count_frame_max + limits.paint.point_count_frame_max,
     };
     try self.frames[0].initInPlace(gpa, &capacity);
     errdefer self.frames[0].deinit(gpa);
@@ -981,7 +981,7 @@ fn initRenderTargets(self: *Window, limits: *const ResourceLimits) !void {
     const reserved = debugger_mod.reservedLimits(limits);
     assert(reserved.check() == null);
     try self.packed_frame.initInPlace(&.{
-        .scene = reserved.scene,
+        .paint = reserved.paint,
         .paint_record_count_max = reserved.records.paint_record_count_frame_max,
     });
     assert(self.packed_frame.draw_count == 0);

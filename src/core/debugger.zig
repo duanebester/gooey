@@ -68,11 +68,11 @@ pub fn reservedLimits(limits: *const ResourceLimits) ResourceLimits {
 /// is valid in every mode, so a budget that builds in one mode builds in all.
 pub fn withHeadroom(limits: *const ResourceLimits) ResourceLimits {
     var reserved = limits.*;
-    reserved.scene.quad_count_frame_max += overlay_quad_count_max;
-    reserved.scene.glyph_count_frame_max += overlay_glyph_count_max;
+    reserved.paint.quad_count_frame_max += overlay_quad_count_max;
+    reserved.paint.glyph_count_frame_max += overlay_glyph_count_max;
     reserved.records.paint_record_count_frame_max += overlay_paint_record_count_max;
-    assert(reserved.scene.quad_count_frame_max > limits.scene.quad_count_frame_max);
-    assert(reserved.scene.glyph_count_frame_max > limits.scene.glyph_count_frame_max);
+    assert(reserved.paint.quad_count_frame_max > limits.paint.quad_count_frame_max);
+    assert(reserved.paint.glyph_count_frame_max > limits.paint.glyph_count_frame_max);
     return reserved;
 }
 
@@ -92,7 +92,7 @@ pub fn appPaintCount(frame: *const records.Frame) u32 {
 }
 
 /// After pack has packed the app's records, before the overlay's: the app
-/// stays within the scene limits it declared, which the packed frame's
+/// stays within the paint limits it declared, which the packed frame's
 /// reserved headroom would otherwise hide. The panic matches pack's own.
 pub fn checkAppPacked(target: *const packed_mod.PackedFrame) void {
     if (comptime !enabled) return;
@@ -104,11 +104,11 @@ pub fn checkAppPacked(target: *const packed_mod.PackedFrame) void {
     const glyphs_used = target.counts[@backingInt(packed_mod.Pool.glyphs)];
     if (quads_used > quads_declared) {
         const frame = target.frame_number;
-        appExhausted("Packed pool 'quads'", "scene", quads_declared, quads_used, frame);
+        appExhausted("Packed pool 'quads'", "paint", quads_declared, quads_used, frame);
     }
     if (glyphs_used > glyphs_declared) {
         const frame = target.frame_number;
-        appExhausted("Packed pool 'glyphs'", "scene", glyphs_declared, glyphs_used, frame);
+        appExhausted("Packed pool 'glyphs'", "paint", glyphs_declared, glyphs_used, frame);
     }
 }
 

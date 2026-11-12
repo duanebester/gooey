@@ -2578,12 +2578,12 @@ fn meshPaint(_: *const u8, painter: *ui.Painter) void {
 
 test "Painter meshes pack into triangle, polyline, and point meshes" {
     // Goal: paint meshes end to end on TestBackend, under the lifecycle
-    // guard (packing triangles must not allocate the scene's frame meshes
-    // after init). Methodology: the paint function draws two touching red
-    // triangle fills, a circle of 10 px (12 sides at scale 1, so 10 fan
-    // triangles), an axis-aligned and a diagonal line, a polyline, and a
-    // point cloud. The records and the packed scene are checked by kind and
-    // count, and the circle's first fan triangle by its corners.
+    // guard (packing triangles must not allocate after init). Methodology:
+    // the paint function draws two touching red triangle fills, a circle of
+    // 10 px (12 sides at scale 1, so 10 fan triangles), an axis-aligned and a
+    // diagonal line, a polyline, and a point cloud. The records and the packed
+    // frame are checked by kind and count, and the circle's first fan
+    // triangle by its corners.
     const app = try testing.allocator.create(MeshApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -3125,19 +3125,19 @@ fn paintCounts(frame: *const internals.records.Frame) PaintCounts {
 /// lines of 64 glyphs, 2 px quads, and empty clip pairs, all in view so none
 /// is culled when packed.
 fn fullPaint(_: *const u8, painter: *ui.Painter) void {
-    const scene_limits = full_limits.scene;
+    const paint_limits = full_limits.paint;
     const frame = painter.window.built();
     const line: [64]u8 = @splat('x');
     var row: u32 = 0;
-    while (paintCounts(frame).glyphs < scene_limits.glyph_count_frame_max) : (row += 1) {
+    while (paintCounts(frame).glyphs < paint_limits.glyph_count_frame_max) : (row += 1) {
         assert(row < 64);
-        const left = scene_limits.glyph_count_frame_max - paintCounts(frame).glyphs;
+        const left = paint_limits.glyph_count_frame_max - paintCounts(frame).glyphs;
         const y: f32 = @floatFromInt(8 + row * 8);
         _ = painter.text(line[0..@min(left, line.len)], 8, y, .{ .size = 6, .color = .black });
     }
-    assert(paintCounts(frame).glyphs == scene_limits.glyph_count_frame_max);
+    assert(paintCounts(frame).glyphs == paint_limits.glyph_count_frame_max);
     var quad: u32 = paintCounts(frame).quads;
-    while (quad < scene_limits.quad_count_frame_max) : (quad += 1) {
+    while (quad < paint_limits.quad_count_frame_max) : (quad += 1) {
         const x: f32 = @floatFromInt(400 + (quad % 64) * 4);
         const y: f32 = @floatFromInt(8 + (quad / 64) * 4);
         painter.fill(.{ .x = x, .y = y, .width = 2, .height = 2 }, .black);
@@ -3156,8 +3156,8 @@ test "the debugger opens over an app filled to exactly its limits" {
     // (contract decision 16), so a correct app cannot crash from opening it.
     // Methodology: the app fills its declared quads, glyphs, and paint
     // records exactly; open the inspector, hover and select its element, then
-    // the profiler, and check each frame and scene holds the app's full
-    // budget plus the overlay.
+    // the profiler, and check each records frame and the packed frame hold
+    // the app's full budget plus the overlay.
     if (!internals.debugger.enabled) return error.SkipZigTest;
     const app = try testing.allocator.create(FullApp);
     defer testing.allocator.destroy(app);
@@ -3168,12 +3168,12 @@ test "the debugger opens over an app filled to exactly its limits" {
     const counts = &app.window.packed_frame.counts;
     const quads = &counts[@backingInt(internals.packed_frame.Pool.quads)];
     const glyphs = &counts[@backingInt(internals.packed_frame.Pool.glyphs)];
-    const scene_limits = full_limits.scene;
+    const paint_limits = full_limits.paint;
     const app_counts = paintCounts(app.window.rendered());
     try testing.expectEqual(full_limits.records.paint_record_count_frame_max, app_counts.records);
-    try testing.expectEqual(scene_limits.quad_count_frame_max, app_counts.quads);
-    try testing.expectEqual(scene_limits.quad_count_frame_max, quads.*);
-    try testing.expectEqual(scene_limits.glyph_count_frame_max, glyphs.*);
+    try testing.expectEqual(paint_limits.quad_count_frame_max, app_counts.quads);
+    try testing.expectEqual(paint_limits.quad_count_frame_max, quads.*);
+    try testing.expectEqual(paint_limits.glyph_count_frame_max, glyphs.*);
 
     const toggle = gooey.input.InputEvent{ .key_down = chord(.i, .{ .cmd = true, .shift = true }) };
     scrollMouse(app, &now, toggle);
@@ -3183,15 +3183,15 @@ test "the debugger opens over an app filled to exactly its limits" {
     try testing.expect(app.window.debugger.info != null);
     const inspected = paintCounts(app.window.rendered());
     try testing.expect(inspected.records > app_counts.records);
-    try testing.expect(quads.* > scene_limits.quad_count_frame_max);
-    try testing.expect(glyphs.* > scene_limits.glyph_count_frame_max);
+    try testing.expect(quads.* > paint_limits.quad_count_frame_max);
+    try testing.expect(glyphs.* > paint_limits.glyph_count_frame_max);
 
     scrollMouse(app, &now, toggle);
     try testing.expectEqual(.profiler, app.window.debugger.mode);
     const profiled = paintCounts(app.window.rendered());
     // The panel, the graph, its target line, and at least one bar.
     try testing.expect(profiled.quads >= app_counts.quads + 4);
-    try testing.expect(glyphs.* > scene_limits.glyph_count_frame_max);
+    try testing.expect(glyphs.* > paint_limits.glyph_count_frame_max);
 }
 
 /// The bounds of the first button named `name`, or null when none is built.

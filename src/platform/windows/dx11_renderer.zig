@@ -200,7 +200,7 @@ pub const Dx11Renderer = struct {
         preference: dx11_device.DriverPreference,
     ) InitError!void {
         assert(surface.scale_factor > 0);
-        assert(limits.scene.check() == null);
+        assert(limits.paint.check() == null);
         const window = &limits.window;
         if (surface.size_px.width > window.framebuffer_width_max) return error.WindowTooLarge;
         if (surface.size_px.height > window.framebuffer_height_max) return error.WindowTooLarge;
@@ -252,7 +252,7 @@ pub const Dx11Renderer = struct {
         self.shaders = try createShaders(&self.device);
         errdefer releaseShaders(&self.shaders);
 
-        const scene = &self.limits.scene;
+        const paint = &self.limits.paint;
         self.instance_indices = try dx11_resources.createIndexSequence(
             &self.device,
             instanceIndexCount(&self.limits),
@@ -265,7 +265,7 @@ pub const Dx11Renderer = struct {
         var created: u32 = 0;
         errdefer for (self.frames[0..created]) |*frame| releaseFrame(frame);
         while (created < self.frame_count) : (created += 1) {
-            self.frames[created] = try createFrame(&self.device, scene);
+            self.frames[created] = try createFrame(&self.device, paint);
         }
         assert(created == self.frame_count);
     }
@@ -619,7 +619,7 @@ fn writeFrame(
     };
     for (arrays) |array| {
         // The packed frame and these buffers are sized from the same
-        // reserved scene limits, so a frame always fits.
+        // reserved paint limits, so a frame always fits.
         assert(array.bytes.len <= @as(usize, array.buffer.count_max) * array.buffer.stride_bytes);
         if (!array.buffer.write(context, array.bytes)) return false;
     }
@@ -660,11 +660,11 @@ pub fn bindTarget(
 /// The largest instance index a draw names: a quad, a sprite, a mesh, or a
 /// staged atlas record.
 fn instanceIndexCount(limits: *const backend.RenderLimits) u32 {
-    const scene = &limits.scene;
+    const paint = &limits.paint;
     const count = @max(
-        packed_mod.quadCapacity(scene),
-        packed_mod.spriteCapacity(scene),
-        packed_mod.meshCapacity(scene),
+        packed_mod.quadCapacity(paint),
+        packed_mod.spriteCapacity(paint),
+        packed_mod.meshCapacity(paint),
         dx11_uploads.Uploads.recordCountMax(&limits.atlas),
     );
     assert(count > 0);
@@ -723,41 +723,41 @@ pub fn releaseShaders(shaders: *Shaders) void {
 }
 
 /// One frame in flight's buffers, each sized like the packed frame's array
-/// for the same scene limits.
+/// for the same paint limits.
 pub fn createFrame(
     device: *const dx11_device.Device,
-    scene: *const limits_mod.SceneLimits,
+    paint: *const limits_mod.PaintLimits,
 ) dx11_resources.ResourceError!FrameBuffers {
-    assert(scene.check() == null);
+    assert(paint.check() == null);
     const uniforms = try dx11_resources.createConstantBuffer(device, @sizeOf(Uniforms));
     errdefer uniforms.release();
     var quads = try InstanceBuffer.create(device, .{
         .name = "quads",
-        .count_max = packed_mod.quadCapacity(scene),
+        .count_max = packed_mod.quadCapacity(paint),
         .stride_bytes = @sizeOf(packed_mod.Quad),
     });
     errdefer quads.release();
     var sprites = try InstanceBuffer.create(device, .{
         .name = "sprites",
-        .count_max = packed_mod.spriteCapacity(scene),
+        .count_max = packed_mod.spriteCapacity(paint),
         .stride_bytes = @sizeOf(packed_mod.Sprite),
     });
     errdefer sprites.release();
     var meshes = try InstanceBuffer.create(device, .{
         .name = "meshes",
-        .count_max = packed_mod.meshCapacity(scene),
+        .count_max = packed_mod.meshCapacity(paint),
         .stride_bytes = @sizeOf(packed_mod.Mesh),
     });
     errdefer meshes.release();
     var mesh_points = try InstanceBuffer.create(device, .{
         .name = "mesh points",
-        .count_max = @max(packed_mod.meshPointCapacity(scene), 1),
+        .count_max = @max(packed_mod.meshPointCapacity(paint), 1),
         .stride_bytes = @sizeOf(packed_mod.MeshPoint),
     });
     errdefer mesh_points.release();
     const edge_modes = try InstanceBuffer.create(device, .{
         .name = "edge modes",
-        .count_max = packed_mod.triangleCapacity(scene),
+        .count_max = packed_mod.triangleCapacity(paint),
         .stride_bytes = @sizeOf(packed_mod.EdgeModes),
     });
     return .{

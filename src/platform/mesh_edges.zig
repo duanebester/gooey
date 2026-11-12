@@ -42,7 +42,7 @@
 //! slices, showed the background.
 //!
 //! Resource sketch (CLAUDE.md §7): one entry per triangle point the frame may
-//! hold (`SceneLimits.path_vertex_count_frame_max`), at most two thirds full:
+//! hold (`PaintLimits.path_vertex_count_frame_max`), at most two thirds full:
 //! 20 B × 1.5 = 30 B per point budget, 491,540 B at `.standard` and 7,864,340 B
 //! at `.large`. The table is mapped from fresh pages at init and not cleared:
 //! the pages are zero and not resident until touched. A frame hashes only into

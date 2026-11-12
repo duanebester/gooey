@@ -31,7 +31,7 @@
 //!   pixel, and meshes shade each covered pixel once per mesh.
 //! - Worst case per frame: `width * height * (1 + overdraw)` pixel writes for
 //!   the packed frame's instance capacities, plus mesh work bounded by the
-//!   scene's mesh point budgets, which the frame build enforces. A 1280x800
+//!   paint budget's mesh point limits, which the frame build enforces. A 1280x800
 //!   frame with 3x overdraw is roughly 4 M pixel writes, a few milliseconds
 //!   on one desktop core.
 //! - GPU, disk, and network: none.
@@ -141,7 +141,7 @@ pub const Renderer = struct {
         assert(limits.window.framebuffer_height_max > 0);
         const width_max = limits.window.framebuffer_width_max;
         const height_max = limits.window.framebuffer_height_max;
-        const polygon_count_max = polygonCountMax(&limits.scene);
+        const polygon_count_max = polygonCountMax(&limits.paint);
 
         self.width_max = width_max;
         self.height_max = height_max;
@@ -271,7 +271,7 @@ pub const Renderer = struct {
 /// Polygons one mesh can produce within the budget: a triangle mesh's
 /// triangles or a polyline's segments, whichever is larger. The frame build
 /// caps each by its per-mesh ceiling and by the frame's point budget.
-fn polygonCountMax(limits: *const limits_mod.SceneLimits) u32 {
+fn polygonCountMax(limits: *const limits_mod.PaintLimits) u32 {
     assert(limits.check() == null);
     const triangle_points_max = @min(
         limits_mod.MAX_PATH_VERTICES,
@@ -605,7 +605,7 @@ const testing = std.testing;
 
 /// A small framebuffer budget so test renderers write kilobytes.
 const test_limits = backend.RenderLimits{
-    .scene = limits_mod.SceneLimits.nano,
+    .paint = limits_mod.PaintLimits.nano,
     .window = .{ .framebuffer_width_max = 16, .framebuffer_height_max = 16 },
     .frame = limits_mod.FrameLimits.nano,
     .atlas = limits_mod.AtlasLimits.nano,
@@ -624,7 +624,7 @@ fn testRenderer() !Renderer {
 /// A packed frame for frame 1 borrowing `points`, filled by the helpers
 /// below the way `pack` fills it: one draw per instance, in call order.
 fn testFrame(frame: *PackedFrame, points: []const packed_mod.MeshPoint) !void {
-    try frame.initInPlace(&.{ .scene = test_limits.scene, .paint_record_count_max = 16 });
+    try frame.initInPlace(&.{ .paint = test_limits.paint, .paint_record_count_max = 16 });
     frame.reset(1, points);
 }
 
