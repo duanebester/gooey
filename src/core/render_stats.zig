@@ -1,111 +1,19 @@
-//! Render Statistics - Performance monitoring for GPU rendering
-//!
-//! Tracks draw calls, pipeline switches, and primitive counts per frame.
-//! Use for profiling and understanding actual rendering bottlenecks.
+//! Render statistics: text shaping work per build, which the debugger's
+//! profiler shows. The text system records each shape cache miss with its time
+//! and each hit; the debugger resets the counts when a build starts.
 
 const std = @import("std");
 
 pub const RenderStats = struct {
-    // Draw call counts
-    draw_calls: u32 = 0,
-    pipeline_switches: u32 = 0,
-
-    // Primitive counts
-    quads_rendered: u32 = 0,
-    shadows_rendered: u32 = 0,
-    glyphs_rendered: u32 = 0,
-    svgs_rendered: u32 = 0,
-    paths_rendered: u32 = 0,
-
-    // Culling stats
-    quads_culled: u32 = 0,
-    shadows_culled: u32 = 0,
-    glyphs_culled: u32 = 0,
-    svgs_culled: u32 = 0,
-    paths_culled: u32 = 0,
-
-    // Batch stats
-    quad_batches: u32 = 0,
-    shadow_batches: u32 = 0,
-    glyph_batches: u32 = 0,
-    svg_batches: u32 = 0,
-    path_batches: u32 = 0,
-
-    // Text shaping stats
     shape_misses: u32 = 0,
     shape_time_ns: u64 = 0,
     shape_cache_hits: u32 = 0,
 
     const Self = @This();
 
-    /// Reset all counters to zero (call at start of frame)
+    /// Reset all counters to zero (call at the start of a build).
     pub fn reset(self: *Self) void {
         self.* = .{};
-    }
-
-    /// Record a draw call
-    pub inline fn recordDrawCall(self: *Self) void {
-        self.draw_calls += 1;
-    }
-
-    /// Record a pipeline switch
-    pub inline fn recordPipelineSwitch(self: *Self) void {
-        self.pipeline_switches += 1;
-    }
-
-    /// Record rendered quads
-    pub inline fn recordQuads(self: *Self, count: u32) void {
-        self.quads_rendered += count;
-        self.quad_batches += 1;
-    }
-
-    /// Record rendered shadows
-    pub inline fn recordShadows(self: *Self, count: u32) void {
-        self.shadows_rendered += count;
-        self.shadow_batches += 1;
-    }
-
-    /// Record rendered glyphs
-    pub inline fn recordGlyphs(self: *Self, count: u32) void {
-        self.glyphs_rendered += count;
-        self.glyph_batches += 1;
-    }
-
-    /// Record rendered SVGs
-    pub inline fn recordSvgs(self: *Self, count: u32) void {
-        self.svgs_rendered += count;
-        self.svg_batches += 1;
-    }
-
-    /// Record rendered paths (canvas/vector graphics)
-    pub inline fn recordPaths(self: *Self, count: u32) void {
-        self.paths_rendered += count;
-        self.path_batches += 1;
-    }
-
-    /// Record culled quads (skipped due to being off-screen)
-    pub inline fn recordQuadsCulled(self: *Self, count: u32) void {
-        self.quads_culled += count;
-    }
-
-    /// Record culled shadows
-    pub inline fn recordShadowsCulled(self: *Self, count: u32) void {
-        self.shadows_culled += count;
-    }
-
-    /// Record culled glyphs
-    pub inline fn recordGlyphsCulled(self: *Self, count: u32) void {
-        self.glyphs_culled += count;
-    }
-
-    /// Record culled SVGs
-    pub inline fn recordSvgsCulled(self: *Self, count: u32) void {
-        self.svgs_culled += count;
-    }
-
-    /// Record culled paths
-    pub inline fn recordPathsCulled(self: *Self, count: u32) void {
-        self.paths_culled += count;
     }
 
     /// Record a text shaping cache miss with timing
@@ -118,126 +26,15 @@ pub const RenderStats = struct {
     pub inline fn recordShapeCacheHit(self: *Self) void {
         self.shape_cache_hits += 1;
     }
-
-    /// Get shaping time in milliseconds
-    pub fn shapeTimeMs(self: *const Self) f32 {
-        return @as(f32, @floatFromInt(self.shape_time_ns)) / 1_000_000.0;
-    }
-
-    /// Calculate culling efficiency (0.0 = no culling, 1.0 = 100% culled)
-    pub fn cullingEfficiency(self: *const Self) f32 {
-        const total_quads = self.quads_rendered + self.quads_culled;
-        if (total_quads == 0) return 0.0;
-        return @as(f32, @floatFromInt(self.quads_culled)) / @as(f32, @floatFromInt(total_quads));
-    }
-
-    /// Average batch size for quads
-    pub fn avgQuadBatchSize(self: *const Self) f32 {
-        if (self.quad_batches == 0) return 0.0;
-        return @as(f32, @floatFromInt(self.quads_rendered)) / @as(f32, @floatFromInt(self.quad_batches));
-    }
-
-    /// Average batch size for shadows
-    pub fn avgShadowBatchSize(self: *const Self) f32 {
-        if (self.shadow_batches == 0) return 0.0;
-        return @as(f32, @floatFromInt(self.shadows_rendered)) / @as(f32, @floatFromInt(self.shadow_batches));
-    }
-
-    /// Print statistics to debug output
-    pub fn print(self: *const Self) void {
-        std.debug.print(
-            \\
-            \\═══════════════════════════════════════
-            \\  Render Stats
-            \\═══════════════════════════════════════
-            \\  Draw calls:        {d}
-            \\  Pipeline switches: {d}
-            \\───────────────────────────────────────
-            \\  Quads:    {d} rendered, {d} culled
-            \\  Shadows:  {d} rendered, {d} culled
-            \\  Glyphs:   {d} rendered, {d} culled
-            \\  SVGs:     {d} rendered, {d} culled
-            \\───────────────────────────────────────
-            \\  Quad batches:   {d} (avg {d:.1} per batch)
-            \\  Shadow batches: {d} (avg {d:.1} per batch)
-            \\  Glyph batches:  {d}
-            \\  SVG batches:    {d}
-            \\  Culling efficiency: {d:.1}%
-            \\───────────────────────────────────────
-            \\  Text shaping:
-            \\    Shape misses: {d}
-            \\    Shape time:   {d:.2}ms
-            \\    Cache hits:   {d}
-            \\═══════════════════════════════════════
-            \\
-        , .{
-            self.draw_calls,
-            self.pipeline_switches,
-            self.quads_rendered,
-            self.quads_culled,
-            self.shadows_rendered,
-            self.shadows_culled,
-            self.glyphs_rendered,
-            self.glyphs_culled,
-            self.svgs_rendered,
-            self.svgs_culled,
-            self.quad_batches,
-            self.avgQuadBatchSize(),
-            self.shadow_batches,
-            self.avgShadowBatchSize(),
-            self.glyph_batches,
-            self.svg_batches,
-            self.cullingEfficiency() * 100.0,
-            self.shape_misses,
-            self.shapeTimeMs(),
-            self.shape_cache_hits,
-        });
-    }
-
-    /// Format stats as a single-line summary (for HUD overlay)
-    pub fn summary(self: *const Self, buf: []u8) []const u8 {
-        const result = std.fmt.bufPrint(buf, "DC:{d} PS:{d} Q:{d}/{d} S:{d} G:{d} V:{d} Sh:{d}/{d:.1}ms", .{
-            self.draw_calls,
-            self.pipeline_switches,
-            self.quads_rendered,
-            self.quads_culled,
-            self.shadows_rendered,
-            self.glyphs_rendered,
-            self.svgs_rendered,
-            self.shape_misses,
-            self.shapeTimeMs(),
-        }) catch return "stats error";
-        return result;
-    }
 };
 
-// Thread-local stats for easy access (optional - can also pass explicitly)
+/// The current build's counts. Shaping and the reset both run on the thread
+/// that builds frames.
 pub var frame_stats: RenderStats = .{};
 
-/// Start a new frame (resets stats)
+/// Start a new build's counts.
 pub fn beginFrame() void {
     frame_stats.reset();
-}
-
-/// Get current frame stats
-pub fn getStats() *RenderStats {
-    return &frame_stats;
-}
-
-test "RenderStats basic operations" {
-    var stats = RenderStats{};
-
-    stats.recordDrawCall();
-    stats.recordDrawCall();
-    stats.recordQuads(10);
-    stats.recordQuads(5);
-    stats.recordQuadsCulled(3);
-
-    try std.testing.expectEqual(@as(u32, 2), stats.draw_calls);
-    try std.testing.expectEqual(@as(u32, 15), stats.quads_rendered);
-    try std.testing.expectEqual(@as(u32, 2), stats.quad_batches);
-    try std.testing.expectEqual(@as(u32, 3), stats.quads_culled);
-    try std.testing.expectEqual(@as(f32, 7.5), stats.avgQuadBatchSize());
 }
 
 test "RenderStats shape tracking" {
@@ -251,5 +48,6 @@ test "RenderStats shape tracking" {
     try std.testing.expectEqual(@as(u32, 2), stats.shape_misses);
     try std.testing.expectEqual(@as(u64, 1_500_000), stats.shape_time_ns);
     try std.testing.expectEqual(@as(u32, 2), stats.shape_cache_hits);
-    try std.testing.expectEqual(@as(f32, 1.5), stats.shapeTimeMs());
+    stats.reset();
+    try std.testing.expectEqual(@as(u32, 0), stats.shape_misses);
 }

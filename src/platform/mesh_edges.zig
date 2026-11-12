@@ -27,8 +27,9 @@
 //! Edges are matched by exact float equality after the path transform. Charts
 //! compute shared vertices with identical arithmetic, so their shared edges
 //! match; edges that only overlap partially (T-junctions) are treated as
-//! silhouettes. Both backends classify with `classify` and write their vertex
-//! records with `write_triangles`, so they choose the same mode for every edge.
+//! silhouettes. Pack classifies every edge of the packed frame once and
+//! writes the modes to its `edge_modes` (`core/pack.zig`), so every backend
+//! chooses the same mode for every edge.
 //!
 //! Geometry (`triangle_draw_vertex_count`): the shaders draw every triangle at
 //! its exact corners and add a separate fringe quad outside each fade and
@@ -40,25 +41,23 @@
 //! ulps apart, and pixel centres in the sliver between them, inside donut
 //! slices, showed the background.
 //!
-//! Resource sketch (CLAUDE.md §7): one entry per path index the frame may
-//! submit (`SceneLimits.path_index_count_frame_max`), at most two thirds full:
-//! 20 B × 1.5 = 30 B per index budget, 491,540 B at `.standard` and 7,864,340 B
+//! Resource sketch (CLAUDE.md §7): one entry per triangle point the frame may
+//! hold (`SceneLimits.path_vertex_count_frame_max`), at most two thirds full:
+//! 20 B × 1.5 = 30 B per point budget, 491,540 B at `.standard` and 7,864,340 B
 //! at `.large`. The table is mapped from fresh pages at init and not cleared:
 //! the pages are zero and not resident until touched. A frame hashes only into
-//! the first 1.5 × (its own path index count) entries, so resident memory
-//! follows the largest frame drawn so far, 30 B per path index it submitted;
+//! the first 1.5 × (its own triangle point count) entries, so resident memory
+//! follows the largest frame drawn so far, 30 B per triangle point it packed;
 //! an app that draws no paths keeps one page. An entry is live only when its
 //! stamp is the frame's, so a frame starts without clearing the table. Per
-//! frame: one pass summing the admitted paths' index counts, then three
-//! inserts and three lookups per submitted triangle, each a 64-bit hash and a
-//! short linear probe. Nothing allocates after init. The fringe quads add no
-//! memory: the shaders generate them from the triangle's three records, 21
-//! draw vertices per triangle.
+//! frame: three inserts and three lookups per packed triangle, each a 64-bit
+//! hash and a short linear probe. Nothing allocates after init. The fringe
+//! quads add no memory: the shaders generate them from the triangle's three
+//! records, 21 draw vertices per triangle.
 
 const std = @import("std");
 const assert = std.debug.assert;
 
-const scene_mod = @import("../scene/mod.zig");
 const limits = @import("../core/limits.zig");
 
 /// How the triangle shader treats one edge. Two bits per edge in the vertex
@@ -80,27 +79,6 @@ pub const PathIndex = u16;
 comptime {
     assert(limits.MAX_PATHS_PER_FRAME <= std.math.maxInt(PathIndex));
 }
-
-/// One de-indexed path triangle vertex: the source `PathVertex` plus the
-/// triangle's edge modes, two bits per edge in order (v0→v1, v1→v2, v2→v0),
-/// values from `EdgeMode`. All three vertices of a triangle carry the same
-/// modes; the vertex shader reads its two neighbours from the buffer. The
-/// modes are stored as an integral float (0..63) because the Vulkan shader
-/// reads the payload as `float[]`; a small integer bit pattern would be a
-/// denormal, which a GPU may flush to zero on load.
-pub const TriangleVertex = extern struct {
-    x: f32,
-    y: f32,
-    u: f32,
-    v: f32,
-    edge_modes: f32,
-
-    comptime {
-        assert(@sizeOf(TriangleVertex) == 20);
-        assert(@offsetOf(TriangleVertex, "edge_modes") == 16);
-        assert(@sizeOf(TriangleVertex) == @sizeOf(scene_mod.PathVertex) + 4);
-    }
-};
 
 /// Vertices the triangle shaders draw per path triangle (Vulkan
 /// `triangles.vert`, Metal `shaders.zig`): the triangle at its exact
@@ -160,12 +138,12 @@ pub const EdgeTable = struct {
     slot_count_high: u32 = 0,
     /// Edges inserted this frame; bounded by `edge_count_frame`.
     edge_count: u32 = 0,
-    /// This frame's edge bound: the path indices `classify` admitted.
+    /// This frame's edge bound: its triangle points, one edge each.
     edge_count_frame: u32 = 0,
     edge_count_max: u32 = 0,
 
-    /// Reserve room for `edge_count_max` edges per frame (the path index
-    /// budget: a triangle's three indices bring three edges).
+    /// Reserve room for `edge_count_max` edges per frame (the triangle point
+    /// budget: a triangle's three points bring three edges).
     pub fn init(self: *EdgeTable, edge_count_max: u32) !void {
         assert(self.entries.len == 0);
         assert(edge_count_max > 0);
@@ -296,152 +274,6 @@ fn slot_count_for(edge_count: u32) u32 {
     const slot_count = @as(u64, edge_count) + edge_count / 2 + 1;
     assert(slot_count <= std.math.maxInt(u32));
     return @intCast(slot_count);
-}
-
-/// Classify every path triangle edge of the frame before any path is drawn.
-/// Paths are visited in draw order, the order the backends draw them in, and
-/// `path_index` in `write_triangles` is the same index into
-/// `scene.getPathInstances()`. Classification stops at the frame's path index
-/// budget; the draw pass then reports the exhausted pool.
-pub fn classify(table: *EdgeTable, scene: *const scene_mod.Scene) void {
-    assert(table.entries.len > 0);
-    const paths = scene.getPathInstances();
-    const gradients = scene.getPathGradients();
-    assert(paths.len == gradients.len);
-    assert(paths.len <= scene.limits.path_count_frame_max);
-    const path_count = admitted_path_count(scene, table.edge_count_max);
-    var index_count: u32 = 0;
-    for (paths[0..path_count]) |*path| {
-        const mesh = scene.getMeshPool().getMesh(path.getMeshRef());
-        index_count += @intCast(mesh.indices.len);
-    }
-    // Each admitted index brings one edge: three per triangle.
-    assert(index_count <= table.edge_count_max);
-    table.begin(index_count);
-    for (paths[0..path_count], gradients[0..path_count], 0..) |*path, *gradient, path_index| {
-        const mesh = scene.getMeshPool().getMesh(path.getMeshRef());
-        const indices = mesh.indices.constSlice();
-        const fill = fill_hash(path, gradient);
-        const vertices = mesh.vertices.constSlice();
-        var triangle: usize = 0;
-        while (triangle < indices.len) : (triangle += 3) {
-            const corners = triangle_corners(path, vertices, indices[triangle..][0..3]);
-            for (0..3) |edge| {
-                const key = edgeKey(corners[edge], corners[(edge + 1) % 3]);
-                table.insert(key, @intCast(path_index), fill);
-            }
-        }
-    }
-    assert(table.edge_count <= index_count);
-}
-
-/// Paths, in draw order, whose indices fit the frame's path index budget
-/// together with every path before them. Classification stops at the first
-/// path that does not fit; the draw pass reports that path's exhausted pool.
-fn admitted_path_count(scene: *const scene_mod.Scene, index_count_max: u32) usize {
-    const paths = scene.getPathInstances();
-    var index_count: u64 = 0;
-    for (paths, 0..) |*path, path_count| {
-        const indices = scene.getMeshPool().getMesh(path.getMeshRef()).indices.len;
-        if (index_count + indices > index_count_max) return path_count;
-        index_count += indices;
-    }
-    assert(index_count <= index_count_max);
-    return paths.len;
-}
-
-pub const TriangleSource = struct {
-    edges: *const EdgeTable,
-    path: *const scene_mod.PathInstance,
-    /// The path's index in `scene.getPathInstances()`, as `classify` saw it.
-    path_index: PathIndex,
-    vertices: []const scene_mod.PathVertex,
-    indices: []const u32,
-};
-
-/// De-index a path mesh into vertex records, each triangle tagged with the
-/// modes `classify` chose for its three edges.
-pub fn write_triangles(target: []TriangleVertex, source: *const TriangleSource) void {
-    assert(target.len == source.indices.len);
-    assert(target.len % 3 == 0);
-    assert(target.len <= limits.MAX_PATH_INDICES);
-    var triangle: usize = 0;
-    while (triangle < target.len) : (triangle += 3) {
-        const indices = source.indices[triangle..][0..3];
-        const corners = triangle_corners(source.path, source.vertices, indices);
-        var edge_modes: u8 = 0;
-        for (0..3) |edge| {
-            const key = edgeKey(corners[edge], corners[(edge + 1) % 3]);
-            const mode = source.edges.mode(key, source.path_index);
-            edge_modes |= @as(u8, @backingInt(mode)) << @intCast(2 * edge);
-        }
-        assert(edge_modes < 64);
-        for (indices, target[triangle..][0..3]) |index, *record| {
-            const vertex = source.vertices[index];
-            record.* = .{
-                .x = vertex.x,
-                .y = vertex.y,
-                .u = vertex.u,
-                .v = vertex.v,
-                .edge_modes = @floatFromInt(edge_modes),
-            };
-        }
-    }
-}
-
-/// Everything that decides a path's colour after its transform: fill colour,
-/// clip, gradient parameters and the gradient's live stops. Two paths with
-/// equal hashes blend identically across a shared edge. Unused stops are
-/// zeroed so stale bytes past `stop_count` cannot split equal fills.
-fn fill_hash(
-    path: *const scene_mod.PathInstance,
-    gradient: *const scene_mod.GradientUniforms,
-) u32 {
-    const Fill = extern struct {
-        color: [4]f32,
-        clip: [4]f32,
-        params: [4]f32,
-        gradient_type: u32,
-        stop_count: u32,
-        stops: [5][16]f32,
-    };
-    var fill = std.mem.zeroes(Fill);
-    fill.color = .{ path.fill_color.h, path.fill_color.s, path.fill_color.l, path.fill_color.a };
-    fill.clip = .{ path.clip_x, path.clip_y, path.clip_width, path.clip_height };
-    fill.params = .{ path.grad_param0, path.grad_param1, path.grad_param2, path.grad_param3 };
-    fill.gradient_type = path.gradient_type;
-    fill.stop_count = gradient.stop_count;
-    assert(fill.gradient_type <= 2);
-    if (fill.gradient_type != 0) {
-        assert(fill.stop_count >= 2);
-        assert(fill.stop_count <= 16);
-        const count = fill.stop_count;
-        @memcpy(fill.stops[0][0..count], gradient.stop_offsets[0..count]);
-        @memcpy(fill.stops[1][0..count], gradient.stop_h[0..count]);
-        @memcpy(fill.stops[2][0..count], gradient.stop_s[0..count]);
-        @memcpy(fill.stops[3][0..count], gradient.stop_l[0..count]);
-        @memcpy(fill.stops[4][0..count], gradient.stop_a[0..count]);
-    }
-    return @truncate(std.hash.Wyhash.hash(0, std.mem.asBytes(&fill)));
-}
-
-/// A triangle's corners in screen space, transformed exactly as the vertex
-/// shaders transform them, so equal corners compare equal across draws.
-fn triangle_corners(
-    path: *const scene_mod.PathInstance,
-    vertices: []const scene_mod.PathVertex,
-    indices: *const [3]u32,
-) [3][2]f32 {
-    var corners: [3][2]f32 = undefined;
-    for (indices, &corners) |index, *corner| {
-        assert(index < vertices.len);
-        const vertex = vertices[index];
-        corner.* = .{
-            vertex.x * path.scale_x + path.offset_x,
-            vertex.y * path.scale_y + path.offset_y,
-        };
-    }
-    return corners;
 }
 
 // =============================================================================

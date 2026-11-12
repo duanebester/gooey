@@ -344,42 +344,6 @@ pub fn build(b: *std.Build) void {
         }
         text_bench_step.dependOn(&text_bench_run.step);
 
-        // =====================================================================
-        // Scene Benchmarks (data plane: scene build, batch iteration, frame e2e)
-        // =====================================================================
-
-        const scene_bench_exe = b.addExecutable(.{
-            .name = "scene-bench",
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("src/scene/benchmarks.zig"),
-                .target = target,
-                .optimize = .fast,
-                .imports = &.{
-                    .{ .name = "gooey", .module = bench_gooey_mod },
-                    .{ .name = "bench", .module = bench_mod },
-                },
-            }),
-        });
-
-        const scene_bench_step = b.step("bench-scene", "Run scene module (data plane) benchmarks");
-        const scene_bench_run = b.addRunArtifact(scene_bench_exe);
-        if (bench_json_dir) |dir| {
-            scene_bench_run.addArgs(&.{ "--json-dir", dir });
-        }
-        scene_bench_step.dependOn(&scene_bench_run.step);
-
-        // The scene benchmark's `validate:` tests (primitive counts, batch
-        // coalescing, and the steady-state zero-allocation invariant) only run
-        // in Debug, where assertions are live. Wire them into `test` so the
-        // data-plane zero-alloc guarantee is a CI-gated fact, mirroring how
-        // `bench_tests` / `compare_tests` are already gated below.
-        const scene_bench_tests = b.addTest(.{
-            .root_module = scene_bench_exe.root_module,
-        });
-        const run_scene_bench_tests = b.addRunArtifact(scene_bench_tests);
-        test_step.dependOn(&run_scene_bench_tests.step);
-
-        _ = addOverflowChecks(b, mod, target, optimize, test_step);
         _ = addFailFastChecks(b, mod, components_mod, target, optimize, test_step);
         addImportBan(b, test_step);
 
@@ -423,7 +387,6 @@ pub fn build(b: *std.Build) void {
         bench_all_step.dependOn(&bench_run.step);
         bench_all_step.dependOn(&core_bench_run.step);
         bench_all_step.dependOn(&text_bench_run.step);
-        bench_all_step.dependOn(&scene_bench_run.step);
         bench_all_step.dependOn(&accessibility_bench_run.step);
 
         // =====================================================================
@@ -696,44 +659,6 @@ pub fn build(b: *std.Build) void {
         text_bench_step.dependOn(&text_bench_run.step);
 
         // =====================================================================
-        // Scene Benchmarks (data plane: scene build, batch iteration, frame e2e)
-        // =====================================================================
-
-        const scene_bench_exe = b.addExecutable(.{
-            .name = "scene-bench",
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("src/scene/benchmarks.zig"),
-                .target = target,
-                .optimize = .fast,
-                .imports = &.{
-                    .{ .name = "gooey", .module = bench_gooey_mod },
-                    .{ .name = "bench", .module = bench_mod },
-                },
-            }),
-        });
-        linkLinuxLibraries(scene_bench_exe, linux_backend);
-
-        const scene_bench_step = b.step("bench-scene", "Run scene module (data plane) benchmarks");
-        const scene_bench_run = b.addRunArtifact(scene_bench_exe);
-        if (bench_json_dir) |dir| {
-            scene_bench_run.addArgs(&.{ "--json-dir", dir });
-        }
-        scene_bench_step.dependOn(&scene_bench_run.step);
-
-        // Scene benchmark `validate:` tests (counts, batch coalescing, and the
-        // steady-state zero-allocation invariant) run only in Debug. The
-        // dependOn is added in the Tests section below, once `test_step` exists.
-        const scene_bench_tests = b.addTest(.{
-            .root_module = scene_bench_exe.root_module,
-            .use_llvm = true,
-        });
-        linkLinuxLibraries(scene_bench_tests, linux_backend);
-        if (!skip_shader_compile) {
-            scene_bench_tests.step.dependOn(compile_shaders_step);
-        }
-        const run_scene_bench_tests = b.addRunArtifact(scene_bench_tests);
-
-        // =====================================================================
         // Accessibility Benchmarks (per-frame fingerprint + tree diff)
         // =====================================================================
 
@@ -778,7 +703,6 @@ pub fn build(b: *std.Build) void {
         bench_all_step.dependOn(&bench_run.step);
         bench_all_step.dependOn(&core_bench_run.step);
         bench_all_step.dependOn(&text_bench_run.step);
-        bench_all_step.dependOn(&scene_bench_run.step);
         bench_all_step.dependOn(&accessibility_bench_run.step);
 
         // =====================================================================
@@ -836,13 +760,7 @@ pub fn build(b: *std.Build) void {
         }, test_step);
         test_step.dependOn(&run_compare_tests.step);
         test_step.dependOn(&run_bench_tests.step);
-        test_step.dependOn(&run_scene_bench_tests.step);
         test_step.dependOn(&run_accessibility_bench_tests.step);
-        const overflow_exe = addOverflowChecks(b, mod, target, optimize, test_step);
-        linkLinuxLibraries(overflow_exe, linux_backend);
-        if (!skip_shader_compile) {
-            overflow_exe.step.dependOn(compile_shaders_step);
-        }
         const fail_fast_exe = addFailFastChecks(
             b,
             mod,
@@ -1376,56 +1294,6 @@ fn addImportBan(b: *std.Build, test_step: *std.Build.Step) void {
     test_step.dependOn(&b.addRunArtifact(tests).step);
 }
 
-/// Adds the fail-fast overflow checks to `test_step` on every native OS.
-///
-/// A full pool must abort with the pool, capacity, counts, and frame (CLAUDE.md
-/// §2). A panic cannot be caught in-process, so `src/scene/overflow_check.zig`
-/// overflows a pool in a child process and each run step asserts the abort and
-/// its exact message (CLAUDE.md §24). The scene pool is checked everywhere. The
-/// renderers' buffers are sized from the packed pools, whose overflow
-/// `fail_fast_check` covers.
-/// Returns the executable so the caller can add platform link steps.
-fn addOverflowChecks(
-    b: *std.Build,
-    gooey_module: *std.Build.Module,
-    target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
-    test_step: *std.Build.Step,
-) *std.Build.Step.Compile {
-    const exe = b.addExecutable(.{
-        .name = "scene-overflow-check",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/scene/overflow_check.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{.{ .name = "gooey", .module = gooey_module }},
-        }),
-    });
-
-    const run_scene = b.addRunArtifact(exe);
-    run_scene.addArg("scene");
-    run_scene.addCheck(.{ .expect_stderr_match = "Scene pool 'quads' exhausted: " ++
-        "capacity 4 (ResourceLimits.scene), 4 in use, 1 requested, frame 1." });
-    run_scene.addCheck(.{ .expect_term = .{ .signal = .ABRT } });
-    test_step.dependOn(&run_scene.step);
-    // Every profile rung's quad pool holds exactly its budget and no more.
-    const profiles = [_][]const u8{ "nano", "small", "standard", "large", "ceiling" };
-    const quad_capacities = [_]u32{ 256, 1024, 4096, 32768, 65536 };
-    for (profiles, quad_capacities) |profile, capacity| {
-        const run_profile = b.addRunArtifact(exe);
-        run_profile.addArg(b.fmt("scene-{s}", .{profile}));
-        run_profile.addCheck(.{ .expect_stderr_match = b.fmt(
-            "Scene pool 'quads' exhausted: capacity {d} (ResourceLimits.scene), " ++
-                "{d} in use, 1 requested, frame 1.",
-            .{ capacity, capacity },
-        ) });
-        run_profile.addCheck(.{ .expect_term = .{ .signal = .ABRT } });
-        test_step.dependOn(&run_profile.step);
-    }
-    add_geometry_overflow_checks(b, exe, test_step);
-    return exe;
-}
-
 /// Adds the fail-fast checks for frame- and input-path failures to `test_step`.
 ///
 /// Each mode of `src/testing/fail_fast_check.zig` drives one path that panics
@@ -1510,42 +1378,6 @@ fn addFailFastChecks(
         test_step.dependOn(&run.step);
     }
     return exe;
-}
-
-fn add_geometry_overflow_checks(
-    b: *std.Build,
-    exe: *std.Build.Step.Compile,
-    test_step: *std.Build.Step,
-) void {
-    const pools = [_][]const u8{
-        "path_vertices", "path_indices", "polyline_points", "points", "colored_points",
-    };
-    const capacities = [_]u32{ 7, 11, 13, 17, 19 };
-    for (pools, capacities) |pool, capacity| {
-        const run = b.addRunArtifact(exe);
-        run.addArg(b.fmt("geometry-{s}", .{pool}));
-        run.addCheck(.{ .expect_stderr_match = b.fmt(
-            "Scene geometry pool '{s}' exhausted: capacity {d} (ResourceLimits.scene), " ++
-                "{d} in use, 1 requested, frame 7.",
-            .{ pool, capacity, capacity },
-        ) });
-        run.addCheck(.{ .expect_term = .{ .signal = .ABRT } });
-        test_step.dependOn(&run.step);
-    }
-    // Renderer instance buffers, sized from the same `overflow_limits` scene budget.
-    const instance_pools = [_][]const u8{ "glyphs", "svgs", "images" };
-    const instance_capacities = [_]u32{ 1024, 4, 4 };
-    for (instance_pools, instance_capacities) |pool, capacity| {
-        const run = b.addRunArtifact(exe);
-        run.addArg(b.fmt("instances-{s}", .{pool}));
-        run.addCheck(.{ .expect_stderr_match = b.fmt(
-            "Scene instance pool '{s}' exhausted: capacity {d} (ResourceLimits.scene), " ++
-                "{d} in use, 1 requested, frame 7.",
-            .{ pool, capacity, capacity },
-        ) });
-        run.addCheck(.{ .expect_term = .{ .signal = .ABRT } });
-        test_step.dependOn(&run.step);
-    }
 }
 
 // =============================================================================

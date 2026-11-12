@@ -43,7 +43,7 @@ even when the average is steady.
 zig build bench-all -Dbench-json-dir=docs/benchmarks
 ```
 
-Individual suites (`bench`, `bench-core`, `bench-text`, `bench-scene`,
+Individual suites (`bench`, `bench-core`, `bench-text`,
 `bench-accessibility`) accept the same `-Dbench-json-dir=` flag — useful when
 iterating on a single module.
 

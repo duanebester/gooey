@@ -1,9 +1,9 @@
-//! Text rendering — converts shaped text to GPU glyph instances.
+//! Text placement: shaped text to glyph quads in the glyph atlas.
 //!
-//! The rendering pipeline has three phases, optimized for minimal lock contention:
+//! `placeText` runs in three phases, optimized for minimal lock contention:
 //!   Phase 1 — Compute device-pixel positions and subpixel offsets (no lock).
 //!   Phase 2 — Batch-resolve all glyphs from the cache under a single mutex lock.
-//!   Phase 3 — Build GlyphInstances and emit to the scene (no lock).
+//!   Phase 3 — Place each glyph and hand it to the caller's sink (no lock).
 //!
 //! The batch glyph resolve (Phase 2) eliminates N-1 mutex lock/unlock pairs per
 //! text run compared to the per-glyph locking pattern, saving ~500–2000 ns for
@@ -11,24 +11,14 @@
 
 const std = @import("std");
 const platform = @import("../platform/mod.zig");
-const scene_mod = @import("../scene/mod.zig");
-const Scene = scene_mod.Scene;
-const Quad = scene_mod.Quad;
-const GlyphInstance = scene_mod.GlyphInstance;
-const ContentMask = scene_mod.ContentMask;
-const DrawOrder = scene_mod.DrawOrder;
 const text_system_mod = @import("text_system.zig");
 const TextSystem = text_system_mod.TextSystem;
 const ShapedRunCache = text_system_mod.ShapedRunCache;
 const CachedGlyph = text_system_mod.CachedGlyph;
 const ShapedGlyph = types.ShapedGlyph;
-const Hsla = scene_mod.Hsla;
 const types = @import("types.zig");
-const Metrics = types.Metrics;
 const FontVariant = types.FontVariant;
 const FontFamily = types.FontFamily;
-const TextDecoration = types.TextDecoration;
-const RenderStats = @import("../core/render_stats.zig").RenderStats;
 
 const is_wasm = platform.is_wasm;
 
@@ -41,110 +31,10 @@ const MAX_GLYPHS_PER_RUN: u32 = ShapedRunCache.MAX_GLYPHS_PER_ENTRY;
 // WASM stack budget check (rule #14): a run's shaped-glyph buffer and the four
 // batch buffers in `placeBatches` are sized at MAX_GLYPHS_PER_RUN. Assert the
 // combined footprint stays under 16 KB so it fits comfortably within WASM's
-// 1 MB stack even in deep call chains (widget render → layout → renderText).
+// 1 MB stack even in deep call chains (tick → emit → placeText).
 comptime {
     const frame_bytes = MAX_GLYPHS_PER_RUN * (@sizeOf(ShapedGlyph) + @sizeOf(f32) + @sizeOf(f32) + @sizeOf(u8) + @sizeOf(CachedGlyph));
     std.debug.assert(frame_bytes <= 16384);
-}
-
-pub const RenderTextOptions = struct {
-    /// Face to shape and rasterize with. Must be in the text system's
-    /// `FontLimits.variants`; the default is the regular face, which every
-    /// set contains.
-    variant: FontVariant = .regular,
-    clipped: bool = true,
-    decoration: TextDecoration = .{},
-    /// Optional separate color for decorations (uses text color if null).
-    decoration_color: ?Hsla = null,
-    /// Optional stats for performance tracking (pass null to skip).
-    stats: ?*RenderStats = null,
-    /// Base draw order for z-ordering (0 = use scene's auto-ordering).
-    base_order: DrawOrder = 0,
-    /// Current draw order offset (incremented per glyph when ordered).
-    current_order: *DrawOrder = undefined,
-    /// Clip bounds for ordered rendering.
-    clip_bounds: ContentMask.ClipBounds = ContentMask.none.bounds,
-
-    /// Check if this uses explicit ordering.
-    pub fn isOrdered(self: *const RenderTextOptions) bool {
-        return self.base_order != 0;
-    }
-
-    /// Get next order and increment.
-    pub fn nextOrder(self: *RenderTextOptions) DrawOrder {
-        const order = self.base_order + self.current_order.*;
-        self.current_order.* += 1;
-        return order;
-    }
-};
-
-// =============================================================================
-// Public API
-// =============================================================================
-
-/// Render shaped text to the scene, returning the scaled width.
-///
-/// Glyph cache lookups are batched under a single mutex lock (Phase 2),
-/// eliminating N-1 lock/unlock pairs for an N-glyph text run.
-pub fn renderText(
-    scene: *Scene,
-    text_system: *TextSystem,
-    text: []const u8,
-    x: f32,
-    baseline_y: f32,
-    scale_factor: f32,
-    color: Hsla,
-    font_size: f32,
-    options: *RenderTextOptions,
-) !f32 {
-    std.debug.assert(font_size > 0);
-    std.debug.assert(font_size < 1000);
-    std.debug.assert(scale_factor > 0);
-
-    if (text.len == 0) return 0;
-
-    // Shaped glyphs have advances/offsets at the base font size; scale them.
-    const size_scale = if (text_system.getMetrics()) |metrics|
-        font_size / metrics.point_size
-    else
-        1.0;
-
-    // Stack buffer for warm-path glyph copies — avoids GPA alloc/free (~5,000 ns).
-    // Total stack footprint verified at comptime above (see WASM stack budget check).
-    var glyph_buf: [MAX_GLYPHS_PER_RUN]ShapedGlyph = undefined;
-    var shaped = try text_system.shapeTextInto(
-        .app,
-        text,
-        options.variant,
-        options.stats,
-        &glyph_buf,
-    );
-    defer if (shaped.owned) shaped.deinit(text_system.run_allocator);
-
-    const scaled_width = shaped.width * size_scale;
-    if (shaped.glyphs.len == 0) return scaled_width;
-
-    const sink = SceneSink{
-        .scene = scene,
-        .scale_factor = scale_factor,
-        .color = color,
-        .options = options,
-    };
-    try placeBatches(text_system, .app, options.variant, font_size, shaped.glyphs, .{
-        .x = x,
-        .baseline_y = baseline_y,
-        .size_scale = size_scale,
-        .scale_factor = scale_factor,
-    }, &sink);
-
-    // Render decorations (underline, strikethrough) if requested.
-    // The variant's own metrics, so a bold underline uses the bold face's thickness.
-    if (options.decoration.hasAny()) {
-        const metrics = text_system.faceFor(.app, options.variant).metrics;
-        try renderDecorations(scene, metrics, x, baseline_y, scaled_width, color, options);
-    }
-
-    return scaled_width;
 }
 
 // =============================================================================
@@ -211,24 +101,6 @@ fn placeBatches(
     }
     std.debug.assert(start == glyphs.len);
 }
-
-/// `renderText`'s batches go to the scene.
-const SceneSink = struct {
-    scene: *Scene,
-    scale_factor: f32,
-    color: Hsla,
-    options: *RenderTextOptions,
-
-    fn batch(
-        self: *const SceneSink,
-        glyphs: []const CachedGlyph,
-        xs: []const f32,
-        ys: []const f32,
-    ) !void {
-        const scene = self.scene;
-        try emitGlyphsToScene(scene, glyphs, xs, ys, self.scale_factor, self.color, self.options);
-    }
-};
 
 /// `placeText`'s batches go to its caller's sink one glyph at a time.
 fn GlyphSink(comptime Sink: type) type {
@@ -301,48 +173,8 @@ fn computeGlyphDevicePositions(
 }
 
 // =============================================================================
-// Phase 3: Scene Emission
+// Phase 3: Glyph Placement
 // =============================================================================
-
-/// Build GlyphInstances from resolved CachedGlyphs and insert into the scene.
-/// Skips glyphs with empty regions (spaces, zero-width characters).
-fn emitGlyphsToScene(
-    scene: *Scene,
-    cached_glyphs: []const CachedGlyph,
-    device_positions_x: []const f32,
-    device_positions_y: []const f32,
-    scale_factor: f32,
-    color: Hsla,
-    options: *RenderTextOptions,
-) !void {
-    std.debug.assert(cached_glyphs.len > 0);
-    std.debug.assert(cached_glyphs.len == device_positions_x.len);
-    std.debug.assert(cached_glyphs.len == device_positions_y.len);
-    std.debug.assert(scale_factor > 0);
-
-    for (cached_glyphs, device_positions_x, device_positions_y) |cached, device_x, device_y| {
-        const placed = placeGlyph(cached, device_x, device_y, scale_factor) orelse continue;
-        const instance = GlyphInstance.init(
-            placed.x,
-            placed.y,
-            placed.width,
-            placed.height,
-            placed.uv_left,
-            placed.uv_top,
-            placed.uv_right,
-            placed.uv_bottom,
-            color,
-        );
-
-        if (options.isOrdered()) {
-            try scene.insertGlyphWithOrder(instance, options.nextOrder(), options.clip_bounds);
-        } else if (options.clipped) {
-            try scene.insertGlyphClipped(instance);
-        } else {
-            try scene.insertGlyph(instance);
-        }
-    }
-}
 
 /// One glyph `placeText` placed: its quad in logical pixels and its glyph
 /// atlas rectangle, each UV edge in the normalized 0..1 range.
@@ -392,13 +224,13 @@ fn placeGlyph(cached: CachedGlyph, device_x: f32, device_y: f32, scale_factor: f
 }
 
 // =============================================================================
-// Glyph placement without a scene (0.4.0 core emit)
+// Public API
 // =============================================================================
 
 /// Shape `text` and hand each placed glyph to `sink.glyph(placed)`, in
-/// order, returning the run's width. The same placement as `renderText`, so
-/// the 0.4.0 core's paint records match what the 0.3.1 runtime draws. The
-/// glyph cache may rasterize on a miss; the shaped run is copied into a stack
+/// order, returning the run's width. Glyphs land where the 0.3.1 runtime
+/// placed them. The glyph cache may rasterize on a miss; the shaped run is
+/// copied into a stack
 /// buffer, so only a shape-cache miss uses the text system's allocator.
 pub fn placeText(
     text_system: *TextSystem,
@@ -431,77 +263,4 @@ pub fn placeText(
         .scale_factor = scale_factor,
     }, &batch_sink);
     return shaped.width * size_scale;
-}
-
-// =============================================================================
-// Decoration Rendering
-// =============================================================================
-
-/// Render text decorations (underline, strikethrough) as scene quads.
-fn renderDecorations(
-    scene: *Scene,
-    metrics: Metrics,
-    x: f32,
-    baseline_y: f32,
-    text_width: f32,
-    color: Hsla,
-    options: *RenderTextOptions,
-) !void {
-    std.debug.assert(text_width >= 0);
-    std.debug.assert(options.decoration.hasAny());
-
-    const decoration_color = options.decoration_color orelse color;
-
-    // Underline: rendered below the baseline at the font's underline position.
-    if (options.decoration.underline) {
-        // underline_position is negative (below baseline).
-        const underline_y = baseline_y - metrics.underline_position;
-        const thickness = @max(1.0, metrics.underline_thickness);
-
-        var quad = Quad.filled(x, underline_y, text_width, thickness, decoration_color);
-        if (options.isOrdered()) {
-            quad.order = options.nextOrder();
-            quad = quad.withClipBounds(options.clip_bounds);
-            try scene.insertQuadWithOrder(quad);
-        } else {
-            try scene.insertQuad(quad);
-        }
-    }
-
-    // Strikethrough: rendered through the middle of the x-height.
-    if (options.decoration.strikethrough) {
-        const strike_y = baseline_y - (metrics.x_height * 0.5);
-        const thickness = @max(1.0, metrics.underline_thickness);
-
-        var quad = Quad.filled(x, strike_y, text_width, thickness, decoration_color);
-        if (options.isOrdered()) {
-            quad.order = options.nextOrder();
-            quad = quad.withClipBounds(options.clip_bounds);
-            try scene.insertQuadWithOrder(quad);
-        } else {
-            try scene.insertQuad(quad);
-        }
-    }
-}
-
-// =============================================================================
-// Tests
-// =============================================================================
-
-test "size_scale calculation" {
-    const testing = std.testing;
-
-    // Test the size_scale formula used in renderText.
-    const base_size: f32 = 16.0;
-
-    // size_scale = font_size / base_size
-    const scale_for_24 = 24.0 / base_size;
-    const scale_for_32 = 32.0 / base_size;
-    const scale_for_12 = 12.0 / base_size;
-    const scale_for_16 = 16.0 / base_size; // Same as base = 1.0
-
-    try testing.expectApproxEqAbs(@as(f32, 1.5), scale_for_24, 0.001);
-    try testing.expectApproxEqAbs(@as(f32, 2.0), scale_for_32, 0.001);
-    try testing.expectApproxEqAbs(@as(f32, 0.75), scale_for_12, 0.001);
-    try testing.expectApproxEqAbs(@as(f32, 1.0), scale_for_16, 0.001);
 }

@@ -68,10 +68,8 @@ pub const AtlasUpload = @import("atlas_uploads.zig").Upload;
 pub const AtlasOptions = @import("cache.zig").AtlasOptions;
 pub const cache = @import("cache.zig");
 
-// Text rendering utility
+// Glyph placement for emit
 pub const render = @import("render.zig");
-pub const renderText = render.renderText;
-pub const RenderTextOptions = render.RenderTextOptions;
 
 pub const GlyphCache = cache.GlyphCache;
 pub const CachedGlyph = cache.CachedGlyph;

@@ -3,13 +3,14 @@
 //! This module provides generic, reusable geometry primitives for application logic.
 //! These types use comptime type parameters for flexibility.
 //!
-//! For GPU rendering, see the extern struct types in `scene.zig` which have
-//! proper Metal alignment. Use the `toGpu*()` methods to convert.
+//! For GPU buffers, the `Gpu*` extern structs below have fixed layouts; the
+//! packed frame's mesh points are `GpuPoint`. Use the `toGpu*()` methods to
+//! convert.
 //!
 //! Type Hierarchy:
 //! ==============
-//! - geometry.zig: Generic types for app logic (Point(T), Size(T), etc.)
-//! - scene.zig: GPU-aligned extern structs (Point, Size, Corners, etc.)
+//! - Generic types for app logic (Point(T), Size(T), etc.)
+//! - `Gpu*`: extern structs with fixed layouts (GpuPoint, GpuSize, GpuCorners, etc.)
 //!
 //! Example:
 //! ```zig
@@ -20,8 +21,7 @@
 
 const std = @import("std");
 
-// Forward declare GPU types to avoid circular imports
-// These are the extern struct types from scene.zig
+// GPU types: extern structs with fixed layouts.
 pub const GpuPoint = extern struct {
     x: f32 = 0,
     y: f32 = 0,

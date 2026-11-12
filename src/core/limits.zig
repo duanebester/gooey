@@ -14,25 +14,25 @@
 //!
 //! ```
 //! ┌─────────────────────────────────────────────────────────────────────────┐
-//! │ Per-Path Geometry Limits (triangulator.zig, path_mesh.zig)              │
+//! │ Per-Path Geometry Limits (triangulator.zig)                             │
 //! │ - MAX_PATH_VERTICES: Maximum vertices in a single path                  │
 //! │ - MAX_PATH_INDICES: Maximum indices after triangulation                 │
-//! │ Purpose: Bound memory per PathMesh, prevent stack overflow              │
+//! │ Purpose: Bound one path's triangulation scratch, prevent stack overflow │
 //! └─────────────────────────────────────────────────────────────────────────┘
 //!                                    │
 //!                                    ▼
 //! ┌─────────────────────────────────────────────────────────────────────────┐
-//! │ Mesh Pool Limits (mesh_pool.zig)                                        │
-//! │ - MAX_PERSISTENT_MESHES: Cached meshes (icons, static shapes)           │
-//! │ - MAX_FRAME_MESHES: Per-frame scratch meshes (animations)               │
-//! │ Purpose: Bound total mesh storage, enable cache eviction                │
+//! │ Per-Mesh Limits (emit.zig)                                              │
+//! │ - MAX_FRAME_MESHES: Triangle meshes per frame                           │
+//! │ - MAX_POLYLINE_POINTS, MAX_POINTS_PER_CLOUD: Points per Painter draw    │
+//! │ Purpose: Bound one draw, fail fast on runaway geometry                  │
 //! └─────────────────────────────────────────────────────────────────────────┘
 //!                                    │
 //!                                    ▼
 //! ┌─────────────────────────────────────────────────────────────────────────┐
-//! │ Per-Frame Instance Limits (scene.zig)                                   │
-//! │ - MAX_PATHS_PER_FRAME: Total path draw calls per frame                  │
-//! │ Purpose: Bound GPU upload size, fail fast on runaway rendering          │
+//! │ Per-Frame Limits (SceneLimits, packed_frame.zig)                        │
+//! │ - quad_count_frame_max, glyph_count_frame_max, ...: Records per frame   │
+//! │ Purpose: Size the packed frame once, fail fast on runaway rendering     │
 //! └─────────────────────────────────────────────────────────────────────────┘
 //! ```
 
@@ -513,40 +513,7 @@ pub const SceneLimits = struct {
                 .bound = MAX_GLYPHS_PER_RUN,
             };
         }
-        // The draw-order sort scratch is sized from the largest sortable pool.
-        if (self.sortKeyCountMax() > MAX_SORT_KEYS) {
-            return .{
-                .budget = .scene,
-                .field = "sortKeyCountMax()",
-                .rule = .above_ceiling,
-                .value = self.sortKeyCountMax(),
-                .bound = MAX_SORT_KEYS,
-            };
-        }
         return null;
-    }
-
-    /// Capacity of the indirect draw-order sort scratch: the largest pool that
-    /// `Scene.sortByOrder` sorts. Paths sort through their own fixed scratch.
-    pub fn sortKeyCountMax(self: *const SceneLimits) u32 {
-        var count_max: u32 = self.shadow_count_frame_max;
-        count_max = @max(count_max, self.quad_count_frame_max);
-        count_max = @max(count_max, self.glyph_count_frame_max);
-        count_max = @max(count_max, self.svg_count_frame_max);
-        count_max = @max(count_max, self.image_count_frame_max);
-        count_max = @max(count_max, self.polyline_count_frame_max);
-        count_max = @max(count_max, self.point_cloud_count_frame_max);
-        count_max = @max(count_max, self.colored_point_cloud_count_frame_max);
-        assert(count_max >= self.quad_count_frame_max);
-        return count_max;
-    }
-
-    /// Quads plus shadows: both convert to one GPU primitive type and share the
-    /// renderer's per-frame instance ring.
-    pub fn unifiedPrimitiveCountMax(self: *const SceneLimits) u32 {
-        assert(self.quad_count_frame_max <= MAX_QUADS_PER_FRAME);
-        assert(self.shadow_count_frame_max <= MAX_SHADOWS_PER_FRAME);
-        return self.quad_count_frame_max + self.shadow_count_frame_max;
     }
 
     /// Bytes one window reserves for this budget: the packed frame's quad,
@@ -1346,22 +1313,6 @@ pub const Violation = struct {
     }
 };
 
-/// Upper bound on the draw-order sort scratch: the largest sortable ceiling.
-pub const MAX_SORT_KEYS: u32 = blk: {
-    var count_max: u32 = 0;
-    for ([_]u32{
-        MAX_SHADOWS_PER_FRAME,
-        MAX_QUADS_PER_FRAME,
-        MAX_GLYPHS_PER_FRAME,
-        MAX_SVGS_PER_FRAME,
-        MAX_IMAGES_PER_FRAME,
-        MAX_POLYLINES_PER_FRAME,
-        MAX_POINT_CLOUDS_PER_FRAME,
-        MAX_COLORED_POINT_CLOUDS_PER_FRAME,
-    }) |count| count_max = @max(count_max, count);
-    break :blk count_max;
-};
-
 // =============================================================================
 // Layout Limits
 // =============================================================================
@@ -1553,9 +1504,8 @@ pub const MAX_WINDOWS: u32 = 8;
 // Per-Path Geometry Limits
 // =============================================================================
 
-/// Maximum vertices per individual path.
-/// Constrains PathMesh size to ~14KB to avoid stack overflow.
-/// Source: triangulator.zig, path_mesh.zig
+/// Maximum vertices per individual path. Bounds one path's triangulation
+/// scratch so it stays on the stack. Source: triangulator.zig
 pub const MAX_PATH_VERTICES: u32 = 512;
 
 /// Maximum triangles per path = MAX_PATH_VERTICES - 2 (simple polygon)
@@ -1595,12 +1545,8 @@ pub const MAX_STROKE_TRIANGLES: u32 = MAX_STROKE_OUTPUT;
 pub const MAX_STROKE_INDICES: u32 = MAX_STROKE_TRIANGLES * 3;
 
 // =============================================================================
-// Mesh Pool Limits
+// Frame Mesh Limits
 // =============================================================================
-
-/// Maximum persistent meshes (cached across frames: icons, static shapes)
-/// Source: mesh_pool.zig
-pub const MAX_PERSISTENT_MESHES: u32 = 512;
 
 /// Most triangle meshes one frame may draw, whatever `path_count_frame_max`
 /// allows: each packs as one 0.3.1 frame path mesh (`Painter.triangles`).
@@ -1662,14 +1608,6 @@ pub const ESTIMATED_GLYPH_MEMORY: u32 = MAX_GLYPHS_PER_FRAME * GLYPH_INSTANCE_SI
 pub const QUAD_SIZE: u32 = @sizeOf(packed_frame.Quad);
 pub const ESTIMATED_QUAD_MEMORY: u32 = MAX_QUADS_PER_FRAME * QUAD_SIZE;
 
-/// Per-path memory (at MAX_PATH_VERTICES=512):
-///   - PathMesh: ~14KB (512 vertices × 16B + 1530 indices × 4B)
-pub const ESTIMATED_PATH_MESH_SIZE: u32 = MAX_PATH_VERTICES * 16 + MAX_PATH_INDICES * 4;
-
-/// Mesh pool memory estimates
-pub const ESTIMATED_PERSISTENT_MESH_MEMORY: u32 = MAX_PERSISTENT_MESHES * ESTIMATED_PATH_MESH_SIZE;
-pub const ESTIMATED_FRAME_MESH_MEMORY: u32 = MAX_FRAME_MESHES * ESTIMATED_PATH_MESH_SIZE;
-
 // =============================================================================
 // Compile-time Validation
 // =============================================================================
@@ -1683,10 +1621,6 @@ comptime {
     // Ensure web batch can hold at least a few max-size paths
     std.debug.assert(WEB_BATCH_VERTICES >= MAX_PATH_VERTICES * 4);
     std.debug.assert(WEB_BATCH_INDICES >= MAX_PATH_INDICES * 4);
-
-    // Ensure frame mesh limit doesn't exceed persistent limit
-    // (persistent is the "premium" tier, should have more capacity)
-    std.debug.assert(MAX_FRAME_MESHES <= MAX_PERSISTENT_MESHES);
 
     // Ensure per-frame instance limit is reasonable
     std.debug.assert(MAX_PATHS_PER_FRAME >= 1024);
@@ -1722,10 +1656,6 @@ test "memory estimates are reasonable" {
 
     // Quad memory should be under 16MB
     try std.testing.expect(ESTIMATED_QUAD_MEMORY < 16 * 1024 * 1024);
-
-    // Total mesh pool memory should be under 16MB
-    const total_mesh_memory = ESTIMATED_PERSISTENT_MESH_MEMORY + ESTIMATED_FRAME_MESH_MEMORY;
-    try std.testing.expect(total_mesh_memory < 16 * 1024 * 1024);
 }
 
 test "named profiles are valid and ordered" {
@@ -1869,11 +1799,10 @@ test "check reports each negative case precisely" {
 test "derived budget quantities" {
     // Goal: pin the relationships other subsystems size from, and keep the
     // per-window sizes documented on each rung honest.
+    // Shadows are packed as quads, so the quad pool holds both budgets.
     const scene = SceneLimits.standard;
-    try std.testing.expectEqual(@as(u32, 8_192), scene.sortKeyCountMax());
-    try std.testing.expectEqual(@as(u32, 4_608), scene.unifiedPrimitiveCountMax());
-    try std.testing.expectEqual(@as(u32, 272), SceneLimits.nano.unifiedPrimitiveCountMax());
-    try std.testing.expectEqual(MAX_SORT_KEYS, SceneLimits.ceiling.sortKeyCountMax());
+    try std.testing.expectEqual(@as(u32, 4_608), packed_frame.quadCapacity(&scene));
+    try std.testing.expectEqual(@as(u32, 272), packed_frame.quadCapacity(&SceneLimits.nano));
     const rungs = ResourceLimits.profile_names;
     inline for (rungs[0 .. rungs.len - 1], rungs[1..]) |lower_name, upper_name| {
         const lower_bytes = @field(SceneLimits, lower_name).sceneBytes();

@@ -140,7 +140,6 @@ pub const linux = if (is_linux) struct {
     pub const wayland = @import("linux/wayland.zig");
     pub const vulkan = @import("linux/vulkan.zig");
     pub const vk_renderer = @import("linux/vk_renderer.zig");
-    pub const unified = @import("unified.zig");
     pub const clipboard = @import("linux/clipboard.zig");
     pub const dbus = @import("linux/dbus.zig");
     pub const file_dialog = @import("linux/file_dialog.zig");

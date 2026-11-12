@@ -8,7 +8,7 @@
 //! accessibility fields name.
 //!
 //! `internals` is the framework's own machinery (records, the window, the
-//! platform layer, the scene). Tests, the goldens, and library components
+//! platform layer, the packed frame). Tests, the goldens, and library components
 //! reach into it; it is not part of the API and may change in any release.
 //!
 //! ## Quick start
@@ -160,7 +160,6 @@ pub const internals = struct {
 
     // The layers beneath the core.
     pub const geometry = @import("geometry/mod.zig");
-    pub const scene = @import("scene/mod.zig");
     pub const layout = @import("layout/layout.zig");
     pub const platform = @import("platform/mod.zig");
     pub const image = @import("image/mod.zig");
@@ -220,7 +219,6 @@ test {
         const lay = internals.layout;
         const plat = internals.platform;
         const txt = text;
-        const sc = internals.scene;
         const inp = input;
         const img = internals.image;
 
@@ -235,10 +233,7 @@ test {
         _ = txt.TextSystem;
         _ = txt.FontFace;
 
-        // Scene / input / image / core leaves.
-        _ = sc.Scene;
-        _ = sc.Quad;
-        _ = sc.Shadow;
+        // Input / image / core leaves.
         _ = inp.InputEvent;
         _ = inp.KeyEvent;
         _ = img.ImageAtlas;
@@ -265,18 +260,6 @@ test {
         @import("platform/cpu/raster.zig"),
         @import("platform/cpu/mesh.zig"),
         @import("platform/cpu/renderer.zig"),
-
-        // Scene leaves — path/polyline/svg test-heavy files.
-        @import("scene/path.zig"),
-        @import("scene/path_instance.zig"),
-        @import("scene/path_mesh.zig"),
-        @import("scene/mesh_pool.zig"),
-        @import("scene/polyline.zig"),
-        @import("scene/svg_instance.zig"),
-        @import("scene/image_instance.zig"),
-        @import("scene/gradient.zig"),
-        @import("scene/batch_iterator.zig"),
-        @import("scene/render_bridge.zig"),
 
         // Layout leaves.
         @import("layout/layout.zig"),
