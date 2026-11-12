@@ -40,8 +40,9 @@ It adds IBus Anthy as a second input source and writes the client environment to
 `gnome-check` builds every example for `wayland_vulkan` and `wayland_cpu`. For each one it
 launches it, captures a frame, closes it with Alt+F4, and requires exit status 0 and no
 panic, assertion, or capacity error on stderr. It then maximizes todo and checks typing,
-Backspace, Home and End, Shift, Add, and Japanese input: preedit, conversion, the candidate
-window, and commit. It prints `ok` or `FAIL` per check and exits nonzero on any failure.
+Backspace, Home and End, Shift, two Adds (it requires both rows), and Japanese input:
+preedit, conversion, the candidate window, and commit. It prints `ok` or `FAIL` per check
+and exits nonzero on any failure.
 
 Screenshots go to `.amp/in/artifacts/gnome/`: one per example, a `vulkan-all.png` and
 `cpu-all.png` contact sheet, and `todo-edit.png` and `todo-ime-*.png`. A frame that draws
@@ -64,8 +65,10 @@ source /tmp/gnome-rt/env
 `gnome-input` takes `;`-separated commands: `move X Y`, `click [X Y]`,
 `drag X0 Y0 X1 Y1`, `scroll STEPS`, `key A+B`, `down KEY`, `up KEY`, `type TEXT`,
 `shot PATH`, and `sleep SECONDS`. Coordinates are screen pixels; GNOME's top bar is 32 px.
-Run a short-lived app as a background child, as above, so its exit status stays readable.
-Run long-lived servers as orb services.
+The headless seat has no input devices of its own, so each call first adds its virtual
+pointer and keyboard with a zero motion and a Shift tap; without that, its first click or
+key reaches no window. Run a short-lived app as a background child, as above, so its exit
+status stays readable. Run long-lived servers as orb services.
 
 ### What the session cannot show
 

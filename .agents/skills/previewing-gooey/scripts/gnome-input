@@ -153,12 +153,25 @@ def run(command):
     time.sleep(0.1)
 
 
+def add_devices():
+    """Mutter adds a session's virtual pointer and keyboard on their first event, and the
+    headless seat has no other input devices, so until then the seat advertises neither:
+    a client has no wl_pointer or wl_keyboard, and that first event reaches no window. A
+    zero relative motion and a Shift tap add both without moving the pointer or typing;
+    the wait lets the clients bind them before the first command."""
+    remote("NotifyPointerMotionRelative", (0.0, 0.0), "(dd)")
+    key("Shift_L", True)
+    key("Shift_L", False)
+    time.sleep(0.5)
+
+
 def main():
     if len(sys.argv) != 2:
         raise SystemExit(__doc__)
     remote("Start")
     time.sleep(0.5)
     try:
+        add_devices()
         for command in sys.argv[1].split(";"):
             if command.strip():
                 run(command.strip())

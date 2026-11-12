@@ -96,6 +96,22 @@ check_backend() {
     fi
 }
 
+# Both Adds made a row: each row is white on the grey page, 62 px below the last, so a
+# lost Add leaves the second row's middle grey.
+check_todo_rows() {
+    local screenshot="$1"
+    local rows=0
+    for y in 253 315; do
+        local pixel
+        pixel="$(magick "$screenshot" -format "%[hex:p{640,${y}}]" info:)"
+        [[ "$pixel" == FFFFFF* ]] && rows=$((rows + 1))
+    done
+    if [[ "$rows" != 2 ]]; then
+        echo "FAIL todo: ${rows} of 2 rows after two Adds (inspect todo-edit.png)"
+        return 1
+    fi
+}
+
 # todo on Vulkan, maximized so the field and button sit at fixed coordinates:
 # typing with Shift and symbols, Backspace, Home and End, Add, then Anthy conversion.
 check_todo_input() {
@@ -109,6 +125,7 @@ check_todo_input() {
     "$input" "key Super_L+Up; sleep 1.5; click ${field}; type Buy milkk; key BackSpace; \
 key Home; type X; key End; type !; click ${add}; sleep 0.5; click ${field}; \
 type Walk dog; click ${add}; sleep 0.8; shot ${artifact_dir}/todo-edit.png"
+    check_todo_rows "${artifact_dir}/todo-edit.png" || failures=$((failures + 1))
     "$input" "click ${field}; key Super_L+space; sleep 1.5"
     local engine
     engine="$(ibus engine)"
