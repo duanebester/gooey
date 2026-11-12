@@ -1379,6 +1379,21 @@ pub const RasterBudget = struct {
         return command_bytes + path_bytes * numbers_per_byte * @sizeOf(f32);
     }
 
+    /// Most bytes `pathDataBounded` writes for one number: an `f32` in
+    /// shortest round-trip scientific form has at most a sign, nine
+    /// significant digits and their point, and a signed two-digit exponent,
+    /// as in "-1.17549435e-38".
+    pub const path_data_number_bytes_max: u32 = 15;
+
+    /// Bytes `pathDataBounded` writes at most for `path_bytes` of source:
+    /// one letter per reserved command, and a space and a number per
+    /// reserved number.
+    pub fn pathDataBytes(path_bytes: u32) u32 {
+        assert(path_bytes <= limits.MAX_SVG_PATH_BYTES);
+        const letter_bytes = path_bytes * commands_per_byte;
+        return letter_bytes + path_bytes * numbers_per_byte * (1 + path_data_number_bytes_max);
+    }
+
     /// Scratch bytes `flattenBounded` reserves: the points, and at most one
     /// polygon per two points (a polygon needs two).
     pub fn flattenBytes(self: RasterBudget) u32 {
@@ -1469,6 +1484,115 @@ pub fn flattenBounded(
     assert(polygons.items.len <= polygon_count_max);
 }
 
+/// Parse `source`, element markup or path data, and write the commands it
+/// parsed to as SVG path data in `buffer`, which holds
+/// `RasterBudget.pathDataBytes(source.len)`. For rasterizers that read only
+/// path data: Canvas2D's `Path2D` draws nothing for `<path d=…/>` markup,
+/// and with this it draws the commands the native rasterizers draw. Every
+/// command keeps its letter, and numbers round-trip exactly. Parsing takes
+/// `RasterBudget.parseBytes(source.len)` from `scratch`.
+pub fn pathDataBounded(
+    scratch: std.mem.Allocator,
+    source: []const u8,
+    buffer: []u8,
+) BoundedError![]const u8 {
+    assert(source.len <= limits.MAX_SVG_PATH_BYTES);
+    assert(buffer.len == RasterBudget.pathDataBytes(@intCast(source.len)));
+    var path = SvgPath.init(scratch);
+    defer path.deinit();
+    try parseBounded(scratch, &path, source);
+
+    const commands = path.commands.items;
+    const numbers = path.data.items;
+    var number_index: usize = 0;
+    var length: usize = 0;
+    for (commands) |command| {
+        const number_count = pathDataNumberCount(command);
+        assert(number_index + number_count <= numbers.len);
+        assert(length + 1 <= buffer.len);
+        buffer[length] = pathDataLetter(command);
+        length += 1;
+        for (0..number_count) |position| {
+            const number = numbers[number_index + position];
+            const is_flag = pathDataIsFlag(command, position);
+            length += pathDataWriteNumber(buffer[length..], number, is_flag);
+        }
+        number_index += number_count;
+    }
+    assert(number_index == numbers.len);
+    assert(length <= buffer.len);
+    return buffer[0..length];
+}
+
+/// Write " number" at the start of `buffer` and return the bytes written.
+/// An arc flag is the single digit SVG requires; any other number is its
+/// shortest round-trip scientific form, so the parsed `f32` is preserved.
+fn pathDataWriteNumber(buffer: []u8, number: f32, is_flag: bool) usize {
+    assert(buffer.len >= 2);
+    buffer[0] = ' ';
+    if (is_flag) {
+        assert(number == 0 or number == 1);
+        buffer[1] = if (number == 1) '1' else '0';
+        return 2;
+    }
+    var digits: [std.fmt.float.min_buffer_size]u8 = undefined;
+    // Scientific mode without a precision never fails (`formatScientific`).
+    const text = std.fmt.float.render(&digits, number, .{
+        .mode = .scientific,
+        .precision = null,
+    }) catch unreachable;
+    assert(text.len <= RasterBudget.path_data_number_bytes_max);
+    assert(1 + text.len <= buffer.len);
+    @memcpy(buffer[1..][0..text.len], text);
+    return 1 + text.len;
+}
+
+/// Whether number `position` of `command` is an arc's large-arc or sweep flag.
+fn pathDataIsFlag(command: PathCommand, position: usize) bool {
+    assert(position < pathDataNumberCount(command));
+    if (command == .arc_to or command == .arc_to_rel) return position == 3 or position == 4;
+    return false;
+}
+
+/// The SVG path letter of `command`; lower case is relative.
+fn pathDataLetter(command: PathCommand) u8 {
+    return switch (command) {
+        .move_to => 'M',
+        .move_to_rel => 'm',
+        .line_to => 'L',
+        .line_to_rel => 'l',
+        .horiz_line_to => 'H',
+        .horiz_line_to_rel => 'h',
+        .vert_line_to => 'V',
+        .vert_line_to_rel => 'v',
+        .curve_to => 'C',
+        .curve_to_rel => 'c',
+        .smooth_curve_to => 'S',
+        .smooth_curve_to_rel => 's',
+        .quad_to => 'Q',
+        .quad_to_rel => 'q',
+        .smooth_quad_to => 'T',
+        .smooth_quad_to_rel => 't',
+        .arc_to => 'A',
+        .arc_to_rel => 'a',
+        .close_path => 'Z',
+    };
+}
+
+/// Numbers `PathParser` stores for one `command`: the SVG arguments of its
+/// letter, with an arc's two flags stored as 0 or 1.
+fn pathDataNumberCount(command: PathCommand) u8 {
+    return switch (command) {
+        .move_to, .move_to_rel, .line_to, .line_to_rel => 2,
+        .smooth_quad_to, .smooth_quad_to_rel => 2,
+        .horiz_line_to, .horiz_line_to_rel, .vert_line_to, .vert_line_to_rel => 1,
+        .curve_to, .curve_to_rel => 6,
+        .smooth_curve_to, .smooth_curve_to_rel, .quad_to, .quad_to_rel => 4,
+        .arc_to, .arc_to_rel => 7,
+        .close_path => 0,
+    };
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -1516,6 +1640,77 @@ test "parseBounded rejects empty and unparsable paths without growing" {
         try std.testing.expectError(error.EmptyPath, parseBounded(gpa, &path, source));
         try std.testing.expectEqual(source.len, path.commands.capacity);
     }
+}
+
+test "pathDataBounded writes element markup as the path data Path2D draws" {
+    // Canvas2D's Path2D reads only path data and draws nothing for Lucide's
+    // `<path d=…/>` markup. The expected string is written from the SVG
+    // grammar by hand: a `<path>`'s leading `m` is absolute and its further
+    // pairs are relative line-tos, a `<line>` is a move and a line, and arc
+    // flags are single digits.
+    const gpa = std.testing.allocator;
+    const source = "<path d=\"m14 12 4 4\"/><path d=\"M2 2a5 5 0 0 1 6.5 6z\"/>" ++
+        "<line x1=\"1\" y1=\"2\" x2=\"3\" y2=\"4\"/>";
+    var buffer: [RasterBudget.pathDataBytes(source.len)]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "M 1.4e1 1.2e1l 4e0 4e0M 2e0 2e0a 5e0 5e0 0e0 0 1 6.5e0 6e0ZM 1e0 2e0L 3e0 4e0",
+        try pathDataBounded(gpa, source, &buffer),
+    );
+}
+
+test "pathDataBounded keeps every command and number of a Lucide icon" {
+    // Methodology: Lucide's `alarm-clock-check` and `album` (circle, rounded
+    // rect, polyline, relative paths) go through `pathDataBounded`; a scanner
+    // independent of the writer reads the result back, and every number must
+    // equal the parsed `f32` bit for bit, in order, with one letter per command.
+    const gpa = std.testing.allocator;
+    const source = "<circle cx=\"12\" cy=\"13\" r=\"8\"/><path d=\"M5 3 2 6\"/>" ++
+        "<path d=\"m22 6-3-3\"/><path d=\"M6.38 18.7 4 21\"/><path d=\"M17.64 18.67 20 21\"/>" ++
+        "<path d=\"m9 13 2 2 4-4\"/><rect width=\"18\" height=\"18\" x=\"3\" y=\"3\" " ++
+        "rx=\"2\" ry=\"2\"/><polyline points=\"11 3 11 11 14 8 17 11 17 3\"/>";
+    var path = SvgPath.init(gpa);
+    defer path.deinit();
+    try parseBounded(gpa, &path, source);
+    var buffer: [RasterBudget.pathDataBytes(source.len)]u8 = undefined;
+    const path_data = try pathDataBounded(gpa, source, &buffer);
+    try std.testing.expectEqual(@as(?usize, null), std.mem.indexOfAny(u8, path_data, "<=\""));
+
+    var letter_count: usize = 0;
+    var number_count: usize = 0;
+    var index: usize = 0;
+    while (index < path_data.len) {
+        const byte = path_data[index];
+        if (byte == ' ') {
+            index += 1;
+        } else if (std.mem.indexOfScalar(u8, "MmLlHhVvCcSsQqTtAaZz", byte) != null) {
+            letter_count += 1;
+            index += 1;
+        } else {
+            const end = std.mem.indexOfAnyPos(u8, path_data, index, " MmLlHhVvCcSsQqTtAaZz") orelse
+                path_data.len;
+            const number = try std.fmt.parseFloat(f32, path_data[index..end]);
+            try std.testing.expect(number_count < path.data.items.len);
+            const expected: u32 = @bitCast(path.data.items[number_count]);
+            try std.testing.expectEqual(expected, @as(u32, @bitCast(number)));
+            number_count += 1;
+            index = end;
+        }
+    }
+    try std.testing.expectEqual(path.commands.items.len, letter_count);
+    try std.testing.expectEqual(path.data.items.len, number_count);
+    // Enough commands that circle, rect, and polyline all contributed.
+    try std.testing.expect(letter_count > 20);
+}
+
+test "pathDataBounded writes the longest f32 in path_data_number_bytes_max bytes" {
+    // An exhaustive pass over every finite f32 found -1.00000075e-36 the
+    // longest in shortest round-trip scientific form, so the bound is tight.
+    const gpa = std.testing.allocator;
+    const source = "M-0.00000000000000000000000000000000000100000075 0";
+    var buffer: [RasterBudget.pathDataBytes(source.len)]u8 = undefined;
+    const path_data = try pathDataBounded(gpa, source, &buffer);
+    try std.testing.expectEqualStrings("M -1.00000075e-36 0e0", path_data);
+    try std.testing.expectEqual(RasterBudget.path_data_number_bytes_max, "-1.00000075e-36".len);
 }
 
 test "parse simple path" {

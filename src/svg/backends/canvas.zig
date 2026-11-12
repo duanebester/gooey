@@ -1,8 +1,11 @@
 //! SVG Rasterizer - Web/Canvas2D-based SVG path rendering
 //!
-//! Rasterizes SVG path data to RGBA bitmaps via JavaScript's Path2D and Canvas2D APIs.
+//! Rasterizes SVG icons to RGBA bitmaps via JavaScript's Path2D and Canvas2D APIs.
 //! Uses two-channel encoding: R = fill alpha, G = stroke alpha.
 //! This allows the shader to apply different colors to fill and stroke.
+//!
+//! `Path2D` reads only path data, so the icon is parsed here, as the native
+//! backends parse it, and handed over as the path data of its commands.
 
 const std = @import("std");
 const svg_mod = @import("../path.zig");
@@ -16,12 +19,18 @@ pub const RasterizedSvg = struct {
 
 pub const RasterBudget = svg_mod.RasterBudget;
 
-/// The browser parses and rasterizes the path, so no scratch is reserved;
-/// the atlas still bounds the path's bytes.
+/// Alignment padding before the parsed numbers, the one 4-byte aligned
+/// reservation; the path data and the parsed commands are bytes.
+const scratch_alignment_slack_bytes: u32 = 3;
+
+/// Bytes one rasterization allocates: the parsed path and the path data the
+/// browser draws. The browser flattens curves itself, so `vertex_count_max`
+/// does not apply here.
 pub fn scratchBytes(budget: RasterBudget, device_size_max: u32) u32 {
-    _ = budget;
-    _ = device_size_max;
-    return 0;
+    std.debug.assert(device_size_max > 0);
+    std.debug.assert(budget.path_bytes_max > 0);
+    return RasterBudget.parseBytes(budget.path_bytes_max) +
+        RasterBudget.pathDataBytes(budget.path_bytes_max) + scratch_alignment_slack_bytes;
 }
 
 pub const RasterizeError = error{
@@ -93,8 +102,6 @@ pub fn rasterizeWithOptions(
     stroke: StrokeOptions,
     budget: RasterBudget,
 ) RasterizeError!RasterizedSvg {
-    _ = allocator; // Not needed for web - JS handles memory
-
     if (path_data.len == 0) return error.EmptyPath;
     if (path_data.len > budget.path_bytes_max) return error.PathTooComplex;
 
@@ -105,10 +112,18 @@ pub fn rasterizeWithOptions(
     // Clear buffer (transparent black)
     @memset(buffer[0..required_size], 0);
 
+    const path_data_bytes = RasterBudget.pathDataBytes(@intCast(path_data.len));
+    const path_data_buffer = allocator.alloc(u8, path_data_bytes) catch return error.OutOfMemory;
+    defer allocator.free(path_data_buffer);
+
+    const browser_path_data = try svg_mod.pathDataBounded(allocator, path_data, path_data_buffer);
+    std.debug.assert(browser_path_data.len > 0);
+    std.debug.assert(browser_path_data.len <= path_data_buffer.len);
+
     const stroke_width: f32 = if (stroke.enabled) stroke.width else 0;
     const drawn = rasterizeSvgPath(
-        path_data.ptr,
-        @intCast(path_data.len),
+        browser_path_data.ptr,
+        @intCast(browser_path_data.len),
         device_size,
         viewbox,
         fill,
