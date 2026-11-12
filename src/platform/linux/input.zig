@@ -208,9 +208,11 @@ pub fn evdevKeyToChar(key: u32, shift: bool) ?u8 {
         evdev.KEY_DOT => if (shift) '>' else '.',
         evdev.KEY_SLASH => if (shift) '?' else '/',
 
-        // Whitespace
+        // Whitespace. Tab types no text, as Return does not: the core gives
+        // its key_down to the focused handler and otherwise moves focus, and
+        // a '\t' sent after it would land in whichever field focus reached.
+        // Windows drops control characters from WM_CHAR for the same reason.
         evdev.KEY_SPACE => ' ',
-        evdev.KEY_TAB => '\t',
 
         else => null,
     };
@@ -791,6 +793,12 @@ test "evdevKeyToChar" {
     try testing.expectEqual(@as(?u8, '.'), evdevKeyToChar(evdev.KEY_DOT, false));
     try testing.expectEqual(@as(?u8, '>'), evdevKeyToChar(evdev.KEY_DOT, true));
     try testing.expectEqual(@as(?u8, ' '), evdevKeyToChar(evdev.KEY_SPACE, false));
+
+    // Tab and Return are keys, not text: a '\t' would follow Tab's focus move
+    // into the next field.
+    try testing.expectEqual(@as(?u8, null), evdevKeyToChar(evdev.KEY_TAB, false));
+    try testing.expectEqual(@as(?u8, null), evdevKeyToChar(evdev.KEY_TAB, true));
+    try testing.expectEqual(@as(?u8, null), evdevKeyToChar(evdev.KEY_ENTER, false));
 
     // Non-printable keys return null
     try testing.expectEqual(@as(?u8, null), evdevKeyToChar(evdev.KEY_LEFTSHIFT, false));
