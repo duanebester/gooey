@@ -6,9 +6,8 @@
 //! name instead of silently losing a feature.
 //!
 //! `PackedFrame` is the four-kind packed frame (`packed_frame.zig`): the pack stage
-//! turns paint records into it, and every renderer on the contract draws it.
-//! Renderers not yet on the contract draw a 0.3.1 `Scene` their host fills
-//! from it (`pack_legacy.zig`) until phase 6 deletes the scene.
+//! turns paint records into it, and every renderer (Metal, Vulkan, WebGPU, and
+//! the CPU renderer) draws it.
 
 const std = @import("std");
 const contract = @import("../platform/contract.zig");

@@ -43,12 +43,8 @@ pub extern "env" fn getCanvasHeight() u32;
 /// `WebWindow.updateSize` widened it straight back, which bought nothing and
 /// cost precision on fractional browser-zoom ratios.
 pub extern "env" fn getDevicePixelRatio() f64;
-/// Get canvas actual pixel width (canvas.width, not clientWidth)
-/// Resize the canvas drawing buffer to its CSS size at the current device
-/// pixel ratio. Returns true when the size changed, which clears the canvas.
-pub extern "env" fn syncCanvasSize() bool;
-pub extern "env" fn getCanvasPixelWidth() u32;
-pub extern "env" fn getCanvasPixelHeight() u32;
+/// Size the canvas's drawing buffer to `width` x `height` device pixels and
+/// reconfigure its WebGPU context. Resizing clears the canvas.
 pub extern "env" fn setCanvasSize(width: u32, height: u32) void;
 pub extern "env" fn setDocumentTitle(ptr: [*]const u8, len: u32) void;
 
@@ -60,66 +56,80 @@ pub extern "env" fn setCanvasCursor(shape: u32) void;
 pub extern "env" fn setImeCursorPosition(x: f32, y: f32, width: f32, height: f32) void;
 
 // =============================================================================
-// WebGPU - Device/Queue handles are managed by JS
+// WebGPU - the packed-frame renderer (`renderer.zig`)
 // =============================================================================
+//
+// JavaScript owns the device, the queue, and every GPU object; WASM holds
+// their handles (non-zero `u32`s). The bind group layout is fixed: storage
+// buffers 0 to 4 and the uniform buffer 5 for the vertex stage, textures 6 to
+// 8 and the sampler 9 for the fragment stage (`shaders/packed.wgsl`).
 
-/// Request the current frame's texture view for rendering
-pub extern "env" fn getCurrentTextureView() u32;
-
-/// Release a texture view handle
-pub extern "env" fn releaseTextureView(handle: u32) void;
-
-// =============================================================================
-// WebGPU - Shader Creation
-// =============================================================================
-
-/// Create a shader module from WGSL source
+/// Create a shader module from WGSL source. Compilation errors reach the
+/// console asynchronously, as does any validation error the device raises.
 pub extern "env" fn createShaderModule(code_ptr: [*]const u8, code_len: u32) u32;
 
-/// Create a render pipeline
-pub extern "env" fn createRenderPipeline(
-    shader_handle: u32,
+/// Create a GPU buffer of `size` bytes with `GPUBufferUsage` flags `usage`.
+pub extern "env" fn createBuffer(size: u32, usage: u32) u32;
+
+/// `queue.writeBuffer`: copies `data_len` bytes from WASM memory before it
+/// returns; the write lands on the queue after every earlier submit.
+pub extern "env" fn writeBuffer(
+    handle: u32,
+    offset: u32,
+    data_ptr: [*]const u8,
+    data_len: u32,
+) void;
+
+/// The device's `maxTextureDimension2D` and `maxStorageBufferBindingSize`.
+pub extern "env" fn deviceMaxTextureDimension2D() u32;
+pub extern "env" fn deviceMaxStorageBufferBindingSize() u32;
+
+/// Create the packed frame's bind group layout and the pipeline layout over
+/// it; returns the pipeline layout.
+pub extern "env" fn createPackedLayout() u32;
+
+/// Create a render pipeline on `layout` drawing triangle lists into the
+/// canvas format with one sample. `premultiplied` selects the blend for a
+/// fragment shader that already multiplies colour by alpha.
+pub extern "env" fn createPackedPipeline(
+    layout: u32,
+    shader: u32,
     vertex_entry: [*]const u8,
     vertex_entry_len: u32,
     fragment_entry: [*]const u8,
     fragment_entry_len: u32,
+    premultiplied: bool,
 ) u32;
 
-/// Create a GPU buffer
-pub extern "env" fn createBuffer(size: u32, usage: u32) u32;
+/// Create the one bind group of `layout`: six buffers (bindings 0 to 5),
+/// three atlas textures (6 to 8), and a sampler (9).
+pub extern "env" fn createPackedBindGroup(
+    layout: u32,
+    buffers_ptr: [*]const u32,
+    buffers_len: u32,
+    textures_ptr: [*]const u32,
+    textures_len: u32,
+    sampler: u32,
+) u32;
 
-/// Write data to a buffer
-pub extern "env" fn writeBuffer(handle: u32, offset: u32, data_ptr: [*]const u8, data_len: u32) void;
+/// Begin the frame: take the canvas's current texture, open a command
+/// encoder and a render pass cleared to the colour. False when the canvas
+/// has no texture to draw into; nothing is open then.
+pub extern "env" fn beginFrame(r: f32, g: f32, b: f32, a: f32) bool;
 
-/// Create a bind group
-pub extern "env" fn createBindGroup(pipeline_handle: u32, group_index: u32, buffer_handles_ptr: [*]const u32, buffer_handles_len: u32) u32;
-
-/// Begin a render pass (clears with given color)
-pub extern "env" fn beginRenderPass(texture_view: u32, r: f32, g: f32, b: f32, a: f32) void;
-
-/// Set the current pipeline for rendering
+/// Encoding into the open render pass.
 pub extern "env" fn setPipeline(pipeline_handle: u32) void;
-
-/// Set the current bind group
 pub extern "env" fn setBindGroup(group_index: u32, bind_group_handle: u32) void;
+pub extern "env" fn setScissorRect(x: u32, y: u32, width: u32, height: u32) void;
+pub extern "env" fn draw(
+    vertex_count: u32,
+    instance_count: u32,
+    first_vertex: u32,
+    first_instance: u32,
+) void;
 
-/// Draw instanced primitives
-pub extern "env" fn drawInstanced(vertex_count: u32, instance_count: u32) void;
-
-/// Draw instanced primitives with first instance offset (for batched rendering)
-pub extern "env" fn drawInstancedWithOffset(vertex_count: u32, instance_count: u32, first_instance: u32) void;
-
-/// Set the index buffer for indexed drawing
-pub extern "env" fn setIndexBuffer(buffer_handle: u32, format: u32, offset: u32, size: u32) void;
-
-/// Set a vertex buffer for vertex attribute drawing
-pub extern "env" fn setVertexBuffer(slot: u32, buffer_handle: u32, offset: u32, size: u32) void;
-
-/// Draw indexed primitives (for triangulated meshes like paths)
-pub extern "env" fn drawIndexed(index_count: u32, instance_count: u32, first_index: u32, base_vertex: i32, first_instance: u32) void;
-
-/// End the render pass and submit
-pub extern "env" fn endRenderPass() void;
+/// End the render pass and submit the frame; the canvas presents it.
+pub extern "env" fn endFrame() void;
 
 // =============================================================================
 // Animation Frame
@@ -194,7 +204,8 @@ pub extern "env" fn rasterizeGlyphSubpixel(
 pub extern "env" fn createAtlasTexture(width: u32, height: u32, bytes_per_pixel: u32) u32;
 
 /// Write tightly packed rows of `width × bytes_per_pixel` bytes into the
-/// rectangle at `(x, y)` of an atlas texture.
+/// rectangle at `(x, y)` of an atlas texture with `queue.writeTexture`, which
+/// copies them before it returns and lands after every earlier submit.
 pub extern "env" fn writeAtlasRegion(
     handle: u32,
     x: u32,
@@ -206,18 +217,8 @@ pub extern "env" fn writeAtlasRegion(
     data_len: u32,
 ) void;
 
-/// Create a sampler
+/// Create the atlas sampler: linear filtering, clamped to the edge.
 pub extern "env" fn createSampler() u32;
-
-/// Create bind group with texture
-pub extern "env" fn createTextBindGroup(
-    pipeline_handle: u32,
-    group_index: u32,
-    glyph_buffer: u32,
-    uniform_buffer: u32,
-    texture_handle: u32,
-    sampler_handle: u32,
-) u32;
 
 // =============================================================================
 // SVG Rasterization
@@ -240,70 +241,6 @@ pub extern "env" fn rasterizeSvgPath(
     out_offset_y: *i16,
 ) bool;
 
-/// Create bind group for SVG pipeline (same layout as text but uses RGBA texture)
-pub extern "env" fn createSvgBindGroup(
-    pipeline_handle: u32,
-    group_index: u32,
-    svg_buffer: u32,
-    uniform_buffer: u32,
-    texture_handle: u32,
-    sampler_handle: u32,
-) u32;
-
-// =============================================================================
-// MSAA (Multisampling Anti-Aliasing) Support
-// =============================================================================
-
-/// Create an MSAA texture for multisampled rendering
-pub extern "env" fn createMSAATexture(width: u32, height: u32, sample_count: u32) u32;
-
-/// Destroy an MSAA texture (call on resize)
-pub extern "env" fn destroyTexture(texture_handle: u32) void;
-
-/// Create a render pipeline with MSAA support
-pub extern "env" fn createMSAARenderPipeline(
-    shader_handle: u32,
-    vertex_entry: [*]const u8,
-    vertex_entry_len: u32,
-    fragment_entry: [*]const u8,
-    fragment_entry_len: u32,
-    sample_count: u32,
-) u32;
-
-/// Create a render pipeline with premultiplied alpha blending (srcRGB = ONE)
-/// Used for shaders that output pre-multiplied RGB values (e.g., SVG)
-pub extern "env" fn createPremultipliedAlphaPipeline(
-    shader_handle: u32,
-    vertex_entry: [*]const u8,
-    vertex_entry_len: u32,
-    fragment_entry: [*]const u8,
-    fragment_entry_len: u32,
-) u32;
-
-/// Create a render pipeline with MSAA and premultiplied alpha blending
-/// Used for shaders that output pre-multiplied RGB values (e.g., SVG)
-pub extern "env" fn createMSAAPremultipliedAlphaPipeline(
-    shader_handle: u32,
-    vertex_entry: [*]const u8,
-    vertex_entry_len: u32,
-    fragment_entry: [*]const u8,
-    fragment_entry_len: u32,
-    sample_count: u32,
-) u32;
-
-/// Begin an MSAA render pass (renders to MSAA texture, resolves to target)
-pub extern "env" fn beginMSAARenderPass(
-    msaa_texture_handle: u32,
-    resolve_view_handle: u32,
-    r: f32,
-    g: f32,
-    b: f32,
-    a: f32,
-) void;
-
-/// Get the current MSAA sample count (4 if supported, 1 otherwise)
-pub extern "env" fn getMSAASampleCount() u32;
-
 // =============================================================================
 // Clipboard
 // =============================================================================
@@ -314,64 +251,3 @@ pub extern "env" fn clipboardWriteText(ptr: [*]const u8, len: u32) void;
 /// Whether the browser runs on macOS or iOS, whose text fields take edit
 /// commands with Cmd rather than Ctrl.
 pub extern "env" fn isApplePlatform() bool;
-
-// =============================================================================
-// Images
-// =============================================================================
-
-/// Create bind group for image pipeline (RGBA texture, same pattern as SVG)
-pub extern "env" fn createImageBindGroup(
-    pipeline_handle: u32,
-    group_index: u32,
-    image_buffer: u32,
-    uniform_buffer: u32,
-    texture_handle: u32,
-    sampler_handle: u32,
-) u32;
-
-// =============================================================================
-// Path Rendering (Indexed Drawing)
-// =============================================================================
-
-/// Index buffer format constants (matches WebGPU GPUIndexFormat)
-pub const IndexFormat = struct {
-    pub const uint16: u32 = 0;
-    pub const uint32: u32 = 1;
-};
-
-/// Create a path render pipeline with indexed drawing support
-/// Uses MSAA and premultiplied alpha blending
-pub extern "env" fn createPathPipeline(
-    shader_handle: u32,
-    vertex_entry: [*]const u8,
-    vertex_entry_len: u32,
-    fragment_entry: [*]const u8,
-    fragment_entry_len: u32,
-    sample_count: u32,
-) u32;
-
-/// Create bind group for path pipeline
-/// vertex_buffer: storage buffer containing PathVertex array
-/// instance_buffer: uniform buffer containing single PathInstance
-/// uniform_buffer: uniform buffer containing viewport uniforms
-pub extern "env" fn createPathBindGroup(
-    pipeline_handle: u32,
-    group_index: u32,
-    vertex_buffer: u32,
-    instance_buffer: u32,
-    uniform_buffer: u32,
-) u32;
-
-/// Create bind group for path pipeline with gradient support
-/// vertex_buffer: storage buffer containing PathVertex array
-/// instance_buffer: uniform buffer containing single PathInstance
-/// uniform_buffer: uniform buffer containing viewport uniforms
-/// gradient_buffer: uniform buffer containing GradientUniforms
-pub extern "env" fn createPathBindGroupWithGradient(
-    pipeline_handle: u32,
-    group_index: u32,
-    vertex_buffer: u32,
-    instance_buffer: u32,
-    uniform_buffer: u32,
-    gradient_buffer: u32,
-) u32;

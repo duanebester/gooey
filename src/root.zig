@@ -257,6 +257,8 @@ test {
         // Path edge classification for the Vulkan and Metal mesh shaders'
         // analytic anti-aliasing. Pure Zig, tested on every OS.
         @import("platform/mesh_edges.zig"),
+        // The clip-to-scissor rule of the Vulkan and WebGPU renderers.
+        @import("platform/scissor.zig"),
 
         // Platform-independent CPU rasterizer used by the Wayland shm and
         // fbdev backends. Tested on every host, not only CPU-backend builds.
@@ -320,7 +322,5 @@ test {
         std.testing.refAllDecls(@import("platform/fbdev/clipboard.zig"));
         // Only the reservation-limit test: the rest of the file calls Vulkan.
         _ = @import("platform/linux/vk_buffers.zig");
-        // Only the clip-to-scissor test, for the same reason.
-        _ = @import("platform/linux/vk_draw.zig");
     }
 }
