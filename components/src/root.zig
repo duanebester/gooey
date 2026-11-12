@@ -182,16 +182,17 @@ pub const Checkbox = struct {
 
 /// A dropdown of options, as the 0.3.1 `Select` draws it, with its menu on a
 /// `.popover` layer. The app owns `selected` and `open`: the trigger calls
-/// `on_toggle`, a click outside calls `on_close`, and option `i` calls
-/// `on_select[i]`, typically `cx.on(State.choose, .{ .arg = i })`.
+/// `on_toggle` to open the menu and `on_close` to close it, a click outside
+/// calls `on_close`, and option `i` calls `on_select[i]`, typically
+/// `cx.on(State.choose, .{ .arg = i })`.
 ///
 /// The combobox takes keyboard focus, and the focused option is the
 /// highlighted one, so a screen reader follows it. Enter, Space, Down, and
 /// Up open the menu on the selected option (or the first); Down, Up, Home,
 /// and End move between options; Enter and Space choose; Esc closes, back
 /// on the combobox; and Tab or Shift+Tab closes and moves on, since the
-/// options are not tab stops. Each opens or closes through `on_toggle`
-/// and chooses through `on_select`, pressed with `effects.click`. A Select
+/// options are not tab stops. Each opens or closes through the trigger and
+/// chooses through `on_select`, pressed with `effects.click`. A Select
 /// retains one 64 B slot for its keys, and adds a key handler per option.
 pub const Select = struct {
     key: []const u8,
@@ -405,6 +406,15 @@ const SelectTrigger = struct {
         const background = if (hovered) theme.overlay else theme.surface;
         const text_color = if (select.selected == null) theme.muted else theme.text;
         const chevron = &chevrons[@intFromBool(select.open)][@intFromBool(select.disabled)];
+        // An open menu's trigger closes through `on_close`, not `on_toggle`.
+        // Every key a drain delivers after the one that chose an option
+        // routes against this frame, where the menu is still open, so a Tab
+        // or Esc that presses the trigger here must not reopen the menu the
+        // choice closed; closing a closed menu changes nothing.
+        var on_click: ?Handler = null;
+        if (!select.disabled) {
+            on_click = if (select.open) select.on_close else select.on_toggle;
+        }
         cx.render(ui.box(.{
             .key = key,
             .style = .{
@@ -418,7 +428,7 @@ const SelectTrigger = struct {
                 .alignment = .{ .main = .space_between, .cross = .center },
                 .cursor = .pointer,
             },
-            .on_click = if (select.disabled) null else select.on_toggle,
+            .on_click = on_click,
         }, .{
             ui.text(select.displayText(), .{
                 .size = theme.font_size_base,

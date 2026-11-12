@@ -3714,6 +3714,37 @@ test "Tab from a Select's menu closes it and moves on, and a click opens it on t
     try testing.expectEqual(@as(u32, 0), app.state.below_clicks);
 }
 
+test "keys drained together after a Select choice leave its menu closed" {
+    // Goal: a browser delivers every key of one animation frame to one
+    // drain, so the keys after the choice route against the frame that still
+    // shows the menu open; closing from that frame must not reopen the menu
+    // the choice closed. Methodology: accessible_form's reported sequence.
+    // Open the Select and move to Intermediate one key per tick, then queue
+    // Enter, Tab, Tab, and Enter for a single drain.
+    const app = try testing.allocator.create(accessible_form.App);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    for (0..6) |_| pressKey(app, &now, .tab, .{});
+    pressKey(app, &now, .down, .{});
+    pressKey(app, &now, .down, .{});
+    try expectFocused(&app.window, .option, "Intermediate");
+    const keys = [_]gooey.input.KeyCode{ .@"return", .tab, .tab, .@"return" };
+    for (keys) |key| app.window.queue.push(.{ .input = .{ .key_down = chord(key, .{}) } });
+    now += 1;
+    app.tick(now);
+    now += 1;
+    app.tick(now);
+    try testing.expectEqual(@as(?usize, 1), app.state.experience_level);
+    try testing.expect(!app.state.experience_open);
+    try testing.expect(formNode(app, .listbox, "Experience level") == null);
+    try expectFocused(&app.window, .button, "Submit registration form");
+    // The last Enter submitted the empty form, which fails validation.
+    try testing.expect(app.state.validation_errors.name);
+}
+
 test "focus on an element that leaves passes to its combobox or the next tab stop" {
     // Goal: lost focus goes somewhere sensible instead of nowhere, so the
     // next Tab continues from there. Methodology: choose a Select option
