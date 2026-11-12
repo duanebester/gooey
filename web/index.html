@@ -771,8 +771,11 @@
       const svgCtx = svgCanvas.getContext("2d", { willReadFrequently: true });
 
       /**
-       * Rasterize an SVG path to an RGBA buffer with two-channel encoding:
-       * R = fill alpha, G = stroke alpha
+       * Rasterize SVG path data into `out`, a deviceSize x deviceSize RGBA
+       * square in WASM memory, with two-channel encoding:
+       * R = fill alpha, G = stroke alpha, B = 0, A = max(fill, stroke).
+       * The viewbox scales to the square, and a stroke past its edge is
+       * clipped, as CoreGraphics and Cairo rasterize it.
        */
       function rasterizeSvgPathJS(
         pathData,
@@ -780,44 +783,40 @@
         viewbox,
         hasFill,
         strokeWidth,
+        out,
       ) {
+        if (out.length !== deviceSize * deviceSize * 4) {
+          throw new Error(`SVG buffer of ${out.length} B for a ${deviceSize} px icon`);
+        }
         // Calculate scale from viewbox to device pixels
         const scale = deviceSize / viewbox;
 
-        // Add padding for stroke
-        const padding = Math.ceil(strokeWidth / 2) + 1;
-        const canvasSize = deviceSize + padding * 2;
-
         // Resize canvas if needed
-        if (svgCanvas.width < canvasSize || svgCanvas.height < canvasSize) {
-          svgCanvas.width = canvasSize;
-          svgCanvas.height = canvasSize;
+        if (svgCanvas.width < deviceSize || svgCanvas.height < deviceSize) {
+          svgCanvas.width = deviceSize;
+          svgCanvas.height = deviceSize;
         }
 
         // Parse the SVG path
         const path = new Path2D(pathData);
 
-        // Clear canvas
-        svgCtx.clearRect(0, 0, canvasSize, canvasSize);
-
         // Render fill (if enabled)
         let fillData = null;
         if (hasFill) {
+          svgCtx.clearRect(0, 0, deviceSize, deviceSize);
           svgCtx.save();
-          svgCtx.translate(padding, padding);
           svgCtx.scale(scale, scale);
           svgCtx.fillStyle = "white";
           svgCtx.fill(path);
           svgCtx.restore();
-          fillData = svgCtx.getImageData(0, 0, canvasSize, canvasSize);
+          fillData = svgCtx.getImageData(0, 0, deviceSize, deviceSize).data;
         }
 
         // Render stroke (if enabled)
         let strokeData = null;
         if (strokeWidth > 0) {
-          svgCtx.clearRect(0, 0, canvasSize, canvasSize);
+          svgCtx.clearRect(0, 0, deviceSize, deviceSize);
           svgCtx.save();
-          svgCtx.translate(padding, padding);
           svgCtx.scale(scale, scale);
           svgCtx.strokeStyle = "white";
           svgCtx.lineWidth = strokeWidth / scale; // Convert back to viewbox units
@@ -825,27 +824,18 @@
           svgCtx.lineJoin = "round";
           svgCtx.stroke(path);
           svgCtx.restore();
-          strokeData = svgCtx.getImageData(0, 0, canvasSize, canvasSize);
+          strokeData = svgCtx.getImageData(0, 0, deviceSize, deviceSize).data;
         }
 
         // Combine into RG channels (matching CoreGraphics output format)
-        // R = fill alpha, G = stroke alpha, B = 0, A = max(fill, stroke)
-        const output = new Uint8Array(canvasSize * canvasSize * 4);
-        for (let i = 0; i < canvasSize * canvasSize; i++) {
-          const fillAlpha = fillData ? fillData.data[i * 4 + 3] : 0;
-          const strokeAlpha = strokeData ? strokeData.data[i * 4 + 3] : 0;
-          output[i * 4 + 0] = fillAlpha; // R = fill alpha
-          output[i * 4 + 1] = strokeAlpha; // G = stroke alpha
-          output[i * 4 + 2] = 0; // B = unused
-          output[i * 4 + 3] = Math.max(fillAlpha, strokeAlpha); // A = combined
+        for (let i = 0; i < deviceSize * deviceSize; i++) {
+          const fillAlpha = fillData ? fillData[i * 4 + 3] : 0;
+          const strokeAlpha = strokeData ? strokeData[i * 4 + 3] : 0;
+          out[i * 4 + 0] = fillAlpha; // R = fill alpha
+          out[i * 4 + 1] = strokeAlpha; // G = stroke alpha
+          out[i * 4 + 2] = 0; // B = unused
+          out[i * 4 + 3] = Math.max(fillAlpha, strokeAlpha); // A = combined
         }
-
-        return {
-          pixels: output,
-          width: canvasSize,
-          height: canvasSize,
-          offset: padding,
-        };
       }
 
       // The font spec is "<style> <weight> <family>" (see WebFontFace.init).
@@ -1451,7 +1441,8 @@
         // SVG Rasterization Support
         // =====================================================================
 
-        // Rasterize an SVG path to RGBA buffer using Path2D/Canvas2D
+        // Rasterize SVG path data into a device-size RGBA square in WASM
+        // memory using Path2D/Canvas2D.
         rasterizeSvgPath: (
           pathPtr,
           pathLen,
@@ -1461,37 +1452,16 @@
           strokeWidth,
           outBuffer,
           bufferSize,
-          outWidth,
-          outHeight,
-          outOffsetX,
-          outOffsetY,
         ) => {
           try {
-            const pathData = getString(pathPtr, pathLen);
-            const result = rasterizeSvgPathJS(
-              pathData,
+            rasterizeSvgPathJS(
+              getString(pathPtr, pathLen),
               deviceSize,
               viewbox,
               hasFill,
               strokeWidth,
+              new Uint8Array(wasmInstance.exports.memory.buffer, outBuffer, bufferSize),
             );
-
-            // Copy pixels to WASM memory
-            const mem = new Uint8Array(
-              wasmInstance.exports.memory.buffer,
-              outBuffer,
-              bufferSize,
-            );
-            const copyLen = Math.min(result.pixels.length, bufferSize);
-            mem.set(result.pixels.subarray(0, copyLen));
-
-            // Write output dimensions
-            const view = new DataView(wasmInstance.exports.memory.buffer);
-            view.setUint32(outWidth, result.width, true);
-            view.setUint32(outHeight, result.height, true);
-            view.setInt16(outOffsetX, result.offset, true);
-            view.setInt16(outOffsetY, result.offset, true);
-
             return true; // success
           } catch (e) {
             console.error("rasterizeSvgPath failed:", e);

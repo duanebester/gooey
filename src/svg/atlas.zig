@@ -133,7 +133,8 @@ pub const SvgAtlas = struct {
     /// an icon within the budget never exhausts it. The software rasterizer
     /// (Linux, Windows) needs the parsed path, the flattened vertices, edge
     /// tables, and a stroke buffer; CoreGraphics needs only the parsed path
-    /// and the stroke buffer; Canvas2D needs none.
+    /// and the stroke buffer; Canvas2D needs the parsed path and the path
+    /// data it hands the browser.
     pub fn rasterScratchBytes(budget: rasterizer.RasterBudget, icon_size_max: u32) u32 {
         std.debug.assert(icon_size_max > 0);
         std.debug.assert(icon_size_max <= limits.MAX_SVG_ICON_SIZE);
@@ -144,7 +145,8 @@ pub const SvgAtlas = struct {
 
     comptime {
         // The ceiling's scratch must stay small next to the atlas textures:
-        // 2.2 MiB against 144 MiB of ceiling textures.
+        // 2.2 MiB for the software rasterizer and 2.6 MiB for Canvas2D,
+        // against 144 MiB of ceiling textures.
         const ceiling = limits.AtlasLimits.ceiling;
         const budget = rasterizer.RasterBudget{
             .path_bytes_max = ceiling.svg_path_bytes_max,
@@ -476,7 +478,7 @@ const RasterScratch = struct {
         .free = free,
     };
 
-    /// `buffer` may be empty: Canvas2D rasterizes in the browser and
+    /// `buffer` may be empty: the null backend rasterizes nothing and
     /// reserves no scratch.
     fn init(buffer: []u8) RasterScratch {
         std.debug.assert(buffer.len <= std.math.maxInt(u32));
