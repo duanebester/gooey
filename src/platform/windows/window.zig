@@ -25,7 +25,8 @@ const interface_mod = @import("../interface.zig");
 const geometry = @import("../../geometry/geometry.zig");
 const input = @import("../../input/events.zig");
 const vk_renderer = @import("../linux/vk_renderer.zig");
-const VulkanRenderer = vk_renderer.VulkanRenderer;
+const renderer_choice = @import("renderer.zig");
+const Renderer = renderer_choice.Renderer;
 const win32 = @import("win32.zig");
 const uia = @import("uia.zig");
 const ime = @import("ime.zig");
@@ -111,7 +112,7 @@ pub const Window = struct {
     /// turn timer runs.
     modal_turn_active: bool = false,
 
-    renderer: VulkanRenderer,
+    renderer: Renderer,
     cursor_shape: interface_mod.CursorShape = .default,
     closed: bool = false,
 
@@ -187,14 +188,22 @@ pub const Window = struct {
 
         self.adoptWindowDpi(options);
         self.readClientSize();
-        const native = vk_renderer.NativeSurface{
-            .hinstance = plat.hinstance,
-            .hwnd = self.hwnd.?,
+        // Vulkan borrows the instance and window to create its surface;
+        // Direct3D 11 builds its swapchain on the window handle alone.
+        const native = switch (renderer_choice.selected) {
+            .vulkan => vk_renderer.NativeSurface{
+                .hinstance = plat.hinstance,
+                .hwnd = self.hwnd.?,
+            },
+            .dx11 => {},
         };
         const viewport = self.rendererViewport();
         const render_limits = backend.RenderLimits.fromResourceLimits(&options.limits);
         try self.renderer.initInPlace(&.{
-            .native = @ptrCast(@constCast(&native)),
+            .native = switch (renderer_choice.selected) {
+                .vulkan => @ptrCast(@constCast(&native)),
+                .dx11 => self.hwnd.?,
+            },
             .size_px = viewport.size_px,
             .scale_factor = viewport.scale_factor,
         }, &render_limits);
@@ -236,7 +245,11 @@ pub const Window = struct {
         self.max_size = options.max_size;
         self.window_limits = options.limits.window;
         self.modal_turn_active = false;
-        self.renderer = .{};
+        switch (renderer_choice.selected) {
+            .vulkan => self.renderer = .{},
+            // Every field is set by `initInPlace` in `init`.
+            .dx11 => self.renderer.initialized = false,
+        }
         self.cursor_shape = .default;
         self.closed = false;
         // Empty and terminated, so `CreateWindowExW` reads a valid string even
@@ -1182,8 +1195,9 @@ fn assertSizeLimit(size: geometry.Size(f64)) void {
 /// Whether the shared renderer holds a complete swapchain: a handle and one
 /// framebuffer per image. Its `resize` reports no error, and a failed
 /// rebuild leaves the framebuffers destroyed.
-pub fn rendererSwapchainUsable(renderer: *const VulkanRenderer) bool {
+pub fn rendererSwapchainUsable(renderer: *const Renderer) bool {
     assert(renderer.initialized);
+    if (renderer_choice.selected == .dx11) return renderer.swapchainUsable();
     if (renderer.swapchain == null) return false;
     const image_count = renderer.swapchain_image_count;
     if (image_count == 0) return false;
