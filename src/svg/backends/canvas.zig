@@ -42,6 +42,10 @@ pub const StrokeOptions = struct {
 // JavaScript Imports
 // =============================================================================
 
+/// Draw `path_data` into a `device_size` square of RGBA pixels at `out_buffer`
+/// (`buffer_size` = `device_size² × 4` bytes), with `viewbox` units scaled to
+/// it, as CoreGraphics and Cairo do: the stroke is clipped at the square's
+/// edge. Returns false if the browser could not draw it.
 extern "env" fn rasterizeSvgPath(
     path_ptr: [*]const u8,
     path_len: u32,
@@ -51,10 +55,6 @@ extern "env" fn rasterizeSvgPath(
     stroke_width: f32,
     out_buffer: [*]u8,
     buffer_size: u32,
-    out_width: *u32,
-    out_height: *u32,
-    out_offset_x: *i16,
-    out_offset_y: *i16,
 ) bool;
 
 // =============================================================================
@@ -105,14 +105,8 @@ pub fn rasterizeWithOptions(
     // Clear buffer (transparent black)
     @memset(buffer[0..required_size], 0);
 
-    var width: u32 = 0;
-    var height: u32 = 0;
-    var offset_x: i16 = 0;
-    var offset_y: i16 = 0;
-
     const stroke_width: f32 = if (stroke.enabled) stroke.width else 0;
-
-    const success = rasterizeSvgPath(
+    const drawn = rasterizeSvgPath(
         path_data.ptr,
         @intCast(path_data.len),
         device_size,
@@ -120,21 +114,15 @@ pub fn rasterizeWithOptions(
         fill,
         stroke_width,
         buffer.ptr,
-        @intCast(buffer.len),
-        &width,
-        &height,
-        &offset_x,
-        &offset_y,
+        required_size,
     );
+    if (!drawn) return error.GraphicsError;
 
-    if (!success) {
-        return error.GraphicsError;
-    }
-
+    // The browser drew the square the native backends draw, at its origin.
     return RasterizedSvg{
-        .width = width,
-        .height = height,
-        .offset_x = offset_x,
-        .offset_y = offset_y,
+        .width = device_size,
+        .height = device_size,
+        .offset_x = 0,
+        .offset_y = 0,
     };
 }

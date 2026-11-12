@@ -221,27 +221,6 @@ pub extern "env" fn writeAtlasRegion(
 pub extern "env" fn createSampler() u32;
 
 // =============================================================================
-// SVG Rasterization
-// =============================================================================
-
-/// Rasterize an SVG path to an RGBA buffer using JS Path2D/Canvas2D
-/// Returns true on success, false on failure
-pub extern "env" fn rasterizeSvgPath(
-    path_ptr: [*]const u8,
-    path_len: u32,
-    device_size: u32,
-    viewbox: f32,
-    has_fill: bool,
-    stroke_width: f32,
-    out_buffer: [*]u8,
-    buffer_size: u32,
-    out_width: *u32,
-    out_height: *u32,
-    out_offset_x: *i16,
-    out_offset_y: *i16,
-) bool;
-
-// =============================================================================
 // Clipboard
 // =============================================================================
 
