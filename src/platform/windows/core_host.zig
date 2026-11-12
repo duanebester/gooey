@@ -48,6 +48,7 @@ const clipboard = @import("clipboard.zig");
 const file_dialog = @import("file_dialog.zig");
 const core_window = @import("../../core/window.zig");
 const backend = @import("../../core/backend.zig");
+const renderer_choice = @import("renderer.zig");
 const core_element = @import("../../core/element.zig");
 const core_tick = @import("../../core/tick.zig");
 const core_router = @import("../../core/router.zig");
@@ -615,8 +616,9 @@ fn renderThreadMain(host: *Host) void {
 }
 
 /// The core's presenter, on the render thread. While the window cannot show
-/// a frame (minimized, or no client area) the surface has no extent, so the
-/// frame is skipped; the main thread pushes a resize once it can again.
+/// a frame (minimized, or no client area) the frame is drawn at a zero-size
+/// viewport, which presents nothing; the main thread pushes a resize once it
+/// can show frames again.
 fn draw(
     context: *anyopaque,
     packed_frame: *const core_window.PackedFrame,
@@ -626,8 +628,10 @@ fn draw(
     const host: *Host = @ptrCast(@alignCast(context));
     assert(frame.scale_factor > 0);
     assert(host.core.render_phase == .draw);
-    // A minimized window draws nothing; its atlas records stay journaled.
-    if (!host.presentable.load(.acquire)) return;
+    if (!host.presentable.load(.acquire)) {
+        drawHidden(host, packed_frame, frame, clear);
+        return;
+    }
     host.applyViewport(frame);
     const renderer = &host.window.renderer;
     if (!window_mod.rendererSwapchainUsable(renderer)) {
@@ -648,9 +652,40 @@ fn draw(
     backend.uploadPendingAtlases(renderer, uploads, host.core.atlas_consumer_key);
     backend.checkCapabilities(renderer.capabilities(), packed_frame);
     renderer.draw(packed_frame, host.viewport, clear);
-    // An out-of-date swapchain skips the frame and is rebuilt by the next
-    // draw; draw this frame again rather than leave a stale one on screen.
-    if (renderer.swapchain_needs_recreate) renderer.draw(packed_frame, host.viewport, clear);
+    // An out-of-date Vulkan swapchain skips the frame and is rebuilt by the
+    // next draw; draw this frame again rather than leave a stale one on
+    // screen. A flip-model DXGI swapchain is never out of date.
+    if (renderer_choice.selected == .vulkan) {
+        if (renderer.swapchain_needs_recreate) renderer.draw(packed_frame, host.viewport, clear);
+    }
+}
+
+/// Draw a frame the window cannot show at a zero-size viewport (contract §9):
+/// the renderer presents nothing but lands the frame's atlas uploads and
+/// closes its atlas frame. Returning early instead would leave the records in
+/// the journal and the consumer's frame open, so the atlases could neither
+/// evict nor stage while the window stays minimized.
+fn drawHidden(
+    host: *Host,
+    packed_frame: *const core_window.PackedFrame,
+    frame: *const records.Frame,
+    clear: records.Color,
+) void {
+    assert(frame.scale_factor > 0);
+    assert(!host.presentable.load(.monotonic));
+    const renderer = &host.window.renderer;
+    const hidden = backend.Viewport{
+        .size_px = .{ .width = 0, .height = 0 },
+        .scale_factor = frame.scale_factor,
+    };
+    if (!std.meta.eql(hidden, host.viewport)) {
+        host.viewport = hidden;
+        renderer.resize(hidden.size_px);
+    }
+    const uploads = host.core.resources.atlas_uploads;
+    backend.uploadPendingAtlases(renderer, uploads, host.core.atlas_consumer_key);
+    backend.checkCapabilities(renderer.capabilities(), packed_frame);
+    renderer.draw(packed_frame, hidden, clear);
 }
 
 /// The window's close callback, on the main thread during dispatch: leave

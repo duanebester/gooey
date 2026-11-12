@@ -22,6 +22,15 @@ pub const TextBackend = enum {
     synthetic,
 };
 
+/// Windows renderer, selected with `-Dwindows-renderer`. Mirrored into
+/// `gooey_build_options` and read by `src/platform/windows/renderer.zig`.
+pub const WindowsRenderer = enum {
+    /// The Vulkan renderer shared with Linux (default).
+    vulkan,
+    /// Direct3D 11, with WARP for machines without a hardware driver.
+    dx11,
+};
+
 const ExampleDefinition = struct {
     name: []const u8,
     source: []const u8,
@@ -918,6 +927,14 @@ fn addWindowsBuilds(
     std.debug.assert(target.result.os.tag == .windows);
     std.debug.assert(target.result.cpu.arch == .x86_64);
 
+    const windows_renderer = b.option(
+        WindowsRenderer,
+        "windows-renderer",
+        "Windows renderer: vulkan (default) or dx11",
+    ) orelse .vulkan;
+    // Linked whichever renderer is selected: an import library adds a DLL
+    // import only for symbols the binary references, so a DirectX 11 build
+    // does not load `vulkan-1.dll`.
     const vulkan_import_library = addVulkanImportLibrary(b);
     const mod = b.addModule("gooey", .{
         .root_source_file = b.path("src/root.zig"),
@@ -925,7 +942,10 @@ fn addWindowsBuilds(
         .optimize = optimize,
     });
     mod.addObjectFile(vulkan_import_library);
-    mod.addImport("gooey_build_options", gooeyBuildOptionsModule(b, .{}));
+    mod.addImport("gooey_build_options", gooeyBuildOptionsModule(b, .{
+        .windows_renderer = windows_renderer,
+    }));
+    addHlslCompile(b);
 
     const components_mod = b.addModule("gooey-components", .{
         .root_source_file = b.path("components/src/root.zig"),
@@ -983,6 +1003,9 @@ fn addWindowsBuilds(
             .optimize = optimize,
         }),
     });
+    backend_tests.root_module.addImport("gooey_build_options", gooeyBuildOptionsModule(b, .{
+        .windows_renderer = windows_renderer,
+    }));
     const step = b.step("test-windows", "Run the shared and Windows backend tests");
     step.dependOn(&b.addRunArtifact(shared_tests).step);
     step.dependOn(&b.addRunArtifact(backend_tests).step);
@@ -1038,6 +1061,57 @@ fn addVulkanImportLibrary(b: *std.Build) std.Build.LazyPath {
     return dlltool.addOutputFileArg("vulkan-1.lib");
 }
 
+/// Adds `compile-hlsl`: rewrites the DirectX 11 renderer's checked-in DXBC
+/// from its HLSL with `src/tools/compile_hlsl.zig`, which calls the system
+/// `D3DCompiler_47.dll`. Builds embed the checked-in files, so only a shader
+/// edit needs this step, and only a Windows host can run it.
+fn addHlslCompile(b: *std.Build) void {
+    const step = b.step("compile-hlsl", "Compile the DirectX 11 HLSL shaders to DXBC");
+    if (b.graph.host.result.os.tag != .windows) return;
+    const exe = b.addExecutable(.{
+        .name = "compile-hlsl",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/tools/compile_hlsl.zig"),
+            .target = b.graph.host,
+            .optimize = .debug,
+        }),
+    });
+    const shader_dir = "src/platform/windows/shaders/";
+    // Each entry point becomes `<source>.<entry>.dxbc`, which the renderer
+    // embeds by that name.
+    const shaders = [_]struct { source: []const u8, entry: []const u8, profile: []const u8 }{
+        .{ .source = "quad", .entry = "vs_main", .profile = "vs_5_0" },
+        .{ .source = "quad", .entry = "ps_main", .profile = "ps_5_0" },
+        .{ .source = "sprite", .entry = "vs_main", .profile = "vs_5_0" },
+        .{ .source = "sprite", .entry = "ps_glyph", .profile = "ps_5_0" },
+        .{ .source = "sprite", .entry = "ps_svg", .profile = "ps_5_0" },
+        .{ .source = "sprite", .entry = "ps_image", .profile = "ps_5_0" },
+        .{ .source = "mesh", .entry = "vs_triangles", .profile = "vs_5_0" },
+        .{ .source = "mesh", .entry = "vs_strip", .profile = "vs_5_0" },
+        .{ .source = "mesh", .entry = "vs_points", .profile = "vs_5_0" },
+        .{ .source = "mesh", .entry = "ps_mesh", .profile = "ps_5_0" },
+        .{ .source = "upload", .entry = "vs_glyph", .profile = "vs_5_0" },
+        .{ .source = "upload", .entry = "vs_svg", .profile = "vs_5_0" },
+        .{ .source = "upload", .entry = "vs_image", .profile = "vs_5_0" },
+        .{ .source = "upload", .entry = "ps_r8", .profile = "ps_5_0" },
+        .{ .source = "upload", .entry = "ps_rgba8", .profile = "ps_5_0" },
+    };
+    for (shaders) |shader| {
+        std.debug.assert(shader.entry.len > 3);
+        const run = b.addRunArtifact(exe);
+        run.setCwd(b.path("."));
+        // The output is a source file Zig's cache does not track; always run.
+        run.has_side_effects = true;
+        run.addArgs(&.{
+            b.fmt("{s}{s}.hlsl", .{ shader_dir, shader.source }),
+            shader.entry,
+            shader.profile,
+            b.fmt("{s}{s}.{s}.dxbc", .{ shader_dir, shader.source, shader.entry }),
+        });
+        step.dependOn(&run.step);
+    }
+}
+
 /// Adds `typecheck-windows`: semantic analysis of the Windows backend from
 /// any host, with no linking, for the same reasons as `typecheck-linux`.
 /// Every Win32 and Vulkan binding is a plain `extern`, so analysis needs no
@@ -1053,18 +1127,32 @@ fn addWindowsTypecheck(b: *std.Build) void {
         .abi = .gnu,
     });
     std.debug.assert(windows_target.result.os.tag == .windows);
+    // Each renderer selects different code in `platform/windows/window.zig`.
+    for ([_]WindowsRenderer{ .vulkan, .dx11 }) |windows_renderer| {
+        addWindowsTypecheckRoots(b, step, windows_target, windows_renderer);
+    }
+}
 
+fn addWindowsTypecheckRoots(
+    b: *std.Build,
+    step: *std.Build.Step,
+    windows_target: std.Build.ResolvedTarget,
+    windows_renderer: WindowsRenderer,
+) void {
+    std.debug.assert(windows_target.result.os.tag == .windows);
+    const options = gooeyBuildOptionsModule(b, .{ .windows_renderer = windows_renderer });
     const gooey_mod = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
         .target = windows_target,
         .optimize = .debug,
     });
-    gooey_mod.addImport("gooey_build_options", gooeyBuildOptionsModule(b, .{}));
+    gooey_mod.addImport("gooey_build_options", options);
     const tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/windows_tests.zig"),
             .target = windows_target,
             .optimize = .debug,
+            .imports = &.{.{ .name = "gooey_build_options", .module = options }},
         }),
     });
     // Every shared `test {}` block and the `refAllDecls` discovery chain, the
@@ -1080,7 +1168,7 @@ fn addWindowsTypecheck(b: *std.Build) void {
     // The 0.4.0 core host: window binding, render thread, IME, clipboard,
     // file dialogs, and UI Automation.
     const core_app = b.addExecutable(.{
-        .name = "typecheck-windows-todo",
+        .name = b.fmt("typecheck-windows-todo-{s}", .{@tagName(windows_renderer)}),
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/examples/todo.zig"),
             .target = windows_target,
@@ -1094,8 +1182,10 @@ fn addWindowsTypecheck(b: *std.Build) void {
 
     // Depend on the compile steps only; see `addLinuxTypecheckRoot`.
     step.dependOn(&tests.step);
-    step.dependOn(&shared_tests.step);
     step.dependOn(&core_app.step);
+    // The shared tests reach the renderer only through the window, which the
+    // two roots above already analyze for this renderer; run them once.
+    if (windows_renderer == .vulkan) step.dependOn(&shared_tests.step);
 }
 
 /// `typecheck-macos`: semantically analyze the macOS backend, its tests, and
@@ -2012,10 +2102,12 @@ fn addGoldens(
 }
 
 /// Build-time choices mirrored into `gooey_build_options`. Defaults are the
-/// shipped configuration; `linux_backend` is read only on Linux targets.
+/// shipped configuration; `linux_backend` is read only on Linux targets and
+/// `windows_renderer` only on Windows targets.
 const GooeyBuildOptions = struct {
     linux_backend: LinuxBackend = .wayland_vulkan,
     text_backend: TextBackend = .platform,
+    windows_renderer: WindowsRenderer = .vulkan,
 };
 
 /// The `gooey_build_options` module: build-time choices the source tree reads
@@ -2024,5 +2116,6 @@ fn gooeyBuildOptionsModule(b: *std.Build, choices: GooeyBuildOptions) *std.Build
     const options = b.addOptions();
     options.addOption(LinuxBackend, "linux_backend", choices.linux_backend);
     options.addOption(TextBackend, "text_backend", choices.text_backend);
+    options.addOption(WindowsRenderer, "windows_renderer", choices.windows_renderer);
     return options.createModule();
 }

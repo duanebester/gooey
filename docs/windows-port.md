@@ -4,8 +4,9 @@
 
 `gooey.App` examples run on Windows: a Win32 window, DirectWrite text, WIC images, the
 software SVG rasterizer, the system clipboard, native file dialogs, IME composition, UI
-Automation accessibility, and the shared Vulkan renderer. Verified on an Intel UHD 620 at
-150% scale. The [checklist](#win32-checklist) has what remains.
+Automation accessibility, and the shared Vulkan renderer, or a [Direct3D 11
+renderer](#directx-11-renderer) with `-Dwindows-renderer=dx11`. Verified on an Intel UHD 620
+at 150% scale. The [checklist](#win32-checklist) has what remains.
 
 0.4.0 core apps (`gooey.App`) run on the [core host](#core-host): counter, todo,
 core-file-dialog, code-editor, actions, nested-overlay, and accessible-form, the core
@@ -32,8 +33,9 @@ If freshly linked binaries come out as 0-byte files that fail with `AccessDenied
 Vulkan first, not DirectX. After the surface split no Vulkan renderer file names a window
 system except the surface implementation, so `VK_KHR_win32_surface` brings analytic AA,
 fixed atlases, the upload journal, and the `ResourceLimits` budgets with no renderer work,
-and phase 5 migrates one renderer for both Linux and Windows. DirectX comes later, if
-needed, written straight against the phase 5 `Renderer` contract.
+and phase 5 migrates one renderer for both Linux and Windows. The Direct3D 11 renderer is
+written straight against the phase 5 `Renderer` contract and selected at build time; Vulkan
+stays the default.
 
 The real work is the Win32 half: windows and the message loop, input, IME, DPI, clipboard,
 file dialogs, cursors, accessibility (UI Automation), and frame pacing on a render thread
@@ -115,6 +117,59 @@ declarations in `linux/vulkan.zig`, minus `vkCreateWaylandSurfaceKHR`, plus
 the bindings. Validation layers ship with the SDK, so without it Debug builds log
 `VK_LAYER_KHRONOS_validation not available` and run without them.
 
+### DirectX 11 renderer
+
+`zig build -Dwindows-renderer=dx11` replaces the Vulkan renderer with
+`src/platform/windows/dx11_renderer.zig`, a contract §9 `Renderer` (`backend.verifyRenderer`).
+`src/platform/windows/renderer.zig` picks the type at compile time, so a Direct3D 11 build
+neither analyzes nor loads `vulkan-1.dll`. The window and core host drive both renderers
+through the same `initInPlace`, `uploadPendingAtlases`, `resize`, and `draw` calls.
+
+- **Bindings.** `d3d11.zig` declares only the D3D11 and DXGI interfaces, methods, and structs
+  the renderer calls, by hand, like `uia.zig`. Every called vtable slot and struct size is
+  pinned at comptime against the SDK headers; `d3d11.dll` and `dxgi.dll` link through the
+  MinGW import libraries Zig ships.
+- **Device.** A hardware device at feature level 11_1 or 11_0, then WARP, Microsoft's
+  software rasterizer, so machines without a driver (VMs, RDP) still draw.
+- **Swapchain.** Flip-discard on the `HWND`, one back buffer per frame in flight,
+  `DXGI_SCALING_NONE`, and a frame latency waitable set to one fewer frame than the
+  buffers, waited on before each frame's writes. A present queues the frame for the next
+  vertical blank (sync interval 1); a frame waits at the latency object instead, and the
+  core host paces frames as it does for Vulkan.
+- **Resources.** Everything is created in `initInPlace` from `RenderLimits`: per frame in
+  flight, dynamic structured buffers sized like the packed frame's arrays (quads, sprites,
+  meshes, mesh points, edge modes) and a viewport constant buffer; the three atlas textures
+  at `AtlasLimits` sides; an immutable instance index buffer; and the shaders and states.
+  Each frame maps only the used prefix of each array with `WRITE_DISCARD`.
+- **Atlas uploads.** `uploadAtlas` copies each record into the frame's fixed staging
+  buffer, one per frame in flight. The next `draw` copies the used range into a GPU buffer
+  with `CopySubresourceRegion` and draws one pixel-exact quad per record into its atlas,
+  bound as a render target, so a region changes on the GPU timeline after every earlier
+  draw and before the next draw samples it. Direct3D 11 has no buffer-to-texture copy, and a
+  staging texture would need a 2D packer with no tight bound. A zero-size draw (a minimised
+  window) still lands its uploads.
+- **Colour.** Packed colours are sRGB-encoded straight RGBA blended in gamma space, so the
+  swapchain and atlases are UNORM, not sRGB, as in the Vulkan renderer.
+- **Drawing.** One pass over `draws`. Each draw's clip becomes the scissor rectangle,
+  rounded so it holds exactly the pixel centres inside the clip, edges included; the
+  pipeline is rebound only when it changes. Quads and sprites are one instanced draw each.
+  Meshes are one draw per mesh: triangles expand to 21 vertices each (the triangle and a
+  fringe quad per faded edge, from pack's edge modes), strips to six per segment, points to
+  six each. A non-indexed draw's `SV_VertexID` and `SV_InstanceID` ignore the start
+  location, so the instance index comes from a per-instance vertex buffer of 0, 1, 2, ....
+- **Shaders.** HLSL twins of the Vulkan GLSL in `src/platform/windows/shaders/`, with the
+  same analytic anti-aliasing and blend modes, and one sample per pixel. The DXBC is
+  checked in like the `.spv` files and embedded; `zig build compile-hlsl` regenerates it
+  through the system `D3DCompiler_47.dll` (`src/tools/compile_hlsl.zig`). The port started
+  from WWW4R4E's HLSL in PR #151.
+- **Failures.** A missing drawable skips the frame and logs once. A removed device logs its
+  reason once and skips every later frame; recovery is not implemented.
+- **Verified.** WARP tests in `dx11_tests.zig` read back a clear, atlas uploads, draw ranges,
+  scissor edges at 150%, a glyph sprite, and the three mesh topologies. On the UHD 620 at
+  150%, 13 Windows examples match the Vulkan renderer pixel for pixel, at their default
+  sizes and at fractional ones during resize. Symantec Endpoint Protection on that machine
+  deletes the Direct3D 11 build of todo on launch (`Heur.AdvML.D`, a heuristic), so todo was
+  not compared there.
 ### Window and platform
 
 | File | Role |
@@ -196,8 +251,9 @@ do (contract rule 1). `gooey.App.main` selects it with one `.windows` arm in
 - **Sizes.** The host reads the window's logical size and scale once per tick and pushes
   a resize when they changed, so a live resize queues one event per tick. The render
   thread rebuilds the swapchain for the viewport the frame was built at, fitted to
-  `ResourceLimits.window`. A minimized or zero-area window skips its frames;
-  restoring it pushes a resize so the next frame is drawn.
+  `ResourceLimits.window`. A minimized or zero-area window draws its frames at a
+  zero-size viewport, which presents nothing but lands their atlas uploads, so the journal
+  never backs up; restoring it pushes a resize so the next frame is drawn.
 - **Live move and resize.** The modal loop's timer runs the host's turn, so the app keeps
   ticking during the drag.
 - **IME.** Each turn the host reads `Query.imeCursorRect` from the rendered frame: the
@@ -607,5 +663,8 @@ the event loop.
 - [ ] Dark title bar and appearance (`DwmSetWindowAttribute`, theme-change tracking).
 - [ ] Custom title-bar hit testing (`WM_NCHITTEST`).
 - [ ] CPU fallback renderer for machines without a Vulkan driver (some VMs, RDP).
+- [x] Direct3D 11 renderer on the phase 5 contract, with WARP for machines without a GPU
+      driver, behind `-Dwindows-renderer=dx11`.
+- [ ] Direct3D 11 device-loss recovery: frames stop after a removed device.
 - [ ] Writable UI Automation (actions; needs the framework path described above).
 - [ ] Clipboard, file dialog, and UI Automation allocations (phase 6 services redesign).
