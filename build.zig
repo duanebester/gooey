@@ -320,6 +320,14 @@ pub fn build(b: *std.Build) void {
         }
         core_bench_step.dependOn(&core_bench_run.step);
 
+        // Core `validate:` tests, pack's included: they check that each
+        // benchmark measures the output it claims, so wire them into `test`.
+        const core_bench_tests = b.addTest(.{
+            .root_module = core_bench_exe.root_module,
+        });
+        const run_core_bench_tests = b.addRunArtifact(core_bench_tests);
+        test_step.dependOn(&run_core_bench_tests.step);
+
         // =====================================================================
         // Text Benchmarks
         // =====================================================================
@@ -633,6 +641,18 @@ pub fn build(b: *std.Build) void {
         }
         core_bench_step.dependOn(&core_bench_run.step);
 
+        // Core `validate:` tests, pack's included. The dependOn is added in
+        // the Tests section below.
+        const core_bench_tests = b.addTest(.{
+            .root_module = core_bench_exe.root_module,
+            .use_llvm = true,
+        });
+        linkLinuxLibraries(core_bench_tests, linux_backend);
+        if (!skip_shader_compile) {
+            core_bench_tests.step.dependOn(compile_shaders_step);
+        }
+        const run_core_bench_tests = b.addRunArtifact(core_bench_tests);
+
         // =====================================================================
         // Text Benchmarks
         // =====================================================================
@@ -760,6 +780,7 @@ pub fn build(b: *std.Build) void {
         }, test_step);
         test_step.dependOn(&run_compare_tests.step);
         test_step.dependOn(&run_bench_tests.step);
+        test_step.dependOn(&run_core_bench_tests.step);
         test_step.dependOn(&run_accessibility_bench_tests.step);
         const fail_fast_exe = addFailFastChecks(
             b,
