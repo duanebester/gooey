@@ -282,6 +282,14 @@ pub const EdgeTable = struct {
     }
 };
 
+/// Bytes `EdgeTable.init(edge_count_max)` maps.
+pub fn table_bytes(edge_count_max: u32) u64 {
+    assert(edge_count_max > 0);
+    const bytes = @as(u64, slot_count_for(edge_count_max)) * @sizeOf(Entry);
+    assert(bytes > @as(u64, edge_count_max) * @sizeOf(Entry));
+    return bytes;
+}
+
 /// Hash slots for `edge_count` edges: a load factor of at most 2/3 keeps
 /// linear probes short, and the extra slot keeps an empty frame probe-able.
 fn slot_count_for(edge_count: u32) u32 {

@@ -229,7 +229,7 @@ pub const PackedFrame = struct {
         self.draws = try reservation.reserve(Draw, capacity.paint_record_count_max);
         errdefer reservation.release(Draw, self.draws, 0);
         self.edge_table = .{};
-        try self.edge_table.init(@max(scene.path_vertex_count_frame_max, 3));
+        try self.edge_table.init(edgeCapacity(scene));
         self.limits = scene.*;
         self.high_water = .{};
         self.quad_count = 0;
@@ -396,6 +396,29 @@ pub fn triangleCapacity(scene: *const limits_mod.SceneLimits) u32 {
     const count = @max(@divFloor(vertex_count, 3), 1);
     if (vertex_count >= 3) assert(count * 3 <= vertex_count);
     return count;
+}
+
+/// Edges the triangle edge table holds: the path vertex budget, at least one
+/// triangle's worth.
+pub fn edgeCapacity(scene: *const limits_mod.SceneLimits) u32 {
+    const count = @max(scene.path_vertex_count_frame_max, 3);
+    assert(count >= 3);
+    assert(count >= scene.path_vertex_count_frame_max);
+    return count;
+}
+
+/// Bytes `PackedFrame.initInPlace` reserves for the pools `scene` sizes:
+/// quads, sprites, meshes, edge modes and the edge table. Clips and draws
+/// follow the paint record budget instead (`Capacity`).
+pub fn sceneBytes(scene: *const limits_mod.SceneLimits) u64 {
+    var bytes: u64 = 0;
+    bytes += @as(u64, quadCapacity(scene)) * @sizeOf(Quad);
+    bytes += @as(u64, spriteCapacity(scene)) * @sizeOf(Sprite);
+    bytes += @as(u64, meshCapacity(scene)) * @sizeOf(Mesh);
+    bytes += @as(u64, triangleCapacity(scene)) * @sizeOf(EdgeModes);
+    bytes += mesh_edges.table_bytes(edgeCapacity(scene));
+    assert(bytes > 0);
+    return bytes;
 }
 
 /// Points every mesh of a frame may hold: one pool for all three topologies.

@@ -39,17 +39,10 @@
 const std = @import("std");
 const assert = std.debug.assert;
 
-// Element types, imported only for `@sizeOf` in budget and memory estimates. The
-// scene module imports this file for its ceilings; the cycle is between files,
+// The packed frame, imported only for its pool sizes in budget and memory
+// estimates. It imports this file for its limits; the cycle is between files,
 // not between comptime values, so Zig resolves it.
-const scene_types = @import("../scene/scene.zig");
-const SvgInstance = @import("../scene/svg_instance.zig").SvgInstance;
-const ImageInstance = @import("../scene/image_instance.zig").ImageInstance;
-const PathInstance = @import("../scene/path_instance.zig").PathInstance;
-const GradientUniforms = @import("../scene/gradient_uniforms.zig").GradientUniforms;
-const Polyline = @import("../scene/polyline.zig").Polyline;
-const PointCloud = @import("../scene/point_cloud.zig").PointCloud;
-const ColoredPointCloud = @import("../scene/colored_point_cloud.zig").ColoredPointCloud;
+const packed_frame = @import("packed_frame.zig");
 const FontVariant = @import("../text/types.zig").FontVariant;
 
 // =============================================================================
@@ -237,11 +230,11 @@ pub const ResourceLimits = struct {
     /// Every capacity at its framework ceiling. For stress tests and benchmarks,
     /// not an app profile: `gooey.App` rejects it at compile time, since an app
     /// budget must leave the debugger overlay's headroom below every ceiling
-    /// (contract decision 16). Costs about 16.5 MiB per scene and 25.5 MiB of
-    /// Metal instance ring. The aggregate mesh geometry ceilings are validation
-    /// bounds, not a renderable reservation: GPU renderers reserve geometry per
-    /// frame in flight (Metal about 62 GiB per frame here), so a window that
-    /// renders must lower them.
+    /// (contract decision 16). The aggregate mesh geometry ceilings are
+    /// validation bounds, not a renderable reservation: the window's mesh points
+    /// alone are about 4.5 GiB of virtual memory, and GPU renderers reserve
+    /// geometry per frame in flight (Metal about 62 GiB per frame here), so a
+    /// window that renders must lower them.
     pub const ceiling: ResourceLimits = .{
         .scene = SceneLimits.ceiling,
         .window = WindowLimits.ceiling,
@@ -344,10 +337,10 @@ pub const ResourceLimits = struct {
     }
 };
 
-/// Per-window, per-frame scene capacities. Each window allocates two scenes
-/// (built and presented) of exactly these sizes, plus a Metal instance ring of
-/// `unifiedPrimitiveCountMax()` primitives per frame in flight. GPU renderers
-/// also reserve mesh buffers from the aggregate geometry fields per frame in flight.
+/// Per-window, per-frame paint capacities. Each window's packed frame reserves
+/// its quad, sprite, mesh and edge pools from these counts, and its two records
+/// frames reserve the mesh points (`sceneBytes`). GPU renderers size their
+/// instance and mesh buffers from the same packed pools per frame in flight.
 pub const SceneLimits = struct {
     quad_count_frame_max: u32,
     shadow_count_frame_max: u32,
@@ -373,7 +366,7 @@ pub const SceneLimits = struct {
     /// dynamic-counters, actions, animation, file-dialog): quads 11, glyphs 118,
     /// no shadows, SVGs, images, paths or geometry. Headroom about 23x for quads;
     /// 1,024 glyphs is the floor because one shaped run is inserted whole. Mesh
-    /// geometry allows a few small icons or one sparkline. About 127 KiB per scene.
+    /// geometry allows a few small icons or one sparkline. About 203 KiB per window.
     pub const nano: SceneLimits = .{
         .quad_count_frame_max = 256,
         .shadow_count_frame_max = 16,
@@ -395,7 +388,7 @@ pub const SceneLimits = struct {
     /// Single-screen apps. Largest measured peaks in the class (todo, layout,
     /// nested-overlay, drag-drop, accessible-form, code-editor): quads 40,
     /// shadows 2, glyphs 358, SVGs 2, no images, paths or geometry. Headroom
-    /// about 25x for quads and 11x for glyphs. About 0.55 MiB per scene.
+    /// about 25x for quads and 11x for glyphs. About 1.1 MiB per window.
     pub const small: SceneLimits = .{
         .quad_count_frame_max = 1_024,
         .shadow_count_frame_max = 64,
@@ -423,7 +416,7 @@ pub const SceneLimits = struct {
     /// Geometry: dashboard needs 780 path vertices, 804 indices, 24 line points
     /// and 42 colored points, so the 4x cut (decision 3) still leaves at least
     /// 20x; the 0.3.1 mesh stress test (an 8,192-point line, 4,096 points of
-    /// each kind) ran on `large`. About 1.8 MiB per scene.
+    /// each kind) ran on `large`. About 2.8 MiB per window.
     pub const standard: SceneLimits = .{
         .quad_count_frame_max = 4_096,
         .shadow_count_frame_max = 512,
@@ -446,7 +439,7 @@ pub const SceneLimits = struct {
     /// mesh stress fixtures. 16x `standard` for geometry and, for full-screen
     /// text, the glyph ceiling less the 300 glyphs a safe build reserves for the
     /// debugger overlay (contract decision 16), which an app budget must leave
-    /// below every ceiling. Scene storage: about 11.6 MiB per scene.
+    /// below every ceiling. About 33.7 MiB per window, half of it mesh points.
     pub const large: SceneLimits = .{
         .quad_count_frame_max = 32_768,
         .shadow_count_frame_max = 2_048,
@@ -556,25 +549,18 @@ pub const SceneLimits = struct {
         return self.quad_count_frame_max + self.shadow_count_frame_max;
     }
 
-    /// Bytes one scene reserves for this budget (element arrays, path gradients,
-    /// clip stack, and sort keys). Excludes the mesh pool, which has its own
-    /// fixed limits.
+    /// Bytes one window reserves for this budget: the packed frame's quad,
+    /// sprite, mesh and edge pools (`packed_frame.sceneBytes`) and the mesh
+    /// points of its two records frames. The wrapped lines this budget's glyph
+    /// count bounds are counted with the layout arena. Every pool comes from
+    /// fresh pages, so this bounds virtual memory; resident memory follows
+    /// what frames write.
     pub fn sceneBytes(self: *const SceneLimits) u64 {
-        var bytes: u64 = 0;
-        bytes += @as(u64, self.quad_count_frame_max) * @sizeOf(scene_types.Quad);
-        bytes += @as(u64, self.shadow_count_frame_max) * @sizeOf(scene_types.Shadow);
-        bytes += @as(u64, self.glyph_count_frame_max) * @sizeOf(scene_types.GlyphInstance);
-        bytes += @as(u64, self.svg_count_frame_max) * @sizeOf(SvgInstance);
-        bytes += @as(u64, self.image_count_frame_max) * @sizeOf(ImageInstance);
-        bytes += @as(u64, self.path_count_frame_max) * @sizeOf(PathInstance);
-        bytes += @as(u64, self.path_count_frame_max) * @sizeOf(GradientUniforms);
-        bytes += @as(u64, self.polyline_count_frame_max) * @sizeOf(Polyline);
-        bytes += @as(u64, self.point_cloud_count_frame_max) * @sizeOf(PointCloud);
-        bytes += @as(u64, self.colored_point_cloud_count_frame_max) *
-            @sizeOf(ColoredPointCloud);
-        bytes += @as(u64, self.clip_depth_max) * @sizeOf(scene_types.ContentMask.ClipBounds);
-        bytes += @as(u64, self.sortKeyCountMax()) * @sizeOf(u64);
-        assert(bytes > 0);
+        const packed_bytes = packed_frame.sceneBytes(self);
+        const point_bytes = @as(u64, packed_frame.meshPointCapacity(self)) *
+            @sizeOf(packed_frame.MeshPoint);
+        const bytes = packed_bytes + 2 * point_bytes;
+        assert(bytes > packed_bytes);
         return bytes;
     }
 
@@ -1668,13 +1654,12 @@ pub const GRADIENT_RANGE_EPSILON: f32 = 0.0001;
 // Memory Budget Estimates
 // =============================================================================
 
-/// Bytes per glyph instance, derived so the estimate cannot go stale (it was
-/// hard-coded as 48 while the struct had grown to 80).
-pub const GLYPH_INSTANCE_SIZE: u32 = @sizeOf(scene_types.GlyphInstance);
+/// Bytes per glyph: one packed sprite, derived so the estimate cannot go stale.
+pub const GLYPH_INSTANCE_SIZE: u32 = @sizeOf(packed_frame.Sprite);
 pub const ESTIMATED_GLYPH_MEMORY: u32 = MAX_GLYPHS_PER_FRAME * GLYPH_INSTANCE_SIZE;
 
-/// Bytes per quad, derived (it was hard-coded as 128 while the struct is 112).
-pub const QUAD_SIZE: u32 = @sizeOf(scene_types.Quad);
+/// Bytes per quad: one packed quad, derived.
+pub const QUAD_SIZE: u32 = @sizeOf(packed_frame.Quad);
 pub const ESTIMATED_QUAD_MEMORY: u32 = MAX_QUADS_PER_FRAME * QUAD_SIZE;
 
 /// Per-path memory (at MAX_PATH_VERTICES=512):
@@ -1883,7 +1868,7 @@ test "check reports each negative case precisely" {
 
 test "derived budget quantities" {
     // Goal: pin the relationships other subsystems size from, and keep the
-    // per-scene sizes documented on each rung honest.
+    // per-window sizes documented on each rung honest.
     const scene = SceneLimits.standard;
     try std.testing.expectEqual(@as(u32, 8_192), scene.sortKeyCountMax());
     try std.testing.expectEqual(@as(u32, 4_608), scene.unifiedPrimitiveCountMax());
@@ -1894,10 +1879,15 @@ test "derived budget quantities" {
         const lower_bytes = @field(SceneLimits, lower_name).sceneBytes();
         try std.testing.expect(lower_bytes < @field(SceneLimits, upper_name).sceneBytes());
     }
-    try std.testing.expect(SceneLimits.nano.sceneBytes() < 128 * 1024);
-    try std.testing.expect(SceneLimits.small.sceneBytes() < 576 * 1024);
-    try std.testing.expect(scene.sceneBytes() < 1_843 * 1024);
-    try std.testing.expect(SceneLimits.large.sceneBytes() < 12 * 1024 * 1024);
+    // `nano` worked by hand from the packed frame's layouts: 272 quads and
+    // 1,044 sprites at 96 B, 24 meshes at 32 B, 341 edge-mode words at 4 B, an
+    // edge table of 1,537 slots at 20 B, and two records frames of 3,072 mesh
+    // points at 8 B.
+    const nano_bytes = 272 * 96 + 1_044 * 96 + 24 * 32 + 341 * 4 + 1_537 * 20 + 2 * 3_072 * 8;
+    try std.testing.expectEqual(@as(u64, nano_bytes), SceneLimits.nano.sceneBytes());
+    try std.testing.expect(SceneLimits.small.sceneBytes() < 1_142 * 1024);
+    try std.testing.expect(scene.sceneBytes() < 2_894 * 1024);
+    try std.testing.expect(SceneLimits.large.sceneBytes() < 34 * 1024 * 1024);
 }
 
 test "FontLimits.check names the broken family" {
