@@ -30,9 +30,8 @@ const window_mod = @import("window.zig");
 const emit_mod = @import("emit.zig");
 const limits_mod = @import("limits.zig");
 const input = @import("../input/mod.zig");
-const render_stats = @import("../scene/render_stats.zig");
+const render_stats = @import("render_stats.zig");
 const layout_types = @import("../layout/types.zig");
-const scene_mod = @import("../scene/mod.zig");
 const packed_mod = @import("packed_frame.zig");
 
 const assert = std.debug.assert;
@@ -457,33 +456,29 @@ const text_size: u16 = 14;
 const graph_frame_ms_max: f32 = 33.33;
 const graph_target_ms: f32 = 16.67;
 
-fn hsla(h: f32, s: f32, l: f32, a: f32) Color {
-    return scene_mod.Hsla.init(h, s, l, a).toColor();
-}
-
-const color_hover = hsla(0.55, 0.9, 0.5, 0.25);
-const color_hover_border = hsla(0.55, 1.0, 0.5, 0.8);
-const color_selected = hsla(0.0, 0.9, 0.5, 0.15);
-const color_selected_border = hsla(0.0, 1.0, 0.5, 1.0);
-const color_ancestor = hsla(0.3, 0.6, 0.5, 0.1);
-const color_ancestor_border = hsla(0.3, 0.8, 0.5, 0.4);
-const panel_background = hsla(0.0, 0.0, 0.12, 0.92);
-const panel_border = hsla(0.0, 0.0, 0.3, 0.8);
-const text_primary = hsla(0.0, 0.0, 0.95, 1.0);
-const text_secondary = hsla(0.0, 0.0, 0.6, 1.0);
-const text_value = hsla(0.55, 0.7, 0.7, 1.0);
-const text_label = hsla(0.3, 0.5, 0.6, 1.0);
-const color_frame_time = hsla(0.55, 0.8, 0.6, 0.9);
-const color_build = hsla(0.45, 0.7, 0.55, 0.9);
-const color_layout = hsla(0.3, 0.8, 0.5, 0.9);
-const color_emit = hsla(0.08, 0.8, 0.5, 0.9);
-const color_pack = hsla(0.75, 0.6, 0.55, 0.9);
-const color_draw = hsla(0.6, 0.8, 0.45, 0.9);
-const color_target_line = hsla(0.0, 0.0, 0.5, 0.5);
-const color_graph = hsla(0.0, 0.0, 0.05, 0.8);
-const color_good = hsla(0.3, 0.8, 0.6, 1.0);
-const color_ok = hsla(0.15, 0.8, 0.5, 1.0);
-const color_bad = hsla(0.0, 0.8, 0.5, 1.0);
+const color_hover = Color.hsla(0.55, 0.9, 0.5, 0.25);
+const color_hover_border = Color.hsla(0.55, 1.0, 0.5, 0.8);
+const color_selected = Color.hsla(0.0, 0.9, 0.5, 0.15);
+const color_selected_border = Color.hsla(0.0, 1.0, 0.5, 1.0);
+const color_ancestor = Color.hsla(0.3, 0.6, 0.5, 0.1);
+const color_ancestor_border = Color.hsla(0.3, 0.8, 0.5, 0.4);
+const panel_background = Color.hsla(0.0, 0.0, 0.12, 0.92);
+const panel_border = Color.hsla(0.0, 0.0, 0.3, 0.8);
+const text_primary = Color.hsla(0.0, 0.0, 0.95, 1.0);
+const text_secondary = Color.hsla(0.0, 0.0, 0.6, 1.0);
+const text_value = Color.hsla(0.55, 0.7, 0.7, 1.0);
+const text_label = Color.hsla(0.3, 0.5, 0.6, 1.0);
+const color_frame_time = Color.hsla(0.55, 0.8, 0.6, 0.9);
+const color_build = Color.hsla(0.45, 0.7, 0.55, 0.9);
+const color_layout = Color.hsla(0.3, 0.8, 0.5, 0.9);
+const color_emit = Color.hsla(0.08, 0.8, 0.5, 0.9);
+const color_pack = Color.hsla(0.75, 0.6, 0.55, 0.9);
+const color_draw = Color.hsla(0.6, 0.8, 0.45, 0.9);
+const color_target_line = Color.hsla(0.0, 0.0, 0.5, 0.5);
+const color_graph = Color.hsla(0.0, 0.0, 0.05, 0.8);
+const color_good = Color.hsla(0.3, 0.8, 0.6, 1.0);
+const color_ok = Color.hsla(0.15, 0.8, 0.5, 1.0);
+const color_bad = Color.hsla(0.0, 0.8, 0.5, 1.0);
 
 fn paintOverlay(window: *Window, state: *Debugger) void {
     assert(state.mode != .disabled);

@@ -40,7 +40,6 @@ const std = @import("std");
 const geometry = @import("../../geometry/geometry.zig");
 const limits_mod = @import("../../core/limits.zig");
 const packed_mod = @import("../../core/packed_frame.zig");
-const scene_mod = @import("../../scene/mod.zig");
 const backend = @import("../../core/backend.zig");
 const reservation = @import("../../core/reservation.zig");
 pub const raster = @import("raster.zig");
@@ -275,17 +274,17 @@ pub const Renderer = struct {
 fn polygonCountMax(limits: *const limits_mod.SceneLimits) u32 {
     assert(limits.check() == null);
     const triangle_points_max = @min(
-        scene_mod.MAX_MESH_VERTICES,
+        limits_mod.MAX_PATH_VERTICES,
         limits.path_vertex_count_frame_max,
     );
     const triangle_count_max = @divFloor(triangle_points_max, 3);
     const polyline_points_max = @min(
-        scene_mod.MAX_POLYLINE_POINTS,
+        limits_mod.MAX_POLYLINE_POINTS,
         limits.polyline_point_count_frame_max,
     );
     const segment_count_max = polyline_points_max -| 1;
     const count_max = @max(triangle_count_max, segment_count_max, 1);
-    assert(count_max <= @max(scene_mod.MAX_POLYLINE_POINTS, scene_mod.MAX_MESH_VERTICES));
+    assert(count_max <= @max(limits_mod.MAX_POLYLINE_POINTS, limits_mod.MAX_PATH_VERTICES));
     return count_max;
 }
 

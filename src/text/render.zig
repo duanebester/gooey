@@ -28,7 +28,7 @@ const Metrics = types.Metrics;
 const FontVariant = types.FontVariant;
 const FontFamily = types.FontFamily;
 const TextDecoration = types.TextDecoration;
-const RenderStats = @import("../scene/render_stats.zig").RenderStats;
+const RenderStats = @import("../core/render_stats.zig").RenderStats;
 
 const is_wasm = platform.is_wasm;
 
@@ -246,9 +246,8 @@ fn GlyphSink(comptime Sink: type) type {
             std.debug.assert(glyphs.len == ys.len);
             const scale_factor = self.scale_factor;
             for (glyphs, xs, ys) |glyph, dx, dy| {
-                const instance = placeGlyph(glyph, dx, dy, scale_factor, Hsla.black) orelse
-                    continue;
-                self.sink.glyph(instance);
+                const placed = placeGlyph(glyph, dx, dy, scale_factor) orelse continue;
+                self.sink.glyph(placed);
             }
         }
     };
@@ -322,8 +321,18 @@ fn emitGlyphsToScene(
     std.debug.assert(scale_factor > 0);
 
     for (cached_glyphs, device_positions_x, device_positions_y) |cached, device_x, device_y| {
-        const instance =
-            placeGlyph(cached, device_x, device_y, scale_factor, color) orelse continue;
+        const placed = placeGlyph(cached, device_x, device_y, scale_factor) orelse continue;
+        const instance = GlyphInstance.init(
+            placed.x,
+            placed.y,
+            placed.width,
+            placed.height,
+            placed.uv_left,
+            placed.uv_top,
+            placed.uv_right,
+            placed.uv_bottom,
+            color,
+        );
 
         if (options.isOrdered()) {
             try scene.insertGlyphWithOrder(instance, options.nextOrder(), options.clip_bounds);
@@ -335,47 +344,58 @@ fn emitGlyphsToScene(
     }
 }
 
-/// The glyph instance for one resolved glyph, or null for an empty region
+/// One glyph `placeText` placed: its quad in logical pixels and its glyph
+/// atlas rectangle, each UV edge in the normalized 0..1 range.
+pub const PlacedGlyph = struct {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    uv_left: f32,
+    uv_top: f32,
+    uv_right: f32,
+    uv_bottom: f32,
+};
+
+/// The placement of one resolved glyph, or null for an empty region
 /// (spaces, zero-width characters). Snaps to the device pixel grid, adds the
 /// raster offset, and converts back to logical pixels, as GPUI does:
 /// floor(device_pos) + raster_offset.
-fn placeGlyph(
-    cached: CachedGlyph,
-    device_x: f32,
-    device_y: f32,
-    scale_factor: f32,
-    color: Hsla,
-) ?GlyphInstance {
+fn placeGlyph(cached: CachedGlyph, device_x: f32, device_y: f32, scale_factor: f32) ?PlacedGlyph {
     std.debug.assert(scale_factor > 0);
     if (cached.region.width == 0 or cached.region.height == 0) return null;
 
     // Use cached atlas size for thread-safe UV calculation.
     // (Atlas may grow between glyph caching and UV calculation in multi-window.)
     const uv = cached.uv();
-    const glyph_width = @as(f32, @floatFromInt(cached.region.width)) / scale_factor;
-    const glyph_height = @as(f32, @floatFromInt(cached.region.height)) / scale_factor;
-    const glyph_x = (@floor(device_x) + @as(f32, @floatFromInt(cached.offset_x))) / scale_factor;
-    const glyph_y = (@floor(device_y) - @as(f32, @floatFromInt(cached.offset_y))) / scale_factor;
-    const instance = GlyphInstance.init(
-        glyph_x,
-        glyph_y,
-        glyph_width,
-        glyph_height,
-        uv.u0,
-        uv.v0,
-        uv.u1,
-        uv.v1,
-        color,
-    );
-    std.debug.assert(instance.size_x > 0);
-    return instance;
+    std.debug.assert(uv.u0 >= 0);
+    std.debug.assert(uv.u0 <= 1);
+    std.debug.assert(uv.v0 >= 0);
+    std.debug.assert(uv.v0 <= 1);
+    std.debug.assert(uv.u1 >= 0);
+    std.debug.assert(uv.u1 <= 1);
+    std.debug.assert(uv.v1 >= 0);
+    std.debug.assert(uv.v1 <= 1);
+    const placed = PlacedGlyph{
+        .x = (@floor(device_x) + @as(f32, @floatFromInt(cached.offset_x))) / scale_factor,
+        .y = (@floor(device_y) - @as(f32, @floatFromInt(cached.offset_y))) / scale_factor,
+        .width = @as(f32, @floatFromInt(cached.region.width)) / scale_factor,
+        .height = @as(f32, @floatFromInt(cached.region.height)) / scale_factor,
+        .uv_left = uv.u0,
+        .uv_top = uv.v0,
+        .uv_right = uv.u1,
+        .uv_bottom = uv.v1,
+    };
+    std.debug.assert(placed.width > 0);
+    std.debug.assert(placed.height > 0);
+    return placed;
 }
 
 // =============================================================================
 // Glyph placement without a scene (0.4.0 core emit)
 // =============================================================================
 
-/// Shape `text` and hand each placed glyph to `sink.glyph(instance)`, in
+/// Shape `text` and hand each placed glyph to `sink.glyph(placed)`, in
 /// order, returning the run's width. The same placement as `renderText`, so
 /// the 0.4.0 core's paint records match what the 0.3.1 runtime draws. The
 /// glyph cache may rasterize on a miss; the shaped run is copied into a stack

@@ -59,7 +59,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 
 const scene_mod = @import("../scene/mod.zig");
-const path_mesh = @import("../scene/path_mesh.zig");
+const limits = @import("../core/limits.zig");
 
 /// How the triangle shader treats one edge. Two bits per edge in the vertex
 /// record; the values are part of the shader contract in Vulkan's `mesh.glsl`
@@ -78,7 +78,7 @@ pub const Key = u64;
 pub const PathIndex = u16;
 
 comptime {
-    assert(@import("../core/limits.zig").MAX_PATHS_PER_FRAME <= std.math.maxInt(PathIndex));
+    assert(limits.MAX_PATHS_PER_FRAME <= std.math.maxInt(PathIndex));
 }
 
 /// One de-indexed path triangle vertex: the source `PathVertex` plus the
@@ -111,7 +111,7 @@ pub const triangle_draw_vertex_count: u32 = 3 + 3 * 6;
 /// Draw vertices for one path draw of `index_count` triangle records.
 pub fn draw_vertex_count(index_count: u32) u32 {
     assert(index_count % 3 == 0);
-    assert(index_count <= path_mesh.MAX_MESH_INDICES);
+    assert(index_count <= limits.MAX_PATH_INDICES);
     return @divExact(index_count, 3) * triangle_draw_vertex_count;
 }
 
@@ -356,7 +356,7 @@ pub const TriangleSource = struct {
 pub fn write_triangles(target: []TriangleVertex, source: *const TriangleSource) void {
     assert(target.len == source.indices.len);
     assert(target.len % 3 == 0);
-    assert(target.len <= path_mesh.MAX_MESH_INDICES);
+    assert(target.len <= limits.MAX_PATH_INDICES);
     var triangle: usize = 0;
     while (triangle < target.len) : (triangle += 3) {
         const indices = source.indices[triangle..][0..3];

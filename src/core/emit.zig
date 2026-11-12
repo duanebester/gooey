@@ -23,7 +23,6 @@ const limits_mod = @import("limits.zig");
 const retained_mod = @import("retained.zig");
 const text_mod = @import("../text/mod.zig");
 const text_render = @import("../text/render.zig");
-const scene_mod = @import("../scene/mod.zig");
 const a11y_types = @import("../accessibility/types.zig");
 const layout_mod = @import("../layout/layout.zig");
 const image_mod = @import("../image/mod.zig");
@@ -856,21 +855,21 @@ const GlyphSink = struct {
     frame: *records.Frame,
     color: Color,
 
-    pub fn glyph(self: *GlyphSink, instance: scene_mod.GlyphInstance) void {
-        assert(instance.size_x > 0);
+    pub fn glyph(self: *GlyphSink, placed: text_render.PlacedGlyph) void {
+        assert(placed.width > 0);
         self.frame.appendPaint(.{ .sprite = .{
             .bounds = .{
-                .x = instance.pos_x,
-                .y = instance.pos_y,
-                .width = instance.size_x,
-                .height = instance.size_y,
+                .x = placed.x,
+                .y = placed.y,
+                .width = placed.width,
+                .height = placed.height,
             },
             .atlas = .glyph,
             .uv = .{
-                .x = instance.uv_left,
-                .y = instance.uv_top,
-                .width = instance.uv_right - instance.uv_left,
-                .height = instance.uv_bottom - instance.uv_top,
+                .x = placed.uv_left,
+                .y = placed.uv_top,
+                .width = placed.uv_right - placed.uv_left,
+                .height = placed.uv_bottom - placed.uv_top,
             },
             .tint = self.color,
             .secondary = Color.transparent,
@@ -998,9 +997,9 @@ fn circleCorner(center: [2]f32, radius: f32, delta: f32, corner: u32) [2]f32 {
     return .{ center[0] + radius * @cos(angle), center[1] + radius * @sin(angle) };
 }
 
-/// The most points one triangle mesh holds: the 0.3.1 path mesh `pack`
-/// copies it into, rounded down to whole triangles.
-pub const triangle_points_max: u32 = scene_mod.MAX_MESH_VERTICES / 3 * 3;
+/// The most points one triangle mesh holds: one path's vertex ceiling,
+/// rounded down to whole triangles.
+pub const triangle_points_max: u32 = limits_mod.MAX_PATH_VERTICES / 3 * 3;
 
 fn emitTriangles(window: *Window, points: []const [2]f32, color: Color) void {
     if (points.len > triangle_points_max) {
@@ -1027,11 +1026,11 @@ fn emitTriangles(window: *Window, points: []const [2]f32, color: Color) void {
             }
         }
     }
-    const mesh_max = @min(window.limits.scene.path_count_frame_max, scene_mod.MAX_FRAME_MESHES);
+    const mesh_max = @min(window.limits.scene.path_count_frame_max, limits_mod.MAX_FRAME_MESHES);
     if (frame.triangle_mesh_count == mesh_max) {
         std.debug.panic("triangle meshes exhausted: capacity {d} (scene.path_count_frame_max, " ++
             "at most {d}), {d} in use, 1 requested, frame {d}", .{
-            mesh_max, scene_mod.MAX_FRAME_MESHES, mesh_max, window.frame_number,
+            mesh_max, limits_mod.MAX_FRAME_MESHES, mesh_max, window.frame_number,
         });
     }
     frame.triangle_mesh_count += 1;
@@ -1050,10 +1049,10 @@ const PointMesh = struct { topology: records.Mesh.Topology, width: f32, color: C
 fn emitPointMesh(window: *Window, points: []const [2]f32, mesh: PointMesh) void {
     assert(mesh.topology != .triangles);
     const count: u32 = @intCast(points.len);
-    // The 0.3.1 scene's per-draw ceilings, checked here with the counts.
+    // The per-mesh ceilings (`limits.zig`), checked here with the counts.
     const draw_max: u32, const width_max: f32 = switch (mesh.topology) {
-        .strip_expanded => .{ scene_mod.MAX_POLYLINE_POINTS, scene_mod.MAX_LINE_WIDTH },
-        .point_instanced => .{ scene_mod.MAX_POINTS_PER_CLOUD, scene_mod.MAX_POINT_RADIUS },
+        .strip_expanded => .{ limits_mod.MAX_POLYLINE_POINTS, limits_mod.MAX_LINE_WIDTH },
+        .point_instanced => .{ limits_mod.MAX_POINTS_PER_CLOUD, limits_mod.MAX_POINT_RADIUS },
         .triangles => unreachable,
     };
     if (count > draw_max or mesh.width > width_max) {

@@ -478,12 +478,10 @@ pub const SceneLimits = struct {
         .colored_point_cloud_count_frame_max = MAX_COLORED_POINT_CLOUDS_PER_FRAME,
         .path_vertex_count_frame_max = MAX_PATHS_PER_FRAME * MAX_PATH_VERTICES,
         .path_index_count_frame_max = MAX_PATHS_PER_FRAME * MAX_PATH_INDICES,
-        .polyline_point_count_frame_max = MAX_POLYLINES_PER_FRAME *
-            @import("../scene/polyline.zig").MAX_POLYLINE_POINTS,
-        .point_count_frame_max = MAX_POINT_CLOUDS_PER_FRAME *
-            @import("../scene/point_cloud.zig").MAX_POINTS_PER_CLOUD,
+        .polyline_point_count_frame_max = MAX_POLYLINES_PER_FRAME * MAX_POLYLINE_POINTS,
+        .point_count_frame_max = MAX_POINT_CLOUDS_PER_FRAME * MAX_POINTS_PER_CLOUD,
         .colored_point_count_frame_max = MAX_COLORED_POINT_CLOUDS_PER_FRAME *
-            @import("../scene/colored_point_cloud.zig").MAX_POINTS_PER_COLORED_CLOUD,
+            MAX_POINTS_PER_COLORED_CLOUD,
         .clip_depth_max = MAX_CLIP_STACK_DEPTH,
     };
 
@@ -1618,9 +1616,28 @@ pub const MAX_STROKE_INDICES: u32 = MAX_STROKE_TRIANGLES * 3;
 /// Source: mesh_pool.zig
 pub const MAX_PERSISTENT_MESHES: u32 = 512;
 
-/// Maximum per-frame meshes (dynamic paths, animations, canvas callbacks)
-/// Source: mesh_pool.zig
+/// Most triangle meshes one frame may draw, whatever `path_count_frame_max`
+/// allows: each packs as one 0.3.1 frame path mesh (`Painter.triangles`).
 pub const MAX_FRAME_MESHES: u32 = 256;
+
+// =============================================================================
+// Per-Mesh Limits
+// =============================================================================
+
+/// Most points one polyline (`Painter.polyline`) may hold.
+pub const MAX_POLYLINE_POINTS: u32 = 8192;
+
+/// Widest polyline, in logical pixels; a sanity bound.
+pub const MAX_LINE_WIDTH: f32 = 1000.0;
+
+/// Most points one point cloud (`Painter.pointCloud`) may hold.
+pub const MAX_POINTS_PER_CLOUD: u32 = 65536;
+
+/// Most points one colored point cloud may hold.
+pub const MAX_POINTS_PER_COLORED_CLOUD: u32 = 65536;
+
+/// Largest point radius, in logical pixels; a sanity bound.
+pub const MAX_POINT_RADIUS: f32 = 1000.0;
 
 // =============================================================================
 // GPU Buffer Limits (Web/WGPU specific)

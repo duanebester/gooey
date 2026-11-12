@@ -390,6 +390,36 @@ pub const Color = struct {
         }
     }
 
+    /// From hue, saturation, lightness and alpha, each in 0..1 (hue wraps
+    /// once: 1 is red again).
+    pub fn hsla(h: f32, s: f32, l: f32, a: f32) Color {
+        std.debug.assert(s >= 0.0 and s <= 1.0);
+        std.debug.assert(l >= 0.0 and l <= 1.0);
+        if (s == 0) {
+            // Achromatic: grey at the lightness.
+            return rgba(l, l, l, a);
+        }
+        const q = if (l < 0.5) l * (1 + s) else l + s - l * s;
+        const p = 2 * l - q;
+        return rgba(
+            hueChannel(p, q, h + 1.0 / 3.0),
+            hueChannel(p, q, h),
+            hueChannel(p, q, h - 1.0 / 3.0),
+            a,
+        );
+    }
+
+    /// One RGB channel of `hsla` at hue offset `t_in`.
+    fn hueChannel(p: f32, q: f32, t_in: f32) f32 {
+        var t = t_in;
+        if (t < 0) t += 1;
+        if (t > 1) t -= 1;
+        if (t < 1.0 / 6.0) return p + (q - p) * 6 * t;
+        if (t < 1.0 / 2.0) return q;
+        if (t < 2.0 / 3.0) return p + (q - p) * (2.0 / 3.0 - t) * 6;
+        return p;
+    }
+
     /// Parse a hex color string like "#1a1a2e", "#RGB", "#RGBA", "#RRGGBB", or "#RRGGBBAA"
     pub fn fromHex(str: []const u8) Color {
         if (str.len == 0) return black;
@@ -546,4 +576,19 @@ test "corners gpu conversion" {
     const gpu = c.toGpuCorners();
     try std.testing.expectEqual(@as(f32, 8.0), gpu.top_left);
     try std.testing.expectEqual(@as(f32, 8.0), gpu.bottom_right);
+}
+
+test "Color.hsla converts each hue sector and grey" {
+    // Goal: pin the HSL formula with an input whose three channels each take a
+    // different branch. Expected values worked by hand: at l 0.5 and s 0.8,
+    // q = 0.9 and p = 0.1; red's hue offset 0.633 falls in the falling sector,
+    // green's 0.3 on the plateau, and blue's -0.033 wraps past 2/3 to p.
+    const color = Color.hsla(0.3, 0.8, 0.5, 0.4);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.26), color.r, 1e-5);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.9), color.g, 1e-5);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.1), color.b, 1e-5);
+    try std.testing.expectEqual(@as(f32, 0.4), color.a);
+    // Zero saturation ignores the hue.
+    const grey = Color.hsla(0.7, 0, 0.25, 1);
+    try std.testing.expectEqual(Color{ .r = 0.25, .g = 0.25, .b = 0.25, .a = 1 }, grey);
 }
