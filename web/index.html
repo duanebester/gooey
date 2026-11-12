@@ -68,62 +68,10 @@
     <script type="module">
       const canvas = document.getElementById("canvas");
 
-      // Handle high-DPI displays. `dpr` follows the display and page zoom:
-      // `updateCanvasSize` re-reads it on every call (the core host calls it
-      // every frame through `syncCanvasSize`), because Safari fires neither
-      // the resolution query below nor a canvas resize when only the ratio
-      // changes on zoom.
-      let dpr = window.devicePixelRatio || 1;
-      // Maximum texture size (WebGPU default limit)
-      const MAX_SIZE = 8192;
-
-      function updateCanvasSize() {
-        dpr = window.devicePixelRatio || 1;
-        // Use CSS size, not canvas.width (which we're about to set)
-        const cssWidth = canvas.clientWidth;
-        const cssHeight = canvas.clientHeight;
-
-        // Calculate device pixel size, clamped to max texture size
-        const targetWidth = Math.min(Math.floor(cssWidth * dpr), MAX_SIZE);
-        const targetHeight = Math.min(Math.floor(cssHeight * dpr), MAX_SIZE);
-
-        // Only update if actually changed
-        if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
-          canvas.width = targetWidth;
-          canvas.height = targetHeight;
-          return true; // Size changed
-        }
-        return false; // No change
-      }
-
-      // Set initial size
-      updateCanvasSize();
-
-      // Resize the drawing buffer to the canvas's CSS size at the current
-      // ratio, and reconfigure the context when it changed. A resize clears
-      // the canvas, so the caller must draw a frame afterwards: the 0.4.0
-      // core host calls this at the start of each frame, before it builds.
-      function syncCanvasSize() {
-        if (!updateCanvasSize()) return false;
-        if (context) context.configure({ device, format, alphaMode: "premultiplied" });
-        return true;
-      }
-
-      // Resize the canvas when the ratio alone changes (a display move in
-      // Chrome), for the 0.3.1 path, which does not poll. A media query
-      // matches one ratio, so re-arm it at the new ratio after every change.
-      function watchDevicePixelRatio() {
-        const query = window.matchMedia(`(resolution: ${dpr}dppx)`);
-        query.addEventListener(
-          "change",
-          () => {
-            syncCanvasSize();
-            watchDevicePixelRatio();
-          },
-          { once: true },
-        );
-      }
-      watchDevicePixelRatio();
+      // The core host sizes the drawing buffer (`setCanvasSize`): it reads
+      // the canvas's CSS size and `devicePixelRatio` every frame and fits the
+      // buffer to the app's framebuffer budget, so a canvas past the budget
+      // renders at a lower scale and CSS scales it up.
 
       // WebGPU state
       let device, queue, context, format;
@@ -135,9 +83,9 @@
         pipelines: new Map(),
         buffers: new Map(),
         bindGroups: new Map(),
-        textureViews: new Map(),
         textures: new Map(),
         samplers: new Map(),
+        layouts: new Map(),
         nextId: 1,
       };
 
@@ -1075,13 +1023,12 @@
 
         getCanvasWidth: () => canvas.clientWidth,
         getCanvasHeight: () => canvas.clientHeight,
-        getCanvasPixelWidth: () => canvas.width,
-        getCanvasPixelHeight: () => canvas.height,
-        getDevicePixelRatio: () => dpr,
-        syncCanvasSize: () => syncCanvasSize(),
+        getDevicePixelRatio: () => window.devicePixelRatio || 1,
+        // Resizing clears the canvas; the caller draws a frame afterwards.
         setCanvasSize: (w, h) => {
           canvas.width = w;
           canvas.height = h;
+          context.configure({ device, format, alphaMode: "premultiplied" });
         },
         setDocumentTitle: (ptr, len) => {
           document.title = getString(ptr, len);
@@ -1099,59 +1046,20 @@
           hiddenInput.style.width = `${Math.max(width, 1)}px`;
           hiddenInput.style.height = `${height}px`;
         },
-        getCurrentTextureView: () => {
-          const texture = context.getCurrentTexture();
-          const view = texture.createView();
-          return allocHandle(handles.textureViews, view);
-        },
-
-        releaseTextureView: (handle) => {
-          handles.textureViews.delete(handle);
-        },
-
+        // WebGPU: the packed-frame renderer (src/platform/web/renderer.zig).
         createShaderModule: (codePtr, codeLen) => {
           const code = getString(codePtr, codeLen);
           const module = device.createShaderModule({ code });
-          return allocHandle(handles.shaderModules, module);
-        },
-
-        createRenderPipeline: (shaderHandle, vsPtr, vsLen, fsPtr, fsLen) => {
-          const module = handles.shaderModules.get(shaderHandle);
-          const vsEntry = getString(vsPtr, vsLen);
-          const fsEntry = getString(fsPtr, fsLen);
-
-          const pipeline = device.createRenderPipeline({
-            layout: "auto",
-            vertex: {
-              module,
-              entryPoint: vsEntry,
-            },
-            fragment: {
-              module,
-              entryPoint: fsEntry,
-              targets: [
-                {
-                  format,
-                  blend: {
-                    color: {
-                      srcFactor: "src-alpha",
-                      dstFactor: "one-minus-src-alpha",
-                      operation: "add",
-                    },
-                    alpha: {
-                      srcFactor: "one",
-                      dstFactor: "one-minus-src-alpha",
-                      operation: "add",
-                    },
-                  },
-                },
-              ],
-            },
-            primitive: {
-              topology: "triangle-list",
-            },
+          module.getCompilationInfo().then((info) => {
+            for (const message of info.messages) {
+              if (message.type === "error") {
+                console.error(
+                  `[Gooey] WGSL ${message.lineNum}:${message.linePos}: ${message.message}`,
+                );
+              }
+            }
           });
-          return allocHandle(handles.pipelines, pipeline);
+          return allocHandle(handles.shaderModules, module);
         },
 
         createBuffer: (size, usage) => {
@@ -1166,42 +1074,118 @@
           queue.writeBuffer(buffer, offset, data);
         },
 
-        createBindGroup: (
-          pipelineHandle,
-          groupIndex,
-          bufferHandlesPtr,
-          bufferHandlesLen,
-        ) => {
-          const pipeline = handles.pipelines.get(pipelineHandle);
-          const memory = wasmInstance.exports.memory;
-          const handleArray = new Uint32Array(
-            memory.buffer,
-            bufferHandlesPtr,
-            bufferHandlesLen,
-          );
+        deviceMaxTextureDimension2D: () => device.limits.maxTextureDimension2D,
+        deviceMaxStorageBufferBindingSize: () =>
+          Math.min(device.limits.maxStorageBufferBindingSize, 0xffffffff),
 
+        // Bindings 0-4 storage buffers and 5 the viewport uniform (vertex),
+        // 6-8 the glyph, SVG, and image atlases and 9 the sampler (fragment).
+        createPackedLayout: () => {
+          const vertex = GPUShaderStage.VERTEX;
+          const fragment = GPUShaderStage.FRAGMENT;
           const entries = [];
-          for (let i = 0; i < bufferHandlesLen; i++) {
-            const buffer = handles.buffers.get(handleArray[i]);
+          for (let binding = 0; binding < 5; binding++) {
+            entries.push({ binding, visibility: vertex, buffer: { type: "read-only-storage" } });
+          }
+          entries.push({ binding: 5, visibility: vertex, buffer: { type: "uniform" } });
+          for (let binding = 6; binding < 9; binding++) {
+            entries.push({ binding, visibility: fragment, texture: { sampleType: "float" } });
+          }
+          entries.push({ binding: 9, visibility: fragment, sampler: { type: "filtering" } });
+          const bindGroupLayout = device.createBindGroupLayout({ entries });
+          const pipelineLayout = device.createPipelineLayout({
+            bindGroupLayouts: [bindGroupLayout],
+          });
+          return allocHandle(handles.layouts, { bindGroupLayout, pipelineLayout });
+        },
+
+        // One sample, triangle lists, colours blended in gamma space into the
+        // canvas's UNORM format. `premultiplied` shaders multiply by alpha.
+        createPackedPipeline: (
+          layoutHandle,
+          shaderHandle,
+          vsPtr,
+          vsLen,
+          fsPtr,
+          fsLen,
+          premultiplied,
+        ) => {
+          const layout = handles.layouts.get(layoutHandle);
+          const module = handles.shaderModules.get(shaderHandle);
+          const pipeline = device.createRenderPipeline({
+            layout: layout.pipelineLayout,
+            vertex: { module, entryPoint: getString(vsPtr, vsLen) },
+            fragment: {
+              module,
+              entryPoint: getString(fsPtr, fsLen),
+              targets: [
+                {
+                  format,
+                  blend: {
+                    color: {
+                      srcFactor: premultiplied ? "one" : "src-alpha",
+                      dstFactor: "one-minus-src-alpha",
+                      operation: "add",
+                    },
+                    alpha: {
+                      srcFactor: "one",
+                      dstFactor: "one-minus-src-alpha",
+                      operation: "add",
+                    },
+                  },
+                },
+              ],
+            },
+            primitive: { topology: "triangle-list" },
+          });
+          return allocHandle(handles.pipelines, pipeline);
+        },
+
+        createPackedBindGroup: (
+          layoutHandle,
+          buffersPtr,
+          buffersLen,
+          texturesPtr,
+          texturesLen,
+          samplerHandle,
+        ) => {
+          const layout = handles.layouts.get(layoutHandle);
+          const memory = wasmInstance.exports.memory;
+          const buffers = new Uint32Array(memory.buffer, buffersPtr, buffersLen);
+          const textures = new Uint32Array(memory.buffer, texturesPtr, texturesLen);
+          const entries = [];
+          for (let i = 0; i < buffersLen; i++) {
+            entries.push({ binding: i, resource: { buffer: handles.buffers.get(buffers[i]) } });
+          }
+          for (let i = 0; i < texturesLen; i++) {
             entries.push({
-              binding: i,
-              resource: { buffer },
+              binding: buffersLen + i,
+              resource: handles.textures.get(textures[i]).createView(),
             });
           }
-
+          entries.push({
+            binding: buffersLen + texturesLen,
+            resource: handles.samplers.get(samplerHandle),
+          });
           const bindGroup = device.createBindGroup({
-            layout: pipeline.getBindGroupLayout(groupIndex),
+            layout: layout.bindGroupLayout,
             entries,
           });
           return allocHandle(handles.bindGroups, bindGroup);
         },
 
-        // Render pass state
+        // The frame being encoded, from beginFrame to endFrame.
         currentEncoder: null,
         currentPass: null,
 
-        beginRenderPass: (textureViewHandle, r, g, b, a) => {
-          const view = handles.textureViews.get(textureViewHandle);
+        beginFrame: (r, g, b, a) => {
+          let view;
+          try {
+            view = context.getCurrentTexture().createView();
+          } catch (e) {
+            console.warn("[Gooey] no canvas texture:", e);
+            return false;
+          }
           env.currentEncoder = device.createCommandEncoder();
           env.currentPass = env.currentEncoder.beginRenderPass({
             colorAttachments: [
@@ -1213,68 +1197,26 @@
               },
             ],
           });
+          return true;
         },
 
         setPipeline: (pipelineHandle) => {
-          const pipeline = handles.pipelines.get(pipelineHandle);
-          env.currentPass.setPipeline(pipeline);
+          env.currentPass.setPipeline(handles.pipelines.get(pipelineHandle));
         },
 
         setBindGroup: (groupIndex, bindGroupHandle) => {
-          const bindGroup = handles.bindGroups.get(bindGroupHandle);
-          env.currentPass.setBindGroup(groupIndex, bindGroup);
+          env.currentPass.setBindGroup(groupIndex, handles.bindGroups.get(bindGroupHandle));
         },
 
-        drawInstanced: (vertexCount, instanceCount) => {
-          env.currentPass.draw(vertexCount, instanceCount);
+        setScissorRect: (x, y, width, height) => {
+          env.currentPass.setScissorRect(x, y, width, height);
         },
 
-        drawInstancedWithOffset: (
-          vertexCount,
-          instanceCount,
-          firstInstance,
-        ) => {
-          env.currentPass.draw(vertexCount, instanceCount, 0, firstInstance);
+        draw: (vertexCount, instanceCount, firstVertex, firstInstance) => {
+          env.currentPass.draw(vertexCount, instanceCount, firstVertex, firstInstance);
         },
 
-        // Indexed drawing for path rendering
-        setIndexBuffer: (bufferHandle, format, offset, size) => {
-          const buffer = handles.buffers.get(bufferHandle);
-          if (!buffer) {
-            console.error("setIndexBuffer: invalid buffer handle");
-            return;
-          }
-          // format: 0 = uint16, 1 = uint32
-          const indexFormat = format === 0 ? "uint16" : "uint32";
-          env.currentPass.setIndexBuffer(buffer, indexFormat, offset, size);
-        },
-
-        setVertexBuffer: (slot, bufferHandle, offset, size) => {
-          const buffer = handles.buffers.get(bufferHandle);
-          if (!buffer) {
-            console.error("setVertexBuffer: invalid buffer handle");
-            return;
-          }
-          env.currentPass.setVertexBuffer(slot, buffer, offset, size);
-        },
-
-        drawIndexed: (
-          indexCount,
-          instanceCount,
-          firstIndex,
-          baseVertex,
-          firstInstance,
-        ) => {
-          env.currentPass.drawIndexed(
-            indexCount,
-            instanceCount,
-            firstIndex,
-            baseVertex,
-            firstInstance,
-          );
-        },
-
-        endRenderPass: () => {
+        endFrame: () => {
           env.currentPass.end();
           queue.submit([env.currentEncoder.finish()]);
           env.currentPass = null;
@@ -1499,38 +1441,10 @@
           const sampler = device.createSampler({
             magFilter: "linear",
             minFilter: "linear",
+            addressModeU: "clamp-to-edge",
+            addressModeV: "clamp-to-edge",
           });
           return allocHandle(handles.samplers, sampler);
-        },
-
-        createTextBindGroup: (
-          pipelineHandle,
-          groupIndex,
-          glyphBuffer,
-          uniformBuffer,
-          textureHandle,
-          samplerHandle,
-        ) => {
-          const pipeline = handles.pipelines.get(pipelineHandle);
-          const texture = handles.textures.get(textureHandle);
-          const sampler = handles.samplers.get(samplerHandle);
-
-          const bindGroup = device.createBindGroup({
-            layout: pipeline.getBindGroupLayout(groupIndex),
-            entries: [
-              {
-                binding: 0,
-                resource: { buffer: handles.buffers.get(glyphBuffer) },
-              },
-              {
-                binding: 1,
-                resource: { buffer: handles.buffers.get(uniformBuffer) },
-              },
-              { binding: 2, resource: texture.createView() },
-              { binding: 3, resource: sampler },
-            ],
-          });
-          return allocHandle(handles.bindGroups, bindGroup);
         },
 
         // =====================================================================
@@ -1585,449 +1499,6 @@
           }
         },
 
-        // Create bind group for SVG pipeline (same layout as text)
-        createSvgBindGroup: (
-          pipelineHandle,
-          groupIndex,
-          svgBuffer,
-          uniformBuffer,
-          textureHandle,
-          samplerHandle,
-        ) => {
-          const pipeline = handles.pipelines.get(pipelineHandle);
-          const texture = handles.textures.get(textureHandle);
-          const sampler = handles.samplers.get(samplerHandle);
-
-          const bindGroup = device.createBindGroup({
-            layout: pipeline.getBindGroupLayout(groupIndex),
-            entries: [
-              {
-                binding: 0,
-                resource: { buffer: handles.buffers.get(svgBuffer) },
-              },
-              {
-                binding: 1,
-                resource: { buffer: handles.buffers.get(uniformBuffer) },
-              },
-              { binding: 2, resource: texture.createView() },
-              { binding: 3, resource: sampler },
-            ],
-          });
-          return allocHandle(handles.bindGroups, bindGroup);
-        },
-
-        // =====================================================================
-        // Image Rendering Support
-        // =====================================================================
-
-        // Create bind group for image pipeline (same layout as SVG - RGBA texture)
-        createImageBindGroup: (
-          pipelineHandle,
-          groupIndex,
-          imageBuffer,
-          uniformBuffer,
-          textureHandle,
-          samplerHandle,
-        ) => {
-          const pipeline = handles.pipelines.get(pipelineHandle);
-          const texture = handles.textures.get(textureHandle);
-          const sampler = handles.samplers.get(samplerHandle);
-
-          const bindGroup = device.createBindGroup({
-            layout: pipeline.getBindGroupLayout(groupIndex),
-            entries: [
-              {
-                binding: 0,
-                resource: { buffer: handles.buffers.get(imageBuffer) },
-              },
-              {
-                binding: 1,
-                resource: { buffer: handles.buffers.get(uniformBuffer) },
-              },
-              { binding: 2, resource: texture.createView() },
-              { binding: 3, resource: sampler },
-            ],
-          });
-          return allocHandle(handles.bindGroups, bindGroup);
-        },
-
-        // =================================================================
-        // MSAA (Multisampling Anti-Aliasing) Support
-        // =================================================================
-
-        // Cache the supported sample count (determined at init)
-        _msaaSampleCount: null,
-
-        getMSAASampleCount: () => {
-          // Return cached value if already determined
-          if (env._msaaSampleCount !== null) {
-            return env._msaaSampleCount;
-          }
-
-          // WebGPU spec: sample counts 1 and 4 are always supported for
-          // render targets. However, some devices may have issues.
-          // Try to create a test texture to verify support.
-          try {
-            const testTexture = device.createTexture({
-              size: { width: 4, height: 4 },
-              format,
-              sampleCount: 4,
-              usage: GPUTextureUsage.RENDER_ATTACHMENT,
-            });
-            testTexture.destroy();
-            env._msaaSampleCount = 4;
-            console.log("MSAA 4x supported");
-          } catch (e) {
-            console.warn("MSAA 4x not supported, falling back to no MSAA:", e);
-            env._msaaSampleCount = 1;
-          }
-          return env._msaaSampleCount;
-        },
-
-        createMSAATexture: (width, height, sampleCount) => {
-          if (sampleCount <= 1) return 0;
-
-          try {
-            const texture = device.createTexture({
-              size: { width, height },
-              format,
-              sampleCount,
-              usage: GPUTextureUsage.RENDER_ATTACHMENT,
-            });
-            return allocHandle(handles.textures, texture);
-          } catch (e) {
-            console.error("Failed to create MSAA texture:", e);
-            return 0;
-          }
-        },
-
-        destroyTexture: (textureHandle) => {
-          const texture = handles.textures.get(textureHandle);
-          if (texture) {
-            texture.destroy();
-            handles.textures.delete(textureHandle);
-          }
-        },
-
-        createMSAARenderPipeline: (
-          shaderHandle,
-          vsPtr,
-          vsLen,
-          fsPtr,
-          fsLen,
-          sampleCount,
-        ) => {
-          const module = handles.shaderModules.get(shaderHandle);
-          const vsEntry = getString(vsPtr, vsLen);
-          const fsEntry = getString(fsPtr, fsLen);
-
-          const pipeline = device.createRenderPipeline({
-            layout: "auto",
-            vertex: {
-              module,
-              entryPoint: vsEntry,
-            },
-            fragment: {
-              module,
-              entryPoint: fsEntry,
-              targets: [
-                {
-                  format,
-                  blend: {
-                    color: {
-                      srcFactor: "src-alpha",
-                      dstFactor: "one-minus-src-alpha",
-                      operation: "add",
-                    },
-                    alpha: {
-                      srcFactor: "one",
-                      dstFactor: "one-minus-src-alpha",
-                      operation: "add",
-                    },
-                  },
-                },
-              ],
-            },
-            primitive: {
-              topology: "triangle-list",
-            },
-            multisample: {
-              count: sampleCount,
-            },
-          });
-          return allocHandle(handles.pipelines, pipeline);
-        },
-
-        // Create a render pipeline with premultiplied alpha blending (srcRGB = ONE)
-        // Used for shaders that output pre-multiplied RGB values (e.g., SVG)
-        createPremultipliedAlphaPipeline: (
-          shaderHandle,
-          vsPtr,
-          vsLen,
-          fsPtr,
-          fsLen,
-        ) => {
-          const module = handles.shaderModules.get(shaderHandle);
-          const vsEntry = getString(vsPtr, vsLen);
-          const fsEntry = getString(fsPtr, fsLen);
-
-          const pipeline = device.createRenderPipeline({
-            layout: "auto",
-            vertex: {
-              module,
-              entryPoint: vsEntry,
-            },
-            fragment: {
-              module,
-              entryPoint: fsEntry,
-              targets: [
-                {
-                  format,
-                  blend: {
-                    color: {
-                      srcFactor: "one", // Premultiplied: RGB already multiplied by alpha
-                      dstFactor: "one-minus-src-alpha",
-                      operation: "add",
-                    },
-                    alpha: {
-                      srcFactor: "one",
-                      dstFactor: "one-minus-src-alpha",
-                      operation: "add",
-                    },
-                  },
-                },
-              ],
-            },
-            primitive: {
-              topology: "triangle-list",
-            },
-          });
-          return allocHandle(handles.pipelines, pipeline);
-        },
-
-        // Create a render pipeline with MSAA and premultiplied alpha blending
-        // Used for shaders that output pre-multiplied RGB values (e.g., SVG)
-        createMSAAPremultipliedAlphaPipeline: (
-          shaderHandle,
-          vsPtr,
-          vsLen,
-          fsPtr,
-          fsLen,
-          sampleCount,
-        ) => {
-          const module = handles.shaderModules.get(shaderHandle);
-          const vsEntry = getString(vsPtr, vsLen);
-          const fsEntry = getString(fsPtr, fsLen);
-
-          const pipeline = device.createRenderPipeline({
-            layout: "auto",
-            vertex: {
-              module,
-              entryPoint: vsEntry,
-            },
-            fragment: {
-              module,
-              entryPoint: fsEntry,
-              targets: [
-                {
-                  format,
-                  blend: {
-                    color: {
-                      srcFactor: "one", // Premultiplied: RGB already multiplied by alpha
-                      dstFactor: "one-minus-src-alpha",
-                      operation: "add",
-                    },
-                    alpha: {
-                      srcFactor: "one",
-                      dstFactor: "one-minus-src-alpha",
-                      operation: "add",
-                    },
-                  },
-                },
-              ],
-            },
-            primitive: {
-              topology: "triangle-list",
-            },
-            multisample: {
-              count: sampleCount,
-            },
-          });
-          return allocHandle(handles.pipelines, pipeline);
-        },
-
-        // Create path pipeline with MSAA and premultiplied alpha
-        // Path rendering uses indexed drawing with storage buffers for vertices
-        createPathPipeline: (
-          shaderHandle,
-          vsPtr,
-          vsLen,
-          fsPtr,
-          fsLen,
-          sampleCount,
-        ) => {
-          const module = handles.shaderModules.get(shaderHandle);
-          const vsEntry = getString(vsPtr, vsLen);
-          const fsEntry = getString(fsPtr, fsLen);
-
-          const pipeline = device.createRenderPipeline({
-            layout: "auto",
-            vertex: {
-              module,
-              entryPoint: vsEntry,
-            },
-            fragment: {
-              module,
-              entryPoint: fsEntry,
-              targets: [
-                {
-                  format,
-                  blend: {
-                    color: {
-                      srcFactor: "one", // Premultiplied alpha
-                      dstFactor: "one-minus-src-alpha",
-                      operation: "add",
-                    },
-                    alpha: {
-                      srcFactor: "one",
-                      dstFactor: "one-minus-src-alpha",
-                      operation: "add",
-                    },
-                  },
-                },
-              ],
-            },
-            primitive: {
-              topology: "triangle-list",
-            },
-            multisample: {
-              count: sampleCount > 1 ? sampleCount : 1,
-            },
-          });
-          return allocHandle(handles.pipelines, pipeline);
-        },
-
-        // Create bind group for path pipeline
-        // Bindings: 0 = vertex storage buffer, 1 = instance uniform, 2 = viewport uniform
-        createPathBindGroup: (
-          pipelineHandle,
-          groupIndex,
-          vertexBufferHandle,
-          instanceBufferHandle,
-          uniformBufferHandle,
-        ) => {
-          const pipeline = handles.pipelines.get(pipelineHandle);
-          const vertexBuffer = handles.buffers.get(vertexBufferHandle);
-          const instanceBuffer = handles.buffers.get(instanceBufferHandle);
-          const uniformBuffer = handles.buffers.get(uniformBufferHandle);
-
-          if (!pipeline || !vertexBuffer || !instanceBuffer || !uniformBuffer) {
-            console.error("createPathBindGroup: invalid handles");
-            return 0;
-          }
-
-          const bindGroup = device.createBindGroup({
-            layout: pipeline.getBindGroupLayout(groupIndex),
-            entries: [
-              {
-                binding: 0,
-                resource: { buffer: vertexBuffer },
-              },
-              {
-                binding: 1,
-                resource: { buffer: instanceBuffer },
-              },
-              {
-                binding: 2,
-                resource: { buffer: uniformBuffer },
-              },
-            ],
-          });
-          return allocHandle(handles.bindGroups, bindGroup);
-        },
-
-        // Create bind group for path pipeline with gradient support
-        // Bindings: 0 = vertex storage buffer, 1 = instance uniform, 2 = viewport uniform, 3 = gradient uniform
-        createPathBindGroupWithGradient: (
-          pipelineHandle,
-          groupIndex,
-          vertexBufferHandle,
-          instanceBufferHandle,
-          uniformBufferHandle,
-          gradientBufferHandle,
-        ) => {
-          const pipeline = handles.pipelines.get(pipelineHandle);
-          const vertexBuffer = handles.buffers.get(vertexBufferHandle);
-          const instanceBuffer = handles.buffers.get(instanceBufferHandle);
-          const uniformBuffer = handles.buffers.get(uniformBufferHandle);
-          const gradientBuffer = handles.buffers.get(gradientBufferHandle);
-
-          if (
-            !pipeline ||
-            !vertexBuffer ||
-            !instanceBuffer ||
-            !uniformBuffer ||
-            !gradientBuffer
-          ) {
-            console.error("createPathBindGroupWithGradient: invalid handles");
-            return 0;
-          }
-
-          const bindGroup = device.createBindGroup({
-            layout: pipeline.getBindGroupLayout(groupIndex),
-            entries: [
-              {
-                binding: 0,
-                resource: { buffer: vertexBuffer },
-              },
-              {
-                binding: 1,
-                resource: { buffer: instanceBuffer },
-              },
-              {
-                binding: 2,
-                resource: { buffer: uniformBuffer },
-              },
-              {
-                binding: 3,
-                resource: { buffer: gradientBuffer },
-              },
-            ],
-          });
-          return allocHandle(handles.bindGroups, bindGroup);
-        },
-
-        beginMSAARenderPass: (
-          msaaTextureHandle,
-          resolveViewHandle,
-          r,
-          g,
-          b,
-          a,
-        ) => {
-          const msaaTexture = handles.textures.get(msaaTextureHandle);
-          const resolveView = handles.textureViews.get(resolveViewHandle);
-
-          if (!msaaTexture || !resolveView) {
-            console.error("beginMSAARenderPass: invalid handles");
-            return;
-          }
-
-          const msaaView = msaaTexture.createView();
-          env.currentEncoder = device.createCommandEncoder();
-          env.currentPass = env.currentEncoder.beginRenderPass({
-            colorAttachments: [
-              {
-                view: msaaView,
-                resolveTarget: resolveView,
-                clearValue: { r, g, b, a },
-                loadOp: "clear",
-                storeOp: "discard",
-              },
-            ],
-          });
-        },
-
         // Text-field edit commands use Cmd on Apple platforms, Ctrl elsewhere.
         // iPadOS Safari reports "MacIntel", which is the right answer for it.
         isApplePlatform: () =>
@@ -2060,6 +1531,9 @@
 
         device = await adapter.requestDevice();
         queue = device.queue;
+        device.addEventListener("uncapturederror", (event) => {
+          console.error("[Gooey] WebGPU:", event.error.message);
+        });
 
         // Configure canvas context
         context = canvas.getContext("webgpu");
@@ -2080,17 +1554,6 @@
           a11y,
         });
         wasmInstance = instance;
-
-        // Handle resize - debounced to avoid loops
-        let resizeTimeout = null;
-        const resizeObserver = new ResizeObserver(() => {
-          if (resizeTimeout) return; // Already scheduled
-          resizeTimeout = setTimeout(() => {
-            resizeTimeout = null;
-            syncCanvasSize();
-          }, 16); // ~1 frame debounce
-        });
-        resizeObserver.observe(canvas);
 
         // Initialize and start
         console.log("[JS] About to call wasmInstance.exports.init()...");

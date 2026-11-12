@@ -301,8 +301,8 @@ WASM has a 1 MiB stack beginning at address 1,048,576 and growing downward.
 - Do not use large struct literals or return large structs by value.
 - Add compile-time size assertions for large foundational types.
 
-Known approximate sizes include `TextSystem` at 1.7 MiB, `WebRenderer` at 1.15 MiB, `Gooey` at
-400 KiB, and `Tree` at 350 KiB. Update these figures when layouts materially change.
+Known approximate sizes include `TextSystem` at 1.7 MiB, `Gooey` at 400 KiB, and `Tree` at
+350 KiB. Update these figures when layouts materially change.
 
 ```zig
 const thing = try allocator.create(Thing);

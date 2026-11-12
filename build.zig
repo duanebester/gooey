@@ -1731,23 +1731,10 @@ fn addWasmBuilds(b: *std.Build) void {
 }
 
 fn addWasmShaderImports(b: *std.Build, module: *std.Build.Module) void {
-    const shaders = [_]struct { name: []const u8, path: []const u8 }{
-        .{ .name = "unified_wgsl", .path = "src/platform/wgpu/shaders/unified.wgsl" },
-        .{ .name = "text_wgsl", .path = "src/platform/wgpu/shaders/text.wgsl" },
-        .{ .name = "svg_wgsl", .path = "src/platform/wgpu/shaders/svg.wgsl" },
-        .{ .name = "image_wgsl", .path = "src/platform/wgpu/shaders/image.wgsl" },
-        .{ .name = "path_wgsl", .path = "src/platform/wgpu/shaders/path.wgsl" },
-        .{ .name = "solid_path_wgsl", .path = "src/platform/wgpu/shaders/path_solid.wgsl" },
-        .{ .name = "polyline_wgsl", .path = "src/platform/wgpu/shaders/polyline.wgsl" },
-        .{ .name = "point_cloud_wgsl", .path = "src/platform/wgpu/shaders/point_cloud.wgsl" },
-    };
-    std.debug.assert(shaders.len == 8);
-    std.debug.assert(shaders[0].name.len > 0);
-    for (shaders) |shader| {
-        module.addAnonymousImport(shader.name, .{
-            .root_source_file = b.path(shader.path),
-        });
-    }
+    // The WebGPU renderer's one shader module (`src/platform/web/renderer.zig`).
+    const path = "src/platform/wgpu/shaders/packed.wgsl";
+    std.debug.assert(std.mem.endsWith(u8, path, ".wgsl"));
+    module.addAnonymousImport("packed_wgsl", .{ .root_source_file = b.path(path) });
 }
 
 fn addWasmExample(

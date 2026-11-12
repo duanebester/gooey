@@ -30,15 +30,15 @@ const mouse_events = @import("mouse_events.zig");
 const scroll_events = @import("scroll_events.zig");
 const text_buffer = @import("text_buffer.zig");
 const composition_buffer = @import("composition_buffer.zig");
-const scene_mod = @import("../../scene/mod.zig");
 const core_window = @import("../../core/window.zig");
-const pack_legacy = @import("../../core/pack_legacy.zig");
+const backend = @import("../../core/backend.zig");
 const core_element = @import("../../core/element.zig");
 const core_router = @import("../../core/router.zig");
 const core_events = @import("../../core/events.zig");
 const records = @import("../../core/records.zig");
 const text_engine = @import("../../core/text_engine.zig");
-const ResourceLimits = @import("../../core/limits.zig").ResourceLimits;
+const limits_mod = @import("../../core/limits.zig");
+const ResourceLimits = limits_mod.ResourceLimits;
 
 const assert = std.debug.assert;
 
@@ -125,6 +125,12 @@ pub const Host = struct {
     width: f64,
     height: f64,
     scale_factor: f64,
+    /// The canvas's drawing buffer and its scale: the logical size at
+    /// `scale_factor`, or lower past the window budget.
+    viewport: backend.Viewport,
+    window_limits: limits_mod.WindowLimits,
+    /// A downscaled viewport was logged; logged again only after it fits.
+    downscaled: bool,
     /// The caret rect last handed to the browser's hidden input.
     ime_rect: ?records.Rect,
     /// The cursor last set on the canvas.
@@ -150,15 +156,24 @@ pub const Host = struct {
             .height = @floatFromInt(options.height),
             .limits = options.limits,
         });
-        self.renderer = try gpa.create(WebRenderer);
-        self.renderer.initInPlace(gpa);
-        self.now_ns = 0;
+        self.window_limits = options.limits.window;
+        self.downscaled = false;
         self.width = self.window.size.width;
         self.height = self.window.size.height;
         self.scale_factor = self.window.scale_factor;
+        self.viewport = self.fitViewport(self.width, self.height, self.scale_factor);
+        self.renderer = try gpa.create(WebRenderer);
+        const render_limits = backend.RenderLimits.fromResourceLimits(&options.limits);
+        try self.renderer.initInPlace(&.{
+            .native = null,
+            .size_px = self.viewport.size_px,
+            .scale_factor = self.viewport.scale_factor,
+        }, &render_limits);
+        self.now_ns = 0;
         self.ime_rect = null;
         self.cursor = .default;
         assert(self.scale_factor > 0);
+        assert(std.meta.eql(self.renderer.size_px, self.viewport.size_px));
     }
 
     /// Bind the core window: atlases, the presenter, and the IME query. The
@@ -170,15 +185,11 @@ pub const Host = struct {
         self.query = .{ .window = core };
         const resources = core.resources;
         const key = @intFromPtr(self.window);
+        // The renderer owns the atlas textures; the core's atlases keep no
+        // pixels and journal every region for `uploadAtlas`.
+        assert(resources.atlas_uploads.storage == .gpu_upload);
         resources.registerAtlasConsumer(key);
         core.atlas_consumer_key = key;
-        self.renderer.initAtlases(.{
-            .uploads = resources.atlas_uploads,
-            .key = key,
-            .text_size = core.limits.atlas.text_size,
-            .svg_size = core.limits.atlas.svg_size,
-            .image_size = core.limits.atlas.image_size,
-        });
         core.bindViewport(.{
             .width = @floatCast(self.width),
             .height = @floatCast(self.height),
@@ -240,10 +251,13 @@ pub const Host = struct {
     /// that arrives before the next animation frame.
     fn queueResize(self: *Host) void {
         if (!hasRoom(&self.core.queue)) return; // Next frame polls again.
-        const buffer_resized = imports.syncCanvasSize();
         self.window.updateSize();
         const size = self.window.size;
         const scale = self.window.scale_factor;
+        const viewport = self.fitViewport(size.width, size.height, scale);
+        const buffer_resized = !std.meta.eql(viewport.size_px, self.viewport.size_px);
+        if (buffer_resized) self.renderer.resize(viewport.size_px);
+        self.viewport = viewport;
         const same_size = size.width == self.width and size.height == self.height;
         if (same_size and scale == self.scale_factor and !buffer_resized) return;
         self.width = size.width;
@@ -254,6 +268,41 @@ pub const Host = struct {
             .height = @floatCast(size.height),
             .scale_factor = @floatCast(scale),
         } } });
+    }
+
+    /// The drawing buffer for a canvas of `width` x `height` CSS pixels at
+    /// `scale_factor`: at that scale, or lower when it would pass the window
+    /// budget, and CSS scales the smaller buffer up. An empty canvas (hidden,
+    /// or laid out at zero size) has an empty buffer.
+    fn fitViewport(self: *Host, width: f64, height: f64, scale_factor: f64) backend.Viewport {
+        assert(width >= 0);
+        assert(height >= 0);
+        assert(scale_factor > 0);
+        const scale: f32 = @floatCast(scale_factor);
+        if (width == 0 or height == 0) {
+            return .{ .size_px = .{ .width = 0, .height = 0 }, .scale_factor = scale };
+        }
+        const limits = &self.window_limits;
+        const viewport = backend.Viewport.fitLogical(
+            @floatCast(width),
+            @floatCast(height),
+            scale,
+            limits,
+        );
+        const downscaled = viewport.scale_factor < scale;
+        if (downscaled and !self.downscaled) {
+            imports.log("renderer: a {d}x{d} canvas at scale {d} exceeds ResourceLimits.window " ++
+                "({d}x{d} px); rendering at scale {d}", .{
+                width,
+                height,
+                scale,
+                limits.framebuffer_width_max,
+                limits.framebuffer_height_max,
+                viewport.scale_factor,
+            });
+        }
+        self.downscaled = downscaled;
+        return viewport;
     }
 
     /// Keys, text, composition, scrolls, then the mouse: 0.3.1's order.
@@ -298,7 +347,7 @@ fn hasRoom(queue: *const core_events.EventQueue) bool {
 }
 
 /// The core's presenter, inside `tick` on the browser's one thread: upload
-/// what the build placed in the atlases, then draw the packed scene.
+/// what the build placed in the atlases, then draw the packed frame.
 fn draw(
     context: *anyopaque,
     packed_frame: *const core_window.PackedFrame,
@@ -306,24 +355,13 @@ fn draw(
     clear: records.Color,
 ) void {
     const host: *Host = @ptrCast(@alignCast(context));
-    // This renderer draws the 0.3.1 scene until it moves onto the contract.
-    const scene: *const scene_mod.Scene = host.core.scene;
-    pack_legacy.fillScene(packed_frame, host.core.scene, .{
-        .width = frame.viewport_width,
-        .height = frame.viewport_height,
-    });
-    assert(frame.viewport_width >= 0);
-    assert(frame.viewport_height >= 0);
-    host.renderer.uploadAtlasRegions();
-    host.renderer.render(
-        scene,
-        frame.viewport_width,
-        frame.viewport_height,
-        clear.r,
-        clear.g,
-        clear.b,
-        clear.a,
-    );
+    assert(frame.scale_factor > 0);
+    assert(host.core.render_phase == .draw);
+    const renderer = host.renderer;
+    const uploads = host.core.resources.atlas_uploads;
+    backend.uploadPendingAtlases(renderer, uploads, host.core.atlas_consumer_key);
+    backend.checkCapabilities(renderer.capabilities(), packed_frame);
+    renderer.draw(packed_frame, host.viewport, clear);
 }
 
 fn clipboardRead(_: *anyopaque, out: []u8) u32 {
