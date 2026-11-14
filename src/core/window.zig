@@ -36,6 +36,7 @@ const keymap_mod = @import("keymap.zig");
 const A11ySystem = @import("a11y_system.zig").A11ySystem;
 const screen_reader_mod = @import("screen_reader.zig");
 const debugger_mod = @import("debugger.zig");
+const frame_trace = @import("frame_trace.zig");
 
 const assert = std.debug.assert;
 
@@ -601,6 +602,8 @@ pub const Window = struct {
     screen_reader_poll: screen_reader_mod.Poll,
     /// The inspector and profiler (Cmd/Ctrl+Shift+I); `void` in release builds.
     debugger: debugger_mod.State,
+    /// Per-frame phase timestamps (`-Dframe-trace`); `void` when off.
+    trace: frame_trace.State,
     dialog_handlers: [dialog_count_max]?handler_mod.Handler,
     dialogs_opened: u32,
     now_ns: u64,
@@ -965,8 +968,11 @@ fn initRuntimeStorage(self: *Window, gpa: std.mem.Allocator, limits: *const Reso
     self.text_scratch_allocator = std.heap.FixedBufferAllocator.init(self.text_scratch);
     // Headless until a host binds its platform's bridge (`bindScreenReader`).
     self.screen_reader = try gpa.create(A11ySystem);
+    errdefer gpa.destroy(self.screen_reader);
     self.screen_reader.initHeadlessInPlace();
+    errdefer self.screen_reader.deinit();
     self.screen_reader_poll = .{};
+    try frame_trace.init(&self.trace, gpa, self.resources.io);
 }
 
 /// The largest `bytes_max` among text kinds with engines; at least the
@@ -999,6 +1005,7 @@ fn deinitRenderTargets(self: *Window) void {
 }
 
 fn deinitRuntimeStorage(self: *Window, gpa: std.mem.Allocator) void {
+    frame_trace.deinit(&self.trace, gpa);
     self.screen_reader.deinit();
     gpa.destroy(self.screen_reader);
     gpa.free(self.text_scratch);

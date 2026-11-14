@@ -24,6 +24,7 @@ const pack_mod = @import("pack.zig");
 const router = @import("router.zig");
 const screen_reader = @import("screen_reader.zig");
 const debugger = @import("debugger.zig");
+const frame_trace = @import("frame_trace.zig");
 
 const assert = std.debug.assert;
 
@@ -44,6 +45,11 @@ pub fn tickMain(app: anytype, window: *Window, now_ns: u64) bool {
     window.now_ns = now_ns;
     flipPresented(window);
     const in_flight = window.frame_in_flight.load(.acquire);
+    // A trace's synthetic input enters the queue before the drain, as a
+    // platform's would; the trace's end asks the host to quit.
+    if (frame_trace.beginTick(&window.trace, window, in_flight) == .quit) {
+        window.quit_requested = true;
+    }
     // Shaped runs of the frame in flight may still sit in the scratch.
     if (!in_flight) window.text_scratch_allocator.reset();
     // The tick that ran a dialog builds nothing: the frame would show the
@@ -85,6 +91,7 @@ fn buildFrame(comptime App: type, window: *Window) void {
         window.resources.setScaleFactor(window.scale_factor);
     }
     window.frame_number += 1;
+    frame_trace.mark(&window.trace, window.frame_number, .build);
     // Open this build's atlas frame: items used from here on stay resident
     // until the renderer uploads them, and items only older frames used may
     // be evicted. Without it every glyph stays protected and the atlas fills.
@@ -106,6 +113,7 @@ fn buildFrame(comptime App: type, window: *Window) void {
     cx_mod.endBuild(window);
 
     window.setPhase(.build, .layout);
+    frame_trace.mark(&window.trace, window.frame_number, .layout);
     const layout_ns = debugger.stamp(window);
     window.layout.endFrame() catch |err| std.debug.panic("layout failed in frame {d}: {s}", .{
         window.frame_number,
@@ -114,6 +122,7 @@ fn buildFrame(comptime App: type, window: *Window) void {
     window.noteLayoutArenaUse();
 
     window.setPhase(.layout, .emit);
+    frame_trace.mark(&window.trace, window.frame_number, .emit);
     const emit_ns = debugger.stamp(window);
     emit_mod.emit(window);
     router.validateFocus(window);
@@ -137,14 +146,17 @@ pub fn presentBuilt(window: *Window) void {
     assert(window.render_phase == .idle);
     const frame = &window.frames[window.built_index];
     window.render_phase = .pack;
+    frame_trace.mark(&window.trace, frame.frame_number, .pack);
     const pack_ns = debugger.stamp(window);
     pack_mod.pack(frame, &window.packed_frame);
     window.render_phase = .draw;
+    frame_trace.mark(&window.trace, frame.frame_number, .draw);
     const draw_ns = debugger.stamp(window);
     if (window.presenter) |presenter| {
         presenter.draw(presenter.context, &window.packed_frame, frame, window.clear_color);
     }
     debugger.notePresent(window, pack_ns, draw_ns);
+    frame_trace.mark(&window.trace, frame.frame_number, .done);
     window.render_phase = .idle;
     window.frame_in_flight.store(false, .release);
 }
@@ -152,6 +164,16 @@ pub fn presentBuilt(window: *Window) void {
 fn publish(window: *Window) void {
     assert(!window.awaiting_flip);
     assert(!window.frame_in_flight.load(.monotonic));
+    if (frame_trace.enabled) {
+        const frame = window.built();
+        frame_trace.noteFrame(&window.trace, frame.frame_number, .{
+            .paint_count = frame.paint_count,
+            .node_count = window.node_count,
+            .viewport_width_px = @intFromFloat(@round(frame.viewport_width * frame.scale_factor)),
+            .viewport_height_px = @intFromFloat(@round(frame.viewport_height * frame.scale_factor)),
+        });
+        frame_trace.mark(&window.trace, frame.frame_number, .publish);
+    }
     window.awaiting_flip = true;
     window.frame_in_flight.store(true, .release);
 }

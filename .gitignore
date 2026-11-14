@@ -13,3 +13,6 @@ bench-results/
 
 # System files
 .DS_Store
+
+# Frame traces (-Dframe-trace)
+frame-trace.csv
