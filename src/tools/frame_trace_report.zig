@@ -16,8 +16,12 @@
 //!   where wake is the previous frame's done → this frame's tick
 //!
 //! Missed refreshes: consecutive frames whose pack starts are `k` refresh
-//! periods apart miss `k − 1` refreshes. The refresh period is the 10th
-//! percentile pack-to-pack interval, snapped to a common display rate.
+//! periods apart miss `k − 1` refreshes. `--refresh-hz=<hz>` gives the
+//! display's refresh rate; without it the period is estimated from the median
+//! pack-to-pack interval, snapped to a common display rate. A compositor's
+//! frame callbacks jitter around the period (mutter: p10 15% short), so a low
+//! percentile would snap to a faster rate; a 10th percentile under 3/4 of the
+//! median instead means the app misses most refreshes, and it is used.
 //!
 //! Resource sketch: one trace holds at most `row_count_max` rows (3 MiB of
 //! rows plus 8 MiB of text, both from the page allocator); the tool is a
@@ -64,9 +68,11 @@ const Trace = struct {
 pub fn main(init: std.process.Init) void {
     const args = init.minimal.args.vector;
     if (args.len < 2) {
-        std.debug.print("usage: zig build frame-trace-report -- <frame-trace.csv>...\n", .{});
+        std.debug.print("usage: zig build frame-trace-report -- [--refresh-hz=<hz>] " ++
+            "<frame-trace.csv>...\n", .{});
         std.process.exit(2);
     }
+    var refresh_ms: ?f64 = null;
     const allocator = std.heap.page_allocator;
     const trace = allocator.create(Trace) catch {
         std.debug.print("frame-trace-report: out of memory\n", .{});
@@ -81,6 +87,16 @@ pub fn main(init: std.process.Init) void {
 
     for (args[1..]) |arg| {
         const path = std.mem.span(arg);
+        const flag = "--refresh-hz=";
+        if (std.mem.startsWith(u8, path, flag)) {
+            const hz = std.fmt.parseFloat(f64, path[flag.len..]) catch 0;
+            if (!(hz >= 1 and hz <= 1000)) {
+                std.debug.print("frame-trace-report: bad {s}\n", .{path});
+                std.process.exit(2);
+            }
+            refresh_ms = 1000 / hz;
+            continue;
+        }
         const text = Dir.cwd().readFile(init.io, path, contents) catch |err| {
             std.debug.print("frame-trace-report: cannot read {s}: {s}\n", .{
                 path,
@@ -99,7 +115,7 @@ pub fn main(init: std.process.Init) void {
             std.debug.print("frame-trace-report: {s}: {s}\n", .{ path, @errorName(err) });
             std.process.exit(2);
         };
-        report(trace, path);
+        report(trace, path, refresh_ms);
     }
 }
 
@@ -207,7 +223,7 @@ fn percentile(sorted: []const f64, fraction: f64) f64 {
     return sorted[rank];
 }
 
-fn report(trace: *const Trace, path: []const u8) void {
+fn report(trace: *const Trace, path: []const u8, refresh_ms: ?f64) void {
     const rows = trace.rows[0..trace.row_count];
     var scratch: [row_count_max]f64 = undefined;
     std.debug.print("\n### {s}\n\n{s}\n\n", .{ path, trace.meta[0..trace.meta_len] });
@@ -241,12 +257,12 @@ fn report(trace: *const Trace, path: []const u8) void {
             values[values.len - 1],
         });
     }
-    reportCadence(rows, &scratch);
+    reportCadence(rows, &scratch, refresh_ms);
     reportHeadroom(rows);
 }
 
 /// Present cadence: pack-to-pack intervals of consecutive frames.
-fn reportCadence(rows: []const Row, scratch: *[row_count_max]f64) void {
+fn reportCadence(rows: []const Row, scratch: *[row_count_max]f64, refresh_ms: ?f64) void {
     var count: usize = 0;
     for (rows[1..], rows[0 .. rows.len - 1]) |row, previous| {
         if (previous.frame + 1 != row.frame) continue;
@@ -258,18 +274,20 @@ fn reportCadence(rows: []const Row, scratch: *[row_count_max]f64) void {
     var span_ms: f64 = 0;
     for (intervals) |interval| span_ms += interval;
     std.sort.pdq(f64, intervals, {}, std.sort.asc(f64));
-    const period_ms = snapPeriod(percentile(intervals, 0.10));
+    const period_ms = refresh_ms orelse estimatePeriod(intervals);
     var missed: u64 = 0;
     for (intervals) |interval| {
         const periods = @round(interval / period_ms);
         if (periods > 1) missed += @intFromFloat(periods - 1);
     }
     const seconds = span_ms / 1000;
-    std.debug.print("\nPresent cadence: refresh {d:.2} ms ({d:.0} Hz), interval p50 {d:.2} / " ++
+    std.debug.print("\nPresent cadence: refresh {d:.2} ms ({d:.0} Hz, {s}), interval p50 " ++
+        "{d:.2} / " ++
         "p95 {d:.2} / p99 {d:.2} / max {d:.2} ms, {d:.1} frames/s, missed refreshes " ++
         "{d} in {d:.1} s ({d:.1} per 30 s)\n", .{
         period_ms,
         1000 / period_ms,
+        if (refresh_ms == null) "estimated" else "given",
         percentile(intervals, 0.50),
         percentile(intervals, 0.95),
         percentile(intervals, 0.99),
@@ -279,6 +297,16 @@ fn reportCadence(rows: []const Row, scratch: *[row_count_max]f64) void {
         seconds,
         @as(f64, @floatFromInt(missed)) * 30 / seconds,
     });
+}
+
+/// The refresh period from sorted pack-to-pack intervals (see the file comment).
+fn estimatePeriod(sorted: []const f64) f64 {
+    assert(sorted.len > 0);
+    const median = percentile(sorted, 0.50);
+    const low = percentile(sorted, 0.10);
+    assert(low <= median);
+    if (low < median * 0.75) return snapPeriod(low);
+    return snapPeriod(median);
 }
 
 fn snapPeriod(measured_ms: f64) f64 {
@@ -350,4 +378,14 @@ test "snapPeriod snaps near a display rate and keeps others" {
     // Goal: a 8.4 ms interval is 120 Hz; 23 ms is no listed rate.
     try std.testing.expectApproxEqAbs(1000.0 / 120.0, snapPeriod(8.4), 1e-9);
     try std.testing.expectApproxEqAbs(23.0, snapPeriod(23.0), 1e-9);
+}
+
+test "estimatePeriod keeps the median through compositor jitter" {
+    // Goal: mutter's 60 Hz callbacks (p10 14.2 ms, p50 16.65 ms) are 60 Hz,
+    // not the 72 Hz the 10th percentile snaps to; an app at half of 120 Hz
+    // with some on-time frames is still 120 Hz.
+    var jitter: [10]f64 = .{ 14.2, 15.0, 16.0, 16.6, 16.6, 16.65, 16.7, 17.0, 18.0, 19.0 };
+    try std.testing.expectApproxEqAbs(1000.0 / 60.0, estimatePeriod(&jitter), 1e-9);
+    var halved: [10]f64 = .{ 8.3, 8.4, 16.6, 16.6, 16.6, 16.7, 16.7, 16.7, 16.7, 16.8 };
+    try std.testing.expectApproxEqAbs(1000.0 / 120.0, estimatePeriod(&halved), 1e-9);
 }
