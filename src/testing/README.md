@@ -37,14 +37,21 @@ test "Add appends a todo" {
     try app.initHeadless(std.testing.allocator, std.testing.io, .{ .scale_factor = 1 });
     defer app.deinitHeadless();
 
+    app.state.draft = "milk"; // Add ignores an empty draft.
     app.tick(16_666_667);
     // The rendered frame holds the hit records and the accessibility tree, with
     // each node's bounds; a test finds what to click there.
     const rendered = app.window.rendered();
-    try std.testing.expect(rendered.a11y_count > 0);
+    const add = for (rendered.a11y[0..rendered.a11y_count]) |*node| {
+        const name = rendered.text(node.name) orelse continue;
+        if (node.role == .button and std.mem.eql(u8, name, "Add")) break node;
+    } else return error.TestAddButtonMissing;
 
     const press: gooey.input.MouseEvent = .{
-        .position = .{ .x = 276, .y = 106 }, // the Add button's centre
+        .position = .{
+            .x = add.bounds.x + add.bounds.width / 2,
+            .y = add.bounds.y + add.bounds.height / 2,
+        },
         .button = .left,
         .click_count = 1,
         .modifiers = .{},
@@ -104,7 +111,7 @@ test "icon with offset" {
     rasterizer.setResultOffsets(-5, 10);
 
     var buffer: [48 * 48 * 4]u8 = undefined;
-    const result = try rasterizer.rasterize(...);
+    const result = try rasterizer.rasterize(testing.allocator, "M0 0 L10 10 Z", 24.0, 48, &buffer);
 
     try std.testing.expectEqual(@as(u32, 32), result.width);
     try std.testing.expectEqual(@as(i16, -5), result.offset_x);
@@ -113,7 +120,8 @@ test "icon with offset" {
 
 ### Module-Level Testing
 
-For code that uses module-level `rasterize()` functions:
+For test helpers that call the module-level `testing.mock_svg_rasterizer.rasterize()`.
+Gooey's own SVG code does not read this mock:
 
 ```zig
 test "svg component" {
@@ -121,7 +129,7 @@ test "svg component" {
     testing.mock_svg_rasterizer.setGlobalMock(&rasterizer);
     defer testing.mock_svg_rasterizer.clearGlobalMock();
 
-    // Code that calls svg.rasterize() will use the mock
+    // A helper that calls testing.mock_svg_rasterizer.rasterize() uses the mock.
     render_my_icon();
 
     try std.testing.expectEqual(@as(u32, 1), rasterizer.rasterize_count);
@@ -224,6 +232,7 @@ test "glyph rasterization" {
         1024,
     );
 
+    try std.testing.expectEqual(mock.render_width, result.width);
     try std.testing.expectEqual(@as(u32, 1), mock.render_glyph_count);
     try std.testing.expectEqual(@as(f32, 16.0), mock.last_font_size.?);
 }

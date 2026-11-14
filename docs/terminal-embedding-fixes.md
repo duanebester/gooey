@@ -14,10 +14,10 @@ commands; git history keeps it.
 ## 1. Bold and italic text: met
 
 `ui.text`'s `weight` and `italic` select a face from the app's `FontLimits` (#92), and
-`cx.measureText` takes the same options (#93), so measured widths match the drawn text. A
+`Painter.measureText` takes the same options (#93), so measured widths match the drawn text. A
 monospace family's bold face keeps the regular face's advance, so a cell grid does not shear.
 A terminal sets `Config.fonts.mono` and draws with `.family = .mono` (contract decision 8),
-listing the mono variants it needs in `fonts.limits`.
+listing the mono variants it needs in `limits.text.fonts.mono_variants`.
 
 ## 2. Tab taken by focus traversal: met
 

@@ -61,6 +61,73 @@ fn pinUi() void {
         _ = gooey.ui.Color;
         _ = gooey.ui.A11y;
         _ = gooey.ui.Painter;
+        _ = gooey.ui.Role;
+        _ = gooey.ui.Orientation;
+        _ = gooey.ui.HeadingLevel;
+        _ = gooey.ui.Rect;
+    }
+}
+
+/// The fields apps set by name. A rename breaks every literal that names
+/// the field, so each is pinned here, not only its containing type.
+fn pinFields() void {
+    comptime {
+        const Box = gooey.ui.Box;
+        for ([_][]const u8{
+            "key",      "style",           "layer",    "focusable",
+            "tab_stop", "key_context",     "on_click", "on_click_outside",
+            "on_key",   "on_pointer_drag", "actions",  "a11y",
+        }) |name| {
+            _ = @FieldType(Box, name);
+        }
+        const A11y = gooey.ui.A11y;
+        for ([_][]const u8{
+            "role",     "label",         "value",      "checked",  "selected",
+            "disabled", "heading_level", "live",       "href",     "description",
+            "expanded", "has_popup",     "pos_in_set", "set_size", "range",
+        }) |name| {
+            _ = @FieldType(A11y, name);
+        }
+        for ([_][]const u8{ "min", "max", "now", "orientation" }) |name| {
+            _ = @FieldType(A11y.Range, name);
+        }
+        const Cursor = @typeInfo(@FieldType(gooey.ui.Style, "cursor")).optional.child;
+        _ = @as(Cursor, .default);
+        _ = @as(Cursor, .text);
+        _ = @as(Cursor, .pointer);
+        _ = @as(Cursor, .resize_left_right);
+        _ = @as(Cursor, .resize_up_down);
+        _ = @FieldType(@FieldType(gooey.ResourceLimits, "text"), "fonts");
+        _ = @FieldType(@FieldType(gooey.ResourceLimits, "build"), "box_depth_max");
+    }
+}
+
+/// `Effects`: what handlers ask the framework for.
+fn pinEffects() void {
+    comptime {
+        const Effects = gooey.Effects;
+        _ = @TypeOf(Effects.focus);
+        _ = @TypeOf(Effects.blur);
+        _ = @TypeOf(Effects.click);
+        _ = @TypeOf(Effects.quit);
+        _ = @TypeOf(Effects.requestRender);
+        _ = @TypeOf(Effects.stopPropagation);
+        _ = @TypeOf(Effects.openFileDialog);
+        _ = @TypeOf(Effects.setTheme);
+        _ = @TypeOf(Effects.setFont);
+        _ = @TypeOf(Effects.announce);
+        _ = @TypeOf(Effects.create);
+        _ = @TypeOf(Effects.remove);
+        _ = @TypeOf(Effects.handler);
+        _ = @TypeOf(Effects.inputEvent);
+        _ = @TypeOf(Effects.completionEvent);
+        _ = @TypeOf(Effects.pointerDrag);
+        _ = @TypeOf(Effects.bounds);
+        const drag_fields = .{ "phase", "x", "y", "start_x", "start_y", "button", "modifiers" };
+        for (drag_fields) |name| {
+            _ = @FieldType(Effects.PointerDrag, name);
+        }
+        _ = Effects.PointerDrag.Phase.cancel;
     }
 }
 
@@ -77,6 +144,8 @@ fn pinNamespaces() void {
         _ = gooey.accessibility.Role;
         _ = gooey.accessibility.State;
         _ = gooey.accessibility.Live;
+        _ = gooey.accessibility.HeadingLevel;
+        _ = gooey.accessibility.Orientation;
     }
 }
 
@@ -94,6 +163,8 @@ test "public API surface compiles" {
     comptime {
         pinSurface();
         pinUi();
+        pinFields();
+        pinEffects();
         pinNamespaces();
         pinCx();
     }
