@@ -8,7 +8,7 @@ The layout system uses an immediate-mode API where you declare your UI structure
 
 1. **Begin frame** - Reset layout state and set viewport size
 2. **Declare elements** - Open/close containers, add text
-3. **End frame** - Compute layout and get render commands
+3. **End frame** - Compute every element's bounds; `core/emit.zig` paints from them
 
 All layout data is allocated from a per-frame arena and automatically cleaned up.
 
@@ -59,8 +59,8 @@ try engine.openElement(.{
 }
 engine.closeElement(); // root
 
-const commands = try engine.endFrame();
-// Use commands to render...
+try engine.endFrame();
+// Read each element's bounds (`engine.elements`, `getBoundingBox`) to paint.
 ```
 
 ## Core Concepts
@@ -281,7 +281,7 @@ fn buildLoginUI(engine: *LayoutEngine) !void {
     }
     engine.closeElement(); // root
 
-    const commands = try engine.endFrame();
+    try engine.endFrame();
 
     // Query element positions for hit-testing (getBoundingBox takes a u32 ID hash)
     if (engine.getBoundingBox(LayoutId.init("submit_btn").id)) |bbox| {
@@ -305,12 +305,11 @@ fn buildLoginUI(engine: *LayoutEngine) !void {
 | `text(content, config)`            | Add a text leaf element                           |
 | `svg(id, width, height, data)`     | Add an SVG leaf element                           |
 | `image(id, width?, height?, data)` | Add an image leaf element (see note below)        |
-| `endFrame()`                       | Compute layout, return render commands            |
+| `endFrame()`                       | Compute every element's bounds                    |
 | `getBoundingBox(id: u32)`          | Get computed bounding box for an element          |
 | `getContentBox(id: u32)`           | Get computed content box (inside padding)         |
-| `getZIndex(id: u32)`               | Get z-index for an element (cached during render) |
 
-> **Note:** `getBoundingBox`, `getContentBox`, and `getZIndex` take a raw `u32` ID hash,
+> **Note:** `getBoundingBox` and `getContentBox` take a raw `u32` ID hash,
 > not a `LayoutId`. Extract it with `.id`: `engine.getBoundingBox(LayoutId.init("foo").id)`.
 
 > **Note:** `image` takes optional `?f32` width and height. When a dimension is
@@ -352,7 +351,6 @@ Floating elements are positioned relative to a parent but don't affect sibling l
 ```zig
 .floating = .{
     .offset = Offset2D.init(10, 20),     // Position offset
-    .z_index = 100,                       // Local render tier, added to floating ancestors (i16)
     .attach_to_parent = true,             // Use direct parent
     .parent_id = LayoutId.init("target").id,  // Or reference by ID
     .element_attach = .left_top,          // Anchor point on this element
@@ -422,4 +420,3 @@ The layout engine uses fixed-capacity collections (no allocation during frames):
      - **2b. Text wrapping** - wrap text now that container widths are known; propagate height changes back up to fit-content parents
   3. **Positions** (top-down) - compute final bounding boxes
      - **3b. Floating elements** - position floating elements relative to parents (includes text wrapping for floats)
-  4. **Render commands** - generate drawing instructions, then sort by z-index

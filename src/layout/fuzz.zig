@@ -5,16 +5,10 @@
 //! is to catch crashes, assertion violations, and depth/capacity overruns
 //! when the tree exercises corners the integration tests don't cover.
 //!
-//! What the fuzzer asserts after every successful frame:
-//!   - The render command list is non-decreasing on `z_index` once sorted
-//!     (engine invariant — floating subtrees override z, descendants
-//!     inherit, and `sortByZIndex()` is the contract).
-//!   - Every `(scissor_start, scissor_end)` pair is balanced in stack
-//!     order. A leaked scissor would clip subsequent siblings; an extra
-//!     end would underflow the renderer's clip stack.
-//!   - Every emitted bounding box has finite, non-NaN coordinates and
-//!     non-negative width/height. NaN would propagate into the GPU pipeline
-//!     and produce undefined behaviour on the Metal/wgpu side.
+//! What the fuzzer asserts after every successful frame: every element's
+//! bounding box has finite, non-NaN coordinates and non-negative width and
+//! height. `core/emit.zig` paints from these boxes, so NaN would propagate
+//! into the packed frame and every GPU backend.
 //!
 //! Run with `zig build fuzz` (single-shot, time-bounded smoke) or
 //! `zig build fuzz -- --infinite` for the 0.16 infinite-mode runner.
@@ -30,14 +24,12 @@ const layout = gooey.internals.layout;
 const engine_mod = layout.engine;
 const types = layout.types;
 const layout_id_mod = layout.layout_id;
-const render_commands = layout.render_commands;
 
 const LayoutEngine = engine_mod.LayoutEngine;
 const Sizing = types.Sizing;
 const SizingAxis = types.SizingAxis;
 const Padding = types.Padding;
 const LayoutId = layout_id_mod.LayoutId;
-const RenderCommand = render_commands.RenderCommand;
 
 // ============================================================================
 // Capacity caps (CLAUDE.md §4)
@@ -62,7 +54,7 @@ const FUZZ_VIEWPORT_MAX: u32 = 4096;
 // ============================================================================
 
 /// Build a random layout tree and run the full pipeline. Asserts the
-/// engine's documented post-conditions on the resulting command list.
+/// engine's documented post-conditions on the resulting bounds.
 pub fn fuzzLayoutTree(_: void, smith: *std.testing.Smith) anyerror!void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -85,8 +77,8 @@ pub fn fuzzLayoutTree(_: void, smith: *std.testing.Smith) anyerror!void {
     // catch the bug long before we got here).
     while (engine.open_element_stack.len > 0) engine.closeElement();
 
-    const commands = try engine.endFrame();
-    try assertCommandListInvariants(commands);
+    try engine.endFrame();
+    try assertBoundsFinite(&engine);
 }
 
 /// Build a random tree of word + whitespace sequences for the text
@@ -119,7 +111,7 @@ pub fn fuzzTextWrapping(_: void, smith: *std.testing.Smith) anyerror!void {
     });
     engine.closeElement();
 
-    _ = try engine.endFrame();
+    try engine.endFrame();
 }
 
 // ============================================================================
@@ -223,48 +215,13 @@ fn sanitizeText(buf: []u8) []const u8 {
     return buf;
 }
 
-/// Engine post-conditions enforced after every successful frame. Each
-/// check is independently fatal — `try` is intentional so the fuzzer
-/// surfaces the first violation, not a cascade.
-fn assertCommandListInvariants(commands: []const RenderCommand) !void {
-    try assertZIndexNonDecreasing(commands);
-    try assertScissorBalanced(commands);
-    try assertBoundsFinite(commands);
-}
-
-/// After `sortByZIndex()` the command list must be ordered by `z_index`
-/// ascending. A regression here would mean `getZIndex` lies and the
-/// renderer paints in the wrong order.
-fn assertZIndexNonDecreasing(commands: []const RenderCommand) !void {
-    if (commands.len <= 1) return;
-    var i: usize = 1;
-    while (i < commands.len) : (i += 1) {
-        try std.testing.expect(commands[i - 1].z_index <= commands[i].z_index);
-    }
-}
-
-/// Every `scissor_start` must have a matching `scissor_end`, and they
-/// must nest properly. Track depth and assert non-negative throughout.
-fn assertScissorBalanced(commands: []const RenderCommand) !void {
-    var depth: i32 = 0;
-    for (commands) |cmd| {
-        switch (cmd.command_type) {
-            .scissor_start => depth += 1,
-            .scissor_end => {
-                depth -= 1;
-                try std.testing.expect(depth >= 0);
-            },
-            else => {},
-        }
-    }
-    try std.testing.expectEqual(@as(i32, 0), depth);
-}
-
-/// No NaN, no infinity, no negative width/height in the emitted command
-/// list. These would propagate straight into the GPU and produce UB.
-fn assertBoundsFinite(commands: []const RenderCommand) !void {
-    for (commands) |cmd| {
-        const b = cmd.bounding_box;
+/// No NaN, no infinity, no negative width/height in any element's bounds.
+/// These would propagate straight into the GPU and produce UB.
+fn assertBoundsFinite(engine: *const LayoutEngine) !void {
+    const elements = engine.elements.items();
+    try std.testing.expect(elements.len > 0);
+    for (elements) |element| {
+        const b = element.computed.bounding_box;
         try std.testing.expect(std.math.isFinite(b.x));
         try std.testing.expect(std.math.isFinite(b.y));
         try std.testing.expect(std.math.isFinite(b.width));

@@ -122,7 +122,7 @@ fn runBenchmark(
     // First pass to get node count for adaptive iterations
     engine.beginFrame(1000, 1000);
     const node_count = buildFn(&engine) catch unreachable;
-    _ = engine.endFrame() catch unreachable;
+    engine.endFrame() catch unreachable;
 
     const warmup_iters = getWarmupIterations(node_count);
     const min_sample_iters = getMinSampleIterations(node_count);
@@ -132,7 +132,7 @@ fn runBenchmark(
     while (warmup_count < warmup_iters) : (warmup_count += 1) {
         engine.beginFrame(1000, 1000);
         _ = buildFn(&engine) catch unreachable;
-        _ = engine.endFrame() catch unreachable;
+        engine.endFrame() catch unreachable;
     }
 
     // Sample - measure only layout computation (endFrame), not tree building
@@ -143,7 +143,7 @@ fn runBenchmark(
         _ = buildFn(&engine) catch unreachable;
 
         const start = time.Instant.now();
-        _ = engine.endFrame() catch unreachable;
+        engine.endFrame() catch unreachable;
         const end = time.Instant.now();
 
         sampler.record(end.since(start));
@@ -172,7 +172,7 @@ fn runFullFrameBenchmark(
     // First pass to get node count for adaptive iterations
     engine.beginFrame(1000, 1000);
     const node_count = buildFn(&engine) catch unreachable;
-    _ = engine.endFrame() catch unreachable;
+    engine.endFrame() catch unreachable;
 
     const warmup_iters = getWarmupIterations(node_count);
     const min_sample_iters = getMinSampleIterations(node_count);
@@ -182,7 +182,7 @@ fn runFullFrameBenchmark(
     while (warmup_count < warmup_iters) : (warmup_count += 1) {
         engine.beginFrame(1000, 1000);
         _ = buildFn(&engine) catch unreachable;
-        _ = engine.endFrame() catch unreachable;
+        engine.endFrame() catch unreachable;
     }
 
     // Sample - measure entire frame: beginFrame + tree build + endFrame
@@ -192,7 +192,7 @@ fn runFullFrameBenchmark(
         const start = time.Instant.now();
         engine.beginFrame(1000, 1000);
         _ = buildFn(&engine) catch unreachable;
-        _ = engine.endFrame() catch unreachable;
+        engine.endFrame() catch unreachable;
         const end = time.Instant.now();
 
         sampler.record(end.since(start));
@@ -220,7 +220,7 @@ fn validateBenchmark(
 
     engine.beginFrame(1000, 1000);
     const count = try buildFn(&engine);
-    _ = try engine.endFrame();
+    try engine.endFrame();
 
     try std.testing.expectEqual(expected_count, count);
 }
@@ -775,8 +775,8 @@ test "validate: percentage_sizing" {
 // Benchmark: nested_floating_overlays (385 nodes, 256 floating)
 // =============================================================================
 // Models 128 open modals, each with a nested dropdown and later modal content.
-// This saturates MAX_FLOATING_ROOTS and exercises z-index composition on
-// two-thirds of all elements without overflowing the fixed floating pool.
+// This saturates MAX_FLOATING_ROOTS and positions nested floats on two-thirds
+// of all elements without overflowing the fixed floating pool.
 
 fn buildNestedFloatingOverlays(engine: *LayoutEngine) !u32 {
     const group_count: u32 = 128;
@@ -792,11 +792,11 @@ fn buildNestedFloatingOverlays(engine: *LayoutEngine) !u32 {
     for (0..group_count) |_| {
         try engine.openElement(.{
             .layout = .{ .sizing = Sizing.fixed(400, 300) },
-            .floating = .{ .z_index = 1000, .attach_to_parent = false },
+            .floating = .{ .attach_to_parent = false },
         });
         try engine.openElement(.{
             .layout = .{ .sizing = Sizing.fixed(200, 100) },
-            .floating = .{ .z_index = 100 },
+            .floating = .{},
         });
         engine.closeElement();
         try engine.openElement(.{

@@ -2,7 +2,7 @@
 //!
 //! Every function takes a `*LayoutEngine` and mutates
 //! `LayoutElement.computed.{min_,sized_}{width,height}` in place; positions
-//! and render commands belong to `position_pass.zig` / `scroll_pass.zig`.
+//! belong to `position_pass.zig`.
 //!
 //! Phase order:
 //!   1. `computeMinSizes`     — bottom-up content minimums.

@@ -1,13 +1,12 @@
 //! Core layout engine — Clay-style flexbox layout algorithm.
 //!
-//! Engine facade: owns the `LayoutEngine` struct, its element/command/arena
+//! Engine facade: owns the `LayoutEngine` struct, its element/arena
 //! storage, the immediate-mode builder API (`openElement`/`closeElement`/
 //! `text`/`svg`/`image`), and the `endFrame` orchestrator. The layout phases
 //! live in sibling files:
 //!
 //!   - `sizing_pass.zig`   — min sizes, final sizes, text wrapping.
 //!   - `position_pass.zig` — positions, floating positioning.
-//!   - `scroll_pass.zig`   — render commands, scissor framing.
 //!   - `fuzz.zig`          — fuzz targets for the above.
 
 const std = @import("std");
@@ -17,10 +16,8 @@ const types = @import("types.zig");
 const reservation = @import("../core/reservation.zig");
 const layout_id = @import("layout_id.zig");
 const arena_mod = @import("arena.zig");
-const render_commands = @import("render_commands.zig");
 const sizing_pass = @import("sizing_pass.zig");
 const position_pass = @import("position_pass.zig");
-const scroll_pass = @import("scroll_pass.zig");
 
 const Sizing = types.Sizing;
 const SizingAxis = types.SizingAxis;
@@ -40,9 +37,6 @@ const TextConfig = types.TextConfig;
 
 const LayoutId = layout_id.LayoutId;
 const LayoutArena = arena_mod.LayoutArena;
-const RenderCommand = render_commands.RenderCommand;
-const RenderCommandList = render_commands.RenderCommandList;
-const RenderCommandType = render_commands.RenderCommandType;
 
 // ============================================================================
 // Capacity Limits
@@ -211,8 +205,6 @@ pub const LayoutElement = struct {
     text_data: ?TextData = null,
     svg_data: ?SvgData = null,
     image_data: ?ImageData = null,
-    /// Cached z_index (set during generateRenderCommands for O(1) lookup)
-    cached_z_index: i16 = 0,
 };
 
 /// Element storage: one fixed reservation of `MAX_ELEMENTS_PER_FRAME`
@@ -310,7 +302,6 @@ pub const LayoutEngine = struct {
     allocator: std.mem.Allocator,
     arena: LayoutArena,
     elements: ElementList,
-    commands: RenderCommandList,
     /// Stack of open container indices (fixed capacity)
     open_element_stack: FixedCapacityArray(u32, MAX_OPEN_DEPTH) = .{},
     root_index: ?u32 = null,
@@ -347,14 +338,12 @@ pub const LayoutEngine = struct {
         var elements = try ElementList.init();
         errdefer elements.deinit();
 
-        const commands = try RenderCommandList.init();
         std.debug.assert(seen_ids.capacity() >= MAX_TRACKED_IDS);
         std.debug.assert(id_to_index.capacity() >= MAX_TRACKED_IDS);
         return .{
             .allocator = allocator,
             .arena = LayoutArena.init(allocator),
             .elements = elements,
-            .commands = commands,
             .seen_ids = seen_ids,
             .id_to_index = id_to_index,
         };
@@ -363,7 +352,6 @@ pub const LayoutEngine = struct {
     pub fn deinit(self: *Self) void {
         self.id_to_index.deinit();
         self.seen_ids.deinit();
-        self.commands.deinit();
         self.elements.deinit();
         self.arena.deinit();
     }
@@ -376,7 +364,6 @@ pub const LayoutEngine = struct {
     pub fn beginFrame(self: *Self, width: f32, height: f32) void {
         self.arena.reset();
         self.elements.clear();
-        self.commands.clear();
         self.open_element_stack.len = 0;
         self.floating_roots.len = 0;
         if (comptime builtin.mode == .debug) {
@@ -578,11 +565,12 @@ pub const LayoutEngine = struct {
         }
     }
 
-    /// End frame and compute layout, returning the render commands.
-    pub fn endFrame(self: *Self) ![]const RenderCommand {
-        if (self.root_index == null) return self.commands.items();
-
-        const root = self.root_index.?;
+    /// End frame and compute every element's bounds. `core/emit.zig` reads
+    /// them through `elements` to write the frame's paint records.
+    pub fn endFrame(self: *Self) !void {
+        const root = self.root_index orelse return;
+        std.debug.assert(root < self.elements.len());
+        std.debug.assert(self.open_element_stack.len == 0);
 
         // Phase 1: Compute minimum sizes (bottom-up).
         sizing_pass.computeMinSizes(self, root, 0);
@@ -598,17 +586,6 @@ pub const LayoutEngine = struct {
 
         // Phase 3b: Position floating elements (includes text wrapping for floats).
         try position_pass.computeFloatingPositions(self);
-
-        // Phase 4: Generate render commands.
-        try scroll_pass.generateRenderCommands(self, root, 0, 1.0, 0);
-
-        // Sort by z-index only when floating elements exist (the only source
-        // of non-zero z_index). Skips ~O(n log n) on float-free frames.
-        if (self.floating_roots.len > 0) {
-            self.commands.sortByZIndex();
-        }
-
-        return self.commands.items();
     }
 
     /// Get computed bounding box for an element by ID (O(1) lookup)
@@ -621,13 +598,5 @@ pub const LayoutEngine = struct {
     pub fn getContentBox(self: *const Self, id: u32) ?BoundingBox {
         const index = self.id_to_index.get(id) orelse return null;
         return self.elements.getConst(index).computed.content_box;
-    }
-
-    /// Get z-index for an element by ID (O(1) lookup using cached value)
-    /// Returns the composed z-index from all floating ancestors, or 0 for non-floating subtrees.
-    /// The z_index is cached during generateRenderCommands.
-    pub fn getZIndex(self: *const Self, id: u32) i16 {
-        const index = self.id_to_index.get(id) orelse return 0;
-        return self.elements.getConst(index).cached_z_index;
     }
 };

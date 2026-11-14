@@ -53,8 +53,10 @@ test "basic layout" {
     });
     engine.closeElement();
 
-    const commands = try engine.endFrame();
-    try std.testing.expect(commands.len > 0);
+    try engine.endFrame();
+    const root = engine.getBoundingBox(LayoutId.init("root").id).?;
+    try std.testing.expectEqual(@as(f32, 800), root.width);
+    try std.testing.expectEqual(@as(f32, 600), root.height);
 }
 
 test "root fill follows viewport resize" {
@@ -72,7 +74,7 @@ test "root fill follows viewport resize" {
         } },
     });
     engine.closeElement();
-    _ = try engine.endFrame();
+    try engine.endFrame();
 
     const initial = engine.getBoundingBox(LayoutId.init("resizing-root").id).?;
     try std.testing.expectEqual(@as(f32, 320), initial.width);
@@ -87,7 +89,7 @@ test "root fill follows viewport resize" {
         } },
     });
     engine.closeElement();
-    _ = try engine.endFrame();
+    try engine.endFrame();
 
     const resized = engine.getBoundingBox(LayoutId.init("resizing-root").id).?;
     try std.testing.expectEqual(@as(f32, 1024), resized.width);
@@ -118,7 +120,7 @@ test "nested layout" {
     }
     engine.closeElement();
 
-    _ = try engine.endFrame();
+    try engine.endFrame();
 }
 
 test "shrink behavior" {
@@ -152,7 +154,7 @@ test "shrink behavior" {
     }
     engine.closeElement();
 
-    _ = try engine.endFrame();
+    try engine.endFrame();
 
     // Children should have shrunk to fit
     const child1 = engine.elements.getConst(1);
@@ -187,7 +189,7 @@ test "a grow scroll container's children overflow it instead of shrinking" {
     engine.closeElement();
     engine.closeElement();
     engine.closeElement();
-    _ = try engine.endFrame();
+    try engine.endFrame();
 
     try std.testing.expectEqual(@as(f32, 100), engine.elements.getConst(1).computed.sized_height);
     try std.testing.expectEqual(@as(f32, 160), engine.elements.getConst(2).computed.sized_height);
@@ -208,7 +210,7 @@ test "aspect ratio" {
     });
     engine.closeElement();
 
-    _ = try engine.endFrame();
+    try engine.endFrame();
 
     const elem = engine.elements.getConst(0);
     // Width 160, aspect 16:9, so height should be 90
@@ -232,7 +234,7 @@ test "percent with min/max" {
     });
     engine.closeElement();
 
-    _ = try engine.endFrame();
+    try engine.endFrame();
 
     const elem = engine.elements.getConst(0);
     // 50% of 800 = 400, but max is 300
@@ -262,7 +264,7 @@ test "floating positioning" {
     }
     engine.closeElement();
 
-    _ = try engine.endFrame();
+    try engine.endFrame();
 
     // Floating element should be positioned below parent
     const parent = engine.elements.getConst(0);
@@ -316,7 +318,7 @@ test "floating elements don't affect parent sizing or sibling layout" {
     }
     engine.closeElement();
 
-    _ = try engine.endFrame();
+    try engine.endFrame();
 
     const parent = engine.elements.getConst(0);
     const regular_child = engine.elements.getConst(1);
@@ -372,7 +374,7 @@ test "text wrapping creates multiple lines" {
     }
     engine.closeElement();
 
-    _ = try engine.endFrame();
+    try engine.endFrame();
 
     // Check that text element has wrapped lines
     const text_elem = engine.elements.getConst(1);
@@ -418,7 +420,7 @@ test "text wrapping with newlines" {
     }
     engine.closeElement();
 
-    _ = try engine.endFrame();
+    try engine.endFrame();
 
     const text_elem = engine.elements.getConst(1);
     const td = text_elem.text_data.?;
@@ -471,7 +473,7 @@ test "propagateHeightChange updates fit-content parent" {
     }
     engine.closeElement();
 
-    _ = try engine.endFrame();
+    try engine.endFrame();
 
     // Parent should have grown to fit wrapped text
     const parent = engine.elements.getConst(0);
@@ -536,7 +538,7 @@ test "propagateHeightChange stops at fixed-height parent" {
     }
     engine.closeElement();
 
-    _ = try engine.endFrame();
+    try engine.endFrame();
 
     const outer = engine.elements.getConst(0);
     const inner = engine.elements.getConst(1);
@@ -546,278 +548,6 @@ test "propagateHeightChange stops at fixed-height parent" {
 
     // Inner (fit-content) should have grown
     try std.testing.expect(inner.computed.sized_height >= 40.0);
-}
-
-test "z-index propagates to render commands" {
-    var engine = try LayoutEngine.init(std.testing.allocator);
-    defer engine.deinit();
-
-    engine.beginFrame(800, 600);
-
-    // Parent element (z_index = 0)
-    try engine.openElement(.{
-        .id = LayoutId.init("parent"),
-        .layout = .{ .sizing = Sizing.fixed(200, 100) },
-        .background_color = Color.white,
-    });
-    {
-        // Floating child with z_index = 100
-        try engine.openElement(.{
-            .id = LayoutId.init("dropdown"),
-            .layout = .{ .sizing = Sizing.fixed(150, 80) },
-            .floating = .{ .z_index = 100, .element_attach = .left_top, .parent_attach = .left_bottom },
-            .background_color = Color.blue,
-        });
-        {
-            // Nested child inside floating - should inherit z_index
-            try engine.openElement(.{
-                .id = LayoutId.init("dropdown-item"),
-                .layout = .{ .sizing = Sizing.fixed(140, 30) },
-                .background_color = Color.red,
-            });
-            engine.closeElement();
-        }
-        engine.closeElement();
-    }
-    engine.closeElement();
-
-    const commands = try engine.endFrame();
-
-    // Find commands by element ID
-    var parent_z: ?i16 = null;
-    var dropdown_z: ?i16 = null;
-    var dropdown_item_z: ?i16 = null;
-
-    for (commands) |cmd| {
-        if (cmd.id == LayoutId.init("parent").id) parent_z = cmd.z_index;
-        if (cmd.id == LayoutId.init("dropdown").id) dropdown_z = cmd.z_index;
-        if (cmd.id == LayoutId.init("dropdown-item").id) dropdown_item_z = cmd.z_index;
-    }
-
-    // Parent should have z_index = 0
-    try std.testing.expectEqual(@as(i16, 0), parent_z.?);
-    // Floating dropdown should have z_index = 100
-    try std.testing.expectEqual(@as(i16, 100), dropdown_z.?);
-    // Nested item inside dropdown should inherit z_index = 100
-    try std.testing.expectEqual(@as(i16, 100), dropdown_item_z.?);
-}
-
-test "nested floating z-index composes with its host" {
-    // Goal: a dropdown inside a modal must sort above the modal's complete
-    // subtree. Methodology: place a normal sibling after the nested dropdown
-    // so equal-tier DFS ordering cannot accidentally make the test pass.
-    var engine = try LayoutEngine.init(std.testing.allocator);
-    defer engine.deinit();
-
-    engine.beginFrame(800, 600);
-    try engine.openElement(.{
-        .id = LayoutId.init("modal"),
-        .layout = .{ .sizing = Sizing.fixed(400, 300) },
-        .floating = .{ .z_index = 1000 },
-        .background_color = Color.white,
-    });
-    try engine.openElement(.{
-        .id = LayoutId.init("dropdown"),
-        .layout = .{ .sizing = Sizing.fixed(200, 100) },
-        .floating = .{ .z_index = 100 },
-        .background_color = Color.blue,
-    });
-    engine.closeElement();
-    try engine.openElement(.{
-        .id = LayoutId.init("later-modal-content"),
-        .layout = .{ .sizing = Sizing.fixed(200, 100) },
-        .background_color = Color.red,
-    });
-    engine.closeElement();
-    engine.closeElement();
-
-    const commands = try engine.endFrame();
-    try std.testing.expectEqual(@as(i16, 1000), engine.getZIndex(LayoutId.init("modal").id));
-    try std.testing.expectEqual(@as(i16, 1100), engine.getZIndex(LayoutId.init("dropdown").id));
-    try std.testing.expectEqual(@as(i16, 1000), engine.getZIndex(LayoutId.init("later-modal-content").id));
-    try std.testing.expect(commands[commands.len - 1].id == LayoutId.init("dropdown").id);
-}
-
-test "nested floating z-index overflow fails the frame" {
-    // Goal: composition must not silently wrap a top overlay behind content.
-    // Methodology: exceed i16 by one with two nested floating elements.
-    var engine = try LayoutEngine.init(std.testing.allocator);
-    defer engine.deinit();
-
-    engine.beginFrame(800, 600);
-    try engine.openElement(.{
-        .id = LayoutId.init("maximum-tier"),
-        .layout = .{ .sizing = Sizing.fixed(100, 100) },
-        .floating = .{ .z_index = std.math.maxInt(i16) },
-    });
-    try engine.openElement(.{
-        .id = LayoutId.init("overflowing-tier"),
-        .layout = .{ .sizing = Sizing.fixed(50, 50) },
-        .floating = .{ .z_index = 1 },
-    });
-    engine.closeElement();
-    engine.closeElement();
-
-    try std.testing.expectError(error.Overflow, engine.endFrame());
-}
-
-test "getZIndex returns inherited z-index" {
-    var engine = try LayoutEngine.init(std.testing.allocator);
-    defer engine.deinit();
-
-    engine.beginFrame(800, 600);
-
-    try engine.openElement(.{
-        .id = LayoutId.init("root"),
-        .layout = .{ .sizing = Sizing.fixed(400, 300) },
-    });
-    {
-        try engine.openElement(.{
-            .id = LayoutId.init("floating"),
-            .layout = .{ .sizing = Sizing.fixed(100, 100) },
-            .floating = .{ .z_index = 50 },
-        });
-        {
-            try engine.openElement(.{
-                .id = LayoutId.init("nested"),
-                .layout = .{ .sizing = Sizing.fixed(50, 50) },
-            });
-            engine.closeElement();
-        }
-        engine.closeElement();
-    }
-    engine.closeElement();
-
-    _ = try engine.endFrame();
-
-    // Root has no floating ancestor
-    try std.testing.expectEqual(@as(i16, 0), engine.getZIndex(LayoutId.init("root").id));
-    // Floating element itself
-    try std.testing.expectEqual(@as(i16, 50), engine.getZIndex(LayoutId.init("floating").id));
-    // Nested element inherits from floating ancestor
-    try std.testing.expectEqual(@as(i16, 50), engine.getZIndex(LayoutId.init("nested").id));
-}
-
-test "text alignment positions wrapped lines correctly" {
-    var engine = try LayoutEngine.init(std.testing.allocator);
-    defer engine.deinit();
-
-    // Mock: each char is 10px wide
-    const mockMeasure = struct {
-        fn measure(
-            text: []const u8,
-            _: u16,
-            font_size: u16,
-            _: ?f32,
-            _: ?*anyopaque,
-        ) TextMeasurement {
-            return .{
-                .width = @as(f32, @floatFromInt(text.len)) * 10.0,
-                .height = @floatFromInt(font_size),
-            };
-        }
-    }.measure;
-
-    engine.setMeasureTextFn(mockMeasure, null);
-    engine.beginFrame(800, 600);
-
-    // Container is 200px wide, text lines are shorter
-    try engine.openElement(.{
-        .layout = .{ .sizing = Sizing.fixed(200, 100) },
-    });
-    {
-        // "AA\nBBBB" - line 1 is 20px, line 2 is 40px
-        try engine.text("AA\nBBBB", .{
-            .wrap_mode = .newlines,
-            .alignment = .center,
-            .font_size = 20,
-            .line_height = 100, // 100% = 20px per line
-        });
-    }
-    engine.closeElement();
-
-    const commands = try engine.endFrame();
-
-    // Find text commands
-    var text_commands: [2]?types.BoundingBox = .{ null, null };
-    var text_cmd_idx: usize = 0;
-    for (commands) |cmd| {
-        if (cmd.command_type == .text and text_cmd_idx < 2) {
-            text_commands[text_cmd_idx] = cmd.bounding_box;
-            text_cmd_idx += 1;
-        }
-    }
-
-    // Both lines should exist
-    try std.testing.expect(text_commands[0] != null);
-    try std.testing.expect(text_commands[1] != null);
-
-    const line1 = text_commands[0].?;
-    const line2 = text_commands[1].?;
-
-    // Line 1 "AA" = 20px wide, centered in 200px container
-    // Expected x = (200 - 20) / 2 = 90
-    try std.testing.expectEqual(@as(f32, 90.0), line1.x);
-    try std.testing.expectEqual(@as(f32, 20.0), line1.width);
-
-    // Line 2 "BBBB" = 40px wide, centered in 200px container
-    // Expected x = (200 - 40) / 2 = 80
-    try std.testing.expectEqual(@as(f32, 80.0), line2.x);
-    try std.testing.expectEqual(@as(f32, 40.0), line2.width);
-}
-
-test "text alignment right aligns text" {
-    var engine = try LayoutEngine.init(std.testing.allocator);
-    defer engine.deinit();
-
-    const mockMeasure = struct {
-        fn measure(
-            text: []const u8,
-            _: u16,
-            font_size: u16,
-            _: ?f32,
-            _: ?*anyopaque,
-        ) TextMeasurement {
-            return .{
-                .width = @as(f32, @floatFromInt(text.len)) * 10.0,
-                .height = @floatFromInt(font_size),
-            };
-        }
-    }.measure;
-
-    engine.setMeasureTextFn(mockMeasure, null);
-    engine.beginFrame(800, 600);
-
-    try engine.openElement(.{
-        .layout = .{ .sizing = Sizing.fixed(200, 50) },
-    });
-    {
-        // Single line "test" = 40px, right aligned in 200px
-        try engine.text("test", .{
-            .alignment = .right,
-            .font_size = 20,
-        });
-    }
-    engine.closeElement();
-
-    const commands = try engine.endFrame();
-
-    // Find the text command
-    var text_box: ?types.BoundingBox = null;
-    for (commands) |cmd| {
-        if (cmd.command_type == .text) {
-            text_box = cmd.bounding_box;
-            break;
-        }
-    }
-
-    try std.testing.expect(text_box != null);
-    const bbox = text_box.?;
-
-    // "test" = 40px wide, right aligned in 200px container
-    // Expected x = 200 - 40 = 160
-    try std.testing.expectEqual(@as(f32, 160.0), bbox.x);
-    try std.testing.expectEqual(@as(f32, 40.0), bbox.width);
 }
 
 test "space_between distributes children evenly" {
@@ -859,7 +589,7 @@ test "space_between distributes children evenly" {
     }
     engine.closeElement();
 
-    _ = try engine.endFrame();
+    try engine.endFrame();
 
     // Get child positions
     const child1 = engine.elements.getConst(1);
@@ -914,7 +644,7 @@ test "space_around distributes space around children" {
     }
     engine.closeElement();
 
-    _ = try engine.endFrame();
+    try engine.endFrame();
 
     const child1 = engine.elements.getConst(1);
     const child2 = engine.elements.getConst(2);
@@ -968,7 +698,7 @@ test "space_evenly distributes space evenly" {
     }
     engine.closeElement();
 
-    _ = try engine.endFrame();
+    try engine.endFrame();
 
     const child1 = engine.elements.getConst(1);
     const child2 = engine.elements.getConst(2);
@@ -1015,7 +745,7 @@ test "space_between with vertical layout" {
     }
     engine.closeElement();
 
-    _ = try engine.endFrame();
+    try engine.endFrame();
 
     const child1 = engine.elements.getConst(1);
     const child2 = engine.elements.getConst(2);
@@ -1050,7 +780,7 @@ test "space_between with single child stays at start" {
     }
     engine.closeElement();
 
-    _ = try engine.endFrame();
+    try engine.endFrame();
 
     const child = engine.elements.getConst(1);
 
@@ -1149,7 +879,7 @@ test "wrapped text re-measures the whole string on every frame" {
             try engine.text(message, .{ .wrap_mode = .words, .font_size = 14 });
         }
         engine.closeElement();
-        _ = try engine.endFrame();
+        try engine.endFrame();
     }
 
     // One whole-string measurement per frame, whose result is superseded by
@@ -1196,7 +926,7 @@ test "unwrapped text depends on the whole-string measurement" {
     }
     engine.closeElement();
 
-    _ = try engine.endFrame();
+    try engine.endFrame();
 
     try std.testing.expectEqual(@as(u32, 1), recorder.whole_string_calls);
 
