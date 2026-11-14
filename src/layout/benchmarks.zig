@@ -480,7 +480,6 @@ test "validate: flex_expand_equal_weights" {
 //         }
 //     }
 // }
-// Note: Gooey doesn't support weighted grow yet, so both children use grow()
 
 fn buildFlexExpandWeights(engine: *LayoutEngine) !u32 {
     var count: u32 = 0;
@@ -511,10 +510,13 @@ fn buildFlexExpandWeights(engine: *LayoutEngine) !u32 {
         count += 1;
         engine.closeElement();
 
-        // Second child: Expand(2) - using grow() since we don't support weights
+        // Second child: Expand(2)
         try engine.openElement(.{
             .layout = .{
-                .sizing = .{ .width = SizingAxis.grow(), .height = SizingAxis.grow() },
+                .sizing = .{
+                    .width = SizingAxis.growWeighted(2, 0, std.math.floatMax(f32)),
+                    .height = SizingAxis.grow(),
+                },
             },
         });
         count += 1;

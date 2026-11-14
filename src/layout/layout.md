@@ -93,6 +93,9 @@ Sizing.fixed(w, h)   // fixed, fixed
 SizingAxis.fitMin(50)           // fit with minimum 50px
 SizingAxis.growMax(300)         // grow up to 300px
 SizingAxis.fitMinMax(50, 200)   // fit between 50-200px
+
+// Weighted grow: siblings share free main-axis space by weight
+SizingAxis.growWeighted(2, 0, std.math.floatMax(f32))  // twice a grow() sibling's share
 ```
 
 ### Layout Direction

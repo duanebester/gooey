@@ -3877,3 +3877,271 @@ test "Tab stays inside a modal, so Enter never clicks what the modal blocks" {
     pressKey(app, &now, .space, .{});
     try testing.expectEqual(@as(u32, 1), app.state.below_clicks);
 }
+
+// =============================================================================
+// Style.opacity, Sizing.grow weights, and Style.pointer_events
+// =============================================================================
+
+const StyleState = struct {
+    pointer_events: @FieldType(ui.Style, "pointer_events") = .none,
+    below_clicks: u32 = 0,
+    overlay_clicks: u32 = 0,
+    child_clicks: u32 = 0,
+
+    pub fn below(self: *StyleState) void {
+        self.below_clicks += 1;
+    }
+
+    pub fn overlay(self: *StyleState) void {
+        self.overlay_clicks += 1;
+    }
+
+    pub fn child(self: *StyleState) void {
+        self.child_clicks += 1;
+    }
+};
+
+const style_config: gooey.Config(StyleState) = .{
+    .title = "Style",
+    .width = 500,
+    .height = 300,
+    .limits = .nano,
+};
+
+fn rgba(r: f32, g: f32, b: f32, a: f32) ui.ColorToken {
+    return .{ .rgba = .{ .r = r, .g = g, .b = b, .a = a } };
+}
+
+fn fixedSquare(side: f32) ui.Style {
+    return .{ .width = .{ .fixed = side }, .height = .{ .fixed = side } };
+}
+
+const OpacityApp = gooey.App(StyleState, opacityRender, style_config);
+
+fn opacityRender(cx: *Cx) void {
+    const state = cx.state(StyleState);
+    var control = fixedSquare(40);
+    control.background = rgba(0, 0, 1, 1);
+    var faded = fixedSquare(60);
+    faded.background = rgba(1, 0, 0, 1);
+    faded.border = .{ .width = 2, .color = rgba(0, 0, 0, 0.8) };
+    faded.opacity = 0.5;
+    var nested = fixedSquare(10);
+    nested.background = rgba(0, 1, 0, 1);
+    nested.opacity = 0.5;
+    var painted = fixedSquare(40);
+    painted.opacity = 0.5;
+    cx.render(ui.box(.{ .style = .{ .direction = .row, .gap = 10 } }, .{
+        ui.box(.{ .style = control }, .{}),
+        ui.box(.{ .style = faded }, .{
+            ui.box(.{ .style = nested }, .{}),
+            ui.text("A", .{ .color = rgba(0, 0, 0, 1) }),
+        }),
+        ui.paint(StyleState, state, paintTwoTriangles, painted),
+    }));
+}
+
+/// Two fills of one colour, which join into one mesh record.
+fn paintTwoTriangles(_: *const StyleState, painter: *gooey.Painter) void {
+    const b = painter.bounds;
+    const color = gooey.Color{ .r = 1, .g = 0, .b = 1, .a = 1 };
+    painter.triangles(&.{ .{ b.x, b.y }, .{ b.x + 10, b.y }, .{ b.x, b.y + 10 } }, color);
+    painter.triangles(&.{ .{ b.x, b.y + 20 }, .{ b.x + 10, b.y + 20 }, .{ b.x, b.y + 30 } }, color);
+}
+
+test "Style.opacity fades every record its subtree draws, nested opacities multiply" {
+    // Goal: `Style.opacity` reaches the paint records, as 0.3.1 folded it
+    // into each command. Method: a full-opacity control box beside a 0.5
+    // box holding a 0.5 child and a text, and a 0.5 paint element that
+    // fills one colour twice. Expected alphas are the products: the control
+    // stays at 1, the box's fill and border halve (1 to 0.5, 0.8 to 0.4),
+    // the child quarters, the glyphs halve, and the two fills still join
+    // into one mesh at half alpha.
+    const app = try testing.allocator.create(OpacityApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    app.tick(0);
+    const frame = app.window.rendered();
+    var seen = struct { control: u32 = 0, faded: u32 = 0, nested: u32 = 0, glyphs: u32 = 0 }{};
+    var meshes: u32 = 0;
+    for (frame.paint[0..frame.paint_count]) |record| {
+        switch (record) {
+            .quad => |quad| {
+                if (quad.fill.b == 1 and quad.fill.r == 0) {
+                    try testing.expectEqual(@as(f32, 1), quad.fill.a);
+                    seen.control += 1;
+                } else if (quad.fill.r == 1) {
+                    try testing.expectEqual(@as(f32, 0.5), quad.fill.a);
+                    try testing.expectEqual(@as(f32, 0.4), quad.border.color.a);
+                    seen.faded += 1;
+                } else if (quad.fill.g == 1) {
+                    try testing.expectEqual(@as(f32, 0.25), quad.fill.a);
+                    seen.nested += 1;
+                }
+            },
+            .sprite => |sprite| {
+                try testing.expectEqual(internals.records.AtlasKind.glyph, sprite.atlas);
+                try testing.expectEqual(@as(f32, 0.5), sprite.tint.a);
+                seen.glyphs += 1;
+            },
+            .mesh => |mesh| {
+                try testing.expectEqual(@as(f32, 0.5), mesh.fill.a);
+                try testing.expectEqual(@as(u32, 6), mesh.range.count);
+                meshes += 1;
+            },
+            .clip_push, .clip_pop => {},
+        }
+    }
+    try testing.expectEqual(@as(u32, 1), seen.control);
+    try testing.expectEqual(@as(u32, 1), seen.faded);
+    try testing.expectEqual(@as(u32, 1), seen.nested);
+    try testing.expectEqual(@as(u32, 1), seen.glyphs);
+    try testing.expectEqual(@as(u32, 1), meshes);
+}
+
+const GrowApp = gooey.App(StyleState, growRender, style_config);
+
+fn growRender(cx: *Cx) void {
+    const row: ui.Style = .{
+        .direction = .row,
+        .width = .{ .fixed = 430 },
+        .height = .{ .fixed = 50 },
+        .gap = 15,
+    };
+    const column: ui.Style = .{ .width = .{ .fixed = 50 }, .height = .{ .fixed = 90 } };
+    cx.render(ui.box(.{}, .{
+        ui.box(.{ .style = row }, .{
+            ui.box(.{ .key = .{ .name = "fixed" }, .style = .{
+                .width = .{ .fixed = 100 },
+                .height = .{ .grow = 1 },
+            } }, .{}),
+            ui.box(.{ .key = .{ .name = "one" }, .style = .{
+                .width = .{ .grow = 1 },
+                .height = .{ .grow = 3 },
+            } }, .{}),
+            ui.box(.{ .key = .{ .name = "two" }, .style = .{
+                .width = .{ .grow = 2 },
+                .height = .{ .grow = 1 },
+            } }, .{}),
+        }),
+        ui.box(.{ .style = column }, .{
+            ui.box(.{ .key = .{ .name = "top" }, .style = .{ .height = .{ .grow = 2 } } }, .{}),
+            ui.box(.{ .key = .{ .name = "bottom" }, .style = .{ .height = .{ .grow = 1 } } }, .{}),
+        }),
+    }));
+}
+
+test "grow siblings share free space by weight on the main axis only" {
+    // Goal: `Sizing.grow` weights through the core and the layout's slow
+    // path. Method: a 430 px row with a 100 px fixed box and two 15 px gaps
+    // leaves 300 px for grow weights 1 and 2, so 100 and 200; an equal
+    // split would give 150 each. Cross-axis weights (3 and 1) must not
+    // matter: every row child fills the 50 px height. A 90 px column splits
+    // weights 2 and 1 into 60 and 30.
+    const app = try testing.allocator.create(GrowApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    app.tick(0);
+    const frame = app.window.rendered();
+    // The five keyed boxes, in tree order, are the only hit records.
+    try testing.expectEqual(@as(u32, 5), frame.hit_count);
+    const hits = frame.hits[0..5];
+    const expected_x = [3]f32{ 0, 115, 230 };
+    const expected_width = [3]f32{ 100, 100, 200 };
+    for (hits[0..3], expected_x, expected_width) |*record, x, width| {
+        try testing.expectEqual(x, record.bounds.x);
+        try testing.expectEqual(width, record.bounds.width);
+        try testing.expectEqual(@as(f32, 50), record.bounds.height);
+    }
+    try testing.expectEqual(@as(f32, 60), hits[3].bounds.height);
+    try testing.expectEqual(@as(f32, 30), hits[4].bounds.height);
+    try testing.expectEqual(hits[3].bounds.y + 60, hits[4].bounds.y);
+}
+
+const PointerApp = gooey.App(StyleState, pointerRender, style_config);
+
+fn pointerRender(cx: *Cx) void {
+    const state = cx.state(StyleState);
+    var below = fixedSquare(100);
+    below.cursor = .pointer;
+    var overlay = fixedSquare(100);
+    overlay.cursor = .text;
+    overlay.pointer_events = state.pointer_events;
+    cx.render(ui.box(.{ .style = .{ .padding = .all(20) } }, .{
+        ui.box(.{
+            .key = .{ .name = "below" },
+            .on_click = cx.on(StyleState.below, .{}),
+            .style = below,
+        }, .{}),
+        ui.box(.{
+            .key = .{ .name = "overlay" },
+            .focusable = true,
+            .on_click = cx.on(StyleState.overlay, .{}),
+            .layer = .{
+                .kind = .popover,
+                .anchor = .{ .window = .{ .x = 20, .y = 20 } },
+                .clip = .escape,
+            },
+            .style = overlay,
+        }, .{
+            ui.box(.{
+                .key = .{ .name = "child" },
+                .on_click = cx.on(StyleState.child, .{}),
+                .style = fixedSquare(20),
+            }, .{}),
+        }),
+    }));
+}
+
+test "pointer_events none passes the pointer to the box below but keeps its keys" {
+    // Goal: `Style.pointer_events = .none` makes a box transparent to the
+    // pointer, as in 0.3.1. Method: a popover exactly covering a clickable
+    // box. With `.none`, a click, the hover cursor, and the hit query over
+    // the popover reach the box below; a click on the popover's own child
+    // still reaches the child and bubbles through the popover's handler;
+    // Tab still focuses the popover. Switching it to `.auto` is the control:
+    // the same click then lands on the popover and the box below gets none.
+    const app = try testing.allocator.create(PointerApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    const frame = app.window.rendered();
+    try testing.expectEqual(@as(u32, 3), frame.hit_count);
+    const below_id = frame.hits[0].id;
+    const overlay_id = frame.hits[1].id;
+    try testing.expect(!frame.hits[1].pointer);
+    try testing.expectEqual(frame.hits[0].bounds, frame.hits[1].bounds);
+
+    const query = gooey.Query{ .window = &app.window };
+    try testing.expectEqual(@as(?gooey.ElementId, below_id), query.hitTest(.{ .x = 70, .y = 70 }));
+    clickAt(app, &now, 70, 70);
+    try testing.expectEqual(@as(u32, 1), app.state.below_clicks);
+    try testing.expectEqual(@as(u32, 0), app.state.overlay_clicks);
+    app.window.queue.push(.{ .input = .{ .mouse_moved = mouse(70, 70) } });
+    now += 1;
+    app.tick(now);
+    try testing.expectEqual(CursorShape.pointer, app.window.cursor);
+
+    clickAt(app, &now, 30, 30);
+    try testing.expectEqual(@as(u32, 1), app.state.child_clicks);
+    try testing.expectEqual(@as(u32, 1), app.state.overlay_clicks);
+    try testing.expectEqual(@as(u32, 1), app.state.below_clicks);
+
+    pressKey(app, &now, .tab, .{});
+    try testing.expectEqual(overlay_id, app.window.focus);
+
+    app.state.pointer_events = .auto;
+    app.window.render_requested = true;
+    now += 1;
+    app.tick(now);
+    const hit = query.hitTest(.{ .x = 70, .y = 70 });
+    try testing.expectEqual(@as(?gooey.ElementId, overlay_id), hit);
+    clickAt(app, &now, 70, 70);
+    try testing.expectEqual(@as(u32, 2), app.state.overlay_clicks);
+    try testing.expectEqual(@as(u32, 1), app.state.below_clicks);
+    try testing.expectEqual(CursorShape.text, app.window.cursor);
+}

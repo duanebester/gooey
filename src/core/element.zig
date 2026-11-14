@@ -28,6 +28,13 @@ pub const HeadingLevel = a11y_types.HeadingLevel;
 pub const Live = a11y_types.Live;
 
 pub const Direction = enum { row, column };
+
+/// Main- or cross-axis sizing. `grow` takes a weight: grow siblings share a
+/// parent's free main-axis space in proportion to their weights, so a weight-2
+/// box gets twice a weight-1 sibling's share. Each still keeps at least its
+/// content's minimum and at most `width_max` or `height_max`. On the cross
+/// axis a grow box fills its parent whatever its weight. A weight must be
+/// finite and greater than 0.
 pub const Sizing = union(enum) { fit, grow: f32, fixed: f32, percent: f32 };
 
 pub const Edges = struct {
@@ -110,6 +117,13 @@ pub const ClipPolicy = enum { none, clip };
 pub const Scroll = struct { x: bool = false, y: bool = true };
 /// The platform's shape, so hosts apply a resolved cursor without a mapping.
 pub const CursorShape = @import("../platform/interface.zig").CursorShape;
+/// `.none` makes the box itself transparent to the pointer, as CSS
+/// `pointer-events: none` and 0.3.1's `pointer_events` did: a press, release,
+/// hover, cursor, or wheel over it goes to the box below or around it instead.
+/// Its children still take the pointer, and their events still bubble through
+/// its handlers. Keyboard focus, Tab, keys, and actions are unchanged. A box
+/// with no handler, key, focus, scroll, or cursor never takes the pointer, so
+/// `.none` changes only boxes that would.
 pub const PointerEvents = enum { auto, none };
 
 /// Layout and appearance: plain data with no per-element arguments, so a
@@ -129,6 +143,12 @@ pub const Style = struct {
     border: ?Border = null,
     corner_radius: Corners = .zero,
     shadow: ?Shadow = null,
+    /// Multiplies the alpha of everything the element and its subtree draw,
+    /// layers it opens included, from 0 (invisible) to 1. Nested opacities
+    /// multiply. Each record fades on its own, as in 0.3.1, so overlapping
+    /// children show through one another rather than fading as one image.
+    /// Hit testing and accessibility ignore it: an invisible box still takes
+    /// the pointer unless `pointer_events` is `.none`.
     opacity: f32 = 1,
     clip: ClipPolicy = .none,
     scroll: ?Scroll = null,
@@ -166,8 +186,6 @@ fn nonZeroHash(comptime name: []const u8) u64 {
     const hash = std.hash.Wyhash.hash(0, name);
     return if (hash == 0) 1 else hash;
 }
-pub const DragSource = struct { type_id: usize, payload: u64 };
-pub const DropTarget = struct { type_id: usize, on_drop: Handler };
 
 /// Accessibility annotation. Strings are copied when the box is built.
 pub const A11y = struct {
@@ -209,8 +227,6 @@ pub const Box = struct {
     on_click_outside: ?Handler = null,
     on_key: ?Handler = null,
     actions: []const ActionBinding = &.{},
-    draggable: ?DragSource = null,
-    drop_target: ?DropTarget = null,
     a11y: ?A11y = null,
 
     pub fn Element(comptime Children: type) type {

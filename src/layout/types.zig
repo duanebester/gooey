@@ -80,13 +80,22 @@ pub const SizingMinMax = struct {
     }
 };
 
+/// Grow constraints: min/max like `SizingMinMax`, plus the share of a
+/// parent's free main-axis space relative to grow siblings.
+pub const GrowSizing = struct {
+    min: f32 = 0,
+    max: f32 = std.math.floatMax(f32),
+    /// Grow siblings split free space in proportion to their weights.
+    weight: f32 = 1,
+};
+
 /// Sizing configuration for a single axis
 pub const SizingAxis = struct {
     value: SizingValue = .{ .fit = .{} },
 
     pub const SizingValue = union(SizingType) {
         fit: SizingMinMax,
-        grow: SizingMinMax,
+        grow: GrowSizing,
         fixed: SizingMinMax,
         percent: PercentSizing,
     };
@@ -123,6 +132,13 @@ pub const SizingAxis = struct {
 
     pub fn growMinMax(min_val: f32, max_val: f32) SizingAxis {
         return .{ .value = .{ .grow = .{ .min = min_val, .max = max_val } } };
+    }
+
+    /// Grow with a share of free space proportional to `weight`.
+    pub fn growWeighted(weight: f32, min_val: f32, max_val: f32) SizingAxis {
+        std.debug.assert(weight > 0);
+        std.debug.assert(std.math.isFinite(weight));
+        return .{ .value = .{ .grow = .{ .min = min_val, .max = max_val, .weight = weight } } };
     }
 
     /// Fixed pixel size

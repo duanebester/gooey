@@ -250,6 +250,7 @@ pub fn emit(window: *Window) void {
         emitFragment(window, &layers_open, &root);
     }
     assert(layers_open.len == 0);
+    assert(window.built().paint_opacity == 1);
     // A focus move this frame did not render reveals nothing later.
     window.focus_reveal = false;
 }
@@ -293,6 +294,7 @@ fn emitFragment(window: *Window, layers_open: *LayerQueue, root: *const LayerRoo
         const box = elements[index].computed.bounding_box;
         const bounds = Rect{ .x = box.x, .y = box.y, .width = box.width, .height = box.height };
         clips.close(window, depth);
+        window.built().paint_opacity = node.opacity;
         const parent_hit = if (depth == root_depth) root.parent_hit else hit_scope[depth - 1];
         if (index != root.node_index and node.layer != null) {
             layers_open.open(window, index, parent_hit, clips.current());
@@ -320,6 +322,9 @@ fn emitFragment(window: *Window, layers_open: *LayerQueue, root: *const LayerRoo
     }
     clips.close(window, 0);
     assert(clips.len == 0);
+    // The focus ring is a keyboard affordance and draws at full strength
+    // inside a faded subtree.
+    window.built().paint_opacity = 1;
     if (ring) |focused| {
         if (window.focus_reveal or focusShifted(window, &focused)) revealFocus(window, &focused);
         window.focus_place = .{
@@ -686,6 +691,8 @@ fn finishScroll(
     {
         window.render_requested = true;
     }
+    // The scrollbars fade with their scroll box, whatever node came last.
+    window.built().paint_opacity = window.nodes[entry.node_index].opacity;
     inline for (.{ window_mod.ScrollAxis.y, window_mod.ScrollAxis.x }) |axis| {
         if (state.track(axis)) |bar| {
             const dragged = state.dragging == axis;
@@ -753,6 +760,7 @@ fn emitHit(window: *Window, node: *const Node, bounds: Rect, place: HitPlace) u3
         .bounds = bounds,
         .fragment = place.fragment,
         .parent = place.parent,
+        .pointer = node.pointer,
         .focusable = node.focusable,
         .tab_stop = node.tab_stop,
         .scroll = node.scroll != null,
@@ -1015,7 +1023,9 @@ fn emitTriangles(window: *Window, points: []const [2]f32, color: Color) void {
         const last = &frame.paint[frame.paint_count - 1];
         if (last.* == .mesh) {
             const mesh = &last.mesh;
-            const joins = mesh.topology == .triangles and colorEql(mesh.fill, color) and
+            // The record holds its colour faded (`records.fade`).
+            const fill = records.fadeColor(color, frame.paint_opacity);
+            const joins = mesh.topology == .triangles and colorEql(mesh.fill, fill) and
                 mesh.range.first + mesh.range.count == frame.mesh_point_count and
                 mesh.range.count + count <= triangle_points_max;
             if (joins) {

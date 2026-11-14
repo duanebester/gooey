@@ -220,14 +220,24 @@ pub fn distributeSpace(
     if (size_to_distribute < 0 and totals.total_desired > 0) {
         distributeShrink(engine, first_child, is_horizontal, available, width, height, totals.total_desired, size_to_distribute, depth);
     } else {
-        distributeGrow(engine, first_child, is_horizontal, width, height, totals.grow_count, size_to_distribute, depth);
+        distributeGrow(
+            engine,
+            first_child,
+            is_horizontal,
+            width,
+            height,
+            totals.grow_weight_total,
+            size_to_distribute,
+            depth,
+        );
     }
 }
 
-/// Pre-pass totals from `distributeSpace`: how many children grow, how much
-/// non-grow desired space they occupy, and the count itself (for gaps).
+/// Pre-pass totals from `distributeSpace`: the grow children's summed
+/// weights, how much non-grow desired space they occupy, and the count
+/// itself (for gaps).
 const ChildTotals = struct {
-    grow_count: u32,
+    grow_weight_total: f32,
     total_desired: f32,
     child_count: u32,
 };
@@ -244,7 +254,7 @@ fn sumDesiredSizes(
     std.debug.assert(first_child < engine.elements.len());
     std.debug.assert(available >= 0 or available == std.math.floatMax(f32));
 
-    var grow_count: u32 = 0;
+    var grow_weight_total: f32 = 0;
     var total_desired: f32 = 0;
     var child_count: u32 = 0;
 
@@ -262,8 +272,9 @@ fn sumDesiredSizes(
         const child_min = if (is_horizontal) child.computed.min_width else child.computed.min_height;
 
         const child_desired: f32 = switch (child_sizing.value) {
-            .grow => blk: {
-                grow_count += 1;
+            .grow => |grow| blk: {
+                std.debug.assert(grow.weight > 0);
+                grow_weight_total += grow.weight;
                 break :blk child_min; // grow elements only contribute their min
             },
             .fit => |mm| blk: {
@@ -281,7 +292,12 @@ fn sumDesiredSizes(
         child_count += 1;
     }
 
-    return .{ .grow_count = grow_count, .total_desired = total_desired, .child_count = child_count };
+    std.debug.assert(std.math.isFinite(grow_weight_total));
+    return .{
+        .grow_weight_total = grow_weight_total,
+        .total_desired = total_desired,
+        .child_count = child_count,
+    };
 }
 
 // ============================================================================
@@ -396,8 +412,9 @@ fn speculativeUniformAssign(
     return .{ .eligible = true, .floating_count = floating_count, .has_grandchildren = has_grandchildren };
 }
 
-/// Fast-path eligibility check: both axes are unbounded `grow` and no
-/// aspect ratio is in play. Anything else routes to the slow path.
+/// Fast-path eligibility check: both axes are unbounded `grow`, the main
+/// axis at weight 1 so every sibling's share is equal, and no aspect ratio
+/// is in play. Anything else routes to the slow path.
 fn isUnconstrainedGrow(child: *const LayoutElement, is_horizontal: bool) bool {
     std.debug.assert(child.config.layout.aspect_ratio == null or child.config.layout.aspect_ratio.? > 0);
     std.debug.assert(UNCONSTRAINED_MAX > 0);
@@ -407,7 +424,7 @@ fn isUnconstrainedGrow(child: *const LayoutElement, is_horizontal: bool) bool {
 
     const main_sizing = if (is_horizontal) child.config.layout.sizing.width else child.config.layout.sizing.height;
     const main_ok = switch (main_sizing.value) {
-        .grow => |mm| mm.min == 0 and mm.max >= UNCONSTRAINED_MAX,
+        .grow => |mm| mm.min == 0 and mm.max >= UNCONSTRAINED_MAX and mm.weight == 1,
         else => false,
     };
     if (!main_ok) return false;
@@ -585,22 +602,25 @@ fn childContentArea(child: *const LayoutElement) struct { width: f32, height: f3
     return .{ .width = content_width, .height = content_height };
 }
 
-/// Distribute extra space to grow elements (slow path). Non-grow children
-/// take their desired size, then we recurse into each child via
-/// `computeFinalSizes` so nested layouts run on accurate constraints.
+/// Distribute extra space to grow elements (slow path): each takes the share
+/// of the free space its weight gives it. Non-grow children take their
+/// desired size, then we recurse into each child via `computeFinalSizes` so
+/// nested layouts run on accurate constraints.
 fn distributeGrow(
     engine: *LayoutEngine,
     first_child: u32,
     is_horizontal: bool,
     width: f32,
     height: f32,
-    grow_count: u32,
+    grow_weight_total: f32,
     size_to_distribute: f32,
     depth: u32,
 ) void {
-    std.debug.assert(size_to_distribute >= 0 or grow_count == 0);
+    std.debug.assert(grow_weight_total >= 0);
+    std.debug.assert(size_to_distribute >= 0 or grow_weight_total == 0);
 
-    const per_grow = if (grow_count > 0) @max(0, size_to_distribute) / @as(f32, @floatFromInt(grow_count)) else 0;
+    const per_weight: f32 =
+        if (grow_weight_total > 0) @max(0, size_to_distribute) / grow_weight_total else 0;
 
     var child_idx: ?u32 = first_child;
     while (child_idx) |ci| {
@@ -620,6 +640,10 @@ fn distributeGrow(
             .percent => |p| (if (is_horizontal) width else height) * p.value,
         };
 
+        const per_grow: f32 = switch (child_sizing_main.value) {
+            .grow => |grow| per_weight * grow.weight,
+            else => 0,
+        };
         var child_width: f32 = undefined;
         var child_height: f32 = undefined;
 
