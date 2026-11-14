@@ -385,7 +385,6 @@ The layout engine uses fixed-capacity collections (no allocation during frames):
 | `MAX_FLOATING_ROOTS`     | 256   | Maximum floating elements per frame   |
 | `MAX_LINES_PER_TEXT`     | 1024  | Maximum wrapped lines per text        |
 | `MAX_WORDS_PER_TEXT`     | 2048  | Maximum words for text wrapping       |
-| `MAX_RECURSION_DEPTH`    | 48    | Maximum traversal depth during passes |
 
 ## Notes
 
@@ -398,3 +397,7 @@ The layout engine uses fixed-capacity collections (no allocation during frames):
      - **2b. Text wrapping** - wrap text now that container widths are known; propagate height changes back up to fit-content parents
   3. **Positions** (top-down) - compute final bounding boxes
      - **3b. Floating elements** - position floating elements relative to parents (includes text wrapping for floats)
+- No phase recurses. Min sizes, final sizes and positions keep an explicit stack
+  of open parents, one frame per level, bounded by `MAX_OPEN_DEPTH`; text
+  wrapping and the floating passes walk a subtree's pre-order index range.
+  Every depth the open stack admits lays out.

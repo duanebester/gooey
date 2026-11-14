@@ -6,8 +6,17 @@
 //!
 //! Phase order:
 //!   1. `computeMinSizes`     — bottom-up content minimums.
-//!   2. `computeFinalSizes`   — top-down concrete sizes (`distributeSpace`).
+//!   2. `computeFinalSizes`   — top-down concrete sizes (`planChildSizes`).
 //!   3. `computeTextWrapping` — wraps text once container widths are known.
+//!
+//! No pass recurses (CLAUDE.md §6). Min and final sizes keep an explicit
+//! stack of open parents, one frame per level, bounded by the engine's open
+//! depth, and visit elements in the recursive passes' order: a child's
+//! subtree is done while the child is still in cache. A parent whose
+//! children are all leaves needs no frame. The engine also stores elements
+//! in pre-order (`createElement` appends a parent before its children), so a
+//! subtree is the contiguous index range `root..subtreeEnd(root)`, which text
+//! wrapping and the floating passes walk forwards.
 //!
 //! Helpers are `pub` because the orchestrator and
 //! `position_pass.computeFloatingSizesWithText` re-enter the pipeline
@@ -27,46 +36,179 @@ const SizingAxis = types.SizingAxis;
 const LayoutConfig = types.LayoutConfig;
 const MeasureTextFn = engine_mod.MeasureTextFn;
 
-const MAX_RECURSION_DEPTH = engine_mod.MAX_RECURSION_DEPTH;
+const MAX_OPEN_DEPTH = engine_mod.MAX_OPEN_DEPTH;
 const MAX_LINES_PER_TEXT = engine_mod.MAX_LINES_PER_TEXT;
 const MAX_WORDS_PER_TEXT = engine_mod.MAX_WORDS_PER_TEXT;
 const UNCONSTRAINED_MAX = engine_mod.UNCONSTRAINED_MAX;
 
 // ============================================================================
+// Pre-order subtrees
+// ============================================================================
+
+/// One past the last element of `root`'s subtree: the next sibling of `root`
+/// or of its nearest ancestor that has one, else the end of the list. The
+/// walk climbs at most the tree's depth, which the open stack bounds.
+pub fn subtreeEnd(engine: *const LayoutEngine, root: u32) u32 {
+    const count = engine.elements.len();
+    std.debug.assert(root < count);
+    var index = root;
+    var steps: u32 = 0;
+    while (steps <= MAX_OPEN_DEPTH) : (steps += 1) {
+        const elem = engine.elements.getConst(index);
+        if (elem.next_sibling_index) |next| {
+            std.debug.assert(next > root);
+            return next;
+        }
+        index = elem.parent_index orelse return count;
+    }
+    unreachable; // A deeper chain than the open stack allows cannot be built.
+}
+
+/// The pre-order invariant every pass relies on: a child follows its parent.
+inline fn assertPreOrder(engine: *const LayoutEngine, root: u32, index: u32) void {
+    if (index > root) {
+        const parent = engine.elements.getConst(index).parent_index.?;
+        std.debug.assert(parent < index);
+        std.debug.assert(parent >= root);
+    }
+}
+
+// ============================================================================
 // Phase 1: Compute minimum sizes (bottom-up)
 // ============================================================================
 
-/// Walk children first, accumulate their min widths/heights along the main
-/// axis (respecting scroll-direction opt-outs), then add gaps + padding + the
-/// element's own sizing-axis constraints. Writes into `computed.min_*`.
-pub fn computeMinSizes(engine: *LayoutEngine, index: u32, depth: u32) void {
-    std.debug.assert(index < engine.elements.len()); // Valid element index
-    std.debug.assert(depth < MAX_RECURSION_DEPTH); // Depth limit
+/// One parent whose children's minimums the bottom-up walk is summing. The
+/// walk finishes a leaf child at once and opens a child that has children,
+/// so each child's minimum is added while it is still in cache, in the order
+/// the recursive pass used (float sums depend on it). The stack holds one
+/// frame per open level.
+const MinSizeFrame = struct {
+    index: u32,
+    /// The next child to add, or null once every child is added.
+    cursor: ?u32,
+    content_width: f32,
+    content_height: f32,
+    /// Non-floating children added so far, for the gaps.
+    flow_count: u32,
+    is_horizontal: bool,
+    is_horizontal_scroll: bool,
+    is_vertical_scroll: bool,
+};
 
-    const elem = engine.elements.get(index);
-    const layout = elem.config.layout;
-    const padding = layout.padding;
-
-    // Check if this is a scroll container - scroll containers don't use
-    // children's sizes for min_height/min_width in the scrollable direction
-    const is_vertical_scroll = if (elem.config.scroll) |s| s.vertical else false;
-    const is_horizontal_scroll = if (elem.config.scroll) |s| s.horizontal else false;
-
-    var content_width: f32 = 0;
-    var content_height: f32 = 0;
-
-    if (elem.first_child_index) |first_child| {
-        accumulateChildMinSizes(
-            engine,
-            first_child,
-            layout,
-            depth,
-            is_horizontal_scroll,
-            is_vertical_scroll,
-            &content_width,
-            &content_height,
-        );
+/// Content minimums for `root`'s whole subtree, floating elements included
+/// (they size themselves but do not count toward their parent).
+pub fn computeMinSizes(engine: *LayoutEngine, root: u32) void {
+    std.debug.assert(root < engine.elements.len()); // Valid element index
+    if (engine.elements.getConst(root).first_child_index == null) {
+        finishMinSize(engine.elements.get(root), 0, 0);
+        return;
     }
+
+    // A frame per open level: the open stack bounds the tree's depth.
+    var stack: [MAX_OPEN_DEPTH]MinSizeFrame = undefined;
+    stack[0] = openMinSizeFrame(engine, root);
+    var depth: u32 = 1;
+    var open_count: u32 = 1;
+    while (depth > 0) {
+        std.debug.assert(open_count <= engine.elements.len()); // Each parent once.
+        const frame = &stack[depth - 1];
+        if (addChildMinSizes(engine, frame)) |child_index| {
+            std.debug.assert(depth < stack.len);
+            stack[depth] = openMinSizeFrame(engine, child_index);
+            depth += 1;
+            open_count += 1;
+        } else {
+            const parent = engine.elements.get(frame.index);
+            addGaps(frame, parent.config.layout.child_gap);
+            finishMinSize(parent, frame.content_width, frame.content_height);
+            depth -= 1;
+            if (depth > 0) addChildMinSize(&stack[depth - 1], parent);
+        }
+    }
+}
+
+/// A frame for `index`'s children. Scroll containers don't use children's
+/// sizes for min_height/min_width in the scrollable direction.
+fn openMinSizeFrame(engine: *LayoutEngine, index: u32) MinSizeFrame {
+    const elem = engine.elements.getConst(index);
+    const first_child = elem.first_child_index.?;
+    std.debug.assert(first_child > index); // Pre-order: children follow.
+    return .{
+        .index = index,
+        .cursor = first_child,
+        .content_width = 0,
+        .content_height = 0,
+        .flow_count = 0,
+        .is_horizontal = elem.config.layout.layout_direction.isHorizontal(),
+        .is_horizontal_scroll = if (elem.config.scroll) |scroll| scroll.horizontal else false,
+        .is_vertical_scroll = if (elem.config.scroll) |scroll| scroll.vertical else false,
+    };
+}
+
+/// Finish and add `frame`'s remaining leaf children until one has children
+/// of its own: return it for the walk to open, its siblings left for later,
+/// or null once every child is added.
+fn addChildMinSizes(engine: *LayoutEngine, frame: *MinSizeFrame) ?u32 {
+    std.debug.assert(frame.index < engine.elements.len());
+    var cursor = frame.cursor;
+    var sibling_count: u32 = 0;
+    while (cursor) |child_index| {
+        std.debug.assert(sibling_count < engine.elements.len()); // Each sibling once.
+        sibling_count += 1;
+        const child = engine.elements.get(child_index);
+        cursor = child.next_sibling_index;
+        if (child.first_child_index != null) {
+            frame.cursor = cursor;
+            return child_index;
+        }
+        finishMinSize(child, 0, 0);
+        addChildMinSize(frame, child);
+    }
+    frame.cursor = null;
+    return null;
+}
+
+/// Add one finished child's minimum along the parent's main axis (sum) and
+/// cross axis (max), respecting scroll-direction opt-outs. Floating children
+/// do not affect their parent's minimum.
+fn addChildMinSize(frame: *MinSizeFrame, child: *const LayoutElement) void {
+    std.debug.assert(child.computed.min_width >= 0);
+    std.debug.assert(child.computed.min_height >= 0);
+    if (child.config.floating != null) return;
+    const min_width = child.computed.min_width;
+    const min_height = child.computed.min_height;
+    if (frame.is_horizontal) {
+        if (!frame.is_horizontal_scroll) frame.content_width += min_width;
+        if (!frame.is_vertical_scroll) frame.content_height = @max(frame.content_height, min_height);
+    } else {
+        if (!frame.is_horizontal_scroll) frame.content_width = @max(frame.content_width, min_width);
+        if (!frame.is_vertical_scroll) frame.content_height += min_height;
+    }
+    frame.flow_count += 1;
+}
+
+/// Add gaps between the flow children, but not for scroll containers in
+/// their scrollable direction.
+fn addGaps(frame: *MinSizeFrame, child_gap: u16) void {
+    std.debug.assert(frame.cursor == null); // Every child is added.
+    if (frame.flow_count > 1) {
+        const gap: f32 = @floatFromInt(child_gap);
+        const gap_total = gap * @as(f32, @floatFromInt(frame.flow_count - 1));
+        if (frame.is_horizontal) {
+            if (!frame.is_horizontal_scroll) frame.content_width += gap_total;
+        } else {
+            if (!frame.is_vertical_scroll) frame.content_height += gap_total;
+        }
+    }
+}
+
+/// Write one element's minimum from its children's content size: widen it to
+/// its text, add padding, then apply its own sizing-axis constraints.
+fn finishMinSize(elem: *LayoutElement, children_width: f32, children_height: f32) void {
+    std.debug.assert(children_width >= 0);
+    std.debug.assert(children_height >= 0);
+    var content_width = children_width;
+    var content_height = children_height;
 
     // Text content measurement
     if (elem.text_data) |td| {
@@ -75,84 +217,223 @@ pub fn computeMinSizes(engine: *LayoutEngine, index: u32, depth: u32) void {
     }
 
     // Add padding to get total minimum size
+    const padding = elem.config.layout.padding;
     const min_width = content_width + padding.totalX();
     const min_height = content_height + padding.totalY();
 
     // Apply sizing constraints from declaration
-    elem.computed.min_width = applyMinMax(min_width, layout.sizing.width);
-    elem.computed.min_height = applyMinMax(min_height, layout.sizing.height);
-}
-
-/// Helper kept under 70 lines: recurse into children, sum/max along the main
-/// axis, and add gap contributions. Skips floating elements (they don't
-/// influence parent sizing). Outputs accumulated `content_*` via pointers.
-fn accumulateChildMinSizes(
-    engine: *LayoutEngine,
-    first_child: u32,
-    layout: LayoutConfig,
-    depth: u32,
-    is_horizontal_scroll: bool,
-    is_vertical_scroll: bool,
-    content_width: *f32,
-    content_height: *f32,
-) void {
-    std.debug.assert(first_child < engine.elements.len());
-    std.debug.assert(depth < MAX_RECURSION_DEPTH);
-
-    var child_idx: ?u32 = first_child;
-    var child_count: u32 = 0;
-    const is_horizontal_layout = layout.layout_direction.isHorizontal();
-
-    while (child_idx) |ci| {
-        computeMinSizes(engine, ci, depth + 1);
-        const child = engine.elements.getConst(ci);
-
-        // Skip floating elements - they don't affect parent's min size
-        if (child.config.floating == null) {
-            if (is_horizontal_layout) {
-                if (!is_horizontal_scroll) content_width.* += child.computed.min_width;
-                if (!is_vertical_scroll) content_height.* = @max(content_height.*, child.computed.min_height);
-            } else {
-                if (!is_horizontal_scroll) content_width.* = @max(content_width.*, child.computed.min_width);
-                if (!is_vertical_scroll) content_height.* += child.computed.min_height;
-            }
-            child_count += 1;
-        }
-
-        child_idx = child.next_sibling_index;
-    }
-
-    // Add gaps between children (but not for scroll containers in scrollable direction)
-    if (child_count > 1) {
-        const gap: f32 = @floatFromInt(layout.child_gap);
-        const gap_total = gap * @as(f32, @floatFromInt(child_count - 1));
-        if (is_horizontal_layout) {
-            if (!is_horizontal_scroll) content_width.* += gap_total;
-        } else {
-            if (!is_vertical_scroll) content_height.* += gap_total;
-        }
-    }
+    elem.computed.min_width = applyMinMax(min_width, elem.config.layout.sizing.width);
+    elem.computed.min_height = applyMinMax(min_height, elem.config.layout.sizing.height);
 }
 
 // ============================================================================
 // Phase 2: Compute final sizes (top-down)
 // ============================================================================
 
-/// Resolve concrete sizes for this element given available space, then
-/// distribute remaining space among children. Aspect-ratio derives height
-/// from width here so that grow/shrink calculations see the final height.
+/// One parent whose children the top-down walk is sizing, and the rule that
+/// gives each remaining child its size. The rule is planned once per parent
+/// from all its children (`planChildSizes`); the walk then sizes one child
+/// and, when that child has children, plans it straight away. A parent whose
+/// children are all leaves is sized on the spot; any other is pushed. A
+/// subtree is therefore sized while its root is still in cache, in the order
+/// the recursive pass used, and the stack holds one frame per open level.
+const SizingFrame = struct {
+    /// The next child to size, or null once every child is sized.
+    cursor: ?u32,
+    rule: SizingRule,
+    is_horizontal: bool,
+    /// Whether any non-floating child has children of its own.
+    has_grandchildren: bool,
+    /// The parent's content area, offered to every child.
+    width: f32,
+    height: f32,
+    /// The shrink ratio for `.shrink`, the space per grow weight for `.grow`.
+    factor: f32,
+};
+
+const SizingRule = enum {
+    /// The uniform-grow fast path already wrote every child's size.
+    assigned,
+    shrink,
+    grow,
+};
+
+/// Size `root` within the available space, then size the rest of its
+/// subtree top-down: each parent's rule sizes its children before they size
+/// theirs. Floating subtrees below `root` are skipped;
+/// `position_pass.computeFloatingPositions` sizes them.
 pub fn computeFinalSizes(
     engine: *LayoutEngine,
-    index: u32,
+    root: u32,
     available_width: f32,
     available_height: f32,
-    depth: u32,
 ) void {
-    std.debug.assert(index < engine.elements.len()); // Valid element index
-    std.debug.assert(depth < MAX_RECURSION_DEPTH); // Depth limit
+    std.debug.assert(root < engine.elements.len()); // Valid element index
     std.debug.assert(available_width >= 0 or available_width == std.math.floatMax(f32)); // Valid width
 
-    const elem = engine.elements.get(index);
+    sizeElement(engine.elements.get(root), available_width, available_height);
+    if (engine.elements.getConst(root).first_child_index == null) return;
+
+    const root_plan = planChildSizes(engine, root);
+    if (!root_plan.has_grandchildren) {
+        sizeLeafChildren(engine, &root_plan); // No frame needed.
+        return;
+    }
+
+    // A frame per open level: the open stack bounds the tree's depth.
+    var stack: [MAX_OPEN_DEPTH]SizingFrame = undefined;
+    stack[0] = root_plan;
+    var depth: u32 = 1;
+    var open_count: u32 = 1;
+    while (depth > 0) {
+        std.debug.assert(open_count <= engine.elements.len()); // Each parent once.
+        var opened: SizingFrame = undefined;
+        if (sizeSiblings(engine, &stack[depth - 1], &opened)) {
+            std.debug.assert(depth < stack.len);
+            stack[depth] = opened;
+            depth += 1;
+            open_count += 1;
+        } else {
+            depth -= 1;
+        }
+    }
+}
+
+/// Size `frame`'s remaining children until one has grandchildren: plan it
+/// into `opened` and return true for the walk to push it, its siblings left
+/// for later; or return false once every child is sized. A child whose own
+/// children are all leaves is finished here, without a frame.
+fn sizeSiblings(engine: *LayoutEngine, frame: *SizingFrame, opened: *SizingFrame) bool {
+    std.debug.assert(frame.factor >= 0);
+    var cursor = frame.cursor;
+    var sibling_count: u32 = 0;
+    while (cursor) |child_index| {
+        std.debug.assert(sibling_count < engine.elements.len()); // Each sibling once.
+        sibling_count += 1;
+        const child = engine.elements.get(child_index);
+        cursor = child.next_sibling_index;
+        if (child.config.floating == null) {
+            sizeByRule(frame, child);
+            if (child.first_child_index != null) {
+                const plan = planChildSizes(engine, child_index);
+                if (plan.has_grandchildren) {
+                    frame.cursor = cursor;
+                    opened.* = plan;
+                    return true;
+                }
+                sizeLeafChildren(engine, &plan);
+            }
+        }
+    }
+    frame.cursor = null;
+    return false;
+}
+
+/// Size every child of a parent whose non-floating children are all leaves.
+fn sizeLeafChildren(engine: *LayoutEngine, frame: *const SizingFrame) void {
+    std.debug.assert(!frame.has_grandchildren);
+    var cursor = frame.cursor;
+    var sibling_count: u32 = 0;
+    while (cursor) |child_index| {
+        std.debug.assert(sibling_count < engine.elements.len()); // Each sibling once.
+        sibling_count += 1;
+        const child = engine.elements.get(child_index);
+        cursor = child.next_sibling_index;
+        if (child.config.floating == null) {
+            std.debug.assert(child.first_child_index == null);
+            sizeByRule(frame, child);
+        }
+    }
+}
+
+/// Size one non-floating child by its parent's planned rule.
+inline fn sizeByRule(frame: *const SizingFrame, child: *LayoutElement) void {
+    std.debug.assert(child.config.floating == null);
+    std.debug.assert(frame.factor >= 0);
+    const is_horizontal = frame.is_horizontal;
+    switch (frame.rule) {
+        .assigned => {},
+        .shrink => {
+            const available = if (is_horizontal) frame.width else frame.height;
+            assignShrunkSize(child, is_horizontal, available, frame.width, frame.height, frame.factor);
+        },
+        .grow => assignGrownSize(child, is_horizontal, frame.width, frame.height, frame.factor),
+    }
+}
+
+/// Plan how `parent_index`'s content area is shared among its children: the
+/// uniform-grow fast path assigns every size now; otherwise the children's
+/// desired sizes decide between shrinking them and growing them.
+fn planChildSizes(engine: *LayoutEngine, parent_index: u32) SizingFrame {
+    const parent = engine.elements.getConst(parent_index);
+    const first_child = parent.first_child_index.?;
+    std.debug.assert(first_child > parent_index); // Pre-order: children follow.
+    // Read the two layout fields rather than copy the whole config: the fast
+    // path below writes elements, so a copy could not be elided.
+    const content = childContentArea(parent);
+    const is_horizontal = parent.config.layout.layout_direction.isHorizontal();
+    const gap: f32 = @floatFromInt(parent.config.layout.child_gap);
+    const available = if (is_horizontal) content.width else content.height;
+
+    var frame: SizingFrame = .{
+        .cursor = first_child,
+        .rule = .assigned,
+        .is_horizontal = is_horizontal,
+        .has_grandchildren = true,
+        .width = content.width,
+        .height = content.height,
+        .factor = 0,
+    };
+    // Fast path: Check if all children are uniform grow elements (very common case)
+    const fast_path = tryUniformGrowFastPath(
+        engine,
+        first_child,
+        is_horizontal,
+        content.width,
+        content.height,
+        available,
+        gap,
+    );
+    switch (fast_path) {
+        .ineligible => {},
+        .sized => return frame,
+        .sized_leaves => {
+            frame.cursor = null; // No child has children: the subtree is sized.
+            frame.has_grandchildren = false;
+            return frame;
+        },
+    }
+
+    // Slow path: classify children, then shrink or grow them.
+    const totals = sumDesiredSizes(engine, first_child, is_horizontal, available);
+    const total_gap = if (totals.child_count > 1) gap * @as(f32, @floatFromInt(totals.child_count - 1)) else 0;
+    const size_to_distribute = available - totals.total_desired - total_gap;
+    frame.has_grandchildren = totals.has_grandchildren;
+
+    if (size_to_distribute < 0 and totals.total_desired > 0) {
+        const overflow = -size_to_distribute;
+        frame.rule = .shrink;
+        frame.factor = @max(0, 1.0 - overflow / totals.total_desired);
+        std.debug.assert(frame.factor <= 1.0);
+    } else {
+        std.debug.assert(totals.grow_weight_total >= 0);
+        std.debug.assert(size_to_distribute >= 0 or totals.grow_weight_total == 0);
+        frame.rule = .grow;
+        frame.factor = if (totals.grow_weight_total > 0)
+            @max(0, size_to_distribute) / totals.grow_weight_total
+        else
+            0;
+    }
+    std.debug.assert(frame.factor >= 0);
+    return frame;
+}
+
+/// Resolve one element's concrete size for the space its parent offers.
+/// Aspect-ratio derives height from width here so that grow/shrink
+/// calculations see the final height.
+fn sizeElement(elem: *LayoutElement, available_width: f32, available_height: f32) void {
+    std.debug.assert(available_width >= 0 or available_width == std.math.floatMax(f32));
+    std.debug.assert(available_height >= 0 or available_height == std.math.floatMax(f32));
     const layout = elem.config.layout;
     const sizing = layout.sizing;
 
@@ -168,82 +449,20 @@ pub fn computeFinalSizes(
 
     elem.computed.sized_width = final_width;
     elem.computed.sized_height = final_height;
-
-    // Content area for children (after padding)
-    // Use @max(0, ...) to prevent negative dimensions when element shrinks below padding
-    const content_width = @max(0, final_width - layout.padding.totalX());
-    const content_height = @max(0, final_height - layout.padding.totalY());
-
-    if (elem.first_child_index) |first_child| {
-        // For scroll containers, allow children to overflow in scrollable directions
-        // by passing a very large available size (prevents shrinking)
-        var child_available_width = content_width;
-        var child_available_height = content_height;
-
-        if (elem.config.scroll) |scroll| {
-            if (scroll.horizontal) child_available_width = std.math.floatMax(f32);
-            if (scroll.vertical) child_available_height = std.math.floatMax(f32);
-        }
-
-        distributeSpace(engine, first_child, layout, child_available_width, child_available_height, depth);
-    }
 }
 
-/// Distribute available space among children (handles grow and shrink).
-/// Coordinator: delegates to the uniform-grow fast path first, then falls
-/// back to the two-pass shrink/grow algorithm.
-pub fn distributeSpace(
-    engine: *LayoutEngine,
-    first_child: u32,
-    layout: LayoutConfig,
-    width: f32,
-    height: f32,
-    depth: u32,
-) void {
-    std.debug.assert(width >= 0 or width == std.math.floatMax(f32));
-    std.debug.assert(depth < MAX_RECURSION_DEPTH); // Depth limit
-
-    const is_horizontal = layout.layout_direction.isHorizontal();
-    const gap: f32 = @floatFromInt(layout.child_gap);
-    const available = if (is_horizontal) width else height;
-
-    // Fast path: Check if all children are uniform grow elements (very common case)
-    if (tryUniformGrowFastPath(engine, first_child, is_horizontal, width, height, available, gap, depth)) {
-        return;
-    }
-
-    // Slow path: classify children, then dispatch to shrink or grow
-    const totals = sumDesiredSizes(engine, first_child, is_horizontal, available);
-    const total_gap = if (totals.child_count > 1) gap * @as(f32, @floatFromInt(totals.child_count - 1)) else 0;
-    const size_to_distribute = available - totals.total_desired - total_gap;
-
-    if (size_to_distribute < 0 and totals.total_desired > 0) {
-        distributeShrink(engine, first_child, is_horizontal, available, width, height, totals.total_desired, size_to_distribute, depth);
-    } else {
-        distributeGrow(
-            engine,
-            first_child,
-            is_horizontal,
-            width,
-            height,
-            totals.grow_weight_total,
-            size_to_distribute,
-            depth,
-        );
-    }
-}
-
-/// Pre-pass totals from `distributeSpace`: the grow children's summed
+/// Pre-pass totals from `planChildSizes`: the grow children's summed
 /// weights, how much non-grow desired space they occupy, and the count
 /// itself (for gaps).
 const ChildTotals = struct {
     grow_weight_total: f32,
     total_desired: f32,
     child_count: u32,
+    has_grandchildren: bool,
 };
 
 /// Inspect each non-floating child and classify by sizing type. The
-/// numbers feed both the shrink-vs-grow decision in `distributeSpace`
+/// numbers feed both the shrink-vs-grow decision in `planChildSizes`
 /// and the gap accounting.
 fn sumDesiredSizes(
     engine: *LayoutEngine,
@@ -257,6 +476,7 @@ fn sumDesiredSizes(
     var grow_weight_total: f32 = 0;
     var total_desired: f32 = 0;
     var child_count: u32 = 0;
+    var has_grandchildren = false;
 
     var child_idx: ?u32 = first_child;
     while (child_idx) |ci| {
@@ -288,6 +508,7 @@ fn sumDesiredSizes(
         };
 
         if (child_sizing.value != .grow) total_desired += child_desired;
+        if (child.first_child_index != null) has_grandchildren = true;
         child_idx = child.next_sibling_index;
         child_count += 1;
     }
@@ -297,6 +518,7 @@ fn sumDesiredSizes(
         .grow_weight_total = grow_weight_total,
         .total_desired = total_desired,
         .child_count = child_count,
+        .has_grandchildren = has_grandchildren,
     };
 }
 
@@ -304,17 +526,21 @@ fn sumDesiredSizes(
 // Phase 2 — fast path for uniform grow children
 // ============================================================================
 
-/// Result of the speculative uniform-grow pass: was it eligible, and how
-/// many floating siblings did we step over (we recompute per-child size
-/// after subtracting those out)?
+/// Result of the speculative uniform-grow pass: was it eligible, how many
+/// floating siblings did we step over (we recompute per-child size after
+/// subtracting those out), and does any flow child have children?
 const SpeculativeResult = struct {
     eligible: bool,
     floating_count: u32,
     has_grandchildren: bool,
 };
 
+/// What the uniform-grow fast path did. `sized_leaves` lets the walk skip the
+/// children entirely: a wide row of grow leaves is not visited twice.
+const FastPathResult = enum { ineligible, sized, sized_leaves };
+
 /// Fast path for uniform grow children — speculative single pass with early
-/// bailout. Returns `true` when the fast path handled distribution.
+/// bailout. Returns `.ineligible` when the slow path must distribute.
 fn tryUniformGrowFastPath(
     engine: *LayoutEngine,
     first_child: u32,
@@ -323,18 +549,17 @@ fn tryUniformGrowFastPath(
     height: f32,
     available: f32,
     gap: f32,
-    depth: u32,
-) bool {
+) FastPathResult {
     std.debug.assert(first_child < engine.elements.len()); // Valid child index
-    std.debug.assert(depth < MAX_RECURSION_DEPTH); // Depth limit
+    std.debug.assert(gap >= 0);
 
     // Get parent's child_count to pre-compute sizes (avoids counting pass)
     const first = engine.elements.getConst(first_child);
-    const parent_idx = first.parent_index orelse return false;
+    const parent_idx = first.parent_index orelse return .ineligible;
     const parent = engine.elements.getConst(parent_idx);
     const total_children = parent.child_count;
 
-    if (total_children == 0) return false;
+    if (total_children == 0) return .ineligible;
 
     // Pre-compute uniform size assuming no floating elements
     const total_gap = if (total_children > 1) gap * @as(f32, @floatFromInt(total_children - 1)) else 0;
@@ -342,24 +567,19 @@ fn tryUniformGrowFastPath(
     const cross_size = if (is_horizontal) height else width;
 
     const result = speculativeUniformAssign(engine, first_child, is_horizontal, per_child, cross_size);
-    if (!result.eligible) return false;
+    if (!result.eligible) return .ineligible;
 
     // If we had floating elements, recalculate and re-assign
     if (result.floating_count > 0) {
         const actual_children = total_children - result.floating_count;
-        if (actual_children == 0) return false;
+        if (actual_children == 0) return .ineligible;
 
         const actual_gap = if (actual_children > 1) gap * @as(f32, @floatFromInt(actual_children - 1)) else 0;
         per_child = @max(0, (available - actual_gap) / @as(f32, @floatFromInt(actual_children)));
         reassignUniformSizes(engine, first_child, is_horizontal, per_child, cross_size);
     }
 
-    // Handle grandchildren recursion in a separate pass (only if needed)
-    if (result.has_grandchildren) {
-        distributeToGrandchildren(engine, first_child, is_horizontal, depth);
-    }
-
-    return true;
+    return if (result.has_grandchildren) .sized else .sized_leaves;
 }
 
 /// Speculative pass: walk children once, assign uniform sizes, and report
@@ -394,7 +614,7 @@ fn speculativeUniformAssign(
             return .{ .eligible = false, .floating_count = 0, .has_grandchildren = false };
         }
 
-        // Track grandchildren
+        // A floating child sizes itself, so only flow children count here.
         if (child.first_child_index != null) has_grandchildren = true;
 
         // Assign sizes speculatively
@@ -409,7 +629,11 @@ fn speculativeUniformAssign(
         child_idx = child.next_sibling_index;
     }
 
-    return .{ .eligible = true, .floating_count = floating_count, .has_grandchildren = has_grandchildren };
+    return .{
+        .eligible = true,
+        .floating_count = floating_count,
+        .has_grandchildren = has_grandchildren,
+    };
 }
 
 /// Fast-path eligibility check: both axes are unbounded `grow`, the main
@@ -463,69 +687,9 @@ fn reassignUniformSizes(
     }
 }
 
-/// Distribute space to grandchildren after uniform assignment
-fn distributeToGrandchildren(
-    engine: *LayoutEngine,
-    first_child: u32,
-    is_horizontal: bool,
-    depth: u32,
-) void {
-    std.debug.assert(first_child < engine.elements.len());
-    std.debug.assert(depth < MAX_RECURSION_DEPTH);
-
-    _ = is_horizontal;
-    var child_idx: ?u32 = first_child;
-    while (child_idx) |ci| {
-        const child = engine.elements.get(ci);
-        if (child.config.floating == null) {
-            if (child.first_child_index) |grandchild| {
-                const content = childContentArea(child);
-                distributeSpace(engine, grandchild, child.config.layout, content.width, content.height, depth + 1);
-            }
-        }
-        child_idx = child.next_sibling_index;
-    }
-}
-
 // ============================================================================
 // Phase 2 — shrink / grow distribution (slow path)
 // ============================================================================
-
-/// Shrink children proportionally when content exceeds available space.
-/// `total_desired > 0` is asserted so the ratio math is well-defined.
-fn distributeShrink(
-    engine: *LayoutEngine,
-    first_child: u32,
-    is_horizontal: bool,
-    available: f32,
-    width: f32,
-    height: f32,
-    total_desired: f32,
-    size_to_distribute: f32,
-    depth: u32,
-) void {
-    std.debug.assert(size_to_distribute < 0);
-    std.debug.assert(total_desired > 0);
-
-    const overflow = -size_to_distribute;
-    const shrink_ratio = @max(0, 1.0 - overflow / total_desired);
-
-    var child_idx: ?u32 = first_child;
-    while (child_idx) |ci| {
-        const child = engine.elements.get(ci);
-
-        // Skip floating elements
-        if (child.config.floating != null) {
-            child_idx = child.next_sibling_index;
-            continue;
-        }
-
-        assignShrunkSize(child, is_horizontal, available, width, height, shrink_ratio);
-        recurseShrinkChildren(engine, child, depth);
-
-        child_idx = child.next_sibling_index;
-    }
-}
 
 /// Compute and assign the shrunk size for a single child on the main axis,
 /// honoring its min constraint, then resolve the cross axis and aspect
@@ -575,19 +739,10 @@ fn assignShrunkSize(
     }
 }
 
-/// Recurse `distributeSpace` into a shrunk child's content area, honoring
-/// scroll-overflow semantics on the scrollable axes.
-fn recurseShrinkChildren(engine: *LayoutEngine, child: *LayoutElement, depth: u32) void {
-    std.debug.assert(depth < MAX_RECURSION_DEPTH);
-    if (child.first_child_index) |grandchild| {
-        const content = childContentArea(child);
-        distributeSpace(engine, grandchild, child.config.layout, content.width, content.height, depth + 1);
-    }
-}
-
 /// The space a sized element offers its children: its content box, unbounded
 /// along a scroll container's scrollable axes so its children overflow
-/// rather than shrink. Every path that recurses into children uses it.
+/// rather than shrink. `computeFinalSizes` distributes every element's
+/// children within it.
 fn childContentArea(child: *const LayoutElement) struct { width: f32, height: f32 } {
     const child_layout = child.config.layout;
     // Use @max(0, ...) to prevent negative dimensions when element shrinks below padding
@@ -602,77 +757,73 @@ fn childContentArea(child: *const LayoutElement) struct { width: f32, height: f3
     return .{ .width = content_width, .height = content_height };
 }
 
-/// Distribute extra space to grow elements (slow path): each takes the share
-/// of the free space its weight gives it. Non-grow children take their
-/// desired size, then we recurse into each child via `computeFinalSizes` so
-/// nested layouts run on accurate constraints.
-fn distributeGrow(
-    engine: *LayoutEngine,
-    first_child: u32,
+/// Assign one child's size when its parent grows its children: a grow child
+/// takes the share of the free space its weight gives it, any other child its
+/// desired size. The child then resolves its own size from what it is offered
+/// (`sizeElement`), so nested layouts run on accurate constraints.
+fn assignGrownSize(
+    child: *LayoutElement,
     is_horizontal: bool,
     width: f32,
     height: f32,
-    grow_weight_total: f32,
-    size_to_distribute: f32,
-    depth: u32,
+    per_weight: f32,
 ) void {
-    std.debug.assert(grow_weight_total >= 0);
-    std.debug.assert(size_to_distribute >= 0 or grow_weight_total == 0);
+    std.debug.assert(per_weight >= 0);
+    std.debug.assert(child.config.floating == null);
 
-    const per_weight: f32 =
-        if (grow_weight_total > 0) @max(0, size_to_distribute) / grow_weight_total else 0;
+    const sizing = child.config.layout.sizing;
+    const child_sizing_main = if (is_horizontal) sizing.width else sizing.height;
+    const child_min_main = if (is_horizontal) child.computed.min_width else child.computed.min_height;
+    const child_desired: f32 = switch (child_sizing_main.value) {
+        .grow => 0, // handled separately
+        .fit => |mm| @max(child_min_main, mm.max),
+        .fixed => |mm| mm.min,
+        .percent => |p| (if (is_horizontal) width else height) * p.value,
+    };
 
-    var child_idx: ?u32 = first_child;
-    while (child_idx) |ci| {
-        const child = engine.elements.get(ci);
+    const per_grow: f32 = switch (child_sizing_main.value) {
+        .grow => |grow| per_weight * grow.weight,
+        else => 0,
+    };
+    var child_width: f32 = undefined;
+    var child_height: f32 = undefined;
 
-        // Skip floating elements
-        if (child.config.floating != null) {
-            child_idx = child.next_sibling_index;
-            continue;
-        }
-
-        const child_sizing_main = if (is_horizontal) child.config.layout.sizing.width else child.config.layout.sizing.height;
-        const child_desired: f32 = switch (child_sizing_main.value) {
-            .grow => 0, // handled separately
-            .fit => |mm| @max(if (is_horizontal) child.computed.min_width else child.computed.min_height, mm.max),
-            .fixed => |mm| mm.min,
-            .percent => |p| (if (is_horizontal) width else height) * p.value,
-        };
-
-        const per_grow: f32 = switch (child_sizing_main.value) {
-            .grow => |grow| per_weight * grow.weight,
-            else => 0,
-        };
-        var child_width: f32 = undefined;
-        var child_height: f32 = undefined;
-
-        if (is_horizontal) {
-            child_width = if (child_sizing_main.value == .grow)
-                @max(child.computed.min_width, per_grow)
-            else
-                child_desired;
-            child_height = height;
-        } else {
-            child_width = width;
-            child_height = if (child_sizing_main.value == .grow)
-                @max(child.computed.min_height, per_grow)
-            else
-                child_desired;
-        }
-
-        computeFinalSizes(engine, ci, child_width, child_height, depth + 1);
-        child_idx = child.next_sibling_index;
+    if (is_horizontal) {
+        child_width = if (child_sizing_main.value == .grow)
+            @max(child.computed.min_width, per_grow)
+        else
+            child_desired;
+        child_height = height;
+    } else {
+        child_width = width;
+        child_height = if (child_sizing_main.value == .grow)
+            @max(child.computed.min_height, per_grow)
+        else
+            child_desired;
     }
+
+    sizeElement(child, child_width, child_height);
 }
 
 // ============================================================================
 // Phase 2b: Text wrapping (container widths now known)
 // ============================================================================
 
-/// Wrap text under each element once container widths are settled, and
-/// propagate height changes back up to fit-content parents.
-pub fn computeTextWrapping(engine: *LayoutEngine, index: u32) !void {
+/// Wrap text in `root`'s subtree, floating elements included, once container
+/// widths are settled, and propagate height changes back up to fit-content
+/// parents. Walks the subtree forwards, the order the recursive pass used.
+pub fn computeTextWrapping(engine: *LayoutEngine, root: u32) !void {
+    const end = subtreeEnd(engine, root);
+    std.debug.assert(end > root);
+    var index = root;
+    while (index < end) : (index += 1) {
+        assertPreOrder(engine, root, index);
+        try wrapElementText(engine, index);
+    }
+}
+
+/// Wrap one element's text, if it has any, at its parent's content width.
+fn wrapElementText(engine: *LayoutEngine, index: u32) !void {
     const elem = engine.elements.get(index);
 
     if (elem.text_data) |*td| {
@@ -697,15 +848,6 @@ pub fn computeTextWrapping(engine: *LayoutEngine, index: u32) !void {
             }
         }
     }
-
-    // Recurse to children
-    if (elem.first_child_index) |first_child| {
-        var child_idx: ?u32 = first_child;
-        while (child_idx) |ci| {
-            try computeTextWrapping(engine, ci);
-            child_idx = engine.elements.getConst(ci).next_sibling_index;
-        }
-    }
 }
 
 /// Width available for text content: parent's sized width minus its
@@ -726,7 +868,7 @@ pub fn propagateHeightChange(engine: *LayoutEngine, parent_idx: ?u32) void {
     var idx = parent_idx;
     var depth: u32 = 0;
     while (idx) |pi| : (depth += 1) {
-        std.debug.assert(depth < engine_mod.MAX_RECURSION_DEPTH);
+        std.debug.assert(depth <= MAX_OPEN_DEPTH); // Ancestors are open containers.
         const parent = engine.elements.get(pi);
         const sizing = parent.config.layout.sizing.height;
 

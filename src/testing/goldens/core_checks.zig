@@ -1317,6 +1317,67 @@ fn cursorAt(app: *CursorApp, now: *u64, x: f32, y: f32) CursorShape {
     return app.window.cursor;
 }
 
+test "boxes nest as deep as the open stack and every level lays out inside its parent" {
+    // Goal: the layout passes take every depth the build admits. They used to
+    // recurse with a cap of 48 below the stack's 64, so about 47 nested boxes
+    // stopped layout with a bare assertion. Method: nest the 63 boxes that fit
+    // inside the window root, each padded by 1 px around a 10 px box at the
+    // bottom, and check every level's bounds: box `i` (1-based, pre-order
+    // index `i` in layout) sits at `i - 1` and spans 10 + 2 × (63 − i).
+    const app = try testing.allocator.create(DeepApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    app.tick(1);
+    const box_count: u32 = internals.window.box_depth_max - 1;
+    const layout = app.window.layout;
+    try testing.expectEqual(box_count + 1, layout.elements.len());
+    var index: u32 = 1;
+    while (index <= box_count) : (index += 1) {
+        const bounds = layout.elements.getConst(index).computed.bounding_box;
+        const offset: f32 = @floatFromInt(index - 1);
+        const side: f32 = @floatFromInt(10 + 2 * (box_count - index));
+        try testing.expectEqual(offset, bounds.x);
+        try testing.expectEqual(offset, bounds.y);
+        try testing.expectEqual(side, bounds.width);
+        try testing.expectEqual(side, bounds.height);
+    }
+    var deepest: u32 = 0;
+    for (app.window.nodes[0..app.window.node_count]) |node| deepest = @max(deepest, node.depth);
+    try testing.expectEqual(box_count, deepest);
+}
+
+const DeepApp = gooey.App(struct {}, deepRender, .{
+    .title = "Deep",
+    .width = 300,
+    .height = 200,
+    .limits = .nano,
+});
+
+fn deepRender(cx: *Cx) void {
+    cx.render(DeepBoxes{ .remaining = internals.window.box_depth_max - 1 });
+}
+
+/// Two padded boxes per component level, so the component depth budget
+/// (64) is not what limits the nesting; a 10 px box at the bottom.
+const DeepBoxes = struct {
+    remaining: u32,
+
+    pub fn render(self: DeepBoxes, cx: *Cx) void {
+        assert(self.remaining > 0);
+        const pad: ui.Style = .{ .padding = .all(1) };
+        const leaf = ui.box(.{ .style = .{
+            .width = .{ .fixed = 10 },
+            .height = .{ .fixed = 10 },
+        } }, .{});
+        if (self.remaining == 1) return cx.render(leaf);
+        if (self.remaining == 2) return cx.render(ui.box(.{ .style = pad }, .{leaf}));
+        cx.render(ui.box(.{ .style = pad }, .{
+            ui.box(.{ .style = pad }, .{DeepBoxes{ .remaining = self.remaining - 2 }}),
+        }));
+    }
+};
+
 test "the cursor resolves from the hovered record and its ancestors" {
     // Goal: the cursor hosts apply after a tick comes from the record under
     // the pointer, as `Box.cursor` did in 0.3.1. Method: move over each row.

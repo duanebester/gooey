@@ -6,13 +6,18 @@
 //! Two sub-phases:
 //!   1. `computePositions` walks the main tree top-down, threading scroll
 //!      offsets and child-alignment / main-axis-distribution rules through
-//!      `positionChildren`.
+//!      `planChildPositions`.
 //!   2. `computeFloatingPositions` re-enters the sizing pass for each
 //!      floating subtree (sizes can shift once the parent bbox is known),
 //!      then positions the floating root and its children.
 //!
 //! Floating elements never affect parent sizing (enforced by the sizing
 //! pass); this file relies on that invariant when computing constraints.
+//!
+//! Like the sizing pass, nothing here recurses (CLAUDE.md §6): placement keeps
+//! an explicit stack of open parents bounded by the engine's open depth, and
+//! the floating passes walk a subtree's pre-order index range forwards
+//! (`sizing_pass.subtreeEnd`).
 
 const std = @import("std");
 
@@ -22,32 +27,195 @@ const types = @import("types.zig");
 
 const LayoutEngine = engine_mod.LayoutEngine;
 const LayoutElement = engine_mod.LayoutElement;
-const ScrollOffset = engine_mod.ScrollOffset;
 const LayoutConfig = types.LayoutConfig;
 const BoundingBox = types.BoundingBox;
 const FloatingConfig = types.FloatingConfig;
 
-const MAX_RECURSION_DEPTH = engine_mod.MAX_RECURSION_DEPTH;
 const MAX_FLOATING_ROOTS = engine_mod.MAX_FLOATING_ROOTS;
+const MAX_OPEN_DEPTH = engine_mod.MAX_OPEN_DEPTH;
 
 // ============================================================================
 // Phase 3: Compute positions (top-down)
 // ============================================================================
 
-/// Set this element's `bounding_box` and `content_box`, then position its
-/// children inside the content box (honoring scroll offset if present).
-pub fn computePositions(engine: *LayoutEngine, index: u32, parent_x: f32, parent_y: f32, depth: u32) void {
-    std.debug.assert(index < engine.elements.len()); // Valid element index
-    std.debug.assert(depth < MAX_RECURSION_DEPTH); // Depth limit
+/// Place `root` at (`x`, `y`), then place the rest of its subtree.
+pub fn computePositions(engine: *LayoutEngine, root: u32, x: f32, y: f32) void {
+    std.debug.assert(root < engine.elements.len()); // Valid element index
+    placeElement(engine.elements.get(root), x, y);
+    positionSubtree(engine, root);
+}
 
-    const elem = engine.elements.get(index);
-    const layout = elem.config.layout;
-    const padding = layout.padding;
+/// One placed parent whose children the walk is placing: where its next
+/// child goes and how its children line up. The walk places one child and,
+/// when that child has children, plans it straight away. A parent whose
+/// children are all leaves is placed on the spot; any other is pushed. A
+/// subtree is therefore placed while its root is still in cache, in the
+/// order the recursive pass used, and the stack holds one frame per open
+/// level.
+const PositionFrame = struct {
+    /// The next child to place, or null once every child is placed.
+    cursor: ?u32,
+    is_horizontal: bool,
+    /// Whether any non-floating child has children of its own.
+    has_grandchildren: bool,
+    alignment: types.ChildAlignment,
+    content_box: BoundingBox,
+    /// The next child's top-left corner before its cross-axis alignment.
+    next_x: f32,
+    next_y: f32,
+    /// The main-axis space after each child.
+    gap: f32,
+};
 
-    // Set this element's bounding box
+/// Place the rest of `root`'s subtree, `root` already placed: each parent
+/// places its children inside its content box (honoring its scroll offset)
+/// before they place theirs. Floating subtrees below `root` are skipped;
+/// `computeFloatingPositions` places them.
+fn positionSubtree(engine: *LayoutEngine, root: u32) void {
+    std.debug.assert(root < engine.elements.len());
+    if (engine.elements.getConst(root).first_child_index == null) return;
+
+    const root_plan = planChildPositions(engine, root);
+    if (!root_plan.has_grandchildren) {
+        placeLeafChildren(engine, root_plan); // No frame needed.
+        return;
+    }
+
+    // A frame per open level: the open stack bounds the tree's depth.
+    var stack: [MAX_OPEN_DEPTH]PositionFrame = undefined;
+    stack[0] = root_plan;
+    var depth: u32 = 1;
+    var open_count: u32 = 1;
+    while (depth > 0) {
+        std.debug.assert(open_count <= engine.elements.len()); // Each parent once.
+        var opened: PositionFrame = undefined;
+        if (placeSiblings(engine, &stack[depth - 1], &opened)) {
+            std.debug.assert(depth < stack.len);
+            stack[depth] = opened;
+            depth += 1;
+            open_count += 1;
+        } else {
+            depth -= 1;
+        }
+    }
+}
+
+/// Plan where `parent_index`'s children go: the main-axis distribution's
+/// start offset and gap, shifted by the parent's scroll offset (negative:
+/// content scrolls under the viewport).
+fn planChildPositions(engine: *LayoutEngine, parent_index: u32) PositionFrame {
+    const parent = engine.elements.getConst(parent_index);
+    const first_child = parent.first_child_index.?;
+    std.debug.assert(first_child > parent_index); // Pre-order: children follow.
+    const layout = parent.config.layout;
+    const content_box = parent.computed.content_box;
+    std.debug.assert(content_box.width >= 0);
+    const is_horizontal = layout.layout_direction.isHorizontal();
+
+    var frame: PositionFrame = .{
+        .cursor = first_child,
+        .is_horizontal = is_horizontal,
+        .has_grandchildren = false,
+        .alignment = layout.child_alignment,
+        .content_box = content_box,
+        .next_x = 0,
+        .next_y = 0,
+        .gap = 0,
+    };
+    // Sum non-floating child sizes and count them along the main axis.
+    const totals = sumChildrenAlongMainAxis(engine, first_child, is_horizontal);
+    if (totals.child_count == 0) {
+        frame.cursor = null; // Only floating children: nothing flows here.
+        return frame;
+    }
+
+    // Convert distribution mode into concrete gap + start offset.
+    const dist = distributionParams(layout, content_box, totals);
+    const offset_x: f32 = if (parent.config.scroll) |s| -s.scroll_offset.x else 0;
+    const offset_y: f32 = if (parent.config.scroll) |s| -s.scroll_offset.y else 0;
+    frame.next_x = content_box.x + offset_x + if (is_horizontal) dist.start_offset else 0;
+    frame.next_y = content_box.y + offset_y + if (!is_horizontal) dist.start_offset else 0;
+    frame.gap = dist.effective_gap;
+    frame.has_grandchildren = totals.has_grandchildren;
+    std.debug.assert(frame.gap >= 0);
+    return frame;
+}
+
+/// Place `frame`'s remaining children until one has grandchildren: plan it
+/// into `opened` and return true for the walk to push it, its siblings left
+/// for later; or return false once every child is placed. A child whose own
+/// children are all leaves is finished here, without a frame. Floating
+/// children are placed by `computeFloatingPositions`.
+fn placeSiblings(engine: *LayoutEngine, frame: *PositionFrame, opened: *PositionFrame) bool {
+    std.debug.assert(frame.gap >= 0);
+    var local = frame.*; // Kept in registers across a wide row.
+    var sibling_count: u32 = 0;
+    while (local.cursor) |child_index| {
+        std.debug.assert(sibling_count < engine.elements.len()); // Each sibling once.
+        sibling_count += 1;
+        const child = engine.elements.get(child_index);
+        local.cursor = child.next_sibling_index;
+        if (child.config.floating == null) {
+            placeNext(&local, child);
+            if (child.first_child_index != null) {
+                const plan = planChildPositions(engine, child_index);
+                if (plan.has_grandchildren) {
+                    frame.* = local;
+                    opened.* = plan;
+                    return true;
+                }
+                placeLeafChildren(engine, plan);
+            }
+        }
+    }
+    frame.cursor = null;
+    return false;
+}
+
+/// Place every child of a parent whose non-floating children are all leaves.
+fn placeLeafChildren(engine: *LayoutEngine, plan: PositionFrame) void {
+    std.debug.assert(!plan.has_grandchildren);
+    var local = plan;
+    var sibling_count: u32 = 0;
+    while (local.cursor) |child_index| {
+        std.debug.assert(sibling_count < engine.elements.len()); // Each sibling once.
+        sibling_count += 1;
+        const child = engine.elements.get(child_index);
+        local.cursor = child.next_sibling_index;
+        if (child.config.floating == null) {
+            std.debug.assert(child.first_child_index == null);
+            placeNext(&local, child);
+        }
+    }
+}
+
+/// Place one non-floating child at its parent's next slot, aligned on the
+/// cross axis, and advance the slot past it and the gap.
+inline fn placeNext(frame: *PositionFrame, child: *LayoutElement) void {
+    std.debug.assert(child.config.floating == null);
+    std.debug.assert(frame.gap >= 0);
+    const is_horizontal = frame.is_horizontal;
+    const cross_offset = crossAxisOffset(frame.alignment, frame.content_box, child, is_horizontal);
+    const child_x = frame.next_x + (if (frame.is_horizontal) 0 else cross_offset);
+    const child_y = frame.next_y + (if (frame.is_horizontal) cross_offset else 0);
+    placeElement(child, child_x, child_y);
+    if (frame.is_horizontal) {
+        frame.next_x += child.computed.sized_width + frame.gap;
+    } else {
+        frame.next_y += child.computed.sized_height + frame.gap;
+    }
+}
+
+/// Set one element's `bounding_box` at (`x`, `y`) and its `content_box`
+/// inside its padding.
+fn placeElement(elem: *LayoutElement, x: f32, y: f32) void {
+    std.debug.assert(!std.math.isNan(x));
+    std.debug.assert(!std.math.isNan(y));
+    const padding = elem.config.layout.padding;
+
     elem.computed.bounding_box = .{
-        .x = parent_x,
-        .y = parent_y,
+        .x = x,
+        .y = y,
         .width = elem.computed.sized_width,
         .height = elem.computed.sized_height,
     };
@@ -55,84 +223,19 @@ pub fn computePositions(engine: *LayoutEngine, index: u32, parent_x: f32, parent
     // Content box (inside padding)
     // Use @max(0, ...) to prevent negative dimensions when element shrinks below padding
     elem.computed.content_box = .{
-        .x = parent_x + @as(f32, @floatFromInt(padding.left)),
-        .y = parent_y + @as(f32, @floatFromInt(padding.top)),
+        .x = x + @as(f32, @floatFromInt(padding.left)),
+        .y = y + @as(f32, @floatFromInt(padding.top)),
         .width = @max(0, elem.computed.sized_width - padding.totalX()),
         .height = @max(0, elem.computed.sized_height - padding.totalY()),
     };
-
-    // Position children (pass scroll offset if this is a scroll container)
-    if (elem.first_child_index) |first_child| {
-        const scroll_offset: ?ScrollOffset = if (elem.config.scroll) |s|
-            .{ .x = s.scroll_offset.x, .y = s.scroll_offset.y }
-        else
-            null;
-        positionChildren(engine, first_child, layout, elem.computed.content_box, scroll_offset, depth);
-    }
 }
 
-/// Position children along the main axis based on
-/// `main_axis_distribution` and `child_alignment`, skipping floating
-/// elements (those are positioned separately in `computeFloatingPositions`).
-pub fn positionChildren(
-    engine: *LayoutEngine,
-    first_child: u32,
-    layout: LayoutConfig,
-    content_box: BoundingBox,
-    scroll_offset: ?ScrollOffset,
-    depth: u32,
-) void {
-    std.debug.assert(first_child < engine.elements.len()); // Valid child index
-    std.debug.assert(depth < MAX_RECURSION_DEPTH); // Depth limit
-
-    const is_horizontal = layout.layout_direction.isHorizontal();
-
-    // Sum non-floating child sizes and count them along the main axis.
-    const totals = sumChildrenAlongMainAxis(engine, first_child, is_horizontal);
-    if (totals.child_count == 0) return;
-
-    // Convert distribution mode into concrete gap + start offset.
-    const dist = distributionParams(layout, content_box, totals);
-
-    // Apply scroll offset (negative — content scrolls under the viewport).
-    const offset_x: f32 = if (scroll_offset) |s| -s.x else 0;
-    const offset_y: f32 = if (scroll_offset) |s| -s.y else 0;
-
-    var cursor_x: f32 = content_box.x + offset_x + if (is_horizontal) dist.start_offset else 0;
-    var cursor_y: f32 = content_box.y + offset_y + if (!is_horizontal) dist.start_offset else 0;
-
-    // Position each child, recursing into its subtree.
-    var child_idx: ?u32 = first_child;
-    while (child_idx) |ci| {
-        const child = engine.elements.get(ci);
-
-        // Skip floating elements - they are positioned separately in computeFloatingPositions
-        if (child.config.floating != null) {
-            child_idx = child.next_sibling_index;
-            continue;
-        }
-
-        const cross_offset = crossAxisOffset(layout.child_alignment, content_box, child, is_horizontal);
-        const child_x = cursor_x + (if (is_horizontal) 0 else cross_offset);
-        const child_y = cursor_y + (if (is_horizontal) cross_offset else 0);
-
-        computePositions(engine, ci, child_x, child_y, depth + 1);
-
-        if (is_horizontal) {
-            cursor_x += child.computed.sized_width + dist.effective_gap;
-        } else {
-            cursor_y += child.computed.sized_height + dist.effective_gap;
-        }
-
-        child_idx = child.next_sibling_index;
-    }
-}
-
-/// Aggregates passed between the helpers below. Identical to the locals in
-/// the pre-split `positionChildren`.
+/// A parent's non-floating children: their summed main-axis size, their
+/// count, and whether any has children of its own.
 const MainAxisTotals = struct {
     total_size: f32,
     child_count: u32,
+    has_grandchildren: bool,
 };
 
 /// Pre-pass: count non-floating children and sum their main-axis sizes.
@@ -142,6 +245,7 @@ fn sumChildrenAlongMainAxis(engine: *LayoutEngine, first_child: u32, is_horizont
 
     var total_size: f32 = 0;
     var child_count: u32 = 0;
+    var has_grandchildren = false;
     var child_idx: ?u32 = first_child;
 
     while (child_idx) |ci| {
@@ -149,11 +253,16 @@ fn sumChildrenAlongMainAxis(engine: *LayoutEngine, first_child: u32, is_horizont
         if (child.config.floating == null) {
             total_size += if (is_horizontal) child.computed.sized_width else child.computed.sized_height;
             child_count += 1;
+            if (child.first_child_index != null) has_grandchildren = true;
         }
         child_idx = child.next_sibling_index;
     }
 
-    return .{ .total_size = total_size, .child_count = child_count };
+    return .{
+        .total_size = total_size,
+        .child_count = child_count,
+        .has_grandchildren = has_grandchildren,
+    };
 }
 
 /// Resolved `main_axis_distribution` parameters — concrete gap and start
@@ -299,58 +408,63 @@ fn resolveFloatingParentBbox(
 }
 
 /// Compute sizes for a floating element with text wrapping integrated.
+/// Walks the floating subtree forwards, skipping nested floating subtrees
+/// (they have their own pass). Each element visited sizes its own subtree
+/// again from the size it holds when the walk reaches it, then wraps its
+/// text: the order and results of the recursive pass this replaces.
 pub fn computeFloatingSizesWithText(
     engine: *LayoutEngine,
-    index: u32,
+    float_root: u32,
     max_width: f32,
     max_height: f32,
 ) !void {
     std.debug.assert(max_width >= 0);
     std.debug.assert(max_height >= 0);
 
-    // First compute initial sizes (top-down).
-    sizing_pass.computeFinalSizes(engine, index, max_width, max_height, 0);
-
-    // Now wrap text with known container widths - this may change element dimensions.
-    const elem = engine.elements.get(index);
-
-    if (elem.text_data) |*td| {
-        const text_max_width = if (elem.parent_index) |pi| blk: {
-            const parent = engine.elements.getConst(pi);
-            // Use @max(0, ...) to prevent negative dimensions when element shrinks below padding
-            break :blk @max(0, parent.computed.sized_width - parent.config.layout.padding.totalX());
-        } else max_width;
-
-        td.container_width = text_max_width;
-
-        if (td.config.wrap_mode != .none and text_max_width > 0) {
-            const wrap_result = try sizing_pass.wrapText(engine, td.text, td.config, text_max_width);
-            td.wrapped_lines = wrap_result.lines;
-
-            if (wrap_result.lines.len > 0) {
-                td.measured_width = wrap_result.max_line_width;
-                td.measured_height = wrap_result.total_height;
-                elem.computed.sized_width = wrap_result.max_line_width;
-                elem.computed.sized_height = wrap_result.total_height;
-                // Grow the fit-content containers up to this floating root,
-                // as the main pass does; the menu or modal grows with them.
-                sizing_pass.propagateHeightChange(engine, elem.parent_index);
-            }
+    const end = sizing_pass.subtreeEnd(engine, float_root);
+    var index = float_root;
+    while (index < end) {
+        const elem = engine.elements.get(index);
+        if (index > float_root) std.debug.assert(elem.parent_index.? < index);
+        if (index != float_root and elem.config.floating != null) {
+            index = sizing_pass.subtreeEnd(engine, index);
+            continue;
         }
+        const is_root = index == float_root;
+        const available_width = if (is_root) max_width else elem.computed.sized_width;
+        const available_height = if (is_root) max_height else elem.computed.sized_height;
+        sizing_pass.computeFinalSizes(engine, index, available_width, available_height);
+        try wrapFloatingText(engine, index, available_width);
+        index += 1;
     }
+    std.debug.assert(index == end);
+}
 
-    // Recurse to children (skipping nested floating elements — they have their own pass).
-    if (elem.first_child_index) |first_child| {
-        var child_idx: ?u32 = first_child;
-        while (child_idx) |ci| {
-            const child = engine.elements.get(ci);
-            if (child.config.floating == null) {
-                const child_max_w = child.computed.sized_width;
-                const child_max_h = child.computed.sized_height;
-                try computeFloatingSizesWithText(engine, ci, child_max_w, child_max_h);
-            }
-            child_idx = child.next_sibling_index;
-        }
+/// Wrap one element of a floating subtree at its parent's content width, or
+/// at `max_width` without a parent, and grow its fit-content ancestors.
+fn wrapFloatingText(engine: *LayoutEngine, index: u32, max_width: f32) !void {
+    std.debug.assert(max_width >= 0);
+    const elem = engine.elements.get(index);
+    const td = if (elem.text_data) |*data| data else return;
+    const text_max_width = if (elem.parent_index) |pi| blk: {
+        const parent = engine.elements.getConst(pi);
+        // Use @max(0, ...) to prevent negative dimensions when element shrinks below padding
+        break :blk @max(0, parent.computed.sized_width - parent.config.layout.padding.totalX());
+    } else max_width;
+
+    td.container_width = text_max_width;
+    if (td.config.wrap_mode == .none or text_max_width <= 0) return;
+
+    const wrap_result = try sizing_pass.wrapText(engine, td.text, td.config, text_max_width);
+    td.wrapped_lines = wrap_result.lines;
+    if (wrap_result.lines.len > 0) {
+        td.measured_width = wrap_result.max_line_width;
+        td.measured_height = wrap_result.total_height;
+        elem.computed.sized_width = wrap_result.max_line_width;
+        elem.computed.sized_height = wrap_result.total_height;
+        // Grow the fit-content containers up to this floating root,
+        // as the main pass does; the menu or modal grows with them.
+        sizing_pass.propagateHeightChange(engine, elem.parent_index);
     }
 }
 
@@ -422,12 +536,6 @@ fn positionFloatingElement(
         .height = @max(0, elem.computed.sized_height - padding.totalY()),
     };
 
-    // Recursively position children of the floating element.
-    if (elem.first_child_index) |first_child| {
-        const scroll_offset: ?ScrollOffset = if (elem.config.scroll) |s|
-            .{ .x = s.scroll_offset.x, .y = s.scroll_offset.y }
-        else
-            null;
-        positionChildren(engine, first_child, elem.config.layout, elem.computed.content_box, scroll_offset, 0);
-    }
+    // Place the floating element's subtree inside it.
+    positionSubtree(engine, float_idx);
 }

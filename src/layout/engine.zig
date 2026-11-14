@@ -53,11 +53,6 @@ pub const MAX_LINES_PER_TEXT = 1024;
 /// Maximum words per text element for word-level measurement caching
 pub const MAX_WORDS_PER_TEXT = 2048;
 
-/// Maximum recursion depth for layout tree traversal. ~100-200 bytes per
-/// frame, so 48 levels ≈ 10KB — safe for a 1MB stack. Real layouts rarely
-/// exceed 20 levels; this is a fail-fast cap.
-pub const MAX_RECURSION_DEPTH = 48;
-
 /// Threshold for treating a max constraint as effectively unconstrained
 /// (detects grow elements without a meaningful upper bound in the fast path).
 pub const UNCONSTRAINED_MAX: f32 = 1e10;
@@ -416,16 +411,16 @@ pub const LayoutEngine = struct {
         std.debug.assert(self.open_element_stack.len == 0);
 
         // Phase 1: Compute minimum sizes (bottom-up).
-        sizing_pass.computeMinSizes(self, root, 0);
+        sizing_pass.computeMinSizes(self, root);
 
         // Phase 2: Compute final sizes (top-down).
-        sizing_pass.computeFinalSizes(self, root, self.viewport_width, self.viewport_height, 0);
+        sizing_pass.computeFinalSizes(self, root, self.viewport_width, self.viewport_height);
 
         // Phase 2b: Wrap text now that we know container widths.
         try sizing_pass.computeTextWrapping(self, root);
 
         // Phase 3: Compute positions (top-down).
-        position_pass.computePositions(self, root, 0, 0, 0);
+        position_pass.computePositions(self, root, 0, 0);
 
         // Phase 3b: Position floating elements (includes text wrapping for floats).
         try position_pass.computeFloatingPositions(self);
