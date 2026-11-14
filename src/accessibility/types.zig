@@ -81,7 +81,10 @@ pub const Role = enum(u8) {
             .spinbutton => "AXIncrementor",
             .combobox => "AXComboBox",
             .listbox => "AXList",
-            .option => "AXStaticText",
+            // VoiceOver reads `AXSelected` on static text only inside a web
+            // area, so an option is a radio button: one of a set, whose value
+            // VoiceOver reads as "selected". `mac_bridge` names it "option".
+            .option => "AXRadioButton",
             .menu => "AXMenu",
             .menuitem => "AXMenuItem",
             .menubar => "AXMenuBar",
