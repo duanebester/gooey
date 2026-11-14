@@ -253,6 +253,8 @@ pub const Effects = struct {
     rendered: ?*const records.Frame,
     /// The payload being dropped, while delivering to `DropTarget.on_drop`.
     drop: ?Drop,
+    /// A keyboard drag to start (`startDrag`), applied after the handler.
+    drag_start: ?ElementId,
 
     pub const Drop = struct { type_id: usize, payload: u64 };
 
@@ -303,6 +305,7 @@ pub const Effects = struct {
             .pointer_drag = null,
             .rendered = null,
             .drop = null,
+            .drag_start = null,
         };
     }
 
@@ -311,8 +314,6 @@ pub const Effects = struct {
         return self.event;
     }
 
-    /// The pointer capture step being delivered, inside `Box.on_pointer_drag`;
-    /// null in any other handler.
     /// The payload dropped on a `DropTarget`, inside its `on_drop`; null in
     /// any other handler or when the payload is not a `T`.
     pub fn dropPayload(self: *const Effects, comptime T: type) ?T {
@@ -322,6 +323,8 @@ pub const Effects = struct {
         return unpackArg(T, dropped.payload);
     }
 
+    /// The pointer capture step being delivered, inside `Box.on_pointer_drag`;
+    /// null in any other handler.
     pub fn pointerDrag(self: *const Effects) ?PointerDrag {
         const drag = self.pointer_drag orelse return null;
         assert(std.math.isFinite(drag.x));
@@ -341,6 +344,21 @@ pub const Effects = struct {
             if (record.id == id) return record.bounds;
         }
         return null;
+    }
+
+    /// Pick up keyed draggable `id` (`Box.draggable`) for a keyboard drag,
+    /// after this handler returns; at most one per handler. The app binds
+    /// the key, typically Space on the focused source. While the drag is
+    /// on, the router takes every key: Tab and the arrows move `over` and
+    /// focus through the drop targets of the payload's type in tree order,
+    /// Enter or Space drops there, and Escape cancels. A drop leaves focus
+    /// on a focusable target; otherwise, and on a cancel, focus returns to
+    /// the source. A drag already on, or an `id` not on screen,
+    /// starts nothing; an `id` on screen that is not draggable panics.
+    pub fn startDrag(self: *Effects, id: ElementId) void {
+        assert(id.isKeyed());
+        assert(self.drag_start == null);
+        self.drag_start = id;
     }
 
     /// The completion being delivered, for `FileDialogRequest.on_complete`.

@@ -39,8 +39,12 @@ pub fn Drag(comptime T: type) type {
         /// `.root` over none.
         over: ElementId,
         /// The pointer, in window coordinates; it may lie outside the window.
+        /// In a keyboard drag, the centre of `over`, or of the source over
+        /// none, so a preview placed here follows the keys.
         x: f32,
         y: f32,
+        /// Started by `effects.startDrag`, not by the pointer.
+        keyboard: bool,
     };
 }
 
@@ -116,6 +120,7 @@ pub const Cx = struct {
             .over = active.over,
             .x = active.x,
             .y = active.y,
+            .keyboard = active.keyboard,
         };
     }
 

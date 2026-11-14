@@ -139,7 +139,7 @@ Every example in `src/examples/` is a complete app; read them next. Run one with
 | `run-dashboard`        | `dashboard.zig`            | gooey-charts in `ui.paint` elements        |
 | `run-core-file-dialog` | `core_file_dialog.zig`     | Open, multi-select, folder, save dialogs   |
 | `run-splitter`         | `splitter.zig`             | `on_pointer_drag`, resize cursors, ranges  |
-| `run-drag-drop`        | `drag_drop.zig`            | `draggable`, `drop_target`, `.drag` layer  |
+| `run-drag-drop`        | `drag_drop.zig`            | `draggable`, `.drag` layer, `startDrag`    |
 
 `lucide-demo` does not build on Windows; every other example builds on every desktop
 platform.
@@ -382,6 +382,7 @@ returns.
 | `pointerDrag()`                          | The pointer capture step, in `on_pointer_drag`.     |
 | `bounds(id)`                             | A keyed element's `ui.Rect` in the frame on screen. |
 | `dropPayload(T)`                         | The dropped payload, in a `drop_target` handler.    |
+| `startDrag(id)`                          | Pick up a keyed draggable from the keyboard.        |
 
 **File dialogs.** A handler requests a dialog and names the handler that receives the
 outcome. The dialog opens on the main thread after the handler returns, and the outcome
@@ -467,8 +468,9 @@ Escape, or a lost gesture (focus loss, Cmd-Tab) ends the drag with no call. A bo
 both `draggable` and `on_pointer_drag`. From `drag_drop.zig`:
 
 ```zig
+            const key: gooey.Key = .{ .index = id };
             cx.render(ui.box(.{
-                .key = .{ .index = id },
+                .key = key,
                 .draggable = .of(ItemId, id),
 ```
 
@@ -481,6 +483,10 @@ both `draggable` and `on_pointer_drag`. From `drag_drop.zig`:
         const id = effects.dropPayload(ItemId) orelse return;
         assert(id < items.len);
         self.move(id, side);
+        const event = effects.inputEvent() orelse return;
+        if (event.* == .key_down) {
+            effects.announce(drop_messages[@backingInt(side)][id], .assertive);
+        }
     }
 ```
 
@@ -503,6 +509,34 @@ target under the preview stays the target:
 ```
 
 A `.drag` layer adds nothing to the accessibility tree: the preview repeats its source.
+
+**From the keyboard.** `effects.startDrag(id)` picks up a keyed draggable from a handler,
+on a key the app chooses. While the drag is on it takes every key: Tab and the arrows move
+`over`, and focus with its ring, through the drop targets of its type in tree order; Enter
+or Space drops there; Escape cancels and returns focus to the source. `x` and `y`
+are then the centre of `over`, or of the source, so the same preview follows the keys, and
+`Drag(T).keyboard` is true. `drag_drop.zig` picks a focused card up with Space:
+
+```zig
+    pub fn pickUp(_: *State, card: gooey.ElementId, effects: *Effects) void {
+        const event = effects.inputEvent() orelse return;
+        if (event.* != .key_down) return;
+        const key = &event.key_down;
+        if (key.key != .space or key.is_repeat) return;
+        if (key.modifiers.cmd or key.modifiers.ctrl or key.modifiers.alt) return;
+        effects.startDrag(card);
+        effects.announce(pick_up_message, .assertive);
+    }
+```
+
+```zig
+                .on_key = cx.on(State.pickUp, .{ .arg = cx.id(key) }),
+```
+
+Each list is labelled, so the screen reader reads the list that takes focus, and the drop
+handler announces where the card went. A drop leaves focus on a focusable target, else
+returns it to the source; the lists are focusable but no tab stop, so focus stays put and
+the announcement is not cut off.
 
 ### Keymaps and actions
 
@@ -844,9 +878,8 @@ pub const std_options = gooey.std_options;
   about. Linux has no screen reader bridge.
 - **Cut in 0.4.0:** multi-window (one window per app), liquid glass, custom shaders, and
   post-processing.
-- **Deferred:** picking up a drag with the keyboard (pointer drag and drop ships; see
-  above), drag and drop between apps or with the OS, edge auto-scroll during a drag, tooltip
-  layers, and programmatic scrolling (`List` has no `scroll_to`).
+- **Deferred:** drag and drop between apps or with the OS, edge auto-scroll during a drag,
+  tooltip layers, and programmatic scrolling (`List` has no `scroll_to`).
 
 ## Platforms
 

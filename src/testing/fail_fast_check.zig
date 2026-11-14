@@ -33,6 +33,8 @@
 //! - `core-pointer-drag-unkeyed`: a box with `on_pointer_drag` and no key.
 //! - `core-drag-unkeyed`: a box with `draggable` and no key.
 //! - `core-drag-both`: a keyed box with both `draggable` and `on_pointer_drag`.
+//! - `core-start-drag-target`: a click asks `effects.startDrag` for its own box,
+//!   which is keyed and on screen but not draggable.
 //! - `core-dialog-target`: names a non-root state as a file dialog's completion handler.
 //! - `core-dialog-paths`: a dialog selects one path more than `dialog_path_count_max`.
 //! - `core-mono-unset`: draws `.family = .mono` text in an app with no `fonts.mono`.
@@ -76,6 +78,7 @@ const Mode = enum {
     @"core-pointer-drag-unkeyed",
     @"core-drag-unkeyed",
     @"core-drag-both",
+    @"core-start-drag-target",
     @"core-dialog-target",
     @"core-dialog-paths",
     @"core-mono-unset",
@@ -115,6 +118,7 @@ pub fn main(init: std.process.Init) !void {
         .@"core-pointer-drag-unkeyed" => coreTick(init.gpa, init.io, CoreApp.unkeyedDrag),
         .@"core-drag-unkeyed" => coreTick(init.gpa, init.io, CoreApp.unkeyedDraggable),
         .@"core-drag-both" => coreTick(init.gpa, init.io, CoreApp.dragBoth),
+        .@"core-start-drag-target" => coreStartDragTarget(init.gpa, init.io),
         .@"core-dialog-target" => coreDialogTarget(init.gpa, init.io),
         .@"core-dialog-paths" => coreDialogPaths(init.gpa, init.io),
         .@"core-mono-unset" => coreTick(init.gpa, init.io, CoreApp.monoText),
@@ -205,6 +209,10 @@ fn atlasLiveSet(gpa: std.mem.Allocator, io: std.Io) void {
 const CoreState = struct {
     fn picked(_: *CoreState) void {}
     fn dragged(_: *CoreState) void {}
+
+    fn startDrag(_: *CoreState, id: gooey.ElementId, effects: *gooey.Effects) void {
+        effects.startDrag(id);
+    }
 };
 
 const core_config: gooey.Config(CoreState) = .{
@@ -323,6 +331,17 @@ const CoreApp = struct {
 
     /// A window-sized box whose click requests a dialog completing on a
     /// state type that is not the root state.
+    /// A keyed, window-sized button that asks to drag itself; it has no
+    /// `Box.draggable`.
+    fn startDragButton(cx: *gooey.Cx) void {
+        const key: gooey.Key = .{ .name = "drag" };
+        cx.render(gooey.ui.box(.{
+            .key = key,
+            .on_click = cx.on(CoreState.startDrag, .{ .arg = cx.id(key) }),
+            .style = .{ .width = .{ .grow = 1 }, .height = .{ .grow = 1 } },
+        }, .{}));
+    }
+
     fn dialogButton(cx: *gooey.Cx) void {
         cx.render(gooey.ui.box(.{
             .key = .{ .name = "open" },
@@ -467,6 +486,11 @@ fn coreAllocation(gpa: std.mem.Allocator, io: std.Io) void {
     const app = initCoreApp(gooey.App(CoreState, CoreApp.empty, core_config), gpa, io);
     const bytes = app.guard.allocator().alloc(u8, 16) catch return;
     _ = bytes;
+}
+
+fn coreStartDragTarget(gpa: std.mem.Allocator, io: std.Io) void {
+    const app = initCoreApp(gooey.App(CoreState, CoreApp.startDragButton, core_config), gpa, io);
+    clickCenter(app);
 }
 
 fn coreDialogTarget(gpa: std.mem.Allocator, io: std.Io) void {

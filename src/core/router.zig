@@ -124,6 +124,8 @@ fn routeInput(window: *Window, event: *const input.InputEvent) void {
             const point = pointOf(mouse.position);
             window.pointer = .{ .x = point.x, .y = point.y };
             debugger.press(window, point.x, point.y);
+            // A press ends a keyboard drag, then lands as usual.
+            if (window.drag.keyboard) cancelDrag(window);
             press(window, event, point);
         },
         .mouse_up => |mouse| {
@@ -133,7 +135,8 @@ fn routeInput(window: *Window, event: *const input.InputEvent) void {
             if (window.capture.id != .root and window.capture.button == mouse.button) {
                 finishCapture(window, event, .end, point);
             }
-            if (window.drag.phase != .idle and window.drag.button == mouse.button) {
+            const pointer_drag = window.drag.phase != .idle and !window.drag.keyboard;
+            if (pointer_drag and window.drag.button == mouse.button) {
                 // A started drag drops and clicks nothing; an armed one never
                 // moved, so its press clicks as usual.
                 if (window.drag.phase == .active) {
@@ -153,7 +156,7 @@ fn routeInput(window: *Window, event: *const input.InputEvent) void {
             window.pointer = .{ .x = point.x, .y = point.y };
             if (window.scroll_drag != .root) dragScrollbar(window, point);
             if (window.capture.id != .root) moveCapture(window, event, point);
-            if (window.drag.phase != .idle) moveDrag(window, point);
+            if (window.drag.phase != .idle and !window.drag.keyboard) moveDrag(window, point);
             updateHover(window);
             debugger.pointerMoved(window);
         },
@@ -162,30 +165,44 @@ fn routeInput(window: *Window, event: *const input.InputEvent) void {
             updateHover(window);
             debugger.pointerMoved(window);
         },
-        .key_down => |key| {
-            // Escape cancels a capture or a drag and goes no further, as
-            // 0.3.1's drag did.
-            if (key.key == .escape and window.capture.id != .root) {
-                finishCapture(window, event, .cancel, capturePoint(window));
-            } else {
-                if (key.key == .escape and window.drag.phase != .idle) {
-                    cancelDrag(window);
-                } else {
-                    keyToFocus(window, event);
-                }
-            }
+        .key_down => keyDown(window, event),
+        // Typing reaches no text field during a keyboard drag.
+        .key_up, .text_input, .composition => {
+            if (!window.drag.keyboard) keyToFocus(window, event);
         },
-        .key_up, .text_input, .composition => keyToFocus(window, event),
         .scroll => |scroll| wheel(window, event, pointOf(scroll.position)),
         .pointer_cancelled => {
             if (window.scroll_drag != .root) endScrollDrag(window);
             if (window.capture.id != .root) {
                 finishCapture(window, event, .cancel, capturePoint(window));
             }
-            if (window.drag.phase != .idle) cancelDrag(window);
+            if (window.drag.keyboard) {
+                endKeyboardDrag(window);
+            } else {
+                if (window.drag.phase != .idle) cancelDrag(window);
+            }
             window.press_len = 0;
         },
         else => {},
+    }
+}
+
+/// Escape cancels a capture or a drag and goes no further, as 0.3.1's drag
+/// did. A keyboard drag takes every key.
+fn keyDown(window: *Window, event: *const input.InputEvent) void {
+    const key = &event.key_down;
+    if (window.drag.keyboard) {
+        keyboardDragKey(window, event);
+    } else {
+        if (key.key == .escape and window.capture.id != .root) {
+            finishCapture(window, event, .cancel, capturePoint(window));
+        } else {
+            if (key.key == .escape and window.drag.phase != .idle) {
+                cancelDrag(window);
+            } else {
+                keyToFocus(window, event);
+            }
+        }
     }
 }
 
@@ -291,6 +308,7 @@ fn armDrag(
     assert(record.id.isKeyed());
     window.drag = .{
         .phase = .armed,
+        .keyboard = false,
         .source = record.id,
         .button = button,
         .type_id = record.drag_type,
@@ -351,8 +369,22 @@ fn drop(window: *Window, event: *const input.InputEvent, point: Point) void {
     const frame = window.rendered();
     const target = dropTargetFrom(frame, hitIndex(frame, point), drag.type_id);
     updateHover(window);
-    if (target == index_none) return;
+    if (target != index_none) deliverDrop(window, event, &drag, target);
+}
+
+/// Call drop target `target`'s `on_drop`, in the frame on screen, with the
+/// ended drag's payload.
+fn deliverDrop(
+    window: *Window,
+    event: *const input.InputEvent,
+    drag: *const Drag,
+    target: u32,
+) void {
+    assert(window.drag.phase == .idle);
+    const frame = window.rendered();
+    assert(target < frame.hit_count);
     const record = &frame.hits[target];
+    assert(record.drop_type == drag.type_id);
     const handler = frame.handlerAt(record.on_drop).?;
     var effects = handler_mod.Effects.init(event, record.id);
     effects.drop = .{ .type_id = drag.type_id, .payload = drag.payload };
@@ -369,6 +401,131 @@ fn cancelDrag(window: *Window) void {
     window.press_len = 0;
     updateHover(window);
     assert(window.drag.over == .root);
+}
+
+/// `effects.startDrag`: a keyboard drag of draggable `id` starts active,
+/// over nothing, at its source's centre. A gesture already on, or an `id`
+/// the frame on screen lacks, starts none; it may have stopped rendering
+/// since the handler's event.
+fn startKeyboardDrag(window: *Window, id: ElementId) void {
+    assert(id.isKeyed());
+    if (window.drag.phase != .idle) return;
+    if (window.capture.id != .root) return;
+    const frame = window.rendered();
+    const index = findRecord(frame, id);
+    if (index == index_none) return;
+    const record = &frame.hits[index];
+    if (record.drag_type == 0) {
+        std.debug.panic("effects.startDrag: element {x} has no Box.draggable", .{
+            @backingInt(id),
+        });
+    }
+    const centre = centreOf(record.bounds);
+    window.drag = .{
+        .phase = .active,
+        .keyboard = true,
+        .source = id,
+        .button = .left,
+        .type_id = record.drag_type,
+        .payload = record.drag_payload,
+        .start_x = centre.x,
+        .start_y = centre.y,
+        .x = centre.x,
+        .y = centre.y,
+        .over = .root,
+    };
+    window.press_len = 0;
+    window.render_requested = true;
+    assert(window.drag.over == .root);
+}
+
+fn centreOf(bounds: records.Rect) Point {
+    assert(bounds.width >= 0);
+    assert(bounds.height >= 0);
+    return .{ .x = bounds.x + bounds.width / 2, .y = bounds.y + bounds.height / 2 };
+}
+
+/// A key during a keyboard drag, which takes them all: Tab and the arrows
+/// move `over`, Enter or Space drops on it, Escape cancels, and any other
+/// key does nothing, so typing reaches no text field.
+fn keyboardDragKey(window: *Window, event: *const input.InputEvent) void {
+    assert(window.drag.keyboard);
+    assert(window.drag.phase == .active);
+    const key = &event.key_down;
+    switch (key.key) {
+        .tab => moveKeyboardOver(window, key.modifiers.shift),
+        .down, .right => moveKeyboardOver(window, false),
+        .up, .left => moveKeyboardOver(window, true),
+        .escape => endKeyboardDrag(window),
+        else => if (activates(key)) keyboardDrop(window, event),
+    }
+}
+
+/// Move `over` and focus, with its ring, to the next drop target of the
+/// payload's type in tree order (the previous with `backward`), wrapping,
+/// from `over` or else the source. Only targets the pointer could reach
+/// count: none under a modal or with `pointer_events = .none`.
+fn moveKeyboardOver(window: *Window, backward: bool) void {
+    const drag = &window.drag;
+    assert(drag.keyboard);
+    assert(drag.type_id != 0);
+    const frame = window.rendered();
+    const count = frame.hit_count;
+    assert(count <= frame.hits.len);
+    if (count == 0) return;
+    const from = findRecord(frame, if (drag.over != .root) drag.over else drag.source);
+    // With neither on screen, the walk starts just outside the list's end.
+    var index: u32 = from;
+    if (from == index_none) index = if (backward) 0 else count - 1;
+    var steps: u32 = 0;
+    while (steps < count) : (steps += 1) {
+        index = if (backward) (index + count - 1) % count else (index + 1) % count;
+        const record = &frame.hits[index];
+        if (record.drop_type != drag.type_id) continue;
+        if (!record.pointer or index < frame.modal_hit_start) continue;
+        setKeyboardOver(window, record);
+        return;
+    }
+}
+
+fn setKeyboardOver(window: *Window, record: *const records.HitRecord) void {
+    const drag = &window.drag;
+    assert(record.drop_type == drag.type_id);
+    assert(record.id.isKeyed());
+    const centre = centreOf(record.bounds);
+    drag.over = record.id;
+    drag.x = centre.x;
+    drag.y = centre.y;
+    setFocus(window, record.id, true);
+    window.render_requested = true;
+}
+
+/// Enter or Space: drop on `over`, if it still renders; over nothing, the
+/// drag stays on. Focus stays on a focusable target, so a screen reader
+/// does not move and cut off the drop's announcement (VoiceOver stops
+/// speech on a focus change); otherwise it returns to the source.
+fn keyboardDrop(window: *Window, event: *const input.InputEvent) void {
+    const drag = window.drag;
+    assert(drag.keyboard);
+    assert(drag.phase == .active);
+    if (drag.over == .root) return;
+    const frame = window.rendered();
+    const target = findRecord(frame, drag.over);
+    if (target == index_none) return;
+    endKeyboardDrag(window);
+    if (frame.hits[target].focusable) setFocus(window, drag.over, true);
+    deliverDrop(window, event, &drag, target);
+}
+
+/// A keyboard drag ends: the preview goes, and focus returns to the source
+/// with its ring; if the source moved, `validateFocus` finds its successor.
+/// A drop on a focusable target then moves focus there (`keyboardDrop`).
+fn endKeyboardDrag(window: *Window) void {
+    assert(window.drag.keyboard);
+    const source = window.drag.source;
+    cancelDrag(window);
+    setFocus(window, source, true);
+    assert(!window.drag.keyboard);
 }
 
 /// A capture's pointer move. Past `click_slop_px` from the press the
@@ -819,6 +976,7 @@ fn call(window: *Window, handler: handler_mod.Handler, effects: *handler_mod.Eff
         );
         window.render_requested = true;
     }
+    if (effects.drag_start) |id| startKeyboardDrag(window, id);
 }
 
 fn isKeyboard(event: *const input.InputEvent) bool {
@@ -942,10 +1100,40 @@ fn updateOver(window: *Window, frame: *const records.Frame, target: u32) void {
         assert(drag.over == .root);
         return;
     }
+    if (drag.keyboard) return followKeyboardOver(window, frame);
     const found = dropTargetFrom(frame, target, drag.type_id);
     const over = if (found == index_none) .root else frame.hits[found].id;
     if (over == drag.over) return;
     drag.over = over;
+    window.render_requested = true;
+}
+
+/// A keyboard drag ignores the pointer. After a flip its `x`, `y` follow
+/// `over` (or the source) to where the frame placed it; a target that
+/// stopped rendering leaves `over` at none and focus on the source.
+fn followKeyboardOver(window: *Window, frame: *const records.Frame) void {
+    const drag = &window.drag;
+    assert(drag.keyboard);
+    if (drag.over != .root) {
+        const index = findRecord(frame, drag.over);
+        if (index != index_none and frame.hits[index].drop_type == drag.type_id) {
+            moveKeyboardPoint(window, frame.hits[index].bounds);
+            return;
+        }
+        drag.over = .root;
+        setFocus(window, drag.source, true);
+        window.render_requested = true;
+    }
+    const source = findRecord(frame, drag.source);
+    if (source != index_none) moveKeyboardPoint(window, frame.hits[source].bounds);
+}
+
+fn moveKeyboardPoint(window: *Window, bounds: records.Rect) void {
+    const centre = centreOf(bounds);
+    const drag = &window.drag;
+    if (centre.x == drag.x and centre.y == drag.y) return;
+    drag.x = centre.x;
+    drag.y = centre.y;
     window.render_requested = true;
 }
 
@@ -970,8 +1158,11 @@ pub fn validateFocus(window: *Window) void {
     if (window.focus == .root) return;
     const frame = window.built();
     const index = findRecord(frame, window.focus);
-    if (index != index_none and frame.hits[index].focusable) {
-        if (index >= frame.modal_hit_start) return;
+    if (index != index_none) {
+        const record = &frame.hits[index];
+        if (record.focusable or window.isKeyboardDropTarget(record.id)) {
+            if (index >= frame.modal_hit_start) return;
+        }
     }
     const successor = focusSuccessor(window.rendered(), frame, window.focus);
     assert(successor != window.focus);

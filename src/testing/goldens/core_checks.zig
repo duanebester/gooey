@@ -4728,7 +4728,10 @@ const DropProbe = struct {
     shifted: bool = false,
     modal: bool = false,
     source_shown: bool = true,
+    near_shown: bool = true,
     near_drops: u32 = 0,
+    /// Keys the source's `on_key` received.
+    source_keys: u32 = 0,
     other_drops: u32 = 0,
     blocked_drops: u32 = 0,
     dropped: ?u32 = null,
@@ -4754,6 +4757,14 @@ const DropProbe = struct {
 
     fn clickPreview(self: *DropProbe, _: *Effects) void {
         self.preview_clicks += 1;
+    }
+
+    /// Space on the focused source picks it up.
+    fn sourceKey(self: *DropProbe, effects: *Effects) void {
+        const event = effects.inputEvent().?;
+        if (event.* != .key_down) return;
+        self.source_keys += 1;
+        if (event.key_down.key == .space) effects.startDrag(probeId("source"));
     }
 };
 
@@ -4781,13 +4792,15 @@ fn dropProbeRender(cx: *Cx) void {
             .key = .{ .name = "source" },
             .style = .{ .width = .{ .fixed = 40 }, .height = .{ .fixed = 40 } },
             .draggable = .of(u32, 7),
+            .focusable = true,
+            .on_key = cx.on(DropProbe.sourceKey, .{}),
         }, .{}) else dropProbeSpacer(40),
         dropProbeSpacer(near_x - 40),
-        ui.box(.{
+        if (s.near_shown) ui.box(.{
             .key = .{ .name = "near" },
             .style = cell,
             .drop_target = .of(u32, cx.on(DropProbe.dropNear, .{})),
-        }, .{}),
+        }, .{}) else dropProbeSpacer(60),
         dropProbeSpacer(300 - near_x - 60),
         ui.box(.{
             .key = .{ .name = "other" },
@@ -4937,4 +4950,169 @@ test "a drag drops its payload after its source stops rendering, and is cancelle
     scrollMouse(app, &now, .{ .mouse_up = mouse(130, 20) });
     try testing.expectEqual(@as(u32, 1), app.state.near_drops);
     try testing.expectEqual(@as(u32, 0), app.state.preview_clicks);
+}
+
+fn keyDown(app: anytype, now: *u64, key: gooey.input.KeyCode, modifiers: gooey.input.Modifiers) void {
+    scrollMouse(app, now, .{ .key_down = chord(key, modifiers) });
+}
+
+test "drag_drop: Space picks a card up, Tab and the arrows choose a list, Space drops" {
+    // Goal: the keyboard path of contract §5 on the example. Methodology:
+    // Tab twice focuses Banana, the second card; Space starts a keyboard
+    // drag at Banana's centre, which dims it. Tab goes to Basket, the first
+    // target after the source in tree order (not Fruits, the first in the
+    // tree), with focus and its ring; Tab again wraps to Fruits, and
+    // Shift+Tab and the arrows walk back and forth. Space drops Banana in
+    // Basket and says so, and focus stays on Basket, which is focusable, so
+    // the screen reader is not moved off the announcement. Tab then reaches
+    // the moved Banana; Escape cancels a drag of it and focuses it again,
+    // and a press cancels another.
+    const app = try testing.allocator.create(DragDropApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    const fruits = dragDropRecord(app, null, false).id;
+    const basket_record = dragDropRecord(app, null, true);
+    const basket = basket_record.id;
+    const basket_bounds = basket_record.bounds;
+    const banana = dragDropRecord(app, 1, false);
+    const banana_id = banana.id;
+    const banana_bounds = banana.bounds;
+    keyDown(app, &now, .tab, .{});
+    keyDown(app, &now, .tab, .{});
+    try testing.expectEqual(banana_id, app.window.focus);
+    keyDown(app, &now, .space, .{});
+    const drag = &app.window.drag;
+    try testing.expect(drag.keyboard);
+    try testing.expect(drag.phase == .active);
+    try testing.expectEqual(gooey.ElementId.root, drag.over);
+    try testing.expectEqual(banana_bounds.x + banana_bounds.width / 2, drag.x);
+    const banana_color = drag_drop.items[1].color;
+    const source_alpha = quadAlphaAt(app.window.rendered(), banana_color, banana_bounds.x).?;
+    try testing.expectApproxEqAbs(@as(f32, 0.4), source_alpha, 0.001);
+    try testing.expectEqual(@as(u32, 1), app.window.rendered().announcements.count);
+
+    keyDown(app, &now, .tab, .{});
+    try testing.expectEqual(basket, drag.over);
+    try testing.expectEqual(basket, app.window.focus);
+    try testing.expect(app.window.focus_visible);
+    try testing.expectEqual(basket_bounds.y + basket_bounds.height / 2, drag.y);
+    keyDown(app, &now, .tab, .{});
+    try testing.expectEqual(fruits, drag.over);
+    keyDown(app, &now, .tab, .{ .shift = true });
+    try testing.expectEqual(basket, drag.over);
+    keyDown(app, &now, .down, .{});
+    try testing.expectEqual(fruits, drag.over);
+    keyDown(app, &now, .up, .{});
+    try testing.expectEqual(basket, drag.over);
+    keyDown(app, &now, .a, .{});
+    try testing.expectEqual(basket, drag.over);
+    try testing.expectEqual(basket, app.window.focus);
+
+    keyDown(app, &now, .space, .{});
+    try testing.expect(drag.phase == .idle);
+    try testing.expect(!drag.keyboard);
+    try testing.expectEqualSlices(drag_drop.ItemId, &.{ 0, 2, 3 }, app.state.list(.left).slice());
+    try testing.expectEqualSlices(drag_drop.ItemId, &.{1}, app.state.list(.right).slice());
+    const said = app.window.rendered().announcements;
+    try testing.expectEqual(@as(u32, 1), said.count);
+    try testing.expectEqualStrings("Banana moved to Basket", said.text(said.slice()[0]));
+    try testing.expectEqual(basket, app.window.focus);
+    try testing.expect(app.window.focus_visible);
+
+    // Escape cancels and focuses the source; a press cancels too.
+    keyDown(app, &now, .tab, .{});
+    const moved_id = dragDropRecord(app, 1, false).id;
+    try testing.expect(moved_id != banana_id);
+    try testing.expectEqual(moved_id, app.window.focus);
+    keyDown(app, &now, .space, .{});
+    try testing.expect(drag.keyboard);
+    // Back from the source, the first target is its own list, before it.
+    keyDown(app, &now, .left, .{});
+    try testing.expectEqual(basket, drag.over);
+    keyDown(app, &now, .escape, .{});
+    try testing.expect(drag.phase == .idle);
+    try testing.expectEqual(moved_id, app.window.focus);
+    keyDown(app, &now, .space, .{});
+    try testing.expect(drag.keyboard);
+    scrollMouse(app, &now, .{ .mouse_down = mouse(40, 20) });
+    try testing.expect(drag.phase == .idle);
+    scrollMouse(app, &now, .{ .mouse_up = mouse(40, 20) });
+    try testing.expectEqualSlices(drag_drop.ItemId, &.{ 0, 2, 3 }, app.state.list(.left).slice());
+    try testing.expectEqualSlices(drag_drop.ItemId, &.{1}, app.state.list(.right).slice());
+}
+
+test "a keyboard drag skips other types and modal-covered targets, and follows the frame" {
+    // Goal: which targets the keys reach, and what a flip does to a
+    // keyboard drag. Methodology: Space on the focused source starts it, and
+    // `a` then reaches no `on_key`. Right walks `near`, `blocked` (skipping
+    // `other`, another type), and wraps to `near`. When `near` moves 100
+    // px, `x` follows it after the flip. A modal blocks every record before
+    // it, so Right reaches no target and `over` stays. With the modal gone,
+    // when `near` stops rendering, `over` is none and focus is back on the
+    // source. Enter then drops nothing; Right finds `near` again, and Enter
+    // drops 7.
+    const app = try testing.allocator.create(DropProbeApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    keyDown(app, &now, .tab, .{});
+    try testing.expectEqual(probeId("source"), app.window.focus);
+    keyDown(app, &now, .space, .{});
+    const drag = &app.window.drag;
+    try testing.expect(drag.keyboard);
+    keyDown(app, &now, .a, .{});
+    try testing.expectEqual(@as(u32, 1), app.state.source_keys);
+    keyDown(app, &now, .right, .{});
+    try testing.expectEqual(probeId("near"), drag.over);
+    try testing.expectEqual(@as(f32, 130), drag.x);
+    keyDown(app, &now, .right, .{});
+    try testing.expectEqual(probeId("blocked"), drag.over);
+    keyDown(app, &now, .right, .{});
+    try testing.expectEqual(probeId("near"), drag.over);
+
+    app.state.shifted = true;
+    app.window.render_requested = true;
+    now += 1;
+    app.tick(now);
+    now += 1;
+    app.tick(now);
+    try testing.expectEqual(@as(f32, 230), drag.x);
+    app.state.modal = true;
+    app.window.render_requested = true;
+    now += 1;
+    app.tick(now);
+    keyDown(app, &now, .right, .{});
+    try testing.expectEqual(probeId("near"), drag.over);
+    keyDown(app, &now, .left, .{});
+    try testing.expectEqual(probeId("near"), drag.over);
+
+    app.state.modal = false;
+    app.state.near_shown = false;
+    app.window.render_requested = true;
+    now += 1;
+    app.tick(now);
+    now += 1;
+    app.tick(now);
+    try testing.expectEqual(gooey.ElementId.root, drag.over);
+    try testing.expectEqual(probeId("source"), app.window.focus);
+    keyDown(app, &now, .@"return", .{});
+    try testing.expect(drag.keyboard);
+    app.state.near_shown = true;
+    app.window.render_requested = true;
+    now += 1;
+    app.tick(now);
+    keyDown(app, &now, .right, .{});
+    try testing.expectEqual(probeId("near"), drag.over);
+    keyDown(app, &now, .@"return", .{});
+    try testing.expect(drag.phase == .idle);
+    try testing.expectEqual(@as(u32, 1), app.state.near_drops);
+    try testing.expectEqual(@as(?u32, 7), app.state.dropped);
+    try testing.expectEqual(@as(u32, 0), app.state.blocked_drops);
+    try testing.expectEqual(probeId("source"), app.window.focus);
+    try testing.expectEqual(@as(u32, 1), app.state.source_keys);
 }

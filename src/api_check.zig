@@ -88,7 +88,7 @@ fn pinFields() void {
         _ = @TypeOf(gooey.ui.DropTarget.of);
         const Layer = @typeInfo(@FieldType(Box, "layer")).optional.child;
         _ = @as(@FieldType(Layer, "kind"), .drag);
-        for ([_][]const u8{ "payload", "over", "x", "y" }) |name| {
+        for ([_][]const u8{ "payload", "over", "x", "y", "keyboard" }) |name| {
             _ = @FieldType(gooey.Drag(u32), name);
         }
         const A11y = gooey.ui.A11y;
@@ -135,6 +135,7 @@ fn pinEffects() void {
         _ = @TypeOf(Effects.pointerDrag);
         _ = @TypeOf(Effects.bounds);
         _ = @TypeOf(Effects.dropPayload);
+        _ = @TypeOf(Effects.startDrag);
         const drag_fields = .{ "phase", "x", "y", "start_x", "start_y", "button", "modifiers" };
         for (drag_fields) |name| {
             _ = @FieldType(Effects.PointerDrag, name);
