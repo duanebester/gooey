@@ -162,6 +162,7 @@ pub const UIA_HelpTextPropertyId: i32 = 30013;
 pub const UIA_IsControlElementPropertyId: i32 = 30016;
 pub const UIA_IsContentElementPropertyId: i32 = 30017;
 pub const UIA_IsOffscreenPropertyId: i32 = 30022;
+pub const UIA_OrientationPropertyId: i32 = 30023;
 pub const UIA_FrameworkIdPropertyId: i32 = 30024;
 pub const UIA_IsRequiredForFormPropertyId: i32 = 30025;
 pub const UIA_ValueValuePropertyId: i32 = 30045;

@@ -4,9 +4,8 @@ Gaps that `booey` (a single-pane terminal prototype) and the Jenkins terminal-mu
 research (`jenkins/docs/terminal-multiplexer-mvp.md`) found in 0.3.1, and where each stands
 on the 0.4 core (`docs/v0.4.0-core-contract.md`).
 
-Status, 2026-11-14 (`main` after #227): items 1, 2, 3, 5, and 6 are met by the core. Item 4
-is met without a new primitive. Item 7 is half met: weighted grow works, and there is no
-splitter.
+Status, 2026-11-14 (0.6 drag-and-drop PRs 1 and 2): items 1, 2, 3, 5, 6, and 7 are met by
+the core. Item 4 is met without a new primitive.
 
 The 0.3.1 version of this document (2026-07-30) described fixes to code the core replaced,
 such as `CxConfig`, `ui.canvas`, the `Focusable` vtable, and the layout engine's render
@@ -56,13 +55,16 @@ error, `on_init` is the only spelling, and the core has no `on_close` to need (c
 Every pool is sized from `ResourceLimits` at init, and exhaustion panics in every build mode
 with the pool name, capacity, requested count, and frame (contract rule 4).
 
-## 7. Multiplexer conveniences: half met
+## 7. Multiplexer conveniences: met
 
 - **Weighted grow: met (#227).** Siblings sized `.{ .grow = weight }` split the parent's
   free main-axis space by weight, each clamped between its content minimum and its
   `width_max` or `height_max`, so a 2:1 split is `.{ .grow = 2 }` beside `.{ .grow = 1 }`.
   A weight must be finite and greater than 0. `.percent` still sets a fixed fraction of
   the parent (`.width = .{ .percent = 0.667 }`).
-- **Splitter: open.** No resizable divider exists, and the public API cannot build one
-  yet: a `Box` takes clicks and keys but no pointer moves, so nothing can follow a drag.
-  Pointer dragging is part of drag and drop, deferred to 0.6.
+- **Splitter: met (0.6).** `Box.on_pointer_drag` captures the pointer from a press to its
+  release, wherever the pointer goes, and `effects.pointerDrag()` reads each step, so a
+  divider follows a drag; Escape or a platform taking the gesture away restores it. The
+  `splitter` example builds a fixed-width sidebar and a weighted top/bottom split this
+  way, each keyboard-driven and reported to screen readers as a range. There is no
+  `components.Splitter`; a multiplexer builds its own from the example.

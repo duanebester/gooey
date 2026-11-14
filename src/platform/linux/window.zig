@@ -729,7 +729,7 @@ pub const Window = struct {
             .mouse_down => |m| {
                 self.pressed_button = m.button;
             },
-            .mouse_up => {
+            .mouse_up, .pointer_cancelled => {
                 self.pressed_button = null;
             },
             else => {},

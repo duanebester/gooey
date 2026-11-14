@@ -343,6 +343,12 @@ pub const WebBridge = struct {
             js_setAttribute(dom_id, "aria-valuenow", 13, str.ptr, @intCast(str.len));
         }
 
+        // A separator is horizontal unless it says otherwise (ARIA).
+        if (elem.orientation) |orientation| {
+            const axis = @tagName(orientation);
+            js_setAttribute(dom_id, "aria-orientation", 16, axis.ptr, @intCast(axis.len));
+        }
+
         // aria-valuetext from value field
         if (elem.value) |value| {
             js_setAttribute(dom_id, "aria-valuetext", 14, value.ptr, @intCast(value.len));

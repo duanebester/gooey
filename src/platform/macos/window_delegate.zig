@@ -1,5 +1,6 @@
 //! NSWindowDelegate: forwards resize, backing-scale and close requests to
-//! the Zig `Window`.
+//! the Zig `Window`, and cancels a pointer gesture when the window stops
+//! being key with a mouse button held.
 
 const objc = @import("objc");
 
@@ -30,6 +31,9 @@ pub fn registerClass() !void {
         return error.MethodAddFailed;
     }
     if (!cls.addMethod("windowDidChangeBackingProperties:", windowDidChangeBackingProperties)) {
+        return error.MethodAddFailed;
+    }
+    if (!cls.addMethod("windowDidResignKey:", windowDidResignKey)) {
         return error.MethodAddFailed;
     }
 
@@ -75,6 +79,18 @@ fn windowDidChangeBackingProperties(self: objc.c.id, _: objc.c.SEL, _: objc.c.id
     // Called when window moves to a display with different scale factor
     const window = getWindow(self) orelse return;
     window.handleResize(); // Scale factor may have changed
+}
+
+/// Another window or app became key, as Cmd-Tab or a system alert makes it,
+/// while a button was held: the release may never reach this window, so the
+/// drag in progress cancels (`pointer_cancelled`) rather than waiting for it
+/// or dropping where the pointer last was.
+fn windowDidResignKey(self: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) void {
+    const window = getWindow(self) orelse return;
+    const NSEvent = objc.getClass("NSEvent") orelse return;
+    const buttons = NSEvent.msgSend(usize, "pressedMouseButtons", .{});
+    if (buttons == 0) return;
+    _ = window.handleInput(.pointer_cancelled);
 }
 
 fn windowShouldClose(self: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) bool {

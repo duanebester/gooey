@@ -1702,6 +1702,12 @@ fn addWasmBuilds(b: *std.Build, frame_trace: FrameTraceChoice) void {
         .source = example_source,
         .output_dir = "web/example",
     });
+    addWasmExample(b, modules, wasm_target, .{
+        .step_name = "wasm-splitter",
+        .description = "Build the splitter example for web",
+        .source = "src/examples/splitter.zig",
+        .output_dir = "web/splitter",
+    });
 }
 
 const WasmModules = struct {
