@@ -1,16 +1,17 @@
 //! Tests for the layout engine, kept separate from `engine.zig`.
 //!
 //! These exercise the engine via its public API plus a few private fields
-//! (`open_element_stack`, `floating_roots`, `id_to_index`, `elements`).
+//! (`open_element_stack`, `floating_roots`, `elements`).
 //! Word-boundary unit tests reach into `sizing_pass.findWordBoundaries`
 //! directly; everything else routes through `LayoutEngine`'s methods.
 
 const std = @import("std");
 
+const assert = std.debug.assert;
+
 const engine_mod = @import("engine.zig");
 const sizing_pass = @import("sizing_pass.zig");
 const types = @import("types.zig");
-const layout_id = @import("layout_id.zig");
 
 const LayoutEngine = engine_mod.LayoutEngine;
 const ElementDeclaration = engine_mod.ElementDeclaration;
@@ -20,11 +21,9 @@ const TextMeasurement = engine_mod.TextMeasurement;
 const MAX_ELEMENTS_PER_FRAME = engine_mod.MAX_ELEMENTS_PER_FRAME;
 const MAX_OPEN_DEPTH = engine_mod.MAX_OPEN_DEPTH;
 const MAX_FLOATING_ROOTS = engine_mod.MAX_FLOATING_ROOTS;
-const MAX_TRACKED_IDS = engine_mod.MAX_TRACKED_IDS;
 const MAX_WORDS_PER_TEXT = engine_mod.MAX_WORDS_PER_TEXT;
 const MAX_LINES_PER_TEXT = engine_mod.MAX_LINES_PER_TEXT;
 
-const LayoutId = layout_id.LayoutId;
 const Sizing = types.Sizing;
 const SizingAxis = types.SizingAxis;
 const LayoutConfig = types.LayoutConfig;
@@ -35,6 +34,15 @@ const Color = types.Color;
 const CornerRadius = types.CornerRadius;
 const TextConfig = types.TextConfig;
 const Offset2D = types.Offset2D;
+
+/// The computed bounds of the element at `index`, in creation order: the
+/// engine appends elements as `openElement` and `text` create them.
+fn boundingBox(engine: *const LayoutEngine, index: u32) types.BoundingBox {
+    assert(index < engine.elements.len());
+    const bounds = engine.elements.getConst(index).computed.bounding_box;
+    assert(bounds.width >= 0);
+    return bounds;
+}
 
 // ============================================================================
 // Tests
@@ -47,14 +55,13 @@ test "basic layout" {
     engine.beginFrame(800, 600);
 
     try engine.openElement(.{
-        .id = LayoutId.init("root"),
         .layout = .{ .sizing = Sizing.fill() },
         .background_color = Color.white,
     });
     engine.closeElement();
 
     try engine.endFrame();
-    const root = engine.getBoundingBox(LayoutId.init("root").id).?;
+    const root = boundingBox(&engine, 0);
     try std.testing.expectEqual(@as(f32, 800), root.width);
     try std.testing.expectEqual(@as(f32, 600), root.height);
 }
@@ -67,7 +74,6 @@ test "root fill follows viewport resize" {
 
     engine.beginFrame(320, 240);
     try engine.openElement(.{
-        .id = LayoutId.init("resizing-root"),
         .layout = .{ .sizing = .{
             .width = SizingAxis.percent(1.0),
             .height = SizingAxis.percent(1.0),
@@ -76,13 +82,12 @@ test "root fill follows viewport resize" {
     engine.closeElement();
     try engine.endFrame();
 
-    const initial = engine.getBoundingBox(LayoutId.init("resizing-root").id).?;
+    const initial = boundingBox(&engine, 0);
     try std.testing.expectEqual(@as(f32, 320), initial.width);
     try std.testing.expectEqual(@as(f32, 240), initial.height);
 
     engine.beginFrame(1024, 576);
     try engine.openElement(.{
-        .id = LayoutId.init("resizing-root"),
         .layout = .{ .sizing = .{
             .width = SizingAxis.percent(1.0),
             .height = SizingAxis.percent(1.0),
@@ -91,7 +96,7 @@ test "root fill follows viewport resize" {
     engine.closeElement();
     try engine.endFrame();
 
-    const resized = engine.getBoundingBox(LayoutId.init("resizing-root").id).?;
+    const resized = boundingBox(&engine, 0);
     try std.testing.expectEqual(@as(f32, 1024), resized.width);
     try std.testing.expectEqual(@as(f32, 576), resized.height);
 }
@@ -249,7 +254,6 @@ test "floating positioning" {
 
     // Parent element
     try engine.openElement(.{
-        .id = LayoutId.init("parent"),
         .layout = .{ .sizing = Sizing.fixed(200, 100) },
         .background_color = Color.white,
     });
@@ -282,7 +286,6 @@ test "floating elements don't affect parent sizing or sibling layout" {
 
     // Parent with fit-content sizing
     try engine.openElement(.{
-        .id = LayoutId.init("parent"),
         .layout = .{
             .sizing = Sizing.fitContent(),
             .layout_direction = .top_to_bottom,
@@ -293,7 +296,6 @@ test "floating elements don't affect parent sizing or sibling layout" {
     {
         // Regular child - should determine parent size
         try engine.openElement(.{
-            .id = LayoutId.init("regular-child"),
             .layout = .{ .sizing = Sizing.fixed(100, 50) },
             .background_color = Color.red,
         });
@@ -301,7 +303,6 @@ test "floating elements don't affect parent sizing or sibling layout" {
 
         // Floating child - should NOT affect parent size
         try engine.openElement(.{
-            .id = LayoutId.init("floating-child"),
             .layout = .{ .sizing = Sizing.fixed(200, 300) }, // Much larger than regular child
             .floating = types.FloatingConfig.dropdown(),
             .background_color = Color.blue,
@@ -310,7 +311,6 @@ test "floating elements don't affect parent sizing or sibling layout" {
 
         // Another regular child - should be positioned ignoring floating sibling
         try engine.openElement(.{
-            .id = LayoutId.init("second-child"),
             .layout = .{ .sizing = Sizing.fixed(100, 50) },
             .background_color = Color.green,
         });
@@ -564,11 +564,9 @@ test "wrapped text grows its floating panel but not the panel's host" {
     const wrapped: TextConfig = .{ .wrap_mode = .words, .font_size = 20, .line_height = 100 };
     const fit_column: Sizing = .{ .width = SizingAxis.fixed(100), .height = SizingAxis.fit() };
     try engine.openElement(.{
-        .id = LayoutId.init("host"),
         .layout = .{ .sizing = fit_column, .layout_direction = .top_to_bottom },
     });
     try engine.openElement(.{
-        .id = LayoutId.init("panel"),
         .layout = .{ .sizing = Sizing.fitContent(), .padding = Padding.all(10) },
         .floating = .{},
     });
@@ -582,8 +580,8 @@ test "wrapped text grows its floating panel but not the panel's host" {
     engine.closeElement();
     try engine.endFrame();
 
-    const panel = engine.getBoundingBox(LayoutId.init("panel").id).?;
-    const host = engine.getBoundingBox(LayoutId.init("host").id).?;
+    const panel = boundingBox(&engine, 1);
+    const host = boundingBox(&engine, 0);
     try std.testing.expectEqual(@as(f32, 60), panel.height);
     try std.testing.expectEqual(@as(f32, 40), host.height);
 }
@@ -613,7 +611,6 @@ test "space_between distributes children evenly" {
     // Remaining space: 300 - 150 = 150px
     // space_between: gap = 150 / (3-1) = 75px between children
     try engine.openElement(.{
-        .id = LayoutId.init("container"),
         .layout = .{
             .sizing = Sizing.fixed(300, 100),
             .layout_direction = .left_to_right,
@@ -622,19 +619,16 @@ test "space_between distributes children evenly" {
     });
     {
         try engine.openElement(.{
-            .id = LayoutId.init("child1"),
             .layout = .{ .sizing = Sizing.fixed(50, 50) },
         });
         engine.closeElement();
 
         try engine.openElement(.{
-            .id = LayoutId.init("child2"),
             .layout = .{ .sizing = Sizing.fixed(50, 50) },
         });
         engine.closeElement();
 
         try engine.openElement(.{
-            .id = LayoutId.init("child3"),
             .layout = .{ .sizing = Sizing.fixed(50, 50) },
         });
         engine.closeElement();
@@ -668,7 +662,6 @@ test "space_around distributes space around children" {
     // space_around: space_per_child = 150 / 3 = 50px
     // start_offset = 50 / 2 = 25px, gap = 50px
     try engine.openElement(.{
-        .id = LayoutId.init("container"),
         .layout = .{
             .sizing = Sizing.fixed(300, 100),
             .layout_direction = .left_to_right,
@@ -677,19 +670,16 @@ test "space_around distributes space around children" {
     });
     {
         try engine.openElement(.{
-            .id = LayoutId.init("child1"),
             .layout = .{ .sizing = Sizing.fixed(50, 50) },
         });
         engine.closeElement();
 
         try engine.openElement(.{
-            .id = LayoutId.init("child2"),
             .layout = .{ .sizing = Sizing.fixed(50, 50) },
         });
         engine.closeElement();
 
         try engine.openElement(.{
-            .id = LayoutId.init("child3"),
             .layout = .{ .sizing = Sizing.fixed(50, 50) },
         });
         engine.closeElement();
@@ -722,7 +712,6 @@ test "space_evenly distributes space evenly" {
     // space_evenly: gap = 150 / (3+1) = 37.5px
     // start_offset = gap = 37.5px
     try engine.openElement(.{
-        .id = LayoutId.init("container"),
         .layout = .{
             .sizing = Sizing.fixed(300, 100),
             .layout_direction = .left_to_right,
@@ -731,19 +720,16 @@ test "space_evenly distributes space evenly" {
     });
     {
         try engine.openElement(.{
-            .id = LayoutId.init("child1"),
             .layout = .{ .sizing = Sizing.fixed(50, 50) },
         });
         engine.closeElement();
 
         try engine.openElement(.{
-            .id = LayoutId.init("child2"),
             .layout = .{ .sizing = Sizing.fixed(50, 50) },
         });
         engine.closeElement();
 
         try engine.openElement(.{
-            .id = LayoutId.init("child3"),
             .layout = .{ .sizing = Sizing.fixed(50, 50) },
         });
         engine.closeElement();
@@ -775,7 +761,6 @@ test "space_between with vertical layout" {
     // Remaining space: 200 - 80 = 120px
     // space_between with 2 children: gap = 120 / 1 = 120px
     try engine.openElement(.{
-        .id = LayoutId.init("container"),
         .layout = .{
             .sizing = Sizing.fixed(100, 200),
             .layout_direction = .top_to_bottom,
@@ -784,13 +769,11 @@ test "space_between with vertical layout" {
     });
     {
         try engine.openElement(.{
-            .id = LayoutId.init("child1"),
             .layout = .{ .sizing = Sizing.fixed(50, 40) },
         });
         engine.closeElement();
 
         try engine.openElement(.{
-            .id = LayoutId.init("child2"),
             .layout = .{ .sizing = Sizing.fixed(50, 40) },
         });
         engine.closeElement();
@@ -816,7 +799,6 @@ test "space_between with single child stays at start" {
 
     // With a single child, space_between should position it at the start
     try engine.openElement(.{
-        .id = LayoutId.init("container"),
         .layout = .{
             .sizing = Sizing.fixed(300, 100),
             .layout_direction = .left_to_right,
@@ -825,7 +807,6 @@ test "space_between with single child stays at start" {
     });
     {
         try engine.openElement(.{
-            .id = LayoutId.init("child"),
             .layout = .{ .sizing = Sizing.fixed(50, 50) },
         });
         engine.closeElement();
@@ -988,20 +969,4 @@ test "unwrapped text depends on the whole-string measurement" {
     const expected_width = @as(f32, @floatFromInt(message.len)) * 10.0;
     try std.testing.expectEqual(expected_width, text_data.measured_width);
     try std.testing.expect(text_data.wrapped_lines == null);
-}
-
-test "LayoutEngine.init returns every failed reservation and frees the earlier ones" {
-    // Every per-frame table is reserved at init, so a failed reservation must
-    // surface as an error rather than an engine that allocates per frame.
-    // `checkAllAllocationFailures` fails each allocation in turn and checks
-    // that `init` returns `OutOfMemory` without leaking the tables before it.
-    const init_then_deinit = struct {
-        fn run(allocator: std.mem.Allocator) !void {
-            var engine = try LayoutEngine.init(allocator);
-            defer engine.deinit();
-            try std.testing.expect(engine.elements.elements.capacity >= MAX_ELEMENTS_PER_FRAME);
-            try std.testing.expect(engine.id_to_index.capacity() >= MAX_TRACKED_IDS);
-        }
-    }.run;
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, init_then_deinit, .{});
 }

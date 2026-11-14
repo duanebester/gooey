@@ -23,13 +23,11 @@ const gooey = @import("gooey");
 const layout = gooey.internals.layout;
 const engine_mod = layout.engine;
 const types = layout.types;
-const layout_id_mod = layout.layout_id;
 
 const LayoutEngine = engine_mod.LayoutEngine;
 const Sizing = types.Sizing;
 const SizingAxis = types.SizingAxis;
 const Padding = types.Padding;
-const LayoutId = layout_id_mod.LayoutId;
 
 // ============================================================================
 // Capacity caps (CLAUDE.md §4)
@@ -94,7 +92,6 @@ pub fn fuzzTextWrapping(_: void, smith: *std.testing.Smith) anyerror!void {
     engine.beginFrame(viewport_w, 1024);
 
     try engine.openElement(.{
-        .id = LayoutId.init("root"),
         .layout = .{
             .sizing = Sizing.fixed(viewport_w, 1024),
             .padding = Padding.all(8),

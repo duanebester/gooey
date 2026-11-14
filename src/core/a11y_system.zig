@@ -15,10 +15,10 @@
 //!   it to early-out when accessibility is off.
 //! - `check_counter`: frame counter driving the periodic refresh.
 //!
-//! The system takes no back-pointer: frame hooks receive the handles
-//! they need (`initInPlace` the platform window/view, `endFrame` a
-//! `*const LayoutEngine`) so data dependencies are visible at the call
-//! site.
+//! The system takes no back-pointer: `initInPlace` receives the platform
+//! window/view it needs, so data dependencies are visible at the call site.
+//! `core/screen_reader.zig` builds the tree from each published frame and
+//! syncs it to the bridge.
 //!
 //! Invariants:
 //! - `bridge.ptr` always points into `platform_bridge` — initialised
@@ -33,16 +33,13 @@ const builtin = @import("builtin");
 
 const a11y = @import("../accessibility/accessibility.zig");
 
-const layout_mod = @import("../layout/layout.zig");
-const LayoutEngine = layout_mod.LayoutEngine;
-
 // =============================================================================
 // A11ySystem
 // =============================================================================
 
 pub const A11ySystem = struct {
-    /// Per-frame accessibility tree. Built up during render, drained
-    /// to the platform bridge by `endFrame`. ~350KB; the struct's
+    /// Per-frame accessibility tree. Built from each published frame
+    /// and drained to the platform bridge by `screen_reader.publish`. ~350KB; the struct's
     /// stack-budget burden.
     tree: a11y.Tree,
 
@@ -176,26 +173,6 @@ pub const A11ySystem = struct {
         }
     }
 
-    /// Frame-end hook. Finalizes the tree, syncs bounds from the
-    /// layout engine, and pushes dirty elements / announcements to the
-    /// platform bridge. Zero cost when `enabled` is false — the entire
-    /// body is gated behind the early-out.
-    pub fn endFrame(self: *Self, layout: *const LayoutEngine) void {
-        std.debug.assert(self.bridgeAddressValid());
-        if (!self.enabled) return;
-
-        self.tree.endFrame();
-
-        // Bounds sync runs on the just-built element list. It must
-        // happen after `endFrame` (which finalizes `element_count`)
-        // and before `syncFrame` (which reads bounds when pushing to
-        // the platform).
-        self.tree.syncBounds(layout);
-
-        // Push dirty elements, removals, announcements, and focus.
-        self.bridge.syncFrame(&self.tree);
-    }
-
     // -------------------------------------------------------------------------
     // Inspection / overrides
     // -------------------------------------------------------------------------
@@ -220,8 +197,8 @@ pub const A11ySystem = struct {
         self.enabled = false;
     }
 
-    /// Mutable access to the underlying tree. Valid only between
-    /// `beginFrame` and `endFrame`. Callers should not retain the
+    /// Mutable access to the underlying tree. Valid only between the
+    /// tree's `beginFrame` and `endFrame`. Callers should not retain the
     /// pointer across frames.
     pub fn getTree(self: *Self) *a11y.Tree {
         return &self.tree;
@@ -342,19 +319,4 @@ test "A11ySystem: beginFrame increments the counter and resets at the interval" 
     // One more frame trips the reset.
     sys.beginFrame();
     try testing.expectEqual(@as(u32, 0), sys.check_counter);
-}
-
-test "A11ySystem: endFrame is a no-op when disabled" {
-    // We can't easily construct a real `LayoutEngine` here, but we
-    // can prove the early-out by giving `endFrame` a junk pointer
-    // that would crash if dereferenced. As long as the early-out
-    // fires, the junk pointer is never touched.
-    var sys: A11ySystem = undefined;
-    sys.initInPlace(null, null);
-    defer sys.deinit();
-
-    try testing.expectEqual(false, sys.isEnabled());
-    const junk: *const LayoutEngine = @ptrFromInt(@alignOf(LayoutEngine));
-    sys.endFrame(junk);
-    // If we got here, the early-out worked.
 }

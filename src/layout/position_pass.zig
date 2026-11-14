@@ -278,11 +278,9 @@ pub fn computeFloatingPositions(engine: *LayoutEngine) !void {
     }
 }
 
-/// Resolve the bbox to position a floating element relative to. Order:
-///   1. `attach_to_parent` honors the direct parent (e.g., dropdowns).
-///   2. Otherwise, use the cached `resolved_floating_parent` index
-///      (set at element creation time to avoid a HashMap lookup here).
-///   3. Fall back to the viewport when neither applies (modals).
+/// Resolve the bbox to position a floating element relative to: the direct
+/// parent when `attach_to_parent` is set (dropdowns), else the viewport
+/// (modals).
 fn resolveFloatingParentBbox(
     engine: *LayoutEngine,
     elem: *const LayoutElement,
@@ -295,9 +293,6 @@ fn resolveFloatingParentBbox(
 
     if (floating.attach_to_parent) {
         if (elem.parent_index) |pi| bbox = engine.elements.getConst(pi).computed.bounding_box;
-    } else if (elem.computed.resolved_floating_parent) |pi| {
-        // cached parent index instead of HashMap lookup
-        bbox = engine.elements.getConst(pi).computed.bounding_box;
     }
 
     return bbox;

@@ -43,6 +43,9 @@ pub const banned_paths = [_][]const u8{
     "src/platform/web/image_loader.zig",
     "src/image/asset_cache.zig",
     "src/platform/linux/tests/",
+    "src/layout/layout_id.zig",
+    "src/layout/render_commands.zig",
+    "src/layout/scroll_pass.zig",
     "components/src/core/",
 };
 

@@ -17,7 +17,6 @@ All layout data is allocated from a per-frame arena and automatically cleaned up
 ```zig
 const layout = @import("layout/layout.zig");
 const LayoutEngine = layout.LayoutEngine;
-const LayoutId = layout.LayoutId;
 const Sizing = layout.Sizing;
 const SizingAxis = layout.SizingAxis;
 const Padding = layout.Padding;
@@ -33,7 +32,6 @@ defer engine.deinit();
 engine.beginFrame(window_width, window_height);
 
 try engine.openElement(.{
-    .id = LayoutId.init("root"),
     .layout = .{
         .sizing = Sizing.fill(),
         .child_alignment = ChildAlignment.center(),
@@ -41,7 +39,6 @@ try engine.openElement(.{
 });
 {
     try engine.openElement(.{
-        .id = LayoutId.init("card"),
         .layout = .{
             .sizing = Sizing.fixed(300, 200),
             .padding = Padding.all(16),
@@ -60,25 +57,18 @@ try engine.openElement(.{
 engine.closeElement(); // root
 
 try engine.endFrame();
-// Read each element's bounds (`engine.elements`, `getBoundingBox`) to paint.
+// Read each element's bounds from `engine.elements` to paint.
 ```
 
 ## Core Concepts
 
-### Element IDs
+### Elements
 
-Every element can have a unique ID for later lookup (e.g., hit testing):
-
-```zig
-// Compile-time string ID
-.id = LayoutId.init("my_button")
-
-// Indexed ID for lists
-.id = LayoutId.indexed("list_item", index)
-
-// Child ID relative to parent
-.id = LayoutId.child(parent_id, "child_name")
-```
+The engine appends elements in the order `openElement` and `text` create
+them; `engine.elements` holds them in that order, and each element's
+`computed.bounding_box` holds its bounds after `endFrame`. The core keys its
+own nodes by `ElementId` and opens one element per node, so node `n` is
+element `n`.
 
 ### Sizing
 
@@ -181,7 +171,6 @@ fn buildLoginUI(engine: *LayoutEngine) !void {
 
     // Root - fills viewport, centers content
     try engine.openElement(.{
-        .id = LayoutId.init("root"),
         .layout = .{
             .sizing = Sizing.fill(),
             .layout_direction = .top_to_bottom,
@@ -192,7 +181,6 @@ fn buildLoginUI(engine: *LayoutEngine) !void {
     {
         // Card container
         try engine.openElement(.{
-            .id = LayoutId.init("card"),
             .layout = .{
                 .sizing = .{
                     .width = SizingAxis.fixed(400),
@@ -209,7 +197,6 @@ fn buildLoginUI(engine: *LayoutEngine) !void {
         {
             // Title
             try engine.openElement(.{
-                .id = LayoutId.init("title"),
                 .layout = .{ .sizing = Sizing.fitContent() },
             });
             try engine.text("Login", .{
@@ -220,7 +207,6 @@ fn buildLoginUI(engine: *LayoutEngine) !void {
 
             // Username field placeholder
             try engine.openElement(.{
-                .id = LayoutId.init("username_field"),
                 .layout = .{
                     .sizing = .{
                         .width = SizingAxis.percent(1.0),
@@ -234,7 +220,6 @@ fn buildLoginUI(engine: *LayoutEngine) !void {
 
             // Button row
             try engine.openElement(.{
-                .id = LayoutId.init("button_row"),
                 .layout = .{
                     .sizing = .{
                         .width = SizingAxis.percent(1.0),
@@ -248,7 +233,6 @@ fn buildLoginUI(engine: *LayoutEngine) !void {
             {
                 // Cancel - fixed width
                 try engine.openElement(.{
-                    .id = LayoutId.init("cancel_btn"),
                     .layout = .{
                         .sizing = Sizing.fixed(100, 36),
                         .child_alignment = ChildAlignment.center(),
@@ -261,7 +245,6 @@ fn buildLoginUI(engine: *LayoutEngine) !void {
 
                 // Submit - grows to fill remaining space
                 try engine.openElement(.{
-                    .id = LayoutId.init("submit_btn"),
                     .layout = .{
                         .sizing = .{
                             .width = SizingAxis.grow(),
@@ -282,11 +265,6 @@ fn buildLoginUI(engine: *LayoutEngine) !void {
     engine.closeElement(); // root
 
     try engine.endFrame();
-
-    // Query element positions for hit-testing (getBoundingBox takes a u32 ID hash)
-    if (engine.getBoundingBox(LayoutId.init("submit_btn").id)) |bbox| {
-        // bbox.x, bbox.y, bbox.width, bbox.height
-    }
 }
 ```
 
@@ -303,24 +281,12 @@ fn buildLoginUI(engine: *LayoutEngine) !void {
 | `openElement(decl)`                | Open a container element                          |
 | `closeElement()`                   | Close the current element                         |
 | `text(content, config)`            | Add a text leaf element                           |
-| `svg(id, width, height, data)`     | Add an SVG leaf element                           |
-| `image(id, width?, height?, data)` | Add an image leaf element (see note below)        |
 | `endFrame()`                       | Compute every element's bounds                    |
-| `getBoundingBox(id: u32)`          | Get computed bounding box for an element          |
-| `getContentBox(id: u32)`           | Get computed content box (inside padding)         |
-
-> **Note:** `getBoundingBox` and `getContentBox` take a raw `u32` ID hash,
-> not a `LayoutId`. Extract it with `.id`: `engine.getBoundingBox(LayoutId.init("foo").id)`.
-
-> **Note:** `image` takes optional `?f32` width and height. When a dimension is
-> `null`, that axis uses `grow()` instead of a fixed size. `svg` width/height are
-> required (non-optional).
 
 ### ElementDeclaration
 
 | Field              | Type              | Default | Description                                  |
 | ------------------ | ----------------- | ------- | -------------------------------------------- |
-| `id`               | `LayoutId`        | `.none` | Unique element identifier                    |
 | `layout`           | `LayoutConfig`    | `{}`    | Sizing and positioning                       |
 | `background_color` | `?Color`          | `null`  | Fill color                                   |
 | `corner_radius`    | `CornerRadius`    | `{}`    | Rounded corners                              |
@@ -351,8 +317,7 @@ Floating elements are positioned relative to a parent but don't affect sibling l
 ```zig
 .floating = .{
     .offset = Offset2D.init(10, 20),     // Position offset
-    .attach_to_parent = true,             // Use direct parent
-    .parent_id = LayoutId.init("target").id,  // Or reference by ID
+    .attach_to_parent = true,             // Direct parent; false = viewport
     .element_attach = .left_top,          // Anchor point on this element
     .parent_attach = .left_bottom,        // Anchor point on parent
     .expand = .{ .width = true, .height = false },  // Match parent size
@@ -403,7 +368,6 @@ The layout engine uses fixed-capacity collections (no allocation during frames):
 | `MAX_ELEMENTS_PER_FRAME` | 16384 | Maximum elements in a single frame    |
 | `MAX_OPEN_DEPTH`         | 64    | Maximum nesting depth                 |
 | `MAX_FLOATING_ROOTS`     | 256   | Maximum floating elements per frame   |
-| `MAX_TRACKED_IDS`        | 4096  | Maximum elements with IDs             |
 | `MAX_LINES_PER_TEXT`     | 1024  | Maximum wrapped lines per text        |
 | `MAX_WORDS_PER_TEXT`     | 2048  | Maximum words for text wrapping       |
 | `MAX_RECURSION_DEPTH`    | 48    | Maximum traversal depth during passes |
@@ -411,7 +375,6 @@ The layout engine uses fixed-capacity collections (no allocation during frames):
 ## Notes
 
 - **Text strings** are copied into the per-frame arena, so they're safe to use with temporary buffers.
-- **ID collisions** are detected in debug builds and logged as warnings.
 - **Text elements** must be inside a container (enforced by debug assertion).
 - **Zero allocation during frame** - all collections use fixed capacity, panic on overflow.
 - The layout algorithm runs in these phases:
