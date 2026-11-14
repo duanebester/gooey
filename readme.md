@@ -11,7 +11,7 @@ Join the [Gooey discord](https://discord.gg/bmzAZnZJyw)
 
 > **0.4.0 replaces the 0.3.1 API:** `gooey.run`, `gooey.core.*`, `cx.animations`, `cx.changed`,
 > `cx.accessible`, `cx.io()`, `gooey.file_dialog`, and the validation helpers are gone.
-> This readme describes 0.4.0 only.
+> This readme describes the 0.5 series (0.4.0's API, plus later additions).
 
 [![CI](https://github.com/duanebester/gooey/actions/workflows/ci.yml/badge.svg?branch=main)][ci]
 
@@ -138,6 +138,7 @@ Every example in `src/examples/` is a complete app; read them next. Run one with
 | `run-lucide-demo`      | `lucide_demo.zig`          | `Painter.svg` with every Lucide icon       |
 | `run-dashboard`        | `dashboard.zig`            | gooey-charts in `ui.paint` elements        |
 | `run-core-file-dialog` | `core_file_dialog.zig`     | Open, multi-select, folder, save dialogs   |
+| `run-splitter`         | `splitter.zig`             | `on_pointer_drag`, resize cursors, ranges  |
 
 `lucide-demo` does not build on Windows; every other example builds on every desktop
 platform.
@@ -206,8 +207,8 @@ A render function takes `*gooey.Cx` and emits elements with `cx.render`. There a
 element constructors:
 
 - `ui.box(box, children)`: a container. `ui.Box` holds per-element fields (`key`, `style`,
-  `layer`, `focusable`, `key_context`, `on_click`, `on_click_outside`, `on_key`, `actions`,
-  `a11y`).
+  `layer`, `focusable`, `tab_stop`, `key_context`, `on_click`, `on_click_outside`, `on_key`,
+  `on_pointer_drag`, `actions`, `a11y`).
 - `ui.text(content, text)`: a text run. `ui.Text` has `size`, `color`, `weight`, `italic`,
   `family`, `wrap`, `line_height`, and `alignment`.
 - `ui.paint(Data, &data, paint_fn, style)`: a leaf drawn with a `Painter`.
@@ -251,7 +252,8 @@ pub fn render(cx: *Cx) void {
 
 `ui.Style` holds layout and appearance only: `direction`, `width`, `height`, the `_min` and
 `_max` sizes, `padding`, `gap`, `alignment`, `background`, `border`, `corner_radius`,
-`shadow`, `opacity`, `clip`, `scroll`, `cursor`, `pointer_events`, and `source`. It has no
+`shadow`, `opacity`, `clip`, `scroll`, `cursor`, `pointer_events`, and `source`. `cursor` is
+`.default`, `.text`, `.pointer`, `.resize_left_right`, or `.resize_up_down`. It has no
 per-element data, so a style can be a shared constant:
 
 ```zig
@@ -366,6 +368,7 @@ returns.
 | Method                                   | Effect                                              |
 | ---------------------------------------- | --------------------------------------------------- |
 | `focus(id)`, `blur()`                    | Move or clear keyboard focus.                       |
+| `click(id)`                              | Run a keyed element's `on_click` afterwards.        |
 | `quit()`                                 | Close the app.                                      |
 | `requestRender()`, `stopPropagation()`   | Render again; stop the event from bubbling further. |
 | `openFileDialog(request)`                | Open or save dialog; see below.                     |
@@ -374,6 +377,8 @@ returns.
 | `create(T, value)`, `remove(T, handle)`  | Create or remove an entity.                         |
 | `handler(method)`                        | A root-state handler for a completion.              |
 | `inputEvent()`, `completionEvent()`      | What invoked this handler.                          |
+| `pointerDrag()`                          | The pointer capture step, in `on_pointer_drag`.     |
+| `bounds(id)`                             | A keyed element's `ui.Rect` in the frame on screen. |
 
 **File dialogs.** A handler requests a dialog and names the handler that receives the
 outcome. The dialog opens on the main thread after the handler returns, and the outcome
@@ -417,8 +422,36 @@ every path of a multiple selection.
 **Timers.** There is no timer API. A view that changes with the clock calls
 `cx.requestRenderAfter(delay_ms)` in every render that needs the next one.
 
-**Background work.** 0.4.0 has no public API for it. Handlers run on the main thread, and the
+**Background work.** There is no public API for it. Handlers run on the main thread, and the
 completions they receive come from file dialogs.
+
+### Pointer capture
+
+A box with `on_pointer_drag` captures the pointer when pressed: its handler gets `begin`,
+then `move` for every pointer move wherever the pointer goes, then `end` on release, or
+`cancel` on Escape or when the platform takes the gesture away (focus loss, Cmd-Tab). The
+box must have a `key`. A press that moves more than 2 px clicks nothing. From
+`splitter.zig`:
+
+```zig
+    pub fn resizeSidebar(self: *State, effects: *Effects) void {
+        const drag = effects.pointerDrag().?;
+        // Splitters answer the primary button only, as native ones do.
+        if (drag.button != .left) return;
+        switch (drag.phase) {
+            .begin => self.sidebar_width_start = self.sidebar_width,
+            .move, .end => self.sidebar_width = clampWidth(
+                self.sidebar_width_start + (drag.x - drag.start_x),
+            ),
+            .cancel => self.sidebar_width = self.sidebar_width_start,
+        }
+        assert(self.sidebar_width >= sidebar_width_min);
+        assert(self.sidebar_width <= sidebar_width_max);
+    }
+```
+
+Keeping the size from `begin` lets `cancel` restore it. `effects.bounds(id)` turns a drag in
+pixels into a share of a keyed container's size.
 
 ### Keymaps and actions
 
@@ -567,7 +600,8 @@ springs toward shown or hidden and reports `progress`, `visible`, and `phase`. E
 
 `ui.paint` draws a leaf with a `Painter`, whose `bounds` is the element's rectangle. The
 painter has `fill`, `quad`, `text`, `textOnBaseline`, `measureText`, `svg`, `image`, `line`,
-`circle`, `polyline`, `pointCloud`, `triangles`, `pushClip`, and `popClip`. From
+`circle`, `polyline`, `pointCloud`, `triangles`, `pushClip`, `popClip`, `theme`, and
+`fontMetrics`. From
 `images.zig`:
 
 ```zig
@@ -706,8 +740,10 @@ The font snippets also come from `core_checks.zig`.
 ## Accessibility
 
 Accessibility is a field on the box. `ui.A11y` has `role` (`gooey.accessibility.Role`),
-`label`, `value`, `checked`, `disabled`, `heading_level`, `live`, `href`, `description`,
-`expanded`, `has_popup`, `pos_in_set`, and `set_size`. The components fill it in. From
+`label`, `value`, `checked`, `selected`, `disabled`, `heading_level` (`ui.HeadingLevel`),
+`live`, `href`, `description`, `expanded`, `has_popup`, `pos_in_set`, `set_size`, and `range`
+(`ui.A11y.Range`: `min`, `max`, `now`, and an `orientation`, for splitters and sliders).
+The components fill it in. From
 `accessible_form.zig`:
 
 ```zig
@@ -727,7 +763,7 @@ Accessibility is a field on the box. `ui.A11y` has `role` (`gooey.accessibility.
 ```
 
 Screen readers: VoiceOver on macOS, UI Automation (Narrator, NVDA) on Windows, and ARIA in
-the browser. Linux has no screen reader support in 0.4.0. See
+the browser. Linux has no screen reader support yet. See
 [docs/accessibility.md](docs/accessibility.md) for roles, live regions, limits, and testing.
 
 ## Debugging and logging
@@ -750,15 +786,15 @@ the root file:
 pub const std_options = gooey.std_options;
 ```
 
-## Not in 0.4.0
+## Not yet in Gooey
 
 - **Known gaps:** the web host has no file dialogs and does not load images yet. The IME
   candidate window is placed at the caret, whatever character range the input method asks
   about. Linux has no screen reader bridge.
-- **Cut from 0.4.0:** multi-window (one window per app), liquid glass, custom shaders, and
+- **Cut in 0.4.0:** multi-window (one window per app), liquid glass, custom shaders, and
   post-processing.
-- **Deferred:** drag and drop, tooltip layers, and programmatic scrolling (`List` has no
-  `scroll_to`).
+- **Deferred:** typed drag and drop (pointer capture ships; see above), tooltip layers,
+  and programmatic scrolling (`List` has no `scroll_to`).
 
 ## Platforms
 

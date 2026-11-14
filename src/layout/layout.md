@@ -5,7 +5,7 @@ A Clay-inspired declarative layout engine for building UI hierarchies with flexb
 This is internal machinery (`gooey.internals.layout`), not app API: apps lay out with
 `ui.box` and `ui.Style` (`docs/v0.4.0-core-contract.md` §1). The core (`src/core/cx.zig`)
 opens one element per node and reads each node's bounds from the engine's element list by
-index (`src/core/emit.zig`). The snippets below compile against v0.5.1's engine
+index (`src/core/emit.zig`). The snippets below compile against v0.5.3's engine
 (`gooey.internals.layout`).
 
 ## Overview
@@ -21,7 +21,8 @@ All layout data is allocated from a per-frame arena and automatically cleaned up
 ## Quick Start
 
 ```zig
-const layout = @import("layout/layout.zig");
+const gooey = @import("gooey");
+const layout = gooey.internals.layout;
 const LayoutEngine = layout.LayoutEngine;
 const Sizing = layout.Sizing;
 const SizingAxis = layout.SizingAxis;
@@ -30,8 +31,9 @@ const ChildAlignment = layout.ChildAlignment;
 const Color = layout.Color;
 const CornerRadius = layout.CornerRadius;
 
-// Initialize once
-var engine = try LayoutEngine.init(allocator);
+// Initialize once. Every capacity comes from the app's budget.
+const limits = gooey.ResourceLimits.small;
+var engine = try LayoutEngine.init(&layout.LayoutCapacity.fromLimits(&limits));
 defer engine.deinit();
 
 // Each frame:
@@ -283,7 +285,7 @@ fn buildLoginUI(engine: *LayoutEngine) !void {
 
 | Method                             | Description                                       |
 | ---------------------------------- | ------------------------------------------------- |
-| `init(allocator)`                  | Create a new layout engine                        |
+| `init(&capacity)`                  | Reserve every table from a `LayoutCapacity`       |
 | `deinit()`                         | Free resources                                    |
 | `setMeasureTextFn(fn, user_data)`  | Set text measurement callback                     |
 | `beginFrame(width, height)`        | Start a new frame                                 |
@@ -374,17 +376,22 @@ const offset = Offset2D.init(10, 20);
 const zero = Offset2D.zero();
 ```
 
-## Capacity Constants
+## Capacities
 
-The layout engine uses fixed-capacity collections (no allocation during frames):
+The layout engine reserves fixed-capacity tables at `init` and never allocates during a
+frame. `LayoutCapacity.fromLimits(&limits)` derives every capacity from the app's
+`ResourceLimits`:
 
-| Constant                 | Value | Description                           |
-| ------------------------ | ----- | ------------------------------------- |
-| `MAX_ELEMENTS_PER_FRAME` | 16384 | Maximum elements in a single frame    |
-| `MAX_OPEN_DEPTH`         | 64    | Maximum nesting depth                 |
-| `MAX_FLOATING_ROOTS`     | 256   | Maximum floating elements per frame   |
-| `MAX_LINES_PER_TEXT`     | 1024  | Maximum wrapped lines per text        |
-| `MAX_WORDS_PER_TEXT`     | 2048  | Maximum words for text wrapping       |
+| Field                          | From                                | Holds                     |
+| ------------------------------ | ----------------------------------- | ------------------------- |
+| `element_count_max`            | `build.element_count_frame_max` + 1 | Elements, with the root   |
+| `box_depth_max`                | `build.box_depth_max` (64)          | Nesting depth             |
+| `floating_count_max`           | `build.layer_count_frame_max`       | Floating elements         |
+| `word_count_text_max`          | `run_codepoint_count_max`           | Words in one wrapped text |
+| `wrapped_line_count_frame_max` | `paint.glyph_count_frame_max`       | Wrapped lines per frame   |
+| `arena_bytes`                  | text and line budgets               | The per-frame arena       |
+
+One text wraps into at most `word_count_text_max + 1` lines.
 
 ## Notes
 
@@ -398,6 +405,6 @@ The layout engine uses fixed-capacity collections (no allocation during frames):
   3. **Positions** (top-down) - compute final bounding boxes
      - **3b. Floating elements** - position floating elements relative to parents (includes text wrapping for floats)
 - No phase recurses. Min sizes, final sizes and positions keep an explicit stack
-  of open parents, one frame per level, bounded by `MAX_OPEN_DEPTH`; text
+  of open parents, one frame per level, bounded by `box_depth_max`; text
   wrapping and the floating passes walk a subtree's pre-order index range.
   Every depth the open stack admits lays out.

@@ -109,3 +109,9 @@ pub const State = types.State;
 
 /// Live-region politeness: the type of `ui.A11y.live`.
 pub const Live = types.Live;
+
+/// Heading depth: the type of `ui.A11y.heading_level`.
+pub const HeadingLevel = types.HeadingLevel;
+
+/// A range's axis: the type of `ui.A11y.Range.orientation`.
+pub const Orientation = types.Orientation;

@@ -73,6 +73,8 @@ pub const ui = struct {
     pub const A11y = element.A11y;
     pub const Role = element.Role;
     pub const Orientation = element.Orientation;
+    /// The type of `A11y.heading_level`, for components that take a level.
+    pub const HeadingLevel = element.HeadingLevel;
     pub const Painter = emit.Painter;
     pub const PaintText = emit.TextStyle;
     pub const PaintSvg = emit.SvgStyle;
