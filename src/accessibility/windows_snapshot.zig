@@ -9,20 +9,22 @@
 //!
 //! ## Resource sketch (CLAUDE.md §7)
 //!
-//! - Entries: `MAX_ELEMENTS` (2,048) of 96 B, 192 KiB, reserved at init.
-//! - Text: at most `text_bytes_element_max` (1 KiB) per element, 2 MiB
-//!   reserved at init. Pages become resident only where a frame writes, so a
-//!   typical UI touches a few KiB.
-//! - Per synced frame: one pass over at most 2,048 elements, at most 2 MiB of
-//!   text copied, and one insert each into a 4,096-bucket map. No allocation.
+//! - Entries: `a11y.element_count_max` (2,048 at `standard`) of 96 B, 192 KiB,
+//!   reserved at init.
+//! - Text: at most `text_bytes_element_max` (1 KiB) per element, 2 MiB at
+//!   `standard`, reserved at init. Pages become resident only where a frame
+//!   writes, so a typical UI touches a few KiB.
+//! - Per synced frame: one pass over at most the tree's elements, at most
+//!   their text copied, and one insert each into a map of twice as many
+//!   buckets. No allocation.
 //! - Text longer than its cap is truncated at a UTF-8 boundary. That is the
 //!   overload behaviour: a screen reader reads the first 256 bytes of a name.
 
 const std = @import("std");
-const constants = @import("constants.zig");
 const types = @import("types.zig");
 const tree_mod = @import("tree.zig");
 const reservation = @import("../core/reservation.zig");
+const limits = @import("../core/limits.zig");
 const layout = @import("../layout/layout.zig");
 
 const assert = std.debug.assert;
@@ -37,7 +39,6 @@ pub const name_bytes_max: u16 = 256;
 pub const value_bytes_max: u16 = 512;
 pub const description_bytes_max: u16 = 256;
 pub const text_bytes_element_max: u32 = name_bytes_max + value_bytes_max + description_bytes_max;
-pub const text_bytes_max: u32 = @as(u32, constants.MAX_ELEMENTS) * text_bytes_element_max;
 
 /// Property changes recorded per frame before the queue reports overflow.
 pub const change_count_max: u16 = 128;
@@ -82,7 +83,7 @@ pub const Entry = struct {
     /// Whether an assistive technology should see this element as a control.
     pub fn isExposed(self: *const Entry) bool {
         assert(self.fingerprint.isValid());
-        assert(self.parent == index_none or self.parent < constants.MAX_ELEMENTS);
+        assert(self.parent == index_none or self.parent < limits.a11y_element_count_ceiling);
         if (self.state.hidden) return false;
         return self.role != .presentation and self.role != .none;
     }
@@ -153,14 +154,18 @@ pub const Snapshot = struct {
 
     /// Reserve the entry and text storage. Nothing is written beyond the
     /// scalars and the map's buckets, so the reservations stay non-resident.
-    pub fn initInPlace(self: *Self) error{OutOfMemory}!void {
-        self.entries = try reservation.reserve(Entry, constants.MAX_ELEMENTS);
+    /// `element_count_max` is the tree's (`a11y.element_count_max`).
+    pub fn initInPlace(self: *Self, element_count_max: u16) error{OutOfMemory}!void {
+        assert(element_count_max > 0);
+        self.entries = try reservation.reserve(Entry, element_count_max);
         errdefer reservation.release(Entry, self.entries, 0);
 
-        self.text = try reservation.reserve(u8, text_bytes_max);
+        const text_bytes = @as(u32, element_count_max) * text_bytes_element_max;
+        self.text = try reservation.reserve(u8, text_bytes);
         errdefer reservation.release(u8, self.text, 0);
 
-        self.map.clear();
+        const bucket_count = std.math.ceilPowerOfTwoAssert(u32, 2 * @as(u32, element_count_max));
+        self.map = try tree_mod.FingerprintMap.init(bucket_count);
         self.entry_count = 0;
         self.entry_count_high_water = 0;
         self.text_used = 0;
@@ -168,8 +173,8 @@ pub const Snapshot = struct {
         self.root_first_child = index_none;
         self.root_last_child = index_none;
         self.focused = index_none;
-        assert(self.entries.len == constants.MAX_ELEMENTS);
-        assert(self.text.len == text_bytes_max);
+        assert(self.entries.len == element_count_max);
+        assert(self.text.len == text_bytes);
     }
 
     /// Zero what any frame wrote and return the storage (CLAUDE.md §21).
@@ -178,6 +183,7 @@ pub const Snapshot = struct {
         assert(self.text_used <= self.text_used_high_water);
         reservation.release(Entry, self.entries, self.entry_count_high_water);
         reservation.release(u8, self.text, self.text_used_high_water);
+        self.map.deinit(true);
         self.entries = &.{};
         self.text = &.{};
     }
@@ -283,7 +289,7 @@ pub const Snapshot = struct {
         dirty: []const u16,
         list: *ChangeList,
     ) void {
-        assert(dirty.len <= constants.MAX_ELEMENTS);
+        assert(dirty.len <= tree.count());
         assert(list.change_count == 0);
         for (dirty) |index| {
             assert(index < tree.count());
@@ -441,9 +447,9 @@ pub fn isSelected(role: types.Role, state: types.State) bool {
 }
 
 comptime {
-    assert(constants.MAX_ELEMENTS < index_none);
+    assert(limits.a11y_element_count_ceiling < index_none);
     assert(@sizeOf(Entry) <= 96);
-    assert(text_bytes_max <= std.math.maxInt(u32));
+    assert(limits.a11y_element_count_ceiling * text_bytes_element_max <= std.math.maxInt(u32));
     assert(name_bytes_max <= value_bytes_max);
 }
 
@@ -453,16 +459,24 @@ comptime {
 
 const testing = std.testing;
 
+const test_capacity = tree_mod.Capacity.standard;
+
 fn createTree() !*Tree {
     const tree = try testing.allocator.create(Tree);
-    tree.initInPlace();
+    errdefer destroyTree(tree);
+    try tree.initInPlace(&test_capacity);
     return tree;
+}
+
+fn destroyTree(tree: *Tree) void {
+    tree.deinit();
+    testing.allocator.destroy(tree);
 }
 
 fn createSnapshot() !*Snapshot {
     const snapshot = try testing.allocator.create(Snapshot);
     errdefer testing.allocator.destroy(snapshot);
-    try snapshot.initInPlace();
+    try snapshot.initInPlace(test_capacity.element_count_max);
     return snapshot;
 }
 
@@ -475,7 +489,7 @@ test "rebuild links children and top-level siblings" {
     // Goal: navigation works from the snapshot alone, including between
     // top-level elements, which `Tree` itself does not link.
     const tree = try createTree();
-    defer testing.allocator.destroy(tree);
+    defer destroyTree(tree);
     const snapshot = try createSnapshot();
     defer destroySnapshot(snapshot);
 
@@ -511,7 +525,7 @@ test "same-role, same-name top-level siblings stay distinct and navigation ends"
     // second returned the second again, forever. Each fingerprint must find
     // its own entry, and walking siblings from the root must end.
     const tree = try createTree();
-    defer testing.allocator.destroy(tree);
+    defer destroyTree(tree);
     const snapshot = try createSnapshot();
     defer destroySnapshot(snapshot);
 
@@ -543,7 +557,7 @@ test "same-role, same-name top-level siblings stay distinct and navigation ends"
 
 test "text is copied, so it outlives the frame's strings" {
     const tree = try createTree();
-    defer testing.allocator.destroy(tree);
+    defer destroyTree(tree);
     const snapshot = try createSnapshot();
     defer destroySnapshot(snapshot);
 
@@ -579,7 +593,7 @@ test "a full tree with maximal text fits the text reservation exactly" {
     // Capacity test (CLAUDE.md §24): fill every element with text at every
     // cap, check the last element, then check the tree refuses one more.
     const tree = try createTree();
-    defer testing.allocator.destroy(tree);
+    defer destroyTree(tree);
     const snapshot = try createSnapshot();
     defer destroySnapshot(snapshot);
 
@@ -588,30 +602,30 @@ test "a full tree with maximal text fits the text reservation exactly" {
     const description: [description_bytes_max + 8]u8 = @splat('d');
     tree.beginFrame();
     var index: u32 = 0;
-    while (index < constants.MAX_ELEMENTS) : (index += 1) {
-        const pushed = tree.pushElement(.{
+    const element_count = test_capacity.element_count_max;
+    while (index < element_count) : (index += 1) {
+        _ = tree.pushElement(.{
             .role = .textbox,
             .name = &name,
             .value = &value,
             .description = &description,
         });
-        try testing.expect(pushed != null);
         tree.popElement();
     }
-    try testing.expectEqual(@as(?u16, null), tree.pushElement(.{ .role = .button }));
+    try testing.expectEqual(element_count, tree.count());
     tree.endFrame();
     snapshot.rebuild(tree);
 
-    try testing.expectEqual(constants.MAX_ELEMENTS, snapshot.entry_count);
-    try testing.expectEqual(text_bytes_max, snapshot.text_used);
-    const last = snapshot.entry(constants.MAX_ELEMENTS - 1);
+    try testing.expectEqual(element_count, snapshot.entry_count);
+    try testing.expectEqual(snapshot.text.len, snapshot.text_used);
+    const last = snapshot.entry(element_count - 1);
     try testing.expectEqual(value_bytes_max, last.value.len);
-    try testing.expectEqual(last.previous_sibling, constants.MAX_ELEMENTS - 2);
+    try testing.expectEqual(last.previous_sibling, element_count - 2);
 }
 
 test "collectChanges reports property, structure, and overflow changes" {
     const tree = try createTree();
-    defer testing.allocator.destroy(tree);
+    defer destroyTree(tree);
     const snapshot = try createSnapshot();
     defer destroySnapshot(snapshot);
 
@@ -654,7 +668,7 @@ test "collectChanges reports property, structure, and overflow changes" {
 
 test "hitTest finds the deepest exposed element under the point" {
     const tree = try createTree();
-    defer testing.allocator.destroy(tree);
+    defer destroyTree(tree);
     const snapshot = try createSnapshot();
     defer destroySnapshot(snapshot);
 

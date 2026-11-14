@@ -9,7 +9,7 @@
 //! for platform sync purposes.
 
 const std = @import("std");
-const constants = @import("constants.zig");
+const limits = @import("../core/limits.zig");
 const types = @import("types.zig");
 
 const assert = std.debug.assert;
@@ -68,8 +68,8 @@ pub const Fingerprint = packed struct(u64) {
 };
 
 /// Most children one parent, or the tree's top level, can have: every child
-/// is an element of the tree.
-pub const position_count_max: u16 = constants.MAX_ELEMENTS;
+/// is an element of the tree, and the largest tree holds the ceiling's.
+pub const position_count_max: u16 = limits.a11y_element_count_ceiling;
 
 /// Compute fingerprint for an element.
 ///

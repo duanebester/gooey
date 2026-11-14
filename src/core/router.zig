@@ -691,7 +691,11 @@ fn call(window: *Window, handler: handler_mod.Handler, effects: *handler_mod.Eff
         window.render_requested = true;
     }
     if (effects.announcement) |announcement| {
-        window.announcements.push(announcement.text, announcement.politeness);
+        window.announcements.push(
+            announcement.text,
+            announcement.politeness,
+            window.frame_number,
+        );
         window.render_requested = true;
     }
 }

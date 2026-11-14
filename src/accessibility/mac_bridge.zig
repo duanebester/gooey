@@ -5,7 +5,8 @@
 //! for zero-allocation after init.
 //!
 //! Strategy:
-//! - Pre-allocated pool of NSAccessibilityElement wrappers
+//! - Pool of NSAccessibilityElement wrappers, one per `a11y.element_count_max`,
+//!   reserved at init from fresh pages
 //! - Fingerprint-based identity mapping for stable object references
 //! - Value and caret change notifications for elements whose content changed
 //! - Periodic VoiceOver detection (not every frame)
@@ -16,7 +17,8 @@ const bridge_mod = @import("bridge.zig");
 const tree_mod = @import("tree.zig");
 const types = @import("types.zig");
 const fingerprint_mod = @import("fingerprint.zig");
-const constants = @import("constants.zig");
+const Fingerprint = fingerprint_mod.Fingerprint;
+const reservation = @import("../core/reservation.zig");
 const layout = @import("../layout/layout.zig");
 const appkit = @import("../platform/macos/appkit.zig");
 const TextSelection = @import("element.zig").TextSelection;
@@ -66,14 +68,15 @@ const NSUTF8StringEncoding: c_ulong = 4;
 // ============================================================================
 
 pub const MacBridge = struct {
-    /// Pool of native accessibility element wrappers (static allocation)
-    wrappers: [constants.MAX_ELEMENTS]Wrapper = undefined,
+    /// Pool of native accessibility element wrappers, `a11y.element_count_max`
+    /// of them, reserved at init; empty when the reservation failed.
+    wrappers: []Wrapper = &.{},
+    /// Slots below this were initialized; the rest are untouched pages.
     wrapper_count: u16 = 0,
 
     /// Map fingerprint -> wrapper slot for stable identity
     /// Linear search is fine for typical element counts (<500)
-    fingerprint_to_slot: [constants.MAX_ELEMENTS]fingerprint_mod.Fingerprint =
-        @as([constants.MAX_ELEMENTS]fingerprint_mod.Fingerprint, @splat(fingerprint_mod.Fingerprint.INVALID)),
+    fingerprint_to_slot: []fingerprint_mod.Fingerprint = &.{},
 
     /// Root accessibility element (the window)
     root_element: ?objc.Object = null,
@@ -265,13 +268,19 @@ pub const MacBridge = struct {
     /// Parameters:
     ///   window: NSWindow object (for screen coordinate conversion)
     ///   view: NSView object (the content view where layout coordinates are relative to)
-    pub fn init(window: ?objc.Object, view: ?objc.Object) Self {
+    /// `element_count_max` is the tree's (`a11y.element_count_max`): stale
+    /// wrappers are reclaimed before a new one is taken, so the frame's
+    /// elements always fit. A failed reservation leaves the bridge inert, as
+    /// the Windows bridge does: the app runs without VoiceOver support and the
+    /// error is logged.
+    pub fn init(element_count_max: u16, window: ?objc.Object, view: ?objc.Object) Self {
+        std.debug.assert(element_count_max > 0);
         var self = Self{};
-
-        // Pre-initialize wrapper pool
-        for (&self.wrappers) |*w| {
-            w.* = Wrapper{};
-        }
+        self.reserveSlots(element_count_max) catch {
+            std.log.err("accessibility: VoiceOver wrapper reservation failed", .{});
+            return self;
+        };
+        std.debug.assert(self.wrappers.len == element_count_max);
 
         self.root_element = window;
         // Store view directly - layout bounds are in view coordinates
@@ -281,6 +290,16 @@ pub const MacBridge = struct {
         registerElementClass();
 
         return self;
+    }
+
+    /// Wrapper slots from fresh pages: a slot is initialized when first
+    /// taken, so only the slots VoiceOver ever used become resident.
+    fn reserveSlots(self: *Self, element_count_max: u16) error{OutOfMemory}!void {
+        const wrappers = try reservation.reserve(Wrapper, element_count_max);
+        errdefer reservation.release(Wrapper, wrappers, 0);
+
+        self.fingerprint_to_slot = try reservation.reserve(Fingerprint, element_count_max);
+        self.wrappers = wrappers;
     }
 
     /// Get the Bridge interface (vtable pattern)
@@ -312,7 +331,7 @@ pub const MacBridge = struct {
         const self = castSelf(ptr);
 
         // Assertion: dirty list is bounded
-        std.debug.assert(dirty.len <= constants.MAX_ELEMENTS);
+        std.debug.assert(dirty.len <= tree.count());
         // Assertion: self is valid
         std.debug.assert(self.root_element != null or !self.voiceover_active);
 
@@ -339,11 +358,11 @@ pub const MacBridge = struct {
         }
     }
 
-    /// One pass over the allocated wrappers, at most `MAX_ELEMENTS`, each an
+    /// One pass over the allocated wrappers, at most `a11y.element_count_max`, each an
     /// O(1) tree lookup and one view-to-screen conversion; a frame is set
     /// only for an element that moved.
     fn refreshFrames(self: *Self, tree: *const tree_mod.Tree) void {
-        std.debug.assert(self.wrapper_count <= constants.MAX_ELEMENTS);
+        std.debug.assert(self.wrapper_count <= self.wrappers.len);
         std.debug.assert(self.voiceover_active);
         for (self.wrappers[0..self.wrapper_count]) |*wrapper| {
             if (!wrapper.active) continue;
@@ -360,7 +379,7 @@ pub const MacBridge = struct {
         // Assertion: root is valid
         std.debug.assert(root.value != null);
         // Assertion: tree element count is bounded
-        std.debug.assert(tree.count() <= constants.MAX_ELEMENTS);
+        std.debug.assert(tree.count() <= tree.elements.len);
 
         const NSMutableArray = objc.getClass("NSMutableArray") orelse return;
 
@@ -406,10 +425,10 @@ pub const MacBridge = struct {
     /// does: VoiceOver calls a splitter with no previous or next contents
     /// "collapsed" toward that side. Its neighbours are its siblings in the
     /// tree, which are in index order (the tree is built depth first). One
-    /// scan of at most `MAX_ELEMENTS` per splitter.
+    /// scan of at most `a11y.element_count_max` per splitter.
     fn updateSplitterContents(self: *Self, tree: *const tree_mod.Tree) void {
-        std.debug.assert(tree.count() <= constants.MAX_ELEMENTS);
-        std.debug.assert(self.wrapper_count <= constants.MAX_ELEMENTS);
+        std.debug.assert(tree.count() <= tree.elements.len);
+        std.debug.assert(self.wrapper_count <= self.wrappers.len);
         var index: u16 = 0;
         while (index < tree.count()) : (index += 1) {
             const elem = tree.getElement(index) orelse continue;
@@ -521,7 +540,7 @@ pub const MacBridge = struct {
 
     fn nativeElement(self: *Self, elem: *const tree_mod.Element) ?objc.Object {
         std.debug.assert(elem.fingerprint.isValid());
-        std.debug.assert(self.wrapper_count <= constants.MAX_ELEMENTS);
+        std.debug.assert(self.wrapper_count <= self.wrappers.len);
         const slot = self.findSlotByFingerprint(elem.fingerprint) orelse return null;
         return self.wrappers[slot].ns_element;
     }
@@ -533,12 +552,18 @@ pub const MacBridge = struct {
         root: objc.Object,
     ) void {
         // Assertion: index in bounds
-        std.debug.assert(idx < constants.MAX_ELEMENTS);
+        std.debug.assert(idx < tree.count());
 
         const elem = tree.getElement(idx) orelse return;
 
-        // Find or allocate wrapper slot
-        const slot = self.findOrAllocSlot(elem.fingerprint) orelse return;
+        // Find or allocate a wrapper slot. When every slot is taken, some hold
+        // elements that left the tree in frames the bridge skipped (VoiceOver
+        // was off); reclaiming them leaves at most the tree's elements, which
+        // the pool always holds.
+        const slot = self.findOrAllocSlot(elem.fingerprint) orelse blk: {
+            self.reclaimStale(tree);
+            break :blk self.findOrAllocSlot(elem.fingerprint) orelse unreachable;
+        };
 
         // Resolve parent's NS element. A top-level element's parent is the
         // window, as in 0.3.1, even though it hangs in the content view's
@@ -573,7 +598,7 @@ pub const MacBridge = struct {
         const self = castSelf(ptr);
 
         // Assertion: removal list bounded
-        std.debug.assert(fingerprints.len <= constants.MAX_ELEMENTS);
+        std.debug.assert(fingerprints.len <= self.wrappers.len);
 
         for (fingerprints) |fp| {
             if (self.findSlotByFingerprint(fp)) |slot| {
@@ -602,7 +627,7 @@ pub const MacBridge = struct {
         const self = castSelf(ptr);
 
         // Assertion: tree is valid
-        std.debug.assert(tree.count() <= constants.MAX_ELEMENTS);
+        std.debug.assert(tree.count() <= tree.elements.len);
 
         if (!self.voiceover_active) return;
 
@@ -612,7 +637,7 @@ pub const MacBridge = struct {
     }
 
     fn focusedElement(self: *Self, tree: *const tree_mod.Tree, idx: ?u16) ?objc.Object {
-        std.debug.assert(tree.count() <= constants.MAX_ELEMENTS);
+        std.debug.assert(tree.count() <= tree.elements.len);
         const focus_idx = idx orelse return null;
         const elem = tree.getElement(focus_idx) orelse return null;
         const slot = self.findSlotByFingerprint(elem.fingerprint) orelse return null;
@@ -631,6 +656,8 @@ pub const MacBridge = struct {
     fn isActive(ptr: *anyopaque) bool {
         const self = castSelf(ptr);
 
+        // An inert bridge (its reservation failed) never syncs.
+        if (self.wrappers.len == 0) return false;
         // Update cached state
         self.voiceover_active = checkVoiceOverRunning();
         return self.voiceover_active;
@@ -643,7 +670,7 @@ pub const MacBridge = struct {
         self.publishFocus(null);
 
         // Release all NS objects
-        for (&self.wrappers) |*w| {
+        for (self.wrappers[0..self.wrapper_count]) |*w| {
             if (w.ns_element) |ns| {
                 releaseNSObject(ns);
                 w.ns_element = null;
@@ -651,6 +678,14 @@ pub const MacBridge = struct {
             w.active = false;
             w.fingerprint = fingerprint_mod.Fingerprint.INVALID;
         }
+        // Zero the slots any frame initialized before the pages go back (§21).
+        if (self.wrappers.len > 0) {
+            reservation.release(Fingerprint, self.fingerprint_to_slot, self.wrapper_count);
+            reservation.release(Wrapper, self.wrappers, self.wrapper_count);
+        }
+        self.wrappers = &.{};
+        self.fingerprint_to_slot = &.{};
+        self.wrapper_count = 0;
 
         self.root_element = null;
         self.content_view = null;
@@ -666,7 +701,7 @@ pub const MacBridge = struct {
         std.debug.assert(fp.isValid());
 
         // Slots at or past `wrapper_count` were never allocated.
-        std.debug.assert(self.wrapper_count <= constants.MAX_ELEMENTS);
+        std.debug.assert(self.wrapper_count <= self.wrappers.len);
         for (self.fingerprint_to_slot[0..self.wrapper_count], 0..) |slot_fp, i| {
             if (slot_fp.eql(fp)) return @intCast(i);
         }
@@ -677,26 +712,44 @@ pub const MacBridge = struct {
         // Assertion: fingerprint is valid
         std.debug.assert(fp.isValid());
         // Assertion: wrapper_count is bounded
-        std.debug.assert(self.wrapper_count <= constants.MAX_ELEMENTS);
+        std.debug.assert(self.wrapper_count <= self.wrappers.len);
 
         // Try existing slot
         if (self.findSlotByFingerprint(fp)) |slot| return slot;
 
-        // Find free slot
-        for (&self.wrappers, 0..) |*w, i| {
+        // Find a free initialized slot, else initialize the next one.
+        for (self.wrappers[0..self.wrapper_count], 0..) |*w, i| {
             if (!w.active) {
                 self.fingerprint_to_slot[i] = fp;
                 w.active = true; // Mark as allocated
                 w.fingerprint = fp;
-                if (i >= self.wrapper_count) {
-                    self.wrapper_count = @intCast(i + 1);
-                }
                 return @intCast(i);
             }
         }
+        if (self.wrapper_count < self.wrappers.len) {
+            const slot = self.wrapper_count;
+            self.wrappers[slot] = .{ .active = true, .fingerprint = fp };
+            self.fingerprint_to_slot[slot] = fp;
+            self.wrapper_count += 1;
+            return slot;
+        }
 
-        // Pool exhausted - fail gracefully
+        // Every slot is taken; the caller reclaims stale ones.
         return null;
+    }
+
+    /// Free every wrapper whose element is not in `tree`'s current frame. One
+    /// pass over the pool with an O(1) lookup each; it runs only when the pool
+    /// is full, which needs a frame the bridge skipped.
+    fn reclaimStale(self: *Self, tree: *const tree_mod.Tree) void {
+        std.debug.assert(self.wrapper_count == self.wrappers.len);
+        std.debug.assert(tree.count() <= self.wrappers.len);
+        for (self.wrappers, 0..) |*w, i| {
+            if (!w.active) continue;
+            if (tree.findElementByFingerprint(w.fingerprint) != null) continue;
+            w.invalidate();
+            self.fingerprint_to_slot[i] = fingerprint_mod.Fingerprint.INVALID;
+        }
     }
 
     fn castSelf(ptr: *anyopaque) *Self {
@@ -1261,8 +1314,9 @@ comptime {
 // ============================================================================
 
 test "mac bridge initialization" {
-    var bridge_impl = MacBridge.init(null, null);
+    var bridge_impl = MacBridge.init(8, null, null);
     const b = bridge_impl.bridge();
+    defer b.deinit();
 
     // Should work with null window (VoiceOver disabled)
     try std.testing.expect(!b.isActive());
@@ -1285,7 +1339,8 @@ test "mac bridge wrapper lifecycle" {
 }
 
 test "mac bridge slot management" {
-    var bridge_impl = MacBridge.init(null, null);
+    var bridge_impl = MacBridge.init(8, null, null);
+    defer bridge_impl.bridge().deinit();
 
     const fp1 = fingerprint_mod.compute(.button, "Button1", null, 0);
     const fp2 = fingerprint_mod.compute(.button, "Button2", null, 1);
@@ -1307,6 +1362,39 @@ test "mac bridge slot management" {
     try std.testing.expectEqual(slot1, slot1_again);
 }
 
+test "a full wrapper pool reclaims elements that left the tree in skipped frames" {
+    // Goal: a pool of exactly the tree's capacity always holds the current
+    // frame, even when removals were never synced (VoiceOver was off). Method:
+    // fill a two-slot pool with two elements, build a frame of two others,
+    // and check that the full pool reports no slot until the stale ones are
+    // reclaimed, then takes both new elements without growing.
+    const capacity: tree_mod.Capacity = .{
+        .element_count_max = 2,
+        .depth_max = 1,
+        .announcement_count_max = 3,
+    };
+    var tree: tree_mod.Tree = undefined;
+    try tree.initInPlace(&capacity);
+    defer tree.deinit();
+    var bridge_impl = MacBridge.init(capacity.element_count_max, null, null);
+    defer bridge_impl.bridge().deinit();
+
+    _ = bridge_impl.findOrAllocSlot(fingerprint_mod.compute(.button, "Old A", null, 0)).?;
+    _ = bridge_impl.findOrAllocSlot(fingerprint_mod.compute(.button, "Old B", null, 1)).?;
+    tree.beginFrame();
+    for ([_][]const u8{ "New A", "New B" }) |name| {
+        _ = tree.pushElement(.{ .role = .button, .name = name });
+        tree.popElement();
+    }
+    tree.endFrame();
+    const new_a = tree.getElement(0).?.fingerprint;
+    try std.testing.expectEqual(@as(?u16, null), bridge_impl.findOrAllocSlot(new_a));
+    bridge_impl.reclaimStale(&tree);
+    try std.testing.expect(bridge_impl.findOrAllocSlot(new_a) != null);
+    try std.testing.expect(bridge_impl.findOrAllocSlot(tree.getElement(1).?.fingerprint) != null);
+    try std.testing.expectEqual(@as(u16, 2), bridge_impl.wrapper_count);
+}
+
 /// A bridge that syncs as if VoiceOver ran, with an element standing in for
 /// the window and no screen conversion, plus a heap tree (~500 KiB).
 const TestRig = struct {
@@ -1315,17 +1403,18 @@ const TestRig = struct {
     root: objc.Object,
 
     fn init(rig: *TestRig) !void {
-        rig.bridge_impl = MacBridge.init(null, null);
+        rig.bridge_impl = MacBridge.init(tree_mod.Capacity.standard.element_count_max, null, null);
         rig.root = createNSAccessibilityElement().?;
         rig.bridge_impl.root_element = rig.root;
         rig.bridge_impl.voiceover_active = true;
         rig.tree = try std.testing.allocator.create(tree_mod.Tree);
-        rig.tree.initInPlace();
+        try rig.tree.initInPlace(&tree_mod.Capacity.standard);
     }
 
     fn deinit(rig: *TestRig) void {
         rig.bridge_impl.bridge().deinit();
         releaseNSObject(rig.root);
+        rig.tree.deinit();
         std.testing.allocator.destroy(rig.tree);
     }
 
@@ -1338,7 +1427,7 @@ const TestRig = struct {
     }
 
     fn leaf(rig: *TestRig, role: types.Role, name: []const u8, y: f32) void {
-        const index = rig.tree.pushElement(.{ .role = role, .name = name }).?;
+        const index = rig.tree.pushElement(.{ .role = role, .name = name });
         rig.tree.getElementMut(index).?.bounds = .{ .x = 5, .y = y, .width = 80, .height = 20 };
         rig.tree.popElement();
     }
@@ -1393,7 +1482,7 @@ test "mac bridge clears the children of a reused wrapper that became a leaf" {
     try rig.init();
     defer rig.deinit();
     rig.tree.beginFrame();
-    _ = rig.tree.pushElement(.{ .role = .group, .name = "Group" }).?;
+    _ = rig.tree.pushElement(.{ .role = .group, .name = "Group" });
     rig.leaf(.button, "Inner", 10);
     rig.tree.popElement();
     rig.tree.endFrame();
@@ -1426,14 +1515,14 @@ test "mac bridge hangs a combobox's listbox beside it and reports chosen options
     defer rig.deinit();
     for ([_]bool{ true, false }) |open| {
         rig.tree.beginFrame();
-        _ = rig.tree.pushElement(.{ .role = .group, .name = "Form" }).?;
+        _ = rig.tree.pushElement(.{ .role = .group, .name = "Form" });
         _ = rig.tree.pushElement(.{
             .role = .combobox,
             .name = "Level",
             .state = .{ .expanded = open },
-        }).?;
+        });
         if (open) {
-            _ = rig.tree.pushElement(.{ .role = .listbox, .name = "Level" }).?;
+            _ = rig.tree.pushElement(.{ .role = .listbox, .name = "Level" });
             rig.leaf(.option, "One", 40);
             const chosen: types.State = .{ .selected = true };
             _ = rig.tree.pushElement(.{ .role = .option, .name = "Two", .state = chosen });

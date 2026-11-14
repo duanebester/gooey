@@ -4586,3 +4586,32 @@ test "a capture clicks only without a move, and ends quietly when its box leaves
     try testing.expectEqual(gooey.ElementId.root, app.window.capture.id);
     try testing.expectEqual(@as(u32, 0), app.state.button_clicks);
 }
+
+const NanoA11yApp = gooey.App(struct {}, nanoA11yRender, .{
+    .title = "A11y",
+    .width = 100,
+    .height = 100,
+    .limits = .nano,
+});
+
+fn nanoA11yRender(cx: *Cx) void {
+    const count = gooey.ResourceLimits.nano.a11y.element_count_max;
+    for (0..count) |_| cx.render(ui.box(.{ .a11y = .{ .role = .button, .label = "Go" } }, .{}));
+}
+
+test "a nano app records exactly its a11y.element_count_max nodes" {
+    // Goal: the frame's node pool comes from `ResourceLimits.a11y`, not the
+    // element budget, and holds that many. Methodology: render exactly
+    // `nano`'s 128 accessible boxes and count the rendered frame's nodes and
+    // capacity; one more is the `core-a11y-elements` fail-fast check.
+    const app = try testing.allocator.create(NanoA11yApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    app.tick(1);
+    const frame = app.window.rendered();
+    const count = gooey.ResourceLimits.nano.a11y.element_count_max;
+    try testing.expectEqual(@as(usize, count), frame.a11y.len);
+    try testing.expectEqual(count, frame.a11y_count);
+    try testing.expectEqual(@as(usize, count), app.window.screen_reader.tree.elements.len);
+}

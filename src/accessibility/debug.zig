@@ -26,7 +26,6 @@ const builtin = @import("builtin");
 const tree_mod = @import("tree.zig");
 const element_mod = @import("element.zig");
 const types = @import("types.zig");
-const constants = @import("constants.zig");
 const fingerprint_mod = @import("fingerprint.zig");
 
 pub const Tree = tree_mod.Tree;
@@ -143,7 +142,7 @@ pub fn getStats(tree: *const Tree) TreeStats {
         var current_parent = elem.parent;
         while (current_parent) |p_idx| {
             depth += 1;
-            if (depth > constants.MAX_DEPTH) break;
+            if (depth > tree.parent_stack.len) break;
             if (p_idx >= tree.element_count) break;
             current_parent = tree.elements[p_idx].parent;
         }
@@ -197,7 +196,7 @@ pub fn validate(tree: *const Tree) ValidationResult {
     }
 
     // Check depth
-    if (tree.stack_depth > constants.MAX_DEPTH) {
+    if (tree.stack_depth > tree.parent_stack.len) {
         result.addIssue(0, .excessive_depth, "Tree depth exceeds maximum");
     }
 
@@ -215,13 +214,13 @@ pub fn dumpTreeTo(tree: *const Tree, writer: anytype) !void {
     try writer.print("\n=== Accessibility Tree Dump ===\n", .{});
     try writer.print("Elements: {d}/{d}, Dirty: {d}, Removed: {d}\n", .{
         tree.element_count,
-        constants.MAX_ELEMENTS,
+        tree.elements.len,
         tree.dirty_count,
         tree.removed_count,
     });
     try writer.print("Stack depth: {d}/{d}\n", .{
         tree.stack_depth,
-        constants.MAX_DEPTH,
+        tree.parent_stack.len,
     });
 
     if (tree.focused_fingerprint.toU64() != Fingerprint.INVALID.toU64()) {
@@ -430,10 +429,10 @@ pub fn findByFingerprint(tree: *const Tree, fp: Fingerprint) ?*const Element {
 /// Assert tree invariants (for testing)
 pub fn assertInvariants(tree: *const Tree) void {
     // Element count within bounds
-    std.debug.assert(tree.element_count <= constants.MAX_ELEMENTS);
+    std.debug.assert(tree.element_count <= tree.elements.len);
 
     // Stack depth within bounds
-    std.debug.assert(tree.stack_depth <= constants.MAX_DEPTH);
+    std.debug.assert(tree.stack_depth <= tree.parent_stack.len);
 
     // All parent references valid
     for (tree.elements[0..tree.element_count]) |elem| {
@@ -452,14 +451,16 @@ pub fn assertInvariants(tree: *const Tree) void {
 // Tests
 // =============================================================================
 
-/// Helper to heap-allocate Tree (~500KB - too large for stack per CLAUDE.md)
+/// A tree at the tests' capacity, on the heap like a window's.
 fn createTestTree() !*Tree {
     const tree = try std.testing.allocator.create(Tree);
-    tree.initInPlace();
+    errdefer std.testing.allocator.destroy(tree);
+    try tree.initInPlace(&@import("tree.zig").Capacity.standard);
     return tree;
 }
 
 fn destroyTestTree(tree: *Tree) void {
+    tree.deinit();
     std.testing.allocator.destroy(tree);
 }
 

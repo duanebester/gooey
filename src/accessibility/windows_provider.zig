@@ -19,11 +19,12 @@
 //!
 //! ## Provider pool (CLAUDE.md §2, §7)
 //!
-//! `provider_count_max` objects of 96 B, 384 KiB, reserved at init and
-//! resident only up to the high-water mark. A provider is claimed with one
-//! reference whenever a method hands one out and returns to the free list when
-//! its last reference is released. UI Automation identifies elements by
-//! runtime id, not by object, so one element may have several live providers.
+//! `providerCountMax` (twice `a11y.element_count_max`) objects of 96 B, 384 KiB
+//! at `standard`, reserved at init and resident only up to the high-water
+//! mark. A provider is claimed with one reference whenever a method hands
+//! one out and returns to the free list when its last reference is released.
+//! UI Automation identifies elements by runtime id, not by object, so one
+//! element may have several live providers.
 //!
 //! Actions are not exposed: the accessibility tree has no path back to the
 //! widgets, so `Invoke`, `SetValue`, `Toggle`, `SetFocus`, and similar return
@@ -31,11 +32,11 @@
 //! input, which the widgets handle.
 
 const std = @import("std");
-const constants = @import("constants.zig");
 const types = @import("types.zig");
 const tree_mod = @import("tree.zig");
 const snapshot_mod = @import("windows_snapshot.zig");
 const reservation = @import("../core/reservation.zig");
+const limits = @import("../core/limits.zig");
 const layout = @import("../layout/layout.zig");
 const uia = @import("../platform/windows/uia.zig");
 const win32 = @import("../platform/windows/win32.zig");
@@ -51,9 +52,13 @@ const Simple = uia.IRawElementProviderSimple;
 const Fragment = uia.IRawElementProviderFragment;
 const FragmentRoot = uia.IRawElementProviderFragmentRoot;
 
-/// Two providers per element: room for a client to cache every element of a
-/// full tree while it navigates to fresh ones.
-pub const provider_count_max: u16 = 2 * constants.MAX_ELEMENTS;
+/// Two providers per element (`a11y.element_count_max`): room for a client to
+/// cache every element of a full tree while it navigates to fresh ones.
+pub fn providerCountMax(element_count_max: u16) u16 {
+    assert(element_count_max > 0);
+    assert(element_count_max <= limits.a11y_element_count_ceiling);
+    return 2 * element_count_max;
+}
 
 /// The longest UTF-8 string turned into a `BSTR`: the snapshot's largest text
 /// cap, and the bridge's announcement cap.
@@ -87,11 +92,16 @@ pub const Server = struct {
 
     const Self = @This();
 
-    pub fn initInPlace(self: *Self, hwnd: win32.HWND) error{OutOfMemory}!void {
-        try self.snapshot.initInPlace();
+    /// `element_count_max` is the tree's (`a11y.element_count_max`).
+    pub fn initInPlace(
+        self: *Self,
+        hwnd: win32.HWND,
+        element_count_max: u16,
+    ) error{OutOfMemory}!void {
+        try self.snapshot.initInPlace(element_count_max);
         errdefer self.snapshot.deinit();
 
-        self.providers = try reservation.reserve(Provider, provider_count_max);
+        self.providers = try reservation.reserve(Provider, providerCountMax(element_count_max));
         errdefer reservation.release(Provider, self.providers, 0);
 
         self.lock = .{};
@@ -105,7 +115,7 @@ pub const Server = struct {
         // The root's first reference belongs to the bridge.
         self.root.initIn(self, .root, Fingerprint.INVALID);
         assert(self.root.reference_count.load(.monotonic) == 1);
-        assert(self.providers.len == provider_count_max);
+        assert(self.providers.len == providerCountMax(element_count_max));
     }
 
     /// Free the storage. Only after `shutdown` reported every provider released.
@@ -141,7 +151,7 @@ pub const Server = struct {
         self.alive = false;
         const high_water = self.provider_high_water;
         self.unlockExclusive();
-        assert(high_water <= provider_count_max);
+        assert(high_water <= self.providers.len);
 
         // Outside the lock: a disconnect releases references, and the last
         // release takes the lock to reclaim its slot. The root has no
@@ -176,14 +186,14 @@ pub const Server = struct {
         const provider = &self.providers[slot];
         provider.initIn(self, .element, fingerprint);
         self.live_count += 1;
-        assert(self.live_count <= provider_count_max);
+        assert(self.live_count <= self.providers.len);
         assert(provider.reference_count.load(.monotonic) == 1);
         return provider;
     }
 
     fn claimSlot(self: *Self) ?u16 {
         assert(self.locked);
-        assert(self.provider_high_water <= provider_count_max);
+        assert(self.provider_high_water <= self.providers.len);
         if (self.free_head != index_none) {
             const slot = self.free_head;
             assert(slot < self.provider_high_water);
@@ -193,7 +203,7 @@ pub const Server = struct {
         }
         // Every claimed slot below the high-water mark is live.
         assert(self.live_count == self.provider_high_water);
-        if (self.provider_high_water < provider_count_max) {
+        if (self.provider_high_water < self.providers.len) {
             const slot = self.provider_high_water;
             self.provider_high_water += 1;
             return slot;
@@ -231,7 +241,7 @@ pub const Server = struct {
         std.log.warn(
             "accessibility: UI Automation provider pool exhausted " ++
                 "(capacity {d}, requested 1, live {d})",
-            .{ provider_count_max, self.live_count },
+            .{ self.providers.len, self.live_count },
         );
     }
 };
@@ -1144,7 +1154,7 @@ comptime {
     // `x86_64-windows` only; see `docs/windows-port.md`.
     assert(@sizeOf(usize) == 8);
     assert(@sizeOf(Provider) <= 96);
-    assert(provider_count_max < index_none);
+    assert(2 * limits.a11y_element_count_ceiling < index_none);
     assert(snapshot_mod.value_bytes_max <= bstr_bytes_max);
 }
 
@@ -1185,11 +1195,12 @@ const TestFixture = struct {
 
         const tree = try testing.allocator.create(Tree);
         errdefer testing.allocator.destroy(tree);
-        tree.initInPlace();
+        try tree.initInPlace(&tree_mod.Capacity.standard);
+        errdefer tree.deinit();
 
         const server = try testing.allocator.create(Server);
         errdefer testing.allocator.destroy(server);
-        try server.initInPlace(hwnd);
+        try server.initInPlace(hwnd, tree_mod.Capacity.standard.element_count_max);
         return .{ .hwnd = hwnd, .tree = tree, .server = server };
     }
 
@@ -1200,6 +1211,7 @@ const TestFixture = struct {
         _ = self.server.root.release();
         self.server.deinit();
         testing.allocator.destroy(self.server);
+        self.tree.deinit();
         testing.allocator.destroy(self.tree);
         _ = win32.DestroyWindow(self.hwnd);
     }
@@ -1372,6 +1384,7 @@ test "an element outliving shutdown reports its fragment root unavailable" {
     try testing.expectEqual(@as(u16, 0), fixture.server.live_count);
     fixture.server.deinit();
     testing.allocator.destroy(fixture.server);
+    fixture.tree.deinit();
     testing.allocator.destroy(fixture.tree);
     _ = win32.DestroyWindow(fixture.hwnd);
 }
@@ -1384,7 +1397,7 @@ test "the provider pool fills exactly, refuses one more, and reuses a released s
 
     fixture.server.lockExclusive();
     var count: u16 = 0;
-    while (count < provider_count_max) : (count += 1) {
+    while (count < fixture.server.providers.len) : (count += 1) {
         try testing.expect(fixture.server.claim(fingerprint) != null);
     }
     try testing.expectEqual(@as(?*Provider, null), fixture.server.claim(fingerprint));

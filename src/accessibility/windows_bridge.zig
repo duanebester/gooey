@@ -20,24 +20,27 @@
 //!
 //! ## Resource sketch (CLAUDE.md §7)
 //!
-//! - Reserved at init: the server (map and bookkeeping, about 50 KiB), the
-//!   snapshot (192 KiB of entries, 2 MiB of text), and the provider pool
-//!   (384 KiB). Resident memory follows use, not capacity.
-//! - Per synced frame: one diff and one rebuild over at most 2,048 elements,
-//!   and at most `change_count_max` (128) property events, plus one structure,
-//!   one focus, and `MAX_ANNOUNCEMENTS` (8) notification events. Each event is
-//!   one call into `uiautomationcore`, which forwards it to listening clients.
+//! - Reserved at init, at `standard`'s 2,048 `a11y.element_count_max`: the
+//!   server (map and bookkeeping, about 50 KiB), the snapshot (192 KiB of
+//!   entries, 2 MiB of text), and the provider pool (384 KiB). Every one
+//!   scales with the field. Resident memory follows use, not capacity.
+//! - Per synced frame: one diff and one rebuild over at most the tree's
+//!   elements, and at most `change_count_max` (128) property events, plus one
+//!   structure, one focus, and the tree's announcements (the frame's
+//!   `a11y.announcement_count_frame_max` plus live-region changes). Each event
+//!   is one call into `uiautomationcore`, which forwards it to listening
+//!   clients.
 //!
 //! Requires Windows 10 1709 for `UiaRaiseNotificationEvent`.
 
 const std = @import("std");
 const bridge_mod = @import("bridge.zig");
-const constants = @import("constants.zig");
 const types = @import("types.zig");
 const tree_mod = @import("tree.zig");
 const snapshot_mod = @import("windows_snapshot.zig");
 const provider_mod = @import("windows_provider.zig");
 const reservation = @import("../core/reservation.zig");
+const limits = @import("../core/limits.zig");
 const uia = @import("../platform/windows/uia.zig");
 const win32 = @import("../platform/windows/win32.zig");
 const shell = @import("../platform/windows/shell.zig");
@@ -70,7 +73,9 @@ pub const WindowsBridge = struct {
     /// Reserve the bridge's storage and publish its root to the window. A
     /// failure leaves the bridge inert: the application runs without
     /// accessibility rather than not at all, and the error is logged.
-    pub fn init(host: ?*uia.Host) Self {
+    /// `element_count_max` is the tree's (`a11y.element_count_max`).
+    pub fn init(element_count_max: u16, host: ?*uia.Host) Self {
+        assert(element_count_max > 0);
         var self: Self = .{ .host = host, .server = null, .com_entered = false, .changes = .{} };
         const window_host = host orelse return self;
         const hwnd = window_host.hwnd orelse return self;
@@ -81,7 +86,7 @@ pub const WindowsBridge = struct {
             std.log.err("accessibility: UI Automation storage reservation failed", .{});
             return self;
         };
-        storage[0].initInPlace(hwnd) catch {
+        storage[0].initInPlace(hwnd, element_count_max) catch {
             reservation.release(Server, storage, 1);
             std.log.err("accessibility: UI Automation storage reservation failed", .{});
             return self;
@@ -118,7 +123,7 @@ pub const WindowsBridge = struct {
     fn syncDirty(ptr: *anyopaque, tree: *const tree_mod.Tree, dirty: []const u16) void {
         const self = castSelf(ptr);
         const server = self.server orelse return;
-        assert(dirty.len <= constants.MAX_ELEMENTS);
+        assert(dirty.len <= tree.count());
         assert(self.changes.change_count == 0);
 
         server.lockExclusive();
@@ -139,7 +144,7 @@ pub const WindowsBridge = struct {
     fn removeElements(ptr: *anyopaque, fingerprints: []const Fingerprint) void {
         const self = castSelf(ptr);
         const server = self.server orelse return;
-        assert(fingerprints.len <= constants.MAX_ELEMENTS);
+        assert(fingerprints.len <= server.snapshot.entries.len);
         if (fingerprints.len == 0) return;
         raiseStructureChanged(server);
     }
@@ -334,13 +339,14 @@ comptime {
 const testing = std.testing;
 
 test "an inert bridge without a window is safe to drive" {
-    var inert = WindowsBridge.init(null);
+    var inert = WindowsBridge.init(tree_mod.Capacity.standard.element_count_max, null);
     const b = inert.bridge();
     defer b.deinit();
 
     const tree = try testing.allocator.create(tree_mod.Tree);
     defer testing.allocator.destroy(tree);
-    tree.initInPlace();
+    try tree.initInPlace(&tree_mod.Capacity.standard);
+    defer tree.deinit();
     tree.beginFrame();
     _ = tree.pushElement(.{ .role = .button, .name = "Test", .state = .{ .focused = true } });
     tree.popElement();
@@ -378,7 +384,7 @@ test "a bridge on a real window publishes its root, syncs, and tears down cleanl
     defer _ = win32.DestroyWindow(hwnd);
 
     var host: uia.Host = .{ .hwnd = hwnd };
-    var windows_bridge = WindowsBridge.init(&host);
+    var windows_bridge = WindowsBridge.init(tree_mod.Capacity.standard.element_count_max, &host);
     const b = windows_bridge.bridge();
     try testing.expect(host.root != null);
     try testing.expect(windows_bridge.server != null);
@@ -387,7 +393,8 @@ test "a bridge on a real window publishes its root, syncs, and tears down cleanl
 
     const tree = try testing.allocator.create(tree_mod.Tree);
     defer testing.allocator.destroy(tree);
-    tree.initInPlace();
+    try tree.initInPlace(&tree_mod.Capacity.standard);
+    defer tree.deinit();
     for ([_]bool{ true, false }) |with_second| {
         tree.beginFrame();
         _ = tree.pushElement(.{ .role = .checkbox, .name = "One", .state = .{ .focused = true } });

@@ -734,8 +734,7 @@ pub const Window = struct {
     /// NSWindow and NSView on macOS, null elsewhere.
     pub fn bindScreenReader(self: *Window, native_window: anytype, native_view: anytype) void {
         assert(self.phase == .idle);
-        self.screen_reader.deinit();
-        self.screen_reader.initInPlace(native_window, native_view);
+        self.screen_reader.bindPlatform(native_window, native_view);
         self.screen_reader_poll = .{};
         assert(self.screen_reader.bridgeAddressValid());
     }
@@ -743,8 +742,7 @@ pub const Window = struct {
     /// Return to the headless bridge before the native window goes away.
     pub fn unbindScreenReader(self: *Window) void {
         assert(self.phase == .idle);
-        self.screen_reader.deinit();
-        self.screen_reader.initHeadlessInPlace();
+        self.screen_reader.bindHeadless();
     }
 
     /// The area engines, which an app reserves with `limits.text.area`.
@@ -881,11 +879,16 @@ fn initBuildStorage(self: *Window, gpa: std.mem.Allocator, limits: *const Resour
     errdefer self.keys.deinit(gpa);
     // The debugger overlay paints into its own headroom (`reservedLimits`).
     const reserved = debugger_mod.reservedLimits(limits);
+    const announcements = records.Announcements.Capacity{
+        .count_max = limits.a11y.announcement_count_frame_max,
+        .bytes_max = limits.a11y.announcement_bytes_frame_max,
+    };
     const frame_capacity = records.FrameCapacity{
         .paint_record_count_max = reserved.records.paint_record_count_frame_max,
         .hit_record_count_max = limits.records.hit_record_count_frame_max,
         .handler_count_max = limits.records.handler_count_frame_max,
-        .a11y_node_count_max = element_count,
+        .a11y_node_count_max = limits.a11y.element_count_max,
+        .announcements = announcements,
         .text_bytes_max = limits.build.text_bytes_frame_max,
         .mesh_point_count_max = limits.paint.path_vertex_count_frame_max +
             limits.paint.polyline_point_count_frame_max + limits.paint.point_count_frame_max,
@@ -893,10 +896,13 @@ fn initBuildStorage(self: *Window, gpa: std.mem.Allocator, limits: *const Resour
     try self.frames[0].initInPlace(gpa, &frame_capacity);
     errdefer self.frames[0].deinit(gpa);
     try self.frames[1].initInPlace(gpa, &frame_capacity);
+    errdefer self.frames[1].deinit(gpa);
+    try self.announcements.initInPlace(gpa, announcements);
     self.built_index = 0;
 }
 
 fn deinitBuildStorage(self: *Window, gpa: std.mem.Allocator) void {
+    self.announcements.deinit(gpa);
     self.frames[1].deinit(gpa);
     self.frames[0].deinit(gpa);
     self.keys.deinit(gpa);
@@ -999,7 +1005,7 @@ fn initRuntimeStorage(self: *Window, gpa: std.mem.Allocator, limits: *const Reso
     // Headless until a host binds its platform's bridge (`bindScreenReader`).
     self.screen_reader = try gpa.create(A11ySystem);
     errdefer gpa.destroy(self.screen_reader);
-    self.screen_reader.initHeadlessInPlace();
+    try self.screen_reader.initInPlace(&.fromLimits(limits));
     errdefer self.screen_reader.deinit();
     self.screen_reader_poll = .{};
     try frame_trace.init(&self.trace, gpa, self.resources.io);

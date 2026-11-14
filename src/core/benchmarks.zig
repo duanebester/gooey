@@ -816,6 +816,7 @@ const PackFixture = struct {
             .hit_record_count_max = 1,
             .handler_count_max = 1,
             .a11y_node_count_max = 1,
+            .announcements = .{ .count_max = 1, .bytes_max = 1 },
             .text_bytes_max = 1,
             .mesh_point_count_max = mesh_point_count_max,
         });
