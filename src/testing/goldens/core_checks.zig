@@ -3086,6 +3086,7 @@ test "dashboard draws every chart within .standard and t switches its theme" {
     // The accent dot, the legend's three circles, two rings of slices, and
     // the conversion ring's centre circles: one mesh per run of a colour.
     try testing.expect(triangle_meshes >= 1 + 3 + 5 + 2 + 3);
+    try checkRevenueArea(frame);
 
     try testing.expectEqual(ui.Color.hex(0x0f172a), rootFill(&app.window));
     app.window.queue.push(.{ .input = .{ .key_down = chord(.t, .{}) } });
@@ -3093,6 +3094,47 @@ test "dashboard draws every chart within .standard and t switches its theme" {
     try testing.expect(!app.state.is_dark_theme);
     try testing.expectEqual(ui.Color.hex(0xf1f5f9), rootFill(&app.window));
     try testing.expectEqual(internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
+}
+
+/// The revenue series' area fill, at 0.3 alpha of its line's colour.
+fn isRevenueArea(fill: ui.Color) bool {
+    const line = ui.Color.hex(0x06b6d4);
+    return @abs(fill.a - 0.3) < 0.001 and @abs(fill.r - line.r) < 0.001 and
+        @abs(fill.b - line.b) < 0.001;
+}
+
+/// The revenue area must be triangles that tile the region under its line
+/// exactly once: abutting quads left anti-aliased seams (vertical stripes),
+/// and overlapping triangles would blend twice. Methodology: no quad has the
+/// area's colour, and the area's triangles sum to the trapezoids between the
+/// revenue polyline (the frame's first) and the baseline, the area's lowest
+/// point, worked out from the polyline's own points.
+fn checkRevenueArea(frame: *const internals.records.Frame) !void {
+    var line: ?[]const internals.records.MeshPoint = null;
+    var area_triangles: f32 = 0;
+    var baseline: f32 = 0;
+    for (frame.paint[0..frame.paint_count]) |record| {
+        if (record == .quad) try testing.expect(!isRevenueArea(record.quad.fill));
+        if (record != .mesh) continue;
+        const points = frame.meshPoints(record.mesh.range);
+        if (record.mesh.topology == .strip_expanded and line == null) line = points;
+        if (record.mesh.topology != .triangles or !isRevenueArea(record.mesh.fill)) continue;
+        var index: usize = 0;
+        while (index < points.len) : (index += 3) {
+            const a = points[index];
+            const b = points[index + 1];
+            const c = points[index + 2];
+            area_triangles += @abs((b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y)) / 2;
+            baseline = @max(baseline, @max(a.y, @max(b.y, c.y)));
+        }
+    }
+    try testing.expectEqual(@as(usize, 12), line.?.len);
+    var area_line: f32 = 0;
+    for (line.?[0 .. line.?.len - 1], line.?[1..]) |from, to| {
+        area_line += (to.x - from.x) * ((baseline - from.y) + (baseline - to.y)) / 2;
+    }
+    try testing.expect(area_line > 0);
+    try testing.expectApproxEqRel(area_line, area_triangles, 0.0001);
 }
 
 /// The fill of the frame's window-sized quad: the root box's background.
