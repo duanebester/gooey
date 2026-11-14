@@ -12,8 +12,9 @@
 //! (8.4 MiB at `.standard`), `atlas_textures.zig`'s (9 MiB), and seven
 //! pipeline states. Per frame: one command buffer, at most one blit pass,
 //! one render pass, the copies `frame_slots.zig` lists, and the draw calls
-//! `encode.zig` lists. Window-sized storage is the layer's drawables, at most
-//! `in_flight_count` of `limits.window`; nothing is recreated on resize.
+//! `encode.zig` lists. Window-sized storage is the layer's drawables, exactly
+//! `drawable_count` of at most `limits.window` each; nothing is recreated on
+//! resize.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -59,7 +60,7 @@ pub const Renderer = struct {
 
     /// `surface.native` is the window's `CAMetalLayer`. Every buffer and
     /// texture is created here at `render_limits`; the layer keeps exactly
-    /// `in_flight_count` drawables.
+    /// `drawable_count` drawables.
     pub noinline fn initInPlace(
         self: *Self,
         surface: *const backend.Surface,
@@ -78,7 +79,7 @@ pub const Renderer = struct {
         const command_queue = objc.Object.fromId(queue_ptr);
         errdefer command_queue.release();
         const layer = objc.Object.fromId(native);
-        configureLayer(layer, device, surface.size_px, render_limits.frame.in_flight_count);
+        configureLayer(layer, device, surface.size_px);
 
         self.pipelines = try pipelines_mod.Pipelines.init(device);
         errdefer self.pipelines.deinit();
@@ -287,6 +288,21 @@ pub const Renderer = struct {
     }
 };
 
+/// Drawables the layer keeps, in every profile. Core Animation holds one on the
+/// glass and one queued to present, so with two, `nextDrawable` blocks the
+/// render thread until the display releases one: frame traces on a 120 Hz
+/// panel measured 2-11 ms waits there in the 2-slot profiles, and none with
+/// three. Frame slots do not depend on this count (`frame_slots.zig` waits on
+/// command buffers), so it stays at Core Animation's maximum. Cost: one
+/// window-sized drawable more than a 2-slot profile's slots, owned by Core
+/// Animation, 4 B per pixel (3.2 MB for a 1160 x 700 px window).
+const drawable_count: u32 = 3;
+
+comptime {
+    assert(drawable_count >= limits_mod.MIN_FRAMES_IN_FLIGHT);
+    assert(drawable_count == limits_mod.MAX_FRAMES_IN_FLIGHT);
+}
+
 fn checkSize(size_px: backend.SizePx, window: *const limits_mod.WindowLimits) !void {
     assert(window.framebuffer_width_max > 0);
     assert(window.framebuffer_height_max > 0);
@@ -294,24 +310,20 @@ fn checkSize(size_px: backend.SizePx, window: *const limits_mod.WindowLimits) !v
     if (size_px.height > window.framebuffer_height_max) return error.WindowTooLarge;
 }
 
-/// Bind `layer` to `device`, size its drawables, and cap them at the budget's
-/// frames in flight. CAMetalLayer accepts 2 or 3, the range
-/// `FrameLimits.check` enforces; two at `nano` and `small` drop one
-/// window-sized surface.
+/// Bind `layer` to `device`, size its drawables, and keep `drawable_count`.
 fn configureLayer(
     layer: objc.Object,
     device: objc.Object,
     size_px: backend.SizePx,
-    frame_count: u32,
 ) void {
-    assert(frame_count >= 2);
-    assert(frame_count <= 3);
+    assert(layer.value != null);
+    assert(device.value != null);
     layer.msgSend(void, "setDevice:", .{device.value});
     layer.msgSend(void, "setDrawableSize:", .{mtl.CGSize{
         .width = @floatFromInt(size_px.width),
         .height = @floatFromInt(size_px.height),
     }});
-    layer.msgSend(void, "setMaximumDrawableCount:", .{@as(c_ulong, frame_count)});
+    layer.msgSend(void, "setMaximumDrawableCount:", .{@as(c_ulong, drawable_count)});
     const drawable_count_max = layer.msgSend(c_ulong, "maximumDrawableCount", .{});
-    assert(drawable_count_max == frame_count);
+    assert(drawable_count_max == drawable_count);
 }
