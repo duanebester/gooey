@@ -13,6 +13,8 @@
 //! - `core-allocation`: allocates through the 0.4.0 core's lifecycle guard after init.
 //! - `core-duplicate-key`: renders two boxes with one key under one parent.
 //! - `core-component-depth`: nests components one level past `component_depth_max`.
+//! - `core-opacity-range`: a box whose `Style.opacity` is just above 1.
+//! - `core-grow-weight`: a box that grows with a weight of 0.
 //! - `core-dialog-target`: names a non-root state as a file dialog's completion handler.
 //! - `core-dialog-paths`: a dialog selects one path more than `dialog_path_count_max`.
 //! - `core-mono-unset`: draws `.family = .mono` text in an app with no `fonts.mono`.
@@ -46,6 +48,8 @@ const Mode = enum {
     @"core-allocation",
     @"core-duplicate-key",
     @"core-component-depth",
+    @"core-opacity-range",
+    @"core-grow-weight",
     @"core-dialog-target",
     @"core-dialog-paths",
     @"core-mono-unset",
@@ -75,6 +79,8 @@ pub fn main(init: std.process.Init) !void {
         .@"core-allocation" => coreAllocation(init.gpa, init.io),
         .@"core-duplicate-key" => coreTick(init.gpa, init.io, CoreApp.duplicateKey),
         .@"core-component-depth" => coreTick(init.gpa, init.io, CoreApp.nested),
+        .@"core-opacity-range" => coreTick(init.gpa, init.io, CoreApp.opacityRange),
+        .@"core-grow-weight" => coreTick(init.gpa, init.io, CoreApp.growWeight),
         .@"core-dialog-target" => coreDialogTarget(init.gpa, init.io),
         .@"core-dialog-paths" => coreDialogPaths(init.gpa, init.io),
         .@"core-mono-unset" => coreTick(init.gpa, init.io, CoreApp.monoText),
@@ -184,6 +190,16 @@ const CoreApp = struct {
             gooey.ui.box(.{ .key = .{ .name = "twin" } }, .{}),
             gooey.ui.box(.{ .key = .{ .name = "twin" } }, .{}),
         });
+    }
+
+    /// One past the top of the valid range: 1 itself is fine.
+    fn opacityRange(cx: *gooey.Cx) void {
+        cx.render(gooey.ui.box(.{ .style = .{ .opacity = 1.01 } }, .{}));
+    }
+
+    /// The smallest invalid weight; any positive weight is valid.
+    fn growWeight(cx: *gooey.Cx) void {
+        cx.render(gooey.ui.box(.{ .style = .{ .width = .{ .grow = 0 } } }, .{}));
     }
 
     /// Each level renders the next through `cx.render`, so the depth grows

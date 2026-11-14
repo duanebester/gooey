@@ -126,6 +126,11 @@ pub const Node = struct {
     /// Tab reaches it: focusable and `Box.tab_stop`.
     tab_stop: bool,
     hit: bool,
+    /// `Style.pointer_events == .auto`: its hit record takes the pointer.
+    pointer: bool,
+    /// The product of its own and its ancestors' `Style.opacity`, which emit
+    /// folds into every record the node draws.
+    opacity: f32,
     cursor: ?element.CursorShape,
     on_click: u32,
     on_click_outside: u32,
