@@ -1417,8 +1417,8 @@ fn addFailFastChecks(
 
     const checks = [_]struct { mode: []const u8, stderr: []const u8 }{
         .{ .mode = "font-variant", .stderr = "TextSystem: font variant 'light' (font_id 4) " ++
-            "is not loaded; FontLimits.variants loads 6 faces: regular, medium, semibold, bold, " ++
-            "italic, bold_italic." },
+            "is not loaded; ResourceLimits.text.fonts.variants loads 6 faces: regular, medium, " ++
+            "semibold, bold, italic, bold_italic. Add it there." },
         .{ .mode = "atlas-item", .stderr = "Atlas pool 'text' cannot hold one item: " ++
             "capacity 64x64 px, requested 65x6 px (1 px border included), frame 2." },
         .{ .mode = "atlas-live-set", .stderr = "Atlas pool 'svg' exhausted: capacity 64x64 px, " ++
@@ -1439,7 +1439,8 @@ fn addFailFastChecks(
         .{ .mode = "core-box-depth", .stderr = "build pool 'box depth' exhausted: capacity 63 " ++
             "levels inside the window root, 63 in use, 1 requested" },
         .{ .mode = "core-mono-unset", .stderr = "text uses family .mono, but no second " ++
-            "family is loaded; set Config.fonts.mono and fonts.limits.mono_variants" },
+            "family is loaded; set Config.fonts.mono and " ++
+            "ResourceLimits.text.fonts.mono_variants" },
         .{ .mode = "core-wrap-lines", .stderr = "text run of 1025 codepoints exceeds " ++
             "text.run_codepoint_count_max 1024, the longest run one shaping may hold in the " ++
             "262144-byte text scratch, in frame 1." },

@@ -22,14 +22,6 @@
 //!                                    │
 //!                                    ▼
 //! ┌─────────────────────────────────────────────────────────────────────────┐
-//! │ Per-Mesh Limits (emit.zig)                                              │
-//! │ - MAX_FRAME_MESHES: Triangle meshes per frame                           │
-//! │ - MAX_POLYLINE_POINTS, MAX_POINTS_PER_CLOUD: Points per Painter draw    │
-//! │ Purpose: Bound one draw, fail fast on runaway geometry                  │
-//! └─────────────────────────────────────────────────────────────────────────┘
-//!                                    │
-//!                                    ▼
-//! ┌─────────────────────────────────────────────────────────────────────────┐
 //! │ Per-Frame Limits (PaintLimits, packed_frame.zig)                        │
 //! │ - quad_count_frame_max, glyph_count_frame_max, ...: Records per frame   │
 //! │ Purpose: Size the packed frame once, fail fast on runaway rendering     │
@@ -76,9 +68,6 @@ pub const MAX_POLYLINES_PER_FRAME: u32 = 4096;
 
 /// Maximum point clouds per frame
 pub const MAX_POINT_CLOUDS_PER_FRAME: u32 = 4096;
-
-/// Maximum colored point clouds per frame (per-point colors for heat maps, particle effects)
-pub const MAX_COLORED_POINT_CLOUDS_PER_FRAME: u32 = 4096;
 
 /// Maximum clip stack depth (nested clips)
 pub const MAX_CLIP_STACK_DEPTH: u32 = 32;
@@ -167,7 +156,7 @@ pub const ResourceLimits = struct {
     entities: EntityLimits,
 
     /// Every profile name `gooey.App(.., .{ .limits = ... })` accepts, smallest first.
-    /// `FontLimits` has a profile of each name, so one name selects both budgets.
+    /// Each profile's `text.fonts` is the `FontLimits` profile of the same name.
     pub const profile_names = [_][]const u8{ "nano", "small", "standard", "large", "ceiling" };
 
     /// Counter-class apps: a few dozen elements and one face, two frames in flight.
@@ -351,15 +340,13 @@ pub const PaintLimits = struct {
     path_count_frame_max: u32,
     polyline_count_frame_max: u32,
     point_cloud_count_frame_max: u32,
-    colored_point_cloud_count_frame_max: u32,
-    /// Aggregate source geometry submitted per frame, summed over draws. Drawing
-    /// a cached mesh twice consumes its vertices and indices twice. These counts
-    /// are independent of draw budgets and of backend expansion or byte layouts.
+    /// Mesh points submitted per frame, summed over draws, one count per kind:
+    /// triangle vertices, polyline points and point-cloud points. One draw may
+    /// use all of its kind's count; nothing bounds a single draw more tightly.
+    /// The counts are independent of draw budgets and of backend expansion.
     path_vertex_count_frame_max: u32,
-    path_index_count_frame_max: u32,
     polyline_point_count_frame_max: u32,
     point_count_frame_max: u32,
-    colored_point_count_frame_max: u32,
     clip_depth_max: u32,
 
     /// Counter-class apps. Largest measured peaks in the class (counter,
@@ -376,12 +363,9 @@ pub const PaintLimits = struct {
         .path_count_frame_max = 16,
         .polyline_count_frame_max = 4,
         .point_cloud_count_frame_max = 4,
-        .colored_point_cloud_count_frame_max = 4,
         .path_vertex_count_frame_max = 1_024,
-        .path_index_count_frame_max = 2_048,
         .polyline_point_count_frame_max = 1_024,
         .point_count_frame_max = 1_024,
-        .colored_point_count_frame_max = 1_024,
         .clip_depth_max = 8,
     };
 
@@ -398,25 +382,22 @@ pub const PaintLimits = struct {
         .path_count_frame_max = 128,
         .polyline_count_frame_max = 32,
         .point_cloud_count_frame_max = 32,
-        .colored_point_cloud_count_frame_max = 32,
         .path_vertex_count_frame_max = 8_192,
-        .path_index_count_frame_max = 8_192,
         .polyline_point_count_frame_max = 8_192,
         .point_count_frame_max = 8_192,
-        .colored_point_count_frame_max = 8_192,
         .clip_depth_max = 16,
     };
 
     /// Ordinary multi-panel apps. Largest measured peaks in the class (showcase,
     /// data-table, spaceship, dashboard) while scrolling, hovering and switching
     /// tabs: quads 102 (spaceship), shadows 3, glyphs 1,370 (showcase), SVGs 26,
-    /// images 1, paths 256, polylines 5, colored point clouds 3, clip depth 2.
+    /// images 1, paths 256, polylines 5, clip depth 2.
     /// Quads and glyphs keep 40x and 6x headroom (decision 10 of the memory
     /// budget review); lucide-demo's 780 quads and 480 SVGs are on `large`.
-    /// Geometry: dashboard needs 780 path vertices, 804 indices, 24 line points
-    /// and 42 colored points, so the 4x cut (decision 3) still leaves at least
-    /// 20x; the 0.3.1 mesh stress test (an 8,192-point line, 4,096 points of
-    /// each kind) ran on `large`. About 2.8 MiB per window.
+    /// Geometry: dashboard needs 780 path vertices and 24 line points, so the
+    /// 4x cut (decision 3) still leaves at least 20x; the 0.3.1 mesh stress
+    /// test (an 8,192-point line, 4,096 points of each kind) ran on `large`.
+    /// About 2.8 MiB per window.
     pub const standard: PaintLimits = .{
         .quad_count_frame_max = 4_096,
         .shadow_count_frame_max = 512,
@@ -426,12 +407,9 @@ pub const PaintLimits = struct {
         .path_count_frame_max = 1_024,
         .polyline_count_frame_max = 256,
         .point_cloud_count_frame_max = 256,
-        .colored_point_cloud_count_frame_max = 256,
         .path_vertex_count_frame_max = 16_384,
-        .path_index_count_frame_max = 16_384,
         .polyline_point_count_frame_max = 32_768,
         .point_count_frame_max = 16_384,
-        .colored_point_count_frame_max = 16_384,
         .clip_depth_max = 16,
     };
 
@@ -449,12 +427,9 @@ pub const PaintLimits = struct {
         .path_count_frame_max = 4_096,
         .polyline_count_frame_max = 1_024,
         .point_cloud_count_frame_max = 1_024,
-        .colored_point_cloud_count_frame_max = 1_024,
         .path_vertex_count_frame_max = 262_144,
-        .path_index_count_frame_max = 262_144,
         .polyline_point_count_frame_max = 524_288,
         .point_count_frame_max = 262_144,
-        .colored_point_count_frame_max = 262_144,
         .clip_depth_max = 32,
     };
 
@@ -468,13 +443,9 @@ pub const PaintLimits = struct {
         .path_count_frame_max = MAX_PATHS_PER_FRAME,
         .polyline_count_frame_max = MAX_POLYLINES_PER_FRAME,
         .point_cloud_count_frame_max = MAX_POINT_CLOUDS_PER_FRAME,
-        .colored_point_cloud_count_frame_max = MAX_COLORED_POINT_CLOUDS_PER_FRAME,
         .path_vertex_count_frame_max = MAX_PATHS_PER_FRAME * MAX_PATH_VERTICES,
-        .path_index_count_frame_max = MAX_PATHS_PER_FRAME * MAX_PATH_INDICES,
-        .polyline_point_count_frame_max = MAX_POLYLINES_PER_FRAME * MAX_POLYLINE_POINTS,
-        .point_count_frame_max = MAX_POINT_CLOUDS_PER_FRAME * MAX_POINTS_PER_CLOUD,
-        .colored_point_count_frame_max = MAX_COLORED_POINT_CLOUDS_PER_FRAME *
-            MAX_POINTS_PER_COLORED_CLOUD,
+        .polyline_point_count_frame_max = 32 * 1024 * 1024,
+        .point_count_frame_max = 256 * 1024 * 1024,
         .clip_depth_max = MAX_CLIP_STACK_DEPTH,
     };
 
@@ -1133,38 +1104,47 @@ pub const TextKindLimits = struct {
 /// area or editor reserves `bytes_max` twice (text and history), so the small
 /// profiles keep only a few.
 pub const TextLimits = struct {
+    /// The font faces the app's text system loads during initialization.
+    fonts: FontLimits,
     input: TextKindLimits,
     area: TextKindLimits,
     editor: TextKindLimits,
 
     pub const nano: TextLimits = .{
+        .fonts = FontLimits.nano,
         .input = .{ .count_max = 4, .bytes_max = 1024, .undo_depth_max = 32 },
         .area = .{ .count_max = 0, .bytes_max = 16 * 1024, .undo_depth_max = 32 },
         .editor = .{ .count_max = 0, .bytes_max = 64 * 1024, .undo_depth_max = 64 },
     };
     pub const small: TextLimits = .{
+        .fonts = FontLimits.small,
         .input = .{ .count_max = 16, .bytes_max = 4 * 1024, .undo_depth_max = 64 },
         .area = .{ .count_max = 2, .bytes_max = 64 * 1024, .undo_depth_max = 64 },
         .editor = .{ .count_max = 0, .bytes_max = 256 * 1024, .undo_depth_max = 128 },
     };
     pub const standard: TextLimits = .{
+        .fonts = FontLimits.standard,
         .input = .{ .count_max = 64, .bytes_max = 8 * 1024, .undo_depth_max = 64 },
         .area = .{ .count_max = 4, .bytes_max = 128 * 1024, .undo_depth_max = 128 },
         .editor = .{ .count_max = 0, .bytes_max = 1024 * 1024, .undo_depth_max = 256 },
     };
     pub const large: TextLimits = .{
+        .fonts = FontLimits.large,
         .input = .{ .count_max = 128, .bytes_max = 8 * 1024, .undo_depth_max = 128 },
         .area = .{ .count_max = 8, .bytes_max = 128 * 1024, .undo_depth_max = 256 },
         .editor = .{ .count_max = 0, .bytes_max = 4 * 1024 * 1024, .undo_depth_max = 512 },
     };
     pub const ceiling: TextLimits = .{
+        .fonts = FontLimits.ceiling,
         .input = .{ .count_max = 1_024, .bytes_max = 64 * 1024, .undo_depth_max = 1_024 },
         .area = .{ .count_max = 256, .bytes_max = 1024 * 1024, .undo_depth_max = 1_024 },
         .editor = .{ .count_max = 64, .bytes_max = 16 * 1024 * 1024, .undo_depth_max = 4_096 },
     };
 
-    /// Counts may be 0; bytes and undo depth must be in `1..=ceiling`.
+    /// The font faces must pass `FontLimits.check`. Engine counts may be 0;
+    /// bytes and undo depth must be in `1..=ceiling`.
     pub fn check(self: *const TextLimits) ?Violation {
+        if (self.fonts.check()) |violation| return violation;
         inline for (.{ "input", "area", "editor" }) |kind| {
             const value: *const TextKindLimits = &@field(self, kind);
             const bound: *const TextKindLimits = &@field(ceiling, kind);
@@ -1284,6 +1264,10 @@ pub const Violation = struct {
         below_relationship,
         above_relationship,
         not_multiple,
+        /// A set names one entry twice (`text.fonts`); `value` is its length.
+        duplicate,
+        /// A font set lacks `.regular`, which supplies line metrics.
+        missing_regular,
     };
 
     /// Human-readable message. Comptime only: used by `ResourceLimits.validate`.
@@ -1309,6 +1293,14 @@ pub const Violation = struct {
                 "ResourceLimits.{t}.{s} = {d} is not a multiple of {d}",
                 .{ self.budget, self.field, self.value, self.bound },
             ),
+            .duplicate => std.fmt.comptimePrint(
+                "ResourceLimits.{t}.{s} lists a font variant twice",
+                .{ self.budget, self.field },
+            ),
+            .missing_regular => std.fmt.comptimePrint(
+                "ResourceLimits.{t}.{s} lacks .regular, which supplies line metrics",
+                .{ self.budget, self.field },
+            ),
         };
     }
 };
@@ -1325,12 +1317,11 @@ pub const MAX_GLYPHS_PER_RUN: u32 = 1024;
 /// loaded on first use. Text that requests a variant outside the set panics
 /// with the variant's name, the loaded set, and this type's name.
 ///
-/// Shaped like `PaintLimits` (named profiles, `check`, `assertValid`,
-/// `validate`) so it moves into the planned `ResourceLimits.text` unchanged.
-/// Every `ResourceLimits` profile name has a `FontLimits` profile of the same
-/// name, so `gooey.App(..., .{ .limits = .nano })` selects both. An explicit
-/// `.font_limits = ...` overrides the font half; the app forwards the result
-/// through `FontConfig.limits` to every text system it creates.
+/// Part of the app's budget as `ResourceLimits.text.fonts`: every
+/// `ResourceLimits` profile carries the `FontLimits` profile of the same name,
+/// and a budget that needs other faces sets `text.fonts` like any other field.
+/// The app forwards it through `FontConfig.limits` to every text system it
+/// creates.
 ///
 /// Gooey-owned cost per face, allocated at init: FreeType 16,976 B (mostly a
 /// 4,096-entry advance cache), web 1,460 B, DirectWrite 80 B, CoreText 56 B.
@@ -1371,38 +1362,43 @@ pub const FontLimits = struct {
         break :blk result;
     };
 
-    pub const Rule = enum {
-        empty,
-        above_ceiling,
-        duplicate,
-        missing_regular,
-        mono_duplicate,
-        mono_missing_regular,
+    /// First violated rule, or null when both sets are valid, reported under
+    /// `ResourceLimits.text.fonts`. An empty `mono_variants` is valid: it
+    /// reserves no second family.
+    pub fn check(self: *const FontLimits) ?Violation {
+        if (checkVariants("fonts.variants", self.variants, 1)) |violation| return violation;
+        return checkVariants("fonts.mono_variants", self.mono_variants, 0);
+    }
 
-        /// The field the rule constrains, for error messages.
-        pub fn field(rule: Rule) []const u8 {
-            return switch (rule) {
-                .empty, .above_ceiling, .duplicate, .missing_regular => "variants",
-                .mono_duplicate, .mono_missing_regular => "mono_variants",
-            };
+    /// One family's set: at least `count_min` faces, at most one per variant,
+    /// no variant twice, and `.regular` (which supplies line metrics) whenever
+    /// the set is not empty.
+    fn checkVariants(
+        comptime field: []const u8,
+        variants: []const FontVariant,
+        comptime count_min: u32,
+    ) ?Violation {
+        const count: u32 = @intCast(@min(variants.len, std.math.maxInt(u32)));
+        if (count < count_min) return fontViolation(field, .zero, count, count_min);
+        if (count > FontVariant.count) {
+            return fontViolation(field, .above_ceiling, count, FontVariant.count);
         }
-    };
+        if (count == 0) return null;
+        if (hasDuplicate(variants)) return fontViolation(field, .duplicate, count, count - 1);
+        for (variants) |variant| {
+            if (variant == .regular) return null;
+        }
+        return fontViolation(field, .missing_regular, count, count);
+    }
 
-    /// First violated rule, or null when both sets are valid. An empty
-    /// `mono_variants` is valid: it reserves no second family.
-    pub fn check(self: *const FontLimits) ?Rule {
-        if (self.variants.len == 0) return .empty;
-        if (self.variants.len > FontVariant.count) return .above_ceiling;
-        if (self.mono_variants.len > FontVariant.count) return .above_ceiling;
-        if (!distinctWithRegular(self.variants)) {
-            return if (hasDuplicate(self.variants)) .duplicate else .missing_regular;
-        }
-        if (self.mono_variants.len == 0) return null;
-        if (!distinctWithRegular(self.mono_variants)) {
-            return if (hasDuplicate(self.mono_variants)) .mono_duplicate else .mono_missing_regular;
-        }
-        assert(self.variants.len <= FontVariant.count);
-        return null;
+    fn fontViolation(
+        comptime field: []const u8,
+        rule: Violation.Rule,
+        value: u32,
+        bound: u32,
+    ) Violation {
+        assert(rule != .not_multiple);
+        return .{ .budget = .text, .field = field, .rule = rule, .value = value, .bound = bound };
     }
 
     fn hasDuplicate(variants: []const FontVariant) bool {
@@ -1413,36 +1409,6 @@ pub const FontLimits = struct {
             seen[@backingInt(variant)] = true;
         }
         return false;
-    }
-
-    fn distinctWithRegular(variants: []const FontVariant) bool {
-        assert(variants.len <= FontVariant.count);
-        if (hasDuplicate(variants)) return false;
-        for (variants) |variant| {
-            if (variant == .regular) return true;
-        }
-        return false;
-    }
-
-    /// Runtime counterpart of `validate`. An invalid set is a programmer error.
-    pub fn assertValid(self: *const FontLimits) void {
-        if (self.check()) |rule| {
-            std.debug.panic("invalid FontLimits.{s} ({d} and {d} entries): rule {s}", .{
-                rule.field(),
-                self.variants.len,
-                self.mono_variants.len,
-                @tagName(rule),
-            });
-        }
-    }
-
-    /// Reject an invalid set at compile time, naming the broken rule.
-    pub fn validate(comptime self: FontLimits) void {
-        comptime {
-            if (self.check()) |rule| {
-                @compileError("invalid FontLimits." ++ rule.field() ++ ": rule " ++ @tagName(rule));
-            }
-        }
     }
 
     comptime {
@@ -1490,28 +1456,14 @@ pub const MAX_STROKE_TRIANGLES: u32 = MAX_STROKE_OUTPUT;
 pub const MAX_STROKE_INDICES: u32 = MAX_STROKE_TRIANGLES * 3;
 
 // =============================================================================
-// Frame Mesh Limits
+// Per-Draw Sanity Bounds
 // =============================================================================
-
-/// Most triangle meshes one frame may draw, whatever `path_count_frame_max`
-/// allows: each packs as one 0.3.1 frame path mesh (`Painter.triangles`).
-pub const MAX_FRAME_MESHES: u32 = 256;
-
-// =============================================================================
-// Per-Mesh Limits
-// =============================================================================
-
-/// Most points one polyline (`Painter.polyline`) may hold.
-pub const MAX_POLYLINE_POINTS: u32 = 8192;
+//
+// A draw's point count is bounded only by its kind's frame budget
+// (`PaintLimits.polyline_point_count_frame_max`, `point_count_frame_max`).
 
 /// Widest polyline, in logical pixels; a sanity bound.
 pub const MAX_LINE_WIDTH: f32 = 1000.0;
-
-/// Most points one point cloud (`Painter.pointCloud`) may hold.
-pub const MAX_POINTS_PER_CLOUD: u32 = 65536;
-
-/// Most points one colored point cloud may hold.
-pub const MAX_POINTS_PER_COLORED_CLOUD: u32 = 65536;
 
 /// Largest point radius, in logical pixels; a sanity bound.
 pub const MAX_POINT_RADIUS: f32 = 1000.0;
@@ -1611,9 +1563,9 @@ test "check reports each negative case precisely" {
     try std.testing.expectEqualStrings("clip_depth_max", limits.check().?.field);
 
     inline for (.{
-        "path_vertex_count_frame_max",    "path_index_count_frame_max",
-        "polyline_point_count_frame_max", "point_count_frame_max",
-        "colored_point_count_frame_max",
+        "path_vertex_count_frame_max",
+        "polyline_point_count_frame_max",
+        "point_count_frame_max",
     }) |field| {
         limits = ResourceLimits.standard;
         @field(limits.paint, field) = 0;
@@ -1675,9 +1627,9 @@ test "check reports each negative case precisely" {
     limits = ResourceLimits.large;
     limits.paint.quad_count_frame_max = PaintLimits.ceiling.quad_count_frame_max;
     inline for (.{
-        "path_vertex_count_frame_max",    "path_index_count_frame_max",
-        "polyline_point_count_frame_max", "point_count_frame_max",
-        "colored_point_count_frame_max",
+        "path_vertex_count_frame_max",
+        "polyline_point_count_frame_max",
+        "point_count_frame_max",
     }) |field| {
         @field(limits.paint, field) = @field(PaintLimits.standard, field);
     }
@@ -1710,28 +1662,59 @@ test "derived budget quantities" {
     try std.testing.expect(PaintLimits.large.paintBytes() < 34 * 1024 * 1024);
 }
 
-test "FontLimits.check names the broken family" {
-    // Goal: decision 8's mono rules. Methodology: an empty mono set is valid
-    // (every profile has one); a mono set must still be distinct and carry
-    // `.regular`, and each violation names `mono_variants`, not `variants`.
-    const app_only: FontLimits = .{ .variants = &.{.regular} };
-    try std.testing.expect(app_only.check() == null);
-    const with_mono: FontLimits = .{
-        .variants = &.{.regular},
-        .mono_variants = &.{ .regular, .bold },
+test "text.fonts reports each broken face set under its own field" {
+    // Goal: the font rules, now part of `ResourceLimits.check`. Methodology:
+    // start from `nano` and break one rule of one set at a time. An empty mono
+    // set is valid (every profile has one); a set at the 14-face ceiling is
+    // valid, and every broken set names `fonts.variants` or
+    // `fonts.mono_variants` with the rule that failed.
+    var limits = ResourceLimits.nano;
+    limits.text.fonts = .{ .variants = &.{.regular}, .mono_variants = &.{ .regular, .bold } };
+    try std.testing.expect(limits.check() == null);
+    limits.text.fonts = FontLimits.ceiling;
+    try std.testing.expect(limits.check() == null);
+    try std.testing.expectEqual(@as(usize, FontVariant.count), FontLimits.ceiling.variants.len);
+
+    const Case = struct { fonts: FontLimits, field: []const u8, rule: Violation.Rule };
+    const cases = [_]Case{
+        .{ .fonts = .{ .variants = &.{} }, .field = "fonts.variants", .rule = .zero },
+        .{
+            .fonts = .{ .variants = &.{ .regular, .regular } },
+            .field = "fonts.variants",
+            .rule = .duplicate,
+        },
+        .{
+            .fonts = .{ .variants = &.{.bold} },
+            .field = "fonts.variants",
+            .rule = .missing_regular,
+        },
+        .{
+            .fonts = .{ .variants = &.{.regular}, .mono_variants = &.{ .regular, .regular } },
+            .field = "fonts.mono_variants",
+            .rule = .duplicate,
+        },
+        .{
+            .fonts = .{ .variants = &.{.regular}, .mono_variants = &.{.bold} },
+            .field = "fonts.mono_variants",
+            .rule = .missing_regular,
+        },
     };
-    try std.testing.expect(with_mono.check() == null);
-    const mono_duplicate: FontLimits = .{
-        .variants = &.{.regular},
-        .mono_variants = &.{ .regular, .regular },
-    };
-    try std.testing.expectEqual(FontLimits.Rule.mono_duplicate, mono_duplicate.check().?);
-    const mono_no_regular: FontLimits = .{ .variants = &.{.regular}, .mono_variants = &.{.bold} };
-    try std.testing.expectEqual(FontLimits.Rule.mono_missing_regular, mono_no_regular.check().?);
-    try std.testing.expectEqualStrings("mono_variants", mono_no_regular.check().?.field());
-    const app_no_regular: FontLimits = .{ .variants = &.{.bold}, .mono_variants = &.{.regular} };
-    try std.testing.expectEqual(FontLimits.Rule.missing_regular, app_no_regular.check().?);
+    inline for (cases) |case| {
+        limits.text.fonts = case.fonts;
+        const violation = limits.check().?;
+        try std.testing.expectEqual(Violation.Budget.text, violation.budget);
+        try std.testing.expectEqualStrings(case.field, violation.field);
+        try std.testing.expectEqual(case.rule, violation.rule);
+    }
+    // One face past the ceiling must repeat a variant, so it fails as above
+    // the ceiling before the duplicate rule is reached.
+    const too_many = FontLimits.all_variants ++ [_]FontVariant{.regular};
+    limits.text.fonts = .{ .variants = too_many[0..] };
+    try std.testing.expectEqual(Violation.Rule.above_ceiling, limits.check().?.rule);
+    try std.testing.expectEqual(@as(u32, FontVariant.count), limits.check().?.bound);
     inline for (ResourceLimits.profile_names) |name| {
-        try std.testing.expectEqual(@as(usize, 0), @field(FontLimits, name).mono_variants.len);
+        const fonts = @field(ResourceLimits, name).text.fonts;
+        try std.testing.expectEqual(@as(usize, 0), fonts.mono_variants.len);
+        try std.testing.expectEqual(@field(FontLimits, name).variants.len, fonts.variants.len);
     }
 }

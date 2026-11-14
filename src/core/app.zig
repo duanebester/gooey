@@ -57,37 +57,23 @@ pub fn Config(comptime State: type) type {
     };
 }
 
-/// The app's font families and faces (decisions 8 and 10). The defaults load
-/// the platform's sans-serif at the theme's `font_size_base`, no second
-/// family, and the `limits` profile's faces.
+/// The app's font families (decisions 8 and 10). The defaults load the
+/// platform's sans-serif at the theme's `font_size_base` and no second family.
+/// The faces each family reserves are part of the budget:
+/// `limits.text.fonts`.
 pub const Fonts = struct {
     /// Family name; null loads the platform's sans-serif.
     name: ?[]const u8 = null,
     /// Points, for both families; null takes the theme's `font_size_base`.
     size: ?f32 = null,
-    /// The second family (decision 8); null reserves no faces.
+    /// The second family (decision 8); null reserves no faces. Its faces are
+    /// `limits.text.fonts.mono_variants`.
     mono: ?FontSource = null,
-    /// The faces to reserve; null keeps the `limits` profile's set.
-    limits: ?FontLimits = null,
 };
-
-/// The font faces for `limits`: the `FontLimits` profile with the same name
-/// as the `ResourceLimits` profile `limits` equals, else `standard`.
-pub fn fontLimitsFor(comptime limits: ResourceLimits) FontLimits {
-    for (ResourceLimits.profile_names) |name| {
-        if (std.meta.eql(@field(ResourceLimits, name), limits)) return @field(FontLimits, name);
-    }
-    return FontLimits.standard;
-}
 
 /// The point size the app loads its families at.
 fn fontSize(comptime State: type, comptime config: Config(State)) f32 {
     return config.fonts.size orelse @floatFromInt(config.theme.font_size_base);
-}
-
-/// The faces the app reserves.
-fn fontFaces(comptime State: type, comptime config: Config(State)) FontLimits {
-    return config.fonts.limits orelse fontLimitsFor(config.limits);
 }
 
 /// Reject font settings that cannot work, naming the field (decision 8): a
@@ -106,15 +92,14 @@ fn checkFonts(comptime State: type, comptime config: Config(State)) void {
                 @compileError("gooey.App: fonts.name names a family longer than 255 bytes");
             }
         }
-        const faces = fontFaces(State, config);
-        faces.validate();
-        const mono_faces = faces.mono_variants.len;
+        // `ResourceLimits.check` has already validated both face sets.
+        const mono_faces = config.limits.text.fonts.mono_variants.len;
         if (config.fonts.mono != null and mono_faces == 0) {
-            @compileError("gooey.App: fonts.mono is set but fonts.limits.mono_variants is " ++
-                "empty; set .fonts.limits with the mono variants to load");
+            @compileError("gooey.App: fonts.mono is set but limits.text.fonts.mono_variants " ++
+                "is empty; list the mono variants to load there");
         }
         if (config.fonts.mono == null and mono_faces > 0) {
-            @compileError("gooey.App: fonts.limits.mono_variants reserves faces but " ++
+            @compileError("gooey.App: limits.text.fonts.mono_variants reserves faces but " ++
                 "fonts.mono is null");
         }
     }
@@ -203,7 +188,7 @@ pub fn App(
         pub const theme = config.theme;
         pub const width = config.width;
         pub const height = config.height;
-        pub const font_limits = fontFaces(State, config);
+        pub const font_limits = config.limits.text.fonts;
         pub const keymap = keymap_mod.compile(config.keymap);
 
         /// The root render function.

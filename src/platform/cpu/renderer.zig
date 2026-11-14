@@ -269,8 +269,9 @@ pub const Renderer = struct {
 };
 
 /// Polygons one mesh can produce within the budget: a triangle mesh's
-/// triangles or a polyline's segments, whichever is larger. The frame build
-/// caps each by its per-mesh ceiling and by the frame's point budget.
+/// triangles or a polyline's segments, whichever is larger. A triangle mesh
+/// is capped by the triangulator's vertices and its frame budget; one
+/// polyline may use its kind's whole frame budget.
 fn polygonCountMax(limits: *const limits_mod.PaintLimits) u32 {
     assert(limits.check() == null);
     const triangle_points_max = @min(
@@ -278,13 +279,10 @@ fn polygonCountMax(limits: *const limits_mod.PaintLimits) u32 {
         limits.path_vertex_count_frame_max,
     );
     const triangle_count_max = @divFloor(triangle_points_max, 3);
-    const polyline_points_max = @min(
-        limits_mod.MAX_POLYLINE_POINTS,
-        limits.polyline_point_count_frame_max,
-    );
-    const segment_count_max = polyline_points_max -| 1;
+    const segment_count_max = limits.polyline_point_count_frame_max -| 1;
     const count_max = @max(triangle_count_max, segment_count_max, 1);
-    assert(count_max <= @max(limits_mod.MAX_POLYLINE_POINTS, limits_mod.MAX_PATH_VERTICES));
+    assert(count_max >= triangle_count_max);
+    assert(count_max <= @max(limits.polyline_point_count_frame_max, triangle_count_max));
     return count_max;
 }
 

@@ -1036,11 +1036,12 @@ fn emitTriangles(window: *Window, points: []const [2]f32, color: Color) void {
             }
         }
     }
-    const mesh_max = @min(window.limits.paint.path_count_frame_max, limits_mod.MAX_FRAME_MESHES);
+    const mesh_max = window.limits.paint.path_count_frame_max;
+    assert(frame.triangle_mesh_count <= mesh_max);
     if (frame.triangle_mesh_count == mesh_max) {
-        std.debug.panic("triangle meshes exhausted: capacity {d} (paint.path_count_frame_max, " ++
-            "at most {d}), {d} in use, 1 requested, frame {d}", .{
-            mesh_max, limits_mod.MAX_FRAME_MESHES, mesh_max, window.frame_number,
+        std.debug.panic("paint pool 'triangle meshes' exhausted: capacity {d}, {d} in use, " ++
+            "1 requested, frame {d}. Raise ResourceLimits.paint.path_count_frame_max.", .{
+            mesh_max, mesh_max, window.frame_number,
         });
     }
     frame.triangle_mesh_count += 1;
@@ -1059,19 +1060,16 @@ const PointMesh = struct { topology: records.Mesh.Topology, width: f32, color: C
 fn emitPointMesh(window: *Window, points: []const [2]f32, mesh: PointMesh) void {
     assert(mesh.topology != .triangles);
     const count: u32 = @intCast(points.len);
-    // The per-mesh ceilings (`limits.zig`), checked here with the counts.
-    const draw_max: u32, const width_max: f32 = switch (mesh.topology) {
-        .strip_expanded => .{ limits_mod.MAX_POLYLINE_POINTS, limits_mod.MAX_LINE_WIDTH },
-        .point_instanced => .{ limits_mod.MAX_POINTS_PER_CLOUD, limits_mod.MAX_POINT_RADIUS },
+    // The width sanity bound (`limits.zig`); `checkMeshPoints` bounds the count.
+    const width_max: f32 = switch (mesh.topology) {
+        .strip_expanded => limits_mod.MAX_LINE_WIDTH,
+        .point_instanced => limits_mod.MAX_POINT_RADIUS,
         .triangles => unreachable,
     };
-    if (count > draw_max or mesh.width > width_max) {
-        std.debug.panic("Painter.{t} of {d} points, width {d}: capacity {d} points, " ++
-            "width {d}, frame {d}", .{
+    if (mesh.width > width_max) {
+        std.debug.panic("Painter.{t} width {d} exceeds {d}, frame {d}", .{
             mesh.topology,
-            count,
             mesh.width,
-            draw_max,
             width_max,
             window.frame_number,
         });

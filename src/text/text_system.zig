@@ -763,7 +763,7 @@ pub const TextSystem = struct {
     ) !void {
         std.debug.assert(scale > 0);
         std.debug.assert(scale <= 4.0); // Reasonable scale factor limit
-        font_limits.assertValid();
+        std.debug.assert(font_limits.check() == null); // The app's budget checked it.
 
         const app_count = font_limits.variants.len;
         const face_count = app_count + font_limits.mono_variants.len;
@@ -859,7 +859,7 @@ pub const TextSystem = struct {
         std.debug.assert(!self.mono_loaded);
         if (self.faces.len == self.app_face_count) {
             std.debug.panic("TextSystem: a second family was loaded but " ++
-                "Fonts.limits.mono_variants is empty; set Config.fonts.limits", .{});
+                "ResourceLimits.text.fonts.mono_variants is empty; list its faces there", .{});
         }
         if (source == .name and source.name.len > family_name_bytes_max) {
             return error.FontNameTooLong;
@@ -1003,7 +1003,8 @@ pub const TextSystem = struct {
         std.debug.assert(self.faces_loaded);
         if (family == .mono and !self.mono_loaded) {
             std.debug.panic("TextSystem: text uses family .mono, but no second family " ++
-                "is loaded; set Config.fonts.mono and fonts.limits.mono_variants", .{});
+                "is loaded; set Config.fonts.mono and " ++
+                "ResourceLimits.text.fonts.mono_variants", .{});
         }
         const slot = self.face_slot_by_variant[@backingInt(family)][@backingInt(variant)];
         if (slot < self.faces.len) {
@@ -1037,7 +1038,7 @@ pub const TextSystem = struct {
         }
         std.debug.panic(
             "TextSystem: font variant '{s}' (font_id {d}) is not loaded; " ++
-                "FontLimits.{s} loads {d} face{s}: {s}. Add it to the app's font_limits.",
+                "ResourceLimits.text.fonts.{s} loads {d} face{s}: {s}. Add it there.",
             .{
                 @tagName(variant),
                 family.fontId(variant),

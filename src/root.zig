@@ -68,13 +68,13 @@ pub const EditorEngine = core.EditorEngine;
 /// `standard` (multi-panel apps), `large` (dense content, many icons or
 /// images), `ceiling` (framework maxima, for stress tests). To raise one budget
 /// or field without moving the whole app up a rung, pass a modified copy, for
-/// example `ResourceLimits.standard` with `atlas.image_size = 2_048`, plus
-/// `.font_limits = .standard`.
+/// example `ResourceLimits.standard` with `atlas.image_size = 2_048`, or
+/// `ResourceLimits.small` with `text.fonts = FontLimits.standard`.
 pub const ResourceLimits = core.ResourceLimits;
 
-/// The font faces every text system loads at init. `App`'s `.limits` profile
-/// name selects the `FontLimits` profile of the same name; `.font_limits = ...`
-/// overrides it. Profiles: `nano` (regular only), `small` (regular, medium,
+/// The font faces every text system loads at init: `ResourceLimits.text.fonts`.
+/// Each `ResourceLimits` profile carries the `FontLimits` profile of the same
+/// name. Profiles: `nano` (regular only), `small` (regular, medium,
 /// semibold, bold), `standard` and `large` (those plus italic and bold italic),
 /// `ceiling` (all 14).
 pub const FontLimits = core.FontLimits;

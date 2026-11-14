@@ -293,7 +293,6 @@ pub const App = gooey.App(State, render, .{
     .height = window_height,
     .limits = limits,
     .theme = &gooey.Theme.dark,
-    .fonts = .{ .limits = gooey.FontLimits.small },
 });
 
 /// The generated entry point (contract §7).
