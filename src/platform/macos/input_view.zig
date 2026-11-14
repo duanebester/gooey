@@ -10,6 +10,7 @@ const appkit = @import("appkit.zig");
 const Window = @import("window.zig").Window;
 const CoreBinding = @import("window.zig").CoreBinding;
 const core_events = @import("../../core/events.zig");
+const limits = @import("../../core/limits.zig");
 const mac_bridge = @import("../../accessibility/mac_bridge.zig");
 
 const NSRect = appkit.NSRect;
@@ -627,7 +628,8 @@ test "insertText delivers long text whole and setMarkedText cuts it at a codepoi
     // next paint panicked in the shaper. Methodology: call the real
     // NSTextInputClient methods on a view bound to a core queue and read the
     // queued events: the insert arrives whole, and the composition, which the
-    // window keeps for the input method, is cut before "東".
+    // window keeps for the input method in `text.preedit_bytes_max` (256 at
+    // `small`) bytes, is cut before "東".
     var queue: core_events.EventQueue = undefined;
     try queue.initInPlace(std.testing.allocator, .{
         .event_count_max = 4,
@@ -642,6 +644,9 @@ test "insertText delivers long text whole and setMarkedText cuts it at a codepoi
         .context = &context,
         .schedule_tick = testNoTick,
     };
+    // `small`'s 256-byte preedit plus the NUL, as `Window.init` reserves it.
+    var marked_buffer: [limits.TextLimits.small.preedit_bytes_max + 1]u8 = undefined;
+    window.marked_text_buffer = &marked_buffer;
     window.clearMarkedText();
     const frame = NSRect{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = 100, .height = 100 } };
     const view = try create(frame, &window);
