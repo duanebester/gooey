@@ -5,27 +5,10 @@
 //!
 //! ## Available Mocks
 //!
-//! - `MockRenderer` - Tracks render calls without GPU operations
 //! - `MockSvgRasterizer` - Simulates SVG rasterization
 //! - `MockFontFace` - Configurable font face for text testing
 //!
-//! ## Example
-//!
-//! ```zig
-//! const gooey = @import("gooey");
-//! const testing = gooey.testing;
-//!
-//! test "my feature" {
-//!     var renderer = try testing.MockRenderer.init(testing.allocator);
-//!     defer renderer.deinit();
-//!
-//!     try renderer.beginFrame(800, 600, 2.0);
-//!     renderer.render();
-//!     renderer.endFrame();
-//!
-//!     try std.testing.expectEqual(@as(u32, 1), renderer.begin_frame_count);
-//! }
-//! ```
+//! The core draws tests through `NullRenderer`.
 
 const std = @import("std");
 
@@ -33,7 +16,6 @@ const std = @import("std");
 // Mock Implementations
 // =============================================================================
 
-pub const MockRenderer = @import("mock_renderer.zig").MockRenderer;
 pub const MockFontFace = @import("mock_font_face.zig").MockFontFace;
 
 /// Mock SVG rasterizer module
