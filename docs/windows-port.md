@@ -608,7 +608,8 @@ they surface while testing the port.
   element straight after opening it (`defer cx.accessibleEnd()` inside the `if`) and gives
   most no `layout_id`. The tree comes out flat, and headings, groups, and radio buttons
   have no bounds, so a screen reader cannot point at them. Inferred from the code and the
-  UI Automation tree; the macOS tree should show the same.
+  UI Automation tree; the macOS tree should show the same. This was 0.3.1's API: the core
+  example builds its tree from `ui.box` a11y fields, and #226 removed `layout_id`.
 - **Build output.** `zig build test-windows` prints `failed command: ...test.exe` whenever
   a test logs a warning, even though the summary reports every test passing.
 

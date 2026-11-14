@@ -1,6 +1,9 @@
 # Gooey Charts Documentation
 
-Gooey Charts (`gooey-charts`) is an optional data visualization library built on Gooey's Canvas API. It provides high-performance, GPU-accelerated charting components with zero allocation during rendering, theme integration, and accessibility support.
+Gooey Charts (`gooey-charts`) is an optional data visualization library that draws through
+the core `Painter` of a `ui.paint` element. It provides high-performance, GPU-accelerated
+charting components with zero allocation during rendering, theme integration, and
+accessibility support.
 
 ## Table of Contents
 
@@ -40,7 +43,7 @@ Gooey Charts (`gooey-charts`) is an optional data visualization library built on
 
 1. **Simple API** — Common charts in 1-3 lines of code
 2. **Composable** — Mix chart types, customize axes, layer annotations
-3. **Performant** — Static allocation, GPU-accelerated via Canvas
+3. **Performant** — Static allocation, GPU-accelerated through `ui.paint` meshes
 4. **Accessible** — Screen reader support for chart data
 5. **Themed** — Inherit Gooey's theme system
 
