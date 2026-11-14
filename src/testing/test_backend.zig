@@ -172,7 +172,7 @@ const testing = std.testing;
 test "NullRenderer records the packed frame it is asked to draw" {
     // Goal: draw writes a dump of exactly the submitted frame, and resize past
     // the window budget is rejected at init. Methodology: draw a one-quad
-    // scene and read the dump back.
+    // frame and read the dump back.
     const render_limits = core_backend.RenderLimits.fromResourceLimits(&.nano);
     const renderer = try testing.allocator.create(NullRenderer);
     defer testing.allocator.destroy(renderer);
@@ -192,7 +192,7 @@ test "NullRenderer records the packed frame it is asked to draw" {
     defer renderer.deinit();
 
     var frame: core_backend.PackedFrame = undefined;
-    try frame.initInPlace(&.{ .scene = render_limits.scene, .paint_record_count_max = 4 });
+    try frame.initInPlace(&.{ .paint = render_limits.paint, .paint_record_count_max = 4 });
     defer frame.deinit();
     frame.reset(1, &.{});
     frame.quads[0] = .{

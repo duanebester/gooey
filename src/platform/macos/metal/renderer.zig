@@ -62,7 +62,7 @@ pub const Renderer = struct {
         render_limits: *const backend.RenderLimits,
     ) !void {
         assert(surface.scale_factor > 0);
-        assert(render_limits.scene.check() == null);
+        assert(render_limits.paint.check() == null);
         const native = surface.native orelse return error.SurfaceMissing;
         try checkSize(surface.size_px, &render_limits.window);
         const device_ptr = mtl.MTLCreateSystemDefaultDevice() orelse

@@ -431,7 +431,7 @@ jobs:
           FAILED=0
           : > bench-report.txt
 
-          for module in core layout text scene accessibility; do
+          for module in core layout text accessibility; do
             BASELINE=$(ls baseline/*-*-"${module}"-benchmarks-*.json 2>/dev/null | head -1)
             CURRENT=$(ls current/*-*-"${module}"-benchmarks-*.json 2>/dev/null | head -1)
 

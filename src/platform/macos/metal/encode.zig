@@ -9,7 +9,7 @@
 //! Performance sketch (CLAUDE.md §7): per draw a 16 B `setFragmentBytes` and
 //! at most one pipeline bind, plus one draw call per quad or sprite draw and
 //! per mesh. Draws are bounded by the paint record budget, meshes by the
-//! scene's mesh limits. Nothing allocates; no CPU work scales with instances.
+//! paint budget's mesh limits. Nothing allocates; no CPU work scales with instances.
 
 const std = @import("std");
 const assert = std.debug.assert;

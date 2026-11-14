@@ -11,7 +11,7 @@ const assert = std.debug.assert;
 const packed_mod = @import("../../core/packed_frame.zig");
 const limits_mod = @import("../../core/limits.zig");
 
-const SceneLimits = limits_mod.SceneLimits;
+const PaintLimits = limits_mod.PaintLimits;
 
 // =============================================================================
 // Capacity Limits (CLAUDE.md §2 and §4)
@@ -50,7 +50,7 @@ pub fn hostPoolAllocationCount(frame_count: u32) u32 {
 }
 
 /// Element counts of one frame's storage buffers: exactly what a packed frame
-/// at the same scene limits can hold (`packed_frame.zig` capacities), so a
+/// at the same paint limits can hold (`packed_frame.zig` capacities), so a
 /// frame within the budget always fits and the renderer never truncates one.
 ///
 /// Resource sketch, one frame in flight (96 B quads and sprites, 32 B meshes,
@@ -65,18 +65,18 @@ pub fn hostPoolAllocationCount(frame_count: u32) u32 {
 pub const FrameCapacity = struct {
     counts: [frame_buffer_count]u32,
 
-    pub fn fromSceneLimits(scene_limits: *const SceneLimits) FrameCapacity {
-        assert(scene_limits.check() == null);
+    pub fn fromPaintLimits(paint_limits: *const PaintLimits) FrameCapacity {
+        assert(paint_limits.check() == null);
         var capacity: FrameCapacity = undefined;
-        capacity.counts[@backingInt(FrameBuffer.quads)] = packed_mod.quadCapacity(scene_limits);
+        capacity.counts[@backingInt(FrameBuffer.quads)] = packed_mod.quadCapacity(paint_limits);
         capacity.counts[@backingInt(FrameBuffer.sprites)] =
-            packed_mod.spriteCapacity(scene_limits);
-        capacity.counts[@backingInt(FrameBuffer.meshes)] = packed_mod.meshCapacity(scene_limits);
+            packed_mod.spriteCapacity(paint_limits);
+        capacity.counts[@backingInt(FrameBuffer.meshes)] = packed_mod.meshCapacity(paint_limits);
         // A zero-sized storage buffer is invalid; one unused point costs 8 bytes.
         capacity.counts[@backingInt(FrameBuffer.mesh_points)] =
-            @max(packed_mod.meshPointCapacity(scene_limits), 1);
+            @max(packed_mod.meshPointCapacity(paint_limits), 1);
         capacity.counts[@backingInt(FrameBuffer.edge_modes)] =
-            packed_mod.triangleCapacity(scene_limits);
+            packed_mod.triangleCapacity(paint_limits);
         for (capacity.counts) |count| assert(count > 0);
         return capacity;
     }
@@ -212,7 +212,7 @@ test "FrameCapacity holds exactly a packed frame of the same budget" {
     // Goal: the renderer's per-frame buffers hold what the window's packed frame
     // can hold. Methodology: derive capacities from two named profiles and check
     // counts and byte sizes against the hand-computed resource sketch above.
-    const standard = FrameCapacity.fromSceneLimits(&SceneLimits.standard);
+    const standard = FrameCapacity.fromPaintLimits(&PaintLimits.standard);
     try testing.expectEqual(@as(u32, 4_096 + 512), standard.countMax(.quads));
     try testing.expectEqual(@as(u32, 8_192 + 1_024 + 256), standard.countMax(.sprites));
     try testing.expectEqual(@as(u32, 1_024 + 256 + 256), standard.countMax(.meshes));
@@ -220,7 +220,7 @@ test "FrameCapacity holds exactly a packed frame of the same budget" {
     try testing.expectEqual(@as(u32, 5_461), standard.countMax(.edge_modes));
     try testing.expectEqual(@as(u64, 1_946_980), standard.frameBytes());
 
-    const nano = FrameCapacity.fromSceneLimits(&SceneLimits.nano);
+    const nano = FrameCapacity.fromPaintLimits(&PaintLimits.nano);
     try testing.expectEqual(@as(u64, 153_060), nano.frameBytes());
 
     // The pool covers each of the budget's frames in flight plus six
@@ -241,11 +241,11 @@ test "FrameCapacity.bufferPastRange names the buffer a device range cannot cover
     // 4,096 polylines x 8,192 and 4,096 clouds x 65,536 points, 8 B each) pass
     // 2^27 bytes but fit a 4 GiB range.
     const guaranteed = storage_buffer_range_guaranteed_bytes;
-    for ([_]SceneLimits{ .nano, .small, .standard, .large }) |limits| {
-        const capacity = FrameCapacity.fromSceneLimits(&limits);
+    for ([_]PaintLimits{ .nano, .small, .standard, .large }) |limits| {
+        const capacity = FrameCapacity.fromPaintLimits(&limits);
         try testing.expectEqual(null, capacity.bufferPastRange(guaranteed));
     }
-    const ceiling = FrameCapacity.fromSceneLimits(&SceneLimits.ceiling);
+    const ceiling = FrameCapacity.fromPaintLimits(&PaintLimits.ceiling);
     try testing.expectEqual(FrameBuffer.mesh_points, ceiling.bufferPastRange(guaranteed).?);
     try testing.expectEqual(null, ceiling.bufferPastRange(1 << 32));
 }

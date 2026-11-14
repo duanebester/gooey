@@ -40,14 +40,14 @@ pub const Capacity = struct {
     staging_bytes: u32,
 
     pub fn fromLimits(limits: *const backend.RenderLimits) Capacity {
-        assert(limits.scene.check() == null);
+        assert(limits.paint.check() == null);
         assert(limits.atlas.upload_bytes_frame_max > 0);
-        const scene = &limits.scene;
+        const paint = &limits.paint;
         return .{
-            .quads = packed_frame.quadCapacity(scene),
-            .sprites = packed_frame.spriteCapacity(scene),
-            .points = @max(packed_frame.meshPointCapacity(scene), 1),
-            .triangles = packed_frame.triangleCapacity(scene),
+            .quads = packed_frame.quadCapacity(paint),
+            .sprites = packed_frame.spriteCapacity(paint),
+            .points = @max(packed_frame.meshPointCapacity(paint), 1),
+            .triangles = packed_frame.triangleCapacity(paint),
             .staging_bytes = limits.atlas.upload_bytes_frame_max,
         };
     }
@@ -189,7 +189,7 @@ fn checkWorkingSet(device: objc.Object, reservation_bytes: u64, frame_count: u32
     if (reservation_bytes <= working_set_bytes_max) return;
     std.log.err(
         "Metal frame reservation of {d} B per window ({d} frames in flight, " ++
-            "ResourceLimits.scene and .atlas) exceeds the device's " ++
+            "ResourceLimits.paint and .atlas) exceeds the device's " ++
             "recommendedMaxWorkingSetSize of {d} B.",
         .{ reservation_bytes, frame_count, working_set_bytes_max },
     );

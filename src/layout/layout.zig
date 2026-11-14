@@ -48,9 +48,6 @@ pub const RenderCommandType = render_commands.RenderCommandType;
 pub const RenderCommandList = render_commands.RenderCommandList;
 pub const RenderData = render_commands.RenderData;
 
-// colorToHsla and renderCommandsToScene live in core/render_bridge.zig,
-// keeping layout decoupled from scene rendering.
-
 pub const LayoutEngine = engine.LayoutEngine;
 pub const MeasureTextFn = engine.MeasureTextFn;
 

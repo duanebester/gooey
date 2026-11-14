@@ -13,7 +13,7 @@ const types = @import("types.zig");
 const font_face_mod = @import("font_face.zig");
 const cache_mod = @import("cache.zig");
 const platform = @import("../platform/mod.zig");
-const render_stats = @import("../scene/render_stats.zig");
+const render_stats = @import("../core/render_stats.zig");
 const RenderStats = render_stats.RenderStats;
 
 const atlas_mod = @import("atlas.zig");

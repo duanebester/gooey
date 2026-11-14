@@ -28,6 +28,7 @@ pub const banned_paths = [_][]const u8{
     "src/widgets/",
     "src/animation/",
     "src/debug/",
+    "src/scene/",
     "src/file_dialog.zig",
     "src/validation.zig",
     "src/input/event.zig",
@@ -35,6 +36,7 @@ pub const banned_paths = [_][]const u8{
     "src/testing/legacy_harness.zig",
     "src/testing/mock_clipboard.zig",
     "src/platform/mutex.zig",
+    "src/platform/unified.zig",
     "src/platform/macos/display_link.zig",
     "src/platform/web/file_dialog.zig",
     "src/platform/web/image_loader.zig",
@@ -202,6 +204,13 @@ test "bannedPath matches deleted files and directories, not their neighbours" {
     try std.testing.expect(bannedPath("src/core/cx.zig") == null);
     try std.testing.expect(bannedPath("src/cx.zig.bak") == null);
     try std.testing.expect(bannedPath("src/core/root.zig") == null);
+    // Phase 6: the scene directory and the old unified GPU structs.
+    try std.testing.expectEqualStrings("src/scene/", bannedPath("src/scene/scene.zig").?);
+    try std.testing.expectEqualStrings(
+        "src/platform/unified.zig",
+        bannedPath("src/platform/unified.zig").?,
+    );
+    try std.testing.expect(bannedPath("src/core/scene.zig") == null);
 }
 
 test "resolveImport follows relative paths from the importer" {

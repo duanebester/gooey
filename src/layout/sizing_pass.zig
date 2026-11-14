@@ -910,7 +910,7 @@ fn claimWrappedLines(engine: *LayoutEngine, line_count: u32) void {
     std.debug.assert(engine.wrapped_line_count <= capacity);
     if (line_count > capacity - engine.wrapped_line_count) {
         std.debug.panic("wrapped lines exhausted: capacity {d} " ++
-            "(scene.glyph_count_frame_max), {d} in use, {d} requested", .{
+            "(paint.glyph_count_frame_max), {d} in use, {d} requested", .{
             capacity,
             engine.wrapped_line_count,
             line_count,

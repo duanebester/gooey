@@ -102,7 +102,7 @@ pub const Surface = struct {
 /// The slice of `ResourceLimits` a renderer reserves against.
 pub const RenderLimits = struct {
     window: limits_mod.WindowLimits,
-    scene: limits_mod.SceneLimits,
+    paint: limits_mod.PaintLimits,
     frame: limits_mod.FrameLimits,
     atlas: limits_mod.AtlasLimits,
 
@@ -110,7 +110,7 @@ pub const RenderLimits = struct {
         assert(resource_limits.check() == null);
         const result = RenderLimits{
             .window = resource_limits.window,
-            .scene = resource_limits.scene,
+            .paint = resource_limits.paint,
             .frame = resource_limits.frame,
             .atlas = resource_limits.atlas,
         };
@@ -129,7 +129,7 @@ pub const Capabilities = struct {
 /// Verify `Renderer` against contract §9:
 ///
 /// - `initInPlace` reserves everything the renderer will use for `limits`:
-///   instance and geometry buffers at the scene limits, atlas textures at the
+///   instance and geometry buffers at the paint limits, atlas textures at the
 ///   atlas limits, and nothing window-sized past `limits.window`. It takes no
 ///   allocator. A device that cannot hold the budget is an init error.
 /// - `uploadAtlas` copies `pixels`, tightly packed rows of `dirty.width`

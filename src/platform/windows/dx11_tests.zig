@@ -223,7 +223,7 @@ const Harness = struct {
         self.readback = try Readback.create(device, side_px, side_px, dx11_swapchain.format);
         errdefer self.readback.release();
         try self.frame.initInPlace(&.{
-            .scene = resource_limits.scene,
+            .paint = resource_limits.paint,
             .paint_record_count_max = 16,
         });
     }

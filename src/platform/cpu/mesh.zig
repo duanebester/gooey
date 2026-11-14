@@ -37,7 +37,7 @@
 //!   covered pixel. Work is O(polygons + rows + covered samples); a polygon is
 //!   visited only on the rows it spans (an active edge table).
 //! - Points: one shade per pixel inside each point's square.
-//! - The scene's mesh point budgets (`SceneLimits.path_vertex_count_frame_max`
+//! - The paint budget's mesh point limits (`PaintLimits.path_vertex_count_frame_max`
 //!   and friends, enforced when the frame is built) bound the polygons and
 //!   points per frame, and the framebuffer bounds the pixels per polygon.
 

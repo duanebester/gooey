@@ -1,11 +1,12 @@
 //! Render commands output from the layout system
 //!
 //! The layout engine produces these commands as a platform-agnostic
-//! representation of what needs to be drawn. These commands are then
-//! translated to GPU primitives by the render_bridge module.
+//! representation of what needs to be drawn. The 0.3.1 scene's render bridge
+//! translated them to GPU primitives; phase 6 removed it, and the core emits
+//! paint records from the laid-out bounds instead (`core/emit.zig`).
 //!
-//! This module has NO dependencies on scene.zig or any GPU types,
-//! keeping the layout system fully decoupled from rendering.
+//! This module has no dependencies on GPU types, keeping the layout system
+//! decoupled from rendering.
 
 const std = @import("std");
 const reservation = @import("../core/reservation.zig");

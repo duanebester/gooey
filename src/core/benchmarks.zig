@@ -14,6 +14,7 @@
 //!   - FixedArray: append/clear, pop, orderedRemove, swapRemove
 //!   - Vec2: batch normalize, batch dot product
 //!   - Rect.contains: batch containment testing
+//!   - Pack: a frame of cards and a triangle chart, records to packed frame
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -56,6 +57,10 @@ const FixedArray = gooey.internals.fixed_array.FixedArray;
 const RectF = geometry.RectF;
 const PointF = geometry.PointF;
 const limits = gooey.internals.limits;
+const records = gooey.internals.records;
+const pack_mod = gooey.internals.pack;
+const packed_frame = gooey.internals.packed_frame;
+const assert = std.debug.assert;
 
 const stroke_mod = geometry.stroke;
 const LineCap = stroke_mod.LineCap;
@@ -771,6 +776,203 @@ fn benchRectContains(
 }
 
 // =============================================================================
+// Benchmark Runners — Pack
+// =============================================================================
+
+/// Cards in the pack benchmark's UI frame. Each card is a shadow and its quad,
+/// then a clip around a label of `pack_card_glyph_count` glyphs and an icon:
+/// the record mix of a scrolling list. 128 cards are 3,712 records, a dense
+/// `.standard` frame.
+const pack_card_count: u32 = 128;
+const pack_card_glyph_count: u32 = 24;
+/// Shadow, quad, clip push, glyphs, icon, clip pop.
+const pack_card_record_count: u32 = 5 + pack_card_glyph_count;
+
+/// The chart frame: `pack_chart_row_count` triangle meshes, each a strip of
+/// `pack_chart_column_count` cells of two triangles. Neighbouring triangles
+/// share edges, and rows alternate fills, so pack classifies interior,
+/// silhouette and underlap edges. 512 triangles in four meshes of 384 points,
+/// under the 510-point mesh ceiling.
+const pack_chart_row_count: u32 = 4;
+const pack_chart_column_count: u32 = 64;
+const pack_chart_triangle_count: u32 = pack_chart_row_count * pack_chart_column_count * 2;
+
+/// What one pack case reads and writes, reserved once outside the timed loop.
+const PackFixture = struct {
+    frame: records.Frame,
+    target: packed_frame.PackedFrame,
+
+    const paint_record_count_max: u32 = 4_096;
+    const mesh_point_count_max: u32 = pack_chart_triangle_count * 3;
+
+    comptime {
+        assert(pack_card_count * pack_card_record_count <= paint_record_count_max);
+        assert(pack_chart_column_count * 2 * 3 <= gooey.internals.emit.triangle_points_max);
+    }
+
+    fn init(self: *PackFixture, gpa: std.mem.Allocator) !void {
+        try self.frame.initInPlace(gpa, &.{
+            .paint_record_count_max = paint_record_count_max,
+            .hit_record_count_max = 1,
+            .handler_count_max = 1,
+            .a11y_node_count_max = 1,
+            .text_bytes_max = 1,
+            .mesh_point_count_max = mesh_point_count_max,
+        });
+        errdefer self.frame.deinit(gpa);
+        try self.target.initInPlace(&.{
+            .paint = limits.PaintLimits.standard,
+            .paint_record_count_max = paint_record_count_max,
+        });
+        self.frame.reset(1, .{ .width = 1200, .height = 800, .scale_factor = 1 });
+        assert(self.frame.paint_count == 0);
+        assert(self.target.draw_count == 0);
+    }
+
+    fn deinit(self: *PackFixture, gpa: std.mem.Allocator) void {
+        self.target.deinit();
+        self.frame.deinit(gpa);
+    }
+};
+
+/// Append the UI frame's cards, top to bottom.
+fn appendPackCards(frame: *records.Frame) void {
+    assert(frame.paint_count == 0);
+    const white = records.Color{ .r = 1, .g = 1, .b = 1, .a = 1 };
+    for (0..pack_card_count) |card| {
+        const y: f32 = @floatFromInt(card * 48);
+        const bounds = records.Rect{ .x = 16, .y = y, .width = 400, .height = 40 };
+        const shadow = records.Color{ .r = 0, .g = 0, .b = 0, .a = 0.3 };
+        frame.appendPaint(.{ .quad = packCardQuad(bounds, 8, shadow) });
+        frame.appendPaint(.{ .quad = packCardQuad(bounds, 0, white) });
+        frame.appendPaint(.{ .clip_push = bounds });
+        for (0..pack_card_glyph_count) |glyph| {
+            const x: f32 = 24 + @as(f32, @floatFromInt(glyph)) * 9;
+            const glyph_bounds = records.Rect{ .x = x, .y = y + 12, .width = 8, .height = 14 };
+            frame.appendPaint(.{ .sprite = packSprite(.glyph, glyph_bounds) });
+        }
+        const icon_bounds = records.Rect{ .x = 380, .y = y + 8, .width = 24, .height = 24 };
+        frame.appendPaint(.{ .sprite = packSprite(.svg, icon_bounds) });
+        frame.appendPaint(.clip_pop);
+    }
+    assert(frame.paint_count == pack_card_count * pack_card_record_count);
+}
+
+fn packCardQuad(bounds: records.Rect, blur: f32, fill: records.Color) records.Quad {
+    assert(blur >= 0);
+    return .{
+        .bounds = bounds,
+        .fill = fill,
+        .border = .none,
+        .corners = .all(8),
+        .blur = blur,
+        .offset_y = 2,
+    };
+}
+
+fn packSprite(atlas: records.AtlasKind, bounds: records.Rect) records.Sprite {
+    assert(bounds.width > 0);
+    return .{
+        .bounds = bounds,
+        .atlas = atlas,
+        .uv = .{ .x = 0.25, .y = 0.25, .width = 0.0625, .height = 0.0625 },
+        .tint = .{ .r = 0.1, .g = 0.1, .b = 0.1, .a = 1 },
+        .secondary = .{ .r = 0, .g = 0, .b = 0, .a = 0 },
+        .corners = .zero,
+        .grayscale = 0,
+        .opacity = 1,
+    };
+}
+
+/// Append the chart frame's meshes: row `r` covers y in [r, r + 1] × 32 px,
+/// each cell split by its rising diagonal into triangles A and B.
+fn appendPackChart(frame: *records.Frame) void {
+    assert(frame.paint_count == 0);
+    const cell: f32 = 32;
+    for (0..pack_chart_row_count) |row| {
+        const range = frame.claimMeshPoints(pack_chart_column_count * 6);
+        const points = frame.meshPoints(range);
+        const y0 = @as(f32, @floatFromInt(row)) * cell;
+        const y1 = y0 + cell;
+        for (0..pack_chart_column_count) |column| {
+            const x0 = @as(f32, @floatFromInt(column)) * cell;
+            const x1 = x0 + cell;
+            const corners = [6][2]f32{
+                .{ x0, y0 }, .{ x1, y0 }, .{ x0, y1 },
+                .{ x1, y0 }, .{ x1, y1 }, .{ x0, y1 },
+            };
+            for (points[column * 6 ..][0..6], corners) |*point, corner| {
+                point.* = .{ .x = corner[0], .y = corner[1] };
+            }
+        }
+        frame.mesh_point_counts[@backingInt(records.Mesh.Topology.triangles)] += range.count;
+        const shade: f32 = if (row % 2 == 0) 0.2 else 0.8;
+        frame.appendPaint(.{ .mesh = .{
+            .range = range,
+            .topology = .triangles,
+            .fill = .{ .r = shade, .g = 0.4, .b = 0.6, .a = 1 },
+            .width = 0,
+        } });
+    }
+    assert(frame.mesh_point_count == pack_chart_triangle_count * 3);
+}
+
+/// Benchmark `pack` over a frame the fixture already holds. Operation count is
+/// the records (cards) or triangles (chart) one pack processes.
+fn benchPack(
+    comptime name: []const u8,
+    fixture: *PackFixture,
+    operation_count: u32,
+) BenchmarkResult {
+    assert(operation_count > 0);
+    assert(fixture.frame.paint_count > 0);
+    for (0..getWarmupIterations(operation_count)) |_| {
+        pack_mod.pack(&fixture.frame, &fixture.target);
+    }
+
+    const min_iterations = getMinSampleIterations(operation_count);
+    var sampler: bench.Sampler = .{};
+    while (sampler.total_time_ns < MIN_SAMPLE_TIME_NS or sampler.iterations < min_iterations) {
+        const start = time.Instant.now();
+        pack_mod.pack(&fixture.frame, &fixture.target);
+        const end = time.Instant.now();
+        sampler.record(end.since(start));
+    }
+    assert(fixture.target.draw_count > 0);
+
+    return .{
+        .name = name,
+        .operation_count = operation_count,
+        .total_time_ns = sampler.total_time_ns,
+        .iterations = sampler.iterations,
+        .min_time_ns = sampler.min_time_ns,
+    };
+}
+
+/// Pack the card frame, then the chart frame, in one fixture: the data plane
+/// every backend draws.
+fn runPackBenchmarks(reporter: *bench.Reporter, gpa: std.mem.Allocator) !void {
+    std.debug.print("\n", .{});
+    std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
+    std.debug.print("Gooey Core Benchmarks — Pack (records to packed frame)\n", .{});
+    std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
+    printHeader();
+    std.debug.print(&@as([105]u8, @splat('-')) ++ "\n", .{});
+
+    var fixture: PackFixture = undefined;
+    try fixture.init(gpa);
+    defer fixture.deinit(gpa);
+    appendPackCards(&fixture.frame);
+    const card_records = pack_card_count * pack_card_record_count;
+    collect(reporter, benchPack("pack_cards_3712_records", &fixture, card_records));
+
+    fixture.frame.reset(2, .{ .width = 1200, .height = 800, .scale_factor = 1 });
+    appendPackChart(&fixture.frame);
+    collect(reporter, benchPack("pack_chart_512_triangles", &fixture, pack_chart_triangle_count));
+    std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
+}
+
+// =============================================================================
 // Comptime Wrappers — Polygon Generators
 // =============================================================================
 
@@ -942,6 +1144,46 @@ test "validate: Rect.contains boundary behavior" {
     // Outside.
     try std.testing.expect(!rect.contains(PointF.init(0.0, 0.0)));
     try std.testing.expect(!rect.contains(PointF.init(200.0, 200.0)));
+}
+
+test "validate: pack keeps every card record, one draw per pipeline run" {
+    // Goal: the benchmark packs the frame it claims to. Method: count what
+    // pack wrote, derived from the card layout: two quads (a shadow and its
+    // card) and 25 sprites per card, one clip per card plus the unbounded
+    // one, and three draws per card (quads, glyphs, icon), since each
+    // pipeline or clip change starts a draw. Nothing is culled.
+    var fixture: PackFixture = undefined;
+    try fixture.init(std.testing.allocator);
+    defer fixture.deinit(std.testing.allocator);
+    appendPackCards(&fixture.frame);
+    pack_mod.pack(&fixture.frame, &fixture.target);
+    const target = &fixture.target;
+    try std.testing.expectEqual(pack_card_count * 2, target.quad_count);
+    const shadow_count = target.counts[@backingInt(packed_frame.Pool.shadows)];
+    try std.testing.expectEqual(pack_card_count, shadow_count);
+    try std.testing.expectEqual(pack_card_count * (pack_card_glyph_count + 1), target.sprite_count);
+    try std.testing.expectEqual(pack_card_count + 1, target.clip_count);
+    try std.testing.expectEqual(pack_card_count * 3, target.draw_count);
+}
+
+test "validate: pack classifies the chart's shared edges" {
+    // Goal: the chart case exercises all three edge modes. Method: in row 1,
+    // cell 10 (away from every border), triangle A's top edge meets row 0,
+    // an earlier draw of another fill (fade), and its diagonal and left edge
+    // meet triangles of its own fill (interior): 1. Triangle B's bottom edge
+    // meets row 2, a later draw of another fill (underlap, edge v1→v2), and
+    // its other edges are interior: 2 << 2.
+    var fixture: PackFixture = undefined;
+    try fixture.init(std.testing.allocator);
+    defer fixture.deinit(std.testing.allocator);
+    appendPackChart(&fixture.frame);
+    pack_mod.pack(&fixture.frame, &fixture.target);
+    const modes = fixture.target.edgeModeList();
+    try std.testing.expectEqual(@as(usize, pack_chart_triangle_count), modes.len);
+    const cell_a = pack_chart_column_count * 2 + 10 * 2;
+    try std.testing.expectEqual(@as(u32, 1), modes[cell_a]);
+    try std.testing.expectEqual(@as(u32, 2 << 2), modes[cell_a + 1]);
+    try std.testing.expectEqual(pack_chart_row_count, fixture.target.mesh_count);
 }
 
 // =============================================================================
@@ -1157,6 +1399,8 @@ pub fn main(init: std.process.Init) !void {
     collect(&reporter, benchRectContains("contains_4000", 4000));
 
     std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
+
+    try runPackBenchmarks(&reporter, init.gpa);
 
     // =========================================================================
     // Scaling Analysis — Triangulation

@@ -14,42 +14,35 @@
 //!
 //! ```
 //! ┌─────────────────────────────────────────────────────────────────────────┐
-//! │ Per-Path Geometry Limits (triangulator.zig, path_mesh.zig)              │
+//! │ Per-Path Geometry Limits (triangulator.zig)                             │
 //! │ - MAX_PATH_VERTICES: Maximum vertices in a single path                  │
 //! │ - MAX_PATH_INDICES: Maximum indices after triangulation                 │
-//! │ Purpose: Bound memory per PathMesh, prevent stack overflow              │
+//! │ Purpose: Bound one path's triangulation scratch, prevent stack overflow │
 //! └─────────────────────────────────────────────────────────────────────────┘
 //!                                    │
 //!                                    ▼
 //! ┌─────────────────────────────────────────────────────────────────────────┐
-//! │ Mesh Pool Limits (mesh_pool.zig)                                        │
-//! │ - MAX_PERSISTENT_MESHES: Cached meshes (icons, static shapes)           │
-//! │ - MAX_FRAME_MESHES: Per-frame scratch meshes (animations)               │
-//! │ Purpose: Bound total mesh storage, enable cache eviction                │
+//! │ Per-Mesh Limits (emit.zig)                                              │
+//! │ - MAX_FRAME_MESHES: Triangle meshes per frame                           │
+//! │ - MAX_POLYLINE_POINTS, MAX_POINTS_PER_CLOUD: Points per Painter draw    │
+//! │ Purpose: Bound one draw, fail fast on runaway geometry                  │
 //! └─────────────────────────────────────────────────────────────────────────┘
 //!                                    │
 //!                                    ▼
 //! ┌─────────────────────────────────────────────────────────────────────────┐
-//! │ Per-Frame Instance Limits (scene.zig)                                   │
-//! │ - MAX_PATHS_PER_FRAME: Total path draw calls per frame                  │
-//! │ Purpose: Bound GPU upload size, fail fast on runaway rendering          │
+//! │ Per-Frame Limits (PaintLimits, packed_frame.zig)                        │
+//! │ - quad_count_frame_max, glyph_count_frame_max, ...: Records per frame   │
+//! │ Purpose: Size the packed frame once, fail fast on runaway rendering     │
 //! └─────────────────────────────────────────────────────────────────────────┘
 //! ```
 
 const std = @import("std");
 const assert = std.debug.assert;
 
-// Element types, imported only for `@sizeOf` in budget and memory estimates. The
-// scene module imports this file for its ceilings; the cycle is between files,
+// The packed frame, imported only for its pool sizes in budget and memory
+// estimates. It imports this file for its limits; the cycle is between files,
 // not between comptime values, so Zig resolves it.
-const scene_types = @import("../scene/scene.zig");
-const SvgInstance = @import("../scene/svg_instance.zig").SvgInstance;
-const ImageInstance = @import("../scene/image_instance.zig").ImageInstance;
-const PathInstance = @import("../scene/path_instance.zig").PathInstance;
-const GradientUniforms = @import("../scene/gradient_uniforms.zig").GradientUniforms;
-const Polyline = @import("../scene/polyline.zig").Polyline;
-const PointCloud = @import("../scene/point_cloud.zig").PointCloud;
-const ColoredPointCloud = @import("../scene/colored_point_cloud.zig").ColoredPointCloud;
+const packed_frame = @import("packed_frame.zig");
 const FontVariant = @import("../text/types.zig").FontVariant;
 
 // =============================================================================
@@ -58,7 +51,7 @@ const FontVariant = @import("../text/types.zig").FontVariant;
 //
 // These are the ceilings an application budget (`ResourceLimits`) may not
 // exceed. They are not the capacities a window allocates: `ResourceLimits`
-// selects those, and `SceneLimits.check` enforces `budget <= ceiling`.
+// selects those, and `PaintLimits.check` enforces `budget <= ceiling`.
 
 /// Maximum quads per frame (rectangles, backgrounds)
 pub const MAX_QUADS_PER_FRAME: u32 = 65536;
@@ -151,7 +144,7 @@ comptime {
 /// storage from this value during initialization and never grows afterwards.
 ///
 /// Each subsystem owns one nested struct so later budgets (layout, a11y, text,
-/// widgets) are added as new fields beside `scene`, `window` and `frame` without
+/// widgets) are added as new fields beside `paint`, `window` and `frame` without
 /// reshaping the type. Fields have no defaults and there is no default profile:
 /// callers pick one of the five named rungs or spell out every capacity, so no
 /// capacity hides in a leaf default.
@@ -162,7 +155,7 @@ comptime {
 /// `standard` (showcase, data-table, spaceship, dashboard), `large` (lucide-demo,
 /// images, mesh stress) and `ceiling` (every framework maximum).
 pub const ResourceLimits = struct {
-    scene: SceneLimits,
+    paint: PaintLimits,
     window: WindowLimits,
     frame: FrameLimits,
     atlas: AtlasLimits,
@@ -179,7 +172,7 @@ pub const ResourceLimits = struct {
 
     /// Counter-class apps: a few dozen elements and one face, two frames in flight.
     pub const nano: ResourceLimits = .{
-        .scene = SceneLimits.nano,
+        .paint = PaintLimits.nano,
         .window = WindowLimits.nano,
         .frame = FrameLimits.nano,
         .atlas = AtlasLimits.nano,
@@ -193,7 +186,7 @@ pub const ResourceLimits = struct {
 
     /// Single-screen forms and lists, two frames in flight.
     pub const small: ResourceLimits = .{
-        .scene = SceneLimits.small,
+        .paint = PaintLimits.small,
         .window = WindowLimits.small,
         .frame = FrameLimits.small,
         .atlas = AtlasLimits.small,
@@ -205,9 +198,9 @@ pub const ResourceLimits = struct {
         .entities = EntityLimits.small,
     };
 
-    /// Ordinary multi-panel UI apps. See `SceneLimits.standard`.
+    /// Ordinary multi-panel UI apps. See `PaintLimits.standard`.
     pub const standard: ResourceLimits = .{
-        .scene = SceneLimits.standard,
+        .paint = PaintLimits.standard,
         .window = WindowLimits.standard,
         .frame = FrameLimits.standard,
         .atlas = AtlasLimits.standard,
@@ -222,7 +215,7 @@ pub const ResourceLimits = struct {
     /// Dense-content apps: big tables, treemaps, full-screen editors, charts,
     /// hundreds of icons, large image atlases.
     pub const large: ResourceLimits = .{
-        .scene = SceneLimits.large,
+        .paint = PaintLimits.large,
         .window = WindowLimits.large,
         .frame = FrameLimits.large,
         .atlas = AtlasLimits.large,
@@ -237,13 +230,13 @@ pub const ResourceLimits = struct {
     /// Every capacity at its framework ceiling. For stress tests and benchmarks,
     /// not an app profile: `gooey.App` rejects it at compile time, since an app
     /// budget must leave the debugger overlay's headroom below every ceiling
-    /// (contract decision 16). Costs about 16.5 MiB per scene and 25.5 MiB of
-    /// Metal instance ring. The aggregate mesh geometry ceilings are validation
-    /// bounds, not a renderable reservation: GPU renderers reserve geometry per
-    /// frame in flight (Metal about 62 GiB per frame here), so a window that
-    /// renders must lower them.
+    /// (contract decision 16). The aggregate mesh geometry ceilings are
+    /// validation bounds, not a renderable reservation: the window's mesh points
+    /// alone are about 4.5 GiB of virtual memory, and GPU renderers reserve
+    /// geometry per frame in flight (Metal about 62 GiB per frame here), so a
+    /// window that renders must lower them.
     pub const ceiling: ResourceLimits = .{
-        .scene = SceneLimits.ceiling,
+        .paint = PaintLimits.ceiling,
         .window = WindowLimits.ceiling,
         .frame = FrameLimits.ceiling,
         .atlas = AtlasLimits.ceiling,
@@ -258,7 +251,7 @@ pub const ResourceLimits = struct {
     /// First violated rule, or null when the budget is valid. Shared by the
     /// comptime `validate` and the runtime initialization checks.
     pub fn check(self: *const ResourceLimits) ?Violation {
-        if (self.scene.check()) |violation| return violation;
+        if (self.paint.check()) |violation| return violation;
         if (self.window.check()) |violation| return violation;
         if (self.frame.check()) |violation| return violation;
         if (self.atlas.check()) |violation| return violation;
@@ -344,11 +337,11 @@ pub const ResourceLimits = struct {
     }
 };
 
-/// Per-window, per-frame scene capacities. Each window allocates two scenes
-/// (built and presented) of exactly these sizes, plus a Metal instance ring of
-/// `unifiedPrimitiveCountMax()` primitives per frame in flight. GPU renderers
-/// also reserve mesh buffers from the aggregate geometry fields per frame in flight.
-pub const SceneLimits = struct {
+/// Per-window, per-frame paint capacities. Each window's packed frame reserves
+/// its quad, sprite, mesh and edge pools from these counts, and its two records
+/// frames reserve the mesh points (`paintBytes`). GPU renderers size their
+/// instance and mesh buffers from the same packed pools per frame in flight.
+pub const PaintLimits = struct {
     quad_count_frame_max: u32,
     shadow_count_frame_max: u32,
     glyph_count_frame_max: u32,
@@ -373,8 +366,8 @@ pub const SceneLimits = struct {
     /// dynamic-counters, actions, animation, file-dialog): quads 11, glyphs 118,
     /// no shadows, SVGs, images, paths or geometry. Headroom about 23x for quads;
     /// 1,024 glyphs is the floor because one shaped run is inserted whole. Mesh
-    /// geometry allows a few small icons or one sparkline. About 127 KiB per scene.
-    pub const nano: SceneLimits = .{
+    /// geometry allows a few small icons or one sparkline. About 203 KiB per window.
+    pub const nano: PaintLimits = .{
         .quad_count_frame_max = 256,
         .shadow_count_frame_max = 16,
         .glyph_count_frame_max = 1_024,
@@ -395,8 +388,8 @@ pub const SceneLimits = struct {
     /// Single-screen apps. Largest measured peaks in the class (todo, layout,
     /// nested-overlay, drag-drop, accessible-form, code-editor): quads 40,
     /// shadows 2, glyphs 358, SVGs 2, no images, paths or geometry. Headroom
-    /// about 25x for quads and 11x for glyphs. About 0.55 MiB per scene.
-    pub const small: SceneLimits = .{
+    /// about 25x for quads and 11x for glyphs. About 1.1 MiB per window.
+    pub const small: PaintLimits = .{
         .quad_count_frame_max = 1_024,
         .shadow_count_frame_max = 64,
         .glyph_count_frame_max = 4_096,
@@ -423,8 +416,8 @@ pub const SceneLimits = struct {
     /// Geometry: dashboard needs 780 path vertices, 804 indices, 24 line points
     /// and 42 colored points, so the 4x cut (decision 3) still leaves at least
     /// 20x; the 0.3.1 mesh stress test (an 8,192-point line, 4,096 points of
-    /// each kind) ran on `large`. About 1.8 MiB per scene.
-    pub const standard: SceneLimits = .{
+    /// each kind) ran on `large`. About 2.8 MiB per window.
+    pub const standard: PaintLimits = .{
         .quad_count_frame_max = 4_096,
         .shadow_count_frame_max = 512,
         .glyph_count_frame_max = 8_192,
@@ -446,8 +439,8 @@ pub const SceneLimits = struct {
     /// mesh stress fixtures. 16x `standard` for geometry and, for full-screen
     /// text, the glyph ceiling less the 300 glyphs a safe build reserves for the
     /// debugger overlay (contract decision 16), which an app budget must leave
-    /// below every ceiling. Scene storage: about 11.6 MiB per scene.
-    pub const large: SceneLimits = .{
+    /// below every ceiling. About 33.7 MiB per window, half of it mesh points.
+    pub const large: PaintLimits = .{
         .quad_count_frame_max = 32_768,
         .shadow_count_frame_max = 2_048,
         .glyph_count_frame_max = 65_236,
@@ -466,7 +459,7 @@ pub const SceneLimits = struct {
     };
 
     /// The framework ceilings themselves; the upper bound for every budget.
-    pub const ceiling: SceneLimits = .{
+    pub const ceiling: PaintLimits = .{
         .quad_count_frame_max = MAX_QUADS_PER_FRAME,
         .shadow_count_frame_max = MAX_SHADOWS_PER_FRAME,
         .glyph_count_frame_max = MAX_GLYPHS_PER_FRAME,
@@ -478,24 +471,22 @@ pub const SceneLimits = struct {
         .colored_point_cloud_count_frame_max = MAX_COLORED_POINT_CLOUDS_PER_FRAME,
         .path_vertex_count_frame_max = MAX_PATHS_PER_FRAME * MAX_PATH_VERTICES,
         .path_index_count_frame_max = MAX_PATHS_PER_FRAME * MAX_PATH_INDICES,
-        .polyline_point_count_frame_max = MAX_POLYLINES_PER_FRAME *
-            @import("../scene/polyline.zig").MAX_POLYLINE_POINTS,
-        .point_count_frame_max = MAX_POINT_CLOUDS_PER_FRAME *
-            @import("../scene/point_cloud.zig").MAX_POINTS_PER_CLOUD,
+        .polyline_point_count_frame_max = MAX_POLYLINES_PER_FRAME * MAX_POLYLINE_POINTS,
+        .point_count_frame_max = MAX_POINT_CLOUDS_PER_FRAME * MAX_POINTS_PER_CLOUD,
         .colored_point_count_frame_max = MAX_COLORED_POINT_CLOUDS_PER_FRAME *
-            @import("../scene/colored_point_cloud.zig").MAX_POINTS_PER_COLORED_CLOUD,
+            MAX_POINTS_PER_COLORED_CLOUD,
         .clip_depth_max = MAX_CLIP_STACK_DEPTH,
     };
 
     /// First violated rule, or null. Every field must be in `1..=ceiling`, and
     /// the cross-limit relationships below must hold.
-    pub fn check(self: *const SceneLimits) ?Violation {
-        inline for (@typeInfo(SceneLimits).@"struct".field_names) |field_name| {
+    pub fn check(self: *const PaintLimits) ?Violation {
+        inline for (@typeInfo(PaintLimits).@"struct".field_names) |field_name| {
             const value: u32 = @field(self, field_name);
             const bound: u32 = @field(ceiling, field_name);
             if (value == 0) {
                 return .{
-                    .budget = .scene,
+                    .budget = .paint,
                     .field = field_name,
                     .rule = .zero,
                     .value = value,
@@ -504,7 +495,7 @@ pub const SceneLimits = struct {
             }
             if (value > bound) {
                 return .{
-                    .budget = .scene,
+                    .budget = .paint,
                     .field = field_name,
                     .rule = .above_ceiling,
                     .value = value,
@@ -515,68 +506,28 @@ pub const SceneLimits = struct {
         // One shaped text run is inserted whole, so a frame must hold at least one.
         if (self.glyph_count_frame_max < MAX_GLYPHS_PER_RUN) {
             return .{
-                .budget = .scene,
+                .budget = .paint,
                 .field = "glyph_count_frame_max",
                 .rule = .below_relationship,
                 .value = self.glyph_count_frame_max,
                 .bound = MAX_GLYPHS_PER_RUN,
             };
         }
-        // The draw-order sort scratch is sized from the largest sortable pool.
-        if (self.sortKeyCountMax() > MAX_SORT_KEYS) {
-            return .{
-                .budget = .scene,
-                .field = "sortKeyCountMax()",
-                .rule = .above_ceiling,
-                .value = self.sortKeyCountMax(),
-                .bound = MAX_SORT_KEYS,
-            };
-        }
         return null;
     }
 
-    /// Capacity of the indirect draw-order sort scratch: the largest pool that
-    /// `Scene.sortByOrder` sorts. Paths sort through their own fixed scratch.
-    pub fn sortKeyCountMax(self: *const SceneLimits) u32 {
-        var count_max: u32 = self.shadow_count_frame_max;
-        count_max = @max(count_max, self.quad_count_frame_max);
-        count_max = @max(count_max, self.glyph_count_frame_max);
-        count_max = @max(count_max, self.svg_count_frame_max);
-        count_max = @max(count_max, self.image_count_frame_max);
-        count_max = @max(count_max, self.polyline_count_frame_max);
-        count_max = @max(count_max, self.point_cloud_count_frame_max);
-        count_max = @max(count_max, self.colored_point_cloud_count_frame_max);
-        assert(count_max >= self.quad_count_frame_max);
-        return count_max;
-    }
-
-    /// Quads plus shadows: both convert to one GPU primitive type and share the
-    /// renderer's per-frame instance ring.
-    pub fn unifiedPrimitiveCountMax(self: *const SceneLimits) u32 {
-        assert(self.quad_count_frame_max <= MAX_QUADS_PER_FRAME);
-        assert(self.shadow_count_frame_max <= MAX_SHADOWS_PER_FRAME);
-        return self.quad_count_frame_max + self.shadow_count_frame_max;
-    }
-
-    /// Bytes one scene reserves for this budget (element arrays, path gradients,
-    /// clip stack, and sort keys). Excludes the mesh pool, which has its own
-    /// fixed limits.
-    pub fn sceneBytes(self: *const SceneLimits) u64 {
-        var bytes: u64 = 0;
-        bytes += @as(u64, self.quad_count_frame_max) * @sizeOf(scene_types.Quad);
-        bytes += @as(u64, self.shadow_count_frame_max) * @sizeOf(scene_types.Shadow);
-        bytes += @as(u64, self.glyph_count_frame_max) * @sizeOf(scene_types.GlyphInstance);
-        bytes += @as(u64, self.svg_count_frame_max) * @sizeOf(SvgInstance);
-        bytes += @as(u64, self.image_count_frame_max) * @sizeOf(ImageInstance);
-        bytes += @as(u64, self.path_count_frame_max) * @sizeOf(PathInstance);
-        bytes += @as(u64, self.path_count_frame_max) * @sizeOf(GradientUniforms);
-        bytes += @as(u64, self.polyline_count_frame_max) * @sizeOf(Polyline);
-        bytes += @as(u64, self.point_cloud_count_frame_max) * @sizeOf(PointCloud);
-        bytes += @as(u64, self.colored_point_cloud_count_frame_max) *
-            @sizeOf(ColoredPointCloud);
-        bytes += @as(u64, self.clip_depth_max) * @sizeOf(scene_types.ContentMask.ClipBounds);
-        bytes += @as(u64, self.sortKeyCountMax()) * @sizeOf(u64);
-        assert(bytes > 0);
+    /// Bytes one window reserves for this budget: the packed frame's quad,
+    /// sprite, mesh and edge pools (`packed_frame.paintBytes`) and the mesh
+    /// points of its two records frames. The wrapped lines this budget's glyph
+    /// count bounds are counted with the layout arena. Every pool comes from
+    /// fresh pages, so this bounds virtual memory; resident memory follows
+    /// what frames write.
+    pub fn paintBytes(self: *const PaintLimits) u64 {
+        const packed_bytes = packed_frame.paintBytes(self);
+        const point_bytes = @as(u64, packed_frame.meshPointCapacity(self)) *
+            @sizeOf(packed_frame.MeshPoint);
+        const bytes = packed_bytes + 2 * point_bytes;
+        assert(bytes > packed_bytes);
         return bytes;
     }
 
@@ -1316,7 +1267,7 @@ pub const Violation = struct {
 
     /// The `ResourceLimits` field holding the broken rule.
     pub const Budget = enum {
-        scene,
+        paint,
         window,
         frame,
         atlas,
@@ -1362,22 +1313,6 @@ pub const Violation = struct {
     }
 };
 
-/// Upper bound on the draw-order sort scratch: the largest sortable ceiling.
-pub const MAX_SORT_KEYS: u32 = blk: {
-    var count_max: u32 = 0;
-    for ([_]u32{
-        MAX_SHADOWS_PER_FRAME,
-        MAX_QUADS_PER_FRAME,
-        MAX_GLYPHS_PER_FRAME,
-        MAX_SVGS_PER_FRAME,
-        MAX_IMAGES_PER_FRAME,
-        MAX_POLYLINES_PER_FRAME,
-        MAX_POINT_CLOUDS_PER_FRAME,
-        MAX_COLORED_POINT_CLOUDS_PER_FRAME,
-    }) |count| count_max = @max(count_max, count);
-    break :blk count_max;
-};
-
 // =============================================================================
 // Layout Limits
 // =============================================================================
@@ -1409,7 +1344,7 @@ pub const MAX_TEXT_LEN: u32 = 512;
 /// loaded on first use. Text that requests a variant outside the set panics
 /// with the variant's name, the loaded set, and this type's name.
 ///
-/// Shaped like `SceneLimits` (named profiles, `check`, `assertValid`,
+/// Shaped like `PaintLimits` (named profiles, `check`, `assertValid`,
 /// `validate`) so it moves into the planned `ResourceLimits.text` unchanged.
 /// Every `ResourceLimits` profile name has a `FontLimits` profile of the same
 /// name, so `gooey.App(..., .{ .limits = .nano })` selects both. An explicit
@@ -1569,9 +1504,8 @@ pub const MAX_WINDOWS: u32 = 8;
 // Per-Path Geometry Limits
 // =============================================================================
 
-/// Maximum vertices per individual path.
-/// Constrains PathMesh size to ~14KB to avoid stack overflow.
-/// Source: triangulator.zig, path_mesh.zig
+/// Maximum vertices per individual path. Bounds one path's triangulation
+/// scratch so it stays on the stack. Source: triangulator.zig
 pub const MAX_PATH_VERTICES: u32 = 512;
 
 /// Maximum triangles per path = MAX_PATH_VERTICES - 2 (simple polygon)
@@ -1611,16 +1545,31 @@ pub const MAX_STROKE_TRIANGLES: u32 = MAX_STROKE_OUTPUT;
 pub const MAX_STROKE_INDICES: u32 = MAX_STROKE_TRIANGLES * 3;
 
 // =============================================================================
-// Mesh Pool Limits
+// Frame Mesh Limits
 // =============================================================================
 
-/// Maximum persistent meshes (cached across frames: icons, static shapes)
-/// Source: mesh_pool.zig
-pub const MAX_PERSISTENT_MESHES: u32 = 512;
-
-/// Maximum per-frame meshes (dynamic paths, animations, canvas callbacks)
-/// Source: mesh_pool.zig
+/// Most triangle meshes one frame may draw, whatever `path_count_frame_max`
+/// allows: each packs as one 0.3.1 frame path mesh (`Painter.triangles`).
 pub const MAX_FRAME_MESHES: u32 = 256;
+
+// =============================================================================
+// Per-Mesh Limits
+// =============================================================================
+
+/// Most points one polyline (`Painter.polyline`) may hold.
+pub const MAX_POLYLINE_POINTS: u32 = 8192;
+
+/// Widest polyline, in logical pixels; a sanity bound.
+pub const MAX_LINE_WIDTH: f32 = 1000.0;
+
+/// Most points one point cloud (`Painter.pointCloud`) may hold.
+pub const MAX_POINTS_PER_CLOUD: u32 = 65536;
+
+/// Most points one colored point cloud may hold.
+pub const MAX_POINTS_PER_COLORED_CLOUD: u32 = 65536;
+
+/// Largest point radius, in logical pixels; a sanity bound.
+pub const MAX_POINT_RADIUS: f32 = 1000.0;
 
 // =============================================================================
 // GPU Buffer Limits (Web/WGPU specific)
@@ -1651,22 +1600,13 @@ pub const GRADIENT_RANGE_EPSILON: f32 = 0.0001;
 // Memory Budget Estimates
 // =============================================================================
 
-/// Bytes per glyph instance, derived so the estimate cannot go stale (it was
-/// hard-coded as 48 while the struct had grown to 80).
-pub const GLYPH_INSTANCE_SIZE: u32 = @sizeOf(scene_types.GlyphInstance);
+/// Bytes per glyph: one packed sprite, derived so the estimate cannot go stale.
+pub const GLYPH_INSTANCE_SIZE: u32 = @sizeOf(packed_frame.Sprite);
 pub const ESTIMATED_GLYPH_MEMORY: u32 = MAX_GLYPHS_PER_FRAME * GLYPH_INSTANCE_SIZE;
 
-/// Bytes per quad, derived (it was hard-coded as 128 while the struct is 112).
-pub const QUAD_SIZE: u32 = @sizeOf(scene_types.Quad);
+/// Bytes per quad: one packed quad, derived.
+pub const QUAD_SIZE: u32 = @sizeOf(packed_frame.Quad);
 pub const ESTIMATED_QUAD_MEMORY: u32 = MAX_QUADS_PER_FRAME * QUAD_SIZE;
-
-/// Per-path memory (at MAX_PATH_VERTICES=512):
-///   - PathMesh: ~14KB (512 vertices × 16B + 1530 indices × 4B)
-pub const ESTIMATED_PATH_MESH_SIZE: u32 = MAX_PATH_VERTICES * 16 + MAX_PATH_INDICES * 4;
-
-/// Mesh pool memory estimates
-pub const ESTIMATED_PERSISTENT_MESH_MEMORY: u32 = MAX_PERSISTENT_MESHES * ESTIMATED_PATH_MESH_SIZE;
-pub const ESTIMATED_FRAME_MESH_MEMORY: u32 = MAX_FRAME_MESHES * ESTIMATED_PATH_MESH_SIZE;
 
 // =============================================================================
 // Compile-time Validation
@@ -1681,10 +1621,6 @@ comptime {
     // Ensure web batch can hold at least a few max-size paths
     std.debug.assert(WEB_BATCH_VERTICES >= MAX_PATH_VERTICES * 4);
     std.debug.assert(WEB_BATCH_INDICES >= MAX_PATH_INDICES * 4);
-
-    // Ensure frame mesh limit doesn't exceed persistent limit
-    // (persistent is the "premium" tier, should have more capacity)
-    std.debug.assert(MAX_FRAME_MESHES <= MAX_PERSISTENT_MESHES);
 
     // Ensure per-frame instance limit is reasonable
     std.debug.assert(MAX_PATHS_PER_FRAME >= 1024);
@@ -1720,10 +1656,6 @@ test "memory estimates are reasonable" {
 
     // Quad memory should be under 16MB
     try std.testing.expect(ESTIMATED_QUAD_MEMORY < 16 * 1024 * 1024);
-
-    // Total mesh pool memory should be under 16MB
-    const total_mesh_memory = ESTIMATED_PERSISTENT_MESH_MEMORY + ESTIMATED_FRAME_MESH_MEMORY;
-    try std.testing.expect(total_mesh_memory < 16 * 1024 * 1024);
 }
 
 test "named profiles are valid and ordered" {
@@ -1739,7 +1671,7 @@ test "named profiles are valid and ordered" {
     inline for (rungs[0 .. rungs.len - 1], rungs[1..]) |lower_name, upper_name| {
         const lower = @field(ResourceLimits, lower_name);
         const upper = @field(ResourceLimits, upper_name);
-        inline for (.{ "scene", "window", "frame", "atlas" }) |budget| {
+        inline for (.{ "paint", "window", "frame", "atlas" }) |budget| {
             const Budget = @TypeOf(@field(lower, budget));
             inline for (@typeInfo(Budget).@"struct".field_names) |field_name| {
                 const lower_value = @field(@field(lower, budget), field_name);
@@ -1761,30 +1693,30 @@ test "check reports each negative case precisely" {
     // Goal: cover the rules `validate` turns into compile errors. Each case
     // starts from a valid profile and breaks exactly one rule at its boundary.
     var limits = ResourceLimits.standard;
-    limits.scene.svg_count_frame_max = 0;
+    limits.paint.svg_count_frame_max = 0;
     const zero = limits.check().?;
     try std.testing.expectEqual(Violation.Rule.zero, zero.rule);
     try std.testing.expectEqualStrings("svg_count_frame_max", zero.field);
 
     limits = ResourceLimits.standard;
-    limits.scene.quad_count_frame_max = MAX_QUADS_PER_FRAME + 1;
+    limits.paint.quad_count_frame_max = MAX_QUADS_PER_FRAME + 1;
     const above = limits.check().?;
     try std.testing.expectEqual(Violation.Rule.above_ceiling, above.rule);
     try std.testing.expectEqual(MAX_QUADS_PER_FRAME, above.bound);
 
     // Exactly at the ceiling is valid.
-    limits.scene.quad_count_frame_max = MAX_QUADS_PER_FRAME;
+    limits.paint.quad_count_frame_max = MAX_QUADS_PER_FRAME;
     try std.testing.expect(limits.check() == null);
 
     limits = ResourceLimits.standard;
-    limits.scene.glyph_count_frame_max = MAX_GLYPHS_PER_RUN - 1;
+    limits.paint.glyph_count_frame_max = MAX_GLYPHS_PER_RUN - 1;
     const below = limits.check().?;
     try std.testing.expectEqual(Violation.Rule.below_relationship, below.rule);
-    limits.scene.glyph_count_frame_max = MAX_GLYPHS_PER_RUN;
+    limits.paint.glyph_count_frame_max = MAX_GLYPHS_PER_RUN;
     try std.testing.expect(limits.check() == null);
 
     limits = ResourceLimits.standard;
-    limits.scene.clip_depth_max = MAX_CLIP_STACK_DEPTH + 1;
+    limits.paint.clip_depth_max = MAX_CLIP_STACK_DEPTH + 1;
     try std.testing.expectEqualStrings("clip_depth_max", limits.check().?.field);
 
     inline for (.{
@@ -1793,12 +1725,12 @@ test "check reports each negative case precisely" {
         "colored_point_count_frame_max",
     }) |field| {
         limits = ResourceLimits.standard;
-        @field(limits.scene, field) = 0;
+        @field(limits.paint, field) = 0;
         try std.testing.expectEqual(Violation.Rule.zero, limits.check().?.rule);
         try std.testing.expectEqualStrings(field, limits.check().?.field);
-        @field(limits.scene, field) = @field(SceneLimits.ceiling, field);
+        @field(limits.paint, field) = @field(PaintLimits.ceiling, field);
         try std.testing.expect(limits.check() == null);
-        @field(limits.scene, field) += 1;
+        @field(limits.paint, field) += 1;
         try std.testing.expectEqual(Violation.Rule.above_ceiling, limits.check().?.rule);
         try std.testing.expectEqualStrings(field, limits.check().?.field);
     }
@@ -1850,37 +1782,41 @@ test "check reports each negative case precisely" {
     // mesh geometry, the shape the removed disktree example declared for a tile
     // map above `.large`. The quad count is exact at the ceiling and one past fails.
     limits = ResourceLimits.large;
-    limits.scene.quad_count_frame_max = SceneLimits.ceiling.quad_count_frame_max;
+    limits.paint.quad_count_frame_max = PaintLimits.ceiling.quad_count_frame_max;
     inline for (.{
         "path_vertex_count_frame_max",    "path_index_count_frame_max",
         "polyline_point_count_frame_max", "point_count_frame_max",
         "colored_point_count_frame_max",
     }) |field| {
-        @field(limits.scene, field) = @field(SceneLimits.standard, field);
+        @field(limits.paint, field) = @field(PaintLimits.standard, field);
     }
     try std.testing.expect(limits.check() == null);
-    limits.scene.quad_count_frame_max += 1;
+    limits.paint.quad_count_frame_max += 1;
     try std.testing.expectEqual(Violation.Rule.above_ceiling, limits.check().?.rule);
     try std.testing.expectEqualStrings("quad_count_frame_max", limits.check().?.field);
 }
 
 test "derived budget quantities" {
     // Goal: pin the relationships other subsystems size from, and keep the
-    // per-scene sizes documented on each rung honest.
-    const scene = SceneLimits.standard;
-    try std.testing.expectEqual(@as(u32, 8_192), scene.sortKeyCountMax());
-    try std.testing.expectEqual(@as(u32, 4_608), scene.unifiedPrimitiveCountMax());
-    try std.testing.expectEqual(@as(u32, 272), SceneLimits.nano.unifiedPrimitiveCountMax());
-    try std.testing.expectEqual(MAX_SORT_KEYS, SceneLimits.ceiling.sortKeyCountMax());
+    // per-window sizes documented on each rung honest.
+    // Shadows are packed as quads, so the quad pool holds both budgets.
+    const paint = PaintLimits.standard;
+    try std.testing.expectEqual(@as(u32, 4_608), packed_frame.quadCapacity(&paint));
+    try std.testing.expectEqual(@as(u32, 272), packed_frame.quadCapacity(&PaintLimits.nano));
     const rungs = ResourceLimits.profile_names;
     inline for (rungs[0 .. rungs.len - 1], rungs[1..]) |lower_name, upper_name| {
-        const lower_bytes = @field(SceneLimits, lower_name).sceneBytes();
-        try std.testing.expect(lower_bytes < @field(SceneLimits, upper_name).sceneBytes());
+        const lower_bytes = @field(PaintLimits, lower_name).paintBytes();
+        try std.testing.expect(lower_bytes < @field(PaintLimits, upper_name).paintBytes());
     }
-    try std.testing.expect(SceneLimits.nano.sceneBytes() < 128 * 1024);
-    try std.testing.expect(SceneLimits.small.sceneBytes() < 576 * 1024);
-    try std.testing.expect(scene.sceneBytes() < 1_843 * 1024);
-    try std.testing.expect(SceneLimits.large.sceneBytes() < 12 * 1024 * 1024);
+    // `nano` worked by hand from the packed frame's layouts: 272 quads and
+    // 1,044 sprites at 96 B, 24 meshes at 32 B, 341 edge-mode words at 4 B, an
+    // edge table of 1,537 slots at 20 B, and two records frames of 3,072 mesh
+    // points at 8 B.
+    const nano_bytes = 272 * 96 + 1_044 * 96 + 24 * 32 + 341 * 4 + 1_537 * 20 + 2 * 3_072 * 8;
+    try std.testing.expectEqual(@as(u64, nano_bytes), PaintLimits.nano.paintBytes());
+    try std.testing.expect(PaintLimits.small.paintBytes() < 1_142 * 1024);
+    try std.testing.expect(paint.paintBytes() < 2_894 * 1024);
+    try std.testing.expect(PaintLimits.large.paintBytes() < 34 * 1024 * 1024);
 }
 
 test "FontLimits.check names the broken family" {

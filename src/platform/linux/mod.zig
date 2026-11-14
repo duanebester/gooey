@@ -52,9 +52,6 @@ pub const wayland = @import("wayland.zig");
 // Input handling
 pub const input = @import("input.zig");
 
-// Shared GPU primitives (same as web)
-pub const unified = @import("../unified.zig");
-
 // The names `platform/mod.zig` aliases as `Platform` and `PlatformWindow`.
 pub const Platform = platform.LinuxPlatform;
 pub const PlatformWindow = window.Window;

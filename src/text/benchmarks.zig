@@ -60,12 +60,6 @@ const TextSystem = text.TextSystem;
 const ShapedRunCache = text.ShapedRunCache;
 const ShapedGlyph = text.ShapedGlyph;
 const CachedGlyph = text.CachedGlyph;
-const renderText = text.renderText;
-const RenderTextOptions = text.RenderTextOptions;
-
-const scene_mod = gooey.internals.scene;
-const Scene = scene_mod.Scene;
-const Hsla = scene_mod.Hsla;
 
 // =============================================================================
 // Benchmark Configuration
@@ -749,7 +743,7 @@ fn benchShapeWarmArena(
 /// Benchmark warm text shaping with shapeTextInto and a stack-allocated glyph
 /// buffer.  On a cache hit, shapeTextInto copies glyphs into the caller's
 /// buffer (owned=false) — no heap allocation or free at all.  This is the
-/// pattern used by renderText after the zero-alloc optimization.
+/// pattern placeText uses after the zero-alloc optimization.
 fn benchShapeWarmInto(
     text_sys: *TextSystem,
     comptime name: []const u8,
@@ -1342,99 +1336,6 @@ fn benchGlyphRasterWarmBatch(
 }
 
 // =============================================================================
-// End-to-End renderText Benchmark
-// =============================================================================
-
-/// Benchmark the full renderText pipeline end-to-end: shape (warm cache) →
-/// compute device positions → batch glyph resolve (single lock) → emit to scene.
-/// Measures real-world text rendering cost including Scene interaction.
-///
-/// Each iteration calls renderText `repetitions` times into a pre-allocated
-/// scene.  The scene is cleared outside the timed region between iterations
-/// to avoid measuring reset cost.  Operation count = repetitions (one
-/// renderText call = one operation).
-fn benchRenderText(
-    text_sys: *TextSystem,
-    allocator: std.mem.Allocator,
-    comptime name: []const u8,
-    input_text: []const u8,
-    font_size: f32,
-    comptime repetitions: u32,
-) BenchmarkResult {
-    std.debug.assert(input_text.len > 0);
-    std.debug.assert(font_size > 0);
-    std.debug.assert(repetitions > 0);
-
-    const operation_count: u32 = repetitions;
-    const min_iters = getMinSampleIterations(operation_count);
-    const scale_factor: f32 = 1.0;
-    const color = Hsla.init(0, 0, 1, 1); // White.
-    const baseline_y: f32 = 20.0;
-
-    // Pre-allocate scene capacity so append is a pointer bump, not an alloc.
-    const limits = &gooey.internals.scene.SceneLimits.ceiling;
-    var scene = Scene.initCapacity(allocator, limits) catch |err| {
-        std.debug.print("  !! {s}: Scene.initCapacity failed: {s} — skipping benchmark\n", .{ name, @errorName(err) });
-        return .{
-            .name = name,
-            .operation_count = operation_count,
-            .total_time_ns = 0,
-            .iterations = 0,
-            .min_per_op_ns = 0,
-            .p50_per_op_ns = 0,
-            .p99_per_op_ns = 0,
-        };
-    };
-    defer scene.deinit();
-
-    var options = RenderTextOptions{};
-
-    // Prime: warm the shape cache and glyph cache.
-    for (0..getWarmupIterations(operation_count)) |_| {
-        scene.clear();
-        for (0..repetitions) |_| {
-            _ = renderText(&scene, text_sys, input_text, 0, baseline_y, scale_factor, color, font_size, &options) catch unreachable;
-        }
-    }
-
-    // Timed sampling.
-    var total_time_ns: u64 = 0;
-    var iterations: u32 = 0;
-    var samples = IterationSamples.init();
-    var last_width: f32 = 0;
-
-    while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iters) {
-        scene.clear(); // Outside timed region — constant cost, not text-rendering cost.
-
-        const start = time.Instant.now();
-        for (0..repetitions) |_| {
-            last_width = renderText(&scene, text_sys, input_text, 0, baseline_y, scale_factor, color, font_size, &options) catch unreachable;
-        }
-        const end = time.Instant.now();
-
-        const elapsed = end.since(start);
-        total_time_ns += elapsed;
-        samples.record(elapsed);
-        iterations += 1;
-    }
-
-    std.debug.assert(last_width > 0);
-    std.debug.assert(iterations >= min_iters);
-    std.debug.assert(scene.glyphs.items.len > 0); // Scene received glyphs.
-    const percentiles = samples.computePercentiles(operation_count);
-
-    return .{
-        .name = name,
-        .operation_count = operation_count,
-        .total_time_ns = total_time_ns,
-        .iterations = iterations,
-        .min_per_op_ns = percentiles.min_per_op_ns,
-        .p50_per_op_ns = percentiles.p50_per_op_ns,
-        .p99_per_op_ns = percentiles.p99_per_op_ns,
-    };
-}
-
-// =============================================================================
 // Validation Tests — Atlas
 // =============================================================================
 
@@ -1717,31 +1618,6 @@ test "validate: resolveGlyphBatch matches per-glyph lookups" {
     }
 }
 
-test "validate: renderText produces glyphs in scene" {
-    const allocator = std.testing.allocator;
-    const ts = createTestTextSystem(allocator) orelse return;
-    defer destroyTestTextSystem(allocator, ts);
-
-    var scene = try Scene.initCapacity(allocator, &gooey.internals.scene.SceneLimits.standard);
-    defer scene.deinit();
-
-    var options = RenderTextOptions{};
-    const width = renderText(
-        &scene,
-        ts,
-        TEXT_SHORT,
-        0,
-        20.0,
-        1.0,
-        Hsla.init(0, 0, 1, 1),
-        BENCH_FONT_SIZE,
-        &options,
-    ) catch return;
-
-    try std.testing.expect(width > 0);
-    try std.testing.expect(scene.glyphs.items.len > 0);
-}
-
 test "validate: extractUniqueGlyphIds deduplicates correctly" {
     // Fabricate a small array of ShapedGlyphs with known glyph IDs.
     const glyphs = [_]text.ShapedGlyph{
@@ -1947,20 +1823,6 @@ fn printGlyphBenchmarks(text_sys: *TextSystem, glyph_ids: []const u16, reporter:
     std.debug.print(&@as([TABLE_WIDTH]u8, @splat('=')) ++ "\n", .{});
 }
 
-/// Print end-to-end renderText benchmarks at short/medium/long text lengths.
-/// Exercises the full pipeline: shape (warm) → device positions → batch glyph
-/// resolve → scene emission.  Scene is pre-allocated; measures steady-state cost.
-fn printRenderTextBenchmarks(text_sys: *TextSystem, allocator: std.mem.Allocator, reporter: *bench.Reporter) void {
-    std.debug.assert(text_sys.getMetrics() != null);
-    std.debug.assert(text_sys.scale_factor > 0);
-
-    printSectionHeader("Gooey Text Benchmarks \u{2014} renderText End-to-End (warm cache, full pipeline)");
-    collect(reporter, benchRenderText(text_sys, allocator, "render_text_short_13ch_x50", TEXT_SHORT, BENCH_FONT_SIZE, 50));
-    collect(reporter, benchRenderText(text_sys, allocator, "render_text_medium_50ch_x50", TEXT_MEDIUM, BENCH_FONT_SIZE, 50));
-    collect(reporter, benchRenderText(text_sys, allocator, "render_text_long_104ch_x50", TEXT_LONG, BENCH_FONT_SIZE, 50));
-    std.debug.print(&@as([TABLE_WIDTH]u8, @splat('=')) ++ "\n", .{});
-}
-
 /// Print shaping scaling analysis (cold shaping at increasing text lengths).
 fn printScalingBenchmarks(text_sys: *TextSystem, reporter: *bench.Reporter) void {
     std.debug.assert(text_sys.getMetrics() != null);
@@ -1986,23 +1848,20 @@ fn printTextPipelineNotes() void {
         \\    Compare warm (GPA) vs warm (arena) to see how much GPA dominates the warm path.
         \\  - Shape warm into = shapeTextInto() with a stack-allocated glyph buffer.
         \\    Zero heap allocation on cache hit: memcpy into caller's buffer, owned=false.
-        \\    This is the pattern used by renderText for zero-alloc warm-path rendering.
+        \\    This is the pattern placeText uses for zero-alloc warm-path rendering.
         \\  - Measure = measureText() which calls shapeText() internally.
         \\  - Measure wrapped = measureTextEx() with max_width constraint (line-breaking).
         \\  - Glyph cold = clear glyph cache, then rasterize all printable ASCII glyphs.
         \\  - Glyph warm = all glyphs pre-cached, pure hash table lookups (subpixel_x=0).
         \\    Iterates a compact u16 glyph ID array (best-case memory layout).
         \\  - Glyph warm per-glyph = same as warm, but iterates ShapedGlyph structs (44 bytes
-        \\    each) with per-glyph mutex lock/unlock.  Matches renderText's real data layout.
+        \\    each) with per-glyph mutex lock/unlock.  Matches placeText's real data layout.
         \\  - Glyph warm batch = same data layout as per-glyph, but all lookups under one
         \\    mutex lock via resolveGlyphBatch().  Compare per-glyph vs batch to isolate
         \\    the cost of N-1 redundant lock/unlock pairs.
         \\  - Glyph warm subpixel = warm lookups across all 4 horizontal subpixel X offsets.
         \\    Exercises the full cache working set that real rendering produces.
         \\    If ns/op is higher than warm, subpixel diversity is causing capacity pressure.
-        \\  - renderText e2e = full pipeline: shapeTextInto (warm) → computeGlyphDevicePositions
-        \\    → resolveGlyphBatch (single lock) → emitGlyphsToScene.  Scene is pre-allocated.
-        \\    This is the number to watch when optimizing text rendering throughput.
         \\  - Scaling = cold shaping at increasing text lengths to reveal linear vs super-linear cost.
         \\    Time/Op = ns per shape call.  Divide by character count for ns/char.
         \\  - Cold benchmarks report op_count = 1 (single shape per iteration, many iterations).
@@ -2060,9 +1919,6 @@ fn runTextPipelineBenchmarks(gpa: std.mem.Allocator, reporter: *bench.Reporter) 
         printable_ascii.len,
     });
     printGlyphBenchmarks(text_sys, unique_glyphs.ids[0..unique_glyphs.count], reporter);
-
-    // --- End-to-end renderText ---
-    printRenderTextBenchmarks(text_sys, gpa, reporter);
 
     // --- Scaling analysis ---
     printScalingBenchmarks(text_sys, reporter);

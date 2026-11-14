@@ -290,7 +290,7 @@ const CoreApp = struct {
     }
 
     fn paintLongPolyline(_: *const u8, painter: *gooey.ui.Painter) void {
-        const count = gooey.ResourceLimits.nano.scene.polyline_point_count_frame_max + 1;
+        const count = gooey.ResourceLimits.nano.paint.polyline_point_count_frame_max + 1;
         const points = comptime blk: {
             @setEvalBranchQuota(4 * count);
             var result: [count][2]f32 = undefined;
@@ -307,7 +307,7 @@ const CoreApp = struct {
 
     /// Exactly `nano`'s polylines, then one more.
     fn paintManyPolylines(_: *const u8, painter: *gooey.ui.Painter) void {
-        const count = gooey.ResourceLimits.nano.scene.polyline_count_frame_max + 1;
+        const count = gooey.ResourceLimits.nano.paint.polyline_count_frame_max + 1;
         const points = [2][2]f32{ .{ 0, 0 }, .{ 10, 10 } };
         for (0..count) |_| painter.polyline(&points, 1, gooey.ui.Color.rgb(1, 1, 1));
     }
@@ -438,7 +438,7 @@ fn corePackRecords(gpa: std.mem.Allocator, pool: enum { draws, clips }) void {
         std.debug.panic("setup: PackedFrame allocation failed: {s}", .{@errorName(err)});
     };
     target.initInPlace(&.{
-        .scene = internals.limits.SceneLimits.nano,
+        .paint = internals.limits.PaintLimits.nano,
         .paint_record_count_max = record_count_max,
     }) catch |err| {
         std.debug.panic("setup: PackedFrame.initInPlace failed: {s}", .{@errorName(err)});
@@ -496,7 +496,7 @@ fn coreCapabilitiesMeshes(gpa: std.mem.Allocator) void {
         std.debug.panic("setup: PackedFrame allocation failed: {s}", .{@errorName(err)});
     };
     target.initInPlace(&.{
-        .scene = internals.limits.SceneLimits.nano,
+        .paint = internals.limits.PaintLimits.nano,
         .paint_record_count_max = 4,
     }) catch |err| {
         std.debug.panic("setup: PackedFrame.initInPlace failed: {s}", .{@errorName(err)});
