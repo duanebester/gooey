@@ -193,6 +193,13 @@ pub const HitRecord = struct {
     /// `Box.on_pointer_drag`: a press here or on a child without one
     /// captures the pointer for this record (contract §5).
     on_pointer_drag: u32,
+    /// `Box.draggable`: the payload's `typeId` (0 for none) and the payload.
+    drag_type: usize,
+    drag_payload: u64,
+    /// `Box.drop_target`: the accepted `typeId` (0 for none) and its
+    /// `on_drop` handler.
+    drop_type: usize,
+    on_drop: u32,
     /// `KeyContext.hash`, or 0 for none.
     key_context: u64,
     /// `Box.actions`: handlers `[actions_start, actions_start + actions_len)`,

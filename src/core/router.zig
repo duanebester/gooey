@@ -34,6 +34,7 @@ const assert = std.debug.assert;
 
 const Window = window_mod.Window;
 const Capture = window_mod.Capture;
+const Drag = window_mod.Drag;
 const PointerDrag = handler_mod.Effects.PointerDrag;
 const ElementId = records.ElementId;
 const index_none = records.index_none;
@@ -132,6 +133,15 @@ fn routeInput(window: *Window, event: *const input.InputEvent) void {
             if (window.capture.id != .root and window.capture.button == mouse.button) {
                 finishCapture(window, event, .end, point);
             }
+            if (window.drag.phase != .idle and window.drag.button == mouse.button) {
+                // A started drag drops and clicks nothing; an armed one never
+                // moved, so its press clicks as usual.
+                if (window.drag.phase == .active) {
+                    drop(window, event, point);
+                    return;
+                }
+                window.drag = Drag.idle;
+            }
             release(window, event, point);
         },
         // An entry carries a real position: AppKit holds back the entry of
@@ -143,6 +153,7 @@ fn routeInput(window: *Window, event: *const input.InputEvent) void {
             window.pointer = .{ .x = point.x, .y = point.y };
             if (window.scroll_drag != .root) dragScrollbar(window, point);
             if (window.capture.id != .root) moveCapture(window, event, point);
+            if (window.drag.phase != .idle) moveDrag(window, point);
             updateHover(window);
             debugger.pointerMoved(window);
         },
@@ -152,11 +163,16 @@ fn routeInput(window: *Window, event: *const input.InputEvent) void {
             debugger.pointerMoved(window);
         },
         .key_down => |key| {
-            // Escape cancels a capture and goes no further, as a drag's does.
+            // Escape cancels a capture or a drag and goes no further, as
+            // 0.3.1's drag did.
             if (key.key == .escape and window.capture.id != .root) {
                 finishCapture(window, event, .cancel, capturePoint(window));
             } else {
-                keyToFocus(window, event);
+                if (key.key == .escape and window.drag.phase != .idle) {
+                    cancelDrag(window);
+                } else {
+                    keyToFocus(window, event);
+                }
             }
         },
         .key_up, .text_input, .composition => keyToFocus(window, event),
@@ -166,6 +182,7 @@ fn routeInput(window: *Window, event: *const input.InputEvent) void {
             if (window.capture.id != .root) {
                 finishCapture(window, event, .cancel, capturePoint(window));
             }
+            if (window.drag.phase != .idle) cancelDrag(window);
             window.press_len = 0;
         },
         else => {},
@@ -186,18 +203,26 @@ fn press(window: *Window, event: *const input.InputEvent, point: Point) void {
     const target = hitIndex(frame, point);
     if (pressScrollbar(window, target, point)) return;
     window.press_len = pathOf(frame, target, window.press_path);
-    // A second button pressed during a capture clicks as usual but does
-    // not take the capture over.
-    const capturing = if (window.capture.id == .root) captureIndex(frame, target) else index_none;
-    if (capturing != index_none) {
-        window.capture = .{
-            .id = frame.hits[capturing].id,
-            .button = event.mouse_down.button,
-            .start_x = point.x,
-            .start_y = point.y,
-            .moved = false,
-            .cursor = cursorOf(frame, target),
-        };
+    // A second button pressed during a gesture clicks as usual but does
+    // not take the gesture over.
+    const idle = window.capture.id == .root and window.drag.phase == .idle;
+    const gesture = if (idle) gestureIndex(frame, target) else index_none;
+    var capturing = false;
+    if (gesture != index_none) {
+        const record = &frame.hits[gesture];
+        if (record.on_pointer_drag != index_none) {
+            capturing = true;
+            window.capture = .{
+                .id = record.id,
+                .button = event.mouse_down.button,
+                .start_x = point.x,
+                .start_y = point.y,
+                .moved = false,
+                .cursor = cursorOf(frame, target),
+            };
+        } else {
+            armDrag(window, record, event.mouse_down.button, point);
+        }
     }
     clickOutside(window, event, target);
     var focus_id: ElementId = .root;
@@ -212,7 +237,7 @@ fn press(window: *Window, event: *const input.InputEvent, point: Point) void {
         index = frame.hits[index].parent;
     }
     setFocus(window, focus_id, false);
-    if (capturing != index_none) deliverCapture(window, event, .begin, point);
+    if (capturing) deliverCapture(window, event, .begin, point);
 }
 
 /// A release: click handlers bubbling from the record under the pointer,
@@ -238,16 +263,112 @@ fn release(window: *Window, event: *const input.InputEvent, point: Point) void {
     }
 }
 
-/// The innermost record on the press path with `Box.on_pointer_drag`.
-fn captureIndex(frame: *const records.Frame, target: u32) u32 {
+/// The innermost record on the press path with `Box.on_pointer_drag` or
+/// `Box.draggable`; a box has at most one of them (`cx.checkKeyed`).
+fn gestureIndex(frame: *const records.Frame, target: u32) u32 {
     var index = target;
     var depth: u32 = 0;
     while (index != index_none) : (depth += 1) {
         assert(depth <= window_mod.box_depth_ceiling);
-        if (frame.hits[index].on_pointer_drag != index_none) return index;
+        const record = &frame.hits[index];
+        if (record.on_pointer_drag != index_none) return index;
+        if (record.drag_type != 0) return index;
+        index = record.parent;
+    }
+    return index_none;
+}
+
+/// A press on a draggable arms a drag of its payload; nothing renders
+/// until it starts.
+fn armDrag(
+    window: *Window,
+    record: *const records.HitRecord,
+    button: input.MouseButton,
+    point: Point,
+) void {
+    assert(window.drag.phase == .idle);
+    assert(record.drag_type != 0);
+    assert(record.id.isKeyed());
+    window.drag = .{
+        .phase = .armed,
+        .source = record.id,
+        .button = button,
+        .type_id = record.drag_type,
+        .payload = record.drag_payload,
+        .start_x = point.x,
+        .start_y = point.y,
+        .x = point.x,
+        .y = point.y,
+        .over = .root,
+    };
+}
+
+/// An armed drag starts past `click_slop_px` from the press, after which
+/// its release clicks nothing; a started one follows the pointer, and
+/// renders so its preview moves. `updateHover`, which runs next, finds
+/// the target it is `over` from the same hit test as the hover.
+fn moveDrag(window: *Window, point: Point) void {
+    const drag = &window.drag;
+    assert(drag.phase != .idle);
+    if (drag.phase == .armed) {
+        const dx = point.x - drag.start_x;
+        const dy = point.y - drag.start_y;
+        const slop = Capture.click_slop_px;
+        if (dx * dx + dy * dy <= slop * slop) return;
+        drag.phase = .active;
+        window.press_len = 0;
+    }
+    drag.x = point.x;
+    drag.y = point.y;
+    window.render_requested = true;
+    assert(drag.phase == .active);
+}
+
+/// The innermost record on `index`'s path that accepts drops of `type_id`.
+fn dropTargetFrom(frame: *const records.Frame, index_start: u32, type_id: usize) u32 {
+    assert(type_id != 0);
+    var index = index_start;
+    var depth: u32 = 0;
+    while (index != index_none) : (depth += 1) {
+        assert(depth <= window_mod.box_depth_ceiling);
+        if (frame.hits[index].drop_type == type_id) return index;
         index = frame.hits[index].parent;
     }
     return index_none;
+}
+
+/// A release ends a started drag: over a target of its type it calls that
+/// target's `on_drop` with the payload; anywhere else it cancels. The
+/// payload was copied at the press, so it drops even if its source has
+/// stopped rendering since.
+fn drop(window: *Window, event: *const input.InputEvent, point: Point) void {
+    const drag = window.drag;
+    assert(drag.phase == .active);
+    assert(drag.type_id != 0);
+    window.drag = Drag.idle;
+    window.press_len = 0;
+    window.render_requested = true;
+    const frame = window.rendered();
+    const target = dropTargetFrom(frame, hitIndex(frame, point), drag.type_id);
+    updateHover(window);
+    if (target == index_none) return;
+    const record = &frame.hits[target];
+    const handler = frame.handlerAt(record.on_drop).?;
+    var effects = handler_mod.Effects.init(event, record.id);
+    effects.drop = .{ .type_id = drag.type_id, .payload = drag.payload };
+    call(window, handler, &effects);
+    if (effects.click_request) |id| clickRequested(window, id, event);
+}
+
+/// Escape or a lost gesture: the drag ends with no call, and a started
+/// one renders without its preview.
+fn cancelDrag(window: *Window) void {
+    assert(window.drag.phase != .idle);
+    if (window.drag.phase == .active) window.render_requested = true;
+    window.drag = Drag.idle;
+    window.press_len = 0;
+    updateHover(window);
+    assert(window.drag.over == .root);
 }
 
 /// A capture's pointer move. Past `click_slop_px` from the press the
@@ -804,11 +925,27 @@ pub fn updateHover(window: *Window) void {
     const captured = window.capture.id != .root;
     window.cursor = if (captured) window.capture.cursor else cursorOf(frame, target);
     if (len == 0 and !captured) assert(window.cursor == .default);
+    updateOver(window, frame, target);
     const same = len == window.hover_len and
         std.mem.eql(ElementId, path[0..len], window.hover_path[0..len]);
     if (same) return;
     @memcpy(window.hover_path[0..len], path[0..len]);
     window.hover_len = len;
+    window.render_requested = true;
+}
+
+/// A started drag's target from the hover's own hit test, so a move costs
+/// one; after a flip, a target that slid under a still pointer becomes it.
+fn updateOver(window: *Window, frame: *const records.Frame, target: u32) void {
+    const drag = &window.drag;
+    if (drag.phase != .active) {
+        assert(drag.over == .root);
+        return;
+    }
+    const found = dropTargetFrom(frame, target, drag.type_id);
+    const over = if (found == index_none) .root else frame.hits[found].id;
+    if (over == drag.over) return;
+    drag.over = over;
     window.render_requested = true;
 }
 

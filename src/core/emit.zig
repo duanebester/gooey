@@ -256,11 +256,24 @@ pub fn emit(window: *Window) void {
 }
 
 /// Accessibility nodes in tree order, whatever fragment paints them, so a
-/// popover's options sit under their combobox for the screen reader.
+/// popover's options sit under their combobox for the screen reader. A
+/// `.drag` layer's subtree adds none: a preview repeats its source, which
+/// the screen reader already has.
 fn emitAccessibility(window: *Window) void {
     const elements = window.layout.elements.items();
+    const nodes = window.nodes[0..window.node_count];
     var a11y_level: [window_mod.box_depth_ceiling + 1]u8 = undefined;
-    for (window.nodes[0..window.node_count], 0..) |*node, index| {
+    var index: u32 = 0;
+    while (index < nodes.len) : (index += 1) {
+        const node = &nodes[index];
+        if (node.layer) |layer| {
+            if (layer.kind == .drag) {
+                const end = subtreeEnd(nodes, index);
+                assert(end > index);
+                index = end - 1;
+                continue;
+            }
+        }
         if (node.kind == .text) continue;
         const depth = node.depth;
         assert(depth <= window.limits.build.box_depth_max);
@@ -281,8 +294,13 @@ fn emitFragment(window: *Window, layers_open: *LayerQueue, root: *const LayerRoo
     var hit_scope: [window_mod.box_depth_ceiling + 1]u32 = undefined;
     var clips = Clips{ .entries = undefined, .len = 0, .base = root.clip };
     if (root.clip) |rect| window.built().appendPaint(.{ .clip_push = rect });
+    // A drag preview follows the pointer, so it never takes it: the target
+    // under it stays the drop target, and its records still bubble.
+    var takes_pointer = true;
     if (root.fragment != layers.content_fragment) {
-        if (nodes[root.node_index].layer.?.kind == .modal) blockEarlierHits(window.built());
+        const kind = nodes[root.node_index].layer.?.kind;
+        if (kind == .modal) blockEarlierHits(window.built());
+        takes_pointer = kind != .drag;
     }
     var ring: ?FocusRing = null;
     var index = root.node_index;
@@ -309,6 +327,7 @@ fn emitFragment(window: *Window, layers_open: *LayerQueue, root: *const LayerRoo
                 hit_scope[depth] = emitHit(window, node, hit_bounds, .{
                     .parent = parent_hit,
                     .fragment = root.fragment,
+                    .takes_pointer = takes_pointer,
                 });
                 if (window.focus_visible and node.focusable and window.isFocused(node.id)) {
                     ring = focusRing(window, &clips, node, bounds);
@@ -739,7 +758,8 @@ fn emitAppearance(window: *Window, node: *const Node, bounds: Rect) void {
 
 /// `parent` is the nearest enclosing hit record: for a layer's box, the
 /// opener's, so clicks inside a popover count as inside its opener.
-const HitPlace = struct { parent: u32, fragment: u8 };
+/// `takes_pointer` is false in a `.drag` fragment.
+const HitPlace = struct { parent: u32, fragment: u8, takes_pointer: bool };
 
 fn emitHit(window: *Window, node: *const Node, bounds: Rect, place: HitPlace) u32 {
     if (!node.hit) return place.parent;
@@ -748,12 +768,15 @@ fn emitHit(window: *Window, node: *const Node, bounds: Rect, place: HitPlace) u3
         node.key_context != 0 or node.actions_len > 0 or node.scroll != null or
         node.cursor != null);
     if (node.on_pointer_drag != index_none) assert(node.id.isKeyed());
+    if (node.drag_type != 0) assert(node.id.isKeyed());
+    if (node.drop_type != 0) assert(node.id.isKeyed());
+    if (node.drop_type != 0) assert(node.on_drop != index_none);
     return window.built().appendHit(.{
         .id = node.id,
         .bounds = bounds,
         .fragment = place.fragment,
         .parent = place.parent,
-        .pointer = node.pointer,
+        .pointer = node.pointer and place.takes_pointer,
         .focusable = node.focusable,
         .tab_stop = node.tab_stop,
         .scroll = node.scroll != null,
@@ -762,6 +785,10 @@ fn emitHit(window: *Window, node: *const Node, bounds: Rect, place: HitPlace) u3
         .on_click_outside = node.on_click_outside,
         .on_key = node.on_key,
         .on_pointer_drag = node.on_pointer_drag,
+        .drag_type = node.drag_type,
+        .drag_payload = node.drag_payload,
+        .drop_type = node.drop_type,
+        .on_drop = node.on_drop,
         .key_context = node.key_context,
         .actions_start = node.actions_start,
         .actions_len = node.actions_len,

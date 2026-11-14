@@ -239,6 +239,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "code-editor", .source = "src/examples/code_editor.zig" },
             .{ .name = "dashboard", .source = "src/examples/dashboard.zig" },
             .{ .name = "splitter", .source = "src/examples/splitter.zig" },
+            .{ .name = "drag-drop", .source = "src/examples/drag_drop.zig" },
         };
         // `zig build run` runs todo, the default example (contract decision 15).
         var todo_exe: ?*std.Build.Step.Compile = null;
@@ -618,6 +619,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "data-table", .source = "src/examples/data_table_example.zig" },
             .{ .name = "dashboard", .source = "src/examples/dashboard.zig" },
             .{ .name = "splitter", .source = "src/examples/splitter.zig" },
+            .{ .name = "drag-drop", .source = "src/examples/drag_drop.zig" },
         };
         // `zig build run` runs todo, the default example (contract decision 15).
         var todo_install: ?*std.Build.Step.InstallArtifact = null;
@@ -970,6 +972,7 @@ fn addWindowsBuilds(
         .{ .name = "layout", .source = "src/examples/layout.zig" },
         .{ .name = "dynamic-counters", .source = "src/examples/dynamic_counters.zig" },
         .{ .name = "splitter", .source = "src/examples/splitter.zig" },
+        .{ .name = "drag-drop", .source = "src/examples/drag_drop.zig" },
     };
     for (examples) |example| {
         addWindowsExample(
@@ -1280,6 +1283,7 @@ fn addMacosCoreExampleTypecheck(
         "images",
         "animation",
         "splitter",
+        "drag_drop",
     };
     for (examples) |name| {
         const exe = b.addExecutable(.{
@@ -1446,6 +1450,10 @@ fn addFailFastChecks(
             "finite and greater than 0" },
         .{ .mode = "core-pointer-drag-unkeyed", .stderr = "Box.on_pointer_drag needs a key " ++
             "(contract §5): box at fail_fast_check.zig:" },
+        .{ .mode = "core-drag-unkeyed", .stderr = "Box.draggable needs a key " ++
+            "(contract §5): box at fail_fast_check.zig:" },
+        .{ .mode = "core-drag-both", .stderr = "Box.draggable and Box.on_pointer_drag on one " ++
+            "box; a press starts one gesture (contract §5): box at fail_fast_check.zig:" },
         .{ .mode = "core-dialog-target", .stderr = "file dialog on_complete targets " ++
             "fail_fast_check.CoreApp.Stranger; the root state is fail_fast_check.CoreState" },
         .{ .mode = "core-dialog-paths", .stderr = "file dialog selected 17 paths: " ++
@@ -2043,6 +2051,12 @@ fn addGoldens(
         .optimize = optimize,
         .imports = example_imports,
     });
+    const drag_drop_mod = b.createModule(.{
+        .root_source_file = b.path("src/examples/drag_drop.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = example_imports,
+    });
     const goldens_imports: []const std.Build.Module.Import = &.{
         .{ .name = "accessible_form_example", .module = accessible_form_mod },
         .{ .name = "actions_example", .module = actions_mod },
@@ -2054,6 +2068,7 @@ fn addGoldens(
         .{ .name = "gooey", .module = gooey_mod },
         .{ .name = "gooey-components", .module = components_mod },
         .{ .name = "counter_example", .module = counter_mod },
+        .{ .name = "drag_drop_example", .module = drag_drop_mod },
         .{ .name = "images_example", .module = images_mod },
         .{ .name = "lucide_example", .module = lucide_mod },
         .{ .name = "nested_overlay_example", .module = nested_overlay_mod },

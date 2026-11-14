@@ -31,6 +31,19 @@ pub const Window = window_mod.Window;
 const Node = window_mod.Node;
 const index_none = records.index_none;
 
+/// What `Cx.drag` reports about a drag in progress (contract §5).
+pub fn Drag(comptime T: type) type {
+    return struct {
+        payload: T,
+        /// The drop target of this payload type under the pointer, or
+        /// `.root` over none.
+        over: ElementId,
+        /// The pointer, in window coordinates; it may lie outside the window.
+        x: f32,
+        y: f32,
+    };
+}
+
 pub const Cx = struct {
     window: *Window,
 
@@ -87,6 +100,23 @@ pub const Cx = struct {
 
     pub fn focused(self: *const Cx, target: ElementId) bool {
         return self.window.isFocused(target);
+    }
+
+    /// The drag in progress, once past its threshold, if its payload is a
+    /// `T`: for dimming its source, restyling the target it is `over`, and
+    /// placing a preview at `x`, `y` on a `.drag` layer.
+    pub fn drag(self: *const Cx, comptime T: type) ?Drag(T) {
+        const active = &self.window.drag;
+        if (active.phase != .active) return null;
+        assert(active.type_id != 0);
+        if (active.type_id != handler_mod.typeId(T)) return null;
+        assert(std.math.isFinite(active.x));
+        return .{
+            .payload = handler_mod.unpackArg(T, active.payload),
+            .over = active.over,
+            .x = active.x,
+            .y = active.y,
+        };
     }
 
     /// Build a handler for `method` (contract §4). Its state is the root
@@ -265,12 +295,23 @@ pub const Cx = struct {
         node.on_click_outside = handlerIndex(frame, box.on_click_outside);
         node.on_key = handlerIndex(frame, box.on_key);
         node.on_pointer_drag = handlerIndex(frame, box.on_pointer_drag);
+        if (box.draggable) |source| {
+            assert(source.type_id != 0);
+            node.drag_type = source.type_id;
+            node.drag_payload = source.payload;
+        }
+        if (box.drop_target) |target| {
+            assert(target.type_id != 0);
+            node.drop_type = target.type_id;
+            node.on_drop = frame.appendHandler(target.on_drop);
+        }
         node.key_context = if (box.key_context) |key_context| key_context.hash else 0;
         node.actions_start = frame.handler_count;
         for (box.actions) |binding| _ = frame.appendAction(binding.action, binding.handler);
         node.actions_len = @intCast(box.actions.len);
         node.cursor = box.style.cursor;
-        // `on_pointer_drag` requires a key (`checkKeyed`), so it takes a record.
+        // `on_pointer_drag`, `draggable`, and `drop_target` require a key
+        // (`checkKeyed`), so each takes a record.
         node.hit = box.key != null or scroll != null or box.focusable or box.on_click != null or
             box.on_click_outside != null or box.on_key != null or
             box.key_context != null or box.actions.len > 0 or box.style.cursor != null;
@@ -388,9 +429,9 @@ fn noteDepth(window: *Window) void {
 fn checkLayer(box: *const element.Box) void {
     if (box.layer) |layer| {
         switch (layer.kind) {
-            .popover, .modal => {},
-            .tooltip, .drag => std.debug.panic("Box.layer .{t}: only .popover and .modal " ++
-                "layers are implemented (contract decision 13)", .{layer.kind}),
+            .popover, .modal, .drag => {},
+            .tooltip => std.debug.panic("Box.layer .tooltip: only .popover, .modal, and " ++
+                ".drag layers are implemented (contract decision 13)", .{}),
         }
     }
 }
@@ -421,13 +462,14 @@ fn copyA11y(frame: *records.Frame, a11y: *const element.A11y) window_mod.A11yBui
     };
 }
 
-/// A pointer capture finds its box again by id at every step, which only a
-/// key keeps stable across frames: an auto id is a sibling position, so it
-/// could name another box after the rows above it change.
+/// A pointer capture finds its box again by id at every step, and a drag
+/// names its source and the target it is `over` by id, which only a key
+/// keeps stable across frames: an auto id is a sibling position, so it
+/// could name another box after the rows above it change. A press arms
+/// either a capture or a drag, so one box cannot ask for both.
 fn checkKeyed(window: *const Window, box: *const element.Box) void {
-    if (box.key != null) return;
-    if (box.on_pointer_drag == null) return;
-    const message = "Box.on_pointer_drag needs a key (contract §5)";
+    const message = gestureMisuse(box) orelse return;
+    assert(message.len > 0);
     if (box.style.source) |source| {
         std.debug.panic("{s}: box at {s}:{d} in frame {d}", .{
             message,
@@ -440,6 +482,19 @@ fn checkKeyed(window: *const Window, box: *const element.Box) void {
         message,
         window.frame_number,
     });
+}
+
+/// What is wrong with a box's gesture fields, or null when nothing is.
+fn gestureMisuse(box: *const element.Box) ?[]const u8 {
+    if (box.draggable != null and box.on_pointer_drag != null) {
+        return "Box.draggable and Box.on_pointer_drag on one box; a press starts one " ++
+            "gesture (contract §5)";
+    }
+    if (box.key != null) return null;
+    if (box.on_pointer_drag != null) return "Box.on_pointer_drag needs a key (contract §5)";
+    if (box.draggable != null) return "Box.draggable needs a key (contract §5)";
+    if (box.drop_target != null) return "Box.drop_target needs a key (contract §5)";
+    return null;
 }
 
 fn resolveId(window: *Window, parent_index: u32, key: ?Key) ElementId {
@@ -499,6 +554,10 @@ fn addNode(window: *Window, kind: window_mod.NodeKind, node_id: ElementId) u32 {
         .on_click_outside = index_none,
         .on_key = index_none,
         .on_pointer_drag = index_none,
+        .drag_type = 0,
+        .drag_payload = 0,
+        .drop_type = 0,
+        .on_drop = index_none,
         .key_context = 0,
         .actions_start = 0,
         .actions_len = 0,

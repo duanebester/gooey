@@ -31,6 +31,8 @@
 //! - `core-opacity-range`: a box whose `Style.opacity` is just above 1.
 //! - `core-grow-weight`: a box that grows with a weight of 0.
 //! - `core-pointer-drag-unkeyed`: a box with `on_pointer_drag` and no key.
+//! - `core-drag-unkeyed`: a box with `draggable` and no key.
+//! - `core-drag-both`: a keyed box with both `draggable` and `on_pointer_drag`.
 //! - `core-dialog-target`: names a non-root state as a file dialog's completion handler.
 //! - `core-dialog-paths`: a dialog selects one path more than `dialog_path_count_max`.
 //! - `core-mono-unset`: draws `.family = .mono` text in an app with no `fonts.mono`.
@@ -72,6 +74,8 @@ const Mode = enum {
     @"core-opacity-range",
     @"core-grow-weight",
     @"core-pointer-drag-unkeyed",
+    @"core-drag-unkeyed",
+    @"core-drag-both",
     @"core-dialog-target",
     @"core-dialog-paths",
     @"core-mono-unset",
@@ -109,6 +113,8 @@ pub fn main(init: std.process.Init) !void {
         .@"core-opacity-range" => coreTick(init.gpa, init.io, CoreApp.opacityRange),
         .@"core-grow-weight" => coreTick(init.gpa, init.io, CoreApp.growWeight),
         .@"core-pointer-drag-unkeyed" => coreTick(init.gpa, init.io, CoreApp.unkeyedDrag),
+        .@"core-drag-unkeyed" => coreTick(init.gpa, init.io, CoreApp.unkeyedDraggable),
+        .@"core-drag-both" => coreTick(init.gpa, init.io, CoreApp.dragBoth),
         .@"core-dialog-target" => coreDialogTarget(init.gpa, init.io),
         .@"core-dialog-paths" => coreDialogPaths(init.gpa, init.io),
         .@"core-mono-unset" => coreTick(init.gpa, init.io, CoreApp.monoText),
@@ -228,6 +234,24 @@ const CoreApp = struct {
     /// A capture finds its box by id across frames, so it must be keyed.
     fn unkeyedDrag(cx: *gooey.Cx) void {
         cx.render(gooey.ui.box(.{
+            .on_pointer_drag = cx.on(CoreState.dragged, .{}),
+            .style = .{ .source = @src() },
+        }, .{}));
+    }
+
+    /// A drag names its source by id across frames, so it must be keyed.
+    fn unkeyedDraggable(cx: *gooey.Cx) void {
+        cx.render(gooey.ui.box(.{
+            .draggable = .of(u32, 1),
+            .style = .{ .source = @src() },
+        }, .{}));
+    }
+
+    /// A press starts one gesture, so a box cannot ask for two.
+    fn dragBoth(cx: *gooey.Cx) void {
+        cx.render(gooey.ui.box(.{
+            .key = .{ .name = "both" },
+            .draggable = .of(u32, 1),
             .on_pointer_drag = cx.on(CoreState.dragged, .{}),
             .style = .{ .source = @src() },
         }, .{}));

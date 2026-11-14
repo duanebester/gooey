@@ -251,6 +251,10 @@ pub const Effects = struct {
     pointer_drag: ?PointerDrag,
     /// The frame on screen, for `bounds`; set by the router.
     rendered: ?*const records.Frame,
+    /// The payload being dropped, while delivering to `DropTarget.on_drop`.
+    drop: ?Drop,
+
+    pub const Drop = struct { type_id: usize, payload: u64 };
 
     /// One step of a pointer capture (`Box.on_pointer_drag`). Positions are
     /// window coordinates in logical pixels; while the button is held the
@@ -298,6 +302,7 @@ pub const Effects = struct {
             .current = current,
             .pointer_drag = null,
             .rendered = null,
+            .drop = null,
         };
     }
 
@@ -308,6 +313,15 @@ pub const Effects = struct {
 
     /// The pointer capture step being delivered, inside `Box.on_pointer_drag`;
     /// null in any other handler.
+    /// The payload dropped on a `DropTarget`, inside its `on_drop`; null in
+    /// any other handler or when the payload is not a `T`.
+    pub fn dropPayload(self: *const Effects, comptime T: type) ?T {
+        const dropped = self.drop orelse return null;
+        assert(dropped.type_id != 0);
+        if (dropped.type_id != typeId(T)) return null;
+        return unpackArg(T, dropped.payload);
+    }
+
     pub fn pointerDrag(self: *const Effects) ?PointerDrag {
         const drag = self.pointer_drag orelse return null;
         assert(std.math.isFinite(drag.x));
