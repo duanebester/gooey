@@ -6,8 +6,9 @@
 //! characters, dialog paths) is copied into the queue's own bytes at push
 //! (contract rule 6) and stays valid until the drain that delivers it ends.
 //!
-//! Overflow policy: consecutive pointer moves and scroll deltas coalesce.
-//! Any other overflow panics with the queue's name and capacity.
+//! Overflow policy: consecutive pointer moves (with or without the same held
+//! button) and scroll deltas coalesce. Any other overflow panics with the
+//! queue's name and capacity.
 
 const std = @import("std");
 const input = @import("../input/mod.zig");
@@ -164,8 +165,10 @@ pub const EventQueue = struct {
         self.text_len = 0;
     }
 
-    /// Fold a pointer move into a queued move, or a scroll into a queued
-    /// scroll, when it directly follows one.
+    /// Fold a pointer move into a queued move, a held-button move into a
+    /// queued one with the same button, or a scroll into a queued scroll,
+    /// when it directly follows one. Without the held-button rule a drag
+    /// at a 1 kHz mouse fills a 64-event queue in 64 ms of stalled ticks.
     fn coalesce(self: *EventQueue, event: Event) bool {
         if (self.count == 0) return false;
         const last = &self.events[self.count - 1];
@@ -174,6 +177,12 @@ pub const EventQueue = struct {
             .mouse_moved => |moved| {
                 if (last.input != .mouse_moved) return false;
                 last.input.mouse_moved = moved;
+                return true;
+            },
+            .mouse_dragged => |dragged| {
+                if (last.input != .mouse_dragged) return false;
+                if (last.input.mouse_dragged.button != dragged.button) return false;
+                last.input.mouse_dragged = dragged;
                 return true;
             },
             .scroll => |scroll| {
@@ -429,6 +438,22 @@ test "queue coalesces moves and scrolls and copies text" {
     try std.testing.expectEqual(@as(u64, 2), queue.coalesced_count);
     queue.clear();
     try std.testing.expectEqual(@as(usize, 0), queue.pending().len);
+
+    // Held-button moves fold only into a held-button move of the same
+    // button: a right drag after a left one, and a plain move after a drag,
+    // each stay their own event.
+    queue.push(.{ .input = .{ .mouse_dragged = move } });
+    queue.push(.{ .input = .{ .mouse_dragged = moved } });
+    var right = moved;
+    right.button = .right;
+    queue.push(.{ .input = .{ .mouse_dragged = right } });
+    queue.push(.{ .input = .{ .mouse_moved = move } });
+    const drags = queue.pending();
+    try std.testing.expectEqual(@as(usize, 3), drags.len);
+    try std.testing.expectEqual(@as(f64, 9), drags[0].input.mouse_dragged.position.x);
+    try std.testing.expectEqual(input.MouseButton.right, drags[1].input.mouse_dragged.button);
+    try std.testing.expect(drags[2].input == .mouse_moved);
+    try std.testing.expectEqual(@as(u64, 3), queue.coalesced_count);
 }
 
 test "platform text past the free text bytes is cut on a codepoint boundary" {

@@ -652,6 +652,47 @@ test "a scroll box's thumb drags and its track jumps, as 0.3.1's did" {
     try testing.expectEqual(gooey.ElementId.root, app.window.scroll_drag);
 }
 
+const NanoScrollApp = gooey.App(struct {}, scrollRender, .{
+    .title = "Scroll",
+    .width = 300,
+    .height = 300,
+    .limits = .nano,
+});
+
+test "a stalled tick's 300 held-button moves fold into one on a 64-event queue" {
+    // Goal: regression for a crash in 0.5.2, where `mouse_dragged` did not
+    // coalesce, so a held-button drag across one stalled tick overflowed
+    // `.nano`'s 64-event queue and panicked. Methodology: press the scroll
+    // thumb (the drag the core already follows), push 300 moves without a
+    // tick, the last one half the thumb's travel down, then tick once. The
+    // queue holds the press and one move, and the offset is the last move's:
+    // 55 of 110 px, as in the thumb test above.
+    const app = try testing.allocator.create(NanoScrollApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    now += 1;
+    app.tick(now);
+    const box = ScrollView.read(&app.window).outer.bounds;
+    const bar_x = box.x + box.width - 10 + 4;
+    const travel: f32 = 146.0 - 146.0 * 150.0 / 260.0;
+    const move_count: u32 = 300;
+    try testing.expect(move_count > app.window.queue.events.len);
+
+    app.window.queue.push(.{ .input = .{ .mouse_down = mouse(bar_x, box.y + 10) } });
+    for (1..move_count + 1) |step| {
+        const fraction = @as(f32, @floatFromInt(step)) / @as(f32, @floatFromInt(move_count));
+        const y = box.y + 10 + travel / 2 * fraction;
+        app.window.queue.push(.{ .input = .{ .mouse_dragged = mouse(bar_x, y) } });
+    }
+    try testing.expectEqual(@as(u32, 2), app.window.queue.count);
+    now += 1;
+    app.tick(now);
+    try testing.expectApproxEqAbs(@as(f32, 55), ScrollView.read(&app.window).outer_offset, 0.01);
+}
+
 /// A Select in a clipped panel above a button, for the popover check. The
 /// panel is shorter than the open menu, and the menu covers the button.
 const SelectState = struct {
