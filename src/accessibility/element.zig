@@ -57,6 +57,9 @@ pub const Element = struct {
     value_min: ?f32 = null,
     value_max: ?f32 = null,
     value_now: ?f32 = null,
+    /// The axis of a separator, slider, or scrollbar; null leaves it to
+    /// the platform's default for the role.
+    orientation: ?types.Orientation = null,
 
     // =========================================================================
     // Collection info (for lists, tabs, etc.)
@@ -155,6 +158,7 @@ pub const Element = struct {
         if (self.value_now) |vn| h.update(std.mem.asBytes(&vn));
         if (self.value_min) |vm| h.update(std.mem.asBytes(&vm));
         if (self.value_max) |vx| h.update(std.mem.asBytes(&vx));
+        if (self.orientation) |o| h.update(std.mem.asBytes(&o));
 
         // Hash collection info
         if (self.pos_in_set) |p| h.update(std.mem.asBytes(&p));

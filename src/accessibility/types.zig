@@ -320,6 +320,14 @@ pub const Live = enum(u2) {
     }
 };
 
+/// The axis a separator divides along, or a slider or scrollbar moves
+/// along. A `vertical` separator stands between left and right panes, as
+/// ARIA's `aria-orientation` and AppKit's `AXOrientation` say.
+pub const Orientation = enum(u1) {
+    horizontal = 0,
+    vertical = 1,
+};
+
 /// Heading level (1-6, 0 = not a heading)
 /// Using enum instead of u3 to prevent invalid level 7.
 pub const HeadingLevel = enum(u3) {

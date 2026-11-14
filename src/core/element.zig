@@ -26,6 +26,7 @@ pub const Anchor = layers.Anchor;
 pub const Role = a11y_types.Role;
 pub const HeadingLevel = a11y_types.HeadingLevel;
 pub const Live = a11y_types.Live;
+pub const Orientation = a11y_types.Orientation;
 
 pub const Direction = enum { row, column };
 
@@ -210,6 +211,14 @@ pub const A11y = struct {
     /// One-based position among `set_size` siblings, as in a radio group.
     pos_in_set: ?u16 = null,
     set_size: ?u16 = null,
+    /// The position of a focusable separator (a splitter) or a slider within
+    /// its range, which screen readers report beside `value`.
+    range: ?Range = null,
+
+    /// `orientation` is the axis the control divides or moves along: a
+    /// `vertical` splitter stands between left and right panes. VoiceOver
+    /// calls a splitter without one horizontal, so it has no default.
+    pub const Range = struct { min: f32, max: f32, now: f32, orientation: Orientation };
 };
 
 /// Per-instance identity and behaviour (contract §1).
@@ -226,6 +235,13 @@ pub const Box = struct {
     on_click: ?Handler = null,
     on_click_outside: ?Handler = null,
     on_key: ?Handler = null,
+    /// Pointer capture (contract §5): a press on this box, or on a child
+    /// that sets none of its own, calls it with `begin`, then `move` for
+    /// every pointer move until the button is released (`end`) or Escape or
+    /// the platform takes the gesture away (`cancel`), wherever the pointer
+    /// goes. `effects.pointerDrag()` reads the phase and position. A press
+    /// that moves more than 2 px clicks nothing. Requires `key`.
+    on_pointer_drag: ?Handler = null,
     actions: []const ActionBinding = &.{},
     a11y: ?A11y = null,
 

@@ -13,6 +13,7 @@ const animation = @import("animation_example");
 const accessible_form = @import("accessible_form_example");
 const code_editor = @import("code_editor_example");
 const nested_overlay = @import("nested_overlay_example");
+const splitter = @import("splitter_example");
 const dashboard = @import("dashboard_example");
 const dynamic_counters = @import("dynamic_counters_example");
 const images = @import("images_example");
@@ -4246,4 +4247,273 @@ test "pointer_events none passes the pointer to the box below but keeps its keys
     try testing.expectEqual(@as(u32, 2), app.state.overlay_clicks);
     try testing.expectEqual(@as(u32, 1), app.state.below_clicks);
     try testing.expectEqual(CursorShape.text, app.window.cursor);
+}
+
+const SplitterApp = splitter.App;
+const sidebar_splitter_id = gooey.ElementId.root.child(.{ .name = "panes" })
+    .child(.{ .name = "sidebar splitter" });
+const top_splitter_id = gooey.ElementId.root.child(.{ .name = "panes" })
+    .child(.{ .name = "content" }).child(.{ .name = "top splitter" });
+
+fn recordBounds(app: anytype, id: gooey.ElementId) internals.records.Rect {
+    const frame = app.window.rendered();
+    for (frame.hits[0..frame.hit_count]) |*record| {
+        if (record.id == id) return record.bounds;
+    }
+    unreachable;
+}
+
+fn dragged(x: f32, y: f32) gooey.input.InputEvent {
+    return .{ .mouse_dragged = mouse(x, y) };
+}
+
+test "splitter: the sidebar follows a drag from its press, clamped, outside the window too" {
+    // Goal: `Box.on_pointer_drag` through the router, with the cursor held
+    // while captured. Methodology: the sidebar starts 240 px wide, so its
+    // 6 px splitter spans x 240 to 246. Press at x 243 and move by +30: the
+    // width is 270, not 30 (the move applied to nothing) and not 240 (no
+    // move delivered). Move to x -500, outside the window: clamped to 120,
+    // with the resize cursor still showing far off the divider. Release at
+    // x 273: 270 stays, and the cursor resolves from what is under it again.
+    const app = try testing.allocator.create(SplitterApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    const bar = recordBounds(app, sidebar_splitter_id);
+    try testing.expectEqual(@as(f32, 240), bar.x);
+    try testing.expectEqual(splitter.splitter_size, bar.width);
+    const y = bar.y + bar.height / 2;
+
+    scrollMouse(app, &now, .{ .mouse_moved = mouse(243, y) });
+    try testing.expectEqual(CursorShape.resize_left_right, app.window.cursor);
+    scrollMouse(app, &now, .{ .mouse_down = mouse(243, y) });
+    try testing.expectEqual(sidebar_splitter_id, app.window.capture.id);
+    scrollMouse(app, &now, dragged(273, y));
+    try testing.expectEqual(@as(f32, 270), app.state.sidebar_width);
+    try testing.expectEqual(@as(f32, 270), recordBounds(app, sidebar_splitter_id).x);
+    scrollMouse(app, &now, dragged(-500, y));
+    try testing.expectEqual(splitter.sidebar_width_min, app.state.sidebar_width);
+    try testing.expectEqual(CursorShape.resize_left_right, app.window.cursor);
+    scrollMouse(app, &now, dragged(2000, y));
+    try testing.expectEqual(splitter.sidebar_width_max, app.state.sidebar_width);
+    scrollMouse(app, &now, dragged(273, y));
+    scrollMouse(app, &now, .{ .mouse_up = mouse(273, y) });
+    try testing.expectEqual(@as(f32, 270), app.state.sidebar_width);
+    try testing.expectEqual(gooey.ElementId.root, app.window.capture.id);
+    try testing.expectEqual(CursorShape.resize_left_right, app.window.cursor);
+    // AppKit delivers the first move after a drag that left the window as an
+    // entry, not a move: it must resolve the cursor all the same.
+    scrollMouse(app, &now, .{ .mouse_entered = mouse(600, y) });
+    try testing.expectEqual(CursorShape.default, app.window.cursor);
+    scrollMouse(app, &now, dragged(700, y));
+    try testing.expectEqual(@as(f32, 270), app.state.sidebar_width);
+    // The splitter answers the primary button only: a right-button drag
+    // from the divider leaves the width where it is.
+    var right = mouse(273, y);
+    right.button = .right;
+    scrollMouse(app, &now, .{ .mouse_down = right });
+    right.position.x = 400;
+    scrollMouse(app, &now, .{ .mouse_dragged = right });
+    scrollMouse(app, &now, .{ .mouse_up = right });
+    try testing.expectEqual(@as(f32, 270), app.state.sidebar_width);
+}
+
+test "splitter: Escape and a lost gesture restore the width the press began with" {
+    // Goal: `cancel` reaches the handler, which restores its start, and the
+    // Escape goes no further. Methodology: drag +50 from 240, press Escape:
+    // 240 again, and the release that follows changes nothing. Then drag
+    // again and deliver `pointer_cancelled`, as a platform does when it
+    // loses capture: 240 again, rather than the 290 a release would keep.
+    const app = try testing.allocator.create(SplitterApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    const y: f32 = 300;
+
+    scrollMouse(app, &now, .{ .mouse_down = mouse(243, y) });
+    scrollMouse(app, &now, dragged(293, y));
+    try testing.expectEqual(@as(f32, 290), app.state.sidebar_width);
+    pressKey(app, &now, .escape, .{});
+    try testing.expectEqual(@as(f32, 240), app.state.sidebar_width);
+    try testing.expectEqual(gooey.ElementId.root, app.window.capture.id);
+    scrollMouse(app, &now, dragged(320, y));
+    scrollMouse(app, &now, .{ .mouse_up = mouse(320, y) });
+    try testing.expectEqual(@as(f32, 240), app.state.sidebar_width);
+
+    scrollMouse(app, &now, .{ .mouse_down = mouse(243, y) });
+    scrollMouse(app, &now, dragged(293, y));
+    scrollMouse(app, &now, .pointer_cancelled);
+    try testing.expectEqual(@as(f32, 240), app.state.sidebar_width);
+    try testing.expectEqual(gooey.ElementId.root, app.window.capture.id);
+}
+
+test "splitter: arrow keys move a focused splitter, which reports its range" {
+    // Goal: the keyboard alternative and its accessibility. Methodology:
+    // Tab reaches the sidebar splitter first; → adds 16, Shift+→ adds 64,
+    // Home goes to the minimum, and End to the maximum. The splitter's
+    // accessibility node is a separator whose range follows the width.
+    const app = try testing.allocator.create(SplitterApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    pressKey(app, &now, .tab, .{});
+    try testing.expectEqual(sidebar_splitter_id, app.window.focus);
+    pressKey(app, &now, .right, .{});
+    try testing.expectEqual(@as(f32, 256), app.state.sidebar_width);
+    pressKey(app, &now, .right, .{ .shift = true });
+    try testing.expectEqual(@as(f32, 320), app.state.sidebar_width);
+    pressKey(app, &now, .home, .{});
+    try testing.expectEqual(splitter.sidebar_width_min, app.state.sidebar_width);
+    pressKey(app, &now, .end, .{});
+    try testing.expectEqual(splitter.sidebar_width_max, app.state.sidebar_width);
+
+    const frame = app.window.rendered();
+    var found = false;
+    for (frame.a11y[0..frame.a11y_count]) |*node| {
+        if (node.id != sidebar_splitter_id) continue;
+        found = true;
+        try testing.expectEqual(gooey.ui.Role.separator, node.role);
+        try testing.expectEqual(splitter.sidebar_width_min, node.range.?.min);
+        try testing.expectEqual(splitter.sidebar_width_max, node.range.?.now);
+        // It stands between left and right panes: a vertical separator.
+        try testing.expectEqual(gooey.ui.Orientation.vertical, node.range.?.orientation);
+        try testing.expect(node.state.focused);
+    }
+    try testing.expect(found);
+}
+
+test "splitter: the top pane's share follows a drag through effects.bounds" {
+    // Goal: a weighted split turns pixels into grow weights from its
+    // container's bounds. Methodology: the content pane is the window's
+    // 600 px tall, so its two panes share 594 px beside the 6 px splitter;
+    // the top pane starts at 0.6 of that, 356.4 px. Dragging the splitter
+    // down 59.4 px (0.1 of 594) gives a share of 0.7, not 0.6 + 59.4 / 600,
+    // and the splitter lands where the pointer left it, at 415.8 px.
+    const app = try testing.allocator.create(SplitterApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    const bar = recordBounds(app, top_splitter_id);
+    try testing.expectApproxEqAbs(@as(f32, 356.4), bar.y, 0.01);
+    const x = bar.x + 100;
+    const y = bar.y + 3;
+    scrollMouse(app, &now, .{ .mouse_down = mouse(x, y) });
+    scrollMouse(app, &now, dragged(x, y + 59.4));
+    scrollMouse(app, &now, .{ .mouse_up = mouse(x, y + 59.4) });
+    try testing.expectApproxEqAbs(@as(f32, 0.7), app.state.top_share, 0.0001);
+    try testing.expectApproxEqAbs(@as(f32, 415.8), recordBounds(app, top_splitter_id).y, 0.01);
+}
+
+/// One captured box with a click handler, a button beside it, and a flag
+/// that stops rendering the captured box, for the capture's edge cases.
+const CaptureState = struct {
+    shown: bool = true,
+    phases: [8]gooey.Effects.PointerDrag.Phase = undefined,
+    phase_count: u32 = 0,
+    box_clicks: u32 = 0,
+    button_clicks: u32 = 0,
+
+    pub fn drag(self: *CaptureState, effects: *Effects) void {
+        assert(self.phase_count < self.phases.len);
+        self.phases[self.phase_count] = effects.pointerDrag().?.phase;
+        self.phase_count += 1;
+    }
+
+    pub fn clickBox(self: *CaptureState) void {
+        self.box_clicks += 1;
+    }
+
+    pub fn clickButton(self: *CaptureState) void {
+        self.button_clicks += 1;
+    }
+
+    fn expectPhases(self: *CaptureState, expected: []const gooey.Effects.PointerDrag.Phase) !void {
+        try testing.expectEqualSlices(
+            gooey.Effects.PointerDrag.Phase,
+            expected,
+            self.phases[0..self.phase_count],
+        );
+        self.phase_count = 0;
+    }
+};
+
+const CaptureApp = gooey.App(CaptureState, captureRender, .{
+    .title = "Capture",
+    .width = 300,
+    .height = 100,
+    .limits = .nano,
+});
+
+fn captureRender(cx: *Cx) void {
+    const state = cx.state(CaptureState);
+    const square: ui.Style = .{ .width = .{ .fixed = 50 }, .height = .{ .fixed = 50 } };
+    cx.render(ui.box(.{ .style = .{ .direction = .row, .gap = 50 } }, .{
+        if (state.shown) ui.box(.{
+            .key = .{ .name = "captured" },
+            .style = square,
+            .on_pointer_drag = cx.on(CaptureState.drag, .{}),
+            .on_click = cx.on(CaptureState.clickBox, .{}),
+        }, .{}) else null,
+        ui.box(.{
+            .key = .{ .name = "button" },
+            .style = square,
+            .on_click = cx.on(CaptureState.clickButton, .{}),
+        }, .{}),
+    }));
+}
+
+test "a capture clicks only without a move, and ends quietly when its box leaves" {
+    // Goal: the click rule beside capture, and a capture whose box stops
+    // rendering. Methodology: the captured box is x 0 to 50, the button x
+    // 100 to 150. A press and release with a 1 px move clicks the box
+    // (within the 2 px slop) after `begin`, `move`, `end`. A press dragged
+    // to the button and released there clicks neither, and one dragged 20 px
+    // and back to the box clicks nothing either. A press, then the
+    // box hidden, then a move and a release, call nothing more and leave no
+    // capture: the handler is looked up in the frame on screen each step.
+    const app = try testing.allocator.create(CaptureApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+
+    scrollMouse(app, &now, .{ .mouse_down = mouse(20, 20) });
+    scrollMouse(app, &now, dragged(21, 20));
+    scrollMouse(app, &now, .{ .mouse_up = mouse(21, 20) });
+    try app.state.expectPhases(&.{ .begin, .move, .end });
+    try testing.expectEqual(@as(u32, 1), app.state.box_clicks);
+
+    scrollMouse(app, &now, .{ .mouse_down = mouse(20, 20) });
+    scrollMouse(app, &now, dragged(120, 20));
+    scrollMouse(app, &now, .{ .mouse_up = mouse(120, 20) });
+    try app.state.expectPhases(&.{ .begin, .move, .end });
+    try testing.expectEqual(@as(u32, 1), app.state.box_clicks);
+    try testing.expectEqual(@as(u32, 0), app.state.button_clicks);
+    // A drag that comes back and releases on the box still clicks nothing.
+    scrollMouse(app, &now, .{ .mouse_down = mouse(20, 20) });
+    scrollMouse(app, &now, dragged(40, 20));
+    scrollMouse(app, &now, dragged(20, 20));
+    scrollMouse(app, &now, .{ .mouse_up = mouse(20, 20) });
+    try app.state.expectPhases(&.{ .begin, .move, .move, .end });
+    try testing.expectEqual(@as(u32, 1), app.state.box_clicks);
+
+    scrollMouse(app, &now, .{ .mouse_down = mouse(20, 20) });
+    app.state.shown = false;
+    app.window.render_requested = true;
+    now += 1;
+    app.tick(now);
+    scrollMouse(app, &now, dragged(30, 20));
+    scrollMouse(app, &now, .{ .mouse_up = mouse(30, 20) });
+    try app.state.expectPhases(&.{.begin});
+    try testing.expectEqual(gooey.ElementId.root, app.window.capture.id);
+    try testing.expectEqual(@as(u32, 0), app.state.button_clicks);
 }

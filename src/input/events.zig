@@ -222,6 +222,10 @@ pub const InputEvent = union(enum) {
     touch_moved: TouchEvent,
     /// All active touch points on the surface were cancelled by the compositor.
     touch_cancelled,
+    /// The platform took the pointer gesture away (lost capture, a broken
+    /// grab, or the window losing focus with a button held). A pointer drag
+    /// in progress cancels instead of ending, so nothing drops or commits.
+    pointer_cancelled,
 };
 
 // Goal: `KeyCode.from` must resolve every named virtual keycode to its tag and

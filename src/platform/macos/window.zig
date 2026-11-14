@@ -586,6 +586,8 @@ pub const Window = struct {
             .default => NSCursor.msgSend(objc.Object, "arrowCursor", .{}),
             .text => NSCursor.msgSend(objc.Object, "IBeamCursor", .{}),
             .pointer => NSCursor.msgSend(objc.Object, "pointingHandCursor", .{}),
+            .resize_left_right => NSCursor.msgSend(objc.Object, "resizeLeftRightCursor", .{}),
+            .resize_up_down => NSCursor.msgSend(objc.Object, "resizeUpDownCursor", .{}),
         };
         std.debug.assert(cursor.value != null);
 

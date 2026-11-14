@@ -238,6 +238,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "lucide-demo", .source = "src/examples/lucide_demo.zig" },
             .{ .name = "code-editor", .source = "src/examples/code_editor.zig" },
             .{ .name = "dashboard", .source = "src/examples/dashboard.zig" },
+            .{ .name = "splitter", .source = "src/examples/splitter.zig" },
         };
         // `zig build run` runs todo, the default example (contract decision 15).
         var todo_exe: ?*std.Build.Step.Compile = null;
@@ -616,6 +617,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "virtual-list", .source = "src/examples/virtual_list_example.zig" },
             .{ .name = "data-table", .source = "src/examples/data_table_example.zig" },
             .{ .name = "dashboard", .source = "src/examples/dashboard.zig" },
+            .{ .name = "splitter", .source = "src/examples/splitter.zig" },
         };
         // `zig build run` runs todo, the default example (contract decision 15).
         var todo_install: ?*std.Build.Step.InstallArtifact = null;
@@ -967,6 +969,7 @@ fn addWindowsBuilds(
         .{ .name = "animation", .source = "src/examples/animation.zig" },
         .{ .name = "layout", .source = "src/examples/layout.zig" },
         .{ .name = "dynamic-counters", .source = "src/examples/dynamic_counters.zig" },
+        .{ .name = "splitter", .source = "src/examples/splitter.zig" },
     };
     for (examples) |example| {
         addWindowsExample(
@@ -1276,6 +1279,7 @@ fn addMacosCoreExampleTypecheck(
         "lucide_demo",
         "images",
         "animation",
+        "splitter",
     };
     for (examples) |name| {
         const exe = b.addExecutable(.{
@@ -1440,6 +1444,8 @@ fn addFailFastChecks(
         .{ .mode = "core-opacity-range", .stderr = "Style.opacity 1.01 is outside 0 to 1" },
         .{ .mode = "core-grow-weight", .stderr = "Sizing.grow weight 0: a weight must be " ++
             "finite and greater than 0" },
+        .{ .mode = "core-pointer-drag-unkeyed", .stderr = "Box.on_pointer_drag needs a key " ++
+            "(contract §5): box at fail_fast_check.zig:" },
         .{ .mode = "core-dialog-target", .stderr = "file dialog on_complete targets " ++
             "fail_fast_check.CoreApp.Stranger; the root state is fail_fast_check.CoreState" },
         .{ .mode = "core-dialog-paths", .stderr = "file dialog selected 17 paths: " ++
@@ -2011,6 +2017,12 @@ fn addGoldens(
         .optimize = optimize,
         .imports = example_imports,
     });
+    const splitter_mod = b.createModule(.{
+        .root_source_file = b.path("src/examples/splitter.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = example_imports,
+    });
     const goldens_imports: []const std.Build.Module.Import = &.{
         .{ .name = "accessible_form_example", .module = accessible_form_mod },
         .{ .name = "actions_example", .module = actions_mod },
@@ -2025,6 +2037,7 @@ fn addGoldens(
         .{ .name = "images_example", .module = images_mod },
         .{ .name = "lucide_example", .module = lucide_mod },
         .{ .name = "nested_overlay_example", .module = nested_overlay_mod },
+        .{ .name = "splitter_example", .module = splitter_mod },
         .{ .name = "todo_example", .module = todo_mod },
         .{ .name = "virtual_list_example", .module = virtual_list_mod },
     };

@@ -33,6 +33,8 @@ const debugger = @import("debugger.zig");
 const assert = std.debug.assert;
 
 const Window = window_mod.Window;
+const Capture = window_mod.Capture;
+const PointerDrag = handler_mod.Effects.PointerDrag;
 const ElementId = records.ElementId;
 const index_none = records.index_none;
 
@@ -127,12 +129,20 @@ fn routeInput(window: *Window, event: *const input.InputEvent) void {
             const point = pointOf(mouse.position);
             window.pointer = .{ .x = point.x, .y = point.y };
             if (window.scroll_drag != .root) endScrollDrag(window);
+            if (window.capture.id != .root and window.capture.button == mouse.button) {
+                finishCapture(window, event, .end, point);
+            }
             release(window, event, point);
         },
-        .mouse_moved, .mouse_dragged => |mouse| {
+        // An entry carries a real position: AppKit holds back the entry of
+        // a drag that left the window and delivers it as the first move
+        // after the release, so dropping it would leave the hover and the
+        // cursor of the drag in place.
+        .mouse_moved, .mouse_dragged, .mouse_entered => |mouse| {
             const point = pointOf(mouse.position);
             window.pointer = .{ .x = point.x, .y = point.y };
             if (window.scroll_drag != .root) dragScrollbar(window, point);
+            if (window.capture.id != .root) moveCapture(window, event, point);
             updateHover(window);
             debugger.pointerMoved(window);
         },
@@ -141,8 +151,23 @@ fn routeInput(window: *Window, event: *const input.InputEvent) void {
             updateHover(window);
             debugger.pointerMoved(window);
         },
-        .key_down, .key_up, .text_input, .composition => keyToFocus(window, event),
+        .key_down => |key| {
+            // Escape cancels a capture and goes no further, as a drag's does.
+            if (key.key == .escape and window.capture.id != .root) {
+                finishCapture(window, event, .cancel, capturePoint(window));
+            } else {
+                keyToFocus(window, event);
+            }
+        },
+        .key_up, .text_input, .composition => keyToFocus(window, event),
         .scroll => |scroll| wheel(window, event, pointOf(scroll.position)),
+        .pointer_cancelled => {
+            if (window.scroll_drag != .root) endScrollDrag(window);
+            if (window.capture.id != .root) {
+                finishCapture(window, event, .cancel, capturePoint(window));
+            }
+            window.press_len = 0;
+        },
         else => {},
     }
 }
@@ -161,6 +186,19 @@ fn press(window: *Window, event: *const input.InputEvent, point: Point) void {
     const target = hitIndex(frame, point);
     if (pressScrollbar(window, target, point)) return;
     window.press_len = pathOf(frame, target, &window.press_path);
+    // A second button pressed during a capture clicks as usual but does
+    // not take the capture over.
+    const capturing = if (window.capture.id == .root) captureIndex(frame, target) else index_none;
+    if (capturing != index_none) {
+        window.capture = .{
+            .id = frame.hits[capturing].id,
+            .button = event.mouse_down.button,
+            .start_x = point.x,
+            .start_y = point.y,
+            .moved = false,
+            .cursor = cursorOf(frame, target),
+        };
+    }
     clickOutside(window, event, target);
     var focus_id: ElementId = .root;
     var index = target;
@@ -174,6 +212,7 @@ fn press(window: *Window, event: *const input.InputEvent, point: Point) void {
         index = frame.hits[index].parent;
     }
     setFocus(window, focus_id, false);
+    if (capturing != index_none) deliverCapture(window, event, .begin, point);
 }
 
 /// A release: click handlers bubbling from the record under the pointer,
@@ -197,6 +236,104 @@ fn release(window: *Window, event: *const input.InputEvent, point: Point) void {
         }
         index = record.parent;
     }
+}
+
+/// The innermost record on the press path with `Box.on_pointer_drag`.
+fn captureIndex(frame: *const records.Frame, target: u32) u32 {
+    var index = target;
+    var depth: u32 = 0;
+    while (index != index_none) : (depth += 1) {
+        assert(depth <= window_mod.box_depth_max);
+        if (frame.hits[index].on_pointer_drag != index_none) return index;
+        index = frame.hits[index].parent;
+    }
+    return index_none;
+}
+
+/// A capture's pointer move. Past `click_slop_px` from the press the
+/// gesture is a drag, so its release clicks nothing.
+fn moveCapture(window: *Window, event: *const input.InputEvent, point: Point) void {
+    const capture = &window.capture;
+    assert(capture.id.isKeyed());
+    if (!capture.moved) {
+        const dx = point.x - capture.start_x;
+        const dy = point.y - capture.start_y;
+        const slop = Capture.click_slop_px;
+        if (dx * dx + dy * dy > slop * slop) {
+            capture.moved = true;
+            window.press_len = 0;
+        }
+    }
+    deliverCapture(window, event, .move, point);
+}
+
+/// End a capture with `end` or `cancel`, then resolve the cursor from what
+/// is under the pointer again.
+fn finishCapture(
+    window: *Window,
+    event: *const input.InputEvent,
+    phase: PointerDrag.Phase,
+    point: Point,
+) void {
+    assert(phase == .end or phase == .cancel);
+    assert(window.capture.id.isKeyed());
+    if (phase == .cancel) window.press_len = 0;
+    deliverCapture(window, event, phase, point);
+    window.capture = Capture.none;
+    updateHover(window);
+    assert(window.capture.id == .root);
+}
+
+/// Where a capture ends that no pointer event ends: the last pointer
+/// position, or the press when the pointer has left the window.
+fn capturePoint(window: *const Window) Point {
+    assert(window.capture.id.isKeyed());
+    const pointer = window.pointer orelse
+        return .{ .x = window.capture.start_x, .y = window.capture.start_y };
+    return .{ .x = pointer.x, .y = pointer.y };
+}
+
+/// Call the capturing record's `on_pointer_drag` with one step, from the
+/// frame on screen. A box that stopped rendering, or no longer has the
+/// handler, ends the capture with no call: nothing is left to tell.
+fn deliverCapture(
+    window: *Window,
+    event: *const input.InputEvent,
+    phase: PointerDrag.Phase,
+    point: Point,
+) void {
+    const capture = window.capture;
+    assert(capture.id.isKeyed());
+    const frame = window.rendered();
+    const index = findRecord(frame, capture.id);
+    const handler = if (index == index_none)
+        null
+    else
+        frame.handlerAt(frame.hits[index].on_pointer_drag);
+    if (handler == null) {
+        window.capture = Capture.none;
+        return;
+    }
+    var effects = handler_mod.Effects.init(event, capture.id);
+    effects.pointer_drag = .{
+        .phase = phase,
+        .x = point.x,
+        .y = point.y,
+        .start_x = capture.start_x,
+        .start_y = capture.start_y,
+        .button = capture.button,
+        .modifiers = modifiersOf(event),
+    };
+    call(window, handler.?, &effects);
+    if (effects.click_request) |id| clickRequested(window, id, event);
+}
+
+fn modifiersOf(event: *const input.InputEvent) input.Modifiers {
+    return switch (event.*) {
+        .mouse_down, .mouse_up, .mouse_moved, .mouse_dragged => |mouse| mouse.modifiers,
+        .key_down, .key_up => |key| key.modifiers,
+        else => .{},
+    };
 }
 
 /// A press on a scroll box's scrollbar drags its thumb or jumps along its
@@ -534,6 +671,7 @@ fn call(window: *Window, handler: handler_mod.Handler, effects: *handler_mod.Eff
     assert(!effects.propagation_stopped);
     effects.clipboard = &window.clipboard;
     effects.store = window.store;
+    effects.rendered = window.rendered();
     handler.call(window.store, effects);
     if (effects.render_requested) window.render_requested = true;
     if (effects.quit_requested) window.quit_requested = true;
@@ -647,27 +785,40 @@ pub fn updateHover(window: *Window) void {
     const frame = window.rendered();
     var path: [window_mod.box_depth_max]ElementId = undefined;
     var len: u32 = 0;
-    // The innermost record that sets a cursor wins, as `Box.cursor` did in
-    // 0.3.1. Resolved even when the path is unchanged: a new frame may give
-    // the same records another cursor.
-    var cursor: ?element.CursorShape = null;
+    // Resolved even when the path is unchanged: a new frame may give the
+    // same records another cursor. A capture keeps the cursor of its press.
+    var target: u32 = index_none;
     if (window.pointer) |pointer| {
-        var index = hitIndex(frame, .{ .x = pointer.x, .y = pointer.y });
+        target = hitIndex(frame, .{ .x = pointer.x, .y = pointer.y });
+        var index = target;
         while (index != index_none) : (len += 1) {
             assert(len < window_mod.box_depth_max);
             path[len] = frame.hits[index].id;
-            if (cursor == null) cursor = frame.hits[index].cursor;
             index = frame.hits[index].parent;
         }
     }
-    window.cursor = cursor orelse .default;
-    if (len == 0) assert(window.cursor == .default);
+    const captured = window.capture.id != .root;
+    window.cursor = if (captured) window.capture.cursor else cursorOf(frame, target);
+    if (len == 0 and !captured) assert(window.cursor == .default);
     const same = len == window.hover_len and
         std.mem.eql(ElementId, path[0..len], window.hover_path[0..len]);
     if (same) return;
     @memcpy(window.hover_path[0..len], path[0..len]);
     window.hover_len = len;
     window.render_requested = true;
+}
+
+/// The innermost cursor set on `index` or its ancestors, as `Box.cursor`
+/// did in 0.3.1; `.default` when none sets one or `index` is none.
+fn cursorOf(frame: *const records.Frame, index_start: u32) element.CursorShape {
+    var index = index_start;
+    var depth: u32 = 0;
+    while (index != index_none) : (depth += 1) {
+        assert(depth <= window_mod.box_depth_max);
+        if (frame.hits[index].cursor) |cursor| return cursor;
+        index = frame.hits[index].parent;
+    }
+    return .default;
 }
 
 /// Move focus off an element that the frame just built did not render, no

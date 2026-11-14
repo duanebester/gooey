@@ -37,6 +37,7 @@ const A11ySystem = @import("a11y_system.zig").A11ySystem;
 const screen_reader_mod = @import("screen_reader.zig");
 const debugger_mod = @import("debugger.zig");
 const frame_trace = @import("frame_trace.zig");
+const input_mod = @import("../input/mod.zig");
 
 const assert = std.debug.assert;
 
@@ -137,6 +138,7 @@ pub const Node = struct {
     on_click: u32,
     on_click_outside: u32,
     on_key: u32,
+    on_pointer_drag: u32,
     key_context: u64,
     actions_start: u32,
     actions_len: u32,
@@ -400,6 +402,38 @@ pub const A11yBuilt = struct {
     live: a11y_types.Live,
     pos_in_set: ?u16,
     set_size: ?u16,
+    range: ?element.A11y.Range,
+};
+
+/// A pointer capture (`Box.on_pointer_drag`, contract §5): from a press on
+/// a box with the handler until its button's release, Escape, or
+/// `pointer_cancelled`. One per window. Handlers are looked up by `id` in
+/// the frame on screen at each step rather than kept, since an entity or
+/// retained target behind one could be gone by the next frame.
+pub const Capture = struct {
+    /// The capturing box, or `.root` when nothing is captured.
+    id: ElementId,
+    button: input_mod.MouseButton,
+    start_x: f32,
+    start_y: f32,
+    /// The pointer went more than `click_slop_px` from the press, so the
+    /// release clicks nothing.
+    moved: bool,
+    /// The cursor under the press, kept while captured so a resize cursor
+    /// holds when the pointer leaves a thin divider.
+    cursor: element.CursorShape,
+
+    /// 0.3.1's `DRAG_THRESHOLD`: a press that moves no further is a click.
+    pub const click_slop_px: f32 = 2;
+
+    pub const none: Capture = .{
+        .id = .root,
+        .button = .left,
+        .start_x = 0,
+        .start_y = 0,
+        .moved = false,
+        .cursor = .default,
+    };
 };
 
 /// Frame-wide set of keyed ids: duplicate detection during build, and the
@@ -565,6 +599,8 @@ pub const Window = struct {
     /// The scroll box whose thumb is being dragged, or `.root`. The drag
     /// lives in its `ScrollState` until the release.
     scroll_drag: ElementId,
+    /// The `Box.on_pointer_drag` gesture in progress, or `Capture.none`.
+    capture: Capture,
     pointer: ?struct { x: f32, y: f32 },
     // Tick state.
     phase: Phase,
@@ -796,6 +832,7 @@ pub noinline fn initInPlace(self: *Window, gpa: std.mem.Allocator, options: *con
     self.cursor = .default;
     self.press_len = 0;
     self.scroll_drag = .root;
+    self.capture = Capture.none;
     self.pointer = null;
     self.phase = .idle;
     self.frame_in_flight = .init(false);

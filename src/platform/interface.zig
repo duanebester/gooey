@@ -43,6 +43,10 @@ pub const CursorShape = enum(u8) {
     text,
     /// Hand/pointing-finger cursor for clickable elements (buttons, links).
     pointer,
+    /// A divider that moves left and right, such as a vertical splitter.
+    resize_left_right,
+    /// A divider that moves up and down, such as a horizontal splitter.
+    resize_up_down,
 };
 
 // =============================================================================

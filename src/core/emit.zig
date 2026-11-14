@@ -755,6 +755,7 @@ fn emitHit(window: *Window, node: *const Node, bounds: Rect, place: HitPlace) u3
         node.on_key != index_none or node.on_click_outside != index_none or
         node.key_context != 0 or node.actions_len > 0 or node.scroll != null or
         node.cursor != null);
+    if (node.on_pointer_drag != index_none) assert(node.id.isKeyed());
     return window.built().appendHit(.{
         .id = node.id,
         .bounds = bounds,
@@ -768,6 +769,7 @@ fn emitHit(window: *Window, node: *const Node, bounds: Rect, place: HitPlace) u3
         .on_click = node.on_click,
         .on_click_outside = node.on_click_outside,
         .on_key = node.on_key,
+        .on_pointer_drag = node.on_pointer_drag,
         .key_context = node.key_context,
         .actions_start = node.actions_start,
         .actions_len = node.actions_len,
@@ -799,6 +801,12 @@ fn emitA11y(window: *Window, node: *const Node, bounds: Rect, level: u8) u8 {
         .live = a11y.live,
         .pos_in_set = a11y.pos_in_set,
         .set_size = a11y.set_size,
+        .range = if (a11y.range) |range| .{
+            .min = range.min,
+            .max = range.max,
+            .now = range.now,
+            .orientation = range.orientation,
+        } else null,
     });
     return 1;
 }

@@ -190,6 +190,9 @@ pub const HitRecord = struct {
     on_click: u32,
     on_click_outside: u32,
     on_key: u32,
+    /// `Box.on_pointer_drag`: a press here or on a child without one
+    /// captures the pointer for this record (contract §5).
+    on_pointer_drag: u32,
     /// `KeyContext.hash`, or 0 for none.
     key_context: u64,
     /// `Box.actions`: handlers `[actions_start, actions_start + actions_len)`,
@@ -213,6 +216,15 @@ pub const A11yNode = struct {
     live: a11y_types.Live,
     pos_in_set: ?u16,
     set_size: ?u16,
+    /// `A11y.range`: a splitter's or slider's position in its range.
+    range: ?Range,
+
+    pub const Range = struct {
+        min: f32,
+        max: f32,
+        now: f32,
+        orientation: a11y_types.Orientation,
+    };
 };
 
 /// Screen-reader announcements (`Effects.announce`) in their own bytes, so a

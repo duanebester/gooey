@@ -18,6 +18,7 @@
 //!   admits, so the build's own check is the one that stops it.
 //! - `core-opacity-range`: a box whose `Style.opacity` is just above 1.
 //! - `core-grow-weight`: a box that grows with a weight of 0.
+//! - `core-pointer-drag-unkeyed`: a box with `on_pointer_drag` and no key.
 //! - `core-dialog-target`: names a non-root state as a file dialog's completion handler.
 //! - `core-dialog-paths`: a dialog selects one path more than `dialog_path_count_max`.
 //! - `core-mono-unset`: draws `.family = .mono` text in an app with no `fonts.mono`.
@@ -54,6 +55,7 @@ const Mode = enum {
     @"core-box-depth",
     @"core-opacity-range",
     @"core-grow-weight",
+    @"core-pointer-drag-unkeyed",
     @"core-dialog-target",
     @"core-dialog-paths",
     @"core-mono-unset",
@@ -86,6 +88,7 @@ pub fn main(init: std.process.Init) !void {
         .@"core-box-depth" => coreTick(init.gpa, init.io, CoreApp.deepBoxes),
         .@"core-opacity-range" => coreTick(init.gpa, init.io, CoreApp.opacityRange),
         .@"core-grow-weight" => coreTick(init.gpa, init.io, CoreApp.growWeight),
+        .@"core-pointer-drag-unkeyed" => coreTick(init.gpa, init.io, CoreApp.unkeyedDrag),
         .@"core-dialog-target" => coreDialogTarget(init.gpa, init.io),
         .@"core-dialog-paths" => coreDialogPaths(init.gpa, init.io),
         .@"core-mono-unset" => coreTick(init.gpa, init.io, CoreApp.monoText),
@@ -176,6 +179,7 @@ fn atlasLiveSet(gpa: std.mem.Allocator, io: std.Io) void {
 
 const CoreState = struct {
     fn picked(_: *CoreState) void {}
+    fn dragged(_: *CoreState) void {}
 };
 
 const core_config: gooey.Config(CoreState) = .{
@@ -200,6 +204,14 @@ const CoreApp = struct {
     /// One past the top of the valid range: 1 itself is fine.
     fn opacityRange(cx: *gooey.Cx) void {
         cx.render(gooey.ui.box(.{ .style = .{ .opacity = 1.01 } }, .{}));
+    }
+
+    /// A capture finds its box by id across frames, so it must be keyed.
+    fn unkeyedDrag(cx: *gooey.Cx) void {
+        cx.render(gooey.ui.box(.{
+            .on_pointer_drag = cx.on(CoreState.dragged, .{}),
+            .style = .{ .source = @src() },
+        }, .{}));
     }
 
     /// The smallest invalid weight; any positive weight is valid.

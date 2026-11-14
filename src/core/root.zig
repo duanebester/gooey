@@ -72,6 +72,7 @@ pub const ui = struct {
     pub const Color = element.Color;
     pub const A11y = element.A11y;
     pub const Role = element.Role;
+    pub const Orientation = element.Orientation;
     pub const Painter = emit.Painter;
     pub const PaintText = emit.TextStyle;
     pub const PaintSvg = emit.SvgStyle;
