@@ -229,38 +229,76 @@ pub const A11yNode = struct {
 
 /// Screen-reader announcements (`Effects.announce`) in their own bytes, so a
 /// handler's slice need not outlive it. The window collects them between
-/// builds; each frame carries the ones made since the previous build.
+/// builds; each frame carries the ones made since the previous build. Both
+/// pools are sized by `ResourceLimits.a11y`: screen readers queue or drop a
+/// burst anyway, so more per frame is a capacity-planning error.
 pub const Announcements = struct {
-    bytes: [bytes_max]u8,
+    bytes: []u8,
     bytes_len: u32,
-    items: [count_max]Item,
+    items: []Item,
     count: u32,
 
-    /// 0.3.1's bound (`MAX_A11Y_ANNOUNCEMENTS`); screen readers queue or drop
-    /// the rest anyway, so more per frame is a programmer error.
-    pub const count_max: u32 = 16;
-    pub const bytes_max: u32 = 1024;
-
     pub const Item = struct { text: TextRange, live: a11y_types.Live };
+
+    pub const Capacity = struct {
+        /// `a11y.announcement_count_frame_max`.
+        count_max: u32,
+        /// `a11y.announcement_bytes_frame_max`.
+        bytes_max: u32,
+    };
+
+    pub fn initInPlace(
+        self: *Announcements,
+        gpa: std.mem.Allocator,
+        capacity: Capacity,
+    ) !void {
+        assert(capacity.count_max > 0);
+        assert(capacity.bytes_max >= capacity.count_max);
+
+        self.items = try gpa.alloc(Item, capacity.count_max);
+        errdefer gpa.free(self.items);
+
+        self.bytes = try gpa.alloc(u8, capacity.bytes_max);
+        self.clear();
+        assert(self.items.len == capacity.count_max);
+    }
+
+    pub fn deinit(self: *Announcements, gpa: std.mem.Allocator) void {
+        assert(self.count <= self.items.len);
+        gpa.free(self.bytes);
+        gpa.free(self.items);
+        self.* = undefined;
+    }
 
     pub fn clear(self: *Announcements) void {
         self.count = 0;
         self.bytes_len = 0;
     }
 
-    /// Copy `message`; exceeding either pool fails fast with its name.
-    pub fn push(self: *Announcements, message: []const u8, live: a11y_types.Live) void {
+    /// Copy `message`; exceeding either pool fails fast with its budget field.
+    pub fn push(
+        self: *Announcements,
+        message: []const u8,
+        live: a11y_types.Live,
+        frame_number: u64,
+    ) void {
         assert(live != .off);
         assert(message.len > 0);
-        assert(self.count <= count_max);
-        if (self.count == count_max or message.len > bytes_max - self.bytes_len) {
-            std.debug.panic("announcement pool exhausted: capacity {d} announcements and " ++
-                "{d} bytes, {d} and {d} in use, {d} bytes requested", .{
-                count_max,
-                bytes_max,
-                self.count,
+        assert(self.count <= self.items.len);
+        assert(self.bytes_len <= self.bytes.len);
+        if (self.count == self.items.len) {
+            std.debug.panic("a11y pool 'announcements' exhausted: capacity {d}, {d} in use, " ++
+                "1 requested, frame {d}. Raise ResourceLimits.a11y." ++
+                "announcement_count_frame_max.", .{ self.items.len, self.count, frame_number });
+        }
+        if (message.len > self.bytes.len - self.bytes_len) {
+            std.debug.panic("a11y pool 'announcement bytes' exhausted: capacity {d} bytes, " ++
+                "{d} in use, {d} requested, frame {d}. Raise ResourceLimits.a11y." ++
+                "announcement_bytes_frame_max.", .{
+                self.bytes.len,
                 self.bytes_len,
                 message.len,
+                frame_number,
             });
         }
         const range = TextRange{ .offset = self.bytes_len, .len = @intCast(message.len) };
@@ -270,8 +308,19 @@ pub const Announcements = struct {
         self.count += 1;
     }
 
+    /// Move the window's collected announcements into a frame: both pools
+    /// come from the same budget, so the copy always fits.
+    pub fn copyFrom(self: *Announcements, source: *const Announcements) void {
+        assert(source.count <= self.items.len);
+        assert(source.bytes_len <= self.bytes.len);
+        @memcpy(self.items[0..source.count], source.items[0..source.count]);
+        @memcpy(self.bytes[0..source.bytes_len], source.bytes[0..source.bytes_len]);
+        self.count = source.count;
+        self.bytes_len = source.bytes_len;
+    }
+
     pub fn slice(self: *const Announcements) []const Item {
-        assert(self.count <= count_max);
+        assert(self.count <= self.items.len);
         return self.items[0..self.count];
     }
 
@@ -304,6 +353,7 @@ pub const FrameCapacity = struct {
     hit_record_count_max: u32,
     handler_count_max: u32,
     a11y_node_count_max: u32,
+    announcements: Announcements.Capacity,
     text_bytes_max: u32,
     mesh_point_count_max: u32,
 };
@@ -360,6 +410,8 @@ pub const Frame = struct {
         errdefer gpa.free(self.action_ids);
         self.a11y = try gpa.alloc(A11yNode, capacity.a11y_node_count_max);
         errdefer gpa.free(self.a11y);
+        try self.announcements.initInPlace(gpa, capacity.announcements);
+        errdefer self.announcements.deinit(gpa);
         self.text_bytes = try gpa.alloc(u8, capacity.text_bytes_max);
         errdefer gpa.free(self.text_bytes);
         self.mesh_points = try gpa.alloc(MeshPoint, capacity.mesh_point_count_max);
@@ -372,6 +424,7 @@ pub const Frame = struct {
         assert(self.paint_count <= self.paint.len);
         gpa.free(self.mesh_points);
         gpa.free(self.text_bytes);
+        self.announcements.deinit(gpa);
         gpa.free(self.a11y);
         gpa.free(self.action_ids);
         gpa.free(self.handlers);
@@ -459,7 +512,14 @@ pub const Frame = struct {
 
     pub fn appendA11y(self: *Frame, node: A11yNode) void {
         assert(self.a11y_count <= self.a11y.len);
-        if (self.a11y_count == self.a11y.len) self.exhausted("a11y nodes", self.a11y.len);
+        if (self.a11y_count == self.a11y.len) {
+            std.debug.panic("a11y pool 'elements' exhausted: capacity {d}, {d} in use, " ++
+                "1 requested, frame {d}. Raise ResourceLimits.a11y.element_count_max.", .{
+                self.a11y.len,
+                self.a11y_count,
+                self.frame_number,
+            });
+        }
         self.a11y[self.a11y_count] = node;
         self.a11y_count += 1;
     }
@@ -540,6 +600,7 @@ test "Frame copies text and bounds every pool" {
         .hit_record_count_max = 2,
         .handler_count_max = 2,
         .a11y_node_count_max = 2,
+        .announcements = .{ .count_max = 1, .bytes_max = 8 },
         .text_bytes_max = 8,
         .mesh_point_count_max = 0,
     });

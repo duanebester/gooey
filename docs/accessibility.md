@@ -402,39 +402,37 @@ move focus through the accessibility API; users fall back to the keyboard and po
 
 ## Capacity limits
 
-| Limit                           | Value                          | Past the limit              |
-| ------------------------------- | ------------------------------ | --------------------------- |
-| `build.element_count_frame_max` | 512 to 16,383 by profile       | Panics: pool "a11y nodes"   |
-| `build.text_bytes_frame_max`    | 16 KiB to 4 MiB by profile     | Panics: pool "text bytes"   |
-| `MAX_ELEMENTS`                  | 2,048 tree elements            | Panics: tree full           |
-| `MAX_DEPTH`                     | 64 nested accessible boxes     | Panics: tree full           |
-| `Announcements.count_max`       | 16 between two builds          | Panics: announcement pool   |
-| `Announcements.bytes_max`       | 1,024 bytes between two builds | Panics: announcement pool   |
-| `MAX_ANNOUNCEMENTS`             | 8 per published frame          | The rest are dropped        |
-| `poll_interval_ns`              | 1 s                            | None: it is the poll period |
+Every capacity comes from the app's `ResourceLimits` (`src/core/limits.zig`), so a
+profile change resizes the frame's node pool, the tree and the platform bridge together.
 
-Where they are declared:
+| Limit                               | Value                | Past the limit             |
+| ----------------------------------- | -------------------- | -------------------------- |
+| `a11y.element_count_max`            | 128 to 16,384        | Panics: "elements"         |
+| `a11y.announcement_count_frame_max` | 4 to 64 per build    | Panics: "announcements"    |
+| `a11y.announcement_bytes_frame_max` | 512 B to 16 KiB      | Panics: "announcement bytes" |
+| `build.box_depth_max`               | the tree's depth     | Panics: "box depth"        |
+| `build.text_bytes_frame_max`        | 16 KiB to 4 MiB      | Panics: "text bytes"       |
+| `poll_interval_ns`                  | 1 s                  | None: it is the poll period |
 
-- `build.*` are fields of the app's `ResourceLimits` (`src/core/limits.zig`). By profile,
-  `nano`, `small`, `standard`, `large`, and `ceiling`: elements 512, 2,048, 4,096, 16,383,
-  and 16,383; text bytes 16 KiB, 64 KiB, 256 KiB, 1 MiB, and 4 MiB. Accessibility nodes
-  share the frame's element capacity, and their strings share its text bytes.
-- `MAX_ELEMENTS`, `MAX_DEPTH`, and `MAX_ANNOUNCEMENTS` are in
-  `src/accessibility/constants.zig`.
-- `Announcements.count_max` and `bytes_max` are in `src/core/records.zig`.
-- `poll_interval_ns` is in `src/core/screen_reader.zig`.
+By profile, `nano`, `small`, `standard`, `large`, and `ceiling`: elements 128, 512, 2,048,
+8,192, and 16,384; announcements 4, 8, 16, 16, and 64; announcement bytes 512, 1 KiB,
+2 KiB, 4 KiB, and 16 KiB.
 
-The tree's 2,048 elements are fixed, not a profile field. From `standard` up, a frame may
-hold more elements than the tree, so an app with more than 2,048 accessible boxes in one
-frame panics as soon as a screen reader runs. The tree check applies only while one runs.
+`check()` holds `a11y.element_count_max` to at most `build.element_count_frame_max`
+(every node is an element) and the announcement bytes to at least one per announcement.
+The frame's node pool, the tree's element tables and each bridge's element slots are all
+`a11y.element_count_max`, so the frame's pool is the only check that can fire; it fires
+whether or not a screen reader runs. The tree also holds one live-region announcement per
+element on top of the explicit ones, so it drops none. Node strings share the frame's
+text bytes. `poll_interval_ns` is in `src/core/screen_reader.zig`.
 
-The 8 forwarded announcements include those the tree makes for live regions; the
-explicit announcements are queued first.
+The tree reserves its tables at window initialization from pages that stay non-resident
+until a screen reader runs, about 0.48 MiB of address space at `standard`.
 
 The Windows bridge adds its own bounds (`windows_snapshot.zig`, `windows_provider.zig`):
 `name_bytes_max` 256, `value_bytes_max` 512, and `description_bytes_max` 256, truncated at
 a code point boundary; `change_count_max` 128 property events per frame, past which it
-invalidates the whole tree; and `provider_count_max` 4,096 providers, past which it
+invalidates the whole tree; and twice `a11y.element_count_max` providers, past which it
 returns `E_OUTOFMEMORY` to the client and warns once instead of panicking, because the
 demand comes from another process.
 

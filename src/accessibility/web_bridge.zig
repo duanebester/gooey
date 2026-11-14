@@ -16,7 +16,9 @@ const bridge_mod = @import("bridge.zig");
 const tree_mod = @import("tree.zig");
 const types = @import("types.zig");
 const fingerprint_mod = @import("fingerprint.zig");
+const Fingerprint = fingerprint_mod.Fingerprint;
 const constants = @import("constants.zig");
+const reservation = @import("../core/reservation.zig");
 
 // Enable verbose init logging for debugging stack overflow issues
 const verbose_init_logging = false;
@@ -85,15 +87,19 @@ pub const WebBridge = struct {
     /// Container element ID (the hidden root div, 0 = not initialized)
     container_id: u32 = 0,
 
-    /// Pool of DOM element IDs (0 = unused)
-    dom_ids: [constants.MAX_ELEMENTS]u32 = @splat(0),
+    /// Pool of DOM element IDs (0 = unused), `a11y.element_count_max` slots
+    /// reserved at init from fresh pages, so an unused slot reads zero.
+    dom_ids: []u32 = &.{},
 
-    /// Map fingerprint -> slot for stable identity
-    fingerprint_to_slot: [constants.MAX_ELEMENTS]fingerprint_mod.Fingerprint =
-        @as([constants.MAX_ELEMENTS]fingerprint_mod.Fingerprint, @splat(fingerprint_mod.Fingerprint.INVALID)),
+    /// Map fingerprint -> slot for stable identity; meaningful below
+    /// `slot_count` only.
+    fingerprint_to_slot: []fingerprint_mod.Fingerprint = &.{},
 
-    /// Slot usage tracking
-    slot_active: [constants.MAX_ELEMENTS]bool = @splat(false),
+    /// Slot usage tracking (false on fresh pages)
+    slot_active: []bool = &.{},
+
+    /// Slots ever taken; every slot at or past it is untouched.
+    slot_count: u16 = 0,
 
     /// Currently focused slot (to prevent focus loops)
     focused_slot: ?u16 = null,
@@ -115,9 +121,32 @@ pub const WebBridge = struct {
     /// Uses out-pointer pattern to avoid large stack copy in WASM.
     /// Creates the hidden container element in the DOM.
     /// Marked noinline to prevent stack accumulation in WASM builds.
-    pub noinline fn init(self: *Self) void {
+    /// `element_count_max` is the tree's (`a11y.element_count_max`): stale
+    /// slots are reclaimed before a new one is taken, so the frame's elements
+    /// always fit. A failed reservation leaves the bridge inert and logged, as
+    /// the Windows bridge does.
+    pub noinline fn init(self: *Self, element_count_max: u16) void {
         std.debug.assert(self.container_id == 0); // Must be zero-initialized
+        std.debug.assert(element_count_max > 0);
+        self.reserveSlots(element_count_max) catch {
+            std.log.err("accessibility: web bridge slot reservation failed", .{});
+            self.assumed_active = false;
+            return;
+        };
+        std.debug.assert(self.dom_ids.len == element_count_max);
         self.container_id = js_createContainer();
+    }
+
+    fn reserveSlots(self: *Self, element_count_max: u16) error{OutOfMemory}!void {
+        const dom_ids = try reservation.reserve(u32, element_count_max);
+        errdefer reservation.release(u32, dom_ids, 0);
+
+        const fingerprints = try reservation.reserve(Fingerprint, element_count_max);
+        errdefer reservation.release(Fingerprint, fingerprints, 0);
+
+        self.slot_active = try reservation.reserve(bool, element_count_max);
+        self.dom_ids = dom_ids;
+        self.fingerprint_to_slot = fingerprints;
     }
 
     /// Get the Bridge interface (vtable pattern)
@@ -141,6 +170,18 @@ pub const WebBridge = struct {
     // Bridge Implementation
     // =========================================================================
 
+    /// The slot for `fingerprint`, claimed when it has none. When every slot
+    /// is taken, some hold elements that left the tree in frames the bridge
+    /// skipped; reclaiming them leaves at most the tree's elements, which the
+    /// pool always holds.
+    fn claimSlot(self: *Self, tree: *const tree_mod.Tree, fingerprint: Fingerprint) u16 {
+        std.debug.assert(self.slot_count <= self.dom_ids.len);
+        std.debug.assert(tree.count() <= self.dom_ids.len);
+        if (self.findOrAllocSlot(fingerprint)) |slot| return slot;
+        self.reclaimStale(tree);
+        return self.findOrAllocSlot(fingerprint) orelse unreachable;
+    }
+
     fn syncDirty(
         ptr: *anyopaque,
         tree: *const tree_mod.Tree,
@@ -149,9 +190,9 @@ pub const WebBridge = struct {
         const self = castSelf(ptr);
 
         // Assertion: dirty list is bounded
-        std.debug.assert(dirty.len <= constants.MAX_ELEMENTS);
+        std.debug.assert(dirty.len <= tree.count());
         // Assertion: tree count is valid
-        std.debug.assert(tree.count() <= constants.MAX_ELEMENTS);
+        std.debug.assert(tree.count() <= self.dom_ids.len);
 
         if (!self.assumed_active) return;
         if (dirty.len == 0) return;
@@ -162,7 +203,7 @@ pub const WebBridge = struct {
 
         for (dirty) |idx| {
             const elem = tree.getElement(idx) orelse continue;
-            const slot = self.findOrAllocSlot(elem.fingerprint) orelse continue;
+            const slot = self.claimSlot(tree, elem.fingerprint);
 
             // Create DOM element if needed
             if (self.dom_ids[slot] == 0) {
@@ -413,7 +454,7 @@ pub const WebBridge = struct {
         // Assertion: container_id should be valid (non-zero or valid from JS)
         std.debug.assert(self.container_id != 0xFFFFFFFF); // Sentinel for error
         // Assertion: tree is valid
-        std.debug.assert(tree.count() <= constants.MAX_ELEMENTS);
+        std.debug.assert(tree.count() <= tree.elements.len);
 
         if (parent_idx) |pi| {
             if (tree.getElement(pi)) |parent_elem| {
@@ -432,7 +473,7 @@ pub const WebBridge = struct {
         const self = castSelf(ptr);
 
         // Assertion: removal list bounded
-        std.debug.assert(fingerprints.len <= constants.MAX_ELEMENTS);
+        std.debug.assert(fingerprints.len <= self.dom_ids.len);
         // Assertion: container_id is valid
         std.debug.assert(self.container_id != 0xFFFFFFFF);
 
@@ -470,7 +511,7 @@ pub const WebBridge = struct {
         const self = castSelf(ptr);
 
         // Assertion: tree is valid
-        std.debug.assert(tree.count() <= constants.MAX_ELEMENTS);
+        std.debug.assert(tree.count() <= tree.elements.len);
         // Assertion: idx is valid if present
         std.debug.assert(idx == null or idx.? < tree.count());
 
@@ -498,15 +539,25 @@ pub const WebBridge = struct {
         if (self.check_counter >= constants.SCREEN_READER_CHECK_INTERVAL) {
             self.check_counter = 0;
             // Use heuristic - can't reliably detect screen readers on web
-            self.assumed_active = js_isScreenReaderHinted();
+            // An inert bridge (its reservation failed) never syncs.
+            self.assumed_active = self.dom_ids.len > 0 and js_isScreenReaderHinted();
         }
 
         return self.assumed_active;
     }
 
-    fn deinit_(_: *anyopaque) void {
-        // DOM elements are cleaned up by the browser when the page unloads
-        // No manual cleanup needed
+    /// DOM elements are cleaned up by the browser when the page unloads; the
+    /// slots any frame took are zeroed before their pages go back (§21).
+    fn deinit_(ptr: *anyopaque) void {
+        const self = castSelf(ptr);
+        if (self.dom_ids.len == 0) return;
+        reservation.release(bool, self.slot_active, self.slot_count);
+        reservation.release(Fingerprint, self.fingerprint_to_slot, self.slot_count);
+        reservation.release(u32, self.dom_ids, self.slot_count);
+        self.dom_ids = &.{};
+        self.fingerprint_to_slot = &.{};
+        self.slot_active = &.{};
+        self.slot_count = 0;
     }
 
     // =========================================================================
@@ -518,7 +569,8 @@ pub const WebBridge = struct {
         // Assertion: fingerprint should be valid when searching
         std.debug.assert(fp.isValid());
 
-        for (self.fingerprint_to_slot, 0..) |slot_fp, i| {
+        std.debug.assert(self.slot_count <= self.fingerprint_to_slot.len);
+        for (self.fingerprint_to_slot[0..self.slot_count], 0..) |slot_fp, i| {
             if (slot_fp.eql(fp)) return @intCast(i);
         }
         return null;
@@ -532,16 +584,39 @@ pub const WebBridge = struct {
         // First, try to find existing slot
         if (self.findSlotByFingerprint(fp)) |slot| return slot;
 
-        // Find an inactive slot
-        for (self.slot_active, 0..) |active, i| {
+        // Find an inactive slot, else take the next untouched one.
+        for (self.slot_active[0..self.slot_count], 0..) |active, i| {
             if (!active) {
                 self.fingerprint_to_slot[i] = fp;
                 return @intCast(i);
             }
         }
+        if (self.slot_count < self.dom_ids.len) {
+            const slot = self.slot_count;
+            std.debug.assert(self.dom_ids[slot] == 0); // Fresh pages.
+            self.fingerprint_to_slot[slot] = fp;
+            self.slot_count += 1;
+            return slot;
+        }
 
-        // No slots available - this shouldn't happen if MAX_ELEMENTS is correct
+        // Every slot is taken; the caller reclaims stale ones.
         return null;
+    }
+
+    /// Remove every slot's element that is not in `tree`'s current frame.
+    /// One pass with an O(1) lookup each; it runs only when the pool is full,
+    /// which needs a frame the bridge skipped.
+    fn reclaimStale(self: *Self, tree: *const tree_mod.Tree) void {
+        std.debug.assert(self.slot_count == self.dom_ids.len);
+        std.debug.assert(tree.count() <= self.dom_ids.len);
+        for (self.fingerprint_to_slot, 0..) |fp, i| {
+            if (!self.slot_active[i]) continue;
+            if (tree.findElementByFingerprint(fp) != null) continue;
+            if (self.dom_ids[i] != 0) js_removeElement(self.dom_ids[i]);
+            self.dom_ids[i] = 0;
+            self.slot_active[i] = false;
+            self.fingerprint_to_slot[i] = fingerprint_mod.Fingerprint.INVALID;
+        }
     }
 
     fn castSelf(ptr: *anyopaque) *Self {
@@ -554,11 +629,9 @@ pub const WebBridge = struct {
 // ============================================================================
 
 comptime {
-    // WebBridge should be reasonably sized
-    std.debug.assert(@sizeOf(WebBridge) < 512 * 1024); // < 512KB
-
-    // DOM ID arrays should be properly sized
-    std.debug.assert(@sizeOf([constants.MAX_ELEMENTS]u32) == constants.MAX_ELEMENTS * 4);
+    // The slots are reserved slices, so the bridge itself stays a few dozen
+    // bytes and needs no in-place initialization on the WASM stack.
+    std.debug.assert(@sizeOf(WebBridge) < 256);
 }
 
 // ============================================================================

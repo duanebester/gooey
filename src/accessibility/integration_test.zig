@@ -18,14 +18,19 @@ const ElementConfig = a11y.ElementConfig;
 const PlatformBridge = a11y.PlatformBridge;
 const MacBridge = a11y.MacBridge;
 
-/// Helper to heap-allocate Tree (~500KB - too large for stack per CLAUDE.md)
+/// The bridges' element slots at the tests' tree capacity.
+const element_count_max = a11y.TreeCapacity.standard.element_count_max;
+
+/// A tree at the `standard` profile's capacity, on the heap like a window's.
 fn createTree() !*Tree {
     const tree = try std.testing.allocator.create(Tree);
-    tree.initInPlace();
+    errdefer std.testing.allocator.destroy(tree);
+    try tree.initInPlace(&a11y.TreeCapacity.standard);
     return tree;
 }
 
 fn destroyTree(tree: *Tree) void {
+    tree.deinit();
     std.testing.allocator.destroy(tree);
 }
 
@@ -392,48 +397,45 @@ test "list with position tracking" {
 // Capacity Tests
 // ============================================================================
 
-test "tree respects element limit" {
+test "tree holds exactly its element capacity" {
+    // Fill the tree to its capacity with siblings; the last push still lands.
+    // One more push is a programmer error that asserts, so it is not run here;
+    // the fail-fast check `core-a11y-elements` covers that boundary.
     const tree = try createTree();
     defer destroyTree(tree);
 
-    tree.beginFrame();
+    const capacity = tree.elements.len;
+    try std.testing.expectEqual(@as(usize, element_count_max), capacity);
 
-    // Push elements up to limit
-    var pushed: u32 = 0;
-    while (pushed < a11y.MAX_ELEMENTS + 10) : (pushed += 1) {
-        const result = tree.pushElement(.{ .role = .button, .name = "Test" });
-        if (result == null) break;
+    tree.beginFrame();
+    var pushed: usize = 0;
+    while (pushed < capacity) : (pushed += 1) {
+        const index = tree.pushElement(.{ .role = .button, .name = "Test" });
+        try std.testing.expectEqual(@as(u16, @intCast(pushed)), index);
         tree.popElement();
     }
-
     tree.endFrame();
 
-    // Should not exceed MAX_ELEMENTS
-    try std.testing.expect(tree.count() <= a11y.MAX_ELEMENTS);
+    try std.testing.expectEqual(capacity, tree.count());
 }
 
-test "tree respects depth limit" {
+test "tree holds exactly its depth capacity" {
     const tree = try createTree();
     defer destroyTree(tree);
 
+    const depth_max = tree.parent_stack.len;
     tree.beginFrame();
-
-    // Try to nest beyond limit
-    var depth: u32 = 0;
-    while (depth < a11y.MAX_DEPTH + 10) : (depth += 1) {
-        const result = tree.pushElement(.{ .role = .group, .name = "Nested" });
-        if (result == null) break;
+    var depth: usize = 0;
+    while (depth < depth_max) : (depth += 1) {
+        _ = tree.pushElement(.{ .role = .group, .name = "Nested" });
     }
-
-    // Close what we opened
+    try std.testing.expectEqual(depth_max, @as(usize, tree.stack_depth));
     while (depth > 0) : (depth -= 1) {
         tree.popElement();
     }
-
     tree.endFrame();
 
-    // Depth should have been limited
-    try std.testing.expect(depth <= a11y.MAX_DEPTH);
+    try std.testing.expectEqual(depth_max, tree.count());
 }
 
 // ============================================================================
@@ -460,7 +462,7 @@ test "zero overhead pattern" {
 
 test "platform bridge creation" {
     var platform_bridge: PlatformBridge = undefined;
-    const b = a11y.createPlatformBridge(&platform_bridge, null, null);
+    const b = a11y.createPlatformBridge(&platform_bridge, element_count_max, null, null);
 
     // Bridge should be usable regardless of platform
     const tree = try createTree();
@@ -480,7 +482,7 @@ test "platform bridge creation" {
 
 test "platform bridge with full frame sync" {
     var platform_bridge: PlatformBridge = undefined;
-    const b = a11y.createPlatformBridge(&platform_bridge, null, null);
+    const b = a11y.createPlatformBridge(&platform_bridge, element_count_max, null, null);
 
     const tree = try createTree();
     defer destroyTree(tree);
@@ -521,7 +523,8 @@ test "macos bridge slot allocation" {
 
     const fingerprint = @import("fingerprint.zig");
 
-    var mac_bridge = MacBridge.init(null, null);
+    var mac_bridge = MacBridge.init(element_count_max, null, null);
+    defer mac_bridge.bridge().deinit();
 
     // Allocate multiple slots
     const fp1 = fingerprint.compute(.button, "Button1", null, 0);
@@ -551,8 +554,9 @@ test "macos bridge slot reuse after invalidation" {
 
     const fingerprint = @import("fingerprint.zig");
 
-    var mac_bridge = MacBridge.init(null, null);
+    var mac_bridge = MacBridge.init(element_count_max, null, null);
     const b = mac_bridge.bridge();
+    defer b.deinit();
 
     // Allocate a slot
     const fp1 = fingerprint.compute(.button, "Button1", null, 0);
@@ -573,7 +577,7 @@ test "macos bridge slot reuse after invalidation" {
 test "macos bridge voiceover detection" {
     if (builtin.os.tag != .macos) return;
 
-    var mac_bridge = MacBridge.init(null, null);
+    var mac_bridge = MacBridge.init(element_count_max, null, null);
     const b = mac_bridge.bridge();
 
     // isActive checks VoiceOver status
@@ -588,10 +592,9 @@ test "macos bridge voiceover detection" {
 test "macos bridge full lifecycle" {
     if (builtin.os.tag != .macos) return;
 
-    var mac_bridge = MacBridge.init(null, null);
+    var mac_bridge = MacBridge.init(element_count_max, null, null);
     const b = mac_bridge.bridge();
 
-    // Heap-allocate Tree (~500KB - too large for stack per CLAUDE.md)
     const tree = try createTree();
     defer destroyTree(tree);
 

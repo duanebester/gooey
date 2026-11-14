@@ -21,6 +21,13 @@
 //!   it first and layout is never asked for more.
 //! - `core-layer-count`: opens one layer more than `nano`'s 8. Each layer is a
 //!   layout floating root, a pool sized from `build.layer_count_frame_max`.
+//! - `core-a11y-elements`: renders one accessible box more than `nano`'s 128
+//!   `a11y.element_count_max`. The frame's node pool, the tree and every
+//!   bridge are sized from that field, so the frame's pool stops it first.
+//! - `core-a11y-announcements`: five clicks between two builds, each announcing,
+//!   one past `nano`'s 4 `a11y.announcement_count_frame_max`.
+//! - `core-a11y-announcement-bytes`: three clicks announcing 256 bytes each: two
+//!   fill `nano`'s 512 `a11y.announcement_bytes_frame_max` exactly.
 //! - `core-opacity-range`: a box whose `Style.opacity` is just above 1.
 //! - `core-grow-weight`: a box that grows with a weight of 0.
 //! - `core-pointer-drag-unkeyed`: a box with `on_pointer_drag` and no key.
@@ -59,6 +66,9 @@ const Mode = enum {
     @"core-box-depth",
     @"core-layout-elements",
     @"core-layer-count",
+    @"core-a11y-elements",
+    @"core-a11y-announcements",
+    @"core-a11y-announcement-bytes",
     @"core-opacity-range",
     @"core-grow-weight",
     @"core-pointer-drag-unkeyed",
@@ -93,6 +103,9 @@ pub fn main(init: std.process.Init) !void {
         .@"core-box-depth" => coreTick(init.gpa, init.io, CoreApp.deepBoxes),
         .@"core-layout-elements" => coreTick(init.gpa, init.io, CoreApp.manyBoxes),
         .@"core-layer-count" => coreTick(init.gpa, init.io, CoreApp.manyLayers),
+        .@"core-a11y-elements" => coreTick(init.gpa, init.io, CoreApp.manyAccessible),
+        .@"core-a11y-announcements" => coreAnnounce(init.gpa, init.io, .count),
+        .@"core-a11y-announcement-bytes" => coreAnnounce(init.gpa, init.io, .bytes),
         .@"core-opacity-range" => coreTick(init.gpa, init.io, CoreApp.opacityRange),
         .@"core-grow-weight" => coreTick(init.gpa, init.io, CoreApp.growWeight),
         .@"core-pointer-drag-unkeyed" => coreTick(init.gpa, init.io, CoreApp.unkeyedDrag),
@@ -255,6 +268,14 @@ const CoreApp = struct {
         const count = gooey.ResourceLimits.nano.build.layer_count_frame_max + 1;
         for (0..count) |_| cx.render(gooey.ui.box(.{
             .layer = .{ .kind = .popover, .anchor = .{ .parent = .{} }, .clip = .escape },
+        }, .{}));
+    }
+
+    /// Exactly `nano`'s accessibility nodes as sibling buttons, then one more.
+    fn manyAccessible(cx: *gooey.Cx) void {
+        const count = gooey.ResourceLimits.nano.a11y.element_count_max + 1;
+        for (0..count) |_| cx.render(gooey.ui.box(.{
+            .a11y = .{ .role = .button, .label = "Go" },
         }, .{}));
     }
 
@@ -474,6 +495,47 @@ fn clickCenter(app: anytype) void {
     app.tick(2);
 }
 
+/// Click an announcing button one time more than `nano` holds between two
+/// builds: `count` announces one byte per click, so the count runs out;
+/// `bytes` announces a quarter of the bytes per click, so two clicks fill them.
+fn coreAnnounce(gpa: std.mem.Allocator, io: std.Io, comptime pool: enum { count, bytes }) void {
+    const a11y = gooey.ResourceLimits.nano.a11y;
+    const Announcer = struct {
+        const message_bytes = if (pool == .count) 1 else a11y.announcement_bytes_frame_max / 2;
+        const click_count = if (pool == .count) a11y.announcement_count_frame_max + 1 else 3;
+        const message: [message_bytes]u8 = @splat('a');
+        comptime {
+            std.debug.assert(click_count * 2 <= gooey.ResourceLimits.nano.events.queue_count_max);
+            if (pool == .bytes) std.debug.assert(click_count <= a11y.announcement_count_frame_max);
+        }
+
+        fn render(cx: *gooey.Cx) void {
+            cx.render(gooey.ui.box(.{
+                .key = .{ .name = "announce" },
+                .on_click = cx.on(say, .{}),
+                .style = .{ .width = .{ .grow = 1 }, .height = .{ .grow = 1 } },
+            }, .{}));
+        }
+
+        fn say(_: *CoreState, effects: *gooey.Effects) void {
+            effects.announce(&message, .polite);
+        }
+    };
+    const app = initCoreApp(gooey.App(CoreState, Announcer.render, core_config), gpa, io);
+    app.tick(1);
+    const point = gooey.input.MouseEvent{
+        .position = .{ .x = 50, .y = 50 },
+        .button = .left,
+        .click_count = 1,
+        .modifiers = .{},
+    };
+    for (0..Announcer.click_count) |_| {
+        app.window.queue.push(.{ .input = .{ .mouse_down = point } });
+        app.window.queue.push(.{ .input = .{ .mouse_up = point } });
+    }
+    app.tick(2);
+}
+
 fn coreDeinitRunning(gpa: std.mem.Allocator, io: std.Io) void {
     const app = initCoreApp(gooey.App(CoreState, CoreApp.empty, core_config), gpa, io);
     app.tick(1);
@@ -499,6 +561,7 @@ fn corePackRecords(gpa: std.mem.Allocator, pool: enum { draws, clips }) void {
         .hit_record_count_max = 1,
         .handler_count_max = 1,
         .a11y_node_count_max = 1,
+        .announcements = .{ .count_max = 1, .bytes_max = 1 },
         .text_bytes_max = 1,
         .mesh_point_count_max = 1,
     }) catch |err| {
@@ -557,6 +620,7 @@ fn coreCapabilitiesMeshes(gpa: std.mem.Allocator) void {
         .hit_record_count_max = 1,
         .handler_count_max = 1,
         .a11y_node_count_max = 1,
+        .announcements = .{ .count_max = 1, .bytes_max = 1 },
         .text_bytes_max = 1,
         .mesh_point_count_max = 2,
     }) catch |err| {

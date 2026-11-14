@@ -103,7 +103,7 @@ fn buildFrame(comptime App: type, window: *Window) void {
     });
     // No frame is in flight here, so the render side reads neither until
     // this frame is published.
-    window.built().announcements = window.announcements;
+    window.built().announcements.copyFrom(&window.announcements);
     window.announcements.clear();
     window.clear_color = window.theme.bg;
     const build_ns = debugger.stamp(window);

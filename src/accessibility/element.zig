@@ -6,7 +6,6 @@
 const std = @import("std");
 const types = @import("types.zig");
 const fingerprint_mod = @import("fingerprint.zig");
-const constants = @import("constants.zig");
 const layout = @import("../layout/layout.zig");
 
 /// A text field's selection, as byte offsets into its value; `start == end`

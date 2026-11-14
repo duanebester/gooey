@@ -43,6 +43,7 @@ pub const Accessibility = @import("accessibility.zig").Accessibility;
 
 /// Accessibility tree for tracking UI hierarchy
 pub const Tree = @import("tree.zig").Tree;
+pub const TreeCapacity = @import("tree.zig").Capacity;
 
 /// Individual accessible element
 pub const Element = @import("element.zig").Element;

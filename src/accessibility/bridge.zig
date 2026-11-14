@@ -12,7 +12,6 @@ const std = @import("std");
 const tree_mod = @import("tree.zig");
 const types = @import("types.zig");
 const fingerprint_mod = @import("fingerprint.zig");
-const constants = @import("constants.zig");
 
 pub const Tree = tree_mod.Tree;
 pub const Element = tree_mod.Element;
@@ -70,17 +69,17 @@ pub const Bridge = struct {
     /// Sync dirty elements to platform
     pub fn syncDirty(self: Bridge, tree: *const Tree, dirty: []const u16) void {
         // Assertion: tree must be valid
-        std.debug.assert(tree.count() <= constants.MAX_ELEMENTS);
-        // Assertion: dirty indices must be within tree bounds
-        std.debug.assert(dirty.len <= constants.MAX_ELEMENTS);
+        std.debug.assert(tree.count() <= tree.elements.len);
+        // Assertion: each element is dirty at most once
+        std.debug.assert(dirty.len <= tree.count());
 
         self.vtable.syncDirty(self.ptr, tree, dirty);
     }
 
     /// Remove elements by fingerprint
     pub fn removeElements(self: Bridge, fps: []const Fingerprint) void {
-        // Assertion: removal list bounded
-        std.debug.assert(fps.len <= constants.MAX_ELEMENTS);
+        // Assertion: removal list bounded by the largest tree
+        std.debug.assert(fps.len <= @import("../core/limits.zig").a11y_element_count_ceiling);
 
         self.vtable.removeElements(self.ptr, fps);
     }
@@ -114,7 +113,7 @@ pub const Bridge = struct {
     /// Perform full frame sync: sync dirty, remove old, announce, handle focus
     pub fn syncFrame(self: Bridge, tree: *const Tree) void {
         // Assertion: tree state is valid
-        std.debug.assert(tree.count() <= constants.MAX_ELEMENTS);
+        std.debug.assert(tree.count() <= tree.elements.len);
         std.debug.assert(tree.stack_depth == 0); // Frame must be ended
 
         // Only sync if screen reader is active
@@ -264,21 +263,23 @@ comptime {
     std.debug.assert(@sizeOf(Bridge.VTable) == 6 * @sizeOf(usize));
 }
 
-/// Helper to heap-allocate Tree (~500KB - too large for stack per CLAUDE.md)
+/// A tree at the tests' capacity, on the heap like a window's.
 fn createTestTree() !*Tree {
     const tree = try std.testing.allocator.create(Tree);
-    tree.initInPlace();
+    errdefer std.testing.allocator.destroy(tree);
+    try tree.initInPlace(&tree_mod.Capacity.standard);
     return tree;
 }
 
 fn destroyTestTree(tree: *Tree) void {
+    tree.deinit();
     std.testing.allocator.destroy(tree);
 }
 
 test "null bridge is safe" {
     const b = NullBridge.bridge();
 
-    // All operations should be no-ops (heap-allocate Tree - ~500KB too large for stack)
+    // All operations should be no-ops.
     const tree = try createTestTree();
     defer destroyTestTree(tree);
     tree.beginFrame();
@@ -298,7 +299,6 @@ test "test bridge records calls" {
     var test_bridge = TestBridge{};
     const b = test_bridge.bridge();
 
-    // Heap-allocate Tree (~500KB - too large for stack per CLAUDE.md)
     const tree = try createTestTree();
     defer destroyTestTree(tree);
     tree.beginFrame();
@@ -325,7 +325,6 @@ test "test bridge respects active flag" {
     var test_bridge = TestBridge{ .active = false };
     const b = test_bridge.bridge();
 
-    // Heap-allocate Tree (~500KB - too large for stack per CLAUDE.md)
     const tree = try createTestTree();
     defer destroyTestTree(tree);
     tree.beginFrame();
@@ -343,7 +342,7 @@ test "bridge syncFrame handles all operations" {
     var test_bridge = TestBridge{};
     const b = test_bridge.bridge();
 
-    // Frame 1: Create two elements (heap-allocate Tree - ~500KB too large for stack)
+    // Frame 1: Create two elements
     const tree = try createTestTree();
     defer destroyTestTree(tree);
     tree.beginFrame();

@@ -1460,6 +1460,15 @@ fn addFailFastChecks(
         .{ .mode = "core-layer-count", .stderr = "layout pool 'floating roots' exhausted: " ++
             "capacity 8, 8 in use, 1 requested. Raise " ++
             "ResourceLimits.build.layer_count_frame_max." },
+        .{ .mode = "core-a11y-elements", .stderr = "a11y pool 'elements' exhausted: " ++
+            "capacity 128, 128 in use, 1 requested, frame 1. Raise " ++
+            "ResourceLimits.a11y.element_count_max." },
+        .{ .mode = "core-a11y-announcements", .stderr = "a11y pool 'announcements' " ++
+            "exhausted: capacity 4, 4 in use, 1 requested, frame 1. Raise " ++
+            "ResourceLimits.a11y.announcement_count_frame_max." },
+        .{ .mode = "core-a11y-announcement-bytes", .stderr = "a11y pool 'announcement bytes' " ++
+            "exhausted: capacity 512 bytes, 512 in use, 256 requested, frame 1. Raise " ++
+            "ResourceLimits.a11y.announcement_bytes_frame_max." },
         .{ .mode = "core-mono-unset", .stderr = "text uses family .mono, but no second " ++
             "family is loaded; set Config.fonts.mono and " ++
             "ResourceLimits.text.fonts.mono_variants" },

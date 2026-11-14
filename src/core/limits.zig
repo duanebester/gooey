@@ -153,6 +153,7 @@ pub const ResourceLimits = struct {
     events: EventLimits,
     text: TextLimits,
     entities: EntityLimits,
+    a11y: A11yLimits,
 
     /// Every profile name `gooey.App(.., .{ .limits = ... })` accepts, smallest first.
     /// Each profile's `text.fonts` is the `FontLimits` profile of the same name.
@@ -170,6 +171,7 @@ pub const ResourceLimits = struct {
         .events = EventLimits.nano,
         .text = TextLimits.nano,
         .entities = EntityLimits.nano,
+        .a11y = A11yLimits.nano,
     };
 
     /// Single-screen forms and lists, two frames in flight.
@@ -184,6 +186,7 @@ pub const ResourceLimits = struct {
         .events = EventLimits.small,
         .text = TextLimits.small,
         .entities = EntityLimits.small,
+        .a11y = A11yLimits.small,
     };
 
     /// Ordinary multi-panel UI apps. See `PaintLimits.standard`.
@@ -198,6 +201,7 @@ pub const ResourceLimits = struct {
         .events = EventLimits.standard,
         .text = TextLimits.standard,
         .entities = EntityLimits.standard,
+        .a11y = A11yLimits.standard,
     };
 
     /// Dense-content apps: big tables, treemaps, full-screen editors, charts,
@@ -213,6 +217,7 @@ pub const ResourceLimits = struct {
         .events = EventLimits.large,
         .text = TextLimits.large,
         .entities = EntityLimits.large,
+        .a11y = A11yLimits.large,
     };
 
     /// Every capacity at its framework ceiling. For stress tests and benchmarks,
@@ -234,6 +239,7 @@ pub const ResourceLimits = struct {
         .events = EventLimits.ceiling,
         .text = TextLimits.ceiling,
         .entities = EntityLimits.ceiling,
+        .a11y = A11yLimits.ceiling,
     };
 
     /// First violated rule, or null when the budget is valid. Shared by the
@@ -249,6 +255,7 @@ pub const ResourceLimits = struct {
         if (checkCeilings(EventLimits, .events, &self.events)) |violation| return violation;
         if (self.text.check()) |violation| return violation;
         if (checkCeilings(EntityLimits, .entities, &self.entities)) |violation| return violation;
+        if (checkCeilings(A11yLimits, .a11y, &self.a11y)) |violation| return violation;
         return self.checkCoreRelationships();
     }
 
@@ -292,6 +299,7 @@ pub const ResourceLimits = struct {
         if (self.build.box_depth_max > element_count) {
             return relationship(.build, "box_depth_max", self.build.box_depth_max, element_count);
         }
+        if (self.checkA11yRelationships()) |violation| return violation;
         if (self.events.dialog_path_bytes_max > self.events.text_bytes_max) {
             return relationship(
                 .events,
@@ -307,6 +315,31 @@ pub const ResourceLimits = struct {
                 .rule = .below_relationship,
                 .value = self.records.paint_record_count_frame_max,
                 .bound = element_count,
+            };
+        }
+        return null;
+    }
+
+    /// Every accessibility node is an element, and every announcement has at
+    /// least one byte.
+    fn checkA11yRelationships(self: *const ResourceLimits) ?Violation {
+        const element_count = self.build.element_count_frame_max;
+        if (self.a11y.element_count_max > element_count) {
+            return relationship(
+                .a11y,
+                "element_count_max",
+                self.a11y.element_count_max,
+                element_count,
+            );
+        }
+        const announcement_count = self.a11y.announcement_count_frame_max;
+        if (self.a11y.announcement_bytes_frame_max < announcement_count) {
+            return .{
+                .budget = .a11y,
+                .field = "announcement_bytes_frame_max",
+                .rule = .below_relationship,
+                .value = self.a11y.announcement_bytes_frame_max,
+                .bound = announcement_count,
             };
         }
         return null;
@@ -1230,6 +1263,57 @@ pub const EntityLimits = struct {
     pub const ceiling: EntityLimits = .{ .count_per_type_max = 4_096 };
 };
 
+/// Screen-reader capacities: the accessibility nodes each frame records, the
+/// tree the platform bridges diff, and the announcements a frame carries.
+/// Peaks measured over every example (0.6 plan, "Method"): 24 nodes
+/// (accessible-form, `small`), 7 at `nano`, and one announcement per frame.
+pub const A11yLimits = struct {
+    /// Accessibility nodes per frame (boxes with `a11y`), which sizes both
+    /// frames' node pools, the accessibility tree, and each platform bridge's
+    /// element slots. Every node is an element, so at most
+    /// `build.element_count_frame_max`; tree indexes are `u16`.
+    element_count_max: u32,
+    /// `Effects.announce` calls between two builds.
+    announcement_count_frame_max: u32,
+    /// Bytes of those announcements' text, copied out of the handlers.
+    announcement_bytes_frame_max: u32,
+
+    pub const nano: A11yLimits = .{
+        .element_count_max = 128,
+        .announcement_count_frame_max = 4,
+        .announcement_bytes_frame_max = 512,
+    };
+    pub const small: A11yLimits = .{
+        .element_count_max = 512,
+        .announcement_count_frame_max = 8,
+        .announcement_bytes_frame_max = 1024,
+    };
+    pub const standard: A11yLimits = .{
+        .element_count_max = 2_048,
+        .announcement_count_frame_max = 16,
+        .announcement_bytes_frame_max = 2048,
+    };
+    pub const large: A11yLimits = .{
+        .element_count_max = 8_192,
+        .announcement_count_frame_max = 16,
+        .announcement_bytes_frame_max = 4096,
+    };
+    pub const ceiling: A11yLimits = .{
+        .element_count_max = a11y_element_count_ceiling,
+        .announcement_count_frame_max = 64,
+        .announcement_bytes_frame_max = 16 * 1024,
+    };
+};
+
+/// The accessibility tree indexes elements with `u16` and reserves `0xFFFF`
+/// as "none"; its fingerprint map holds twice as many buckets, a power of two.
+pub const a11y_element_count_ceiling: u32 = 16_384;
+
+comptime {
+    assert(a11y_element_count_ceiling < std.math.maxInt(u16));
+    assert(2 * a11y_element_count_ceiling <= std.math.maxInt(u16));
+}
+
 /// Every `u32` field of a flat budget must be in `1..=ceiling`.
 fn checkCeilings(comptime T: type, comptime budget: Violation.Budget, self: *const T) ?Violation {
     inline for (@typeInfo(T).@"struct".field_names) |field_name| {
@@ -1300,6 +1384,7 @@ pub const Violation = struct {
         events,
         text,
         entities,
+        a11y,
     };
     pub const Rule = enum {
         zero,
@@ -1682,6 +1767,49 @@ test "check reports each negative case precisely" {
     try std.testing.expectEqualStrings("quad_count_frame_max", limits.check().?.field);
 }
 
+test "check bounds each a11y field by its ceiling and its relationships" {
+    // Goal: every `ResourceLimits.a11y` field fails at 0 and one past its
+    // ceiling and passes at the ceiling; nodes never outnumber elements and
+    // announcement bytes never fall below one per announcement. Method: start
+    // from `ceiling` (every field at its ceiling) and move one field at a time.
+    inline for (.{
+        "element_count_max",
+        "announcement_count_frame_max",
+        "announcement_bytes_frame_max",
+    }) |field| {
+        var limits = ResourceLimits.ceiling;
+        try std.testing.expect(limits.check() == null);
+        const field_ceiling = @field(A11yLimits.ceiling, field);
+        @field(limits.a11y, field) = 0;
+        try std.testing.expectEqual(Violation.Rule.zero, limits.check().?.rule);
+        try std.testing.expectEqualStrings(field, limits.check().?.field);
+        @field(limits.a11y, field) = field_ceiling + 1;
+        const above = limits.check().?;
+        try std.testing.expectEqual(Violation.Budget.a11y, above.budget);
+        try std.testing.expectEqualStrings(field, above.field);
+        try std.testing.expectEqual(Violation.Rule.above_ceiling, above.rule);
+        try std.testing.expectEqual(field_ceiling, above.bound);
+    }
+
+    var limits = ResourceLimits.nano;
+    limits.a11y.element_count_max = limits.build.element_count_frame_max;
+    try std.testing.expect(limits.check() == null);
+    limits.a11y.element_count_max += 1;
+    const nodes = limits.check().?;
+    try std.testing.expectEqualStrings("element_count_max", nodes.field);
+    try std.testing.expectEqual(Violation.Rule.above_relationship, nodes.rule);
+    try std.testing.expectEqual(limits.build.element_count_frame_max, nodes.bound);
+
+    limits = ResourceLimits.nano;
+    limits.a11y.announcement_bytes_frame_max = limits.a11y.announcement_count_frame_max;
+    try std.testing.expect(limits.check() == null);
+    limits.a11y.announcement_bytes_frame_max -= 1;
+    const bytes = limits.check().?;
+    try std.testing.expectEqualStrings("announcement_bytes_frame_max", bytes.field);
+    try std.testing.expectEqual(Violation.Rule.below_relationship, bytes.rule);
+    try std.testing.expectEqual(limits.a11y.announcement_count_frame_max, bytes.bound);
+}
+
 test "check bounds box depth and layers by their ceilings and the element count" {
     // Goal: `build.box_depth_max` and `build.layer_count_frame_max` each sit
     // exactly on every bound (valid), then one past it (the named violation).
@@ -1704,6 +1832,7 @@ test "check bounds box depth and layers by their ceilings and the element count"
     limits.build.key_count_frame_max = 100;
     limits.records.hit_record_count_frame_max = 100;
     limits.records.handler_count_frame_max = 100;
+    limits.a11y.element_count_max = 100;
     limits.build.box_depth_max = 100;
     try std.testing.expect(limits.check() == null);
     limits.build.box_depth_max = 101;

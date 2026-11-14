@@ -23,9 +23,9 @@
 //! Why this shape: it mirrors the scene suite's frame-e2e group directly — a
 //! whole-frame µs number against the budget is the only thing that answers "does
 //! the a11y diff fit the frame?". The fingerprint micro-bench sits underneath as
-//! the per-element primitive. The tree uses static arrays end to end, so there is
-//! no allocator churn to gate (CLAUDE.md §2); the only heap touch is the one-time
-//! `Tree` allocation (it is ~350 KiB, so it is heap-allocated per §14).
+//! the per-element primitive. The tree reserves every table once, at init, from
+//! the `standard` profile's `ResourceLimits.a11y`, so there is no allocator churn
+//! to gate (CLAUDE.md §2).
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -61,9 +61,9 @@ const a11y = gooey.accessibility;
 const Tree = a11y.Tree;
 const fingerprint = a11y.fingerprint;
 const Fingerprint = fingerprint.Fingerprint;
-const constants = a11y.constants;
 
-const MAX_ELEMENTS = constants.MAX_ELEMENTS;
+/// The `standard` profile's tree: 2,048 elements, enough for every case below.
+const capacity = a11y.TreeCapacity.standard;
 
 // =============================================================================
 // Benchmark Configuration
@@ -376,14 +376,16 @@ fn benchFingerprint(comptime name: []const u8, count: u32, with_parent: bool) Be
 fn benchFrameDiff(allocator: Allocator, comptime name: []const u8, child_count: u32, churn_count: u32) !BenchmarkResult {
     std.debug.assert(child_count > 0);
     std.debug.assert(churn_count <= child_count);
-    std.debug.assert(child_count + 1 <= MAX_ELEMENTS);
+    std.debug.assert(child_count + 1 <= capacity.element_count_max);
 
     const table = try allocNames(allocator, child_count);
     defer freeNames(allocator, table);
 
     const tree = try allocator.create(Tree);
     defer allocator.destroy(tree);
-    tree.initInPlace();
+
+    try tree.initInPlace(&capacity);
+    defer tree.deinit();
 
     const operation_count = child_count + 1; // children + the root group
     const warmup_iters = getWarmupIterations(operation_count);
@@ -431,7 +433,9 @@ test "validate: a stable rebuild reports zero dirty after the first frame" {
 
     const tree = try allocator.create(Tree);
     defer allocator.destroy(tree);
-    tree.initInPlace();
+
+    try tree.initInPlace(&capacity);
+    defer tree.deinit();
 
     // First frame: everything is new, so every element is dirty.
     _ = runDiffFrame(tree, table.names, 0, false);
@@ -452,7 +456,9 @@ test "validate: churn marks exactly the changed elements dirty" {
 
     const tree = try allocator.create(Tree);
     defer allocator.destroy(tree);
-    tree.initInPlace();
+
+    try tree.initInPlace(&capacity);
+    defer tree.deinit();
 
     const churn_count: u32 = 8;
 
@@ -538,8 +544,8 @@ pub fn main(init: std.process.Init) !void {
         \\  - stable = identical content each frame (steady state, ~0 dirty after frame 1).
         \\    churn  = a fraction of live .status elements change value each frame, driving
         \\    the dirty-detection + auto-announce path.
-        \\  - The tree is fully static-allocation; the only heap touch is the one-time
-        \\    Tree allocation, so there is no per-frame zero-alloc gate to run here.
+        \\  - The tree reserves its tables once at init (`standard` profile), so there
+        \\    is no per-frame zero-alloc gate to run here.
         \\  - operation_count = total elements (children + root); iterations are adaptive.
         \\
     , .{});

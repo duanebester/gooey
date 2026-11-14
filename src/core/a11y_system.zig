@@ -2,8 +2,7 @@
 //! poll counter.
 //!
 //! - `tree`: per-frame `a11y.Tree` widgets push elements into; rebuilt
-//!   every frame, ~zero alloc after init. ~350KB — the dominant size
-//!   here and the reason `initInPlace` is `noinline`.
+//!   every frame from tables reserved at init from `ResourceLimits.a11y`.
 //! - `platform_bridge`: tagged-union storage for the active platform's
 //!   bridge, so the framework hands out a uniform `Bridge` regardless
 //!   of platform.
@@ -15,14 +14,15 @@
 //!   it to early-out when accessibility is off.
 //! - `check_counter`: frame counter driving the periodic refresh.
 //!
-//! The system takes no back-pointer: `initInPlace` receives the platform
+//! The system takes no back-pointer: `bindPlatform` receives the platform
 //! window/view it needs, so data dependencies are visible at the call site.
 //! `core/screen_reader.zig` builds the tree from each published frame and
 //! syncs it to the bridge.
 //!
 //! Invariants:
-//! - `bridge.ptr` always points into `platform_bridge` — initialised
-//!   in lockstep with the union and never replaced after init.
+//! - `bridge.ptr` always points into `platform_bridge` — written in
+//!   lockstep with the union by `initInPlace`, `bindPlatform` and
+//!   `bindHeadless`, which run only during initialization and teardown.
 //! - `check_counter < SCREEN_READER_CHECK_INTERVAL` after every
 //!   `beginFrame`.
 //! - `enabled == true` only via the periodic poll finding a screen
@@ -38,9 +38,8 @@ const a11y = @import("../accessibility/accessibility.zig");
 // =============================================================================
 
 pub const A11ySystem = struct {
-    /// Per-frame accessibility tree. Built from each published frame
-    /// and drained to the platform bridge by `screen_reader.publish`. ~350KB; the struct's
-    /// stack-budget burden.
+    /// Per-frame accessibility tree. Built from each published frame and
+    /// drained to the platform bridge by `screen_reader.publish`.
     tree: a11y.Tree,
 
     /// Tagged-union storage for the active platform bridge — only the
@@ -70,53 +69,53 @@ pub const A11ySystem = struct {
     // Lifecycle
     // -------------------------------------------------------------------------
 
-    /// Initialize the accessibility subsystem in place at the system's
-    /// final heap address.
+    /// Reserve the tree from `capacity` and start on the no-op bridge, for a
+    /// window with no platform window yet (`Window.initHeadlessPtr`). The
+    /// tree is built as usual; nothing is published to an OS accessibility
+    /// runtime until `bindPlatform`.
     ///
-    /// Marked `noinline` so the compiler can't fold the ~350KB `Tree`
-    /// field into the caller's WASM stack frame; only the enclosing
-    /// init path pays the cost.
-    ///
-    /// `window` and `view` are the platform-native handles the bridge
-    /// needs (NSWindow + NSView on macOS, ignored on others). Pass
-    /// `null` from non-macOS platforms.
-    pub noinline fn initInPlace(
-        self: *Self,
-        window: anytype,
-        view: anytype,
-    ) void {
-        // Field-by-field — no struct literal, no stack temp.
-
-        // Tree in-place to dodge the ~350KB struct-literal stack temp.
-        // The leaf `Tree.initInPlace` is itself `noinline`.
-        self.tree.initInPlace();
-
-        // Scalars first — cheap, sets the invariant.
-        self.enabled = false;
-        self.check_counter = 0;
-
-        // `createPlatformBridge` writes the union variant and returns
-        // the dispatcher handle. It must run after the union storage is
-        // at its final address, which holds because `self` is already
-        // initialised in place by its parent.
-        self.platform_bridge = undefined;
-        self.bridge = a11y.createPlatformBridge(&self.platform_bridge, window, view);
-
-        // Write-boundary assertion: the dispatcher must point into our
-        // own storage.
-        std.debug.assert(self.bridgeAddressValid());
-    }
-
-    /// Initialize with the no-op bridge, for a window with no platform window
-    /// (`Window.initHeadlessPtr`). The tree is built as usual; nothing is
-    /// published to an OS accessibility runtime or a D-Bus session.
-    pub noinline fn initHeadlessInPlace(self: *Self) void {
-        self.tree.initInPlace();
+    /// `noinline` keeps the tree's setup out of the caller's WASM frame.
+    pub noinline fn initInPlace(self: *Self, capacity: *const a11y.TreeCapacity) !void {
+        try self.tree.initInPlace(capacity);
         self.enabled = false;
         self.check_counter = 0;
         self.platform_bridge = .{ .null_bridge = {} };
         self.bridge = a11y.NullBridge.bridge();
         std.debug.assert(self.bridgeAddressValid());
+        std.debug.assert(!self.bridge.isActive());
+    }
+
+    /// Replace the bridge with the platform's, sized to the tree. The tree's
+    /// storage is kept: binding happens during initialization, and a rebind
+    /// must not allocate (§2).
+    ///
+    /// `window` and `view` are the platform-native handles the bridge needs
+    /// (NSWindow and NSView on macOS, the `uia.Host` on Windows, null
+    /// elsewhere).
+    pub fn bindPlatform(self: *Self, window: anytype, view: anytype) void {
+        std.debug.assert(self.bridgeAddressValid());
+        self.bridge.deinit();
+        self.enabled = false;
+        self.check_counter = 0;
+        // The union is at its final address because `self` is.
+        self.platform_bridge = .{ .null_bridge = {} };
+        self.bridge = a11y.createPlatformBridge(
+            &self.platform_bridge,
+            @intCast(self.tree.elements.len),
+            window,
+            view,
+        );
+        std.debug.assert(self.bridgeAddressValid());
+    }
+
+    /// Return to the no-op bridge before the native window goes away.
+    pub fn bindHeadless(self: *Self) void {
+        std.debug.assert(self.bridgeAddressValid());
+        self.bridge.deinit();
+        self.enabled = false;
+        self.check_counter = 0;
+        self.platform_bridge = .{ .null_bridge = {} };
+        self.bridge = a11y.NullBridge.bridge();
         std.debug.assert(!self.bridge.isActive());
     }
 
@@ -136,11 +135,13 @@ pub const A11ySystem = struct {
         return bridge_address < storage_end;
     }
 
-    /// Tear down the platform bridge. Must be called from the parent
-    /// struct's `deinit` before any teardown that might invalidate
-    /// the underlying window / view handles.
+    /// Tear down the bridge, then release the tree. Must be called from the
+    /// parent struct's `deinit` before any teardown that might invalidate the
+    /// underlying window / view handles.
     pub fn deinit(self: *Self) void {
+        std.debug.assert(self.bridgeAddressValid());
         self.bridge.deinit();
+        self.tree.deinit();
     }
 
     // -------------------------------------------------------------------------
@@ -229,8 +230,9 @@ const testing = std.testing;
 
 test "A11ySystem: initInPlace produces a disabled, freshly-counted system" {
     var sys: A11ySystem = undefined;
-    sys.initInPlace(null, null);
+    try sys.initInPlace(&a11y.TreeCapacity.standard);
     defer sys.deinit();
+    sys.bindPlatform(null, null);
 
     try testing.expectEqual(false, sys.isEnabled());
     try testing.expectEqual(@as(u32, 0), sys.check_counter);
@@ -249,7 +251,8 @@ test "A11ySystem: a by-value copy is detected as a dangling bridge" {
     // bridge resources.
     const original = try testing.allocator.create(A11ySystem);
     defer testing.allocator.destroy(original);
-    original.initInPlace(null, null);
+    try original.initInPlace(&a11y.TreeCapacity.standard);
+    original.bindPlatform(null, null);
     defer original.deinit();
 
     const copy = try testing.allocator.create(A11ySystem);
@@ -266,7 +269,7 @@ test "A11ySystem: a by-value copy is detected as a dangling bridge" {
 
 test "A11ySystem: forceEnable / forceDisable flip the cached flag" {
     var sys: A11ySystem = undefined;
-    sys.initInPlace(null, null);
+    try sys.initInPlace(&a11y.TreeCapacity.standard);
     defer sys.deinit();
 
     sys.forceEnable();
@@ -278,18 +281,18 @@ test "A11ySystem: forceEnable / forceDisable flip the cached flag" {
 
 test "A11ySystem: announce is a no-op when disabled" {
     var sys: A11ySystem = undefined;
-    sys.initInPlace(null, null);
+    try sys.initInPlace(&a11y.TreeCapacity.standard);
     defer sys.deinit();
 
     // Disabled by default — announce should not push to the tree.
     try testing.expectEqual(false, sys.isEnabled());
     sys.announce("ignored", .polite);
-    try testing.expectEqual(@as(u32, 0), sys.tree.announcement_count);
+    try testing.expectEqual(@as(u16, 0), sys.tree.announcement_count);
 }
 
 test "A11ySystem: announce reaches the tree when enabled" {
     var sys: A11ySystem = undefined;
-    sys.initInPlace(null, null);
+    try sys.initInPlace(&a11y.TreeCapacity.standard);
     defer sys.deinit();
 
     sys.forceEnable();
@@ -298,12 +301,12 @@ test "A11ySystem: announce reaches the tree when enabled" {
     sys.announce("hello", .polite);
     sys.tree.endFrame();
 
-    try testing.expectEqual(@as(u32, 1), sys.tree.announcement_count);
+    try testing.expectEqual(@as(u16, 1), sys.tree.announcement_count);
 }
 
 test "A11ySystem: beginFrame increments the counter and resets at the interval" {
     var sys: A11ySystem = undefined;
-    sys.initInPlace(null, null);
+    try sys.initInPlace(&a11y.TreeCapacity.standard);
     defer sys.deinit();
 
     // Drive the counter up to one tick before the interval. Each
