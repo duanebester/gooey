@@ -2633,6 +2633,9 @@ test "data_table sorts 10,000 rows from its headers and builds only the rows in 
     try testing.expect(children.count < 30);
     try testing.expectEqual(@as(f32, 32), rows[0].height);
     try testing.expectEqual(@as(u32, 3), app.state.order[3]);
+    // Name grows, so the last column ends at the list's right edge.
+    const modified = nodeNamed(&app.window, .button, "Modified").?.bounds;
+    try testing.expectEqual(children.list.x + children.list.width, modified.x + modified.width);
 
     tableHeader(app, &now, "Size");
     try testing.expect(tableSorted(&app.state, true));
