@@ -77,7 +77,7 @@ const ModalContent = struct {
             handler.* = cx.on(State.selectOption, .{ .arg = @as(u32, @intCast(index)) });
         }
         cx.render(ui.box(.{ .style = .{ .width = .{ .fixed = 312 }, .gap = 16 } }, .{
-            ui.text("Modal with nested Select", .{ .size = 22 }),
+            ui.text("Modal with nested Select", .{ .size = 22, .wrap = .words }),
             ui.text("The open dropdown should be visible above this modal.", .{
                 .size = 14,
                 .color = .{ .rgba = .rgb(0.35, 0.35, 0.4) },

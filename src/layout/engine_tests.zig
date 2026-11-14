@@ -550,6 +550,58 @@ test "propagateHeightChange stops at fixed-height parent" {
     try std.testing.expect(inner.computed.sized_height >= 40.0);
 }
 
+test "wrapped text grows its floating panel but not the panel's host" {
+    // Goal: wrapped lines inside a floating panel must grow the panel, as they
+    // grow any fit-content parent, while the panel must not grow its host.
+    // Methodology: both texts wrap "abcdefghij abcdefghij" (210 px at 10 px a
+    // character) to two 20 px lines in 100 px. Without the fix the panel stays
+    // one line tall (40 px) and the host counts the panel in its height (80 px).
+    var engine = try LayoutEngine.init(std.testing.allocator);
+    defer engine.deinit();
+    engine.setMeasureTextFn(measureTenPixelsPerCharacter, null);
+    engine.beginFrame(800, 600);
+
+    const wrapped: TextConfig = .{ .wrap_mode = .words, .font_size = 20, .line_height = 100 };
+    const fit_column: Sizing = .{ .width = SizingAxis.fixed(100), .height = SizingAxis.fit() };
+    try engine.openElement(.{
+        .id = LayoutId.init("host"),
+        .layout = .{ .sizing = fit_column, .layout_direction = .top_to_bottom },
+    });
+    try engine.openElement(.{
+        .id = LayoutId.init("panel"),
+        .layout = .{ .sizing = Sizing.fitContent(), .padding = Padding.all(10) },
+        .floating = .{},
+    });
+    try engine.openElement(.{
+        .layout = .{ .sizing = fit_column, .layout_direction = .top_to_bottom },
+    });
+    try engine.text("abcdefghij abcdefghij", wrapped);
+    engine.closeElement();
+    engine.closeElement();
+    try engine.text("abcdefghij abcdefghij", wrapped);
+    engine.closeElement();
+    try engine.endFrame();
+
+    const panel = engine.getBoundingBox(LayoutId.init("panel").id).?;
+    const host = engine.getBoundingBox(LayoutId.init("host").id).?;
+    try std.testing.expectEqual(@as(f32, 60), panel.height);
+    try std.testing.expectEqual(@as(f32, 40), host.height);
+}
+
+fn measureTenPixelsPerCharacter(
+    text: []const u8,
+    _: u16,
+    font_size: u16,
+    _: ?f32,
+    _: ?*anyopaque,
+) TextMeasurement {
+    std.debug.assert(font_size > 0);
+    return .{
+        .width = @as(f32, @floatFromInt(text.len)) * 10.0,
+        .height = @floatFromInt(font_size),
+    };
+}
+
 test "space_between distributes children evenly" {
     var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();

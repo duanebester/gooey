@@ -318,7 +318,6 @@ pub fn computeFloatingSizesWithText(
 
     // Now wrap text with known container widths - this may change element dimensions.
     const elem = engine.elements.get(index);
-    var needs_resize = false;
 
     if (elem.text_data) |*td| {
         const text_max_width = if (elem.parent_index) |pi| blk: {
@@ -338,7 +337,9 @@ pub fn computeFloatingSizesWithText(
                 td.measured_height = wrap_result.total_height;
                 elem.computed.sized_width = wrap_result.max_line_width;
                 elem.computed.sized_height = wrap_result.total_height;
-                needs_resize = true;
+                // Grow the fit-content containers up to this floating root,
+                // as the main pass does; the menu or modal grows with them.
+                sizing_pass.propagateHeightChange(engine, elem.parent_index);
             }
         }
     }
@@ -355,12 +356,6 @@ pub fn computeFloatingSizesWithText(
             }
             child_idx = child.next_sibling_index;
         }
-    }
-
-    // If text wrapping changed dimensions, propagate up and recompute.
-    if (needs_resize) {
-        sizing_pass.computeMinSizes(engine, index, 0);
-        sizing_pass.computeFinalSizes(engine, index, max_width, max_height, 0);
     }
 }
 

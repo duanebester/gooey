@@ -694,10 +694,15 @@ fn textContainerWidth(engine: *LayoutEngine, elem: *const LayoutElement) f32 {
     return engine.viewport_width;
 }
 
-/// Propagate child height changes up to fit-content parents
+/// Propagate child height changes up to fit-content parents. Floating
+/// children take no space in their parent, so they are left out of its
+/// height, and the walk stops at a floating element: its height does not
+/// change its host's layout.
 pub fn propagateHeightChange(engine: *LayoutEngine, parent_idx: ?u32) void {
     var idx = parent_idx;
-    while (idx) |pi| {
+    var depth: u32 = 0;
+    while (idx) |pi| : (depth += 1) {
+        std.debug.assert(depth < engine_mod.MAX_RECURSION_DEPTH);
         const parent = engine.elements.get(pi);
         const sizing = parent.config.layout.sizing.height;
 
@@ -714,12 +719,13 @@ pub fn propagateHeightChange(engine: *LayoutEngine, parent_idx: ?u32) void {
         var child_count: u32 = 0;
         while (child_idx) |ci| {
             const child = engine.elements.getConst(ci);
+            child_idx = child.next_sibling_index;
+            if (child.config.floating != null) continue;
             if (is_vertical) {
                 total_height += child.computed.sized_height;
             } else {
                 total_height = @max(total_height, child.computed.sized_height);
             }
-            child_idx = child.next_sibling_index;
             child_count += 1;
         }
 
@@ -730,6 +736,7 @@ pub fn propagateHeightChange(engine: *LayoutEngine, parent_idx: ?u32) void {
         const new_height = total_height + padding.totalY();
         parent.computed.sized_height = @max(sizing.getMin(), @min(sizing.getMax(), new_height));
 
+        if (parent.config.floating != null) break;
         idx = parent.parent_index;
     }
 }
