@@ -160,11 +160,11 @@ not API and may change in any release.
 | `theme`     | `&Theme.light`  | The theme every color token resolves against.              |
 | `keymap`    | `&.{}`          | Keyboard bindings for actions.                             |
 | `entities`  | `&.{}`          | Entity types, one fixed pool each.                         |
-| `fonts`     | `.{}`           | App and mono families, size, and faces.                    |
+| `fonts`     | `.{}`           | App and mono families, and their size.                     |
 | `on_init`   | `null`          | `fn (state: *State, effects: *Effects) void`, run at init. |
 
-Unknown fields are compile errors. Pick the smallest profile that fits; the name also selects
-the `FontLimits` profile of the same name:
+Unknown fields are compile errors. Pick the smallest profile that fits. Each profile's
+`text.fonts` is the `FontLimits` profile of the same name, the faces the app loads at init:
 
 | Profile     | For                                                 | Font faces |
 | ----------- | --------------------------------------------------- | ---------: |
@@ -190,14 +190,12 @@ pub const App = gooey.App(State, render, .{
     .height = window_height,
     .limits = limits,
     .theme = &gooey.Theme.dark,
-    .fonts = .{ .limits = gooey.FontLimits.small },
 });
 ```
 
-A modified value has no profile name, so set `.fonts.limits` when it needs more than the
-`standard` faces it falls back to. A mixed budget passes the same compile-time checks as a
-profile. The fields and their measurements are in `src/core/limits.zig` and
-`docs/v0.4.0-memory-budget.md`.
+A modified value keeps the faces of the profile it started from; set `text.fonts` to load
+others. A mixed budget passes the same compile-time checks as a profile. The fields and
+their measurements are in `src/core/limits.zig` and `docs/v0.4.0-memory-budget.md`.
 
 ### Render with `Cx` and `ui`
 
@@ -679,14 +677,20 @@ A custom theme is a `gooey.Theme` value with every color field set: `bg`, `surfa
 theme, and components scale their text from `font_size_base`.
 
 `Config.fonts` sets the app family (`name`, null for the platform's sans-serif), the point
-size (`size`, null for `font_size_base`), an optional second family (`mono`), and the faces to
-load (`limits`). A second family needs mono faces:
+size (`size`, null for `font_size_base`), and an optional second family (`mono`). The faces
+each family loads are part of the budget, `limits.text.fonts`, so a second family needs mono
+faces there:
 
 ```zig
-    .fonts = .{
-        .mono = .{ .system = .monospace },
-        .limits = .{ .variants = &.{.regular}, .mono_variants = &.{.regular} },
-    },
+    .limits = font_limits,
+    .fonts = .{ .mono = .{ .system = .monospace } },
+});
+
+const font_limits = blk: {
+    var value = gooey.ResourceLimits.nano;
+    value.text.fonts = .{ .variants = &.{.regular}, .mono_variants = &.{.regular} };
+    break :blk value;
+};
 ```
 
 ```zig

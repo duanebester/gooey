@@ -1453,12 +1453,15 @@ const FontApp = gooey.App(FontState, fontRender, .{
     .title = "Fonts",
     .width = 300,
     .height = 100,
-    .limits = .nano,
-    .fonts = .{
-        .mono = .{ .system = .monospace },
-        .limits = .{ .variants = &.{.regular}, .mono_variants = &.{.regular} },
-    },
+    .limits = font_limits,
+    .fonts = .{ .mono = .{ .system = .monospace } },
 });
+
+const font_limits = blk: {
+    var value = gooey.ResourceLimits.nano;
+    value.text.fonts = .{ .variants = &.{.regular}, .mono_variants = &.{.regular} };
+    break :blk value;
+};
 
 fn fontRender(cx: *Cx) void {
     cx.render(ui.box(.{
@@ -2739,6 +2742,71 @@ test "Painter meshes pack into triangle, polyline, and point meshes" {
     try testing.expectEqual(@as(u32, 3), packed_frame.meshList()[3].count);
     try testing.expectEqual(@as(u32, 14), packed_frame.triangle_count);
     try testing.expectEqual(internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
+}
+
+test "one polyline and the triangle meshes may fill their whole frame budget" {
+    // Goal: a draw is bounded only by its kind's frame budget. Before 0.6 a
+    // polyline stopped at 8,192 points and a frame at 256 triangle meshes,
+    // whatever the budget said. Methodology: a budget of 16,384 polyline
+    // points and 512 paths; one polyline uses every point and 512 triangles
+    // alternate colour so none join, filling both pools exactly. One more of
+    // either fails fast (`core-mesh-points` covers the points).
+    for (&full_line, 0..) |*point, index| {
+        const x: f32 = @floatFromInt(index % 200);
+        point.* = .{ x, @floatFromInt(index / 200) };
+    }
+    const app = try testing.allocator.create(FullMeshApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    app.tick(0);
+    const frame = app.window.rendered();
+    var triangle_mesh_count: u32 = 0;
+    var line_point_count: u32 = 0;
+    for (frame.paint[0..frame.paint_count]) |record| {
+        if (record != .mesh) continue;
+        switch (record.mesh.topology) {
+            .triangles => triangle_mesh_count += 1,
+            .strip_expanded => line_point_count += record.mesh.range.count,
+            .point_instanced => unreachable,
+        }
+    }
+    const paint = full_mesh_limits.paint;
+    try testing.expectEqual(paint.path_count_frame_max, triangle_mesh_count);
+    try testing.expectEqual(paint.polyline_point_count_frame_max, line_point_count);
+}
+
+var full_line: [full_mesh_limits.paint.polyline_point_count_frame_max][2]f32 = undefined;
+
+const full_mesh_limits = blk: {
+    var value = gooey.ResourceLimits.small;
+    value.paint.polyline_point_count_frame_max = 16_384;
+    value.paint.path_count_frame_max = 512;
+    break :blk value;
+};
+
+const FullMeshApp = gooey.App(struct {}, fullMeshRender, .{
+    .title = "Full meshes",
+    .width = 300,
+    .height = 300,
+    .limits = full_mesh_limits,
+});
+
+fn fullMeshRender(cx: *Cx) void {
+    const nothing: u8 = 0;
+    cx.render(ui.paint(u8, &nothing, fullMeshPaint, .{
+        .width = .{ .fixed = 200 },
+        .height = .{ .fixed = 200 },
+    }));
+}
+
+fn fullMeshPaint(_: *const u8, painter: *ui.Painter) void {
+    painter.polyline(&full_line, 1, mesh_blue);
+    var index: u32 = 0;
+    while (index < full_mesh_limits.paint.path_count_frame_max) : (index += 1) {
+        const color = if (index % 2 == 0) mesh_red else mesh_blue;
+        painter.triangles(&.{ .{ 0, 0 }, .{ 10, 0 }, .{ 0, 10 } }, color);
+    }
 }
 
 /// The 32 px icon cells built this frame, in tree order.
