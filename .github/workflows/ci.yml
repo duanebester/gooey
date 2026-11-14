@@ -6,6 +6,7 @@
 # Jobs:
 #   - test-linux: Run unit tests on Linux
 #   - test-macos: Run unit tests on macOS
+#   - test-windows: Run Windows tests and build the examples, per renderer
 #   - build-linux: Build all optimization levels on Linux
 #   - build-macos: Build all optimization levels on macOS
 #   - build-wasm: Build WebAssembly targets
@@ -47,6 +48,7 @@ jobs:
     needs:
       - test-linux
       - test-macos
+      - test-windows
       - build-linux
       - build-macos
       - build-wasm
@@ -156,6 +158,44 @@ jobs:
       # backend can be analyzed from macOS with no SDK or import libraries.
       - name: Typecheck Windows backend
         run: zig build typecheck-windows
+
+  # ==========================================================================
+  # Windows Tests
+  # ==========================================================================
+  # GitHub's Windows runners have no GPU. The dx11 renderer's pixel tests run
+  # on WARP, Direct3D's software rasterizer, so they need none either.
+  test-windows:
+    name: Test (Windows) (${{ matrix.renderer }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        renderer: [vulkan, dx11]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Cache Zig
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~\AppData\Local\zig
+            zig-cache
+          key: zig-cache-windows-${{ matrix.renderer }}-${{ hashFiles('build.zig', 'build.zig.zon') }}
+          restore-keys: |
+            zig-cache-windows-${{ matrix.renderer }}-
+            zig-cache-windows-
+
+      - name: Run tests
+        run: zig build test-windows -Dwindows-renderer=${{ matrix.renderer }}
+
+      - name: Build examples (ReleaseSafe)
+        run: zig build -Doptimize=ReleaseSafe -Dwindows-renderer=${{ matrix.renderer }}
 
   # ==========================================================================
   # Linux Build (Multiple Optimization Levels)
