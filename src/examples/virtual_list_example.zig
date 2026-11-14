@@ -39,7 +39,8 @@ pub const Message = struct {
     pub fn height(self: *const Message) f32 {
         return switch (self.kind) {
             .text_short => 48,
-            .text_medium => 72,
+            // Two wrapped lines under the sender's name.
+            .text_medium => 80,
             .text_long => 120,
             .image => 180,
             .system => 32,
@@ -169,7 +170,13 @@ pub const MessageRow = struct {
             else => {
                 var style = bubble;
                 style.background = .{ .rgba = if (is_me) sent_color else received_color };
-                const content = ui.text(message.content, .{ .size = 14, .color = text_color });
+                // Long messages wrap inside the bubble; `height` leaves room
+                // for the lines each type's text takes.
+                const content = ui.text(message.content, .{
+                    .size = 14,
+                    .color = text_color,
+                    .wrap = .words,
+                });
                 if (is_me) {
                     cx.render(ui.box(.{ .style = style }, .{content}));
                 } else {
