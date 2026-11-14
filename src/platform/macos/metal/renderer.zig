@@ -46,6 +46,10 @@ pub const Renderer = struct {
     size_px: backend.SizePx,
     limits: backend.RenderLimits,
     frame_skip_logged: bool,
+    /// The drawable the last `draw` presented, not retained (it lives until
+    /// the caller's autorelease pool drains); null when it presented none.
+    /// The frame trace reads its `presentedTime` (`-Dframe-trace`).
+    last_drawable: ?objc.Object,
 
     const Self = @This();
 
@@ -90,6 +94,7 @@ pub const Renderer = struct {
         self.size_px = surface.size_px;
         self.limits = render_limits.*;
         self.frame_skip_logged = false;
+        self.last_drawable = null;
         assert(self.slots.count == render_limits.frame.in_flight_count);
     }
 
@@ -168,6 +173,7 @@ pub const Renderer = struct {
         assert(viewport.scale_factor > 0);
         assert(viewport.size_px.width == self.size_px.width);
         assert(viewport.size_px.height == self.size_px.height);
+        self.last_drawable = null;
         const command_buffer = self.beginFrame();
         self.endBlit();
         // A minimized window has nothing to draw into; its uploads still land.
@@ -185,6 +191,7 @@ pub const Renderer = struct {
         self.bindFrame(pass.encoder, viewport);
         encode.encodeDraws(pass.encoder, frame, &self.pipelines);
         render_pass.finishAndPresent(pass.encoder, command_buffer, pass.drawable);
+        self.last_drawable = pass.drawable;
         self.retireFrame(command_buffer);
     }
 

@@ -9,7 +9,9 @@
 //! comparable across threads. `publish → pack` is the present-pacing wait
 //! (display link, frame callback, or vblank); `pack → pack` of consecutive
 //! frames is the present cadence, which the report turns into missed
-//! refreshes.
+//! refreshes. A host that learns when a frame reached the glass reports it
+//! with `notePresented` (macOS: `MTLDrawable.presentedTime`), which the
+//! report turns into the glass cadence.
 //!
 //! A scenario may drive the app with synthetic input, pushed into the core's
 //! queue once per built frame, before the drain, as a platform would push it:
@@ -82,8 +84,13 @@ pub const Entry = extern struct {
     node_count: u32,
     viewport_width_px: u32,
     viewport_height_px: u32,
-    _pad: [2]u32 = .{ 0, 0 },
+    /// When the frame reached the glass, on the trace clock, for hosts that
+    /// report it (macOS, `notePresented`): 0 = not reported, 1 = never shown.
+    present_ns: u64,
 };
+
+/// `Entry.present_ns` of a frame the platform never showed.
+pub const present_dropped: u64 = 1;
 
 pub const Trace = struct {
     entries: []Entry,
@@ -154,6 +161,20 @@ pub fn mark(state: *State, frame_number: u64, which: Mark) void {
         .done => target.done_ns = now,
     }
     assert(target.frame_number == frame_number);
+}
+
+/// The platform's report of when `frame_number` reached the glass, or that it
+/// never did (`present_dropped`). Render side, while that frame's entry is no
+/// longer written by anyone else: its done stamp is in the past.
+pub fn notePresented(state: *State, frame_number: u64, present_ns: u64) void {
+    if (comptime !enabled) return;
+    const target = entry(state, frame_number) orelse return;
+    assert(target.frame_number == frame_number);
+    assert(target.done_ns > 0);
+    assert(present_ns >= present_dropped);
+    // A platform clock is mapped onto the trace clock, so a present stamp is
+    // not asserted against draw_ns; the report checks the order.
+    target.present_ns = present_ns;
 }
 
 /// Counts for the frame just built, recorded with its publish.
@@ -254,7 +275,7 @@ const renderer_name: []const u8 = switch (builtin.os.tag) {
 };
 
 const header = "frame,tick_ns,build_ns,layout_ns,emit_ns,publish_ns,pack_ns,draw_ns," ++
-    "done_ns,paint_records,nodes,viewport_width_px,viewport_height_px";
+    "done_ns,paint_records,nodes,viewport_width_px,viewport_height_px,present_ns";
 
 /// Write every complete frame after the warmup. Native targets write
 /// `file_name`; the web logs each line with a `frame-trace,` prefix.
@@ -318,7 +339,7 @@ fn dumpLines(state: *const State, frame_count: u64, sink: anytype) u64 {
         if (e.done_ns == 0) continue;
         assert(e.frame_number == index + 1);
         const row = std.fmt.bufPrint(&line_buffer, "{d},{d},{d},{d},{d},{d},{d},{d},{d}," ++
-            "{d},{d},{d},{d}", .{
+            "{d},{d},{d},{d},{d}", .{
             e.frame_number,
             relative(state, e.tick_ns),
             relative(state, e.build_ns),
@@ -332,12 +353,20 @@ fn dumpLines(state: *const State, frame_count: u64, sink: anytype) u64 {
             e.node_count,
             e.viewport_width_px,
             e.viewport_height_px,
-        }) catch unreachable; // 13 integers of at most 20 digits fit 512 bytes.
+            presentRelative(state, e.present_ns),
+        }) catch unreachable; // 14 integers of at most 20 digits fit 512 bytes.
         sink.line(row);
         written += 1;
     }
     assert(written <= frame_count);
     return written;
+}
+
+/// `present_ns` relative to the trace start; 0 and `present_dropped` keep
+/// their meaning.
+fn presentRelative(state: *const State, ns: u64) u64 {
+    if (ns <= present_dropped) return ns;
+    return relative(state, ns);
 }
 
 fn relative(state: *const State, ns: u64) u64 {
