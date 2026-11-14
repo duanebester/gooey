@@ -163,6 +163,9 @@ pub const MacBridge = struct {
             // (AXDescription), so a splitter carries its name as both.
             const title = if (elem.role == .separator) elem.name else null;
             setAccessibilityTitle(ns, title);
+            // A description is help text (AXHelp), as a native control's
+            // tool tip is; VoiceOver reads it as the hint after the name.
+            setAccessibilityHelp(ns, elem.description);
 
             // Set value. A toggle or option without a text value reports
             // whether it is on as VoiceOver expects (0 or 1); otherwise a
@@ -820,6 +823,20 @@ fn setAccessibilityTitle(elem: objc.Object, title: ?[]const u8) void {
     const ns_title = createNSStringFromSlice(text) orelse return;
     defer releaseNSObject(ns_title);
     elem.msgSend(void, "setAccessibilityTitle:", .{ns_title.value});
+}
+
+/// Set or, with null, clear the element's help text (AXHelp), so a reused
+/// wrapper never keeps an earlier element's.
+fn setAccessibilityHelp(elem: objc.Object, help: ?[]const u8) void {
+    std.debug.assert(elem.value != null);
+    const text = help orelse {
+        elem.msgSend(void, "setAccessibilityHelp:", .{@as(objc.c.id, null)});
+        return;
+    };
+    std.debug.assert(text.len <= 65535);
+    const ns_help = createNSStringFromSlice(text) orelse return;
+    defer releaseNSObject(ns_help);
+    elem.msgSend(void, "setAccessibilityHelp:", .{ns_help.value});
 }
 
 fn clearAccessibilityLabel(elem: objc.Object) void {
@@ -1542,6 +1559,38 @@ test "mac bridge hangs a combobox's listbox beside it and reports chosen options
         try std.testing.expectEqual(group.value, list_parent);
         try expectOption(rig.native(.option, "One"), false);
         try expectOption(rig.native(.option, "Two"), true);
+    }
+}
+
+test "a description is the element's help, cleared when a reused wrapper has none" {
+    // Goal: `A11y.description` reaches VoiceOver as AXHelp, which it reads
+    // as the hint. Methodology: sync a button with a description and read
+    // `accessibilityHelp`; then sync the same element without one, which
+    // keeps its fingerprint and so its wrapper, and the help is gone.
+    var rig: TestRig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    for ([_]?[]const u8{ "Space picks it up to move it", null }) |description| {
+        rig.tree.beginFrame();
+        const index = rig.tree.pushElement(.{
+            .role = .button,
+            .name = "Banana",
+            .description = description,
+        });
+        rig.tree.getElementMut(index).?.bounds = .{ .x = 5, .y = 5, .width = 80, .height = 20 };
+        rig.tree.popElement();
+        rig.tree.endFrame();
+        rig.sync();
+        const button = rig.native(.button, "Banana");
+        const help: objc.c.id = button.msgSend(objc.c.id, "accessibilityHelp", .{});
+        if (description) |text| {
+            try std.testing.expect(help != null);
+            const help_object = objc.Object{ .value = help };
+            const help_text = std.mem.span(help_object.msgSend([*:0]const u8, "UTF8String", .{}));
+            try std.testing.expectEqualStrings(text, help_text);
+        } else {
+            try std.testing.expect(help == null);
+        }
     }
 }
 
