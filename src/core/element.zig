@@ -242,6 +242,14 @@ pub const Box = struct {
     /// goes. `effects.pointerDrag()` reads the phase and position. A press
     /// that moves more than 2 px clicks nothing. Requires `key`.
     on_pointer_drag: ?Handler = null,
+    /// Drag and drop (contract §5): a press here, or on a child without its
+    /// own, arms a drag carrying this payload, which starts once the
+    /// pointer moves more than 2 px and then clicks nothing. Requires `key`;
+    /// a box cannot also have `on_pointer_drag`.
+    draggable: ?DragSource = null,
+    /// Accepts drops of one payload type: a release over it calls `on_drop`,
+    /// which reads the payload with `effects.dropPayload`. Requires `key`.
+    drop_target: ?DropTarget = null,
     actions: []const ActionBinding = &.{},
     a11y: ?A11y = null,
 
@@ -252,6 +260,38 @@ pub const Box = struct {
 
             pub const core_element: ElementKind = .box;
         };
+    }
+};
+
+/// What a `Box.draggable` carries: a value of at most 8 bytes, such as an
+/// id or an index, packed as handler arguments are. Pointers are not
+/// payloads, since what they point to may not outlive the frame.
+pub const DragSource = struct {
+    type_id: usize,
+    payload: u64,
+
+    pub fn of(comptime T: type, payload: T) DragSource {
+        comptime assert(@sizeOf(T) <= @sizeOf(u64));
+        comptime assert(@typeInfo(T) != .pointer);
+        const source: DragSource = .{
+            .type_id = handler_mod.typeId(T),
+            .payload = handler_mod.packArg(T, payload),
+        };
+        assert(source.type_id != 0);
+        return source;
+    }
+};
+
+/// A box that accepts drops of payloads of one type.
+pub const DropTarget = struct {
+    type_id: usize,
+    on_drop: Handler,
+
+    pub fn of(comptime T: type, on_drop: Handler) DropTarget {
+        comptime assert(@sizeOf(T) <= @sizeOf(u64));
+        const target: DropTarget = .{ .type_id = handler_mod.typeId(T), .on_drop = on_drop };
+        assert(target.type_id != 0);
+        return target;
     }
 };
 

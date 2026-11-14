@@ -53,6 +53,7 @@ pub const Key = core.Key;
 pub const Lifetime = core.Lifetime;
 pub const Handle = core.Handle;
 pub const Query = core.Query;
+pub const Drag = core.Drag;
 pub const Theme = core.Theme;
 pub const Painter = core.Painter;
 pub const PathPromptOptions = core.PathPromptOptions;

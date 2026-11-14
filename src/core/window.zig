@@ -138,6 +138,11 @@ pub const Node = struct {
     on_click_outside: u32,
     on_key: u32,
     on_pointer_drag: u32,
+    /// `Box.draggable` and `Box.drop_target`; a type of 0 means none.
+    drag_type: usize,
+    drag_payload: u64,
+    drop_type: usize,
+    on_drop: u32,
     key_context: u64,
     actions_start: u32,
     actions_len: u32,
@@ -435,6 +440,38 @@ pub const Capture = struct {
     };
 };
 
+/// A drag of a `Box.draggable` (contract §5): armed by a press on it, and
+/// started once the pointer moves past `Capture.click_slop_px`, as 0.3.1's
+/// did. One per window. The payload is copied in, so the drag outlives its
+/// source's record; `over` is the innermost drop target of the payload's
+/// type under the pointer, or `.root`, recomputed by `router.updateHover`
+/// on each move and after each flip.
+pub const Drag = struct {
+    phase: enum { idle, armed, active },
+    source: ElementId,
+    button: input_mod.MouseButton,
+    type_id: usize,
+    payload: u64,
+    start_x: f32,
+    start_y: f32,
+    x: f32,
+    y: f32,
+    over: ElementId,
+
+    pub const idle: Drag = .{
+        .phase = .idle,
+        .source = .root,
+        .button = .left,
+        .type_id = 0,
+        .payload = 0,
+        .start_x = 0,
+        .start_y = 0,
+        .x = 0,
+        .y = 0,
+        .over = .root,
+    };
+};
+
 /// Frame-wide set of keyed ids: duplicate detection during build, and the
 /// "was this scope rendered" query for the retained sweep.
 pub const KeySet = struct {
@@ -597,6 +634,9 @@ pub const Window = struct {
     scroll_drag: ElementId,
     /// The `Box.on_pointer_drag` gesture in progress, or `Capture.none`.
     capture: Capture,
+    /// The `Box.draggable` gesture in progress, or `Drag.idle`. A press
+    /// starts at most one of `capture` and `drag`.
+    drag: Drag,
     pointer: ?struct { x: f32, y: f32 },
     // Tick state.
     phase: Phase,
@@ -820,6 +860,7 @@ pub noinline fn initInPlace(self: *Window, gpa: std.mem.Allocator, options: *con
     self.press_len = 0;
     self.scroll_drag = .root;
     self.capture = Capture.none;
+    self.drag = Drag.idle;
     self.pointer = null;
     self.phase = .idle;
     self.frame_in_flight = .init(false);

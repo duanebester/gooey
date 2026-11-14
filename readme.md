@@ -139,6 +139,7 @@ Every example in `src/examples/` is a complete app; read them next. Run one with
 | `run-dashboard`        | `dashboard.zig`            | gooey-charts in `ui.paint` elements        |
 | `run-core-file-dialog` | `core_file_dialog.zig`     | Open, multi-select, folder, save dialogs   |
 | `run-splitter`         | `splitter.zig`             | `on_pointer_drag`, resize cursors, ranges  |
+| `run-drag-drop`        | `drag_drop.zig`            | `draggable`, `drop_target`, `.drag` layer  |
 
 `lucide-demo` does not build on Windows; every other example builds on every desktop
 platform.
@@ -209,7 +210,7 @@ element constructors:
 
 - `ui.box(box, children)`: a container. `ui.Box` holds per-element fields (`key`, `style`,
   `layer`, `focusable`, `tab_stop`, `key_context`, `on_click`, `on_click_outside`, `on_key`,
-  `on_pointer_drag`, `actions`, `a11y`).
+  `on_pointer_drag`, `draggable`, `drop_target`, `actions`, `a11y`).
 - `ui.text(content, text)`: a text run. `ui.Text` has `size`, `color`, `weight`, `italic`,
   `family`, `wrap`, `line_height`, and `alignment`.
 - `ui.paint(Data, &data, paint_fn, style)`: a leaf drawn with a `Painter`.
@@ -380,6 +381,7 @@ returns.
 | `inputEvent()`, `completionEvent()`      | What invoked this handler.                          |
 | `pointerDrag()`                          | The pointer capture step, in `on_pointer_drag`.     |
 | `bounds(id)`                             | A keyed element's `ui.Rect` in the frame on screen. |
+| `dropPayload(T)`                         | The dropped payload, in a `drop_target` handler.    |
 
 **File dialogs.** A handler requests a dialog and names the handler that receives the
 outcome. The dialog opens on the main thread after the handler returns, and the outcome
@@ -453,6 +455,54 @@ box must have a `key`. A press that moves more than 2 px clicks nothing. From
 
 Keeping the size from `begin` lets `cancel` restore it. `effects.bounds(id)` turns a drag in
 pixels into a share of a keyed container's size.
+
+### Drag and drop
+
+A keyed box with `draggable = .of(T, payload)` arms a drag of a copy of `payload` when
+pressed; `T` is at most 8 bytes and holds no pointers, such as an index or an id. The drag
+starts once the pointer moves more than 2 px, and then its press clicks nothing. A keyed box
+with `drop_target = .of(T, handler)` accepts payloads of type `T`: a release over it calls
+`handler`, which reads the payload with `effects.dropPayload(T)`. A release anywhere else,
+Escape, or a lost gesture (focus loss, Cmd-Tab) ends the drag with no call. A box cannot be
+both `draggable` and `on_pointer_drag`. From `drag_drop.zig`:
+
+```zig
+            cx.render(ui.box(.{
+                .key = .{ .index = id },
+                .draggable = .of(ItemId, id),
+```
+
+```zig
+            .drop_target = .of(ItemId, cx.on(State.dropOn, .{ .arg = self.side })),
+```
+
+```zig
+    pub fn dropOn(self: *State, side: Side, effects: *Effects) void {
+        const id = effects.dropPayload(ItemId) orelse return;
+        assert(id < items.len);
+        self.move(id, side);
+    }
+```
+
+While a drag is on, `cx.drag(T)` returns a `gooey.Drag(T)`: its `payload`, the drop target
+of that type under the pointer (`over`, or `.root` over none), and the pointer's `x` and `y`
+in window coordinates. Render uses it to dim the source, highlight the target, and place a
+preview on a `.drag` layer, which draws above modals and never takes the pointer, so the
+target under the preview stays the target:
+
+```zig
+        const drag = cx.drag(ItemId) orelse return;
+        assert(drag.payload < items.len);
+        const item = items[drag.payload];
+        cx.render(ui.box(.{
+            .layer = .{
+                .kind = .drag,
+                .anchor = .{ .window = .{ .x = drag.x - 60, .y = drag.y - 20 } },
+                .clip = .escape,
+            },
+```
+
+A `.drag` layer adds nothing to the accessibility tree: the preview repeats its source.
 
 ### Keymaps and actions
 
@@ -794,8 +844,9 @@ pub const std_options = gooey.std_options;
   about. Linux has no screen reader bridge.
 - **Cut in 0.4.0:** multi-window (one window per app), liquid glass, custom shaders, and
   post-processing.
-- **Deferred:** typed drag and drop (pointer capture ships; see above), tooltip layers,
-  and programmatic scrolling (`List` has no `scroll_to`).
+- **Deferred:** picking up a drag with the keyboard (pointer drag and drop ships; see
+  above), drag and drop between apps or with the OS, edge auto-scroll during a drag, tooltip
+  layers, and programmatic scrolling (`List` has no `scroll_to`).
 
 ## Platforms
 

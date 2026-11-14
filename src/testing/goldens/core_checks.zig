@@ -14,6 +14,7 @@ const accessible_form = @import("accessible_form_example");
 const code_editor = @import("code_editor_example");
 const nested_overlay = @import("nested_overlay_example");
 const splitter = @import("splitter_example");
+const drag_drop = @import("drag_drop_example");
 const dashboard = @import("dashboard_example");
 const dynamic_counters = @import("dynamic_counters_example");
 const images = @import("images_example");
@@ -4614,4 +4615,326 @@ test "a nano app records exactly its a11y.element_count_max nodes" {
     try testing.expectEqual(@as(usize, count), frame.a11y.len);
     try testing.expectEqual(count, frame.a11y_count);
     try testing.expectEqual(@as(usize, count), app.window.screen_reader.tree.elements.len);
+}
+
+const DragDropApp = drag_drop.App;
+
+/// The hit record of the card carrying `id`, or with `id` null, of the list
+/// on the right (`right`) or left.
+fn dragDropRecord(
+    app: *DragDropApp,
+    id: ?drag_drop.ItemId,
+    right: bool,
+) *const internals.records.HitRecord {
+    const frame = app.window.rendered();
+    // The lists render left, then right, so tree order tells them apart.
+    var lists_seen: u32 = 0;
+    for (frame.hits[0..frame.hit_count]) |*record| {
+        if (id) |card| {
+            if (record.drag_type != 0 and record.drag_payload == card) return record;
+        } else {
+            if (record.drop_type == 0) continue;
+            if ((lists_seen == 1) == right) return record;
+            lists_seen += 1;
+        }
+    }
+    unreachable;
+}
+
+/// The alpha of the first quad filled with `color` at `x`, or at any x when
+/// `x` is null; null when there is none.
+fn quadAlphaAt(frame: *const internals.records.Frame, color: ui.Color, x: ?f32) ?f32 {
+    for (frame.paint[0..frame.paint_count]) |record| {
+        if (record != .quad) continue;
+        const fill = record.quad.fill;
+        if (fill.r != color.r or fill.g != color.g or fill.b != color.b) continue;
+        if (x) |left| {
+            if (record.quad.bounds.x != left) continue;
+        }
+        return fill.a;
+    }
+    return null;
+}
+
+test "drag_drop: a card drags to the other list; a short press, Escape, or a miss moves none" {
+    // Goal: contract §5's drag and drop through the router, the `.drag`
+    // layer, and emit, on the example. Methodology: press Banana and move 2
+    // px, the slop: still armed. Move to the right list's centre: the drag
+    // starts and the list is `over`, though the preview is laid out under
+    // the pointer (a `.drag` layer never takes it). The source dims to 0.4,
+    // the preview paints at 0.85, and the press no longer clicks. Release:
+    // Banana moves right. Then a drag cancelled by Escape and one released
+    // over the title move nothing.
+    const app = try testing.allocator.create(DragDropApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    const banana = dragDropRecord(app, 1, false).bounds;
+    const right_record = dragDropRecord(app, null, true);
+    const right_id = right_record.id;
+    const right = right_record.bounds;
+    const start_x = banana.x + 20;
+    const start_y = banana.y + banana.height / 2;
+    scrollMouse(app, &now, .{ .mouse_down = mouse(start_x, start_y) });
+    scrollMouse(app, &now, dragged(start_x + 2, start_y));
+    try testing.expect(app.window.drag.phase == .armed);
+    const target_x = right.x + right.width / 2;
+    const target_y = right.y + right.height / 2;
+    scrollMouse(app, &now, dragged(target_x, target_y));
+    try testing.expect(app.window.drag.phase == .active);
+    scrollMouse(app, &now, dragged(target_x + 1, target_y));
+    try testing.expectEqual(right_id, app.window.drag.over);
+    const frame = app.window.rendered();
+    const banana_color = drag_drop.items[1].color;
+    const source_alpha = quadAlphaAt(frame, banana_color, banana.x).?;
+    try testing.expectApproxEqAbs(@as(f32, 0.4), source_alpha, 0.001);
+    const preview_alpha = quadAlphaAt(frame, banana_color, target_x + 1 - 60).?;
+    try testing.expectApproxEqAbs(@as(f32, 0.85), preview_alpha, 0.001);
+    try testing.expectEqual(@as(u32, 0), app.window.press_len);
+
+    scrollMouse(app, &now, .{ .mouse_up = mouse(target_x + 1, target_y) });
+    try testing.expectEqualSlices(drag_drop.ItemId, &.{ 0, 2, 3 }, app.state.list(.left).slice());
+    try testing.expectEqualSlices(drag_drop.ItemId, &.{1}, app.state.list(.right).slice());
+    try testing.expect(app.window.drag.phase == .idle);
+    now += 1;
+    app.tick(now);
+    try testing.expectEqual(@as(?f32, 1), quadAlphaAt(app.window.rendered(), banana_color, null));
+
+    // Escape cancels: Apple stays put though released over the right list.
+    const apple = dragDropRecord(app, 0, false).bounds;
+    scrollMouse(app, &now, .{ .mouse_down = mouse(apple.x + 20, apple.y + 10) });
+    scrollMouse(app, &now, dragged(target_x, target_y));
+    try testing.expect(app.window.drag.phase == .active);
+    scrollMouse(app, &now, .{ .key_down = chord(.escape, .{}) });
+    try testing.expect(app.window.drag.phase == .idle);
+    scrollMouse(app, &now, .{ .mouse_up = mouse(target_x, target_y) });
+    // A drag released over the title, outside both lists, moves nothing.
+    scrollMouse(app, &now, .{ .mouse_down = mouse(apple.x + 20, apple.y + 10) });
+    scrollMouse(app, &now, dragged(40, 20));
+    scrollMouse(app, &now, .{ .mouse_up = mouse(40, 20) });
+    try testing.expectEqualSlices(drag_drop.ItemId, &.{ 0, 2, 3 }, app.state.list(.left).slice());
+    try testing.expectEqualSlices(drag_drop.ItemId, &.{1}, app.state.list(.right).slice());
+    try testing.expectEqual(internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
+}
+
+/// A row: a draggable source at x 0 to 40, then drop targets 60 px wide,
+/// `near` at x 100 (or with `shifted`, x 200), `other` of another payload
+/// type at x 300, and `blocked` at x 400, which a modal covers while
+/// `modal` is set. While a drag is on, a `.drag` preview with a label and a
+/// click handler sits under the pointer.
+const DropProbe = struct {
+    shifted: bool = false,
+    modal: bool = false,
+    source_shown: bool = true,
+    near_drops: u32 = 0,
+    other_drops: u32 = 0,
+    blocked_drops: u32 = 0,
+    dropped: ?u32 = null,
+    /// `dropPayload` of another type than the payload's gave null.
+    other_type_null: bool = false,
+    preview_clicks: u32 = 0,
+
+    const Other = struct { value: u16 };
+
+    fn dropNear(self: *DropProbe, effects: *Effects) void {
+        self.near_drops += 1;
+        self.dropped = effects.dropPayload(u32);
+        self.other_type_null = effects.dropPayload(Other) == null;
+    }
+
+    fn dropOther(self: *DropProbe, _: *Effects) void {
+        self.other_drops += 1;
+    }
+
+    fn dropBlocked(self: *DropProbe, _: *Effects) void {
+        self.blocked_drops += 1;
+    }
+
+    fn clickPreview(self: *DropProbe, _: *Effects) void {
+        self.preview_clicks += 1;
+    }
+};
+
+const DropProbeApp = gooey.App(DropProbe, dropProbeRender, .{
+    .title = "Drop probe",
+    .width = 500,
+    .height = 100,
+    .limits = .nano,
+});
+
+fn dropProbeSpacer(width: f32) ui.Box.Element(@TypeOf(.{})) {
+    assert(width >= 0);
+    return ui.box(.{ .style = .{ .width = .{ .fixed = width }, .height = .{ .fixed = 40 } } }, .{});
+}
+
+fn dropProbeRender(cx: *Cx) void {
+    const s = cx.state(DropProbe);
+    const cell: ui.Style = .{ .width = .{ .fixed = 60 }, .height = .{ .fixed = 40 } };
+    const near_x: f32 = if (s.shifted) 200 else 100;
+    cx.render(ui.box(.{
+        .key = .{ .name = "row" },
+        .style = .{ .direction = .row, .width = .{ .grow = 1 } },
+    }, .{
+        if (s.source_shown) ui.box(.{
+            .key = .{ .name = "source" },
+            .style = .{ .width = .{ .fixed = 40 }, .height = .{ .fixed = 40 } },
+            .draggable = .of(u32, 7),
+        }, .{}) else dropProbeSpacer(40),
+        dropProbeSpacer(near_x - 40),
+        ui.box(.{
+            .key = .{ .name = "near" },
+            .style = cell,
+            .drop_target = .of(u32, cx.on(DropProbe.dropNear, .{})),
+        }, .{}),
+        dropProbeSpacer(300 - near_x - 60),
+        ui.box(.{
+            .key = .{ .name = "other" },
+            .style = cell,
+            .drop_target = .of(DropProbe.Other, cx.on(DropProbe.dropOther, .{})),
+        }, .{}),
+        dropProbeSpacer(40),
+        ui.box(.{
+            .key = .{ .name = "blocked" },
+            .style = cell,
+            .drop_target = .of(u32, cx.on(DropProbe.dropBlocked, .{})),
+        }, .{}),
+        if (s.modal) ui.box(.{
+            .key = .{ .name = "modal" },
+            .layer = .{ .kind = .modal, .anchor = .{ .window = .{ .x = 380 } }, .clip = .escape },
+            .style = .{ .width = .{ .fixed = 100 }, .height = .{ .fixed = 100 } },
+        }, .{}) else null,
+        if (cx.drag(u32)) |drag| ui.box(.{
+            .key = .{ .name = "preview" },
+            .layer = .{
+                .kind = .drag,
+                .anchor = .{ .window = .{ .x = drag.x - 20, .y = drag.y - 20 } },
+                .clip = .escape,
+            },
+            .style = .{ .width = .{ .fixed = 40 }, .height = .{ .fixed = 40 } },
+            .on_click = cx.on(DropProbe.clickPreview, .{}),
+            .a11y = .{ .role = .button, .label = "Preview" },
+        }, .{}) else null,
+    }));
+}
+
+fn probeId(name: []const u8) gooey.ElementId {
+    return gooey.ElementId.root.child(.{ .name = "row" }).child(.{ .name = name });
+}
+
+test "a drag preview never takes the pointer and adds no accessibility node" {
+    // Goal: the `.drag` layer's two rules. Methodology: drag the source to
+    // x 130, inside `near`; the preview is laid out at x 110 to 150, under
+    // the pointer, with a click handler and a label. `near` is still the
+    // target, a hit test there finds `near`, the preview's record does not
+    // take the pointer, and no accessibility node carries its label. A
+    // release drops on `near` and does not click the preview.
+    const app = try testing.allocator.create(DropProbeApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    scrollMouse(app, &now, .{ .mouse_down = mouse(20, 20) });
+    scrollMouse(app, &now, dragged(130, 20));
+    scrollMouse(app, &now, dragged(131, 20));
+    try testing.expectEqual(probeId("near"), app.window.drag.over);
+    const frame = app.window.rendered();
+    const query: gooey.Query = .{ .window = &app.window };
+    try testing.expectEqual(probeId("near"), query.hitTest(.{ .x = 131, .y = 20 }).?);
+    var preview_found = false;
+    for (frame.hits[0..frame.hit_count]) |*record| {
+        if (record.id != probeId("preview")) continue;
+        preview_found = true;
+        try testing.expect(!record.pointer);
+        try testing.expect(record.bounds.contains(131, 20));
+    }
+    try testing.expect(preview_found);
+    for (frame.a11y[0..frame.a11y_count]) |*node| {
+        try testing.expect(node.id != probeId("preview"));
+    }
+    scrollMouse(app, &now, .{ .mouse_up = mouse(131, 20) });
+    try testing.expectEqual(@as(u32, 1), app.state.near_drops);
+    try testing.expectEqual(@as(?u32, 7), app.state.dropped);
+    try testing.expect(app.state.other_type_null);
+    try testing.expectEqual(@as(u32, 0), app.state.preview_clicks);
+}
+
+test "over follows the payload type, a flip under a still pointer, and a modal" {
+    // Goal: `over` is the innermost target of the payload's type that the
+    // pointer can reach, recomputed after a flip. Methodology: over `other`
+    // (another payload type) it is `.root`. Back over `near` at x 130, then
+    // `near` moves to x 200 with the pointer still: after the flip `over`
+    // is `.root`, so a target that slid away is not kept. With a modal
+    // over `blocked`, the pointer on `blocked` finds no target, and the
+    // release there drops nothing anywhere.
+    const app = try testing.allocator.create(DropProbeApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    scrollMouse(app, &now, .{ .mouse_down = mouse(20, 20) });
+    scrollMouse(app, &now, dragged(330, 20));
+    try testing.expect(app.window.drag.phase == .active);
+    try testing.expectEqual(gooey.ElementId.root, app.window.drag.over);
+    scrollMouse(app, &now, dragged(130, 20));
+    try testing.expectEqual(probeId("near"), app.window.drag.over);
+    app.state.shifted = true;
+    app.window.render_requested = true;
+    now += 1;
+    app.tick(now);
+    now += 1;
+    app.tick(now);
+    try testing.expectEqual(gooey.ElementId.root, app.window.drag.over);
+    scrollMouse(app, &now, dragged(230, 20));
+    try testing.expectEqual(probeId("near"), app.window.drag.over);
+
+    app.state.modal = true;
+    app.window.render_requested = true;
+    now += 1;
+    app.tick(now);
+    scrollMouse(app, &now, dragged(430, 20));
+    try testing.expectEqual(gooey.ElementId.root, app.window.drag.over);
+    scrollMouse(app, &now, .{ .mouse_up = mouse(430, 20) });
+    try testing.expect(app.window.drag.phase == .idle);
+    try testing.expectEqual(@as(u32, 0), app.state.near_drops);
+    try testing.expectEqual(@as(u32, 0), app.state.other_drops);
+    try testing.expectEqual(@as(u32, 0), app.state.blocked_drops);
+}
+
+test "a drag drops its payload after its source stops rendering, and is cancelled by the platform" {
+    // Goal: the payload is copied at the press, and a lost gesture ends the
+    // drag. Methodology: start a drag, hide the source, and release on
+    // `near`: it gets 7. Then a drag over `near` that the platform cancels
+    // (`pointer_cancelled`) drops nothing, and its release clicks nothing.
+    const app = try testing.allocator.create(DropProbeApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    scrollMouse(app, &now, .{ .mouse_down = mouse(20, 20) });
+    scrollMouse(app, &now, dragged(130, 20));
+    app.state.source_shown = false;
+    app.window.render_requested = true;
+    now += 1;
+    app.tick(now);
+    scrollMouse(app, &now, .{ .mouse_up = mouse(130, 20) });
+    try testing.expectEqual(@as(u32, 1), app.state.near_drops);
+    try testing.expectEqual(@as(?u32, 7), app.state.dropped);
+
+    app.state.source_shown = true;
+    app.window.render_requested = true;
+    now += 1;
+    app.tick(now);
+    scrollMouse(app, &now, .{ .mouse_down = mouse(20, 20) });
+    scrollMouse(app, &now, dragged(130, 20));
+    try testing.expect(app.window.drag.phase == .active);
+    scrollMouse(app, &now, .pointer_cancelled);
+    try testing.expect(app.window.drag.phase == .idle);
+    scrollMouse(app, &now, .{ .mouse_up = mouse(130, 20) });
+    try testing.expectEqual(@as(u32, 1), app.state.near_drops);
+    try testing.expectEqual(@as(u32, 0), app.state.preview_clicks);
 }

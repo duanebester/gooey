@@ -28,6 +28,7 @@ fn pinSurface() void {
         _ = gooey.Lifetime;
         _ = gooey.Handle;
         _ = gooey.Query;
+        _ = @TypeOf(gooey.Drag);
         _ = gooey.Theme;
         _ = gooey.Painter;
         _ = gooey.PathPromptOptions;
@@ -57,6 +58,8 @@ fn pinUi() void {
         _ = @TypeOf(gooey.ui.Paint);
         _ = gooey.ui.Box;
         _ = gooey.ui.Style;
+        _ = gooey.ui.DragSource;
+        _ = gooey.ui.DropTarget;
         _ = gooey.ui.Text;
         _ = gooey.ui.Color;
         _ = gooey.ui.A11y;
@@ -74,11 +77,19 @@ fn pinFields() void {
     comptime {
         const Box = gooey.ui.Box;
         for ([_][]const u8{
-            "key",      "style",           "layer",    "focusable",
-            "tab_stop", "key_context",     "on_click", "on_click_outside",
-            "on_key",   "on_pointer_drag", "actions",  "a11y",
+            "key",      "style",           "layer",     "focusable",
+            "tab_stop", "key_context",     "on_click",  "on_click_outside",
+            "on_key",   "on_pointer_drag", "draggable", "drop_target",
+            "actions",  "a11y",
         }) |name| {
             _ = @FieldType(Box, name);
+        }
+        _ = @TypeOf(gooey.ui.DragSource.of);
+        _ = @TypeOf(gooey.ui.DropTarget.of);
+        const Layer = @typeInfo(@FieldType(Box, "layer")).optional.child;
+        _ = @as(@FieldType(Layer, "kind"), .drag);
+        for ([_][]const u8{ "payload", "over", "x", "y" }) |name| {
+            _ = @FieldType(gooey.Drag(u32), name);
         }
         const A11y = gooey.ui.A11y;
         for ([_][]const u8{
@@ -123,6 +134,7 @@ fn pinEffects() void {
         _ = @TypeOf(Effects.completionEvent);
         _ = @TypeOf(Effects.pointerDrag);
         _ = @TypeOf(Effects.bounds);
+        _ = @TypeOf(Effects.dropPayload);
         const drag_fields = .{ "phase", "x", "y", "start_x", "start_y", "button", "modifiers" };
         for (drag_fields) |name| {
             _ = @FieldType(Effects.PointerDrag, name);
@@ -156,6 +168,7 @@ fn pinCx() void {
         _ = @TypeOf(gooey.Cx.render);
         _ = @TypeOf(gooey.Cx.on);
         _ = @TypeOf(gooey.Cx.theme);
+        _ = @TypeOf(gooey.Cx.drag);
     }
 }
 
