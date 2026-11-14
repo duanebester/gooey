@@ -26,6 +26,7 @@ const assert = std.debug.assert;
 const dw = @import("bindings.zig");
 const types = @import("../../types.zig");
 const DirectWriteFace = @import("face.zig").DirectWriteFace;
+const limits = @import("../../../core/limits.zig");
 
 const ShapedGlyph = types.ShapedGlyph;
 const ShapedRun = types.ShapedRun;
@@ -43,6 +44,13 @@ pub const glyph_count_max: u32 = text_utf16_count_max * 3 / 2 + 16;
 /// Script changes per call. Spaces and punctuation join the surrounding run,
 /// so this is the number of script switches, not of words.
 pub const script_run_count_max: u32 = 256;
+
+// The core stops a run past `text.run_codepoint_count_max` before it is
+// shaped; a codepoint is at most two UTF-16 units, so every run it lets
+// through fits.
+comptime {
+    std.debug.assert(text_utf16_count_max >= 2 * limits.run_codepoint_count_max);
+}
 
 /// "" selects no particular locale.
 const locale_name_empty = [_:0]u16{};

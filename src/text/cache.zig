@@ -16,6 +16,9 @@ const Atlas = @import("atlas.zig").Atlas;
 const Region = @import("atlas.zig").Region;
 const AtlasUploads = @import("atlas.zig").AtlasUploads;
 const limits = @import("../core/limits.zig");
+const reservation = @import("../core/reservation.zig");
+
+const assert = std.debug.assert;
 
 /// Where the glyph atlas comes from: its fixed side and the shared upload journal.
 pub const AtlasOptions = struct {
@@ -149,26 +152,41 @@ const Lookup = union(enum) {
     miss,
 };
 
-/// Glyph cache with atlas management - fixed capacity, zero runtime allocation
+/// Glyph cache with atlas management. Every table is reserved at init from
+/// `ResourceLimits.text.glyph_cache_count_max` and never grows (CLAUDE.md §2).
+///
+/// Zero is "empty" everywhere, so the tables come from fresh pages and stay
+/// non-resident until glyphs are cached: hash slots and free-list links hold
+/// an entry index plus one, and entry slots are claimed in order up to
+/// `entry_high_water` before the free list is used.
+///
+/// Memory at `standard` (4,096 glyphs): entries 4,096 × 64 B, free-list links
+/// 4,096 × 2 B, hash slots 8,192 × 2 B: 280 KiB of virtual memory.
 pub const GlyphCache = struct {
     allocator: std.mem.Allocator,
 
-    /// Fixed-capacity glyph storage
-    entries: [MAX_CACHED_GLYPHS]GlyphEntry,
-    /// Hash table: maps hash slot -> entry index (EMPTY_SLOT = empty)
-    hash_table: [HASH_TABLE_SIZE]u16,
+    /// Entry slots; those at or past `entry_high_water` were never written.
+    entries: []GlyphEntry,
+    /// Hash slot -> entry index + 1, or `slot_empty`. A power of two, at
+    /// least twice the entries, so the modulo is a mask and probes stay short.
+    hash_table: []u16,
     /// Number of valid entries
     entry_count: u32,
+    /// Entry slots claimed so far; slots below it are valid or on the free
+    /// list. `deinit` zeroes this prefix (§21).
+    entry_high_water: u16,
+    /// Whether any slot of `hash_table` was written, for `deinit`'s zeroing.
+    hash_written: bool,
 
-    /// Intrusive free list threaded through entries array.
-    /// Each element stores the index of the next free slot, or EMPTY_SLOT for end-of-list.
-    /// Separate array avoids union gymnastics in GlyphEntry — 8 KB (4096 × 2 bytes).
+    /// Free-list link of each claimed slot: the next free index + 1, or
+    /// `slot_empty` at the end of the list.
     ///
     /// INVARIANT: Any code path that sets `entry.valid = false` on an individual entry
-    /// MUST push that entry's index back onto this free list (set `free_chain[idx] =
-    /// next_free; next_free = idx`). `reclaimStale` and bulk `clear()` do.
-    free_chain: [MAX_CACHED_GLYPHS]u16,
-    /// Head of the free list (EMPTY_SLOT = cache full, no free slots).
+    /// MUST push that entry's index back onto this free list. `reclaimStale`
+    /// and bulk `clear()` do.
+    free_chain: []u16,
+    /// Head of the free list (index + 1), or `slot_empty`; when empty, the
+    /// next slot is `entry_high_water`.
     next_free: u16,
 
     /// Grayscale atlas for regular text, fixed at `AtlasLimits.text_size`.
@@ -181,32 +199,39 @@ pub const GlyphCache = struct {
 
     const Self = @This();
 
-    // Capacity limits
-    pub const MAX_CACHED_GLYPHS: usize = 4096;
-    const HASH_TABLE_SIZE: usize = 8192; // 2x entries for low collision rate
     const MAX_PROBE_LENGTH: usize = 64;
-    const EMPTY_SLOT: u16 = 0xFFFF;
+    const slot_empty: u16 = 0;
     const RENDER_BUFFER_SIZE: u32 = limits.MAX_GLYPH_SIZE; // Max glyph size
 
-    // Compile-time verification
-    comptime {
-        std.debug.assert(MAX_CACHED_GLYPHS < EMPTY_SLOT); // Ensure sentinel is valid
-        std.debug.assert(HASH_TABLE_SIZE >= MAX_CACHED_GLYPHS * 2); // Good load factor
-        // Free chain index type must be able to address all entries.
-        std.debug.assert(MAX_CACHED_GLYPHS <= std.math.maxInt(u16));
+    /// Hash slots for `glyph_count_max` entries: twice as many, rounded up to
+    /// a power of two.
+    pub fn hashSlotCount(glyph_count_max: u32) u32 {
+        assert(glyph_count_max > 0);
+        assert(glyph_count_max <= limits.TextLimits.ceiling.glyph_cache_count_max);
+        return std.math.ceilPowerOfTwoAssert(u32, 2 * glyph_count_max);
     }
 
-    /// Initialize GlyphCache in-place using out-pointer pattern.
-    /// Avoids stack overflow on WASM where GlyphCache is ~200KB.
-    /// Marked noinline to prevent stack accumulation in WASM builds.
+    /// Reserve the cache's tables for `glyph_count_max` glyphs
+    /// (`text.glyph_cache_count_max`) and its atlas. Nothing in the tables
+    /// is written: fresh pages are an empty cache.
     pub noinline fn initInPlace(
         self: *Self,
         allocator: std.mem.Allocator,
         scale: f32,
+        glyph_count_max: u32,
         atlas_options: AtlasOptions,
     ) !void {
-        std.debug.assert(scale > 0);
-        std.debug.assert(scale <= 4.0);
+        assert(scale > 0);
+        assert(scale <= 4.0);
+
+        self.entries = try reservation.reserve(GlyphEntry, glyph_count_max);
+        errdefer reservation.release(GlyphEntry, self.entries, 0);
+
+        self.free_chain = try reservation.reserve(u16, glyph_count_max);
+        errdefer reservation.release(u16, self.free_chain, 0);
+
+        self.hash_table = try reservation.reserveZeroed(u16, hashSlotCount(glyph_count_max));
+        errdefer reservation.release(u16, self.hash_table, 0);
 
         const buffer_bytes = RENDER_BUFFER_SIZE * RENDER_BUFFER_SIZE;
         const render_buffer = try allocator.alloc(u8, buffer_bytes);
@@ -220,24 +245,15 @@ pub const GlyphCache = struct {
 
         self.allocator = allocator;
         self.entry_count = 0;
+        self.entry_high_water = 0;
+        self.hash_written = false;
+        self.next_free = slot_empty;
         self.render_buffer = render_buffer;
         self.render_buffer_size = buffer_bytes;
         self.scale_factor = scale;
 
-        // Initialize hash table to empty slots
-        @memset(&self.hash_table, EMPTY_SLOT);
-
-        // Initialize all entries as invalid
-        for (&self.entries) |*entry| {
-            entry.valid = false;
-        }
-
-        // Chain every slot into the free list: 0 → 1 → 2 → ... → EMPTY_SLOT.
-        self.next_free = 0;
-        self.initFreeList();
-
-        std.debug.assert(self.entry_count == 0);
-        std.debug.assert(self.next_free == 0);
+        assert(self.entries.len == glyph_count_max);
+        assert(self.hash_table.len >= 2 * self.entries.len);
     }
 
     pub fn setScaleFactor(self: *Self, scale: f32) void {
@@ -250,23 +266,45 @@ pub const GlyphCache = struct {
         }
     }
 
+    /// Zero what any frame wrote before the pages go back (§21).
     pub fn deinit(self: *Self) void {
+        assert(self.entry_count <= self.entry_high_water);
+        assert(self.entry_high_water <= self.entries.len);
         self.grayscale_atlas.deinit();
         self.allocator.free(self.render_buffer);
+        const hash_used = if (self.hash_written) self.hash_table.len else 0;
+        reservation.release(u16, self.hash_table, hash_used);
+        reservation.release(u16, self.free_chain, self.entry_high_water);
+        reservation.release(GlyphEntry, self.entries, self.entry_high_water);
         self.* = undefined;
     }
 
-    /// Chain all entry slots into the free list for O(1) insertion.
-    /// Called at init and after clear.
-    fn initFreeList(self: *Self) void {
-        for (0..MAX_CACHED_GLYPHS - 1) |i| {
-            self.free_chain[i] = @intCast(i + 1);
-        }
-        self.free_chain[MAX_CACHED_GLYPHS - 1] = EMPTY_SLOT;
-        self.next_free = 0;
+    /// Push slot `index` onto the free list.
+    fn freeSlot(self: *Self, index: u16) void {
+        assert(index < self.entry_high_water);
+        assert(!self.entries[index].valid);
+        self.free_chain[index] = self.next_free;
+        self.next_free = index + 1;
+    }
 
-        std.debug.assert(self.free_chain[0] == 1);
-        std.debug.assert(self.free_chain[MAX_CACHED_GLYPHS - 1] == EMPTY_SLOT);
+    /// Claim a slot: the free list's head, else the next never-used slot.
+    /// The caller made room first, so one of the two exists.
+    fn claimSlot(self: *Self) u16 {
+        if (self.next_free != slot_empty) {
+            const index = self.next_free - 1;
+            self.next_free = self.free_chain[index];
+            assert(!self.entries[index].valid);
+            return index;
+        }
+        assert(self.entry_high_water < self.entries.len);
+        const index = self.entry_high_water;
+        self.entry_high_water += 1;
+        return index;
+    }
+
+    /// Whether `claimSlot` would succeed without `makeRoom`.
+    fn hasFreeSlot(self: *const Self) bool {
+        return self.next_free != slot_empty or self.entry_high_water < self.entries.len;
     }
 
     /// Classify a key `lookupHit` did not return: absent, or cached with
@@ -275,9 +313,11 @@ pub const GlyphCache = struct {
         std.debug.assert(key.font_ptr != 0);
         std.debug.assert(key.subpixel_x < SUBPIXEL_VARIANTS_X);
 
-        const index = self.findEntry(key) orelse return .miss;
-        const entry = &self.entries[index];
+        const entry = self.findEntry(key) orelse return .miss;
         std.debug.assert(!self.grayscale_atlas.isLive(entry.shelf, entry.generation));
+        const offset = @intFromPtr(entry) - @intFromPtr(self.entries.ptr);
+        const index: u16 = @intCast(@divExact(offset, @sizeOf(GlyphEntry)));
+        assert(index < self.entry_high_water);
         return .{ .stale = index };
     }
 
@@ -296,8 +336,7 @@ pub const GlyphCache = struct {
     /// drops every entry, and `store` resets the stamp.
     inline fn lookupHit(self: *Self, key: GlyphKey, frame: u64) ?*const CachedGlyph {
         std.debug.assert(frame > 0);
-        const index = self.findEntry(key) orelse return null;
-        const entry = &self.entries[index];
+        const entry = self.findEntry(key) orelse return null;
         if (entry.frame_verified == frame) {
             // Checked only with runtime safety: the hit path must not load
             // the shelf, and ReleaseFast may keep loads an assert needs.
@@ -312,27 +351,25 @@ pub const GlyphCache = struct {
         return &entry.glyph;
     }
 
-    /// Index of the valid entry holding `key`, if any.
-    inline fn findEntry(self: *const Self, key: GlyphKey) ?u16 {
-        const key_hash = key.hash();
-        const start_slot = @as(usize, @truncate(key_hash)) % HASH_TABLE_SIZE;
-        var probe: usize = start_slot;
+    /// The valid entry holding `key`, if any. The table and entries are loaded
+    /// once, so the probe loop reloads neither (§20), and the hit path uses the
+    /// pointer instead of indexing the entries again.
+    inline fn findEntry(self: *const Self, key: GlyphKey) ?*GlyphEntry {
+        const hash_table = self.hash_table;
+        const entries = self.entries;
+        const mask = hash_table.len - 1;
+        var probe: usize = @as(usize, @truncate(key.hash())) & mask;
 
         for (0..MAX_PROBE_LENGTH) |_| {
-            const entry_idx = self.hash_table[probe];
+            const stored = hash_table[probe];
+            if (stored == slot_empty) return null;
 
-            if (entry_idx == EMPTY_SLOT) {
-                return null; // Not found
-            }
+            const entry_idx = stored - 1;
+            assert(entry_idx < entries.len);
+            const entry = &entries[entry_idx];
+            if (entry.valid and GlyphKey.eql(entry.key, key)) return entry;
 
-            std.debug.assert(entry_idx < MAX_CACHED_GLYPHS);
-            const entry = &self.entries[entry_idx];
-
-            if (entry.valid and GlyphKey.eql(entry.key, key)) {
-                return entry_idx;
-            }
-
-            probe = (probe + 1) % HASH_TABLE_SIZE;
+            probe = (probe + 1) & mask;
         }
 
         return null; // Max probe length reached
@@ -342,8 +379,8 @@ pub const GlyphCache = struct {
     /// place, or pop a free slot. When the table is full, reclaim entries whose
     /// shelves were evicted, evicting the least recently used shelf if none are.
     fn store(self: *Self, key: GlyphKey, lookup_result: Lookup, rendered: Rendered) void {
-        std.debug.assert(key.font_ptr != 0);
-        std.debug.assert(self.entry_count <= MAX_CACHED_GLYPHS);
+        assert(key.font_ptr != 0);
+        assert(self.entry_count <= self.entries.len);
         const entry: GlyphEntry = .{
             .key = key,
             .glyph = rendered.glyph,
@@ -360,35 +397,32 @@ pub const GlyphCache = struct {
             },
             .miss => {},
         }
-        if (self.next_free == EMPTY_SLOT) self.makeRoom();
+        if (!self.hasFreeSlot()) self.makeRoom();
 
-        // Pop the head of the free list — O(1) instead of O(N) linear scan.
-        const idx = self.next_free;
-        std.debug.assert(idx != EMPTY_SLOT);
-        self.next_free = self.free_chain[idx];
-        std.debug.assert(!self.entries[idx].valid);
-
+        const idx = self.claimSlot();
         self.entries[idx] = entry;
         self.entry_count += 1;
         self.insertIntoHashTable(key, idx);
 
-        std.debug.assert(self.entry_count <= MAX_CACHED_GLYPHS);
+        assert(self.entry_count <= self.entries.len);
     }
 
     /// Free at least one entry slot. Entries whose shelves were evicted go
     /// first; otherwise the least recently used unprotected shelf is evicted.
     /// A full table with every shelf in use this frame fails fast.
     fn makeRoom(self: *Self) void {
-        std.debug.assert(self.next_free == EMPTY_SLOT);
+        assert(!self.hasFreeSlot());
+        assert(self.entry_count == self.entries.len);
         // Each eviction frees one shelf, so the loop ends within the shelf count.
         var attempt: usize = 0;
         while (attempt <= self.grayscale_atlas.shelves.len) : (attempt += 1) {
             if (self.reclaimStale() > 0) return;
             if (!self.grayscale_atlas.evictOne()) break;
         }
-        std.debug.panic("GlyphCache pool 'entries' exhausted: capacity {d}, {d} in use, " ++
-            "1 requested, every glyph used since frame {d}.", .{
-            MAX_CACHED_GLYPHS,
+        std.debug.panic("text pool 'glyph cache' exhausted: capacity {d}, {d} in use, " ++
+            "1 requested, every glyph used since frame {d}. " ++
+            "Raise ResourceLimits.text.glyph_cache_count_max.", .{
+            self.entries.len,
             self.entry_count,
             self.grayscale_atlas.uploads.frameCurrent(),
         });
@@ -396,22 +430,22 @@ pub const GlyphCache = struct {
 
     /// Drop every entry whose atlas pixels were evicted and rebuild the hash
     /// table (linear probing cannot delete in place). Returns the count freed.
-    /// O(MAX_CACHED_GLYPHS + HASH_TABLE_SIZE); runs only when the table is full.
+    /// O(entries + hash slots); runs only when the table is full.
     fn reclaimStale(self: *Self) u32 {
+        const claimed = self.entries[0..self.entry_high_water];
         var freed: u32 = 0;
-        for (&self.entries, 0..) |*entry, index| {
+        for (claimed, 0..) |*entry, index| {
             if (!entry.valid) continue;
             if (self.grayscale_atlas.isLive(entry.shelf, entry.generation)) continue;
             entry.valid = false;
-            self.free_chain[index] = self.next_free;
-            self.next_free = @intCast(index);
+            self.freeSlot(@intCast(index));
             freed += 1;
         }
         if (freed == 0) return 0;
-        std.debug.assert(self.entry_count >= freed);
+        assert(self.entry_count >= freed);
         self.entry_count -= freed;
-        @memset(&self.hash_table, EMPTY_SLOT);
-        for (&self.entries, 0..) |*entry, index| {
+        @memset(self.hash_table, slot_empty);
+        for (claimed, 0..) |*entry, index| {
             if (entry.valid) self.insertIntoHashTable(entry.key, @intCast(index));
         }
         return freed;
@@ -419,23 +453,24 @@ pub const GlyphCache = struct {
 
     /// Insert entry into hash table using linear probing
     fn insertIntoHashTable(self: *Self, key: GlyphKey, entry_idx: u16) void {
-        std.debug.assert(entry_idx < MAX_CACHED_GLYPHS);
+        assert(entry_idx < self.entry_high_water);
 
-        const key_hash = key.hash();
-        const start_slot = @as(usize, @truncate(key_hash)) % HASH_TABLE_SIZE;
-        var probe: usize = start_slot;
+        const hash_table = self.hash_table;
+        const mask = hash_table.len - 1;
+        var probe: usize = @as(usize, @truncate(key.hash())) & mask;
+        self.hash_written = true;
 
         for (0..MAX_PROBE_LENGTH) |_| {
-            if (self.hash_table[probe] == EMPTY_SLOT) {
-                self.hash_table[probe] = entry_idx;
+            if (hash_table[probe] == slot_empty) {
+                hash_table[probe] = entry_idx + 1;
                 return;
             }
-            probe = (probe + 1) % HASH_TABLE_SIZE;
+            probe = (probe + 1) & mask;
         }
 
-        // Max probe length reached - entry won't be in hash table
-        // This is rare with 2x table size but we handle it gracefully
-        std.debug.assert(false); // Should not happen with proper sizing
+        // At most half the slots are occupied, so a probe of 64 finds a free
+        // one unless the hash is badly broken.
+        unreachable;
     }
 
     /// A rendered glyph and the shelf that holds its pixels.
@@ -665,19 +700,20 @@ pub const GlyphCache = struct {
     /// Clear the cache (call when changing fonts or scale). The atlas condemns
     /// every shelf; their space returns once no open frame still uses it.
     pub fn clear(self: *Self) void {
-        for (&self.entries) |*entry| {
+        // Every claimed slot goes back on the free list; slots past the
+        // high-water mark are still unwritten.
+        self.next_free = slot_empty;
+        for (self.entries[0..self.entry_high_water], 0..) |*entry, index| {
             entry.valid = false;
+            self.freeSlot(@intCast(index));
         }
-        @memset(&self.hash_table, EMPTY_SLOT);
+        if (self.hash_written) @memset(self.hash_table, slot_empty);
 
         self.entry_count = 0;
         self.grayscale_atlas.clear();
 
-        // Rebuild the free list so every slot is available again.
-        self.initFreeList();
-
-        std.debug.assert(self.entry_count == 0);
-        std.debug.assert(self.next_free == 0);
+        assert(self.entry_count == 0);
+        assert(self.hasFreeSlot());
     }
 
     /// Get the grayscale atlas for GPU upload
@@ -744,10 +780,11 @@ test "GlyphKey subpixel variants" {
 
 test "GlyphKey wyhash distribution — printable ASCII × subpixel variants" {
     // Hash all printable ASCII glyph IDs (32–126 = 95 chars) × 4 subpixel variants = 380 keys.
-    // Use the real HASH_TABLE_SIZE (8192) — that's what determines probe-chain length in practice.
+    // Use `standard`'s table (8,192 slots): that is what determines probe-chain length in practice.
     // At load factor 380/8192 ≈ 4.6%, birthday-paradox predicts ~2.4% collision rate.
     const testing = std.testing;
-    const TABLE_SLOTS: u32 = GlyphCache.HASH_TABLE_SIZE;
+    const glyph_count = limits.TextLimits.standard.glyph_cache_count_max;
+    const TABLE_SLOTS: u32 = comptime GlyphCache.hashSlotCount(glyph_count);
     var buckets: [TABLE_SLOTS]u16 = @splat(0);
 
     const font_ptr: usize = 0x7FFF_0000_1000;

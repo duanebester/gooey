@@ -55,6 +55,10 @@ comptime {
 pub const limits = blk: {
     var value = gooey.ResourceLimits.small;
     value.text.editor = .{ .count_max = 1, .bytes_max = file_bytes_max, .undo_depth_max = 128 };
+    // Each visible line is its own shaped run, and the editor redraws every
+    // line each frame: it filled the old fixed 256 runs (0.6 plan, "Method"),
+    // so it takes `large`'s 512 to keep a tall window cached.
+    value.text.shaped_run_count_max = 512;
     break :blk value;
 };
 

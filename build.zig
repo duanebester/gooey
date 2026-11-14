@@ -1442,6 +1442,9 @@ fn addFailFastChecks(
         .{ .mode = "atlas-live-set", .stderr = "Atlas pool 'svg' exhausted: capacity 64x64 px, " ++
             "64 rows held by items in use since frame 2, requested 64x16 px " ++
             "(1 px border included), frame 2." },
+        .{ .mode = "glyph-cache", .stderr = "text pool 'glyph cache' exhausted: capacity 512, " ++
+            "512 in use, 1 requested, every glyph used since frame 2. " ++
+            "Raise ResourceLimits.text.glyph_cache_count_max." },
         .{ .mode = "core-allocation", .stderr = "allocation after initialization: alloc of " ++
             "16 bytes while the lifecycle is running" },
         .{ .mode = "core-duplicate-key", .stderr = "duplicate key \"twin\" under element" },

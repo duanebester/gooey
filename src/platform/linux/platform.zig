@@ -5,6 +5,7 @@
 //! (`core_host.zig`) runs the event loop on this connection.
 
 const std = @import("std");
+const limits_mod = @import("../../core/limits.zig");
 const wayland = @import("wayland.zig");
 const interface_mod = @import("../interface.zig");
 const linux_window = @import("window.zig");
@@ -1699,7 +1700,8 @@ const ImeText = struct {
 
     comptime {
         std.debug.assert(bytes_max <= std.math.maxInt(u16));
-        std.debug.assert(bytes_max >= LinuxWindow.marked_text_bytes_max);
+        // The protocol limit, which the preedit budget never exceeds.
+        std.debug.assert(bytes_max >= limits_mod.TextLimits.ceiling.preedit_bytes_max);
     }
 
     fn set(self: *ImeText, text: ?[*:0]const u8) void {

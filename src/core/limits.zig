@@ -300,6 +300,14 @@ pub const ResourceLimits = struct {
             return relationship(.build, "box_depth_max", self.build.box_depth_max, element_count);
         }
         if (self.checkA11yRelationships()) |violation| return violation;
+        if (self.text.preedit_bytes_max > self.events.text_bytes_max) {
+            return relationship(
+                .text,
+                "preedit_bytes_max",
+                self.text.preedit_bytes_max,
+                self.events.text_bytes_max,
+            );
+        }
         if (self.events.dialog_path_bytes_max > self.events.text_bytes_max) {
             return relationship(
                 .events,
@@ -1174,53 +1182,109 @@ pub const TextKindLimits = struct {
     undo_depth_max: u32,
 };
 
-/// The three text-engine pools: single-line inputs, multi-line areas, and code
-/// editors. Editors are opt-in: every profile but `ceiling` sets their count to
-/// 0, and an app that shows one sets it (the code-editor example sets 1). An
-/// area or editor reserves `bytes_max` twice (text and history), so the small
-/// profiles keep only a few.
+/// The text system's caches and faces, and the three text-engine pools:
+/// single-line inputs, multi-line areas, and code editors. Editors are opt-in:
+/// every profile but `ceiling` sets their count to 0, and an app that shows one
+/// sets it (the code-editor example sets 1). An area or editor reserves
+/// `bytes_max` twice (text and history), so the small profiles keep only a few.
+///
+/// Cache peaks measured over every example (0.6 plan, "Method"): glyphs 117 at
+/// `nano`, 283 at `small` (accessible-form), 222 at `standard`; shaped runs 18
+/// / 32 / 256 (data-table and code-editor fill 256); measured widths 19 / 403
+/// / 620.
 pub const TextLimits = struct {
     /// The font faces the app's text system loads during initialization.
     fonts: FontLimits,
+    /// Rendered glyphs the glyph cache holds: one per glyph, size, subpixel
+    /// offset and face. A full cache evicts glyphs whose atlas shelf no open
+    /// frame used; a frame that draws more distinct glyphs than this fails
+    /// fast. The hash table is twice this, a power of two.
+    glyph_cache_count_max: u32,
+    /// Shaped runs (up to 128 glyphs and 512 bytes each) the shaped-run cache
+    /// keeps. It evicts the least recently used, so a miss costs shaping time.
+    shaped_run_count_max: u32,
+    /// Slots of the width cache `measureText` uses, a power of two of at least
+    /// `measure_probe_count + 1`; it evicts the least recently used in a probe
+    /// window.
+    measure_slot_count_max: u32,
+    /// Bytes of IME composition (preedit) one text engine and the platform
+    /// window keep. The OS supplies it, so a longer one is cut at a code point
+    /// boundary and logged, not a panic. It travels through the event queue's
+    /// text, so at most `events.text_bytes_max`.
+    preedit_bytes_max: u32,
     input: TextKindLimits,
     area: TextKindLimits,
     editor: TextKindLimits,
 
+    /// The flat cache fields, checked against `ceiling` like other budgets.
+    const cache_field_names = .{
+        "glyph_cache_count_max",
+        "shaped_run_count_max",
+        "measure_slot_count_max",
+        "preedit_bytes_max",
+    };
+
     pub const nano: TextLimits = .{
         .fonts = FontLimits.nano,
+        .glyph_cache_count_max = 512,
+        .shaped_run_count_max = 64,
+        .measure_slot_count_max = 256,
+        .preedit_bytes_max = 256,
         .input = .{ .count_max = 4, .bytes_max = 1024, .undo_depth_max = 32 },
         .area = .{ .count_max = 0, .bytes_max = 16 * 1024, .undo_depth_max = 32 },
         .editor = .{ .count_max = 0, .bytes_max = 64 * 1024, .undo_depth_max = 64 },
     };
     pub const small: TextLimits = .{
         .fonts = FontLimits.small,
+        .glyph_cache_count_max = 1_024,
+        .shaped_run_count_max = 128,
+        .measure_slot_count_max = 1_024,
+        .preedit_bytes_max = 256,
         .input = .{ .count_max = 16, .bytes_max = 4 * 1024, .undo_depth_max = 64 },
         .area = .{ .count_max = 2, .bytes_max = 64 * 1024, .undo_depth_max = 64 },
         .editor = .{ .count_max = 0, .bytes_max = 256 * 1024, .undo_depth_max = 128 },
     };
     pub const standard: TextLimits = .{
         .fonts = FontLimits.standard,
+        .glyph_cache_count_max = 4_096,
+        .shaped_run_count_max = 256,
+        .measure_slot_count_max = 2_048,
+        .preedit_bytes_max = 1_024,
         .input = .{ .count_max = 64, .bytes_max = 8 * 1024, .undo_depth_max = 64 },
         .area = .{ .count_max = 4, .bytes_max = 128 * 1024, .undo_depth_max = 128 },
         .editor = .{ .count_max = 0, .bytes_max = 1024 * 1024, .undo_depth_max = 256 },
     };
     pub const large: TextLimits = .{
         .fonts = FontLimits.large,
+        .glyph_cache_count_max = 8_192,
+        .shaped_run_count_max = 512,
+        .measure_slot_count_max = 4_096,
+        .preedit_bytes_max = 1_024,
         .input = .{ .count_max = 128, .bytes_max = 8 * 1024, .undo_depth_max = 128 },
         .area = .{ .count_max = 8, .bytes_max = 128 * 1024, .undo_depth_max = 256 },
         .editor = .{ .count_max = 0, .bytes_max = 4 * 1024 * 1024, .undo_depth_max = 512 },
     };
+    /// Glyph indexes are `u16` with 0 as "empty", so the cache holds at most
+    /// 16,384 and its table 32,768. The preedit ceiling is the Wayland
+    /// text-input-v3 limit.
     pub const ceiling: TextLimits = .{
         .fonts = FontLimits.ceiling,
+        .glyph_cache_count_max = 16_384,
+        .shaped_run_count_max = 1_024,
+        .measure_slot_count_max = 16_384,
+        .preedit_bytes_max = 4_000,
         .input = .{ .count_max = 1_024, .bytes_max = 64 * 1024, .undo_depth_max = 1_024 },
         .area = .{ .count_max = 256, .bytes_max = 1024 * 1024, .undo_depth_max = 1_024 },
         .editor = .{ .count_max = 64, .bytes_max = 16 * 1024 * 1024, .undo_depth_max = 4_096 },
     };
 
-    /// The font faces must pass `FontLimits.check`. Engine counts may be 0;
-    /// bytes and undo depth must be in `1..=ceiling`.
+    /// The font faces must pass `FontLimits.check`; the cache fields are in
+    /// `1..=ceiling` and the width cache is a power of two above its probe
+    /// window. Engine counts may be 0; bytes and undo depth must be in
+    /// `1..=ceiling`.
     pub fn check(self: *const TextLimits) ?Violation {
         if (self.fonts.check()) |violation| return violation;
+        if (self.checkCaches()) |violation| return violation;
         inline for (.{ "input", "area", "editor" }) |kind| {
             const value: *const TextKindLimits = &@field(self, kind);
             const bound: *const TextKindLimits = &@field(ceiling, kind);
@@ -1250,7 +1314,56 @@ pub const TextLimits = struct {
         }
         return null;
     }
+
+    fn checkCaches(self: *const TextLimits) ?Violation {
+        inline for (cache_field_names) |name| {
+            const value: u32 = @field(self, name);
+            const bound: u32 = @field(ceiling, name);
+            if (value == 0) {
+                return .{ .budget = .text, .field = name, .rule = .zero, .value = 0, .bound = 1 };
+            }
+            if (value > bound) {
+                return .{
+                    .budget = .text,
+                    .field = name,
+                    .rule = .above_ceiling,
+                    .value = value,
+                    .bound = bound,
+                };
+            }
+        }
+        const slots = self.measure_slot_count_max;
+        if (slots <= measure_probe_count) {
+            return .{
+                .budget = .text,
+                .field = "measure_slot_count_max",
+                .rule = .below_relationship,
+                .value = slots,
+                .bound = measure_probe_count + 1,
+            };
+        }
+        if (!std.math.isPowerOfTwo(slots)) {
+            return .{
+                .budget = .text,
+                .field = "measure_slot_count_max",
+                .rule = .not_power_of_two,
+                .value = slots,
+                .bound = std.math.ceilPowerOfTwoAssert(u32, slots),
+            };
+        }
+        return null;
+    }
 };
+
+/// How far the width cache probes from a key's slot before it evicts the
+/// least recently used in that window: a fixed bound on each lookup.
+pub const measure_probe_count: u32 = 8;
+
+comptime {
+    assert(std.math.isPowerOfTwo(TextLimits.ceiling.measure_slot_count_max));
+    // Glyph indexes plus one, and twice as many hash slots, fit a `u16`.
+    assert(2 * TextLimits.ceiling.glyph_cache_count_max < std.math.maxInt(u16));
+}
 
 /// Entity pools: every type in `Config.entities` gets one pool of this many.
 pub const EntityLimits = struct {
@@ -1392,6 +1505,9 @@ pub const Violation = struct {
         below_relationship,
         above_relationship,
         not_multiple,
+        /// A count that indexes by mask is not a power of two; `bound` is the
+        /// next one up.
+        not_power_of_two,
         /// A set names one entry twice (`text.fonts`); `value` is its length.
         duplicate,
         /// A font set lacks `.regular`, which supplies line metrics.
@@ -1419,6 +1535,10 @@ pub const Violation = struct {
             ),
             .not_multiple => std.fmt.comptimePrint(
                 "ResourceLimits.{t}.{s} = {d} is not a multiple of {d}",
+                .{ self.budget, self.field, self.value, self.bound },
+            ),
+            .not_power_of_two => std.fmt.comptimePrint(
+                "ResourceLimits.{t}.{s} = {d} is not a power of two; use {d}",
                 .{ self.budget, self.field, self.value, self.bound },
             ),
             .duplicate => std.fmt.comptimePrint(
@@ -1526,6 +1646,7 @@ pub const FontLimits = struct {
         bound: u32,
     ) Violation {
         assert(rule != .not_multiple);
+        assert(rule != .not_power_of_two);
         return .{ .budget = .text, .field = field, .rule = rule, .value = value, .bound = bound };
     }
 
@@ -1808,6 +1929,59 @@ test "check bounds each a11y field by its ceiling and its relationships" {
     try std.testing.expectEqualStrings("announcement_bytes_frame_max", bytes.field);
     try std.testing.expectEqual(Violation.Rule.below_relationship, bytes.rule);
     try std.testing.expectEqual(limits.a11y.announcement_count_frame_max, bytes.bound);
+}
+
+test "check bounds each text cache field by its ceiling and its relationships" {
+    // Goal: every text cache field fails at 0 and one past its ceiling and
+    // passes at the ceiling; measure slots must exceed the probe window and be
+    // a power of two; the preedit never outgrows the event queue's text bytes.
+    // Method: start from `ceiling` and move one field at a time, then sit each
+    // relationship exactly on its bound and step one past it.
+    inline for (.{
+        "glyph_cache_count_max",
+        "shaped_run_count_max",
+        "measure_slot_count_max",
+        "preedit_bytes_max",
+    }) |field| {
+        var limits = ResourceLimits.ceiling;
+        try std.testing.expect(limits.check() == null);
+        const field_ceiling = @field(TextLimits.ceiling, field);
+        @field(limits.text, field) = 0;
+        try std.testing.expectEqual(Violation.Rule.zero, limits.check().?.rule);
+        try std.testing.expectEqualStrings(field, limits.check().?.field);
+        @field(limits.text, field) = field_ceiling + 1;
+        const above = limits.check().?;
+        try std.testing.expectEqual(Violation.Budget.text, above.budget);
+        try std.testing.expectEqualStrings(field, above.field);
+        try std.testing.expectEqual(Violation.Rule.above_ceiling, above.rule);
+        try std.testing.expectEqual(field_ceiling, above.bound);
+    }
+
+    var limits = ResourceLimits.nano;
+    limits.text.measure_slot_count_max = 16;
+    try std.testing.expect(limits.check() == null);
+    limits.text.measure_slot_count_max = measure_probe_count;
+    const window = limits.check().?;
+    try std.testing.expectEqualStrings("measure_slot_count_max", window.field);
+    try std.testing.expectEqual(Violation.Rule.below_relationship, window.rule);
+    try std.testing.expectEqual(measure_probe_count + 1, window.bound);
+    // 9 passes the window rule, so only the power-of-two rule can stop it.
+    limits.text.measure_slot_count_max = measure_probe_count + 1;
+    const odd = limits.check().?;
+    try std.testing.expectEqual(Violation.Rule.not_power_of_two, odd.rule);
+    try std.testing.expectEqual(@as(u32, 16), odd.bound);
+
+    // Every profile's queue holds more text than the preedit ceiling, so the
+    // queue shrinks to 2,048 bytes (`nano`'s dialog paths still fit) first.
+    limits = ResourceLimits.nano;
+    limits.events.text_bytes_max = 2 * 1024;
+    limits.text.preedit_bytes_max = limits.events.text_bytes_max;
+    try std.testing.expect(limits.check() == null);
+    limits.text.preedit_bytes_max += 1;
+    const preedit = limits.check().?;
+    try std.testing.expectEqualStrings("preedit_bytes_max", preedit.field);
+    try std.testing.expectEqual(Violation.Rule.above_relationship, preedit.rule);
+    try std.testing.expectEqual(limits.events.text_bytes_max, preedit.bound);
 }
 
 test "check bounds box depth and layers by their ceilings and the element count" {

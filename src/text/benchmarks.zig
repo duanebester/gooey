@@ -54,6 +54,16 @@ const time = struct {
 };
 
 const text = gooey.text;
+
+/// The benchmarks' text budget: one face (`nano`'s) and `standard`'s caches,
+/// with `small`'s 1,024 width slots, the sizes every cache had before they
+/// came from `ResourceLimits`, so results compare across that change.
+const bench_text_limits = blk: {
+    var value = gooey.ResourceLimits.standard.text;
+    value.fonts = text.FontLimits.nano;
+    value.measure_slot_count_max = gooey.ResourceLimits.small.text.measure_slot_count_max;
+    break :blk value;
+};
 const Atlas = text.Atlas;
 const Region = text.Region;
 const TextSystem = text.TextSystem;
@@ -1444,7 +1454,7 @@ fn createTestTextSystem(allocator: std.mem.Allocator) ?*TextSystem {
         return null;
     };
 
-    ts.initInPlace(allocator, 1.0, std.testing.io, &text.FontLimits.nano, .{
+    ts.initInPlace(allocator, 1.0, std.testing.io, &bench_text_limits, .{
         .size = 1024,
         .uploads = uploads,
     }) catch {
@@ -1891,7 +1901,7 @@ fn runTextPipelineBenchmarks(gpa: std.mem.Allocator, reporter: *bench.Reporter) 
     var uploads: text.AtlasUploads = undefined;
     try uploads.initHeadless(gpa, reporter.io);
     defer uploads.deinit();
-    try text_sys.initInPlace(gpa, 1.0, reporter.io, &text.FontLimits.nano, .{
+    try text_sys.initInPlace(gpa, 1.0, reporter.io, &bench_text_limits, .{
         .size = 1024,
         .uploads = &uploads,
     });

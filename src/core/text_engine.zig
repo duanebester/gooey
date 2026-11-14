@@ -37,9 +37,6 @@ pub const ElementId = id_mod.ElementId;
 pub const History = history_mod.History;
 pub const Clipboard = clipboard_mod.Clipboard;
 
-/// Preedit bytes one engine holds. IME candidates are short phrases.
-pub const preedit_bytes_max: u32 = 256;
-
 /// Codepoints one line may hold. Components paint a line as one shaped run,
 /// and a run past `text.run_codepoint_count_max` fails fast as a programmer
 /// error; typed, pasted, and committed text is operating input, so an edit
@@ -95,7 +92,8 @@ pub fn Engine(comptime kind: Kind) type {
         cursor: u32,
         /// The other end of the selection; equal to `cursor` when none.
         anchor: u32,
-        preedit: [preedit_bytes_max]u8,
+        /// IME composition, `text.preedit_bytes_max` bytes bound by the pool.
+        preedit: []u8,
         preedit_len: u32,
         history: History,
         /// Window clock of the last edit or caret move, set by `prepare`.
@@ -158,7 +156,7 @@ pub fn Engine(comptime kind: Kind) type {
         }
 
         pub fn preeditText(self: *const Self) []const u8 {
-            assert(self.preedit_len <= preedit_bytes_max);
+            assert(self.preedit_len <= self.preedit.len);
             return self.preedit[0..self.preedit_len];
         }
 
@@ -316,11 +314,22 @@ pub fn Engine(comptime kind: Kind) type {
             self.history.seal();
         }
 
+        /// Show `value` as the composition. The OS supplies it, so a longer
+        /// one is cut at a code point boundary and logged (decision R2).
         pub fn setPreedit(self: *Self, value: []const u8) void {
-            const kept = clipboard_mod.prefixFitting(value, preedit_bytes_max);
+            assert(self.preedit.len > 0);
+            const kept = clipboard_mod.prefixFitting(value, self.preedit.len);
+            if (kept < value.len) {
+                std.log.warn("IME composition of {d} bytes cut to {d}. Raise " ++
+                    "ResourceLimits.text.preedit_bytes_max ({d}).", .{
+                    value.len,
+                    kept,
+                    self.preedit.len,
+                });
+            }
             @memcpy(self.preedit[0..kept], value[0..kept]);
             self.preedit_len = @intCast(kept);
-            assert(self.preedit_len <= preedit_bytes_max);
+            assert(self.preedit_len <= self.preedit.len);
         }
 
         fn deleteSelection(self: *Self) void {
@@ -828,18 +837,27 @@ pub fn Pool(comptime kind: Kind) type {
         slab: retained.Slab,
         text_bytes: []u8,
         history_bytes: []u8,
+        preedit_bytes: []u8,
         edits: []history_mod.Edit,
         bytes_max: u32,
         undo_depth_max: u32,
+        preedit_bytes_max: u32,
 
         const stride: u32 = std.mem.alignForward(u32, @sizeOf(E), retained.slab_alignment);
 
-        pub const Capacity = struct { count: u32, bytes_max: u32, undo_depth_max: u32 };
+        pub const Capacity = struct {
+            count: u32,
+            bytes_max: u32,
+            undo_depth_max: u32,
+            /// `text.preedit_bytes_max`, the same for every kind.
+            preedit_bytes_max: u32,
+        };
 
         pub fn initInPlace(self: *Self, gpa: std.mem.Allocator, capacity: Capacity) !void {
             assert(capacity.count > 0);
             assert(capacity.bytes_max > 0);
             assert(capacity.undo_depth_max > 0);
+            assert(capacity.preedit_bytes_max > 0);
             const bytes_total = @as(usize, capacity.count) * capacity.bytes_max;
             const name = "text pool '" ++ @tagName(kind) ++ "'";
             try self.slab.initInPlace(gpa, name, stride, capacity.count);
@@ -848,15 +866,20 @@ pub fn Pool(comptime kind: Kind) type {
             errdefer gpa.free(self.text_bytes);
             self.history_bytes = try gpa.alloc(u8, bytes_total);
             errdefer gpa.free(self.history_bytes);
+            const preedit_total = @as(usize, capacity.count) * capacity.preedit_bytes_max;
+            self.preedit_bytes = try gpa.alloc(u8, preedit_total);
+            errdefer gpa.free(self.preedit_bytes);
             const edit_count = @as(usize, capacity.count) * capacity.undo_depth_max;
             self.edits = try gpa.alloc(history_mod.Edit, edit_count);
             self.bytes_max = capacity.bytes_max;
             self.undo_depth_max = capacity.undo_depth_max;
+            self.preedit_bytes_max = capacity.preedit_bytes_max;
         }
 
         pub fn deinit(self: *Self, gpa: std.mem.Allocator) void {
             assert(self.bytes_max > 0);
             gpa.free(self.edits);
+            gpa.free(self.preedit_bytes);
             gpa.free(self.history_bytes);
             gpa.free(self.text_bytes);
             self.slab.deinit(gpa);
@@ -893,6 +916,8 @@ pub fn Pool(comptime kind: Kind) type {
             const bytes_start = @as(usize, slot) * self.bytes_max;
             const edits_start = @as(usize, slot) * self.undo_depth_max;
             engine.bytes = self.text_bytes[bytes_start..][0..self.bytes_max];
+            const preedit_start = @as(usize, slot) * self.preedit_bytes_max;
+            engine.preedit = self.preedit_bytes[preedit_start..][0..self.preedit_bytes_max];
             engine.history = History.init(
                 self.edits[edits_start..][0..self.undo_depth_max],
                 self.history_bytes[bytes_start..][0..self.bytes_max],
@@ -926,9 +951,11 @@ fn TestOf(comptime kind: Kind) type {
         history_bytes: [size]u8,
         clipboard_bytes: [size]u8,
         clipboard: Clipboard,
+        preedit: [16]u8,
 
         fn init(self: *@This()) void {
             self.engine.bytes = &self.bytes;
+            self.engine.preedit = &self.preedit;
             self.engine.history = History.init(&self.edits, &self.history_bytes);
             self.engine.reset();
             self.clipboard = Clipboard.init(&self.clipboard_bytes);
@@ -985,6 +1012,20 @@ test "an edit keeps the prefix that leaves every line within the bound" {
     // Joining a long line's head to another's tail may not outgrow either.
     try std.testing.expectEqual(@as(?u32, 0), fit("abcdefg\nxy", 5, 9, "", 4));
     try std.testing.expectEqual(@as(?u32, null), fit("abcdef\nxy", 6, 7, "", 4));
+}
+
+test "a preedit fills its budget exactly and cuts one more byte at a code point" {
+    // Goal: `text.preedit_bytes_max` bounds the composition. Method: the test
+    // engine's 16-byte preedit; 16 ASCII bytes fit whole, and 14 bytes then a
+    // 3-byte "東" (17 bytes) keeps the 14, since the codepoint cannot split.
+    var t: TestEngine = undefined;
+    t.init();
+    const engine = &t.engine;
+    try std.testing.expectEqual(@as(usize, 16), engine.preedit.len);
+    engine.setPreedit("0123456789abcdef");
+    try std.testing.expectEqualStrings("0123456789abcdef", engine.preeditText());
+    engine.setPreedit("0123456789abcd\u{6771}");
+    try std.testing.expectEqualStrings("0123456789abcd", engine.preeditText());
 }
 
 test "input engine edits by codepoint and commits over a preedit" {

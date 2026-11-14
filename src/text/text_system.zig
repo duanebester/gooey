@@ -18,6 +18,10 @@ const RenderStats = render_stats.RenderStats;
 
 const atlas_mod = @import("atlas.zig");
 const Atlas = atlas_mod.Atlas;
+const limits_mod = @import("../core/limits.zig");
+const reservation = @import("../core/reservation.zig");
+
+const assert = std.debug.assert;
 
 // =============================================================================
 // Shaped Run Cache - Fixed Capacity, Zero Runtime Allocation
@@ -117,83 +121,74 @@ const CacheEntry = struct {
     }
 };
 
-/// Cache for shaped text runs - fully pre-allocated, zero runtime allocation
-/// Uses hash table with open addressing for O(1) average lookup.
-/// Implements LRU eviction when capacity is reached.
+/// Cache for shaped text runs, reserved at init from
+/// `ResourceLimits.text.shaped_run_count_max` and never grown (CLAUDE.md §2).
+/// A hash table with open addressing finds an entry in O(1) on average; a full
+/// cache evicts the least recently used entry, so a miss costs shaping time,
+/// never correctness.
+///
+/// Zero is "empty": hash slots hold an entry index plus one, and entry slots
+/// are claimed in order up to `entry_high_water`, so fresh pages are an empty
+/// cache. Memory at `standard` (256 runs): entries 256 × 4,152 B and 512 hash
+/// slots × 2 B, 1.0 MiB of virtual memory, resident as runs are cached.
 pub const ShapedRunCache = struct {
-    /// Pre-allocated cache entries
-    entries: [MAX_ENTRIES]CacheEntry,
-    /// Hash table: maps hash slot -> entry index (EMPTY_SLOT = empty)
-    hash_table: [HASH_TABLE_SIZE]u16,
+    /// Entry slots; those at or past `entry_high_water` were never written.
+    entries: []CacheEntry,
+    /// Hash slot -> entry index + 1, or `slot_empty`; a power of two, at least
+    /// twice the entries.
+    hash_table: []u16,
     /// Number of valid entries
     entry_count: u32,
+    /// Entry slots claimed so far; `deinit` zeroes this prefix (§21).
+    entry_high_water: u32,
+    /// Whether any hash slot was written, for `deinit`'s zeroing.
+    hash_written: bool,
     /// Global access counter for LRU
     access_counter: u32,
 
     const Self = @This();
 
-    // Compile-time capacity limits
-    pub const MAX_ENTRIES: usize = 256;
+    // Which runs are cacheable at all; longer ones are shaped uncached.
     pub const MAX_GLYPHS_PER_ENTRY: usize = 128; // ~128 chars per cached string
     pub const MAX_TEXT_LEN: usize = 512; // Max cacheable text length
 
-    // Hash table configuration
-    // Size is 2x entries for low collision rate with open addressing
-    const HASH_TABLE_SIZE: usize = 512;
-    const MAX_PROBE_LENGTH: usize = HASH_TABLE_SIZE; // Must be able to probe entire table
-    const EMPTY_SLOT: u16 = 0xFFFF; // Sentinel for empty hash slots
+    const slot_empty: u16 = 0;
 
-    // Compile-time size verification
     comptime {
-        // Ensure reasonable memory footprint (~1.5MB for cache)
-        const entry_size = @sizeOf(CacheEntry);
-        const total_size = entry_size * MAX_ENTRIES;
-        std.debug.assert(total_size < 2 * 1024 * 1024); // Under 2MB
         std.debug.assert(@sizeOf(ShapedGlyph) <= 48); // Glyph struct size check
+        // Entry indexes plus one fit a `u16` at the ceiling.
+        std.debug.assert(limits_mod.TextLimits.ceiling.shaped_run_count_max < std.math.maxInt(u16));
     }
 
-    pub fn init() Self {
-        var self = Self{
-            .entries = undefined,
-            .hash_table = @as([HASH_TABLE_SIZE]u16, @splat(EMPTY_SLOT)),
+    /// Reserve `entry_count_max` entries (`text.shaped_run_count_max`) and
+    /// twice as many hash slots, rounded up to a power of two.
+    pub fn init(entry_count_max: u32) error{OutOfMemory}!Self {
+        assert(entry_count_max > 0);
+        assert(entry_count_max <= limits_mod.TextLimits.ceiling.shaped_run_count_max);
+        const slot_count = std.math.ceilPowerOfTwoAssert(u32, 2 * entry_count_max);
+
+        const entries = try reservation.reserve(CacheEntry, entry_count_max);
+        errdefer reservation.release(CacheEntry, entries, 0);
+
+        const hash_table = try reservation.reserveZeroed(u16, slot_count);
+        const self: Self = .{
+            .entries = entries,
+            .hash_table = hash_table,
             .entry_count = 0,
+            .entry_high_water = 0,
+            .hash_written = false,
             .access_counter = 0,
         };
-
-        // Initialize all entries as invalid
-        for (&self.entries) |*entry| {
-            entry.clear();
-        }
-
-        std.debug.assert(self.entry_count == 0);
-        std.debug.assert(self.access_counter == 0);
-
+        assert(self.hash_table.len >= 2 * self.entries.len);
         return self;
     }
 
-    /// Initialize ShapedRunCache in-place using out-pointer pattern.
-    /// Avoids stack overflow on WASM where ShapedRunCache is ~1.5MB.
-    /// Marked noinline to prevent stack accumulation in WASM builds.
-    pub noinline fn initInPlace(self: *Self) void {
-        self.entry_count = 0;
-        self.access_counter = 0;
-
-        // Initialize hash table to empty slots
-        @memset(&self.hash_table, EMPTY_SLOT);
-
-        // Initialize all entries as invalid
-        for (&self.entries) |*entry| {
-            entry.clear();
-        }
-
-        std.debug.assert(self.entry_count == 0);
-        std.debug.assert(self.access_counter == 0);
-    }
-
+    /// Zero what was written before the pages go back (§21).
     pub fn deinit(self: *Self) void {
-        // No dynamic memory to free - just clear state
-        self.entry_count = 0;
-        self.access_counter = 0;
+        assert(self.entry_count <= self.entry_high_water);
+        const hash_used = if (self.hash_written) self.hash_table.len else 0;
+        reservation.release(u16, self.hash_table, hash_used);
+        reservation.release(CacheEntry, self.entries, self.entry_high_water);
         self.* = undefined;
     }
 
@@ -204,41 +199,19 @@ pub const ShapedRunCache = struct {
         std.debug.assert(key.text_len > 0);
         std.debug.assert(key.text_len <= MAX_TEXT_LEN);
 
-        const start_slot = @as(usize, @truncate(key.text_hash)) % HASH_TABLE_SIZE;
-        var probe: usize = start_slot;
+        const index = self.findEntryIndex(key) orelse return null;
+        const entry = &self.entries[index];
+        self.access_counter += 1;
+        entry.last_access = self.access_counter;
 
-        for (0..MAX_PROBE_LENGTH) |_| {
-            const entry_idx = self.hash_table[probe];
+        std.debug.assert(entry.glyph_count <= MAX_GLYPHS_PER_ENTRY);
+        std.debug.assert(entry.width >= 0);
 
-            if (entry_idx == EMPTY_SLOT) {
-                // Empty slot means key not in table
-                return null;
-            }
-
-            std.debug.assert(entry_idx < MAX_ENTRIES);
-            const entry = &self.entries[entry_idx];
-
-            if (entry.valid and ShapedRunKey.eql(entry.key, key)) {
-                // Update LRU
-                self.access_counter += 1;
-                entry.last_access = self.access_counter;
-
-                std.debug.assert(entry.glyph_count <= MAX_GLYPHS_PER_ENTRY);
-                std.debug.assert(entry.width >= 0);
-
-                return ShapedRun{
-                    .glyphs = entry.glyphs[0..entry.glyph_count],
-                    .width = entry.width,
-                    .owned = false, // Cache owns this memory
-                };
-            }
-
-            // Linear probing: try next slot
-            probe = (probe + 1) % HASH_TABLE_SIZE;
-        }
-
-        // Max probe length reached - treat as miss
-        return null;
+        return ShapedRun{
+            .glyphs = entry.glyphs[0..entry.glyph_count],
+            .width = entry.width,
+            .owned = false, // Cache owns this memory
+        };
     }
 
     /// Store a shaped run in cache (copies glyphs into pre-allocated storage)
@@ -272,22 +245,7 @@ pub const ShapedRunCache = struct {
             return;
         }
 
-        // Find slot: prefer empty, otherwise LRU
-        var target_idx: usize = 0;
-        var oldest_access: u32 = std.math.maxInt(u32);
-
-        for (&self.entries, 0..) |*entry, idx| {
-            if (!entry.valid) {
-                // Found empty slot
-                target_idx = idx;
-                break;
-            } else if (entry.last_access < oldest_access) {
-                // Track LRU candidate
-                oldest_access = entry.last_access;
-                target_idx = idx;
-            }
-        }
-
+        const target_idx = self.claimSlot();
         const slot = &self.entries[target_idx];
 
         // If evicting, remove old entry from hash table first
@@ -314,96 +272,119 @@ pub const ShapedRunCache = struct {
         // Insert into hash table
         self.insertIntoHashTable(key, @intCast(target_idx));
 
-        std.debug.assert(self.entry_count <= MAX_ENTRIES);
+        std.debug.assert(self.entry_count <= self.entries.len);
         std.debug.assert(slot.valid);
     }
 
-    /// Find entry index by key, returns null if not found
-    fn findEntryIndex(self: *Self, key: ShapedRunKey) ?usize {
-        const start_slot = @as(usize, @truncate(key.text_hash)) % HASH_TABLE_SIZE;
-        var probe: usize = start_slot;
-
-        for (0..MAX_PROBE_LENGTH) |_| {
-            const entry_idx = self.hash_table[probe];
-
-            if (entry_idx == EMPTY_SLOT) {
-                return null;
+    /// The slot a new run goes in: the next never-used slot, else the first
+    /// invalid one, else the least recently used. One scan of the claimed
+    /// slots, at most `shaped_run_count_max`, only when every slot was used.
+    fn claimSlot(self: *Self) usize {
+        if (self.entry_high_water < self.entries.len) {
+            const index = self.entry_high_water;
+            self.entry_high_water += 1;
+            self.entries[index].valid = false;
+            return index;
+        }
+        var target_idx: usize = 0;
+        var oldest_access: u32 = std.math.maxInt(u32);
+        for (self.entries, 0..) |*entry, idx| {
+            if (!entry.valid) return idx;
+            if (entry.last_access < oldest_access) {
+                oldest_access = entry.last_access;
+                target_idx = idx;
             }
+        }
+        assert(self.entry_count == self.entries.len);
+        return target_idx;
+    }
 
-            std.debug.assert(entry_idx < MAX_ENTRIES);
-            const entry = &self.entries[entry_idx];
+    /// Find entry index by key, returns null if not found. The table and
+    /// entries are loaded once, so the probe loop reloads neither (§20).
+    fn findEntryIndex(self: *const Self, key: ShapedRunKey) ?usize {
+        const hash_table = self.hash_table;
+        const entries = self.entries;
+        const mask = hash_table.len - 1;
+        var probe: usize = @as(usize, @truncate(key.text_hash)) & mask;
 
-            if (entry.valid and ShapedRunKey.eql(entry.key, key)) {
-                return entry_idx;
-            }
+        for (0..hash_table.len) |_| {
+            const stored = hash_table[probe];
+            if (stored == slot_empty) return null;
 
-            probe = (probe + 1) % HASH_TABLE_SIZE;
+            const entry_idx = stored - 1;
+            std.debug.assert(entry_idx < entries.len);
+            const entry = &entries[entry_idx];
+            if (entry.valid and ShapedRunKey.eql(entry.key, key)) return entry_idx;
+
+            probe = (probe + 1) & mask;
         }
 
         return null;
     }
 
-    /// Insert entry into hash table using linear probing
+    /// Insert entry into hash table using linear probing. At most half the
+    /// slots are occupied, so a free one is always found.
     fn insertIntoHashTable(self: *Self, key: ShapedRunKey, entry_idx: u16) void {
-        std.debug.assert(entry_idx < MAX_ENTRIES);
+        std.debug.assert(entry_idx < self.entry_high_water);
 
-        const start_slot = @as(usize, @truncate(key.text_hash)) % HASH_TABLE_SIZE;
-        var probe: usize = start_slot;
+        const mask = self.hash_table.len - 1;
+        var probe: usize = @as(usize, @truncate(key.text_hash)) & mask;
+        self.hash_written = true;
 
-        for (0..MAX_PROBE_LENGTH) |_| {
-            if (self.hash_table[probe] == EMPTY_SLOT) {
-                self.hash_table[probe] = entry_idx;
+        for (0..self.hash_table.len) |_| {
+            if (self.hash_table[probe] == slot_empty) {
+                self.hash_table[probe] = entry_idx + 1;
                 return;
             }
-            probe = (probe + 1) % HASH_TABLE_SIZE;
+            probe = (probe + 1) & mask;
         }
-
-        // Max probe length reached - this shouldn't happen with proper sizing
-        // but we fail gracefully (entry just won't be in hash table)
-        std.debug.assert(false); // Should never reach here with 2x table size
+        unreachable;
     }
 
     /// Remove entry from hash table (used during eviction)
     /// Uses tombstone-free deletion by rehashing subsequent entries
     fn removeFromHashTable(self: *Self, key: ShapedRunKey, entry_idx: usize) void {
-        const start_slot = @as(usize, @truncate(key.text_hash)) % HASH_TABLE_SIZE;
-        var probe: usize = start_slot;
+        const mask = self.hash_table.len - 1;
+        var probe: usize = @as(usize, @truncate(key.text_hash)) & mask;
+        const stored: u16 = @intCast(entry_idx + 1);
 
         // Find the slot containing this entry
-        for (0..MAX_PROBE_LENGTH) |_| {
-            if (self.hash_table[probe] == EMPTY_SLOT) {
+        for (0..self.hash_table.len) |_| {
+            if (self.hash_table[probe] == slot_empty) {
                 return; // Entry not in hash table
             }
 
-            if (self.hash_table[probe] == @as(u16, @intCast(entry_idx))) {
+            if (self.hash_table[probe] == stored) {
                 // Found it - remove and rehash subsequent entries
-                self.hash_table[probe] = EMPTY_SLOT;
+                self.hash_table[probe] = slot_empty;
                 self.rehashAfterRemoval(probe);
                 return;
             }
 
-            probe = (probe + 1) % HASH_TABLE_SIZE;
+            probe = (probe + 1) & mask;
         }
     }
 
     /// Rehash entries that may have been displaced by the removed entry
     fn rehashAfterRemoval(self: *Self, removed_slot: usize) void {
-        var slot = (removed_slot + 1) % HASH_TABLE_SIZE;
+        const mask = self.hash_table.len - 1;
+        var slot = (removed_slot + 1) & mask;
 
-        for (0..MAX_PROBE_LENGTH) |_| {
-            const entry_idx = self.hash_table[slot];
-            if (entry_idx == EMPTY_SLOT) {
+        for (0..self.hash_table.len) |_| {
+            const stored = self.hash_table[slot];
+            if (stored == slot_empty) {
                 return; // Done - hit empty slot
             }
 
             // Check if this entry needs to be moved
+            const entry_idx = stored - 1;
             const entry = &self.entries[entry_idx];
             if (!entry.valid) {
-                slot = (slot + 1) % HASH_TABLE_SIZE;
+                slot = (slot + 1) & mask;
                 continue;
             }
 
-            const natural_slot = @as(usize, @truncate(entry.key.text_hash)) % HASH_TABLE_SIZE;
+            const natural_slot = @as(usize, @truncate(entry.key.text_hash)) & mask;
 
             // If entry's natural slot is between removed_slot and current slot
             // (wrapping around), it needs to be rehashed
@@ -414,11 +395,11 @@ pub const ShapedRunCache = struct {
 
             if (needs_rehash) {
                 // Remove from current slot and reinsert
-                self.hash_table[slot] = EMPTY_SLOT;
+                self.hash_table[slot] = slot_empty;
                 self.insertIntoHashTable(entry.key, entry_idx);
             }
 
-            slot = (slot + 1) % HASH_TABLE_SIZE;
+            slot = (slot + 1) & mask;
         }
     }
 
@@ -426,11 +407,10 @@ pub const ShapedRunCache = struct {
     /// faces into the same slots, so a font change must clear explicitly.
     /// Entries for different faces coexist; nothing clears on a face switch.
     pub fn clear(self: *Self) void {
-        for (&self.entries) |*entry| {
+        for (self.entries[0..self.entry_high_water]) |*entry| {
             entry.clear();
         }
-        // Clear hash table
-        @memset(&self.hash_table, EMPTY_SLOT);
+        if (self.hash_written) @memset(self.hash_table, slot_empty);
 
         self.entry_count = 0;
         // Don't reset access_counter to preserve LRU ordering after clear
@@ -481,50 +461,41 @@ const MeasureEntry = struct {
 /// window, so a bounded linear probe with LRU eviction inside that window needs no
 /// separate hash table, no tombstones, and no rehash-on-removal.
 pub const MeasureCache = struct {
-    /// Pre-allocated slots, indexed directly by hash
-    slots: [SLOT_COUNT]MeasureEntry,
+    /// Slots indexed directly by hash, `text.measure_slot_count_max` of them
+    /// (a power of two). Zero is an empty slot, so fresh pages are an empty
+    /// cache. Memory at `standard` (2,048 slots × 56 B): 112 KiB of virtual
+    /// memory, resident as widths are cached.
+    slots: []MeasureEntry,
+    /// Whether any slot was written, for `deinit`'s zeroing.
+    written: bool,
     /// Global access counter for LRU
     access_counter: u32,
 
     const Self = @This();
 
-    // Capacity limits. 1024 x ~56 bytes is ~57KB -- two orders of magnitude below
-    // the shaped-run cache, so this is affordable at a much higher entry count.
-    pub const SLOT_COUNT: usize = 1024;
     /// Associativity: how far a key may probe from its natural slot before the
     /// least-recently-used slot in that window is evicted. Bounds worst-case
     /// lookup to a fixed number of comparisons.
-    pub const MAX_PROBE_LENGTH: usize = 8;
+    pub const MAX_PROBE_LENGTH: usize = limits_mod.measure_probe_count;
 
-    comptime {
-        // Power of two keeps the modulo a mask.
-        std.debug.assert(std.math.isPowerOfTwo(SLOT_COUNT));
-        std.debug.assert(MAX_PROBE_LENGTH < SLOT_COUNT);
-        // Stay far below the shaped-run cache budget; this is the whole point.
-        std.debug.assert(@sizeOf(MeasureEntry) * SLOT_COUNT < 128 * 1024);
-    }
-
-    /// Initialize in-place using the out-pointer pattern, matching
-    /// `ShapedRunCache`. Marked noinline to keep the ~57KB off the WASM stack.
-    pub noinline fn initInPlace(self: *Self) void {
-        self.access_counter = 0;
-
-        for (&self.slots) |*slot| {
-            slot.clear();
-        }
-
-        std.debug.assert(self.access_counter == 0);
-        std.debug.assert(!self.slots[0].valid);
-    }
-
-    pub fn init() Self {
-        var self: Self = undefined;
-        self.initInPlace();
+    /// Reserve `slot_count` slots (`text.measure_slot_count_max`).
+    pub fn init(slot_count: u32) error{OutOfMemory}!Self {
+        // Power of two keeps the modulo a mask; the budget's check holds both.
+        assert(std.math.isPowerOfTwo(slot_count));
+        assert(slot_count > MAX_PROBE_LENGTH);
+        const self: Self = .{
+            .slots = try reservation.reserveZeroed(MeasureEntry, slot_count),
+            .written = false,
+            .access_counter = 0,
+        };
+        assert(!self.slots[0].valid);
         return self;
     }
 
+    /// Zero the slots if any were written, then release them (§21).
     pub fn deinit(self: *Self) void {
-        self.access_counter = 0;
+        const used = if (self.written) self.slots.len else 0;
+        reservation.release(MeasureEntry, self.slots, used);
         self.* = undefined;
     }
 
@@ -533,10 +504,12 @@ pub const MeasureCache = struct {
         std.debug.assert(key.text_len > 0);
         std.debug.assert(key.text_len <= ShapedRunCache.MAX_TEXT_LEN);
 
-        const start_slot = @as(usize, @truncate(key.text_hash)) % SLOT_COUNT;
+        const slots = self.slots;
+        const mask = slots.len - 1;
+        const start_slot = @as(usize, @truncate(key.text_hash)) & mask;
 
         for (0..MAX_PROBE_LENGTH) |offset| {
-            const slot = &self.slots[(start_slot + offset) % SLOT_COUNT];
+            const slot = &slots[(start_slot + offset) & mask];
 
             if (slot.valid) {
                 if (ShapedRunKey.eql(slot.key, key)) {
@@ -563,14 +536,16 @@ pub const MeasureCache = struct {
         std.debug.assert(key.text_len <= ShapedRunCache.MAX_TEXT_LEN);
         std.debug.assert(width >= 0);
 
-        const start_slot = @as(usize, @truncate(key.text_hash)) % SLOT_COUNT;
+        const slots = self.slots;
+        const mask = slots.len - 1;
+        const start_slot = @as(usize, @truncate(key.text_hash)) & mask;
 
         var victim_index: usize = start_slot;
         var oldest_access: u32 = std.math.maxInt(u32);
 
         for (0..MAX_PROBE_LENGTH) |offset| {
-            const index = (start_slot + offset) % SLOT_COUNT;
-            const slot = &self.slots[index];
+            const index = (start_slot + offset) & mask;
+            const slot = &slots[index];
 
             if (slot.valid) {
                 // Refresh in place when the key is already present.
@@ -588,10 +563,11 @@ pub const MeasureCache = struct {
             }
         }
 
-        const victim = &self.slots[victim_index];
+        const victim = &slots[victim_index];
         victim.key = key;
         victim.width = width;
         victim.valid = true;
+        self.written = true;
         self.access_counter += 1;
         victim.last_access = self.access_counter;
 
@@ -603,13 +579,13 @@ pub const MeasureCache = struct {
     /// them; keys carry the face address, so faces coexist and only a font
     /// reload, which reuses those addresses, clears.
     pub fn clear(self: *Self) void {
-        for (&self.slots) |*slot| {
-            slot.clear();
+        if (self.written) {
+            for (self.slots) |*slot| slot.clear();
         }
         // Don't reset access_counter, to preserve LRU ordering after clear.
 
         std.debug.assert(!self.slots[0].valid);
-        std.debug.assert(!self.slots[SLOT_COUNT - 1].valid);
+        std.debug.assert(!self.slots[self.slots.len - 1].valid);
     }
 };
 
@@ -678,6 +654,7 @@ pub const SystemFont = types.SystemFont;
 pub const FontVariant = types.FontVariant;
 pub const FontFamily = types.FontFamily;
 pub const FontLimits = @import("../core/limits.zig").FontLimits;
+pub const TextLimits = @import("../core/limits.zig").TextLimits;
 pub const CachedGlyph = cache_mod.CachedGlyph;
 pub const AtlasOptions = cache_mod.AtlasOptions;
 pub const SUBPIXEL_VARIANTS_X = types.SUBPIXEL_VARIANTS_X;
@@ -741,24 +718,23 @@ pub const TextSystem = struct {
         std.debug.assert(face_slot_count_max < face_slot_none);
     }
 
-    /// Initialize TextSystem in-place using out-pointer pattern.
-    /// Avoids stack overflow on WASM where TextSystem is ~1.7MB
-    /// (GlyphCache: ~200KB, ShapedRunCache: ~1.5MB).
+    /// Initialize TextSystem in-place from the app's `ResourceLimits.text`:
+    /// one face slot per `fonts.variants` entry, which `loadFont` or
+    /// `loadSystemFont` fills before the first frame, and the glyph,
+    /// shaped-run and width caches at their budgeted sizes.
     /// Marked noinline to prevent stack accumulation in WASM builds.
-    ///
-    /// Reserves one face slot per `font_limits.variants` entry; `loadFont` or
-    /// `loadSystemFont` fills every slot before the first frame.
     pub noinline fn initInPlace(
         self: *Self,
         allocator: std.mem.Allocator,
         scale: f32,
         io: std.Io,
-        font_limits: *const FontLimits,
+        text_limits: *const TextLimits,
         atlas_options: cache_mod.AtlasOptions,
     ) !void {
         std.debug.assert(scale > 0);
         std.debug.assert(scale <= 4.0); // Reasonable scale factor limit
-        std.debug.assert(font_limits.check() == null); // The app's budget checked it.
+        std.debug.assert(text_limits.check() == null); // The app's budget checked it.
+        const font_limits = &text_limits.fonts;
 
         const app_count = font_limits.variants.len;
         const face_count = app_count + font_limits.mono_variants.len;
@@ -788,11 +764,16 @@ pub const TextSystem = struct {
         self.scale_factor = scale;
         self.io = io;
 
-        // Initialize caches in-place to avoid large stack temporaries
-        try self.cache.initInPlace(allocator, scale, atlas_options);
+        try self.cache.initInPlace(
+            allocator,
+            scale,
+            text_limits.glyph_cache_count_max,
+            atlas_options,
+        );
         errdefer self.cache.deinit();
-        self.shape_cache.initInPlace();
-        self.measure_cache.initInPlace();
+        self.shape_cache = try ShapedRunCache.init(text_limits.shaped_run_count_max);
+        errdefer self.shape_cache.deinit();
+        self.measure_cache = try MeasureCache.init(text_limits.measure_slot_count_max);
         self.shape_cache_mutex = .init;
         self.glyph_cache_mutex = .init;
 
@@ -1486,6 +1467,11 @@ fn measureGlyphRun(
 // Tests
 // =============================================================================
 
+/// The caches' sizes in these tests: `standard`'s 256 runs and `small`'s
+/// 1,024 width slots.
+const test_shaped_run_count: u32 = TextLimits.standard.shaped_run_count_max;
+const test_measure_slot_count: u32 = TextLimits.small.measure_slot_count_max;
+
 test "ShapedRunKey hash consistency" {
     const key1 = ShapedRunKey.init("Hello", 0x1234, 16.0);
     const key2 = ShapedRunKey.init("Hello", 0x1234, 16.0);
@@ -1498,7 +1484,7 @@ test "ShapedRunKey hash consistency" {
 }
 
 test "ShapedRunCache basic operations" {
-    var cache = ShapedRunCache.init();
+    var cache = try ShapedRunCache.init(test_shaped_run_count);
     defer cache.deinit();
 
     // Create test glyphs
@@ -1527,8 +1513,15 @@ test "ShapedRunCache basic operations" {
     try std.testing.expect(!cached.?.owned); // Cache owns it
 }
 
-test "ShapedRunCache LRU eviction" {
-    var cache = ShapedRunCache.init();
+test "ShapedRunCache holds exactly its budget, then evicts only the least recent" {
+    // Goal: the cache is sized by `text.shaped_run_count_max` and, full,
+    // evicts the least recently used run and nothing else. Methodology: at
+    // `nano`'s 64 runs, fill exactly and read every run back in insertion
+    // order, which leaves run 0 the least recent; one more put must miss run
+    // 0 alone. A wrong LRU (oldest insert, first slot, or a random slot after
+    // the reads) would drop a different run.
+    const capacity = TextLimits.nano.shaped_run_count_max;
+    var cache = try ShapedRunCache.init(capacity);
     defer cache.deinit();
 
     var glyph = ShapedGlyph{
@@ -1539,40 +1532,33 @@ test "ShapedRunCache LRU eviction" {
         .y_advance = 0,
         .cluster = 0,
     };
+    const run = ShapedRun{ .glyphs = @as(*[1]ShapedGlyph, &glyph), .width = 10, .owned = true };
 
-    const run = ShapedRun{
-        .glyphs = @as(*[1]ShapedGlyph, &glyph),
-        .width = 10.0,
-        .owned = true,
-    };
-
-    // Fill cache completely
-    var i: usize = 0;
-    while (i < ShapedRunCache.MAX_ENTRIES) : (i += 1) {
-        var buf: [32]u8 = undefined;
-        const text = std.fmt.bufPrint(&buf, "text{d}", .{i}) catch unreachable;
-        const key = ShapedRunKey.init(text, 0x1000, 16.0);
-        cache.put(key, run);
+    var buf: [32]u8 = undefined;
+    for (0..capacity) |i| {
+        cache.put(ShapedRunKey.init(try std.fmt.bufPrint(&buf, "text{d}", .{i}), 0x1000, 16), run);
+    }
+    try std.testing.expectEqual(capacity, cache.entry_count);
+    for (0..capacity) |i| {
+        const key = ShapedRunKey.init(try std.fmt.bufPrint(&buf, "text{d}", .{i}), 0x1000, 16);
+        try std.testing.expect(cache.get(key) != null);
     }
 
-    try std.testing.expectEqual(@as(u32, ShapedRunCache.MAX_ENTRIES), cache.entry_count);
+    // Leave run 0 least recent, then put one more.
+    for (1..capacity) |i| {
+        const key = ShapedRunKey.init(try std.fmt.bufPrint(&buf, "text{d}", .{i}), 0x1000, 16);
+        _ = cache.get(key);
+    }
+    const extra_key = ShapedRunKey.init("extra", 0x1000, 16);
+    cache.put(extra_key, run);
 
-    // Access first entry to make it recently used
-    const first_key = ShapedRunKey.init("text0", 0x1000, 16.0);
-    _ = cache.get(first_key);
-
-    // Add one more - should evict LRU (which is text1, not text0)
-    const new_key = ShapedRunKey.init("newtext", 0x1000, 16.0);
-    cache.put(new_key, run);
-
-    // Cache should still be at capacity
-    try std.testing.expectEqual(@as(u32, ShapedRunCache.MAX_ENTRIES), cache.entry_count);
-
-    // New entry should be present
-    try std.testing.expect(cache.get(new_key) != null);
-
-    // text0 should still be present (was accessed recently)
-    try std.testing.expect(cache.get(first_key) != null);
+    try std.testing.expectEqual(capacity, cache.entry_count);
+    try std.testing.expect(cache.get(extra_key) != null);
+    try std.testing.expect(cache.get(ShapedRunKey.init("text0", 0x1000, 16)) == null);
+    for (1..capacity) |i| {
+        const key = ShapedRunKey.init(try std.fmt.bufPrint(&buf, "text{d}", .{i}), 0x1000, 16);
+        try std.testing.expect(cache.get(key) != null);
+    }
 }
 
 test "cache keys differ by face, and faces stay resident side by side" {
@@ -1594,7 +1580,7 @@ test "cache keys differ by face, and faces stay resident side by side" {
     const glyph_bold = cache_mod.GlyphKey.initWithFontPtr(bold_face, 55, 16.0, 2.0, 0, 0);
     try testing.expect(!cache_mod.GlyphKey.eql(glyph_regular, glyph_bold));
 
-    var shape_cache = ShapedRunCache.init();
+    var shape_cache = try ShapedRunCache.init(test_shaped_run_count);
     defer shape_cache.deinit();
     var regular_glyph = [_]ShapedGlyph{.{
         .glyph_id = 55,
@@ -1617,7 +1603,7 @@ test "cache keys differ by face, and faces stay resident side by side" {
     try testing.expectEqual(@as(f32, 9), shape_cache.get(regular_key).?.width);
     try testing.expectEqual(@as(f32, 11), shape_cache.get(bold_key).?.width);
 
-    var measure_cache = MeasureCache.init();
+    var measure_cache = try MeasureCache.init(test_measure_slot_count);
     defer measure_cache.deinit();
     measure_cache.put(regular_key, 40);
     measure_cache.put(bold_key, 46);
@@ -1634,7 +1620,7 @@ test "cache keys differ by face, and faces stay resident side by side" {
 }
 
 test "ShapedRunCache hash collision handling" {
-    var cache = ShapedRunCache.init();
+    var cache = try ShapedRunCache.init(test_shaped_run_count);
     defer cache.deinit();
 
     var glyph = ShapedGlyph{
@@ -1676,7 +1662,7 @@ test "ShapedRunCache hash collision handling" {
     // Test eviction maintains hash table consistency
     // Add more entries to trigger evictions
     i = 100;
-    while (i < ShapedRunCache.MAX_ENTRIES + 50) : (i += 1) {
+    while (i < test_shaped_run_count + 50) : (i += 1) {
         var buf: [32]u8 = undefined;
         const text = std.fmt.bufPrint(&buf, "evict_test_{d}", .{i}) catch unreachable;
         const key = ShapedRunKey.init(text, 0x1000, 16.0);
@@ -1684,11 +1670,11 @@ test "ShapedRunCache hash collision handling" {
     }
 
     // Cache should be at capacity
-    try std.testing.expectEqual(@as(u32, ShapedRunCache.MAX_ENTRIES), cache.entry_count);
+    try std.testing.expectEqual(@as(u32, test_shaped_run_count), cache.entry_count);
 
     // Most recent entries should be retrievable
-    i = ShapedRunCache.MAX_ENTRIES;
-    while (i < ShapedRunCache.MAX_ENTRIES + 50) : (i += 1) {
+    i = test_shaped_run_count;
+    while (i < test_shaped_run_count + 50) : (i += 1) {
         var buf: [32]u8 = undefined;
         const text = std.fmt.bufPrint(&buf, "evict_test_{d}", .{i}) catch unreachable;
         const key = ShapedRunKey.init(text, 0x1000, 16.0);
@@ -1743,7 +1729,7 @@ test "shapeTextInto warm path copies into caller buffer with owned=false" {
     // We test at the cache level since the full TextSystem needs a loaded font.
     const testing = std.testing;
 
-    var cache = ShapedRunCache.init();
+    var cache = try ShapedRunCache.init(test_shaped_run_count);
     defer cache.deinit();
 
     // Populate cache with a known 3-glyph run.
@@ -1839,7 +1825,7 @@ test "shape cache insert limit is MAX_GLYPHS_PER_ENTRY, not MAX_TEXT_LEN" {
     // text short enough that the lookup gate would happily admit both.
     const testing = std.testing;
 
-    var cache = ShapedRunCache.init();
+    var cache = try ShapedRunCache.init(test_shaped_run_count);
     defer cache.deinit();
 
     const at_limit = ShapedRunCache.MAX_GLYPHS_PER_ENTRY;
@@ -1914,7 +1900,7 @@ test "MeasureCache stores widths the shape cache refuses" {
     // out. Verify a round-trip at the first refused length and across the band.
     const testing = std.testing;
 
-    var cache = MeasureCache.init();
+    var cache = try MeasureCache.init(test_measure_slot_count);
     defer cache.deinit();
 
     const font_ptr: usize = 0x2000;
@@ -1952,7 +1938,7 @@ test "MeasureCache converges after a single miss for over-limit text" {
     // count how many of them would have had to shape.
     const testing = std.testing;
 
-    var cache = MeasureCache.init();
+    var cache = try MeasureCache.init(test_measure_slot_count);
     defer cache.deinit();
 
     const font_ptr: usize = 0x3000;
@@ -1983,7 +1969,7 @@ test "MeasureCache keys distinguish font size" {
     // a key that hashes text but forgets the size.
     const testing = std.testing;
 
-    var cache = MeasureCache.init();
+    var cache = try MeasureCache.init(test_measure_slot_count);
     defer cache.deinit();
 
     const font_ptr: usize = 0x5555;
@@ -2009,12 +1995,12 @@ test "MeasureCache never returns a stale width under eviction pressure" {
     // still hits carries exactly the width it was stored with.
     const testing = std.testing;
 
-    var cache = MeasureCache.init();
+    var cache = try MeasureCache.init(test_measure_slot_count);
     defer cache.deinit();
 
     const font_ptr: usize = 0x4000;
 
-    const insert_count: u32 = @intCast(MeasureCache.SLOT_COUNT * 4);
+    const insert_count: u32 = @intCast(test_measure_slot_count * 4);
     var buf: [200]u8 = undefined;
 
     var seed: u32 = 0;
@@ -2039,12 +2025,54 @@ test "MeasureCache never returns a stale width under eviction pressure" {
     // Some entries must survive, and the cache cannot hold more than it has
     // slots -- the latter guards against the probe window silently growing.
     try testing.expect(hits > 0);
-    try testing.expect(hits <= MeasureCache.SLOT_COUNT);
+    try testing.expect(hits <= test_measure_slot_count);
 
     // The most recent insert is always resident.
     fillTestText(&buf, insert_count - 1);
     const newest = ShapedRunKey.init(&buf, font_ptr, 16.0);
     try testing.expectEqual(@as(f32, @floatFromInt(insert_count - 1)), cache.get(newest).?);
+}
+
+test "MeasureCache fills a probe window exactly, then evicts its least recent" {
+    // Goal: `text.measure_slot_count_max` slots, each key probing at most
+    // `measure_probe_count` of them. Methodology: at the smallest valid size
+    // (16 slots), find nine keys whose natural slot is the same, put eight
+    // (the window, filled exactly) and read all back, touch all but the
+    // first, then put the ninth: only the first misses.
+    const testing = std.testing;
+    const window = MeasureCache.MAX_PROBE_LENGTH;
+    var cache = try MeasureCache.init(window * 2);
+    defer cache.deinit();
+    const mask = cache.slots.len - 1;
+
+    var texts: [window + 1][16]u8 = undefined;
+    var lens: [window + 1]usize = undefined;
+    var found: usize = 0;
+    var seed: u32 = 0;
+    const target = ShapedRunKey.init("k0", 0x5000, 16).text_hash & mask;
+    while (found < texts.len) : (seed += 1) {
+        assert(seed < 100_000);
+        const text = try std.fmt.bufPrint(&texts[found], "k{d}", .{seed});
+        if (ShapedRunKey.init(text, 0x5000, 16).text_hash & mask != target) continue;
+        lens[found] = text.len;
+        found += 1;
+    }
+
+    for (0..window) |i| {
+        cache.put(ShapedRunKey.init(texts[i][0..lens[i]], 0x5000, 16), @floatFromInt(i));
+    }
+    for (0..window) |i| {
+        const key = ShapedRunKey.init(texts[i][0..lens[i]], 0x5000, 16);
+        try testing.expectEqual(@as(f32, @floatFromInt(i)), cache.get(key).?);
+    }
+    for (1..window) |i| _ = cache.get(ShapedRunKey.init(texts[i][0..lens[i]], 0x5000, 16));
+
+    cache.put(ShapedRunKey.init(texts[window][0..lens[window]], 0x5000, 16), 99);
+    try testing.expect(cache.get(ShapedRunKey.init(texts[0][0..lens[0]], 0x5000, 16)) == null);
+    for (1..window + 1) |i| {
+        const key = ShapedRunKey.init(texts[i][0..lens[i]], 0x5000, 16);
+        try testing.expect(cache.get(key) != null);
+    }
 }
 
 test "glyph cache re-renders a glyph whose atlas shelf was evicted" {
@@ -2067,7 +2095,7 @@ test "glyph cache re-renders a glyph whose atlas shelf was evicted" {
 
     const text_system = try testing.allocator.create(TextSystem);
     defer testing.allocator.destroy(text_system);
-    try text_system.initInPlace(testing.allocator, 1.0, testing.io, &FontLimits.standard, .{
+    try text_system.initInPlace(testing.allocator, 1.0, testing.io, &TextLimits.standard, .{
         .size = 64,
         .uploads = &uploads,
     });
@@ -2105,6 +2133,68 @@ test "glyph cache re-renders a glyph whose atlas shelf was evicted" {
     try testing.expectEqualSlices(u8, saved[0..saved_len], current[0..current_len]);
 }
 
+test "glyph cache holds exactly its budget in one frame and reuses evicted slots after" {
+    // Goal: the cache has `text.glyph_cache_count_max` entries. Methodology: a
+    // budget of 8; draw 8 distinct glyphs in frame 1 and check every one hits
+    // with its region, filling the cache exactly. In frame 2, after frame 1's
+    // uploads are consumed, a 9th glyph must evict a shelf only frame 1 used
+    // and take a freed slot: the cache never grows past 8. A 9th
+    // glyph in frame 1 itself is the `core-glyph-cache` fail-fast check.
+    const testing = std.testing;
+    var uploads: atlas_mod.AtlasUploads = undefined;
+    try uploads.init(testing.allocator, testing.io, .{
+        .storage = .cpu_texture,
+        .upload_bytes_frame_max = 64 * 1024,
+    });
+    defer uploads.deinit();
+    const consumer: usize = 1;
+    uploads.registerConsumer(consumer);
+    defer uploads.unregisterConsumer(consumer);
+
+    var text_limits = TextLimits.standard;
+    text_limits.glyph_cache_count_max = 8;
+    const text_system = try testing.allocator.create(TextSystem);
+    defer testing.allocator.destroy(text_system);
+    try text_system.initInPlace(testing.allocator, 1.0, testing.io, &text_limits, .{
+        .size = 256,
+        .uploads = &uploads,
+    });
+    defer text_system.deinit();
+    try text_system.loadSystemFont(.sans_serif, 20);
+
+    var run = try text_system.shapeText(.app, "ABCDEFGHK", .regular, null);
+    defer run.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 9), run.glyphs.len);
+
+    _ = uploads.beginFrame(consumer);
+    var regions: [8]atlas_mod.Region = undefined;
+    for (run.glyphs[0..8], &regions) |glyph, *region| {
+        region.* = (try text_system.getGlyphSubpixel(glyph.glyph_id, 20, 0, 0)).region;
+    }
+    try testing.expectEqual(@as(u32, 8), text_system.cache.entry_count);
+    for (run.glyphs[0..8], regions) |glyph, region| {
+        const hit = try text_system.getGlyphSubpixel(glyph.glyph_id, 20, 0, 0);
+        try testing.expectEqual(region, hit.region);
+    }
+    try testing.expectEqual(@as(u32, 8), text_system.cache.entry_count);
+
+    // Frame 1 closes once a consume starts after frame 2 began. The 9th
+    // glyph is 40 px so it opens its own shelf: rendered at 20 px it would
+    // share frame 1's shelf, stamp it current, and leave nothing evictable.
+    _ = uploads.beginFrame(consumer);
+    _ = uploads.consumeBegin(consumer);
+    uploads.consumeEnd(consumer);
+    const ninth = try text_system.getGlyphSubpixel(run.glyphs[8].glyph_id, 40, 0, 0);
+    try testing.expect(ninth.region.height > regions[0].height);
+    // Evicting frame 1's shelves made their entries stale, and the 9th took a
+    // reclaimed slot: the cache holds at most 8 and never claimed a 9th slot.
+    // How many shelves 8 glyphs at 20 px span depends on the backend's glyph
+    // heights, so how many entries one eviction reclaims is not fixed.
+    try testing.expect(text_system.cache.entry_count <= 8);
+    try testing.expectEqual(@as(u16, 8), text_system.cache.entry_high_water);
+    try testing.expectEqual(@as(usize, 8), text_system.cache.entries.len);
+}
+
 test "glyph cache hits protect their shelf in every frame they are used" {
     // Goal: a glyph used in the current frame is never evicted, although only
     // its first hit in each frame stamps its shelf. Methodology: 'A' at 20 px
@@ -2126,7 +2216,7 @@ test "glyph cache hits protect their shelf in every frame they are used" {
 
     const text_system = try testing.allocator.create(TextSystem);
     defer testing.allocator.destroy(text_system);
-    try text_system.initInPlace(testing.allocator, 1.0, testing.io, &FontLimits.standard, .{
+    try text_system.initInPlace(testing.allocator, 1.0, testing.io, &TextLimits.standard, .{
         .size = 128,
         .uploads = &uploads,
     });

@@ -255,7 +255,7 @@ pub fn App(
             try self.resources.initOwnedInPlace(gpa, io, scale_factor, .{
                 .font_name = config.fonts.name,
                 .font_size = fontSize(State, config),
-                .limits = font_limits,
+                .text = &config.limits.text,
                 .mono = config.fonts.mono,
             }, &config.limits.atlas);
             errdefer self.resources.deinit();

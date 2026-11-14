@@ -53,6 +53,18 @@ pub fn reserve(comptime T: type, count: u32) error{OutOfMemory}![]T {
     return items[0..count];
 }
 
+/// Reserve `count` elements of `T` that read zero before any write, for tables
+/// whose empty state is zero and that are probed before they are filled (hash
+/// tables, set-associative caches). Natively fresh pages already read zero,
+/// so nothing is written. WASM's page allocator reuses freed pages without
+/// clearing them, and linear memory is resident anyway, so it zeroes there.
+pub fn reserveZeroed(comptime T: type, count: u32) error{OutOfMemory}![]T {
+    const items = try reserve(T, count);
+    if (!page_granular) @memset(std.mem.sliceAsBytes(items), 0);
+    assert(items.len == count);
+    return items;
+}
+
 /// Zero `items[0..used_count_max]`, the prefix any owner ever wrote, then return
 /// the reservation to the page allocator.
 pub fn release(comptime T: type, items: []T, used_count_max: usize) void {

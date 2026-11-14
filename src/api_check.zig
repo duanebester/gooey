@@ -108,7 +108,13 @@ fn pinFields() void {
         _ = @as(Cursor, .pointer);
         _ = @as(Cursor, .resize_left_right);
         _ = @as(Cursor, .resize_up_down);
-        _ = @FieldType(@FieldType(gooey.ResourceLimits, "text"), "fonts");
+        const Text = @FieldType(gooey.ResourceLimits, "text");
+        for ([_][]const u8{
+            "fonts",                  "glyph_cache_count_max", "shaped_run_count_max",
+            "measure_slot_count_max", "preedit_bytes_max",
+        }) |name| {
+            _ = @FieldType(Text, name);
+        }
         _ = @FieldType(@FieldType(gooey.ResourceLimits, "build"), "box_depth_max");
     }
 }
