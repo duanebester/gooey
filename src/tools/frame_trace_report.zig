@@ -13,7 +13,9 @@
 //! - pack, draw: the render side; draw ends when `presentBuilt` returns
 //! - main: tick → publish; render: pack → done
 //! - serial: main + render + wake, the work one frame in flight serializes,
-//!   where wake is the previous frame's done → this frame's tick
+//!   where wake is the previous frame's done → this frame's tick. The web
+//!   (`os=freestanding`) runs both sides in one animation frame, so its done →
+//!   tick gap is the wait for the next frame, not a wake, and is left out.
 //!
 //! Missed refreshes: consecutive frames whose pack starts are `k` refresh
 //! periods apart miss `k − 1` refreshes. `--refresh-hz=<hz>` gives the
@@ -63,6 +65,8 @@ const Trace = struct {
     row_count: u32,
     meta: [256]u8,
     meta_len: u32,
+    /// Both sides of the tick run on one thread (the web).
+    single_thread: bool,
 };
 
 pub fn main(init: std.process.Init) void {
@@ -127,6 +131,7 @@ pub fn main(init: std.process.Init) void {
 fn parse(trace: *Trace, text: []const u8) !void {
     trace.row_count = 0;
     trace.meta_len = 0;
+    trace.single_thread = false;
     var lines = std.mem.splitScalar(u8, text, '\n');
     var line_count: u32 = 0;
     while (lines.next()) |raw| {
@@ -140,6 +145,7 @@ fn parse(trace: *Trace, text: []const u8) !void {
             const length: u32 = @intCast(@min(line.len, trace.meta.len));
             @memcpy(trace.meta[0..length], line[0..length]);
             trace.meta_len = length;
+            trace.single_thread = std.mem.indexOf(u8, line, "os=freestanding") != null;
             continue;
         }
         if (std.mem.startsWith(u8, line, "frame,")) continue;
@@ -194,7 +200,7 @@ fn ms(ns: u64) f64 {
     return @as(f64, @floatFromInt(ns)) / std.time.ns_per_ms;
 }
 
-fn phaseMs(rows: []const Row, index: usize, phase: Phase) ?f64 {
+fn phaseMs(rows: []const Row, index: usize, phase: Phase, single_thread: bool) ?f64 {
     const row = &rows[index];
     return switch (phase) {
         .drain => ms(row.build - row.tick),
@@ -211,8 +217,8 @@ fn phaseMs(rows: []const Row, index: usize, phase: Phase) ?f64 {
             const previous = &rows[index - 1];
             if (previous.frame + 1 != row.frame) break :blk null;
             if (row.tick < previous.done) break :blk null;
-            break :blk ms(row.publish - row.tick) + ms(row.done - row.pack) +
-                ms(row.tick - previous.done);
+            const wake_ms = if (single_thread) 0 else ms(row.tick - previous.done);
+            break :blk ms(row.publish - row.tick) + ms(row.done - row.pack) + wake_ms;
         },
     };
 }
@@ -243,11 +249,12 @@ fn report(trace: *const Trace, path: []const u8, refresh_ms: ?f64) void {
     });
     std.debug.print("| Phase (ms) | p50 | p95 | p99 | max |\n" ++
         "| --- | ---: | ---: | ---: | ---: |\n", .{});
+    const single_thread = trace.single_thread;
     for (0..phase_count) |phase_index| {
         const phase: Phase = @fromBackingInt(@intCast(phase_index));
         var count: usize = 0;
         for (0..rows.len) |index| {
-            const value = phaseMs(rows, index, phase) orelse continue;
+            const value = phaseMs(rows, index, phase, single_thread) orelse continue;
             scratch[count] = value;
             count += 1;
         }
@@ -263,7 +270,7 @@ fn report(trace: *const Trace, path: []const u8, refresh_ms: ?f64) void {
         });
     }
     reportCadence(rows, &scratch, refresh_ms);
-    reportHeadroom(rows);
+    reportHeadroom(rows, trace.single_thread);
 }
 
 /// Present cadence: pack-to-pack intervals of consecutive frames.
@@ -327,23 +334,23 @@ fn snapPeriod(measured_ms: f64) f64 {
 /// and serialized as one frame in flight does today; and how many of the
 /// serialized misses moving draw off the main thread's path (design A)
 /// would recover.
-fn reportHeadroom(rows: []const Row) void {
+fn reportHeadroom(rows: []const Row, single_thread: bool) void {
     var main_fits: u64 = 0;
     var render_fits: u64 = 0;
     var serial_fits: u64 = 0;
     var serial_count: u64 = 0;
     var recovered: u64 = 0;
     for (0..rows.len) |index| {
-        const main_ms = phaseMs(rows, index, .main).?;
-        const render_ms = phaseMs(rows, index, .render).?;
+        const main_ms = phaseMs(rows, index, .main, single_thread).?;
+        const render_ms = phaseMs(rows, index, .render, single_thread).?;
         if (main_ms <= frame_ms_target) main_fits += 1;
         if (render_ms <= frame_ms_target) render_fits += 1;
-        const serial_ms = phaseMs(rows, index, .serial) orelse continue;
+        const serial_ms = phaseMs(rows, index, .serial, single_thread) orelse continue;
         serial_count += 1;
         if (serial_ms <= frame_ms_target) {
             serial_fits += 1;
         } else {
-            const draw_ms = phaseMs(rows, index, .draw).?;
+            const draw_ms = phaseMs(rows, index, .draw, single_thread).?;
             if (serial_ms - draw_ms <= frame_ms_target) recovered += 1;
         }
     }
