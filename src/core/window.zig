@@ -445,9 +445,12 @@ pub const Capture = struct {
 /// did. One per window. The payload is copied in, so the drag outlives its
 /// source's record; `over` is the innermost drop target of the payload's
 /// type under the pointer, or `.root`, recomputed by `router.updateHover`
-/// on each move and after each flip.
+/// on each move and after each flip. A keyboard drag (`effects.startDrag`)
+/// starts active, ignores the pointer, and moves `over` with the keys, and
+/// `x`, `y` are the centre of `over`, or of the source over none.
 pub const Drag = struct {
     phase: enum { idle, armed, active },
+    keyboard: bool,
     source: ElementId,
     button: input_mod.MouseButton,
     type_id: usize,
@@ -460,6 +463,7 @@ pub const Drag = struct {
 
     pub const idle: Drag = .{
         .phase = .idle,
+        .keyboard = false,
         .source = .root,
         .button = .left,
         .type_id = 0,
@@ -748,6 +752,15 @@ pub const Window = struct {
 
     pub fn isFocused(self: *const Window, id: ElementId) bool {
         return id != .root and self.focus == id;
+    }
+
+    /// The drop target a keyboard drag is `over`: it holds focus, and shows
+    /// the ring, though it is not `focusable`.
+    pub fn isKeyboardDropTarget(self: *const Window, id: ElementId) bool {
+        if (id == .root) return false;
+        if (!self.drag.keyboard) return false;
+        assert(self.drag.phase == .active);
+        return self.drag.over == id;
     }
 
     pub fn isHovered(self: *const Window, id: ElementId) bool {

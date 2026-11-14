@@ -1454,6 +1454,7 @@ fn addFailFastChecks(
             "(contract §5): box at fail_fast_check.zig:" },
         .{ .mode = "core-drag-both", .stderr = "Box.draggable and Box.on_pointer_drag on one " ++
             "box; a press starts one gesture (contract §5): box at fail_fast_check.zig:" },
+        .{ .mode = "core-start-drag-target", .stderr = "effects.startDrag: element " },
         .{ .mode = "core-dialog-target", .stderr = "file dialog on_complete targets " ++
             "fail_fast_check.CoreApp.Stranger; the root state is fail_fast_check.CoreState" },
         .{ .mode = "core-dialog-paths", .stderr = "file dialog selected 17 paths: " ++

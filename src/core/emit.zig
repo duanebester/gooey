@@ -329,7 +329,8 @@ fn emitFragment(window: *Window, layers_open: *LayerQueue, root: *const LayerRoo
                     .fragment = root.fragment,
                     .takes_pointer = takes_pointer,
                 });
-                if (window.focus_visible and node.focusable and window.isFocused(node.id)) {
+                const takes_focus = node.focusable or window.isKeyboardDropTarget(node.id);
+                if (window.focus_visible and takes_focus and window.isFocused(node.id)) {
                     ring = focusRing(window, &clips, node, bounds);
                 }
                 if (node.kind == .paint) emitPaint(window, node, bounds, clips.paintDepth());
