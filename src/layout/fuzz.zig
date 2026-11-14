@@ -135,7 +135,6 @@ fn emitContainer(engine: *LayoutEngine, state: *TreeState, depth: u32) anyerror!
     const child_gap: u16 = @intCast(state.smith.valueRangeAtMost(u16, 0, 16));
 
     try engine.openElement(.{
-        .id = .none,
         .layout = .{
             .sizing = sizing,
             .padding = Padding.all(padding_amt),
