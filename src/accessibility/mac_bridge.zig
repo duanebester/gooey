@@ -146,6 +146,7 @@ pub const MacBridge = struct {
 
             // Set role
             setAccessibilityRole(ns, elem.role);
+            setAccessibilityRoleDescription(ns, roleDescription(elem.role));
 
             // Set label (name)
             if (elem.name) |name| {
@@ -154,14 +155,14 @@ pub const MacBridge = struct {
                 clearAccessibilityLabel(ns);
             }
 
-            // Set value. A toggle without a text value reports its checked
-            // state as VoiceOver expects (0 or 1); otherwise a value that
-            // went away is cleared, so a reused wrapper never reports stale
-            // text.
+            // Set value. A toggle or option without a text value reports
+            // whether it is on as VoiceOver expects (0 or 1); otherwise a
+            // value that went away is cleared, so a reused wrapper never
+            // reports stale text.
             if (elem.value) |value| {
                 setAccessibilityValue(ns, value);
-            } else if (isToggle(elem.role)) {
-                setAccessibilityChecked(ns, elem.state.checked);
+            } else if (toggleState(elem)) |on| {
+                setAccessibilityChecked(ns, on);
             } else {
                 clearAccessibilityValue(ns);
             }
@@ -366,15 +367,14 @@ pub const MacBridge = struct {
             const ns = self.wrappers[slot].ns_element orelse continue;
 
             // If element has no parent in tree, it's a child of root
-            if (elem.parent == null) {
-                root_children.msgSend(void, "addObject:", .{ns.value});
-            }
+            if (elem.parent == null) self.addNativeChild(tree, elem, root_children);
 
             // Update children for elements that have children in the tree.
             // A leaf clears what its native object held: a pooled wrapper
-            // reused for a leaf would otherwise keep its old children.
+            // reused for a leaf would otherwise keep its old children. A
+            // combobox is a leaf to VoiceOver (see `addNativeChild`).
             const wrapper = &self.wrappers[slot];
-            if (elem.child_count > 0) {
+            if (elem.child_count > 0 and elem.role != .combobox) {
                 self.updateElementChildren(tree, elem, ns);
                 wrapper.has_children = true;
             } else if (wrapper.has_children) {
@@ -411,20 +411,47 @@ pub const MacBridge = struct {
         var child_idx = elem.first_child;
         while (child_idx) |idx| {
             const child_elem = tree.getElement(idx) orelse break;
-            const child_slot = self.findSlotByFingerprint(child_elem.fingerprint) orelse {
-                child_idx = child_elem.next_sibling;
-                continue;
-            };
-            const child_ns = self.wrappers[child_slot].ns_element orelse {
-                child_idx = child_elem.next_sibling;
-                continue;
-            };
-
-            children.msgSend(void, "addObject:", .{child_ns.value});
+            self.addNativeChild(tree, child_elem, children);
             child_idx = child_elem.next_sibling;
         }
 
         setAccessibilityChildren(ns, children);
+    }
+
+    /// Add `elem`'s native element to `children`, followed by a combobox's
+    /// own children (its popup listbox): VoiceOver treats an element with
+    /// children as a container and, when focus returns to it, puts its
+    /// cursor back on the child it last visited, so a combobox holding its
+    /// list sent VoiceOver into the closed list instead of onto the box.
+    /// The listbox is the box's sibling to VoiceOver, as `resolveParentNS`
+    /// says. One level, at most `child_count` children.
+    fn addNativeChild(
+        self: *Self,
+        tree: *const tree_mod.Tree,
+        elem: *const tree_mod.Element,
+        children: objc.Object,
+    ) void {
+        std.debug.assert(children.value != null);
+        std.debug.assert(elem.fingerprint.isValid());
+        if (self.nativeElement(elem)) |ns| children.msgSend(void, "addObject:", .{ns.value});
+        if (elem.role != .combobox) return;
+        var added: u16 = 0;
+        var child_idx = elem.first_child;
+        while (child_idx) |idx| : (added += 1) {
+            std.debug.assert(added < elem.child_count);
+            const child_elem = tree.getElement(idx) orelse break;
+            if (self.nativeElement(child_elem)) |ns| {
+                children.msgSend(void, "addObject:", .{ns.value});
+            }
+            child_idx = child_elem.next_sibling;
+        }
+    }
+
+    fn nativeElement(self: *Self, elem: *const tree_mod.Element) ?objc.Object {
+        std.debug.assert(elem.fingerprint.isValid());
+        std.debug.assert(self.wrapper_count <= constants.MAX_ELEMENTS);
+        const slot = self.findSlotByFingerprint(elem.fingerprint) orelse return null;
+        return self.wrappers[slot].ns_element;
     }
 
     fn syncElement(
@@ -459,9 +486,13 @@ pub const MacBridge = struct {
     ) objc.Object {
         // Assertion: inputs are valid
         std.debug.assert(root.value != null);
+        std.debug.assert(elem.fingerprint.isValid());
 
-        const parent_idx = elem.parent orelse return root;
-        const parent_elem = tree.getElement(parent_idx) orelse return root;
+        var parent_elem = tree.getElement(elem.parent orelse return root) orelse return root;
+        // A combobox's children hang beside it (see `addNativeChild`).
+        if (parent_elem.role == .combobox) {
+            parent_elem = tree.getElement(parent_elem.parent orelse return root) orelse return root;
+        }
         const parent_slot = self.findSlotByFingerprint(parent_elem.fingerprint) orelse return root;
         return self.wrappers[parent_slot].ns_element orelse root;
     }
@@ -627,6 +658,20 @@ fn setAccessibilityRole(elem: objc.Object, role: types.Role) void {
     elem.msgSend(void, "setAccessibilityRole:", .{ns_role.value});
 }
 
+/// Null restores AppKit's description of the role, so a reused wrapper never
+/// keeps an earlier element's.
+fn setAccessibilityRoleDescription(elem: objc.Object, description: ?[]const u8) void {
+    std.debug.assert(elem.value != null);
+    const text = description orelse {
+        elem.msgSend(void, "setAccessibilityRoleDescription:", .{@as(objc.c.id, null)});
+        return;
+    };
+    std.debug.assert(text.len > 0);
+    const ns_text = createNSStringFromSlice(text) orelse return;
+    defer releaseNSObject(ns_text);
+    elem.msgSend(void, "setAccessibilityRoleDescription:", .{ns_text.value});
+}
+
 fn setAccessibilityLabel(elem: objc.Object, label: []const u8) void {
     // Assertion: element is valid
     std.debug.assert(elem.value != null);
@@ -659,8 +704,21 @@ fn clearAccessibilityValue(elem: objc.Object) void {
     elem.msgSend(void, "setAccessibilityValue:", .{@as(objc.c.id, null)});
 }
 
-fn isToggle(role: types.Role) bool {
-    return role == .checkbox or role == .radio or role == .switch_;
+/// Whether a toggle is checked or an option chosen: both are radio buttons
+/// or checkboxes to VoiceOver, which reads their value as the state. Null
+/// for other roles.
+fn toggleState(elem: *const tree_mod.Element) ?bool {
+    return switch (elem.role) {
+        .checkbox, .radio, .switch_ => elem.state.checked,
+        .option => elem.state.selected,
+        else => null,
+    };
+}
+
+/// An option is a radio button to VoiceOver (see `Role.toNSRole`), named
+/// as ARIA names it; other roles keep AppKit's description.
+fn roleDescription(role: types.Role) ?[]const u8 {
+    return if (role == .option) "option" else null;
 }
 
 fn setAccessibilityChecked(elem: objc.Object, checked: bool) void {
@@ -782,8 +840,8 @@ fn valueHash(elem: *const tree_mod.Element) u64 {
     if (elem.value) |value| {
         hasher.update("text:");
         hasher.update(value);
-    } else if (isToggle(elem.role)) {
-        hasher.update(if (elem.state.checked) "checked" else "unchecked");
+    } else if (toggleState(elem)) |on| {
+        hasher.update(if (on) "checked" else "unchecked");
     }
     return hasher.final();
 }
@@ -1221,6 +1279,58 @@ test "mac bridge clears the children of a reused wrapper that became a leaf" {
     const reused = rig.native(.button, "Leaf");
     try std.testing.expectEqual(group.value, reused.value);
     try std.testing.expectEqual(@as(usize, 0), childCount(reused));
+}
+
+test "mac bridge hangs a combobox's listbox beside it and reports chosen options" {
+    // Goal: VoiceOver puts its cursor back on the child it last visited when
+    // focus returns to a container, so a combobox holding its listbox sent
+    // the cursor into the closed list; and it reads "selected" only from a
+    // radio button's value. Methodology: sync a group holding an open
+    // combobox with a chosen option, read the native tree, then close it.
+    var rig: TestRig = undefined;
+    try rig.init();
+    defer rig.deinit();
+    for ([_]bool{ true, false }) |open| {
+        rig.tree.beginFrame();
+        _ = rig.tree.pushElement(.{ .role = .group, .name = "Form" }).?;
+        _ = rig.tree.pushElement(.{
+            .role = .combobox,
+            .name = "Level",
+            .state = .{ .expanded = open },
+        }).?;
+        if (open) {
+            _ = rig.tree.pushElement(.{ .role = .listbox, .name = "Level" }).?;
+            rig.leaf(.option, "One", 40);
+            const chosen: types.State = .{ .selected = true };
+            _ = rig.tree.pushElement(.{ .role = .option, .name = "Two", .state = chosen });
+            rig.tree.popElement();
+            rig.tree.popElement();
+        }
+        rig.tree.popElement();
+        rig.tree.popElement();
+        rig.tree.endFrame();
+        rig.sync();
+        const group = rig.native(.group, "Form");
+        try std.testing.expectEqual(@as(usize, 0), childCount(rig.native(.combobox, "Level")));
+        try std.testing.expectEqual(@as(usize, if (open) 2 else 1), childCount(group));
+        if (!open) continue;
+        const list = rig.native(.listbox, "Level");
+        const list_parent: objc.c.id = list.msgSend(objc.c.id, "accessibilityParent", .{});
+        try std.testing.expectEqual(group.value, list_parent);
+        try expectOption(rig.native(.option, "One"), false);
+        try expectOption(rig.native(.option, "Two"), true);
+    }
+}
+
+fn expectOption(ns: objc.Object, selected: bool) !void {
+    const role: objc.Object = ns.msgSend(objc.Object, "accessibilityRole", .{});
+    const description: objc.Object = ns.msgSend(objc.Object, "accessibilityRoleDescription", .{});
+    const value: objc.Object = ns.msgSend(objc.Object, "accessibilityValue", .{});
+    const role_text = std.mem.span(role.msgSend([*:0]const u8, "UTF8String", .{}));
+    const description_text = std.mem.span(description.msgSend([*:0]const u8, "UTF8String", .{}));
+    try std.testing.expectEqualStrings("AXRadioButton", role_text);
+    try std.testing.expectEqualStrings("option", description_text);
+    try std.testing.expectEqual(selected, value.msgSend(bool, "boolValue", .{}));
 }
 
 test "role to ns role mapping" {
