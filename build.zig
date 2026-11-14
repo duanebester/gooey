@@ -31,6 +31,28 @@ pub const WindowsRenderer = enum {
     dx11,
 };
 
+/// Frame trace scenario, selected with `-Dframe-trace` (`src/core/frame_trace.zig`).
+/// Mirrored into `gooey_build_options` for app modules only; tests, goldens,
+/// and benchmarks always build with `.off`.
+pub const FrameTrace = enum {
+    /// No trace: the shipped configuration.
+    off,
+    /// Record frames; the app or a person drives it.
+    passive,
+    /// Request a render every frame.
+    redraw,
+    /// Scroll at the window centre every frame.
+    scroll,
+    /// Click the window centre, then type and delete one key per frame.
+    typing,
+};
+
+/// The `-Dframe-trace` and `-Dframe-trace-seconds` choices.
+const FrameTraceChoice = struct {
+    scenario: FrameTrace,
+    seconds: u32,
+};
+
 const ExampleDefinition = struct {
     name: []const u8,
     source: []const u8,
@@ -39,6 +61,19 @@ const ExampleDefinition = struct {
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const frame_trace = FrameTraceChoice{
+        .scenario = b.option(
+            FrameTrace,
+            "frame-trace",
+            "Record per-frame phase times to frame-trace.csv: off (default), passive, " ++
+                "redraw, scroll, or typing",
+        ) orelse .off,
+        .seconds = b.option(
+            u32,
+            "frame-trace-seconds",
+            "Seconds a frame trace runs before it writes its file and quits (default 30)",
+        ) orelse 30,
+    };
 
     // Benchmark JSON output directory (optional).
     // Usage: zig build bench-all -Dbench-json-dir=bench-results
@@ -77,6 +112,27 @@ pub fn build(b: *std.Build) void {
     compare_run.addPassthruArgs();
     compare_step.dependOn(&compare_run.step);
 
+    // =========================================================================
+    // Frame Trace Report (platform-independent): `-Dframe-trace` summaries
+    // =========================================================================
+
+    const trace_report_exe = b.addExecutable(.{
+        .name = "frame-trace-report",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/tools/frame_trace_report.zig"),
+            .target = target,
+            .optimize = .fast,
+        }),
+    });
+    const trace_report_run = b.addRunArtifact(trace_report_exe);
+    trace_report_run.addPassthruArgs();
+    b.step(
+        "frame-trace-report",
+        "Summarize -Dframe-trace files: zig build frame-trace-report -- frame-trace.csv",
+    ).dependOn(&trace_report_run.step);
+    const trace_report_tests = b.addTest(.{ .root_module = trace_report_exe.root_module });
+    const run_trace_report_tests = b.addRunArtifact(trace_report_tests);
+
     // Unit tests for the comparison/gating logic itself.  Built here
     // (platform-independent) and wired into each branch's `test` step
     // below so CI actually exercises the regression gate's own rules.
@@ -99,7 +155,7 @@ pub fn build(b: *std.Build) void {
     const is_native_linux = target.result.os.tag == .linux;
     const is_native_windows = target.result.os.tag == .windows;
 
-    if (is_native_windows) addWindowsBuilds(b, target, optimize);
+    if (is_native_windows) addWindowsBuilds(b, target, optimize, frame_trace);
 
     if (is_native_macos) {
         // Local, zero-dependency Objective-C runtime wrapper (a trimmed in-tree
@@ -121,7 +177,10 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         });
         mod.addImport("objc", objc_mod);
-        mod.addImport("gooey_build_options", gooeyBuildOptionsModule(b, .{}));
+        mod.addImport("gooey_build_options", gooeyBuildOptionsModule(b, .{
+            .frame_trace = frame_trace.scenario,
+            .frame_trace_seconds = frame_trace.seconds,
+        }));
         linkMacosFrameworks(mod);
 
         // Benchmarks measure the shipped configuration, so they import a
@@ -247,6 +306,7 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run_charts_tests.step);
         test_step.dependOn(&run_compare_tests.step);
         test_step.dependOn(&run_bench_tests.step);
+        test_step.dependOn(&run_trace_report_tests.step);
 
         // =====================================================================
         // Layout Fuzz Targets (PR 10)
@@ -438,7 +498,15 @@ pub fn build(b: *std.Build) void {
             "linux-backend",
             "Linux display/renderer: wayland_vulkan (default), wayland_cpu, or fbdev",
         ) orelse .wayland_vulkan;
-        const gooey_options_mod = gooeyBuildOptionsModule(b, .{ .linux_backend = linux_backend });
+        const gooey_options_mod = gooeyBuildOptionsModule(b, .{
+            .linux_backend = linux_backend,
+            .frame_trace = frame_trace.scenario,
+            .frame_trace_seconds = frame_trace.seconds,
+        });
+        // Benchmarks and valgrind measure the shipped configuration.
+        const untraced_options_mod = gooeyBuildOptionsModule(b, .{
+            .linux_backend = linux_backend,
+        });
 
         // =========================================================================
         // Shader Compilation (GLSL -> SPIR-V)
@@ -529,7 +597,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = .fast,
         });
-        bench_gooey_mod.addImport("gooey_build_options", gooey_options_mod);
+        bench_gooey_mod.addImport("gooey_build_options", untraced_options_mod);
         linkLinuxGooeyLibraries(bench_gooey_mod, linux_backend);
 
         // =========================================================================
@@ -780,6 +848,7 @@ pub fn build(b: *std.Build) void {
         }, test_step);
         test_step.dependOn(&run_compare_tests.step);
         test_step.dependOn(&run_bench_tests.step);
+        test_step.dependOn(&run_trace_report_tests.step);
         test_step.dependOn(&run_core_bench_tests.step);
         test_step.dependOn(&run_accessibility_bench_tests.step);
         const fail_fast_exe = addFailFastChecks(
@@ -814,7 +883,7 @@ pub fn build(b: *std.Build) void {
             .target = valgrind_target,
             .optimize = .safe, // ReleaseSafe for meaningful stack traces
         });
-        valgrind_mod.addImport("gooey_build_options", gooey_options_mod);
+        valgrind_mod.addImport("gooey_build_options", untraced_options_mod);
 
         // Separate test artifact for valgrind with baseline CPU
         const valgrind_tests = b.addTest(.{
@@ -844,7 +913,7 @@ pub fn build(b: *std.Build) void {
         test_valgrind_step.dependOn(&valgrind_run.step);
     }
 
-    addWasmBuilds(b);
+    addWasmBuilds(b, frame_trace);
     addLinuxTypecheck(b);
     addWindowsTypecheck(b);
     addMacosTypecheck(b);
@@ -862,6 +931,7 @@ fn addWindowsBuilds(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
     optimize: std.lang.Optimize,
+    frame_trace: FrameTraceChoice,
 ) void {
     std.debug.assert(target.result.os.tag == .windows);
     std.debug.assert(target.result.cpu.arch == .x86_64);
@@ -883,6 +953,8 @@ fn addWindowsBuilds(
     mod.addObjectFile(vulkan_import_library);
     mod.addImport("gooey_build_options", gooeyBuildOptionsModule(b, .{
         .windows_renderer = windows_renderer,
+        .frame_trace = frame_trace.scenario,
+        .frame_trace_seconds = frame_trace.seconds,
     }));
     addHlslCompile(b);
 
@@ -1550,7 +1622,7 @@ fn addLinuxTypecheckRoot(
     step.dependOn(&compile.step);
 }
 
-fn addWasmBuilds(b: *std.Build) void {
+fn addWasmBuilds(b: *std.Build, frame_trace: FrameTraceChoice) void {
     const wasm_target = b.resolveTargetQuery(.{
         .cpu_arch = .wasm32,
         .os_tag = .freestanding,
@@ -1561,30 +1633,63 @@ fn addWasmBuilds(b: *std.Build) void {
         .optimize = .small,
     });
     addWasmShaderImports(b, gooey_module);
-    gooey_module.addImport("gooey_build_options", gooeyBuildOptionsModule(b, .{}));
+    gooey_module.addImport("gooey_build_options", gooeyBuildOptionsModule(b, .{
+        .frame_trace = frame_trace.scenario,
+        .frame_trace_seconds = frame_trace.seconds,
+    }));
     const components_module = b.createModule(.{
         .root_source_file = b.path("components/src/root.zig"),
         .target = wasm_target,
         .optimize = .small,
     });
     components_module.addImport("gooey", gooey_module);
+    const charts_module = b.createModule(.{
+        .root_source_file = b.path("charts/src/root.zig"),
+        .target = wasm_target,
+        .optimize = .small,
+    });
+    charts_module.addImport("gooey", gooey_module);
+    const modules = WasmModules{
+        .gooey = gooey_module,
+        .components = components_module,
+        .charts = charts_module,
+    };
 
     std.debug.assert(wasm_target.result.cpu.arch == .wasm32);
     std.debug.assert(wasm_target.result.os.tag == .freestanding);
 
-    addWasmExample(b, gooey_module, components_module, wasm_target, .{
+    addWasmExample(b, modules, wasm_target, .{
         .step_name = "wasm",
         .description = "Build the todo example for web",
         .source = "src/examples/todo.zig",
         .output_dir = "web",
     });
-    addWasmExample(b, gooey_module, components_module, wasm_target, .{
+    addWasmExample(b, modules, wasm_target, .{
         .step_name = "wasm-counter",
         .description = "Build the counter example for web",
         .source = "src/examples/counter.zig",
         .output_dir = "web/counter",
     });
+    // Any example for the web, for frame traces of the heavier examples:
+    // `zig build wasm-example -Dwasm-example=src/examples/dashboard.zig`.
+    const example_source = b.option(
+        []const u8,
+        "wasm-example",
+        "Source of the example `wasm-example` builds into web/example (default: todo)",
+    ) orelse "src/examples/todo.zig";
+    addWasmExample(b, modules, wasm_target, .{
+        .step_name = "wasm-example",
+        .description = "Build the -Dwasm-example example for web into web/example",
+        .source = example_source,
+        .output_dir = "web/example",
+    });
 }
+
+const WasmModules = struct {
+    gooey: *std.Build.Module,
+    components: *std.Build.Module,
+    charts: *std.Build.Module,
+};
 
 fn addWasmShaderImports(b: *std.Build, module: *std.Build.Module) void {
     // The WebGPU renderer's one shader module (`src/platform/web/renderer.zig`).
@@ -1595,8 +1700,7 @@ fn addWasmShaderImports(b: *std.Build, module: *std.Build.Module) void {
 
 fn addWasmExample(
     b: *std.Build,
-    gooey_module: *std.Build.Module,
-    components_module: *std.Build.Module,
+    modules: WasmModules,
     wasm_target: std.Build.ResolvedTarget,
     options: struct {
         step_name: []const u8,
@@ -1613,8 +1717,9 @@ fn addWasmExample(
         .target = wasm_target,
         .optimize = .small,
         .imports = &.{
-            .{ .name = "gooey", .module = gooey_module },
-            .{ .name = "gooey-components", .module = components_module },
+            .{ .name = "gooey", .module = modules.gooey },
+            .{ .name = "gooey-components", .module = modules.components },
+            .{ .name = "gooey-charts", .module = modules.charts },
         },
     });
     const executable = b.addExecutable(.{
@@ -1625,7 +1730,7 @@ fn addWasmExample(
             .optimize = .small,
             .imports = &.{
                 .{ .name = "application", .module = application_module },
-                .{ .name = "gooey", .module = gooey_module },
+                .{ .name = "gooey", .module = modules.gooey },
             },
         }),
     });
@@ -1951,6 +2056,8 @@ const GooeyBuildOptions = struct {
     linux_backend: LinuxBackend = .wayland_vulkan,
     text_backend: TextBackend = .platform,
     windows_renderer: WindowsRenderer = .vulkan,
+    frame_trace: FrameTrace = .off,
+    frame_trace_seconds: u32 = 30,
 };
 
 /// The `gooey_build_options` module: build-time choices the source tree reads
@@ -1960,5 +2067,7 @@ fn gooeyBuildOptionsModule(b: *std.Build, choices: GooeyBuildOptions) *std.Build
     options.addOption(LinuxBackend, "linux_backend", choices.linux_backend);
     options.addOption(TextBackend, "text_backend", choices.text_backend);
     options.addOption(WindowsRenderer, "windows_renderer", choices.windows_renderer);
+    options.addOption(FrameTrace, "frame_trace", choices.frame_trace);
+    options.addOption(u32, "frame_trace_seconds", choices.frame_trace_seconds);
     return options.createModule();
 }
