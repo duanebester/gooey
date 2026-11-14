@@ -242,6 +242,7 @@ pub const Cx = struct {
     fn buildBox(self: *Cx, box: *const element.Box, children: anytype) void {
         const window = self.window;
         checkLayer(box);
+        checkKeyed(window, box);
         const parent_index = window.open_stack[window.open_depth - 1];
         const box_id = resolveId(window, parent_index, box.key);
         const scroll = retainScroll(window, box, box_id);
@@ -263,30 +264,17 @@ pub const Cx = struct {
         node.on_click = handlerIndex(frame, box.on_click);
         node.on_click_outside = handlerIndex(frame, box.on_click_outside);
         node.on_key = handlerIndex(frame, box.on_key);
+        node.on_pointer_drag = handlerIndex(frame, box.on_pointer_drag);
         node.key_context = if (box.key_context) |key_context| key_context.hash else 0;
         node.actions_start = frame.handler_count;
         for (box.actions) |binding| _ = frame.appendAction(binding.action, binding.handler);
         node.actions_len = @intCast(box.actions.len);
         node.cursor = box.style.cursor;
+        // `on_pointer_drag` requires a key (`checkKeyed`), so it takes a record.
         node.hit = box.key != null or scroll != null or box.focusable or box.on_click != null or
             box.on_click_outside != null or box.on_key != null or
             box.key_context != null or box.actions.len > 0 or box.style.cursor != null;
-        if (box.a11y) |a11y| node.a11y = .{
-            .role = a11y.role,
-            .label = frame.copyText(a11y.label orelse ""),
-            .value = frame.copyText(a11y.value orelse ""),
-            .href = frame.copyText(a11y.href orelse ""),
-            .description = frame.copyText(a11y.description orelse ""),
-            .checked = a11y.checked,
-            .selected = a11y.selected,
-            .disabled = a11y.disabled,
-            .expanded = a11y.expanded,
-            .has_popup = a11y.has_popup,
-            .heading_level = a11y.heading_level,
-            .live = a11y.live,
-            .pos_in_set = a11y.pos_in_set,
-            .set_size = a11y.set_size,
-        };
+        if (box.a11y) |*a11y| node.a11y = copyA11y(frame, a11y);
         resolveAppearance(window, node, &box.style);
         pushOpen(window, index);
         self.renderChild(children);
@@ -407,6 +395,53 @@ fn checkLayer(box: *const element.Box) void {
     }
 }
 
+/// Copy a box's accessibility annotation into the frame, strings included.
+fn copyA11y(frame: *records.Frame, a11y: *const element.A11y) window_mod.A11yBuilt {
+    if (a11y.range) |range| {
+        assert(range.min <= range.max);
+        assert(range.now >= range.min);
+        assert(range.now <= range.max);
+    }
+    return .{
+        .role = a11y.role,
+        .label = frame.copyText(a11y.label orelse ""),
+        .value = frame.copyText(a11y.value orelse ""),
+        .href = frame.copyText(a11y.href orelse ""),
+        .description = frame.copyText(a11y.description orelse ""),
+        .checked = a11y.checked,
+        .selected = a11y.selected,
+        .disabled = a11y.disabled,
+        .expanded = a11y.expanded,
+        .has_popup = a11y.has_popup,
+        .heading_level = a11y.heading_level,
+        .live = a11y.live,
+        .pos_in_set = a11y.pos_in_set,
+        .set_size = a11y.set_size,
+        .range = a11y.range,
+    };
+}
+
+/// A pointer capture finds its box again by id at every step, which only a
+/// key keeps stable across frames: an auto id is a sibling position, so it
+/// could name another box after the rows above it change.
+fn checkKeyed(window: *const Window, box: *const element.Box) void {
+    if (box.key != null) return;
+    if (box.on_pointer_drag == null) return;
+    const message = "Box.on_pointer_drag needs a key (contract §5)";
+    if (box.style.source) |source| {
+        std.debug.panic("{s}: box at {s}:{d} in frame {d}", .{
+            message,
+            source.file,
+            source.line,
+            window.frame_number,
+        });
+    }
+    std.debug.panic("{s}: in frame {d} (set Style.source = @src() to locate the box)", .{
+        message,
+        window.frame_number,
+    });
+}
+
 fn resolveId(window: *Window, parent_index: u32, key: ?Key) ElementId {
     const parent = window.nodes[parent_index].id;
     const given = key orelse return autoId(window, parent_index);
@@ -463,6 +498,7 @@ fn addNode(window: *Window, kind: window_mod.NodeKind, node_id: ElementId) u32 {
         .on_click = index_none,
         .on_click_outside = index_none,
         .on_key = index_none,
+        .on_pointer_drag = index_none,
         .key_context = 0,
         .actions_start = 0,
         .actions_len = 0,

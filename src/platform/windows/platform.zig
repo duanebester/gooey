@@ -244,6 +244,8 @@ fn loadCursors() [WindowsPlatform.cursor_shape_count]?win32.HCURSOR {
             .default => win32.IDC_ARROW,
             .text => win32.IDC_IBEAM,
             .pointer => win32.IDC_HAND,
+            .resize_left_right => win32.IDC_SIZEWE,
+            .resize_up_down => win32.IDC_SIZENS,
         };
         slot.* = win32.LoadCursorW(null, resource);
         if (slot.* == null) {

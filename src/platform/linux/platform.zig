@@ -525,6 +525,8 @@ pub const LinuxPlatform = struct {
                 .default => 1,
                 .text => 9,
                 .pointer => 4,
+                .resize_left_right => 30, // col_resize
+                .resize_up_down => 31, // row_resize
             };
             wayland.cursorShapeDeviceSetShape(device, serial, protocol_shape);
         } else {

@@ -399,6 +399,7 @@ pub const Tree = struct {
             .value_min = config.value_min,
             .value_max = config.value_max,
             .value_now = config.value_now,
+            .orientation = config.orientation,
             .pos_in_set = config.pos_in_set,
             .set_size = config.set_size,
             .parent = parent_idx,
@@ -635,6 +636,7 @@ pub const ElementConfig = struct {
     value_min: ?f32 = null,
     value_max: ?f32 = null,
     value_now: ?f32 = null,
+    orientation: ?types.Orientation = null,
     pos_in_set: ?u16 = null,
     set_size: ?u16 = null,
 

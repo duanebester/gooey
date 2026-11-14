@@ -116,7 +116,7 @@ pub const WebWindow = struct {
     /// caller that sets the same shape every frame restyles nothing.
     pub fn setCursorShape(self: *Self, shape: interface.CursorShape) void {
         std.debug.assert(self.window_id.isValid());
-        std.debug.assert(@backingInt(shape) <= @backingInt(interface.CursorShape.pointer));
+        std.debug.assert(@backingInt(shape) <= @backingInt(interface.CursorShape.resize_up_down));
         if (self.cursor_shape == shape) return;
 
         imports.setCanvasCursor(@backingInt(shape));

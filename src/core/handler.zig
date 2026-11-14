@@ -21,6 +21,7 @@ const Live = @import("../accessibility/types.zig").Live;
 const Clipboard = @import("clipboard.zig").Clipboard;
 const entities = @import("entities.zig");
 const retained_mod = @import("retained.zig");
+const records = @import("records.zig");
 
 const assert = std.debug.assert;
 
@@ -246,6 +247,30 @@ pub const Effects = struct {
     store: ?*Store,
     /// The element the router is delivering to, for `focusSelf`.
     current: ElementId,
+    /// The gesture being delivered to `Box.on_pointer_drag`, set by the router.
+    pointer_drag: ?PointerDrag,
+    /// The frame on screen, for `bounds`; set by the router.
+    rendered: ?*const records.Frame,
+
+    /// One step of a pointer capture (`Box.on_pointer_drag`). Positions are
+    /// window coordinates in logical pixels; while the button is held the
+    /// pointer may be outside the window, so they may be negative or past
+    /// its size. A handler that resizes from a drag keeps the size it had
+    /// at `begin` and applies `x - start_x`, so a `cancel` can restore it.
+    pub const PointerDrag = struct {
+        phase: Phase,
+        x: f32,
+        y: f32,
+        /// Where the press landed.
+        start_x: f32,
+        start_y: f32,
+        button: input.MouseButton,
+        modifiers: input.Modifiers,
+
+        /// `begin` on the press, `move` per coalesced pointer move, `end`
+        /// on the release, `cancel` on Escape or `pointer_cancelled`.
+        pub const Phase = enum { begin, move, end, cancel };
+    };
 
     pub const FocusRequest = union(enum) { none, focus: ElementId, blur };
 
@@ -271,12 +296,37 @@ pub const Effects = struct {
             .clipboard = null,
             .store = null,
             .current = current,
+            .pointer_drag = null,
+            .rendered = null,
         };
     }
 
     /// The input event being delivered, for key and text handlers.
     pub fn inputEvent(self: *const Effects) ?*const input.InputEvent {
         return self.event;
+    }
+
+    /// The pointer capture step being delivered, inside `Box.on_pointer_drag`;
+    /// null in any other handler.
+    pub fn pointerDrag(self: *const Effects) ?PointerDrag {
+        const drag = self.pointer_drag orelse return null;
+        assert(std.math.isFinite(drag.x));
+        assert(std.math.isFinite(drag.start_x));
+        return drag;
+    }
+
+    /// A keyed element's bounds in the frame on screen, as hit testing sees
+    /// them (clipped by the scroll and clip boxes around it), in window
+    /// coordinates; null when it was not rendered. A splitter reads its
+    /// container's size here to turn a drag in pixels into grow weights.
+    pub fn bounds(self: *const Effects, id: ElementId) ?records.Rect {
+        assert(id.isKeyed());
+        const frame = self.rendered orelse return null;
+        assert(frame.hit_count <= frame.hits.len);
+        for (frame.hits[0..frame.hit_count]) |*record| {
+            if (record.id == id) return record.bounds;
+        }
+        return null;
     }
 
     /// The completion being delivered, for `FileDialogRequest.on_complete`.

@@ -204,6 +204,8 @@ fn shape_names(shape: CursorShape) []const [*:0]const u8 {
         .default => &.{ "default", "left_ptr" },
         .text => &.{ "text", "xterm" },
         .pointer => &.{ "pointer", "hand2", "hand1" },
+        .resize_left_right => &.{ "col-resize", "sb_h_double_arrow" },
+        .resize_up_down => &.{ "row-resize", "sb_v_double_arrow" },
     };
 }
 

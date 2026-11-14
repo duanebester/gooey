@@ -194,6 +194,8 @@ pub const TME_LEAVE: u32 = 0x0002;
 pub const IDC_ARROW: u16 = 32512;
 pub const IDC_IBEAM: u16 = 32513;
 pub const IDC_HAND: u16 = 32649;
+pub const IDC_SIZEWE: u16 = 32644;
+pub const IDC_SIZENS: u16 = 32645;
 
 // `SetProcessDpiAwarenessContext`. The context is a pseudo-handle: a small
 // negative integer in a pointer-sized slot.
