@@ -66,7 +66,12 @@ const Trace = struct {
 };
 
 pub fn main(init: std.process.Init) void {
-    const args = init.minimal.args.vector;
+    // `toSlice` decodes the WTF-16 command line on Windows, where the raw
+    // vector is not argv.
+    const args = init.minimal.args.toSlice(init.arena.allocator()) catch {
+        std.debug.print("frame-trace-report: cannot read the command line\n", .{});
+        std.process.exit(2);
+    };
     if (args.len < 2) {
         std.debug.print("usage: zig build frame-trace-report -- [--refresh-hz=<hz>] " ++
             "<frame-trace.csv>...\n", .{});
@@ -86,7 +91,7 @@ pub fn main(init: std.process.Init) void {
     defer allocator.free(contents);
 
     for (args[1..]) |arg| {
-        const path = std.mem.span(arg);
+        const path: []const u8 = arg;
         const flag = "--refresh-hz=";
         if (std.mem.startsWith(u8, path, flag)) {
             const hz = std.fmt.parseFloat(f64, path[flag.len..]) catch 0;
