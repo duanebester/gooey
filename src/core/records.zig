@@ -134,6 +134,39 @@ pub const Mesh = struct {
     pub const Topology = enum { triangles, strip_expanded, point_instanced };
 };
 
+/// `record` with its alpha multiplied by `opacity`, as 0.3.1 folded subtree
+/// opacity into each command. Glyph and SVG sprites carry their colour in
+/// `tint` and `secondary`; image sprites carry it in `opacity`, since their
+/// tint multiplies the texel and fading both would square the opacity.
+pub fn fade(record: Record, opacity: f32) Record {
+    assert(opacity >= 0);
+    assert(opacity <= 1);
+    if (opacity == 1) return record;
+    var faded = record;
+    switch (faded) {
+        .quad => |*quad| {
+            quad.fill = fadeColor(quad.fill, opacity);
+            quad.border.color = fadeColor(quad.border.color, opacity);
+        },
+        .sprite => |*sprite| switch (sprite.atlas) {
+            .image => sprite.opacity *= opacity,
+            .glyph, .glyph_color, .svg => {
+                sprite.tint = fadeColor(sprite.tint, opacity);
+                sprite.secondary = fadeColor(sprite.secondary, opacity);
+            },
+        },
+        .mesh => |*mesh| mesh.fill = fadeColor(mesh.fill, opacity),
+        .clip_push, .clip_pop => {},
+    }
+    return faded;
+}
+
+pub fn fadeColor(color: Color, opacity: f32) Color {
+    assert(opacity >= 0);
+    assert(opacity <= 1);
+    return .{ .r = color.r, .g = color.g, .b = color.b, .a = color.a * opacity };
+}
+
 /// Sentinel for "no handler" and "no parent" indexes.
 pub const index_none: u32 = std.math.maxInt(u32);
 
@@ -144,6 +177,9 @@ pub const HitRecord = struct {
     bounds: Rect,
     fragment: u8,
     parent: u32,
+    /// `Style.pointer_events == .auto`. A record without it is skipped by
+    /// pointer hit tests but still bubbles, focuses, and takes keys.
+    pointer: bool,
     focusable: bool,
     /// Tab and Shift+Tab stop here (`Box.tab_stop`); implies `focusable`.
     tab_stop: bool,
@@ -283,6 +319,9 @@ pub const Frame = struct {
     /// Triangle mesh records, each one 0.3.1 frame path mesh when packed.
     triangle_mesh_count: u32,
     ime: ?Ime,
+    /// `Style.opacity` of the element emit is drawing, folded into the alpha
+    /// of every paint record appended (`fade`); 1 outside an element.
+    paint_opacity: f32,
     /// The first hit record of the last modal fragment, or 0 with none open.
     /// A modal blocks hit testing of earlier fragments (contract §6), and
     /// fragments emit in order, so hit tests never look below this index.
@@ -347,6 +386,7 @@ pub const Frame = struct {
         self.triangle_mesh_count = 0;
         self.ime = null;
         self.modal_hit_start = 0;
+        self.paint_opacity = 1;
         self.overlay_start = debugger.paint_mark_none;
         self.frame_number = frame_number;
         self.viewport_width = viewport.width;
@@ -356,10 +396,12 @@ pub const Frame = struct {
 
     pub fn appendPaint(self: *Frame, record: Record) void {
         assert(self.paint_count <= self.paint.len);
+        assert(self.paint_opacity >= 0);
+        assert(self.paint_opacity <= 1);
         if (self.paint_count == self.paint.len) {
             self.exhausted("paint records", self.paint.len);
         }
-        self.paint[self.paint_count] = record;
+        self.paint[self.paint_count] = fade(record, self.paint_opacity);
         self.paint_count += 1;
     }
 
@@ -501,4 +543,31 @@ test "Frame copies text and bounds every pool" {
     frame.reset(1, .{ .width = 10, .height = 10, .scale_factor = 2 });
     try std.testing.expectEqual(@as(u32, 0), frame.paint_count);
     try std.testing.expectEqual(@as(u32, 0), frame.text_len);
+}
+
+test "fade halves an image sprite's opacity and a glyph or SVG sprite's colours" {
+    // Goal: each sprite kind fades through the field its pipeline reads.
+    // Method: fade an image and an SVG sprite to 0.5. The image must keep
+    // its tint, since its shader multiplies tint and opacity, and fading
+    // both would draw it at 0.25; the SVG must halve fill and stroke.
+    const sprite = Sprite{
+        .bounds = .{ .x = 0, .y = 0, .width = 4, .height = 4 },
+        .atlas = .image,
+        .uv = .{ .x = 0, .y = 0, .width = 1, .height = 1 },
+        .tint = Color.white,
+        .secondary = .{ .r = 0, .g = 0, .b = 0, .a = 0.8 },
+        .corners = .zero,
+        .grayscale = 0,
+        .opacity = 0.6,
+    };
+    const image = fade(.{ .sprite = sprite }, 0.5).sprite;
+    try std.testing.expectEqual(@as(f32, 0.3), image.opacity);
+    try std.testing.expectEqual(@as(f32, 1), image.tint.a);
+    var svg = sprite;
+    svg.atlas = .svg;
+    svg.opacity = 1;
+    const faded = fade(.{ .sprite = svg }, 0.5).sprite;
+    try std.testing.expectEqual(@as(f32, 1), faded.opacity);
+    try std.testing.expectEqual(@as(f32, 0.5), faded.tint.a);
+    try std.testing.expectEqual(@as(f32, 0.4), faded.secondary.a);
 }

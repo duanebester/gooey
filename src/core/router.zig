@@ -74,14 +74,16 @@ pub const Query = struct {
 };
 
 /// The deepest hit record containing `point`, or `index_none`. Records
-/// below the last modal fragment are never hit (contract §6).
+/// below the last modal fragment are never hit (contract §6), and records
+/// of `pointer_events = .none` boxes let the point through to earlier ones.
 fn hitIndex(frame: *const records.Frame, point: Point) u32 {
     assert(frame.hit_count <= frame.hits.len);
     assert(frame.modal_hit_start <= frame.hit_count);
     var index = frame.hit_count;
     while (index > frame.modal_hit_start) {
         index -= 1;
-        if (frame.hits[index].bounds.contains(point.x, point.y)) return index;
+        const record = &frame.hits[index];
+        if (record.pointer and record.bounds.contains(point.x, point.y)) return index;
     }
     return index_none;
 }

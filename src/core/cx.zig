@@ -241,7 +241,7 @@ pub const Cx = struct {
 
     fn buildBox(self: *Cx, box: *const element.Box, children: anytype) void {
         const window = self.window;
-        checkMilestoneOne(box);
+        checkLayer(box);
         const parent_index = window.open_stack[window.open_depth - 1];
         const box_id = resolveId(window, parent_index, box.key);
         const scroll = retainScroll(window, box, box_id);
@@ -397,8 +397,7 @@ fn noteDepth(window: *Window) void {
     }
 }
 
-fn checkMilestoneOne(box: *const element.Box) void {
-    const phase_four = "is not supported until phase 4 of 0.4.0";
+fn checkLayer(box: *const element.Box) void {
     if (box.layer) |layer| {
         switch (layer.kind) {
             .popover, .modal => {},
@@ -406,9 +405,6 @@ fn checkMilestoneOne(box: *const element.Box) void {
                 "layers are implemented (contract decision 13)", .{layer.kind}),
         }
     }
-    if (box.draggable != null) std.debug.panic("Box.draggable {s}", .{phase_four});
-    if (box.drop_target != null) std.debug.panic("Box.drop_target {s}", .{phase_four});
-    if (box.style.opacity != 1) std.debug.panic("Style.opacity {s}", .{phase_four});
 }
 
 fn resolveId(window: *Window, parent_index: u32, key: ?Key) ElementId {
@@ -449,6 +445,9 @@ fn addNode(window: *Window, kind: window_mod.NodeKind, node_id: ElementId) u32 {
     const parent: u32 =
         if (window.open_depth > 0) window.open_stack[window.open_depth - 1] else index_none;
     if (parent != index_none) window.nodes[parent].child_count += 1;
+    const opacity: f32 = if (parent != index_none) window.nodes[parent].opacity else 1;
+    assert(opacity >= 0);
+    assert(opacity <= 1);
     window.nodes[index] = .{
         .kind = kind,
         .id = node_id,
@@ -458,6 +457,8 @@ fn addNode(window: *Window, kind: window_mod.NodeKind, node_id: ElementId) u32 {
         .focusable = false,
         .tab_stop = false,
         .hit = false,
+        .pointer = true,
+        .opacity = opacity,
         .cursor = null,
         .on_click = index_none,
         .on_click_outside = index_none,
@@ -514,7 +515,10 @@ fn openNodeWith(
 ) u32 {
     if (style.scroll != null) assert(options.scroll != null);
     const index = addNode(window, kind, node_id);
-    window.nodes[index].source = debugger.nodeSource(style.source);
+    const node = &window.nodes[index];
+    node.source = debugger.nodeSource(style.source);
+    node.opacity *= styleOpacity(window, style.opacity);
+    node.pointer = style.pointer_events == .auto;
     var decl = declaration(style);
     if (style.scroll) |axes| decl.scroll = .{
         .horizontal = axes.x,
@@ -595,6 +599,16 @@ fn popOpen(window: *Window, index: u32) void {
 fn handlerIndex(frame: *records.Frame, handler: ?Handler) u32 {
     const value = handler orelse return index_none;
     return frame.appendHandler(value);
+}
+
+/// `Style.opacity`, checked: a value outside 0 to 1 is a programmer error in
+/// every build mode, since a renderer would draw it as garbage alpha.
+fn styleOpacity(window: *const Window, opacity: f32) f32 {
+    if (opacity >= 0 and opacity <= 1) return opacity;
+    std.debug.panic("Style.opacity {d} is outside 0 to 1 (frame {d})", .{
+        opacity,
+        window.frame_number,
+    });
 }
 
 fn resolveAppearance(window: *Window, node: *Node, style: *const element.Style) void {
@@ -678,11 +692,12 @@ fn sizingAxis(sizing: element.Sizing, min: ?f32, max: ?f32) layout_mod.SizingAxi
         else
             layout_mod.SizingAxis.fit(),
         .grow => |weight| blk: {
-            if (weight != 1) {
-                std.debug.panic("grow weights other than 1 need the phase 4 layout", .{});
+            if (!(weight > 0 and std.math.isFinite(weight))) {
+                std.debug.panic("Sizing.grow weight {d}: a weight must be finite and " ++
+                    "greater than 0", .{weight});
             }
             const grow_max = max orelse std.math.floatMax(f32);
-            break :blk layout_mod.SizingAxis.growMinMax(min orelse 0, grow_max);
+            break :blk layout_mod.SizingAxis.growWeighted(weight, min orelse 0, grow_max);
         },
         .fixed => |size| blk: {
             assert(!bounded);

@@ -1355,6 +1355,9 @@ fn addFailFastChecks(
         .{ .mode = "core-allocation", .stderr = "allocation after initialization: alloc of " ++
             "16 bytes while the lifecycle is running" },
         .{ .mode = "core-duplicate-key", .stderr = "duplicate key \"twin\" under element" },
+        .{ .mode = "core-opacity-range", .stderr = "Style.opacity 1.01 is outside 0 to 1" },
+        .{ .mode = "core-grow-weight", .stderr = "Sizing.grow weight 0: a weight must be " ++
+            "finite and greater than 0" },
         .{ .mode = "core-dialog-target", .stderr = "file dialog on_complete targets " ++
             "fail_fast_check.CoreApp.Stranger; the root state is fail_fast_check.CoreState" },
         .{ .mode = "core-dialog-paths", .stderr = "file dialog selected 17 paths: " ++
