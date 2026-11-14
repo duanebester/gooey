@@ -130,31 +130,31 @@ test "floating_roots uses fixed capacity" {
     // Add several floating elements (no IDs needed for this test)
     try engine.openElement(.{
         .layout = .{ .sizing = Sizing.fixed(50, 50) },
-        .floating = .{ .z_index = 0 },
+        .floating = .{},
     });
     engine.closeElement();
 
     try engine.openElement(.{
         .layout = .{ .sizing = Sizing.fixed(50, 50) },
-        .floating = .{ .z_index = 1 },
+        .floating = .{},
     });
     engine.closeElement();
 
     try engine.openElement(.{
         .layout = .{ .sizing = Sizing.fixed(50, 50) },
-        .floating = .{ .z_index = 2 },
+        .floating = .{},
     });
     engine.closeElement();
 
     try engine.openElement(.{
         .layout = .{ .sizing = Sizing.fixed(50, 50) },
-        .floating = .{ .z_index = 3 },
+        .floating = .{},
     });
     engine.closeElement();
 
     try engine.openElement(.{
         .layout = .{ .sizing = Sizing.fixed(50, 50) },
-        .floating = .{ .z_index = 4 },
+        .floating = .{},
     });
     engine.closeElement();
 
@@ -208,7 +208,7 @@ test "UTF-8 text wrapping handles multi-byte characters" {
 
     engine.closeElement();
 
-    _ = try engine.endFrame();
+    try engine.endFrame();
 
     // Should render without crashing - UTF-8 handling works
     const text_elem = engine.elements.getConst(1);
@@ -255,7 +255,7 @@ test "UTF-8 text wrapping with emoji" {
 
     engine.closeElement();
 
-    _ = try engine.endFrame();
+    try engine.endFrame();
 
     // Should complete without panic
     const text_elem = engine.elements.getConst(1);
@@ -304,7 +304,7 @@ test "id_to_index is pre-allocated" {
     engine.closeElement();
 
     engine.closeElement();
-    _ = try engine.endFrame();
+    try engine.endFrame();
 
     // All IDs should be trackable via getBoundingBox
     const root_bbox = engine.getBoundingBox(LayoutId.init("root").id);
@@ -331,7 +331,7 @@ test "beginFrame clears fixed capacity arrays" {
         .floating = .{},
     });
     engine.closeElement();
-    _ = try engine.endFrame();
+    try engine.endFrame();
 
     // Verify state after first frame
     try std.testing.expect(engine.floating_roots.len > 0 or engine.open_element_stack.len == 0);
@@ -440,7 +440,7 @@ test "floating element resolved_floating_parent is cached at creation" {
     const parent_idx = engine.id_to_index.get(LayoutId.init("parent").id).?;
     try std.testing.expectEqual(parent_idx, float_elem.computed.resolved_floating_parent.?);
 
-    _ = try engine.endFrame();
+    try engine.endFrame();
 }
 
 /// The y of a 100 px wide, `float_height` tall element floating below a
@@ -470,7 +470,7 @@ fn dropdownY(parent_y: u16, float_height: f32) !f32 {
     engine.closeElement();
     engine.closeElement();
     engine.closeElement();
-    _ = try engine.endFrame();
+    try engine.endFrame();
     const trigger = engine.getBoundingBox(LayoutId.init("trigger").id).?;
     try std.testing.expectEqual(@as(f32, @floatFromInt(parent_y)), trigger.y);
     return engine.getBoundingBox(LayoutId.init("menu").id).?.y;
@@ -519,7 +519,7 @@ test "floating expand.width makes element match parent width" {
 
     engine.closeElement();
 
-    _ = try engine.endFrame();
+    try engine.endFrame();
 
     // The floating element should have expanded to parent width
     const float_bbox = engine.getBoundingBox(LayoutId.init("expand-float").id).?;
@@ -553,7 +553,7 @@ test "floating expand.height makes element match parent height" {
 
     engine.closeElement();
 
-    _ = try engine.endFrame();
+    try engine.endFrame();
 
     // The floating element should have expanded to parent height
     const float_bbox = engine.getBoundingBox(LayoutId.init("expand-float").id).?;
@@ -587,7 +587,7 @@ test "floating expand both dimensions" {
 
     engine.closeElement();
 
-    _ = try engine.endFrame();
+    try engine.endFrame();
 
     // The floating element should match parent in both dimensions
     const modal_bbox = engine.getBoundingBox(LayoutId.init("modal").id).?;
@@ -602,7 +602,6 @@ test "floating expand both dimensions" {
 test "Offset2D shared type works in FloatingConfig" {
     const float_config = types.FloatingConfig{
         .offset = types.Offset2D.init(10, 20),
-        .z_index = 5,
     };
 
     try std.testing.expectEqual(@as(f32, 10), float_config.offset.x);
@@ -682,7 +681,7 @@ test "distributeGrow gives equal space to grow elements" {
     }
     engine.closeElement();
 
-    _ = try engine.endFrame();
+    try engine.endFrame();
 
     const grow1 = engine.getBoundingBox(LayoutId.init("grow1").id).?;
     const grow2 = engine.getBoundingBox(LayoutId.init("grow2").id).?;
@@ -730,7 +729,7 @@ test "distributeShrink respects minimum constraints" {
     }
     engine.closeElement();
 
-    _ = try engine.endFrame();
+    try engine.endFrame();
 
     const minchild = engine.getBoundingBox(LayoutId.init("minchild").id).?;
 
@@ -763,7 +762,7 @@ test "fast path: single grow child gets full available space" {
     }
     engine.closeElement();
 
-    _ = try engine.endFrame();
+    try engine.endFrame();
 
     const child = engine.getBoundingBox(LayoutId.init("only-child").id).?;
 
@@ -805,7 +804,7 @@ test "fast path: all floating children falls back to slow path" {
     }
     engine.closeElement();
 
-    _ = try engine.endFrame();
+    try engine.endFrame();
 
     // Both floating elements should be positioned (not crash)
     const f1 = engine.getBoundingBox(LayoutId.init("floating1").id).?;
@@ -856,7 +855,7 @@ test "fast path: mixed sizing children falls back to slow path" {
     }
     engine.closeElement();
 
-    _ = try engine.endFrame();
+    try engine.endFrame();
 
     const fixed = engine.getBoundingBox(LayoutId.init("fixed-child").id).?;
     const grow = engine.getBoundingBox(LayoutId.init("grow-child").id).?;
@@ -905,7 +904,7 @@ test "fast path: grow with min constraint falls back to slow path" {
     }
     engine.closeElement();
 
-    _ = try engine.endFrame();
+    try engine.endFrame();
 
     const constrained = engine.getBoundingBox(LayoutId.init("constrained-grow").id).?;
     const normal = engine.getBoundingBox(LayoutId.init("normal-grow").id).?;

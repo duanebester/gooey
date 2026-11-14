@@ -500,7 +500,6 @@ pub const AttachPoint = enum {
 
 pub const FloatingConfig = struct {
     offset: Offset2D = .{},
-    z_index: i16 = 0,
     attach_to_parent: bool = true,
     parent_id: ?u32 = null,
     element_attach: AttachPoint = .left_top,

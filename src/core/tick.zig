@@ -107,7 +107,7 @@ fn buildFrame(comptime App: type, window: *Window) void {
 
     window.setPhase(.build, .layout);
     const layout_ns = debugger.stamp(window);
-    _ = window.layout.endFrame() catch |err| std.debug.panic("layout failed in frame {d}: {s}", .{
+    window.layout.endFrame() catch |err| std.debug.panic("layout failed in frame {d}: {s}", .{
         window.frame_number,
         @errorName(err),
     });
