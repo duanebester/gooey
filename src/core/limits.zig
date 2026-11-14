@@ -1323,9 +1323,6 @@ pub const MAX_LAYOUT_ELEMENTS: u32 = 4096;
 /// Maximum nested component depth (prevent stack overflow)
 pub const MAX_NESTED_COMPONENTS: u32 = 64;
 
-/// Maximum render commands per frame
-pub const MAX_RENDER_COMMANDS: u32 = 8192;
-
 // =============================================================================
 // Text Limits
 // =============================================================================
