@@ -4,7 +4,6 @@
 //!   - `FixedCapacityArray` fixed-capacity collection
 //!   - `open_element_stack` / `floating_roots` fixed-capacity invariants
 //!   - UTF-8 text wrapping
-//!   - Pre-allocation of `id_to_index`, `seen_ids`
 //!   - `beginFrame` reset behavior
 //!   - Word-boundary helper (`sizing_pass.findWordBoundaries`)
 //!   - Floating `expand` behavior
@@ -15,10 +14,11 @@
 
 const std = @import("std");
 
+const assert = std.debug.assert;
+
 const engine_mod = @import("engine.zig");
 const sizing_pass = @import("sizing_pass.zig");
 const types = @import("types.zig");
-const layout_id = @import("layout_id.zig");
 
 const LayoutEngine = engine_mod.LayoutEngine;
 const ElementDeclaration = engine_mod.ElementDeclaration;
@@ -28,11 +28,9 @@ const TextMeasurement = engine_mod.TextMeasurement;
 const MAX_ELEMENTS_PER_FRAME = engine_mod.MAX_ELEMENTS_PER_FRAME;
 const MAX_OPEN_DEPTH = engine_mod.MAX_OPEN_DEPTH;
 const MAX_FLOATING_ROOTS = engine_mod.MAX_FLOATING_ROOTS;
-const MAX_TRACKED_IDS = engine_mod.MAX_TRACKED_IDS;
 const MAX_WORDS_PER_TEXT = engine_mod.MAX_WORDS_PER_TEXT;
 const MAX_LINES_PER_TEXT = engine_mod.MAX_LINES_PER_TEXT;
 
-const LayoutId = layout_id.LayoutId;
 const Sizing = types.Sizing;
 const SizingAxis = types.SizingAxis;
 const LayoutConfig = types.LayoutConfig;
@@ -42,6 +40,15 @@ const Color = types.Color;
 const CornerRadius = types.CornerRadius;
 const TextConfig = types.TextConfig;
 const Offset2D = types.Offset2D;
+
+/// The computed bounds of the element at `index`, in creation order: the
+/// engine appends elements as `openElement` and `text` create them.
+fn boundingBox(engine: *const LayoutEngine, index: u32) types.BoundingBox {
+    assert(index < engine.elements.len());
+    const bounds = engine.elements.getConst(index).computed.bounding_box;
+    assert(bounds.width >= 0);
+    return bounds;
+}
 
 // =============================================================================
 // Fixed Capacity Arrays, UTF-8, Capacity Limits
@@ -123,7 +130,6 @@ test "floating_roots uses fixed capacity" {
 
     // Create a parent element
     try engine.openElement(.{
-        .id = LayoutId.init("parent"),
         .layout = .{ .sizing = Sizing.fixed(400, 300) },
     });
 
@@ -267,57 +273,7 @@ test "capacity constants are reasonable" {
     try std.testing.expect(MAX_ELEMENTS_PER_FRAME >= 1000);
     try std.testing.expect(MAX_OPEN_DEPTH >= 32);
     try std.testing.expect(MAX_FLOATING_ROOTS >= 64);
-    try std.testing.expect(MAX_TRACKED_IDS >= 1000);
     try std.testing.expect(MAX_LINES_PER_TEXT >= 100);
-}
-
-test "id_to_index is pre-allocated" {
-    var engine = try LayoutEngine.init(std.testing.allocator);
-    defer engine.deinit();
-
-    // After init, hashmaps should have capacity (pre-allocated)
-    // We can't directly check capacity, but we can verify lookups work
-    engine.beginFrame(800, 600);
-
-    try engine.openElement(.{
-        .id = LayoutId.init("root"),
-        .layout = .{ .sizing = Sizing.fill() },
-    });
-
-    // Create several elements with comptime IDs
-    try engine.openElement(.{
-        .id = LayoutId.init("elem-a"),
-        .layout = .{ .sizing = Sizing.fixed(10, 10) },
-    });
-    engine.closeElement();
-
-    try engine.openElement(.{
-        .id = LayoutId.init("elem-b"),
-        .layout = .{ .sizing = Sizing.fixed(10, 10) },
-    });
-    engine.closeElement();
-
-    try engine.openElement(.{
-        .id = LayoutId.init("elem-c"),
-        .layout = .{ .sizing = Sizing.fixed(10, 10) },
-    });
-    engine.closeElement();
-
-    engine.closeElement();
-    try engine.endFrame();
-
-    // All IDs should be trackable via getBoundingBox
-    const root_bbox = engine.getBoundingBox(LayoutId.init("root").id);
-    try std.testing.expect(root_bbox != null);
-
-    const elem_a_bbox = engine.getBoundingBox(LayoutId.init("elem-a").id);
-    try std.testing.expect(elem_a_bbox != null);
-
-    const elem_b_bbox = engine.getBoundingBox(LayoutId.init("elem-b").id);
-    try std.testing.expect(elem_b_bbox != null);
-
-    const elem_c_bbox = engine.getBoundingBox(LayoutId.init("elem-c").id);
-    try std.testing.expect(elem_c_bbox != null);
 }
 
 test "beginFrame clears fixed capacity arrays" {
@@ -403,46 +359,6 @@ test "word-level measurement handles newlines" {
     try std.testing.expect(!words.buffer[1].has_newline);
 }
 
-test "floating element resolved_floating_parent is cached at creation" {
-    var engine = try LayoutEngine.init(std.testing.allocator);
-    defer engine.deinit();
-
-    engine.beginFrame(800, 600);
-
-    // Create parent with ID
-    try engine.openElement(.{
-        .id = LayoutId.init("parent"),
-        .layout = .{ .sizing = Sizing.fixed(200, 200) },
-        .background_color = Color.white,
-    });
-
-    // Create floating child that references parent by ID
-    try engine.openElement(.{
-        .id = LayoutId.init("float"),
-        .layout = .{ .sizing = Sizing.fixed(50, 50) },
-        .floating = .{
-            .attach_to_parent = false,
-            .parent_id = LayoutId.init("parent").id,
-        },
-        .background_color = Color.red,
-    });
-    engine.closeElement();
-
-    engine.closeElement();
-
-    // Before endFrame, check that resolved_floating_parent was set
-    const float_idx = engine.id_to_index.get(LayoutId.init("float").id).?;
-    const float_elem = engine.elements.getConst(float_idx);
-
-    // The resolved parent should be cached
-    try std.testing.expect(float_elem.computed.resolved_floating_parent != null);
-
-    const parent_idx = engine.id_to_index.get(LayoutId.init("parent").id).?;
-    try std.testing.expectEqual(parent_idx, float_elem.computed.resolved_floating_parent.?);
-
-    try engine.endFrame();
-}
-
 /// The y of a 100 px wide, `float_height` tall element floating below a
 /// 40 px parent at `parent_y` in a 600 px viewport, attached as a dropdown
 /// menu is: at the parent's top left, offset by the parent's height.
@@ -451,7 +367,6 @@ fn dropdownY(parent_y: u16, float_height: f32) !f32 {
     defer engine.deinit();
     engine.beginFrame(800, 600);
     try engine.openElement(.{
-        .id = LayoutId.init("root"),
         .layout = .{
             .sizing = Sizing.fixed(800, 600),
             .padding = .{ .top = parent_y },
@@ -459,11 +374,9 @@ fn dropdownY(parent_y: u16, float_height: f32) !f32 {
         },
     });
     try engine.openElement(.{
-        .id = LayoutId.init("trigger"),
         .layout = .{ .sizing = Sizing.fixed(100, 40) },
     });
     try engine.openElement(.{
-        .id = LayoutId.init("menu"),
         .layout = .{ .sizing = Sizing.fixed(100, float_height) },
         .floating = .{ .attach_to_parent = true, .offset = .{ .y = 40 } },
     });
@@ -471,9 +384,9 @@ fn dropdownY(parent_y: u16, float_height: f32) !f32 {
     engine.closeElement();
     engine.closeElement();
     try engine.endFrame();
-    const trigger = engine.getBoundingBox(LayoutId.init("trigger").id).?;
+    const trigger = boundingBox(&engine, 1);
     try std.testing.expectEqual(@as(f32, @floatFromInt(parent_y)), trigger.y);
-    return engine.getBoundingBox(LayoutId.init("menu").id).?.y;
+    return boundingBox(&engine, 2).y;
 }
 
 test "a parent-attached float opens above its parent when only that side fits" {
@@ -500,14 +413,12 @@ test "floating expand.width makes element match parent width" {
 
     // Create parent container
     try engine.openElement(.{
-        .id = LayoutId.init("parent"),
         .layout = .{ .sizing = Sizing.fixed(300, 200) },
         .background_color = Color.white,
     });
 
     // Create floating child with expand.width = true
     try engine.openElement(.{
-        .id = LayoutId.init("expand-float"),
         .layout = .{ .sizing = Sizing.fitContent() }, // Would normally fit content
         .floating = .{
             .attach_to_parent = true,
@@ -522,7 +433,7 @@ test "floating expand.width makes element match parent width" {
     try engine.endFrame();
 
     // The floating element should have expanded to parent width
-    const float_bbox = engine.getBoundingBox(LayoutId.init("expand-float").id).?;
+    const float_bbox = boundingBox(&engine, 1);
     try std.testing.expectEqual(@as(f32, 300), float_bbox.width);
 }
 
@@ -534,14 +445,12 @@ test "floating expand.height makes element match parent height" {
 
     // Create parent container
     try engine.openElement(.{
-        .id = LayoutId.init("parent"),
         .layout = .{ .sizing = Sizing.fixed(300, 250) },
         .background_color = Color.white,
     });
 
     // Create floating child with expand.height = true
     try engine.openElement(.{
-        .id = LayoutId.init("expand-float"),
         .layout = .{ .sizing = Sizing.fitContent() },
         .floating = .{
             .attach_to_parent = true,
@@ -556,7 +465,7 @@ test "floating expand.height makes element match parent height" {
     try engine.endFrame();
 
     // The floating element should have expanded to parent height
-    const float_bbox = engine.getBoundingBox(LayoutId.init("expand-float").id).?;
+    const float_bbox = boundingBox(&engine, 1);
     try std.testing.expectEqual(@as(f32, 250), float_bbox.height);
 }
 
@@ -568,14 +477,12 @@ test "floating expand both dimensions" {
 
     // Create parent container
     try engine.openElement(.{
-        .id = LayoutId.init("parent"),
         .layout = .{ .sizing = Sizing.fixed(400, 300) },
         .background_color = Color.white,
     });
 
     // Create floating child with both expand flags
     try engine.openElement(.{
-        .id = LayoutId.init("modal"),
         .layout = .{ .sizing = Sizing.fitContent() },
         .floating = .{
             .attach_to_parent = true,
@@ -590,7 +497,7 @@ test "floating expand both dimensions" {
     try engine.endFrame();
 
     // The floating element should match parent in both dimensions
-    const modal_bbox = engine.getBoundingBox(LayoutId.init("modal").id).?;
+    const modal_bbox = boundingBox(&engine, 1);
     try std.testing.expectEqual(@as(f32, 400), modal_bbox.width);
     try std.testing.expectEqual(@as(f32, 300), modal_bbox.height);
 }
@@ -659,21 +566,18 @@ test "distributeGrow gives equal space to grow elements" {
     {
         // Three grow elements should each get 100px (300/3)
         try engine.openElement(.{
-            .id = LayoutId.init("grow1"),
             .layout = .{ .sizing = .{ .width = SizingAxis.grow(), .height = SizingAxis.fixed(50) } },
             .background_color = Color.red,
         });
         engine.closeElement();
 
         try engine.openElement(.{
-            .id = LayoutId.init("grow2"),
             .layout = .{ .sizing = .{ .width = SizingAxis.grow(), .height = SizingAxis.fixed(50) } },
             .background_color = Color.green,
         });
         engine.closeElement();
 
         try engine.openElement(.{
-            .id = LayoutId.init("grow3"),
             .layout = .{ .sizing = .{ .width = SizingAxis.grow(), .height = SizingAxis.fixed(50) } },
             .background_color = Color.blue,
         });
@@ -683,9 +587,9 @@ test "distributeGrow gives equal space to grow elements" {
 
     try engine.endFrame();
 
-    const grow1 = engine.getBoundingBox(LayoutId.init("grow1").id).?;
-    const grow2 = engine.getBoundingBox(LayoutId.init("grow2").id).?;
-    const grow3 = engine.getBoundingBox(LayoutId.init("grow3").id).?;
+    const grow1 = boundingBox(&engine, 1);
+    const grow2 = boundingBox(&engine, 2);
+    const grow3 = boundingBox(&engine, 3);
 
     try std.testing.expectEqual(@as(f32, 100), grow1.width);
     try std.testing.expectEqual(@as(f32, 100), grow2.width);
@@ -704,7 +608,6 @@ test "distributeShrink respects minimum constraints" {
     {
         // Child with min constraint of 60 should not shrink below that
         try engine.openElement(.{
-            .id = LayoutId.init("minchild"),
             .layout = .{
                 .sizing = .{
                     .width = SizingAxis.fitMinMax(60, 200), // min=60, max=200
@@ -716,7 +619,6 @@ test "distributeShrink respects minimum constraints" {
         engine.closeElement();
 
         try engine.openElement(.{
-            .id = LayoutId.init("shrinkable"),
             .layout = .{
                 .sizing = .{
                     .width = SizingAxis.fitMax(200), // min=0, can shrink fully
@@ -731,7 +633,7 @@ test "distributeShrink respects minimum constraints" {
 
     try engine.endFrame();
 
-    const minchild = engine.getBoundingBox(LayoutId.init("minchild").id).?;
+    const minchild = boundingBox(&engine, 1);
 
     // minchild should not shrink below its minimum of 60
     try std.testing.expect(minchild.width >= 60);
@@ -748,13 +650,11 @@ test "fast path: single grow child gets full available space" {
     engine.beginFrame(400, 300);
 
     try engine.openElement(.{
-        .id = LayoutId.init("container"),
         .layout = .{ .sizing = Sizing.fixed(400, 300), .layout_direction = .left_to_right },
     });
     {
         // Single grow child should get full width (fast path with total_children == 1)
         try engine.openElement(.{
-            .id = LayoutId.init("only-child"),
             .layout = .{ .sizing = Sizing.fill() },
             .background_color = Color.red,
         });
@@ -764,7 +664,7 @@ test "fast path: single grow child gets full available space" {
 
     try engine.endFrame();
 
-    const child = engine.getBoundingBox(LayoutId.init("only-child").id).?;
+    const child = boundingBox(&engine, 1);
 
     // Single grow child should fill entire container
     try std.testing.expectEqual(@as(f32, 400), child.width);
@@ -778,7 +678,6 @@ test "fast path: all floating children falls back to slow path" {
     engine.beginFrame(400, 300);
 
     try engine.openElement(.{
-        .id = LayoutId.init("container"),
         .layout = .{
             .sizing = Sizing.fixed(400, 300),
             .layout_direction = .left_to_right,
@@ -787,7 +686,6 @@ test "fast path: all floating children falls back to slow path" {
     {
         // All children are floating - fast path should return false (actual_children == 0)
         try engine.openElement(.{
-            .id = LayoutId.init("floating1"),
             .layout = .{ .sizing = Sizing.fixed(100, 100) },
             .floating = types.FloatingConfig.dropdown(),
             .background_color = Color.red,
@@ -795,7 +693,6 @@ test "fast path: all floating children falls back to slow path" {
         engine.closeElement();
 
         try engine.openElement(.{
-            .id = LayoutId.init("floating2"),
             .layout = .{ .sizing = Sizing.fixed(100, 100) },
             .floating = types.FloatingConfig.dropdown(),
             .background_color = Color.blue,
@@ -807,8 +704,8 @@ test "fast path: all floating children falls back to slow path" {
     try engine.endFrame();
 
     // Both floating elements should be positioned (not crash)
-    const f1 = engine.getBoundingBox(LayoutId.init("floating1").id).?;
-    const f2 = engine.getBoundingBox(LayoutId.init("floating2").id).?;
+    const f1 = boundingBox(&engine, 1);
+    const f2 = boundingBox(&engine, 2);
 
     try std.testing.expectEqual(@as(f32, 100), f1.width);
     try std.testing.expectEqual(@as(f32, 100), f2.width);
@@ -821,27 +718,23 @@ test "fast path: mixed sizing children falls back to slow path" {
     engine.beginFrame(400, 100);
 
     try engine.openElement(.{
-        .id = LayoutId.init("container"),
         .layout = .{ .sizing = Sizing.fixed(400, 100), .layout_direction = .left_to_right },
     });
     {
         // Mixed sizing: fixed + grow + fit - should use slow path
         try engine.openElement(.{
-            .id = LayoutId.init("fixed-child"),
             .layout = .{ .sizing = Sizing.fixed(100, 50) },
             .background_color = Color.red,
         });
         engine.closeElement();
 
         try engine.openElement(.{
-            .id = LayoutId.init("grow-child"),
             .layout = .{ .sizing = Sizing.fill() },
             .background_color = Color.green,
         });
         engine.closeElement();
 
         try engine.openElement(.{
-            .id = LayoutId.init("fit-child"),
             .layout = .{ .sizing = Sizing.fitContent() },
             .background_color = Color.blue,
         });
@@ -857,9 +750,9 @@ test "fast path: mixed sizing children falls back to slow path" {
 
     try engine.endFrame();
 
-    const fixed = engine.getBoundingBox(LayoutId.init("fixed-child").id).?;
-    const grow = engine.getBoundingBox(LayoutId.init("grow-child").id).?;
-    const fit = engine.getBoundingBox(LayoutId.init("fit-child").id).?;
+    const fixed = boundingBox(&engine, 1);
+    const grow = boundingBox(&engine, 2);
+    const fit = boundingBox(&engine, 3);
 
     // Fixed child keeps its size
     try std.testing.expectEqual(@as(f32, 100), fixed.width);
@@ -878,13 +771,11 @@ test "fast path: grow with min constraint falls back to slow path" {
     engine.beginFrame(300, 100);
 
     try engine.openElement(.{
-        .id = LayoutId.init("container"),
         .layout = .{ .sizing = Sizing.fixed(300, 100), .layout_direction = .left_to_right },
     });
     {
         // Grow with min constraint - fast path should bail (mm.min != 0)
         try engine.openElement(.{
-            .id = LayoutId.init("constrained-grow"),
             .layout = .{
                 .sizing = .{
                     .width = SizingAxis.growMinMax(80, std.math.floatMax(f32)),
@@ -896,7 +787,6 @@ test "fast path: grow with min constraint falls back to slow path" {
         engine.closeElement();
 
         try engine.openElement(.{
-            .id = LayoutId.init("normal-grow"),
             .layout = .{ .sizing = Sizing.fill() },
             .background_color = Color.green,
         });
@@ -906,8 +796,8 @@ test "fast path: grow with min constraint falls back to slow path" {
 
     try engine.endFrame();
 
-    const constrained = engine.getBoundingBox(LayoutId.init("constrained-grow").id).?;
-    const normal = engine.getBoundingBox(LayoutId.init("normal-grow").id).?;
+    const constrained = boundingBox(&engine, 1);
+    const normal = boundingBox(&engine, 2);
 
     // Both should share space equally (150 each) since slow path handles this
     // The min constraint of 80 is satisfied by the equal split

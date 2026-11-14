@@ -62,7 +62,6 @@ const Tree = a11y.Tree;
 const fingerprint = a11y.fingerprint;
 const Fingerprint = fingerprint.Fingerprint;
 const constants = a11y.constants;
-const LayoutId = gooey.internals.layout.LayoutId;
 
 const MAX_ELEMENTS = constants.MAX_ELEMENTS;
 
@@ -283,16 +282,16 @@ fn buildTree(tree: *Tree, names: [][]const u8, churn_count: u32, toggle: bool) v
     std.debug.assert(names.len >= 1);
     std.debug.assert(churn_count <= names.len);
 
-    _ = tree.pushElement(.{ .layout_id = LayoutId.none, .role = .group, .name = "a11y_root" });
+    _ = tree.pushElement(.{ .role = .group, .name = "a11y_root" });
 
     const child_count: u32 = @intCast(names.len);
     var i: u32 = 0;
     while (i < child_count) : (i += 1) {
         if (i < churn_count) {
             const value: []const u8 = if (toggle) "on" else "off";
-            _ = tree.pushElement(.{ .layout_id = LayoutId.none, .role = .status, .name = names[i], .value = value });
+            _ = tree.pushElement(.{ .role = .status, .name = names[i], .value = value });
         } else {
-            _ = tree.pushElement(.{ .layout_id = LayoutId.none, .role = .button, .name = names[i] });
+            _ = tree.pushElement(.{ .role = .button, .name = names[i] });
         }
         tree.popElement();
     }

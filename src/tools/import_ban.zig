@@ -1,5 +1,5 @@
 //! `zig build import-ban`: fails when code reaches a 0.3.1 path that phase 6
-//! deleted (plan §26, phase 6 exit).
+//! or the 0.4 close-out deleted (plan §26, phase 6 exit).
 //!
 //! The old middle is gone, so an import of one of its paths only compiles if
 //! someone recreates the file. This check catches both halves of that: a
@@ -35,12 +35,17 @@ pub const banned_paths = [_][]const u8{
     "src/core/mod.zig",
     "src/testing/legacy_harness.zig",
     "src/testing/mock_clipboard.zig",
+    "src/testing/mock_renderer.zig",
     "src/platform/mutex.zig",
     "src/platform/unified.zig",
     "src/platform/macos/display_link.zig",
     "src/platform/web/file_dialog.zig",
     "src/platform/web/image_loader.zig",
+    "src/image/asset_cache.zig",
     "src/platform/linux/tests/",
+    "src/layout/layout_id.zig",
+    "src/layout/render_commands.zig",
+    "src/layout/scroll_pass.zig",
     "components/src/core/",
 };
 

@@ -1314,27 +1314,11 @@ pub const Violation = struct {
 };
 
 // =============================================================================
-// Layout Limits
-// =============================================================================
-
-/// Maximum layout elements in tree
-pub const MAX_LAYOUT_ELEMENTS: u32 = 4096;
-
-/// Maximum nested component depth (prevent stack overflow)
-pub const MAX_NESTED_COMPONENTS: u32 = 64;
-
-// =============================================================================
 // Text Limits
 // =============================================================================
 
 /// Maximum glyphs in a single shaped run
 pub const MAX_GLYPHS_PER_RUN: u32 = 1024;
-
-/// Maximum cached shaped runs
-pub const MAX_SHAPED_RUN_CACHE: u32 = 256;
-
-/// Maximum text length for single-line inputs
-pub const MAX_TEXT_LEN: u32 = 512;
 
 /// The font faces a text system loads during initialization (CLAUDE.md §2): one
 /// face per entry in `variants`, so `variants.len` is the face count. Nothing is
@@ -1471,33 +1455,6 @@ pub const FontLimits = struct {
 };
 
 // =============================================================================
-// Accessibility Limits
-// =============================================================================
-
-/// Maximum accessibility tree elements
-pub const MAX_A11Y_ELEMENTS: u32 = 1024;
-
-/// Maximum pending announcements
-pub const MAX_A11Y_ANNOUNCEMENTS: u32 = 16;
-
-// =============================================================================
-// Widget Limits
-// =============================================================================
-
-/// Maximum concurrent widgets
-pub const MAX_WIDGETS: u32 = 256;
-
-/// Maximum deferred commands per frame
-pub const MAX_DEFERRED_COMMANDS: u32 = 32;
-
-// =============================================================================
-// Window Limits
-// =============================================================================
-
-/// Maximum windows per application
-pub const MAX_WINDOWS: u32 = 8;
-
-// =============================================================================
 // Per-Path Geometry Limits
 // =============================================================================
 
@@ -1510,15 +1467,6 @@ pub const MAX_PATH_TRIANGLES: u32 = MAX_PATH_VERTICES - 2;
 
 /// Maximum indices per path = triangles × 3
 pub const MAX_PATH_INDICES: u32 = MAX_PATH_TRIANGLES * 3;
-
-/// Maximum path commands per path
-pub const MAX_PATH_COMMANDS: u32 = 2048;
-
-/// Maximum data floats per path (commands like cubicTo need 6 floats)
-pub const MAX_PATH_DATA: u32 = MAX_PATH_COMMANDS * 8;
-
-/// Maximum subpaths (each moveTo starts a new subpath)
-pub const MAX_SUBPATHS: u32 = 64;
 
 // =============================================================================
 // Stroke Limits
@@ -1569,55 +1517,13 @@ pub const MAX_POINTS_PER_COLORED_CLOUD: u32 = 65536;
 pub const MAX_POINT_RADIUS: f32 = 1000.0;
 
 // =============================================================================
-// GPU Buffer Limits (Web/WGPU specific)
-// =============================================================================
-
-/// Web renderer batch buffer capacity for vertices (holds multiple paths)
-/// Note: This is LARGER than MAX_PATH_VERTICES because it's a batch buffer
-pub const WEB_BATCH_VERTICES: u32 = 16384;
-
-/// Web renderer batch buffer capacity for indices
-pub const WEB_BATCH_INDICES: u32 = 49152;
-
-/// Web renderer maximum paths per batch
-pub const WEB_MAX_PATHS_PER_BATCH: u32 = 256;
-
-// =============================================================================
-// Shader Constants
-// =============================================================================
-
-/// Maximum gradient color stops (must match GPU shader definitions)
-pub const MAX_GRADIENT_STOPS: u32 = 16;
-
-/// Epsilon for gradient range comparisons (avoids division by zero)
-/// Used in both Metal and WGSL shaders for consistency
-pub const GRADIENT_RANGE_EPSILON: f32 = 0.0001;
-
-// =============================================================================
-// Memory Budget Estimates
-// =============================================================================
-
-/// Bytes per glyph: one packed sprite, derived so the estimate cannot go stale.
-pub const GLYPH_INSTANCE_SIZE: u32 = @sizeOf(packed_frame.Sprite);
-pub const ESTIMATED_GLYPH_MEMORY: u32 = MAX_GLYPHS_PER_FRAME * GLYPH_INSTANCE_SIZE;
-
-/// Bytes per quad: one packed quad, derived.
-pub const QUAD_SIZE: u32 = @sizeOf(packed_frame.Quad);
-pub const ESTIMATED_QUAD_MEMORY: u32 = MAX_QUADS_PER_FRAME * QUAD_SIZE;
-
-// =============================================================================
 // Compile-time Validation
 // =============================================================================
 
 comptime {
     // Sanity checks - fail compilation if limits are unreasonable
     std.debug.assert(MAX_GLYPHS_PER_FRAME >= MAX_GLYPHS_PER_RUN);
-    std.debug.assert(MAX_NESTED_COMPONENTS <= 256); // Stack safety
     std.debug.assert(MAX_CLIP_STACK_DEPTH <= 64); // Reasonable nesting
-
-    // Ensure web batch can hold at least a few max-size paths
-    std.debug.assert(WEB_BATCH_VERTICES >= MAX_PATH_VERTICES * 4);
-    std.debug.assert(WEB_BATCH_INDICES >= MAX_PATH_INDICES * 4);
 
     // Ensure per-frame instance limit is reasonable
     std.debug.assert(MAX_PATHS_PER_FRAME >= 1024);
@@ -1641,18 +1547,6 @@ test "limit relationships" {
     // Indices are derived from vertices correctly
     try std.testing.expectEqual(MAX_PATH_TRIANGLES, MAX_PATH_VERTICES - 2);
     try std.testing.expectEqual(MAX_PATH_INDICES, MAX_PATH_TRIANGLES * 3);
-
-    // Web batch can hold multiple paths
-    const paths_per_batch = WEB_BATCH_VERTICES / MAX_PATH_VERTICES;
-    try std.testing.expect(paths_per_batch >= 4);
-}
-
-test "memory estimates are reasonable" {
-    // Glyph memory at the ceiling should be under 8MB
-    try std.testing.expect(ESTIMATED_GLYPH_MEMORY < 8 * 1024 * 1024);
-
-    // Quad memory should be under 16MB
-    try std.testing.expect(ESTIMATED_QUAD_MEMORY < 16 * 1024 * 1024);
 }
 
 test "named profiles are valid and ordered" {

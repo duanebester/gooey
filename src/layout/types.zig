@@ -500,8 +500,9 @@ pub const AttachPoint = enum {
 
 pub const FloatingConfig = struct {
     offset: Offset2D = .{},
+    /// Position against the direct parent; false positions against the
+    /// viewport (modals).
     attach_to_parent: bool = true,
-    parent_id: ?u32 = null,
     element_attach: AttachPoint = .left_top,
     parent_attach: AttachPoint = .left_top,
     /// Whether to expand to match parent dimensions

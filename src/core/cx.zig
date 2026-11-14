@@ -543,7 +543,7 @@ fn floating(anchor: element.Anchor) layout_mod.FloatingConfig {
             .parent_attach = .left_top,
         },
     };
-    assert(config.parent_id == null);
+    assert(config.element_attach == .left_top);
     return config;
 }
 

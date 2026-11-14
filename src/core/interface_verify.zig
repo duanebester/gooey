@@ -1,10 +1,8 @@
 //! Compile-time interface verification
 //!
 //! Duck-typed `@hasDecl` checks for the subsystem shapes that have no single
-//! authoritative contract: renderers, clipboards, SVG rasterizers, image
-//! loaders, and file dialogs. These verify that a
-//! declaration exists, not that its type matches, because the backends
-//! legitimately differ in signature (see `verifyRendererInterface`).
+//! authoritative contract: SVG rasterizers and image decoders. These verify
+//! that a declaration exists, not that its type matches.
 //!
 //! This module does NOT cover the renderer the core draws through:
 //! `core/backend.zig` verifies that with complete function types
@@ -13,42 +11,9 @@
 //!
 //! Usage in a backend file:
 //!   const interface_verify = @import("../../core/interface_verify.zig");
-//!   comptime { interface_verify.verifyRendererInterface(@This()); }
+//!   comptime { interface_verify.verifyImageLoaderModule(@This()); }
 
 const std = @import("std");
-
-/// Verify a type implements the Renderer interface
-///
-/// Required methods:
-///   - deinit(*Self) void
-///   - renderScene or render (at least one)
-///
-/// NOTE: The render/renderScene flexibility is intentional. Platform renderers
-/// have legitimately different signatures:
-///   - Metal: render(clear_color), renderScene(scene, clear_color) — has internal scene state
-///   - Vulkan: render(scene) — stateless, scene passed in
-///   - Web: render(scene, viewport_w, viewport_h, r, g, b, a) — needs viewport info
-///
-/// The verification only checks that *some* render capability exists, not the
-/// exact signature, because platform-specific calling code handles the differences.
-///
-/// Optional methods (platform-dependent):
-///   - resize(*Self, ...) - native platforms; web handles resize via canvas
-///   - beginFrame/endFrame - if using explicit frame boundaries
-pub fn verifyRendererInterface(comptime T: type) void {
-    comptime {
-        // Must have deinit
-        assertHasDecl(T, "deinit", "Renderer");
-
-        // Must have either renderScene or render for rendering
-        if (!@hasDecl(T, "renderScene") and !@hasDecl(T, "render")) {
-            @compileError("Renderer must have renderScene or render method");
-        }
-
-        // Note: resize is optional - web platforms handle resize via canvas/viewport
-        // Native platforms (Metal, Vulkan) should have resize
-    }
-}
 
 /// Verify a type implements the SvgRasterizer interface (struct-based)
 ///
@@ -87,18 +52,6 @@ pub fn verifySvgRasterizerModule(comptime M: type) void {
     }
 }
 
-/// Verify a type implements the ImageLoader interface
-///
-/// Required methods:
-///   - loadFromMemory or decode
-pub fn verifyImageLoaderInterface(comptime T: type) void {
-    comptime {
-        if (!@hasDecl(T, "loadFromMemory") and !@hasDecl(T, "decode")) {
-            @compileError("ImageLoader must have loadFromMemory or decode method");
-        }
-    }
-}
-
 /// Verify a module implements the ImageLoader interface (module-level functions)
 ///
 /// Required exports:
@@ -115,18 +68,6 @@ pub fn verifyImageLoaderModule(comptime M: type) void {
         // Required type exports
         assertHasDecl(M, "DecodedImage", "ImageLoader module");
         assertHasDecl(M, "LoadError", "ImageLoader module");
-    }
-}
-
-/// Verify a type implements the FileDialog interface
-///
-/// Required methods:
-///   - promptForPaths(*Self, Allocator, PathPromptOptions) ?PathPromptResult
-///   - promptForNewPath(*Self, Allocator, SavePromptOptions) ?[]const u8
-pub fn verifyFileDialogInterface(comptime T: type) void {
-    comptime {
-        assertHasDecl(T, "promptForPaths", "FileDialog");
-        assertHasDecl(T, "promptForNewPath", "FileDialog");
     }
 }
 
@@ -150,31 +91,6 @@ fn assertHasDecl(comptime T: type, comptime name: []const u8, comptime interface
 test "interface verification helpers compile" {
     // These are comptime-only, just verify the module compiles
     _ = assertHasDecl;
-}
-
-test "verifyRendererInterface with mock" {
-    const MockRenderer = struct {
-        pub fn deinit(_: *@This()) void {}
-        pub fn resize(_: *@This(), _: u32, _: u32, _: f64) void {}
-        pub fn render(_: *@This()) void {}
-    };
-
-    // Should not cause compile error
-    comptime {
-        verifyRendererInterface(MockRenderer);
-    }
-}
-
-test "verifyRendererInterface with web-style mock (no resize)" {
-    const MockWebRenderer = struct {
-        pub fn deinit(_: *@This()) void {}
-        pub fn render(_: *@This()) void {}
-    };
-
-    // Should not cause compile error - resize is optional for web
-    comptime {
-        verifyRendererInterface(MockWebRenderer);
-    }
 }
 
 test "verifySvgRasterizerModule with mock" {
@@ -232,22 +148,6 @@ test "verifySvgRasterizerModule with mock" {
     // Should not cause compile error
     comptime {
         verifySvgRasterizerModule(MockSvgModule);
-    }
-}
-
-test "verifyFileDialogInterface with mock" {
-    const MockFileDialog = struct {
-        pub fn promptForPaths(_: *@This(), _: std.mem.Allocator, _: anytype) ?void {
-            return null;
-        }
-        pub fn promptForNewPath(_: *@This(), _: std.mem.Allocator, _: anytype) ?[]const u8 {
-            return null;
-        }
-    };
-
-    // Should not cause compile error
-    comptime {
-        verifyFileDialogInterface(MockFileDialog);
     }
 }
 

@@ -12,8 +12,6 @@ const constants = @import("constants.zig");
 const element_mod = @import("element.zig");
 const fingerprint_mod = @import("fingerprint.zig");
 const types = @import("types.zig");
-const layout = @import("../layout/layout.zig");
-const engine_mod = @import("../layout/engine.zig");
 
 pub const Element = element_mod.Element;
 pub const Fingerprint = fingerprint_mod.Fingerprint;
@@ -390,7 +388,6 @@ pub const Tree = struct {
 
         // Initialize element
         self.elements[index] = .{
-            .layout_id = config.layout_id,
             .fingerprint = fp,
             .role = config.role,
             .name = config.name,
@@ -619,68 +616,15 @@ pub const Tree = struct {
         return self.element_count == 0;
     }
 
-    /// Find element by layout_id (for resolving relationship IDs).
-    /// Returns element index if found, null otherwise.
-    /// Note: This is O(n) - use sparingly, primarily for relationship resolution.
-    pub fn findElementByLayoutId(self: *const Self, layout_id: layout.LayoutId) ?u16 {
-        std.debug.assert(self.element_count <= constants.MAX_ELEMENTS);
-
-        if (layout_id.id == 0) return null;
-
-        const elem_count = self.element_count;
-        for (0..elem_count) |i| {
-            if (self.elements[i].layout_id.id == layout_id.id) {
-                return @intCast(i);
-            }
-        }
-        return null;
-    }
-
-    /// Find element by string ID (convenience wrapper).
-    /// Converts string to LayoutId and searches.
-    pub fn findElementByStringId(self: *const Self, id: []const u8) ?u16 {
-        std.debug.assert(self.element_count <= constants.MAX_ELEMENTS);
-
-        if (id.len == 0) return null;
-
-        const layout_id = layout.LayoutId.fromString(id);
-        return self.findElementByLayoutId(layout_id);
-    }
-
     /// Check if tree has capacity for more elements
     pub fn hasCapacity(self: *const Self) bool {
         std.debug.assert(self.element_count <= constants.MAX_ELEMENTS);
         return self.element_count < constants.MAX_ELEMENTS;
     }
-
-    // =========================================================================
-    // Layout Sync
-    // =========================================================================
-
-    /// Sync bounds from layout engine to accessibility elements.
-    /// Call after layout computation, before platform sync.
-    pub fn syncBounds(self: *Self, layout_engine: *const engine_mod.LayoutEngine) void {
-        // Assertion: element count is bounded
-        std.debug.assert(self.element_count <= constants.MAX_ELEMENTS);
-
-        const elem_count = self.element_count;
-        for (0..elem_count) |i| {
-            const elem = &self.elements[i];
-
-            // Skip elements without layout_id
-            if (elem.layout_id.id == 0) continue;
-
-            // Look up bounds from layout engine
-            if (layout_engine.getBoundingBox(elem.layout_id.id)) |bounds| {
-                elem.bounds = bounds;
-            }
-        }
-    }
 };
 
 /// Configuration for pushElement()
 pub const ElementConfig = struct {
-    layout_id: layout.LayoutId = layout.LayoutId.none,
     role: types.Role,
     name: ?[]const u8 = null,
     description: ?[]const u8 = null,
@@ -1198,50 +1142,6 @@ test "non-live regions do not auto-announce" {
 
     // Regular elements don't auto-announce
     try std.testing.expectEqual(@as(u8, 0), tree.announcement_count);
-}
-
-test "findElementByLayoutId returns correct index" {
-    const tree = try createTestTree();
-    defer destroyTestTree(tree);
-    tree.beginFrame();
-
-    const label_id = layout.LayoutId.fromString("name-label");
-    const input_id = layout.LayoutId.fromString("name-input");
-
-    // Create label element first
-    const label_idx = tree.pushElement(.{
-        .layout_id = label_id,
-        .role = .paragraph,
-        .name = "Name:",
-    });
-    tree.popElement();
-
-    // Create input element with relationship to label
-    const input_idx = tree.pushElement(.{
-        .layout_id = input_id,
-        .role = .textbox,
-        .name = "Name input",
-        .labelled_by = label_idx,
-    });
-    tree.popElement();
-
-    tree.endFrame();
-
-    // Verify findElementByLayoutId works
-    try std.testing.expectEqual(label_idx, tree.findElementByLayoutId(label_id));
-    try std.testing.expectEqual(input_idx, tree.findElementByLayoutId(input_id));
-
-    // Verify findElementByStringId works
-    try std.testing.expectEqual(label_idx, tree.findElementByStringId("name-label"));
-    try std.testing.expectEqual(input_idx, tree.findElementByStringId("name-input"));
-
-    // Verify relationship is set correctly
-    const input_elem = tree.getElement(input_idx.?).?;
-    try std.testing.expectEqual(label_idx, input_elem.labelled_by);
-
-    // Non-existent ID returns null
-    try std.testing.expectEqual(@as(?u16, null), tree.findElementByStringId("non-existent"));
-    try std.testing.expectEqual(@as(?u16, null), tree.findElementByLayoutId(layout.LayoutId.none));
 }
 
 test "relationship fields propagate correctly" {

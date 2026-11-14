@@ -18,9 +18,6 @@ pub const Element = struct {
     // Identity
     // =========================================================================
 
-    /// Links to visual element (for bounds lookup)
-    layout_id: layout.LayoutId,
-
     /// Stable identity across frames
     fingerprint: fingerprint_mod.Fingerprint,
 
@@ -215,16 +212,11 @@ pub const Element = struct {
     }
 
     /// Create element with minimal required fields
-    pub fn init(
-        layout_id: layout.LayoutId,
-        fp: fingerprint_mod.Fingerprint,
-        role: types.Role,
-    ) Self {
+    pub fn init(fp: fingerprint_mod.Fingerprint, role: types.Role) Self {
         std.debug.assert(fp.isValid() or role == .presentation or role == .none);
         std.debug.assert(@backingInt(role) <= @backingInt(types.Role.none));
 
         return Self{
-            .layout_id = layout_id,
             .fingerprint = fp,
             .role = role,
         };
@@ -244,7 +236,7 @@ comptime {
 test "element accessibility check" {
     const fp = fingerprint_mod.compute(.button, "Test", null, 0);
 
-    var elem = Element.init(layout.LayoutId.none, fp, .button);
+    var elem = Element.init(fp, .button);
     try std.testing.expect(elem.isAccessible());
 
     // Presentation role is not accessible
@@ -260,7 +252,7 @@ test "element accessibility check" {
 test "element focusability" {
     const fp = fingerprint_mod.compute(.button, "Test", null, 0);
 
-    var elem = Element.init(layout.LayoutId.none, fp, .button);
+    var elem = Element.init(fp, .button);
     try std.testing.expect(elem.isFocusable());
 
     // Disabled elements are not focusable
@@ -281,7 +273,6 @@ test "element content hash stability" {
     const fp = fingerprint_mod.compute(.button, "Submit", null, 0);
 
     const elem1 = Element{
-        .layout_id = layout.LayoutId.none,
         .fingerprint = fp,
         .role = .button,
         .name = "Submit",
@@ -289,7 +280,6 @@ test "element content hash stability" {
     };
 
     const elem2 = Element{
-        .layout_id = layout.LayoutId.none,
         .fingerprint = fp,
         .role = .button,
         .name = "Submit",
@@ -306,7 +296,7 @@ test "element content hash stability" {
 
     // A caret or selection move with the same text re-syncs the field, so
     // VoiceOver hears about it; gaining the caret at offset 0 counts too.
-    var field = Element.init(layout.LayoutId.none, fp, .textbox);
+    var field = Element.init(fp, .textbox);
     field.value = "milk";
     var caret = field;
     caret.selection = .{ .start = 0, .end = 0 };
@@ -319,11 +309,11 @@ test "element content hash stability" {
 test "element content hash ignores bounds" {
     const fp = fingerprint_mod.compute(.button, "Test", null, 0);
 
-    var elem1 = Element.init(layout.LayoutId.none, fp, .button);
+    var elem1 = Element.init(fp, .button);
     elem1.name = "Test";
     elem1.bounds = .{ .x = 0, .y = 0, .width = 100, .height = 50 };
 
-    var elem2 = Element.init(layout.LayoutId.none, fp, .button);
+    var elem2 = Element.init(fp, .button);
     elem2.name = "Test";
     elem2.bounds = .{ .x = 200, .y = 300, .width = 100, .height = 50 };
 
@@ -334,7 +324,7 @@ test "element content hash ignores bounds" {
 test "element live region detection" {
     const fp = fingerprint_mod.compute(.group, "Test", null, 0);
 
-    var elem = Element.init(layout.LayoutId.none, fp, .group);
+    var elem = Element.init(fp, .group);
     try std.testing.expect(!elem.isLiveRegion());
 
     elem.live = .polite;
@@ -352,7 +342,7 @@ test "element live region detection" {
 test "element container check" {
     const fp = fingerprint_mod.compute(.button, "Test", null, 0);
 
-    var elem = Element.init(layout.LayoutId.none, fp, .button);
+    var elem = Element.init(fp, .button);
     try std.testing.expect(!elem.isContainer());
 
     elem.role = .group;

@@ -224,7 +224,6 @@ test {
 
         // Layout.
         _ = lay.LayoutEngine;
-        _ = lay.LayoutId;
         _ = lay.LayoutConfig;
 
         // Platform / runtime / text.

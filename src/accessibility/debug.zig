@@ -523,15 +523,12 @@ test "validation passes for valid tree" {
 test "format element" {
     var buf: [256]u8 = undefined;
 
-    const layout_mod = @import("../layout/layout.zig");
-
     const elem = Element{
         .role = .button,
         .name = "Click me",
         .fingerprint = Fingerprint.INVALID,
         .state = .{},
         .live = .off,
-        .layout_id = layout_mod.LayoutId.fromString("test"),
         .description = null,
         .value = null,
         .heading_level = .none,

@@ -4,7 +4,6 @@ const std = @import("std");
 
 // Sub-modules
 pub const types = @import("types.zig");
-pub const layout_id = @import("layout_id.zig");
 pub const arena = @import("arena.zig");
 pub const engine = @import("engine.zig");
 pub const sizing_pass = @import("sizing_pass.zig");
@@ -32,7 +31,6 @@ pub const TextConfig = types.TextConfig;
 pub const BoundingBox = types.BoundingBox;
 pub const AttachPoint = types.AttachPoint;
 
-pub const LayoutId = layout_id.LayoutId;
 pub const LayoutArena = arena.LayoutArena;
 
 // Element types from engine (no separate element.zig needed)
