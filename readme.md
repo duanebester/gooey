@@ -1,8 +1,8 @@
 # Gooey
 
 A GPU-accelerated UI framework for Zig. It targets macOS (Metal), Linux (Wayland with
-Vulkan or a CPU renderer, or the kernel framebuffer), Windows (Win32 with Vulkan), and the
-browser (WASM with WebGPU).
+Vulkan or a CPU renderer, or the kernel framebuffer), Windows (Win32 with Vulkan or
+Direct3D 11), and the browser (WASM with WebGPU).
 
 Join the [Gooey discord](https://discord.gg/bmzAZnZJyw)
 
@@ -816,11 +816,13 @@ Wayland window renders at a reduced scale.
 
 ### Windows
 
-Win32 windows, the shared Vulkan renderer, DirectWrite text, WIC images, native file
+Win32 windows, the shared Vulkan renderer or Direct3D 11 (`-Dwindows-renderer=dx11`, which
+falls back to WARP without a hardware driver), DirectWrite text, WIC images, native file
 dialogs, IME, and UI Automation. 64-bit only. See [docs/windows-port.md](docs/windows-port.md).
 
 ```bash
 zig build run-todo
+zig build run-todo -Dwindows-renderer=dx11
 zig build test-windows
 ```
 

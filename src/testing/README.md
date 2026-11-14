@@ -4,76 +4,70 @@ Testing utilities and patterns for Gooey applications.
 
 ## Overview
 
-The `testing` module provides mock implementations and helpers for testing Gooey code
-without platform dependencies. This enables fast, isolated unit tests that don't require
-a display, GPU, clipboard access, or file dialogs.
+The `testing` module holds the headless backend the core runs on in tests, record dumps for
+goldens, two leaf mocks, and assertion helpers. It needs no display, GPU, clipboard, or file
+dialogs.
 
 ```zig
 const gooey = @import("gooey");
 const testing = gooey.testing;
 ```
 
-> **Note:** The testing module is only available when `@import("builtin").is_test` is true.
+> **Note:** The testing module is only available when `@import("builtin").is_test` is true,
+> or in the goldens' synthetic-text build.
+
+- `NullRenderer` and `test_backend`: the core's `Renderer` for tests, which records packed
+  frames instead of drawing.
+- `record_dump`: text dumps of packed frames, hit records, and accessibility trees.
+- `MockSvgRasterizer`: simulates SVG rasterization (CoreGraphics, Cairo, Canvas).
+- `MockFontFace`: configurable font metrics (CoreText, FreeType, browser fonts).
 
 ---
 
-## Available Mocks
+## Testing an app headless
 
-| Mock                | Purpose                         | Platform Dependency Replaced       |
-| ------------------- | ------------------------------- | ---------------------------------- |
-| `MockRenderer`      | Track render calls              | Metal, Vulkan, WebGPU              |
-| `MockSvgRasterizer` | Simulate SVG rasterization      | CoreGraphics, Cairo, Canvas        |
-| `MockFontFace`      | Configurable font metrics       | CoreText, FreeType, Browser fonts  |
-
----
-
-## MockRenderer
-
-Tracks rendering method calls without any GPU operations.
-
-### Basic Usage
+`App.initHeadless` reserves an app without a platform window, on `TestBackend`. A test
+pushes input into the window's queue exactly as a platform does, runs one tick per frame,
+and reads the rendered frame:
 
 ```zig
-test "render pipeline" {
-    var renderer = try testing.MockRenderer.init(testing.allocator);
-    defer renderer.deinit();
+test "Add appends a todo" {
+    const app = try std.testing.allocator.create(App);
+    defer std.testing.allocator.destroy(app);
+    try app.initHeadless(std.testing.allocator, std.testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
 
-    // Simulate a frame
-    try renderer.beginFrame(800, 600, 2.0);
-    renderer.renderScene(&my_scene);
-    renderer.endFrame();
+    app.tick(16_666_667);
+    // The rendered frame holds the hit records and the accessibility tree, with
+    // each node's bounds; a test finds what to click there.
+    const rendered = app.window.rendered();
+    try std.testing.expect(rendered.a11y_count > 0);
 
-    // Verify
-    try std.testing.expectEqual(@as(u32, 1), renderer.begin_frame_count);
-    try std.testing.expectEqual(@as(u32, 1), renderer.render_scene_count);
-    try std.testing.expect(renderer.isFrameBalanced());
+    const press: gooey.input.MouseEvent = .{
+        .position = .{ .x = 276, .y = 106 }, // the Add button's centre
+        .button = .left,
+        .click_count = 1,
+        .modifiers = .{},
+    };
+    app.window.queue.push(.{ .input = .{ .mouse_down = press } });
+    app.window.queue.push(.{ .input = .{ .mouse_up = press } });
+    app.tick(33_333_334);
+    try std.testing.expectEqual(@as(u32, 1), app.state.count);
 }
 ```
 
-### Simulating Failures
+Every tick after init runs under the lifecycle guard, so an allocation through Gooey's
+allocator panics. To also check what was drawn, set `app.window.presenter` to a
+`NullRenderer`; `src/testing/goldens/core.zig` does this and dumps each frame with
+`record_dump`.
 
-```zig
-test "handle render failure" {
-    var renderer = try testing.MockRenderer.init(testing.allocator);
-    defer renderer.deinit();
+## Goldens
 
-    renderer.should_fail_begin_frame = true;
-
-    const result = renderer.beginFrame(800, 600, 1.0);
-    try std.testing.expectError(MockRenderer.Error.MockFailure, result);
-}
-```
-
-### Tracked State
-
-| Field                       | Description                            |
-| --------------------------- | -------------------------------------- |
-| `begin_frame_count`         | Number of `beginFrame` calls           |
-| `end_frame_count`           | Number of `endFrame` calls             |
-| `render_scene_count`        | Number of `renderScene`/`render` calls |
-| `resize_count`              | Number of `resize` calls               |
-| `last_width`, `last_height` | Last dimensions passed                 |
-| `last_scale`                | Last scale factor passed               |
+`src/testing/goldens/` replays scripted input traces (`traces.zig`) against counter, todo,
+and actions on the core and compares each frame's packed records, hit records, and
+accessibility tree with `core_*.txt`. They run in `zig build test`; `zig build goldens`
+rewrites the files after an intended change. `legacy_*.txt` are the 0.3.1 captures, which
+`compare.zig` checks the core's output against through its normalisation rules.
 
 ---
 
@@ -270,95 +264,31 @@ test "handle missing glyph" {
 
 ### Geometry Assertions
 
-Floating-point comparisons with tolerance (0.001):
+Floating-point comparisons with tolerance (0.001), over the geometry types in
+`gooey.internals.geometry`:
 
 ```zig
-test "color calculation" {
-    const actual = compute_color();
-    const expected = gooey.Color.rgb(1.0, 0.5, 0.0);
-
-    try testing.expectColorEqual(expected, actual);
-}
+const geometry = gooey.internals.geometry;
 
 test "layout bounds" {
-    const actual = element.getBounds();
-    const expected = gooey.BoundsF.init(10.0, 20.0, 100.0, 200.0);
+    const actual = computeBounds();
+    const expected = geometry.BoundsF.init(10.0, 20.0, 100.0, 200.0);
 
     try testing.expectBoundsEqual(expected, actual);
 }
-
-test "position" {
-    const actual = widget.getPosition();
-    const expected = gooey.PointF{ .x = 50.0, .y = 75.0 };
-
-    try testing.expectPointEqual(expected, actual);
-}
-
-test "size" {
-    const actual = widget.getSize();
-    const expected = gooey.SizeF{ .width = 100.0, .height = 50.0 };
-
-    try testing.expectSizeEqual(expected, actual);
-}
 ```
 
----
-
-## Patterns
-
-### Test Isolation with Reset
-
-Use `reset()` to clear state between test cases in parameterized tests:
-
-```zig
-test "multiple scenarios" {
-    var renderer = try testing.MockRenderer.init(testing.allocator);
-    defer renderer.deinit();
-
-    // Scenario 1
-    try renderer.beginFrame(800, 600, 1.0);
-    renderer.endFrame();
-    try std.testing.expectEqual(@as(u32, 1), renderer.begin_frame_count);
-
-    renderer.reset();
-
-    // Scenario 2 (counters back to 0)
-    try renderer.beginFrame(1920, 1080, 2.0);
-    renderer.endFrame();
-    try std.testing.expectEqual(@as(u32, 1), renderer.begin_frame_count);
-}
-```
-
-### Verifying Call Sequences
-
-```zig
-test "proper frame lifecycle" {
-    var renderer = try testing.MockRenderer.init(testing.allocator);
-    defer renderer.deinit();
-
-    run_app_frame(&renderer);
-
-    // Verify balanced begin/end
-    try std.testing.expect(renderer.isFrameBalanced());
-
-    // Verify render was called
-    try std.testing.expect(renderer.totalRenderCalls() > 0);
-}
-```
+`expectColorEqual`, `expectPointEqual`, and `expectSizeEqual` work the same way on
+`gooey.Color`, `geometry.PointF`, and `geometry.SizeF`.
 
 ---
 
 ## Interface Verification
 
-All mocks include compile-time interface verification to ensure they match
-the real implementation signatures:
+The SVG mock verifies its signatures against the real rasterizer at compile time, so it
+fails to compile when the interface changes:
 
 ```zig
-// In mock_renderer.zig
-comptime {
-    interface_verify.verifyRendererInterface(@This());
-}
-
 // In mock_svg_rasterizer.zig
 comptime {
     interface_verify.verifySvgRasterizerInterface(@This());
@@ -366,8 +296,8 @@ comptime {
 }
 ```
 
-If the real interface changes, the mocks will fail to compile, ensuring
-test code stays in sync.
+Renderers, `NullRenderer` included, are checked the same way by `backend.verifyRenderer`
+(`src/core/backend.zig`, contract §9).
 
 ---
 
@@ -380,8 +310,8 @@ zig build test
 # Run with summary
 zig build test --summary all
 
-# Run specific test file
-zig test src/testing/mock_renderer.zig
+# Rewrite the goldens after an intended change
+zig build goldens
 ```
 
 ---

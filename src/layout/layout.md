@@ -2,6 +2,12 @@
 
 A Clay-inspired declarative layout engine for building UI hierarchies with flexbox-style sizing and positioning.
 
+This is internal machinery (`gooey.internals.layout`), not app API: apps lay out with
+`ui.box` and `ui.Style` (`docs/v0.4.0-core-contract.md` §1). The core (`src/core/cx.zig`)
+declares one element per node with no `LayoutId`, and reads each node's bounds from the
+engine's element list by index (`src/core/emit.zig`). `LayoutId`, `getBoundingBox`, and
+`getContentBox` below are used only by the engine's own tests.
+
 ## Overview
 
 The layout system uses an immediate-mode API where you declare your UI structure each frame:
@@ -25,7 +31,7 @@ const Color = layout.Color;
 const CornerRadius = layout.CornerRadius;
 
 // Initialize once
-var engine = LayoutEngine.init(allocator);
+var engine = try LayoutEngine.init(allocator);
 defer engine.deinit();
 
 // Each frame:
