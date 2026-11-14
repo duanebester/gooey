@@ -31,8 +31,8 @@ const LayoutConfig = types.LayoutConfig;
 const BoundingBox = types.BoundingBox;
 const FloatingConfig = types.FloatingConfig;
 
-const MAX_FLOATING_ROOTS = engine_mod.MAX_FLOATING_ROOTS;
-const MAX_OPEN_DEPTH = engine_mod.MAX_OPEN_DEPTH;
+/// The explicit stack's ceiling; `sizing_pass.zig` explains the choice.
+const box_depth_ceiling = @import("../core/limits.zig").box_depth_ceiling;
 
 // ============================================================================
 // Phase 3: Compute positions (top-down)
@@ -82,7 +82,7 @@ fn positionSubtree(engine: *LayoutEngine, root: u32) void {
     }
 
     // A frame per open level: the open stack bounds the tree's depth.
-    var stack: [MAX_OPEN_DEPTH]PositionFrame = undefined;
+    var stack: [box_depth_ceiling]PositionFrame = undefined;
     stack[0] = root_plan;
     var depth: u32 = 1;
     var open_count: u32 = 1;
@@ -90,7 +90,7 @@ fn positionSubtree(engine: *LayoutEngine, root: u32) void {
         std.debug.assert(open_count <= engine.elements.len()); // Each parent once.
         var opened: PositionFrame = undefined;
         if (placeSiblings(engine, &stack[depth - 1], &opened)) {
-            std.debug.assert(depth < stack.len);
+            std.debug.assert(depth < engine.capacity.box_depth_max);
             stack[depth] = opened;
             depth += 1;
             open_count += 1;
@@ -363,7 +363,7 @@ fn crossAxisOffset(
 /// sizing pass for the floating subtree so nested layouts see the parent's
 /// bbox as their constraint, then assigns concrete coordinates.
 pub fn computeFloatingPositions(engine: *LayoutEngine) !void {
-    std.debug.assert(engine.floating_roots.len <= MAX_FLOATING_ROOTS);
+    std.debug.assert(engine.floating_roots.len <= engine.capacity.floating_count_max);
 
     for (engine.floating_roots.slice()) |float_idx| {
         const elem = engine.elements.get(float_idx);

@@ -25,6 +25,10 @@ const engine_mod = layout.engine;
 const types = layout.types;
 
 const LayoutEngine = engine_mod.LayoutEngine;
+
+/// The engine holds the `standard` profile's capacities, as an app would; the
+/// caps below keep every tree well inside them.
+const fuzz_capacity = layout.LayoutCapacity.fromLimits(&gooey.ResourceLimits.standard);
 const Sizing = types.Sizing;
 const SizingAxis = types.SizingAxis;
 const Padding = types.Padding;
@@ -56,9 +60,8 @@ const FUZZ_VIEWPORT_MAX: u32 = 4096;
 pub fn fuzzLayoutTree(_: void, smith: *std.testing.Smith) anyerror!void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const gpa = std.testing.allocator;
 
-    var engine = try LayoutEngine.init(gpa);
+    var engine = try LayoutEngine.init(&fuzz_capacity);
     defer engine.deinit();
     engine.setMeasureTextFn(fuzzMeasureText, null);
 
@@ -82,9 +85,7 @@ pub fn fuzzLayoutTree(_: void, smith: *std.testing.Smith) anyerror!void {
 /// Build a random tree of word + whitespace sequences for the text
 /// wrapping pass. Skinny viewport widths force wrapping to engage.
 pub fn fuzzTextWrapping(_: void, smith: *std.testing.Smith) anyerror!void {
-    const gpa = std.testing.allocator;
-
-    var engine = try LayoutEngine.init(gpa);
+    var engine = try LayoutEngine.init(&fuzz_capacity);
     defer engine.deinit();
     engine.setMeasureTextFn(fuzzMeasureText, null);
 
@@ -123,7 +124,7 @@ const TreeState = struct {
 
 /// Emit a container with random sizing + 0..N children, recursing up to
 /// `MAX_FUZZ_DEPTH`. Caps total element count via `TreeState` so a
-/// pathological Smith input can't blow `MAX_ELEMENTS_PER_FRAME`.
+/// pathological Smith input can't exhaust the engine's elements.
 fn emitContainer(engine: *LayoutEngine, state: *TreeState, depth: u32) anyerror!void {
     if (state.elements_emitted >= MAX_FUZZ_ELEMENTS) return;
     if (depth >= MAX_FUZZ_DEPTH) return;

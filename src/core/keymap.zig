@@ -15,7 +15,7 @@
 //! does not reach `on_key` or the IME.
 //!
 //! Work per key press: one pass over at most `keymap.len` bindings, each
-//! checking at most the path's `box_depth_max + 1` records for its context.
+//! checking at most the path's `build.box_depth_max` records for its context.
 
 const std = @import("std");
 const element = @import("element.zig");

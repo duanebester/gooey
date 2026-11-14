@@ -15,14 +15,15 @@ const types = @import("types.zig");
 
 const LayoutEngine = engine_mod.LayoutEngine;
 const ElementDeclaration = engine_mod.ElementDeclaration;
-const FixedCapacityArray = engine_mod.FixedCapacityArray;
+const BoundedList = engine_mod.BoundedList;
 const WordInfo = engine_mod.WordInfo;
 const TextMeasurement = engine_mod.TextMeasurement;
-const MAX_ELEMENTS_PER_FRAME = engine_mod.MAX_ELEMENTS_PER_FRAME;
-const MAX_OPEN_DEPTH = engine_mod.MAX_OPEN_DEPTH;
-const MAX_FLOATING_ROOTS = engine_mod.MAX_FLOATING_ROOTS;
-const MAX_WORDS_PER_TEXT = engine_mod.MAX_WORDS_PER_TEXT;
-const MAX_LINES_PER_TEXT = engine_mod.MAX_LINES_PER_TEXT;
+const LayoutCapacity = engine_mod.LayoutCapacity;
+const ResourceLimits = @import("../core/limits.zig").ResourceLimits;
+
+/// Every engine here holds the `standard` profile's capacities, as an app on
+/// that profile would; there is no unbudgeted engine.
+const test_capacity = LayoutCapacity.fromLimits(&ResourceLimits.standard);
 
 const Sizing = types.Sizing;
 const SizingAxis = types.SizingAxis;
@@ -49,7 +50,7 @@ fn boundingBox(engine: *const LayoutEngine, index: u32) types.BoundingBox {
 // ============================================================================
 
 test "basic layout" {
-    var engine = try LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
 
     engine.beginFrame(800, 600);
@@ -69,7 +70,7 @@ test "basic layout" {
 test "root fill follows viewport resize" {
     // Goal: a fill-window root must use fresh viewport dimensions every frame.
     // Methodology: lay out the same root before and after a viewport resize.
-    var engine = try LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
 
     engine.beginFrame(320, 240);
@@ -102,7 +103,7 @@ test "root fill follows viewport resize" {
 }
 
 test "nested layout" {
-    var engine = try LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
 
     engine.beginFrame(800, 600);
@@ -129,7 +130,7 @@ test "nested layout" {
 }
 
 test "shrink behavior" {
-    var engine = try LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
 
     engine.beginFrame(200, 100); // Small viewport
@@ -174,7 +175,7 @@ test "a grow scroll container's children overflow it instead of shrinking" {
     // along the scroll axis, as every other sizing path does. Methodology: a
     // 100 px tall viewport holds a vertical scroll container whose box child
     // fits two 80 px children; the box must keep its 160 px.
-    var engine = try LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
 
     engine.beginFrame(200, 100);
@@ -201,7 +202,7 @@ test "a grow scroll container's children overflow it instead of shrinking" {
 }
 
 test "aspect ratio" {
-    var engine = try LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
 
     engine.beginFrame(800, 600);
@@ -223,7 +224,7 @@ test "aspect ratio" {
 }
 
 test "percent with min/max" {
-    var engine = try LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
 
     engine.beginFrame(800, 600);
@@ -247,7 +248,7 @@ test "percent with min/max" {
 }
 
 test "floating positioning" {
-    var engine = try LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
 
     engine.beginFrame(800, 600);
@@ -279,7 +280,7 @@ test "floating positioning" {
 }
 
 test "floating elements don't affect parent sizing or sibling layout" {
-    var engine = try LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
 
     engine.beginFrame(800, 600);
@@ -335,7 +336,7 @@ test "floating elements don't affect parent sizing or sibling layout" {
 }
 
 test "text wrapping creates multiple lines" {
-    var engine = try LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
 
     // Mock text measurement: each character is 10px wide, height is font_size
@@ -388,7 +389,7 @@ test "text wrapping creates multiple lines" {
 }
 
 test "text wrapping with newlines" {
-    var engine = try LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
 
     const mockMeasure = struct {
@@ -431,7 +432,7 @@ test "text wrapping with newlines" {
 }
 
 test "propagateHeightChange updates fit-content parent" {
-    var engine = try LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
 
     const mockMeasure = struct {
@@ -487,7 +488,7 @@ test "propagateHeightChange updates fit-content parent" {
 }
 
 test "propagateHeightChange stops at fixed-height parent" {
-    var engine = try LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
 
     const mockMeasure = struct {
@@ -556,7 +557,7 @@ test "wrapped text grows its floating panel but not the panel's host" {
     // Methodology: both texts wrap "abcdefghij abcdefghij" (210 px at 10 px a
     // character) to two 20 px lines in 100 px. Without the fix the panel stays
     // one line tall (40 px) and the host counts the panel in its height (80 px).
-    var engine = try LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
     engine.setMeasureTextFn(measureTenPixelsPerCharacter, null);
     engine.beginFrame(800, 600);
@@ -601,7 +602,7 @@ fn measureTenPixelsPerCharacter(
 }
 
 test "space_between distributes children evenly" {
-    var engine = try LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
 
     engine.beginFrame(800, 600);
@@ -651,7 +652,7 @@ test "space_between distributes children evenly" {
 }
 
 test "space_around distributes space around children" {
-    var engine = try LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
 
     engine.beginFrame(800, 600);
@@ -701,7 +702,7 @@ test "space_around distributes space around children" {
 }
 
 test "space_evenly distributes space evenly" {
-    var engine = try LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
 
     engine.beginFrame(800, 600);
@@ -751,7 +752,7 @@ test "space_evenly distributes space evenly" {
 }
 
 test "space_between with vertical layout" {
-    var engine = try LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
 
     engine.beginFrame(800, 600);
@@ -792,7 +793,7 @@ test "space_between with vertical layout" {
 }
 
 test "space_between with single child stays at start" {
-    var engine = try LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
 
     engine.beginFrame(800, 600);
@@ -893,7 +894,7 @@ test "wrapped text re-measures the whole string on every frame" {
 
     var recorder = MeasureRecorder{ .whole_string_len = @intCast(message.len) };
 
-    var engine = try LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
 
     engine.setMeasureTextFn(MeasureRecorder.measure, &recorder);
@@ -942,7 +943,7 @@ test "unwrapped text depends on the whole-string measurement" {
 
     var recorder = MeasureRecorder{ .whole_string_len = @intCast(message.len) };
 
-    var engine = try LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
 
     engine.setMeasureTextFn(MeasureRecorder.measure, &recorder);

@@ -119,7 +119,6 @@ fn buildFrame(comptime App: type, window: *Window) void {
         window.frame_number,
         @errorName(err),
     });
-    window.noteLayoutArenaUse();
 
     window.setPhase(.layout, .emit);
     frame_trace.mark(&window.trace, window.frame_number, .emit);

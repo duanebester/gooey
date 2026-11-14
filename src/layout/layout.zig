@@ -40,6 +40,7 @@ pub const ElementType = engine.ElementType;
 pub const TextData = engine.TextData;
 
 pub const LayoutEngine = engine.LayoutEngine;
+pub const LayoutCapacity = engine.LayoutCapacity;
 pub const MeasureTextFn = engine.MeasureTextFn;
 
 // Anchor for test discovery: refAllDecls walks the `pub const`s above,

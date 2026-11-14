@@ -6,9 +6,9 @@
 //! Run as executable: zig build bench
 //! Quick tests only:  zig build test (validates node counts, doesn't time)
 //!
-//! Current MAX_ELEMENTS_PER_FRAME = 16384. Only benchmarks that fit
-//! within this limit are included. For comparison with PanGui's full suite
-//! (which tests up to 100k+ nodes), consider increasing this limit.
+//! Every engine holds the `ceiling` profile's capacities (`bench_capacity`):
+//! 65,536 elements, 128 levels and 255 floating roots. Only benchmarks that
+//! fit within them are included; PanGui's full suite tests up to 100k+ nodes.
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -45,6 +45,10 @@ const time = struct {
 const layout = gooey.internals.layout;
 
 const LayoutEngine = layout.LayoutEngine;
+
+/// The framework ceiling, the profile `ResourceLimits` documents for stress
+/// tests and benchmarks; an app budget is at most this.
+const bench_capacity = layout.LayoutCapacity.fromLimits(&gooey.ResourceLimits.ceiling);
 const Sizing = layout.Sizing;
 const SizingAxis = layout.SizingAxis;
 const Padding = layout.Padding;
@@ -112,11 +116,11 @@ const BenchmarkResult = struct {
 // =============================================================================
 
 fn runBenchmark(
-    allocator: std.mem.Allocator,
     comptime name: []const u8,
     comptime buildFn: fn (*LayoutEngine) anyerror!u32,
 ) BenchmarkResult {
-    var engine = LayoutEngine.init(allocator) catch @panic("layout-bench: LayoutEngine.init OOM");
+    var engine = LayoutEngine.init(&bench_capacity) catch
+        @panic("layout-bench: LayoutEngine.init OOM");
     defer engine.deinit();
 
     // First pass to get node count for adaptive iterations
@@ -162,11 +166,11 @@ fn runBenchmark(
 /// together. This captures the cost of element creation, sibling linking, and ID tracking
 /// in addition to layout computation.
 fn runFullFrameBenchmark(
-    allocator: std.mem.Allocator,
     comptime name: []const u8,
     comptime buildFn: fn (*LayoutEngine) anyerror!u32,
 ) BenchmarkResult {
-    var engine = LayoutEngine.init(allocator) catch @panic("layout-bench: LayoutEngine.init OOM");
+    var engine = LayoutEngine.init(&bench_capacity) catch
+        @panic("layout-bench: LayoutEngine.init OOM");
     defer engine.deinit();
 
     // First pass to get node count for adaptive iterations
@@ -215,7 +219,7 @@ fn validateBenchmark(
     comptime buildFn: fn (*LayoutEngine) anyerror!u32,
     expected_count: u32,
 ) !void {
-    var engine = try LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(&bench_capacity);
     defer engine.deinit();
 
     engine.beginFrame(1000, 1000);
@@ -579,7 +583,7 @@ test "validate: percentage_and_ratio" {
 
 fn buildDeepNesting(engine: *LayoutEngine) !u32 {
     var count: u32 = 0;
-    const depth: u32 = 50; // Stay within MAX_OPEN_DEPTH (64)
+    const depth: u32 = 50; // Within every profile's `build.box_depth_max` (64).
 
     // Create nested containers
     for (0..depth) |_| {
@@ -774,17 +778,19 @@ test "validate: percentage_sizing" {
 }
 
 // =============================================================================
-// Benchmark: nested_floating_overlays (385 nodes, 256 floating)
+// Benchmark: nested_floating_overlays (382 nodes, 254 floating)
 // =============================================================================
-// Models 128 open modals, each with a nested dropdown and later modal content.
-// This saturates MAX_FLOATING_ROOTS and positions nested floats on two-thirds
-// of all elements without overflowing the fixed floating pool.
+// Models 127 open modals, each with a nested dropdown and later modal content.
+// This nearly saturates the ceiling's 255 floating roots (one per layer, a
+// `u8` fragment index) and positions nested floats on two-thirds of all
+// elements without overflowing the floating pool.
 
 fn buildNestedFloatingOverlays(engine: *LayoutEngine) !u32 {
-    const group_count: u32 = 128;
+    const group_count: u32 = 127;
     comptime {
         std.debug.assert(group_count > 0);
-        std.debug.assert(group_count * 2 == layout.engine.MAX_FLOATING_ROOTS);
+        std.debug.assert(group_count * 2 <= bench_capacity.floating_count_max);
+        std.debug.assert(group_count * 2 + 2 > bench_capacity.floating_count_max);
     }
 
     try engine.openElement(.{
@@ -813,7 +819,7 @@ fn buildNestedFloatingOverlays(engine: *LayoutEngine) !u32 {
 }
 
 test "validate: nested_floating_overlays" {
-    try validateBenchmark(buildNestedFloatingOverlays, 385);
+    try validateBenchmark(buildNestedFloatingOverlays, 382);
 }
 
 // =============================================================================
@@ -834,10 +840,6 @@ fn collect(reporter: *bench.Reporter, result: BenchmarkResult) void {
 }
 
 pub fn main(init: std.process.Init) !void {
-    var gpa: std.heap.DebugAllocator(.{}) = .init;
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
     var reporter = bench.Reporter.init("layout", init.io, init.minimal.args.vector);
 
     std.debug.print("\n", .{});
@@ -853,20 +855,20 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print(&@as([90]u8, @splat('-')) ++ "\n", .{});
 
     // Smallest first
-    collect(&reporter, runBenchmark(allocator, "nested_floating_overlays", buildNestedFloatingOverlays));
-    collect(&reporter, runBenchmark(allocator, "wide_no_wrap_simple_few", buildWideNoWrapSimpleFew));
-    collect(&reporter, runBenchmark(allocator, "deep_nesting", buildDeepNesting));
-    collect(&reporter, runBenchmark(allocator, "space_distribution", buildSpaceDistribution));
-    collect(&reporter, runBenchmark(allocator, "percentage_sizing", buildPercentageSizing));
-    collect(&reporter, runBenchmark(allocator, "shrink_overflow", buildShrinkOverflow));
-    collect(&reporter, runBenchmark(allocator, "expand_with_max_constraint", buildExpandWithMaxConstraint));
-    collect(&reporter, runBenchmark(allocator, "expand_with_min_constraint", buildExpandWithMinConstraint));
-    collect(&reporter, runBenchmark(allocator, "mixed_layout", buildMixedLayout));
+    collect(&reporter, runBenchmark("nested_floating_overlays", buildNestedFloatingOverlays));
+    collect(&reporter, runBenchmark("wide_no_wrap_simple_few", buildWideNoWrapSimpleFew));
+    collect(&reporter, runBenchmark("deep_nesting", buildDeepNesting));
+    collect(&reporter, runBenchmark("space_distribution", buildSpaceDistribution));
+    collect(&reporter, runBenchmark("percentage_sizing", buildPercentageSizing));
+    collect(&reporter, runBenchmark("shrink_overflow", buildShrinkOverflow));
+    collect(&reporter, runBenchmark("expand_with_max_constraint", buildExpandWithMaxConstraint));
+    collect(&reporter, runBenchmark("expand_with_min_constraint", buildExpandWithMinConstraint));
+    collect(&reporter, runBenchmark("mixed_layout", buildMixedLayout));
     // PanGui comparison benchmarks (larger node counts)
-    collect(&reporter, runBenchmark(allocator, "nested_vertical_stack", buildNestedVerticalStack));
-    collect(&reporter, runBenchmark(allocator, "percentage_and_ratio", buildPercentageAndRatio));
-    collect(&reporter, runBenchmark(allocator, "flex_expand_equal_weights", buildFlexExpandEqualWeights));
-    collect(&reporter, runBenchmark(allocator, "flex_expand_weights", buildFlexExpandWeights));
+    collect(&reporter, runBenchmark("nested_vertical_stack", buildNestedVerticalStack));
+    collect(&reporter, runBenchmark("percentage_and_ratio", buildPercentageAndRatio));
+    collect(&reporter, runBenchmark("flex_expand_equal_weights", buildFlexExpandEqualWeights));
+    collect(&reporter, runBenchmark("flex_expand_weights", buildFlexExpandWeights));
 
     std.debug.print(&@as([90]u8, @splat('=')) ++ "\n", .{});
 
@@ -883,25 +885,46 @@ pub fn main(init: std.process.Init) !void {
     });
     std.debug.print(&@as([90]u8, @splat('-')) ++ "\n", .{});
 
-    collect(&reporter, runFullFrameBenchmark(allocator, "full_nested_floating_overlays", buildNestedFloatingOverlays));
-    collect(&reporter, runFullFrameBenchmark(allocator, "full_wide_no_wrap_simple_few", buildWideNoWrapSimpleFew));
-    collect(&reporter, runFullFrameBenchmark(allocator, "full_deep_nesting", buildDeepNesting));
-    collect(&reporter, runFullFrameBenchmark(allocator, "full_space_distribution", buildSpaceDistribution));
-    collect(&reporter, runFullFrameBenchmark(allocator, "full_percentage_sizing", buildPercentageSizing));
-    collect(&reporter, runFullFrameBenchmark(allocator, "full_shrink_overflow", buildShrinkOverflow));
-    collect(&reporter, runFullFrameBenchmark(allocator, "full_expand_with_max_constraint", buildExpandWithMaxConstraint));
-    collect(&reporter, runFullFrameBenchmark(allocator, "full_expand_with_min_constraint", buildExpandWithMinConstraint));
-    collect(&reporter, runFullFrameBenchmark(allocator, "full_mixed_layout", buildMixedLayout));
-    collect(&reporter, runFullFrameBenchmark(allocator, "full_nested_vertical_stack", buildNestedVerticalStack));
-    collect(&reporter, runFullFrameBenchmark(allocator, "full_percentage_and_ratio", buildPercentageAndRatio));
-    collect(&reporter, runFullFrameBenchmark(allocator, "full_flex_expand_equal_weights", buildFlexExpandEqualWeights));
-    collect(&reporter, runFullFrameBenchmark(allocator, "full_flex_expand_weights", buildFlexExpandWeights));
+    collect(&reporter, runFullFrameBenchmark(
+        "full_nested_floating_overlays",
+
+        buildNestedFloatingOverlays,
+    ));
+    collect(&reporter, runFullFrameBenchmark(
+        "full_wide_no_wrap_simple_few",
+        buildWideNoWrapSimpleFew,
+    ));
+    collect(&reporter, runFullFrameBenchmark("full_deep_nesting", buildDeepNesting));
+    collect(&reporter, runFullFrameBenchmark("full_space_distribution", buildSpaceDistribution));
+    collect(&reporter, runFullFrameBenchmark("full_percentage_sizing", buildPercentageSizing));
+    collect(&reporter, runFullFrameBenchmark("full_shrink_overflow", buildShrinkOverflow));
+    collect(&reporter, runFullFrameBenchmark(
+        "full_expand_with_max_constraint",
+        buildExpandWithMaxConstraint,
+    ));
+    collect(&reporter, runFullFrameBenchmark(
+        "full_expand_with_min_constraint",
+        buildExpandWithMinConstraint,
+    ));
+    collect(&reporter, runFullFrameBenchmark("full_mixed_layout", buildMixedLayout));
+    collect(&reporter, runFullFrameBenchmark(
+        "full_nested_vertical_stack",
+        buildNestedVerticalStack,
+    ));
+    collect(&reporter, runFullFrameBenchmark("full_percentage_and_ratio", buildPercentageAndRatio));
+    collect(&reporter, runFullFrameBenchmark(
+        "full_flex_expand_equal_weights",
+        buildFlexExpandEqualWeights,
+    ));
+    collect(&reporter, runFullFrameBenchmark("full_flex_expand_weights", buildFlexExpandWeights));
 
     std.debug.print(&@as([90]u8, @splat('=')) ++ "\n", .{});
 
     std.debug.print("\nLayout Only = endFrame() only. Full Frame = beginFrame + tree build + endFrame.\n", .{});
     std.debug.print("Iterations are adaptive based on node count (fewer for large tests).\n", .{});
-    std.debug.print("\nCurrent MAX_ELEMENTS_PER_FRAME = {d}\n", .{layout.engine.MAX_ELEMENTS_PER_FRAME});
+    std.debug.print("\nEngine capacity = {d} elements (ResourceLimits.ceiling)\n", .{
+        bench_capacity.element_count_max,
+    });
     std.debug.print("PanGui benchmarks use up to 100k+ nodes for comparison.\n", .{});
 
     reporter.finish();

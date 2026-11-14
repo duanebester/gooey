@@ -44,8 +44,9 @@ separate fragments in one shared order. Measured on 0.3.1, layout cost 38–70 n
   top or bottom opens on the parent's other side when it fits there, else it is clamped.
 - **No numeric z-index** exists anywhere: not in the API, the layout engine (#221), or the
   packed frame, whose draws are already in fragment order.
-- **Bounded:** layers per frame are `ResourceLimits.build.layer_count_frame_max`, and
-  fragments are written in linear passes with no sort.
+- **Bounded:** layers per frame are `ResourceLimits.build.layer_count_frame_max`, which also
+  sizes the layout engine's floating roots (each layer box floats), and fragments are
+  written in linear passes with no sort.
 
 ## Differences from the proposal
 

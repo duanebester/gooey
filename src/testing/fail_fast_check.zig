@@ -13,20 +13,24 @@
 //! - `core-allocation`: allocates through the 0.4.0 core's lifecycle guard after init.
 //! - `core-duplicate-key`: renders two boxes with one key under one parent.
 //! - `core-component-depth`: nests components one level past `component_depth_max`.
-//! - `core-box-depth`: nests boxes one level past the 63 the window root's
-//!   open stack holds inside it. The layout passes take every depth the stack
-//!   admits, so the build's own check is the one that stops it.
+//! - `core-box-depth`: nests boxes one level past `nano`'s `build.box_depth_max`
+//!   of 64, the window root included. The layout open stack is sized from the
+//!   same field, so the build's own check, which knows the frame, stops it.
+//! - `core-layout-elements`: renders one box more than `nano`'s 512 elements.
+//!   The layout engine holds the same budget plus the root, so the build stops
+//!   it first and layout is never asked for more.
+//! - `core-layer-count`: opens one layer more than `nano`'s 8. Each layer is a
+//!   layout floating root, a pool sized from `build.layer_count_frame_max`.
 //! - `core-opacity-range`: a box whose `Style.opacity` is just above 1.
 //! - `core-grow-weight`: a box that grows with a weight of 0.
 //! - `core-pointer-drag-unkeyed`: a box with `on_pointer_drag` and no key.
 //! - `core-dialog-target`: names a non-root state as a file dialog's completion handler.
 //! - `core-dialog-paths`: a dialog selects one path more than `dialog_path_count_max`.
 //! - `core-mono-unset`: draws `.family = .mono` text in an app with no `fonts.mono`.
-//! - `core-wrap-lines`: one text of a line past `MAX_LINES_PER_TEXT`. Layout
-//!   measures it whole first, so the per-run shaping bound
-//!   (`text.run_codepoint_count_max`) stops it, on every platform.
-//! - `core-wrap-words`: one text of a word past `MAX_WORDS_PER_TEXT`, which
-//!   the same bound stops first.
+//! - `core-wrap-run`: one text of 1,025 newlines and letters, one codepoint past
+//!   `text.run_codepoint_count_max`, which also sizes layout's per-text word
+//!   and line scratch. Layout measures it whole first, so the shaping bound
+//!   stops it on every platform before the scratch could fill.
 //! - `core-wrap-frame`: wraps two texts into one line past the frame's glyph budget.
 //! - `core-deinit-running`: frees a running app without stopping it first.
 //! - `core-list-count`: a `List` of per-row heights one row past its `count_max`.
@@ -53,14 +57,15 @@ const Mode = enum {
     @"core-duplicate-key",
     @"core-component-depth",
     @"core-box-depth",
+    @"core-layout-elements",
+    @"core-layer-count",
     @"core-opacity-range",
     @"core-grow-weight",
     @"core-pointer-drag-unkeyed",
     @"core-dialog-target",
     @"core-dialog-paths",
     @"core-mono-unset",
-    @"core-wrap-lines",
-    @"core-wrap-words",
+    @"core-wrap-run",
     @"core-wrap-frame",
     @"core-deinit-running",
     @"core-list-count",
@@ -86,14 +91,15 @@ pub fn main(init: std.process.Init) !void {
         .@"core-duplicate-key" => coreTick(init.gpa, init.io, CoreApp.duplicateKey),
         .@"core-component-depth" => coreTick(init.gpa, init.io, CoreApp.nested),
         .@"core-box-depth" => coreTick(init.gpa, init.io, CoreApp.deepBoxes),
+        .@"core-layout-elements" => coreTick(init.gpa, init.io, CoreApp.manyBoxes),
+        .@"core-layer-count" => coreTick(init.gpa, init.io, CoreApp.manyLayers),
         .@"core-opacity-range" => coreTick(init.gpa, init.io, CoreApp.opacityRange),
         .@"core-grow-weight" => coreTick(init.gpa, init.io, CoreApp.growWeight),
         .@"core-pointer-drag-unkeyed" => coreTick(init.gpa, init.io, CoreApp.unkeyedDrag),
         .@"core-dialog-target" => coreDialogTarget(init.gpa, init.io),
         .@"core-dialog-paths" => coreDialogPaths(init.gpa, init.io),
         .@"core-mono-unset" => coreTick(init.gpa, init.io, CoreApp.monoText),
-        .@"core-wrap-lines" => coreTick(init.gpa, init.io, CoreApp.wrapLines),
-        .@"core-wrap-words" => coreTick(init.gpa, init.io, CoreApp.wrapWords),
+        .@"core-wrap-run" => coreTick(init.gpa, init.io, CoreApp.wrapRun),
         .@"core-wrap-frame" => coreTick(init.gpa, init.io, CoreApp.wrapFrame),
         .@"core-deinit-running" => coreDeinitRunning(init.gpa, init.io),
         .@"core-list-count" => coreTick(init.gpa, init.io, CoreApp.longList),
@@ -231,10 +237,25 @@ const CoreApp = struct {
         cx.render(Nest{});
     }
 
-    /// 64 nested boxes: one more than fit inside the window root.
+    /// 64 nested boxes inside the window root: one level past the budget,
+    /// which counts the root.
     fn deepBoxes(cx: *gooey.Cx) void {
-        const box_count = gooey.internals.window.box_depth_max;
+        const box_count = gooey.ResourceLimits.nano.build.box_depth_max;
         cx.render(NestBoxes{ .remaining = box_count });
+    }
+
+    /// Exactly `nano`'s elements as sibling boxes, then one more.
+    fn manyBoxes(cx: *gooey.Cx) void {
+        const count = gooey.ResourceLimits.nano.build.element_count_frame_max + 1;
+        for (0..count) |_| cx.render(gooey.ui.box(.{}, .{}));
+    }
+
+    /// Exactly `nano`'s layers as sibling popovers, then one more.
+    fn manyLayers(cx: *gooey.Cx) void {
+        const count = gooey.ResourceLimits.nano.build.layer_count_frame_max + 1;
+        for (0..count) |_| cx.render(gooey.ui.box(.{
+            .layer = .{ .kind = .popover, .anchor = .{ .parent = .{} }, .clip = .escape },
+        }, .{}));
     }
 
     /// Opens two boxes per component level, so 64 boxes stay within the
@@ -298,19 +319,11 @@ const CoreApp = struct {
         cx.render(gooey.ui.text("code", .{ .family = .mono }));
     }
 
-    /// One empty line per newline, then "m": one more line than the pool
-    /// holds, in 1,025 bytes, which every shaper measures.
-    fn wrapLines(cx: *gooey.Cx) void {
-        const lines = comptime newlinesThenM(gooey.internals.layout.engine.MAX_LINES_PER_TEXT);
-        cx.render(gooey.ui.text(&lines, .{ .wrap = .newlines }));
-    }
-
-    /// One empty word per newline, then "m": one more word than the pool
-    /// holds. Words are scanned before lines are packed, so the word pool is
-    /// the one exhausted.
-    fn wrapWords(cx: *gooey.Cx) void {
-        const words = comptime newlinesThenM(gooey.internals.layout.engine.MAX_WORDS_PER_TEXT);
-        cx.render(gooey.ui.text(&words, .{ .wrap = .words }));
+    /// One empty word and line per newline, then "m": 1,025 codepoints, one
+    /// past the run bound that also sizes layout's word and line scratch.
+    fn wrapRun(cx: *gooey.Cx) void {
+        const run = comptime newlinesThenM(gooey.text.run_codepoint_count_max);
+        cx.render(gooey.ui.text(&run, .{ .wrap = .words }));
     }
 
     /// `nano` draws at most 1,024 glyphs, so the frame holds 1,024 wrapped

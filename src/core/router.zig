@@ -185,7 +185,7 @@ fn press(window: *Window, event: *const input.InputEvent, point: Point) void {
     const frame = window.rendered();
     const target = hitIndex(frame, point);
     if (pressScrollbar(window, target, point)) return;
-    window.press_len = pathOf(frame, target, &window.press_path);
+    window.press_len = pathOf(frame, target, window.press_path);
     // A second button pressed during a capture clicks as usual but does
     // not take the capture over.
     const capturing = if (window.capture.id == .root) captureIndex(frame, target) else index_none;
@@ -204,7 +204,7 @@ fn press(window: *Window, event: *const input.InputEvent, point: Point) void {
     var index = target;
     var depth: u32 = 0;
     while (index != index_none) : (depth += 1) {
-        assert(depth <= window_mod.box_depth_max);
+        assert(depth <= window_mod.box_depth_ceiling);
         if (frame.hits[index].focusable) {
             focus_id = frame.hits[index].id;
             break;
@@ -227,7 +227,7 @@ fn release(window: *Window, event: *const input.InputEvent, point: Point) void {
     var index = hitIndex(frame, point);
     var depth: u32 = 0;
     while (index != index_none) : (depth += 1) {
-        assert(depth <= window_mod.box_depth_max);
+        assert(depth <= window_mod.box_depth_ceiling);
         const record = &frame.hits[index];
         if (std.mem.indexOfScalar(ElementId, pressed, record.id) != null) {
             if (frame.handlerAt(record.on_click)) |handler| {
@@ -243,7 +243,7 @@ fn captureIndex(frame: *const records.Frame, target: u32) u32 {
     var index = target;
     var depth: u32 = 0;
     while (index != index_none) : (depth += 1) {
-        assert(depth <= window_mod.box_depth_max);
+        assert(depth <= window_mod.box_depth_ceiling);
         if (frame.hits[index].on_pointer_drag != index_none) return index;
         index = frame.hits[index].parent;
     }
@@ -345,7 +345,7 @@ fn pressScrollbar(window: *Window, target: u32, point: Point) bool {
     var index = target;
     var depth: u32 = 0;
     while (index != index_none) : (depth += 1) {
-        assert(depth <= window_mod.box_depth_max);
+        assert(depth <= window_mod.box_depth_ceiling);
         const record = &frame.hits[index];
         if (record.scroll) {
             if (window.retained.find(window_mod.ScrollState, record.id)) |state| {
@@ -411,7 +411,7 @@ fn isAncestorOrSelf(frame: *const records.Frame, ancestor: u32, index_start: u32
     var index = index_start;
     var depth: u32 = 0;
     while (index != index_none) : (depth += 1) {
-        assert(depth <= window_mod.box_depth_max);
+        assert(depth <= window_mod.box_depth_ceiling);
         if (index == ancestor) return true;
         index = frame.hits[index].parent;
     }
@@ -426,7 +426,7 @@ fn bubble(window: *Window, event: *const input.InputEvent, start: u32, slot: Slo
     var index = start;
     var depth: u32 = 0;
     while (index != index_none) : (depth += 1) {
-        assert(depth <= window_mod.box_depth_max);
+        assert(depth <= window_mod.box_depth_ceiling);
         const record = &frame.hits[index];
         const handler_index = switch (slot) {
             .click => record.on_click,
@@ -453,7 +453,7 @@ fn wheel(window: *Window, event: *const input.InputEvent, point: Point) void {
     var index = hitIndex(frame, point);
     var depth: u32 = 0;
     while (index != index_none) : (depth += 1) {
-        assert(depth <= window_mod.box_depth_max);
+        assert(depth <= window_mod.box_depth_ceiling);
         const record = &frame.hits[index];
         if (frame.handlerAt(record.on_key)) |handler| {
             const type_id = handler.target.type_id;
@@ -783,7 +783,7 @@ pub fn setFocus(window: *Window, id: ElementId, visible: bool) void {
 /// Recompute the hover path from the pointer against the rendered frame.
 pub fn updateHover(window: *Window) void {
     const frame = window.rendered();
-    var path: [window_mod.box_depth_max]ElementId = undefined;
+    var path: [window_mod.box_depth_ceiling]ElementId = undefined;
     var len: u32 = 0;
     // Resolved even when the path is unchanged: a new frame may give the
     // same records another cursor. A capture keeps the cursor of its press.
@@ -792,7 +792,7 @@ pub fn updateHover(window: *Window) void {
         target = hitIndex(frame, .{ .x = pointer.x, .y = pointer.y });
         var index = target;
         while (index != index_none) : (len += 1) {
-            assert(len < window_mod.box_depth_max);
+            assert(len < window.hover_path.len);
             path[len] = frame.hits[index].id;
             index = frame.hits[index].parent;
         }
@@ -814,7 +814,7 @@ fn cursorOf(frame: *const records.Frame, index_start: u32) element.CursorShape {
     var index = index_start;
     var depth: u32 = 0;
     while (index != index_none) : (depth += 1) {
-        assert(depth <= window_mod.box_depth_max);
+        assert(depth <= window_mod.box_depth_ceiling);
         if (frame.hits[index].cursor) |cursor| return cursor;
         index = frame.hits[index].parent;
     }
@@ -843,7 +843,7 @@ pub fn validateFocus(window: *Window) void {
 /// Tab stops tried on each side of a lost focus (`focusSuccessor`).
 const successor_tab_stop_count_max: u32 = 32;
 const successor_candidate_count_max: u32 =
-    window_mod.box_depth_max + 2 * successor_tab_stop_count_max;
+    window_mod.box_depth_ceiling + 2 * successor_tab_stop_count_max;
 
 /// Where focus goes when `lost` leaves: in the frame on screen, its nearest
 /// focusable ancestor, such as the combobox of an option chosen with the
@@ -884,7 +884,7 @@ fn successorCandidates(frame: *const records.Frame, lost: ElementId, out: []Elem
     var depth: u32 = 0;
     while (index != index_none) : (index = frame.hits[index].parent) {
         depth += 1;
-        assert(depth <= window_mod.box_depth_max);
+        assert(depth <= window_mod.box_depth_ceiling);
         if (frame.hits[index].focusable) {
             out[count] = frame.hits[index].id;
             count += 1;
