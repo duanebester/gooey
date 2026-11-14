@@ -184,15 +184,15 @@ jobs:
         uses: actions/cache@v5
         with:
           path: |
-            ~\AppData\Local\zig
-            zig-cache
+            ~/AppData/Local/zig
+            .zig-cache
           key: zig-cache-windows-${{ matrix.renderer }}-${{ hashFiles('build.zig', 'build.zig.zon') }}
           restore-keys: |
             zig-cache-windows-${{ matrix.renderer }}-
             zig-cache-windows-
 
       - name: Run tests
-        run: zig build test-windows -Dwindows-renderer=${{ matrix.renderer }}
+        run: zig build test-windows -Dwindows-renderer=${{ matrix.renderer }} --summary line
 
       - name: Build examples (ReleaseSafe)
         run: zig build -Doptimize=ReleaseSafe -Dwindows-renderer=${{ matrix.renderer }}
