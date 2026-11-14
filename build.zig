@@ -1364,6 +1364,8 @@ fn addFailFastChecks(
             "capacity 16. Raise ResourceLimits.events.dialog_path_count_max." },
         .{ .mode = "core-component-depth", .stderr = "component depth 65 exceeds " ++
             "build.component_depth_max 64 rendering fail_fast_check.CoreApp.Nest" },
+        .{ .mode = "core-box-depth", .stderr = "build pool 'box depth' exhausted: capacity 63 " ++
+            "levels inside the window root, 63 in use, 1 requested" },
         .{ .mode = "core-mono-unset", .stderr = "text uses family .mono, but no second " ++
             "family is loaded; set Config.fonts.mono and fonts.limits.mono_variants" },
         .{ .mode = "core-wrap-lines", .stderr = "text run of 1025 codepoints exceeds " ++

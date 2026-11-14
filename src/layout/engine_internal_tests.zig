@@ -8,7 +8,7 @@
 //!   - Word-boundary helper (`sizing_pass.findWordBoundaries`)
 //!   - Floating `expand` behavior
 //!   - `Offset2D` / `WordInfo` shared types
-//!   - `distributeGrow` / `distributeShrink` / fast-path coverage
+//!   - Grow, shrink and fast-path distribution coverage
 //!
 //! All tests route through public `LayoutEngine` methods unless noted.
 
@@ -554,7 +554,7 @@ test "MAX_WORDS_PER_TEXT constant is reasonable" {
     try std.testing.expect(MAX_WORDS_PER_TEXT <= 10000); // But not excessive
 }
 
-test "distributeGrow gives equal space to grow elements" {
+test "grow distribution gives equal space to grow elements" {
     var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
@@ -596,7 +596,7 @@ test "distributeGrow gives equal space to grow elements" {
     try std.testing.expectEqual(@as(f32, 100), grow3.width);
 }
 
-test "distributeShrink respects minimum constraints" {
+test "shrink distribution respects minimum constraints" {
     var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 

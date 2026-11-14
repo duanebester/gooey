@@ -514,6 +514,7 @@ fn openNodeWith(
     options: OpenOptions,
 ) u32 {
     if (style.scroll != null) assert(options.scroll != null);
+    checkBoxDepth(window);
     const index = addNode(window, kind, node_id);
     const node = &window.nodes[index];
     node.source = debugger.nodeSource(style.source);
@@ -578,13 +579,26 @@ fn retainScroll(
     return handle;
 }
 
+/// A box or paint opens a layout element, so its depth is checked before the
+/// layout engine's open stack takes it: past the bound it fails fast here,
+/// naming the pool, rather than inside the layout engine. The window root
+/// holds one level, so an app nests `box_depth_max - 1` levels inside it.
+fn checkBoxDepth(window: *Window) void {
+    assert(window.open_depth <= window_mod.box_depth_max);
+    if (window.open_depth < window_mod.box_depth_max) return;
+    std.debug.panic("build pool 'box depth' exhausted: capacity {d} levels inside the " ++
+        "window root, {d} in use, 1 requested, frame {d}. Nest boxes and paints less " ++
+        "deeply (layout.engine.MAX_OPEN_DEPTH).", .{
+        window_mod.box_depth_max - 1,
+        window.open_depth - 1,
+        window.frame_number,
+    });
+}
+
 fn pushOpen(window: *Window, index: u32) void {
-    if (window.open_depth == window_mod.box_depth_max) {
-        std.debug.panic("box nesting exceeds {d} (the 0.3.1 layout engine's depth), frame {d}", .{
-            window_mod.box_depth_max,
-            window.frame_number,
-        });
-    }
+    // `openNodeWith` checked the depth before opening this box.
+    assert(window.open_depth < window_mod.box_depth_max);
+    assert(index < window.node_count);
     window.open_stack[window.open_depth] = index;
     window.open_depth += 1;
 }

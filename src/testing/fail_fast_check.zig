@@ -13,6 +13,9 @@
 //! - `core-allocation`: allocates through the 0.4.0 core's lifecycle guard after init.
 //! - `core-duplicate-key`: renders two boxes with one key under one parent.
 //! - `core-component-depth`: nests components one level past `component_depth_max`.
+//! - `core-box-depth`: nests boxes one level past the 63 the window root's
+//!   open stack holds inside it. The layout passes take every depth the stack
+//!   admits, so the build's own check is the one that stops it.
 //! - `core-opacity-range`: a box whose `Style.opacity` is just above 1.
 //! - `core-grow-weight`: a box that grows with a weight of 0.
 //! - `core-dialog-target`: names a non-root state as a file dialog's completion handler.
@@ -48,6 +51,7 @@ const Mode = enum {
     @"core-allocation",
     @"core-duplicate-key",
     @"core-component-depth",
+    @"core-box-depth",
     @"core-opacity-range",
     @"core-grow-weight",
     @"core-dialog-target",
@@ -79,6 +83,7 @@ pub fn main(init: std.process.Init) !void {
         .@"core-allocation" => coreAllocation(init.gpa, init.io),
         .@"core-duplicate-key" => coreTick(init.gpa, init.io, CoreApp.duplicateKey),
         .@"core-component-depth" => coreTick(init.gpa, init.io, CoreApp.nested),
+        .@"core-box-depth" => coreTick(init.gpa, init.io, CoreApp.deepBoxes),
         .@"core-opacity-range" => coreTick(init.gpa, init.io, CoreApp.opacityRange),
         .@"core-grow-weight" => coreTick(init.gpa, init.io, CoreApp.growWeight),
         .@"core-dialog-target" => coreDialogTarget(init.gpa, init.io),
@@ -213,6 +218,30 @@ const CoreApp = struct {
     fn nested(cx: *gooey.Cx) void {
         cx.render(Nest{});
     }
+
+    /// 64 nested boxes: one more than fit inside the window root.
+    fn deepBoxes(cx: *gooey.Cx) void {
+        const box_count = gooey.internals.window.box_depth_max;
+        cx.render(NestBoxes{ .remaining = box_count });
+    }
+
+    /// Opens two boxes per component level, so 64 boxes stay within the
+    /// component depth budget and the box depth is the one exhausted.
+    const NestBoxes = struct {
+        remaining: u32,
+
+        pub fn render(self: NestBoxes, cx: *gooey.Cx) void {
+            std.debug.assert(self.remaining > 0);
+            const pad: gooey.ui.Style = .{ .padding = .all(1) };
+            if (self.remaining == 1) return cx.render(gooey.ui.box(.{}, .{}));
+            if (self.remaining == 2) {
+                return cx.render(gooey.ui.box(.{ .style = pad }, .{gooey.ui.box(.{}, .{})}));
+            }
+            cx.render(gooey.ui.box(.{ .style = pad }, .{
+                gooey.ui.box(.{ .style = pad }, .{NestBoxes{ .remaining = self.remaining - 2 }}),
+            }));
+        }
+    };
 
     /// A window-sized box whose click requests a dialog completing on a
     /// state type that is not the root state.

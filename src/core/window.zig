@@ -59,8 +59,9 @@ pub fn wheelOffset(delta: f32) f32 {
     return delta * direction;
 }
 
-/// Deepest box nesting the build tracks. The 0.3.1 layout engine stops at
-/// `MAX_OPEN_DEPTH` (64), so the core cannot nest deeper until phase 4.
+/// Deepest box nesting the build tracks, the window root included: the
+/// layout engine's open stack (`MAX_OPEN_DEPTH`, 64). Its passes walk the
+/// tree without recursion, so they lay out every depth the stack admits.
 pub const box_depth_max: u32 = layout_mod.engine.MAX_OPEN_DEPTH;
 
 /// Bytes of text-system scratch per tick for shaped runs on a shape-cache
