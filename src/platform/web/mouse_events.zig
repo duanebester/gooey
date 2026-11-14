@@ -9,7 +9,8 @@
 //! - Double/triple click detection (JS tracks timing)
 //! - Left/right/middle button support
 //! - Keyboard modifiers on mouse events
-//! - Drag events (mouse_moved vs mouse_dragged)
+//! - Drag events (mouse_moved vs mouse_dragged), kept past the canvas edge by
+//!   pointer capture, and cancelled when the page takes the gesture away
 
 const input = @import("../../input/events.zig");
 
@@ -38,6 +39,9 @@ pub const RawMouseEvent = extern struct {
         mouse_dragged = 3,
         mouse_entered = 4,
         mouse_exited = 5,
+        /// The page took the gesture away (`pointercancel`, a lost pointer
+        /// capture with a button held, or the window losing focus).
+        pointer_cancelled = 6,
     };
 
     pub const Button = enum(u8) {
@@ -142,5 +146,6 @@ pub fn toInputEvent(raw: RawMouseEvent) InputEvent {
         .mouse_dragged => .{ .mouse_dragged = mouse_event },
         .mouse_entered => .{ .mouse_entered = mouse_event },
         .mouse_exited => .{ .mouse_exited = mouse_event },
+        .pointer_cancelled => .pointer_cancelled,
     };
 }

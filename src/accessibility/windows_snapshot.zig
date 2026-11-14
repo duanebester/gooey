@@ -76,6 +76,8 @@ pub const Entry = struct {
     heading_level: types.HeadingLevel,
     live: types.Live,
     has_value_now: bool,
+    /// A separator's or slider's axis; null leaves UIA's `None`.
+    orientation: ?types.Orientation,
 
     /// Whether an assistive technology should see this element as a control.
     pub fn isExposed(self: *const Entry) bool {
@@ -238,6 +240,7 @@ pub const Snapshot = struct {
         target.role = element.role;
         target.heading_level = element.heading_level;
         target.live = element.live;
+        target.orientation = element.orientation;
     }
 
     /// Append `index` to its parent's children, or to the root's. `Tree`
@@ -401,7 +404,9 @@ pub fn supportsValue(role: types.Role) bool {
 
 pub fn supportsRangeValue(role: types.Role) bool {
     return switch (role) {
-        .slider, .progressbar, .scrollbar, .spinbutton => true,
+        // Gooey's only separators are splitters (`A11y.range`), whose position
+        // is a range, as WAI-ARIA's focusable window splitter defines.
+        .slider, .progressbar, .scrollbar, .spinbutton, .separator => true,
         else => false,
     };
 }

@@ -901,6 +901,10 @@ pub const LinuxPlatform = struct {
         const self: *Self = @ptrCast(@alignCast(data));
         self.pointer_enter_serial = null;
         self.cursor_shape = null;
+        // A leave with a button held means the compositor broke the implicit
+        // grab (a release outside arrives before its leave), so the gesture
+        // is gone: cancel it rather than leave a drag waiting for a release.
+        self.cancelPointerGesture();
 
         // Dispatch mouse_exited event to active window
         if (self.active_window) |window| {
@@ -1327,6 +1331,20 @@ pub const LinuxPlatform = struct {
             window.key_repeat_tracker.reset();
             window.click_tracker.reset();
         }
+        // Another window took the keyboard mid-drag, as Alt+Tab does; its
+        // release may never reach this surface.
+        self.cancelPointerGesture();
+    }
+
+    /// Forget held buttons and send `pointer_cancelled` when any was held,
+    /// so a drag cancels instead of dropping where the pointer last was.
+    fn cancelPointerGesture(self: *Self) void {
+        if (self.pointer_buttons == 0) return;
+        self.pointer_buttons = 0;
+        std.debug.assert(self.pointer_buttons == 0);
+        const window = self.active_window orelse return;
+        _ = window.handleInput(.pointer_cancelled);
+        std.debug.assert(window.pressed_button == null);
     }
 
     fn keyboardKeymap(

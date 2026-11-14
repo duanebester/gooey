@@ -65,6 +65,7 @@ pub fn registerClass() !void {
     if (!cls.addMethod("mouseExited:", mouseExited)) return error.MethodAddFailed;
     if (!cls.addMethod("rightMouseDown:", rightMouseDown)) return error.MethodAddFailed;
     if (!cls.addMethod("rightMouseUp:", rightMouseUp)) return error.MethodAddFailed;
+    if (!cls.addMethod("rightMouseDragged:", rightMouseDragged)) return error.MethodAddFailed;
     if (!cls.addMethod("scrollWheel:", scrollWheel)) return error.MethodAddFailed;
 
     // NSTextInputClient protocol methods (for IME support)
@@ -235,6 +236,13 @@ fn rightMouseDown(self: objc.c.id, _: objc.c.SEL, event: objc.c.id) callconv(.c)
 fn rightMouseUp(self: objc.c.id, _: objc.c.SEL, event: objc.c.id) callconv(.c) void {
     const window = getWindow(self) orelse return;
     _ = window.handleInput(parseMouseEvent(self, event, .mouse_up));
+}
+
+/// AppKit reports right-button motion apart from `mouseDragged:`; without
+/// this a right-button drag would see its press and release but no moves.
+fn rightMouseDragged(self: objc.c.id, _: objc.c.SEL, event: objc.c.id) callconv(.c) void {
+    const window = getWindow(self) orelse return;
+    _ = window.handleInput(parseMouseEvent(self, event, .mouse_dragged));
 }
 
 fn scrollWheel(self: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) void {

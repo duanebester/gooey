@@ -896,6 +896,7 @@ pub fn elementProperty(
         uia.UIA_IsControlElementPropertyId => variantBool(entry.isExposed()),
         uia.UIA_IsContentElementPropertyId => variantBool(entry.isExposed()),
         uia.UIA_IsOffscreenPropertyId => variantBool(entry.state.hidden),
+        uia.UIA_OrientationPropertyId => variantInt(orientationType(entry.orientation)),
         uia.UIA_FrameworkIdPropertyId => try variantText(framework_id),
         uia.UIA_IsRequiredForFormPropertyId => variantBool(entry.state.required),
         uia.UIA_AriaRolePropertyId => try variantText(role.toAriaRole()),
@@ -991,6 +992,18 @@ fn headingLevel(level: types.HeadingLevel) i32 {
     assert(number >= 1);
     assert(number <= 6);
     return uia.HeadingLevel1 + @as(i32, number) - 1;
+}
+
+/// UIA's `OrientationType`: None 0, Horizontal 1, Vertical 2.
+fn orientationType(orientation: ?types.Orientation) i32 {
+    const axis = orientation orelse return 0;
+    const value: i32 = switch (axis) {
+        .horizontal => 1,
+        .vertical => 2,
+    };
+    assert(value >= 1);
+    assert(value <= 2);
+    return value;
 }
 
 /// `[UiaAppendRuntimeId, low, high]`: unique within the host window, which

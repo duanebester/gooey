@@ -122,6 +122,8 @@ pub const MacBridge = struct {
         frame: layout.BoundingBox = frame_unset,
         /// Whether children were last set non-empty.
         has_children: bool = false,
+        /// Whether previous and next contents were last set (a splitter).
+        has_contents: bool = false,
 
         /// Update wrapper from accessibility element
         pub fn update(
@@ -154,6 +156,10 @@ pub const MacBridge = struct {
             } else {
                 clearAccessibilityLabel(ns);
             }
+            // VoiceOver reads a splitter's title, never its label
+            // (AXDescription), so a splitter carries its name as both.
+            const title = if (elem.role == .separator) elem.name else null;
+            setAccessibilityTitle(ns, title);
 
             // Set value. A toggle or option without a text value reports
             // whether it is on as VoiceOver expects (0 or 1); otherwise a
@@ -163,9 +169,15 @@ pub const MacBridge = struct {
                 setAccessibilityValue(ns, value);
             } else if (toggleState(elem)) |on| {
                 setAccessibilityChecked(ns, on);
+            } else if (elem.value_now) |now| {
+                // A splitter or slider without a text value reports its
+                // position as a number in its range, as NSSlider does.
+                setAccessibilityRange(ns, elem.value_min orelse now, elem.value_max orelse now, now);
             } else {
                 clearAccessibilityValue(ns);
             }
+            // Unknown when null, which a reused wrapper needs as well.
+            setAccessibilityOrientation(ns, elem.orientation);
 
             // Set parent relationship
             setAccessibilityParent(ns, parent_ns);
@@ -387,6 +399,66 @@ pub const MacBridge = struct {
 
         // Set children on root element
         setAccessibilityChildren(root, root_children);
+        self.updateSplitterContents(tree);
+    }
+
+    /// Give each splitter the elements on either side of it, as NSSplitView
+    /// does: VoiceOver calls a splitter with no previous or next contents
+    /// "collapsed" toward that side. Its neighbours are its siblings in the
+    /// tree, which are in index order (the tree is built depth first). One
+    /// scan of at most `MAX_ELEMENTS` per splitter.
+    fn updateSplitterContents(self: *Self, tree: *const tree_mod.Tree) void {
+        std.debug.assert(tree.count() <= constants.MAX_ELEMENTS);
+        std.debug.assert(self.wrapper_count <= constants.MAX_ELEMENTS);
+        var index: u16 = 0;
+        while (index < tree.count()) : (index += 1) {
+            const elem = tree.getElement(index) orelse continue;
+            const slot = self.findSlotByFingerprint(elem.fingerprint) orelse continue;
+            const wrapper = &self.wrappers[slot];
+            const ns = wrapper.ns_element orelse continue;
+            if (elem.role == .separator) {
+                const previous = self.siblingElement(tree, index, .previous);
+                const next = self.siblingElement(tree, index, .next);
+                setAccessibilityContents(ns, "setAccessibilityPreviousContents:", previous);
+                setAccessibilityContents(ns, "setAccessibilityNextContents:", next);
+                wrapper.has_contents = true;
+            } else if (wrapper.has_contents) {
+                setAccessibilityContents(ns, "setAccessibilityPreviousContents:", null);
+                setAccessibilityContents(ns, "setAccessibilityNextContents:", null);
+                wrapper.has_contents = false;
+            }
+        }
+    }
+
+    /// The native element of the sibling just before or after `index`.
+    fn siblingElement(
+        self: *Self,
+        tree: *const tree_mod.Tree,
+        index: u16,
+        side: enum { previous, next },
+    ) ?objc.Object {
+        std.debug.assert(index < tree.count());
+        const parent = tree.getElement(index).?.parent;
+        var found: ?u16 = null;
+        var other: u16 = 0;
+        while (other < tree.count()) : (other += 1) {
+            if (other == index) {
+                if (side == .previous) break;
+                continue;
+            }
+            const elem = tree.getElement(other) orelse continue;
+            if (!std.meta.eql(elem.parent, parent)) continue;
+            if (side == .previous) {
+                found = other;
+            } else {
+                if (other > index) {
+                    found = other;
+                    break;
+                }
+            }
+        }
+        const sibling = tree.getElement(found orelse return null).?;
+        return self.nativeElement(sibling);
     }
 
     /// Update accessibilityChildren for a single element
@@ -684,6 +756,19 @@ fn setAccessibilityLabel(elem: objc.Object, label: []const u8) void {
     elem.msgSend(void, "setAccessibilityLabel:", .{ns_label.value});
 }
 
+/// Set or, with null, clear the element's title (AXTitle).
+fn setAccessibilityTitle(elem: objc.Object, title: ?[]const u8) void {
+    std.debug.assert(elem.value != null);
+    const text = title orelse {
+        elem.msgSend(void, "setAccessibilityTitle:", .{@as(objc.c.id, null)});
+        return;
+    };
+    std.debug.assert(text.len <= 65535);
+    const ns_title = createNSStringFromSlice(text) orelse return;
+    defer releaseNSObject(ns_title);
+    elem.msgSend(void, "setAccessibilityTitle:", .{ns_title.value});
+}
+
 fn clearAccessibilityLabel(elem: objc.Object) void {
     std.debug.assert(elem.value != null);
     elem.msgSend(void, "setAccessibilityLabel:", .{@as(objc.c.id, null)});
@@ -727,6 +812,52 @@ fn setAccessibilityChecked(elem: objc.Object, checked: bool) void {
     const number: objc.c.id = NSNumber.msgSend(objc.c.id, "numberWithBool:", .{checked});
     std.debug.assert(number != null);
     elem.msgSend(void, "setAccessibilityValue:", .{number});
+}
+
+fn setAccessibilityRange(elem: objc.Object, min: f32, max: f32, now: f32) void {
+    std.debug.assert(elem.value != null);
+    std.debug.assert(min <= now);
+    std.debug.assert(now <= max);
+    const NSNumber = objc.getClass("NSNumber") orelse return;
+    const values = [_]struct { selector: [:0]const u8, value: f32 }{
+        .{ .selector = "setAccessibilityMinValue:", .value = min },
+        .{ .selector = "setAccessibilityMaxValue:", .value = max },
+        .{ .selector = "setAccessibilityValue:", .value = now },
+    };
+    for (values) |item| {
+        const number: objc.c.id = NSNumber.msgSend(
+            objc.c.id,
+            "numberWithDouble:",
+            .{@as(f64, item.value)},
+        );
+        std.debug.assert(number != null);
+        elem.msgSend(void, item.selector, .{number});
+    }
+}
+
+/// `NSAccessibilityOrientation`: unknown 0, vertical 1, horizontal 2.
+fn setAccessibilityOrientation(elem: objc.Object, orientation: ?types.Orientation) void {
+    std.debug.assert(elem.value != null);
+    const value: c_long = if (orientation) |axis| switch (axis) {
+        .vertical => 1,
+        .horizontal => 2,
+    } else 0;
+    std.debug.assert(value <= 2);
+    elem.msgSend(void, "setAccessibilityOrientation:", .{value});
+}
+
+/// Set a splitter's previous or next contents to `element` alone, or to
+/// an empty array when there is none.
+fn setAccessibilityContents(elem: objc.Object, selector: [:0]const u8, element: ?objc.Object) void {
+    std.debug.assert(elem.value != null);
+    std.debug.assert(selector.len > 0);
+    const NSArray = objc.getClass("NSArray") orelse return;
+    const contents: objc.c.id = if (element) |sibling|
+        NSArray.msgSend(objc.c.id, "arrayWithObject:", .{sibling.value})
+    else
+        NSArray.msgSend(objc.c.id, "array", .{});
+    std.debug.assert(contents != null);
+    elem.msgSend(void, selector, .{contents});
 }
 
 fn setAccessibilityParent(elem: objc.Object, parent: objc.Object) void {
@@ -842,6 +973,9 @@ fn valueHash(elem: *const tree_mod.Element) u64 {
         hasher.update(value);
     } else if (toggleState(elem)) |on| {
         hasher.update(if (on) "checked" else "unchecked");
+    } else if (elem.value_now) |now| {
+        hasher.update("range:");
+        hasher.update(std.mem.asBytes(&now));
     }
     return hasher.final();
 }
