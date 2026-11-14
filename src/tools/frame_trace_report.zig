@@ -37,7 +37,9 @@ const assert = std.debug.assert;
 
 const row_count_max: u32 = 32_768;
 const file_bytes_max: u32 = 8 * 1024 * 1024;
-const column_count: u32 = 13;
+/// Columns of a row; traces before `present_ns` have one fewer.
+const column_count: u32 = 14;
+const present_dropped: u64 = 1;
 const frame_ms_target: f64 = 1000.0 / 120.0;
 const rates_hz = [_]f64{ 30, 48, 50, 60, 72, 75, 90, 100, 120, 144, 165, 240 };
 
@@ -55,6 +57,8 @@ const Row = struct {
     nodes: u64,
     width_px: u64,
     height_px: u64,
+    /// When the frame reached the glass: 0 = not reported, 1 = never shown.
+    present: u64,
 };
 
 const Phase = enum { drain, build, layout, emit, wait, pack, draw, main, render, serial };
@@ -164,7 +168,11 @@ fn parseRow(line: []const u8) !Row {
         if (index == column_count) return error.TooManyColumns;
         values[index] = try std.fmt.parseInt(u64, field, 10);
     }
-    if (index != column_count) return error.TooFewColumns;
+    if (index == column_count - 1) {
+        values[column_count - 1] = 0;
+    } else {
+        if (index != column_count) return error.TooFewColumns;
+    }
     const row = Row{
         .frame = values[0],
         .tick = values[1],
@@ -179,6 +187,7 @@ fn parseRow(line: []const u8) !Row {
         .nodes = values[10],
         .width_px = values[11],
         .height_px = values[12],
+        .present = values[13],
     };
     if (!ordered(&row)) return error.UnorderedRow;
     return row;
@@ -270,6 +279,7 @@ fn report(trace: *const Trace, path: []const u8, refresh_ms: ?f64) void {
         });
     }
     reportCadence(rows, &scratch, refresh_ms);
+    reportGlass(rows, &scratch, refresh_ms);
     reportHeadroom(rows, trace.single_thread);
 }
 
@@ -307,6 +317,53 @@ fn reportCadence(rows: []const Row, scratch: *[row_count_max]f64, refresh_ms: ?f
         @as(f64, @floatFromInt(count)) / seconds,
         missed,
         seconds,
+        @as(f64, @floatFromInt(missed)) * 30 / seconds,
+    });
+}
+
+/// Glass cadence, for hosts that report presents (`present_ns`): intervals
+/// between consecutive frames that both reached the glass, and frames that
+/// never did. Missed refreshes count against the given or estimated period.
+fn reportGlass(rows: []const Row, scratch: *[row_count_max]f64, refresh_ms: ?f64) void {
+    var count: usize = 0;
+    var dropped: u64 = 0;
+    var reported: u64 = 0;
+    for (rows, 0..) |row, index| {
+        if (row.present == 0) continue;
+        reported += 1;
+        if (row.present == present_dropped) {
+            dropped += 1;
+            continue;
+        }
+        if (index == 0) continue;
+        const previous = &rows[index - 1];
+        if (previous.frame + 1 != row.frame) continue;
+        if (previous.present <= present_dropped) continue;
+        if (row.present < previous.present) continue;
+        scratch[count] = ms(row.present - previous.present);
+        count += 1;
+    }
+    if (count == 0) return;
+    const intervals = scratch[0..count];
+    var span_ms: f64 = 0;
+    for (intervals) |interval| span_ms += interval;
+    std.sort.pdq(f64, intervals, {}, std.sort.asc(f64));
+    const period_ms = refresh_ms orelse estimatePeriod(intervals);
+    var missed: u64 = 0;
+    for (intervals) |interval| {
+        const periods = @round(interval / period_ms);
+        if (periods > 1) missed += @intFromFloat(periods - 1);
+    }
+    const seconds = span_ms / 1000;
+    std.debug.print("Glass cadence: {d} of {d} frames reported, {d} never shown, interval " ++
+        "p50 {d:.2} / p99 {d:.2} / max {d:.2} ms, missed refreshes {d} ({d:.1} per 30 s)\n", .{
+        reported,
+        rows.len,
+        dropped,
+        percentile(intervals, 0.50),
+        percentile(intervals, 0.99),
+        intervals[intervals.len - 1],
+        missed,
         @as(f64, @floatFromInt(missed)) * 30 / seconds,
     });
 }
@@ -383,6 +440,9 @@ test "parseRow rejects a frame whose stamps run backwards" {
     );
     const row = try parseRow("61,10,11,12,13,14,15,16,17,100,20,800,600");
     try std.testing.expectEqual(@as(u64, 61), row.frame);
+    try std.testing.expectEqual(@as(u64, 0), row.present);
+    const shown = try parseRow("61,10,11,12,13,14,15,16,17,100,20,800,600,25");
+    try std.testing.expectEqual(@as(u64, 25), shown.present);
     try std.testing.expectError(error.TooFewColumns, parseRow("61,10,11"));
 }
 

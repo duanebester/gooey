@@ -94,7 +94,6 @@ pub const MAX_FRAMEBUFFER_HEIGHT: u32 = 4320;
 pub const MAX_FRAMES_IN_FLIGHT: u32 = 3;
 
 /// Fewest frames in flight: one the GPU reads while the CPU records the next.
-/// Metal's `maximumDrawableCount` accepts only 2 or 3, which the range matches.
 pub const MIN_FRAMES_IN_FLIGHT: u32 = 2;
 
 /// Largest atlas side, in pixels, any atlas budget may declare. 4096² RGBA is 64 MiB.
@@ -635,17 +634,16 @@ pub const WindowLimits = struct {
 /// Frames a window's renderer keeps in flight. Every per-frame GPU resource is
 /// reserved once per frame in flight at init: the Vulkan host and mesh pools,
 /// descriptor sets, command buffers and fences, and the Metal instance and mesh
-/// rings. It also sets the presentation image count: Metal's
-/// `maximumDrawableCount` equals it, and the Vulkan swapchain asks for the
-/// driver's minimum plus one image per frame in flight above two (the driver
-/// minimum plus one, as before, at three). The CPU renderer draws synchronously,
+/// rings. It also sets the Vulkan swapchain's image count: the driver's minimum
+/// plus one image per frame in flight above two (the driver minimum plus one, as
+/// before, at three). Metal keeps three drawables in every profile, because two
+/// stall `nextDrawable` (`metal/renderer.zig`). The CPU renderer draws synchronously,
 /// so its two `wl_shm` slots, one the compositor reads and one being drawn, are
 /// the minimum here and do not change with the budget.
 ///
 /// Two frames halve the bound rings at `nano` and `small`, whose apps are not
 /// GPU-bound, at the cost of less CPU/GPU overlap (memory budget decision 4).
-/// `standard` and above keep three until frame pacing with two drawables has
-/// been measured on a Mac.
+/// `standard` and above keep three.
 pub const FrameLimits = struct {
     in_flight_count: u32,
 

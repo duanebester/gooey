@@ -39,6 +39,7 @@ const core_router = @import("../../core/router.zig");
 const core_events = @import("../../core/events.zig");
 const core_handler = @import("../../core/handler.zig");
 const records = @import("../../core/records.zig");
+const frame_trace = @import("../../core/frame_trace.zig");
 
 const assert = std.debug.assert;
 
@@ -60,8 +61,13 @@ extern "c" fn dispatch_async_f(
 /// is used.
 extern "c" var _dispatch_main_q: u8;
 extern "c" var NSRunLoopCommonModes: objc.c.id;
+extern "c" fn CACurrentMediaTime() f64;
 
 const CAFrameRateRange = extern struct { minimum: f32, maximum: f32, preferred: f32 };
+
+/// Frames whose drawables the frame trace keeps before it reads their
+/// `presentedTime`: a present lands within the frames in flight, at most 3.
+const presented_ring_count: u32 = 4;
 
 /// `QOS_CLASS_USER_INTERACTIVE`, the main thread's class.
 const qos_class_user_interactive: c_uint = 0x21;
@@ -144,6 +150,9 @@ pub const Host = struct {
     ime_rect: ?records.Rect,
     built_frame_number: u64,
     built_marked_length_utf16: c_ulong,
+    /// Render thread only, `-Dframe-trace` builds: drawables awaiting their
+    /// `presentedTime` (`notePresented`).
+    presented: if (frame_trace.enabled) PresentedRing else void,
 
     pub const Options = struct {
         platform: *MacPlatform,
@@ -177,6 +186,7 @@ pub const Host = struct {
         self.ime_rect = null;
         self.built_frame_number = 0;
         self.built_marked_length_utf16 = 0;
+        if (frame_trace.enabled) self.presented = .{};
         self.bindWindow();
         errdefer self.unbindWindow();
         self.link = try createLink(self.window);
@@ -249,6 +259,7 @@ pub const Host = struct {
         CFRunLoopStop(self.render_loop.load(.acquire).?);
         thread.join();
         self.thread = null;
+        if (frame_trace.enabled) self.presented.releaseAll();
         self.link.release();
         active_host.store(null, .release);
         assert(self.thread == null);
@@ -417,6 +428,63 @@ fn displayLinkTick(_: objc.c.id, _: objc.c.SEL, _: objc.c.id) callconv(.c) void 
     host.scheduleTick();
 }
 
+/// Drawables of the last frames, retained until their `presentedTime` is
+/// read, so the frame trace records when each frame reached the glass. A
+/// retain is a reference count, not a Gooey allocation.
+const PresentedRing = struct {
+    frame_numbers: [presented_ring_count]u64 = @splat(0),
+    drawables: [presented_ring_count]?objc.Object = @splat(null),
+    next: u32 = 0,
+
+    /// Keep `frame_number`'s drawable (null when it presented none) and
+    /// report the frame it displaces from the ring.
+    fn push(
+        self: *PresentedRing,
+        trace: *frame_trace.State,
+        frame_number: u64,
+        drawable: ?objc.Object,
+    ) void {
+        assert(frame_number > 0);
+        assert(self.next < presented_ring_count);
+        const slot = self.next;
+        self.report(trace, slot);
+        self.frame_numbers[slot] = frame_number;
+        self.drawables[slot] = drawable;
+        if (drawable) |kept| _ = kept.msgSend(objc.Object, "retain", .{});
+        self.next = (slot + 1) % presented_ring_count;
+    }
+
+    /// Record when the frame in `slot` was shown, mapping Core Animation's
+    /// clock onto the trace clock through a pair of reads taken together.
+    fn report(self: *PresentedRing, trace: *frame_trace.State, slot: u32) void {
+        const frame_number = self.frame_numbers[slot];
+        if (frame_number == 0) return;
+        const drawable = self.drawables[slot] orelse {
+            frame_trace.notePresented(trace, frame_number, frame_trace.present_dropped);
+            return;
+        };
+        defer drawable.release();
+        self.drawables[slot] = null;
+        const presented_s = drawable.msgSend(f64, "presentedTime", .{});
+        if (presented_s <= 0) {
+            frame_trace.notePresented(trace, frame_number, frame_trace.present_dropped);
+            return;
+        }
+        const now_ns = frame_trace.stamp(trace);
+        const age_s = @max(CACurrentMediaTime() - presented_s, 0);
+        const age_ns: u64 = @intFromFloat(age_s * std.time.ns_per_s);
+        assert(age_ns < now_ns);
+        frame_trace.notePresented(trace, frame_number, @max(now_ns - age_ns, 2));
+    }
+
+    fn releaseAll(self: *PresentedRing) void {
+        for (&self.drawables) |*drawable| {
+            if (drawable.*) |kept| kept.release();
+            drawable.* = null;
+        }
+    }
+};
+
 /// The core's presenter, on the render thread. The frame carries the
 /// viewport it was built for; the drawable follows it before the draw, and
 /// the atlas regions the frame samples are uploaded first.
@@ -453,6 +521,9 @@ fn draw(
     const uploads = host.core.resources.atlas_uploads;
     core_backend.uploadPendingAtlases(renderer, uploads, host.core.atlas_consumer_key);
     renderer.draw(packed_frame, viewport, clear);
+    if (frame_trace.enabled) {
+        host.presented.push(&host.core.trace, frame.frame_number, renderer.last_drawable);
+    }
 }
 
 // =============================================================================
