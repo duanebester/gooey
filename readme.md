@@ -177,12 +177,14 @@ Unknown fields are compile errors. Pick the smallest profile that fits. Each pro
 | `.ceiling`  | Framework maxima for tests; `gooey.App` rejects it  |         14 |
 
 To raise one budget without moving the whole app up a rung, start from a profile and change
-fields. `code_editor.zig` reserves one code editor slot on top of `.small`:
+fields. `code_editor.zig` reserves one code editor slot on top of `.small`, and keeps more
+shaped runs cached because it reshapes every visible line each frame:
 
 ```zig
 pub const limits = blk: {
     var value = gooey.ResourceLimits.small;
     value.text.editor = .{ .count_max = 1, .bytes_max = file_bytes_max, .undo_depth_max = 128 };
+    value.text.shaped_run_count_max = 512;
     break :blk value;
 };
 
@@ -200,7 +202,10 @@ others. A mixed budget passes the same compile-time checks as a profile. Layout 
 from the same budget: `build.element_count_frame_max` elements, `build.box_depth_max` levels
 of box nesting (64 at every profile, the window root included), and one floating root per
 `build.layer_count_frame_max` layer. The accessibility tree and the platform screen-reader
-bridge hold `a11y.element_count_max` nodes (128 at `nano` to 8,192 at `large`). The fields and
+bridge hold `a11y.element_count_max` nodes (128 at `nano` to 8,192 at `large`). The text
+system's caches are `text.glyph_cache_count_max` glyphs, `text.shaped_run_count_max` shaped
+runs and `text.measure_slot_count_max` widths; a frame that draws more distinct glyphs than
+its glyph cache holds panics and names the field. The fields and
 their measurements are in `src/core/limits.zig` and `docs/v0.4.0-memory-budget.md`.
 
 ### Render with `Cx` and `ui`

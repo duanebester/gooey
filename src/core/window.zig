@@ -1017,31 +1017,14 @@ fn initRuntimeStorage(self: *Window, gpa: std.mem.Allocator, limits: *const Reso
     errdefer self.retained.deinit(gpa);
     // A text kind with a count of 0 reserves nothing; an app without inputs
     // still gets a one-slot pool so the store's entity table is uniform.
-    const input = limits.text.input;
-    try self.inputs.initInPlace(gpa, .{
-        .count = @max(input.count_max, 1),
-        .bytes_max = input.bytes_max,
-        .undo_depth_max = input.undo_depth_max,
-    });
+    try self.inputs.initInPlace(gpa, poolCapacity(.input, &limits.text));
     errdefer self.inputs.deinit(gpa);
-    const area = limits.text.area;
-    self.areas_reserved = area.count_max > 0;
-    if (self.areas_reserved) {
-        try self.areas.initInPlace(gpa, .{
-            .count = area.count_max,
-            .bytes_max = area.bytes_max,
-            .undo_depth_max = area.undo_depth_max,
-        });
-    }
+    self.areas_reserved = limits.text.area.count_max > 0;
+    if (self.areas_reserved) try self.areas.initInPlace(gpa, poolCapacity(.area, &limits.text));
     errdefer if (self.areas_reserved) self.areas.deinit(gpa);
-    const editor = limits.text.editor;
-    self.editors_reserved = editor.count_max > 0;
+    self.editors_reserved = limits.text.editor.count_max > 0;
     if (self.editors_reserved) {
-        try self.editors.initInPlace(gpa, .{
-            .count = editor.count_max,
-            .bytes_max = editor.bytes_max,
-            .undo_depth_max = editor.undo_depth_max,
-        });
+        try self.editors.initInPlace(gpa, poolCapacity(.editor, &limits.text));
     }
     errdefer if (self.editors_reserved) self.editors.deinit(gpa);
     // One clipboard buffer for copy and paste, as large as the largest kind
@@ -1063,6 +1046,25 @@ fn initRuntimeStorage(self: *Window, gpa: std.mem.Allocator, limits: *const Reso
     errdefer self.screen_reader.deinit();
     self.screen_reader_poll = .{};
     try frame_trace.init(&self.trace, gpa, self.resources.io);
+}
+
+/// One engine pool's capacity from the app's text budget. The input pool has
+/// at least one slot even at a count of 0, so the store's entity table is
+/// uniform.
+fn poolCapacity(
+    comptime kind: text_engine.Kind,
+    text: *const limits_mod.TextLimits,
+) text_engine.Pool(kind).Capacity {
+    const kind_limits: limits_mod.TextKindLimits = @field(text, @tagName(kind));
+    const count = if (kind == .input) @max(kind_limits.count_max, 1) else kind_limits.count_max;
+    assert(count > 0);
+    assert(text.preedit_bytes_max > 0);
+    return .{
+        .count = count,
+        .bytes_max = kind_limits.bytes_max,
+        .undo_depth_max = kind_limits.undo_depth_max,
+        .preedit_bytes_max = text.preedit_bytes_max,
+    };
 }
 
 /// The largest `bytes_max` among text kinds with engines; at least the

@@ -520,11 +520,11 @@ fn attributedSubstring(
     const clamped = clampRange(range, length);
     const NSString = objc.getClass("NSString") orelse return null;
     const NSAttributedString = objc.getClass("NSAttributedString") orelse return null;
-    var bytes: [Window.marked_text_bytes_max + 1]u8 = undefined;
-    @memcpy(bytes[0..window.marked_text.len], window.marked_text);
-    bytes[window.marked_text.len] = 0;
+    // `setMarkedText` keeps a NUL after the marked text in its buffer.
+    assert(window.marked_text.ptr == window.marked_text_buffer.ptr);
+    assert(window.marked_text_buffer[window.marked_text.len] == 0);
     const string = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{
-        @as([*:0]const u8, @ptrCast(&bytes)),
+        @as([*:0]const u8, @ptrCast(window.marked_text_buffer.ptr)),
     });
     if (string.value == null) return null;
     // A composition longer than the window's buffer was cut; never read past

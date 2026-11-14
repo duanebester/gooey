@@ -7,6 +7,7 @@ const std = @import("std");
 const ct = @import("bindings.zig");
 const types = @import("../../types.zig");
 const CoreTextFace = @import("face.zig").CoreTextFace;
+const limits = @import("../../../core/limits.zig");
 
 const ShapedGlyph = types.ShapedGlyph;
 const ShapedRun = types.ShapedRun;
@@ -35,6 +36,14 @@ pub const CoreTextShaper = struct {
     const MAX_GLYPHS_PER_RUN: usize = 1024;
     /// Maximum UTF-16 units for cluster mapping (~2KB UTF-8 text)
     const MAX_CLUSTER_MAP: usize = 2048;
+
+    // The core stops a run past `text.run_codepoint_count_max` before it is
+    // shaped, so these buffers hold every run it lets through: a codepoint is
+    // at most two UTF-16 units, and one glyph per codepoint.
+    comptime {
+        std.debug.assert(MAX_CLUSTER_MAP >= 2 * limits.run_codepoint_count_max);
+        std.debug.assert(MAX_GLYPHS_PER_RUN >= limits.run_codepoint_count_max);
+    }
 
     pub fn init(allocator: std.mem.Allocator) Self {
         return .{

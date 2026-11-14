@@ -71,6 +71,9 @@ pub fn withHeadroom(limits: *const ResourceLimits) ResourceLimits {
     reserved.paint.quad_count_frame_max += overlay_quad_count_max;
     reserved.paint.glyph_count_frame_max += overlay_glyph_count_max;
     reserved.records.paint_record_count_frame_max += overlay_paint_record_count_max;
+    // Every overlay glyph sprite may be a distinct cache key in the frame the
+    // app fills its own glyph cache, and a frame's keys cannot be evicted.
+    reserved.text.glyph_cache_count_max += overlay_glyph_count_max;
     assert(reserved.paint.quad_count_frame_max > limits.paint.quad_count_frame_max);
     assert(reserved.paint.glyph_count_frame_max > limits.paint.glyph_count_frame_max);
     return reserved;

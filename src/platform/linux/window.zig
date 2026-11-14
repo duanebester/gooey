@@ -29,7 +29,6 @@ const backend = @import("../../core/backend.zig");
 const core_events = @import("../../core/events.zig");
 const core_router = @import("../../core/router.zig");
 const core_clipboard = @import("../../core/clipboard.zig");
-const core_text_engine = @import("../../core/text_engine.zig");
 
 /// How the core host drives this window (contract §9), as on macOS: the
 /// window pushes input and configures into the core's queue and asks the
@@ -150,7 +149,8 @@ pub const Window = struct {
 
     /// Marked (composing) text from IME
     marked_text: []const u8 = "",
-    marked_text_buffer: [marked_text_bytes_max]u8 = undefined,
+    /// `text.preedit_bytes_max` bytes, allocated with the window.
+    marked_text_buffer: []u8 = &.{},
 
     /// Whether IME is currently active for this window
     ime_active: bool = false,
@@ -215,6 +215,8 @@ pub const Window = struct {
             .renderer = .{},
         };
         self.storeTitle(options.title);
+        self.marked_text_buffer = try allocator.alloc(u8, options.limits.text.preedit_bytes_max);
+        errdefer allocator.free(self.marked_text_buffer);
 
         // Register before any Wayland object exists so that every later error
         // path unwinds through one errdefer rather than a second exit branch.
@@ -535,6 +537,7 @@ pub const Window = struct {
         self.destroySurface();
 
         std.debug.assert(!self.window_id.isValid());
+        self.allocator.free(self.marked_text_buffer);
         self.allocator.destroy(self);
     }
 
@@ -643,21 +646,21 @@ pub const Window = struct {
     // IME Support
     // =========================================================================
 
-    /// The composition the window keeps, as long as the text engines'
-    /// preedit, which shows no more.
-    pub const marked_text_bytes_max = core_text_engine.preedit_bytes_max;
-
-    /// Set the marked (composing) text for IME. A longer composition is
-    /// external input, so it is cut at a codepoint boundary, never inside a
-    /// UTF-8 sequence, and the cut logged.
+    /// Set the marked (composing) text for IME. The window keeps as much as
+    /// the text engines' preedit, `text.preedit_bytes_max`, which shows no
+    /// more. A longer composition is external input, so it is cut at a
+    /// codepoint boundary, never inside a UTF-8 sequence, and the cut logged.
     pub fn setMarkedText(self: *Self, text: []const u8) void {
-        const kept = core_clipboard.prefixFitting(text, marked_text_bytes_max);
+        const bytes_max = self.marked_text_buffer.len;
+        std.debug.assert(bytes_max > 0);
+        const kept = core_clipboard.prefixFitting(text, bytes_max);
         if (kept < text.len) {
-            std.log.warn("IME composition of {d} bytes cut to {d}", .{ text.len, kept });
+            std.log.warn("IME composition of {d} bytes cut to {d}. Raise " ++
+                "ResourceLimits.text.preedit_bytes_max ({d}).", .{ text.len, kept, bytes_max });
         }
         @memcpy(self.marked_text_buffer[0..kept], text[0..kept]);
         self.marked_text = self.marked_text_buffer[0..kept];
-        std.debug.assert(self.marked_text.len <= marked_text_bytes_max);
+        std.debug.assert(self.marked_text.len <= bytes_max);
         if (kept > 0 and kept < text.len) std.debug.assert(text[kept] & 0xC0 != 0x80);
     }
 

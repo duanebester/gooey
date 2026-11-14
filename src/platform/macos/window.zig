@@ -19,7 +19,6 @@ const WindowOptions = interface_mod.WindowOptions;
 const core_events = @import("../../core/events.zig");
 const core_router = @import("../../core/router.zig");
 const core_clipboard = @import("../../core/clipboard.zig");
-const core_text_engine = @import("../../core/text_engine.zig");
 
 /// How a 0.4.0 core app drives this window (contract §9): the window pushes
 /// input and resizes into the core's queue and asks the host for a tick, and
@@ -94,7 +93,9 @@ pub const Window = struct {
 
     // IME (Input Method Editor) state
     marked_text: []const u8 = "",
-    marked_text_buffer: [marked_text_bytes_max]u8 = undefined,
+    /// `text.preedit_bytes_max` bytes and a NUL terminator, allocated with
+    /// the window; `marked_text` is always followed by a NUL.
+    marked_text_buffer: []u8 = &.{},
     /// The marked text's length and the IME's selection within it, in UTF-16
     /// units as NSTextInputClient counts them; `marked_text` is UTF-8.
     marked_length_utf16: c_ulong = 0,
@@ -131,6 +132,9 @@ pub const Window = struct {
         errdefer allocator.destroy(self);
 
         initFields(self, allocator, plat, options);
+        const preedit_bytes_max = options.limits.text.preedit_bytes_max;
+        self.marked_text_buffer = try allocator.alloc(u8, preedit_bytes_max + 1);
+        errdefer allocator.free(self.marked_text_buffer);
         try self.createNSWindow(options);
 
         // Set delegate AFTER ns_view is created to prevent crashes from early delegate callbacks
@@ -279,21 +283,23 @@ pub const Window = struct {
     // IME Support
     // =========================================================================
 
-    /// The composition the window keeps for the input method to read back,
-    /// as long as the text engines' preedit, which shows no more.
-    pub const marked_text_bytes_max = core_text_engine.preedit_bytes_max;
-
-    /// Set the marked (composing) text for IME. A longer composition is
+    /// Set the marked (composing) text for IME. The window keeps it for the
+    /// input method to read back, as much as the text engines' preedit,
+    /// `text.preedit_bytes_max`, which shows no more. A longer composition is
     /// external input, so it is cut at a codepoint boundary, never inside a
     /// UTF-8 sequence, and the cut logged.
     pub fn setMarkedText(self: *Self, text: []const u8) void {
-        const kept = core_clipboard.prefixFitting(text, marked_text_bytes_max);
+        const bytes_max = self.marked_text_buffer.len - 1; // The NUL's byte.
+        assert(bytes_max > 0);
+        const kept = core_clipboard.prefixFitting(text, bytes_max);
         if (kept < text.len) {
-            std.log.warn("IME composition of {d} bytes cut to {d}", .{ text.len, kept });
+            std.log.warn("IME composition of {d} bytes cut to {d}. Raise " ++
+                "ResourceLimits.text.preedit_bytes_max ({d}).", .{ text.len, kept, bytes_max });
         }
         @memcpy(self.marked_text_buffer[0..kept], text[0..kept]);
+        self.marked_text_buffer[kept] = 0;
         self.marked_text = self.marked_text_buffer[0..kept];
-        assert(self.marked_text.len <= marked_text_bytes_max);
+        assert(self.marked_text.len <= bytes_max);
         if (kept > 0 and kept < text.len) assert(text[kept] & 0xC0 != 0x80);
     }
 
@@ -358,6 +364,7 @@ pub const Window = struct {
         assert(self.ns_view.value != null);
         self.renderer.deinit();
         self.releaseAppKitObjects();
+        self.allocator.free(self.marked_text_buffer);
         self.allocator.destroy(self);
     }
 

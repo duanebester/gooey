@@ -17,7 +17,7 @@ const Allocator = std.mem.Allocator;
 
 const text_mod = @import("../text/mod.zig");
 const TextSystem = text_mod.TextSystem;
-const FontLimits = text_mod.FontLimits;
+const TextLimits = @import("limits.zig").TextLimits;
 
 const svg_mod = @import("../svg/mod.zig");
 const SvgAtlas = svg_mod.SvgAtlas;
@@ -40,11 +40,11 @@ pub const FontConfig = struct {
     font_name: ?[]const u8 = null,
     /// Font size in points. Asserted `> 0` and `< 1000` at load time.
     font_size: f32 = 16.0,
-    /// The faces loaded at init, one per variant. No default (CLAUDE.md §2):
-    /// the app's `FontLimits` profile, such as `FontLimits.nano`.
-    limits: FontLimits,
+    /// The app's text budget, `ResourceLimits.text`: the faces loaded at init,
+    /// one per variant, and the text caches' sizes. No default (CLAUDE.md §2).
+    text: *const TextLimits,
     /// The optional second family (contract decision 8), loaded into
-    /// `limits.mono_variants` at `font_size`. Null loads none; 0.3.1 apps
+    /// `text.fonts.mono_variants` at `font_size`. Null loads none; 0.3.1 apps
     /// never set it.
     mono: ?TextSystem.FaceSource = null,
 };
@@ -123,7 +123,7 @@ pub const AppResources = struct {
 
         const text_system = try allocator.create(TextSystem);
         errdefer allocator.destroy(text_system);
-        try text_system.initInPlace(allocator, scale, io, &font_config.limits, .{
+        try text_system.initInPlace(allocator, scale, io, font_config.text, .{
             .size = atlas_limits.text_size,
             .uploads = atlas_uploads,
         });
@@ -254,7 +254,7 @@ pub const AppResources = struct {
 const testing = std.testing;
 
 /// System sans-serif at 16 pt with one face: the tests only check ownership.
-const test_font_config: FontConfig = .{ .limits = FontLimits.nano };
+const test_font_config: FontConfig = .{ .text = &TextLimits.nano };
 
 test "AppResources: initOwned allocates and frees cleanly" {
     var resources = try AppResources.initOwned(
@@ -299,7 +299,7 @@ test "AppResources: custom font config loads named font" {
         testing.allocator,
         testing.io,
         1.0,
-        .{ .font_name = null, .font_size = 14.0, .limits = FontLimits.nano },
+        .{ .font_name = null, .font_size = 14.0, .text = &TextLimits.nano },
         &AtlasLimits.nano,
     );
     defer resources.deinit();

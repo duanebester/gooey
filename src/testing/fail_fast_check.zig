@@ -10,6 +10,8 @@
 //! - `font-variant`: measures text in a font variant the face set did not load.
 //! - `atlas-item`: inserts one item larger than its fixed atlas.
 //! - `atlas-live-set`: fills an atlas with items used this frame and inserts one more.
+//! - `glyph-cache`: renders 513 distinct glyphs in one frame, one past `nano`'s
+//!   512 `text.glyph_cache_count_max`; every entry is in use, so none is evicted.
 //! - `core-allocation`: allocates through the 0.4.0 core's lifecycle guard after init.
 //! - `core-duplicate-key`: renders two boxes with one key under one parent.
 //! - `core-component-depth`: nests components one level past `component_depth_max`.
@@ -64,6 +66,7 @@ const Mode = enum {
     @"font-variant",
     @"atlas-item",
     @"atlas-live-set",
+    @"glyph-cache",
     @"core-allocation",
     @"core-duplicate-key",
     @"core-component-depth",
@@ -104,6 +107,7 @@ pub fn main(init: std.process.Init) !void {
         .@"font-variant" => fontVariant(init.gpa, init.io),
         .@"atlas-item" => atlasItem(init.gpa, init.io),
         .@"atlas-live-set" => atlasLiveSet(init.gpa, init.io),
+        .@"glyph-cache" => glyphCache(init.gpa, init.io),
         .@"core-allocation" => coreAllocation(init.gpa, init.io),
         .@"core-duplicate-key" => coreTick(init.gpa, init.io, CoreApp.duplicateKey),
         .@"core-component-depth" => coreTick(init.gpa, init.io, CoreApp.nested),
@@ -151,7 +155,8 @@ fn fontVariant(gpa: std.mem.Allocator, io: std.Io) void {
         std.debug.panic("setup: AtlasUploads.initHeadless failed: {s}", .{@errorName(err)});
     };
     const atlas_options: text.AtlasOptions = .{ .size = 1024, .uploads = uploads };
-    text_system.initInPlace(gpa, 1.0, io, &text.FontLimits.standard, atlas_options) catch |err| {
+    const text_limits = &gooey.ResourceLimits.standard.text;
+    text_system.initInPlace(gpa, 1.0, io, text_limits, atlas_options) catch |err| {
         std.debug.panic("setup: TextSystem.initInPlace failed: {s}", .{@errorName(err)});
     };
     text_system.loadSystemFont(.sans_serif, 16) catch |err| {
@@ -200,6 +205,60 @@ fn atlasLiveSet(gpa: std.mem.Allocator, io: std.Io) void {
     }
     std.debug.assert(atlas.rows_active == 64);
     _ = atlas.insert(62, 14, &pixels);
+}
+
+fn glyphCache(gpa: std.mem.Allocator, io: std.Io) void {
+    // 27 letters at 19 sizes, 8 to 26 px, are 513 distinct keys: `nano`'s 512
+    // `text.glyph_cache_count_max` exactly, then one more, all in one frame,
+    // so no entry may be evicted. The 1,024 px atlas and 1 MiB upload budget
+    // hold every glyph, so the cache is the pool that runs out.
+    const text = gooey.text;
+    const glyph_count_max = gooey.ResourceLimits.nano.text.glyph_cache_count_max;
+    const letters = "abcdefghijklmnopqrstuvwxyzA";
+    const size_min: u32 = 8;
+    const size_count: u32 = 19;
+    comptime std.debug.assert(letters.len * size_count == glyph_count_max + 1);
+
+    const uploads = gpa.create(text.AtlasUploads) catch |err| {
+        std.debug.panic("setup: AtlasUploads allocation failed: {s}", .{@errorName(err)});
+    };
+    const upload_options: text.AtlasUploads.Options = .{
+        .storage = .cpu_texture,
+        .upload_bytes_frame_max = 1024 * 1024,
+    };
+    uploads.init(gpa, io, upload_options) catch |err| {
+        std.debug.panic("setup: AtlasUploads.init failed: {s}", .{@errorName(err)});
+    };
+    const text_system = gpa.create(text.TextSystem) catch |err| {
+        std.debug.panic("setup: TextSystem allocation failed: {s}", .{@errorName(err)});
+    };
+    const atlas_options: text.AtlasOptions = .{ .size = 1024, .uploads = uploads };
+    const text_limits = &gooey.ResourceLimits.nano.text;
+    text_system.initInPlace(gpa, 1.0, io, text_limits, atlas_options) catch |err| {
+        std.debug.panic("setup: TextSystem.initInPlace failed: {s}", .{@errorName(err)});
+    };
+    text_system.loadSystemFont(.sans_serif, 16) catch |err| {
+        std.debug.panic("setup: loadSystemFont failed: {s}", .{@errorName(err)});
+    };
+    const run = text_system.shapeText(.app, letters, .regular, null) catch |err| {
+        std.debug.panic("setup: shapeText failed: {s}", .{@errorName(err)});
+    };
+    std.debug.assert(run.glyphs.len == letters.len);
+    _ = uploads.beginFrame(1);
+    var size_index: u32 = 0;
+    while (size_index < size_count) : (size_index += 1) {
+        if (size_index + 1 == size_count) {
+            std.debug.assert(text_system.cache.entry_count == glyph_count_max + 1 - letters.len);
+        }
+        const size: f32 = @floatFromInt(size_min + size_index);
+        for (run.glyphs) |glyph| {
+            _ = text_system.getGlyphSubpixel(glyph.glyph_id, size, 0, 0) catch |err| {
+                std.debug.panic("getGlyphSubpixel failed instead of panicking: {s}", .{
+                    @errorName(err),
+                });
+            };
+        }
+    }
 }
 
 // =============================================================================

@@ -21,7 +21,7 @@
 //!
 //! ```zig
 //! const text = try allocator.create(TextSystem);
-//! try text.initInPlace(allocator, 1.0, io, &FontLimits.standard, .{
+//! try text.initInPlace(allocator, 1.0, io, &ResourceLimits.standard.text, .{
 //!     .size = AtlasLimits.standard.text_size,
 //!     .uploads = uploads, // shared `AtlasUploads`
 //! });
@@ -50,6 +50,7 @@ pub const FontWeight = types.FontWeight;
 pub const FontVariant = types.FontVariant;
 pub const FontFamily = types.FontFamily;
 pub const FontLimits = @import("../core/limits.zig").FontLimits;
+pub const TextLimits = @import("../core/limits.zig").TextLimits;
 pub const TextDecoration = types.TextDecoration;
 pub const RasterizedGlyph = types.RasterizedGlyph;
 
