@@ -8,11 +8,11 @@
 //! Performance sketch per window at `.small` (todo): 2,048 nodes × ~120 B
 //! (0.24 MiB); two frames of 8,192 paint records × 88 B, 2,048 hit records,
 //! 2,048 handlers, and 64 KiB of text (≈1.9 MiB); 128 queued events; 16
-//! input engines × 4 KiB; a 176 KiB layout arena for text copies and 4,096
-//! wrapped lines, resident only as far as a frame writes; 256 KiB of text
-//! scratch; and the packed frame at `limits.paint` (`packed_frame.zig`),
-//! resident only as far as frames write. The layout engine keeps its fixed 16,384-element reservation until phase 4 ports
-//! layout, so `build.element_count_frame_max` is checked against it.
+//! input engines × 4 KiB; the layout engine's 2,049 elements × 384 B
+//! (0.75 MiB), a 176 KiB arena for text copies and 4,096 wrapped lines, and
+//! 32 KiB of wrap scratch (`LayoutCapacity`), resident only as far as a frame
+//! writes; 256 KiB of text scratch; and the packed frame at `limits.paint`
+//! (`packed_frame.zig`), resident only as far as frames write.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -27,7 +27,6 @@ const clipboard_mod = @import("clipboard.zig");
 const element = @import("element.zig");
 const limits_mod = @import("limits.zig");
 const layout_mod = @import("../layout/layout.zig");
-const reservation = @import("reservation.zig");
 const text_mod = @import("../text/mod.zig");
 const app_resources = @import("app_resources.zig");
 const a11y_types = @import("../accessibility/types.zig");
@@ -61,10 +60,10 @@ pub fn wheelOffset(delta: f32) f32 {
     return delta * direction;
 }
 
-/// Deepest box nesting the build tracks, the window root included: the
-/// layout engine's open stack (`MAX_OPEN_DEPTH`, 64). Its passes walk the
-/// tree without recursion, so they lay out every depth the stack admits.
-pub const box_depth_max: u32 = layout_mod.engine.MAX_OPEN_DEPTH;
+/// Stack scratch in the router, emit and debugger holds a path or a level per
+/// box depth at the framework ceiling (128 entries); each window's own depth
+/// is `limits.build.box_depth_max`, asserted where the scratch is written.
+pub const box_depth_ceiling = limits_mod.box_depth_ceiling;
 
 /// Bytes of text-system scratch per tick for shaped runs on a shape-cache
 /// miss: one run of `MAX_GLYPHS_PER_ENTRY` glyphs, several times over for
@@ -539,10 +538,6 @@ pub const Window = struct {
     store: *handler_mod.Store,
     resources: *AppResources,
     layout: *LayoutEngine,
-    /// From `reservation.zig`, so only the prefix frames write becomes resident.
-    layout_arena: []u8,
-    /// The arena's high-water mark, zeroed on release (CLAUDE.md §21).
-    layout_arena_used_max: usize,
     nodes: []Node,
     node_count: u32,
     keys: KeySet,
@@ -586,7 +581,8 @@ pub const Window = struct {
     /// Where the last build drew the focus ring, so the next one sees a
     /// layout change move the focused box and scrolls it back into view.
     focus_place: FocusPlace,
-    hover_path: [box_depth_max]ElementId,
+    /// `build.box_depth_max` ids, reserved at init like `press_path`.
+    hover_path: []ElementId,
     hover_len: u32,
     /// The hovered record's cursor, or the nearest ancestor's that sets one;
     /// `.default` over none. Hosts apply it after a tick when it changed.
@@ -594,7 +590,7 @@ pub const Window = struct {
     /// Ids from the pressed record up to the root, captured on press. A
     /// release fires the click handlers of records in this path only, so a
     /// press that slides off a button does not click it (decision 7).
-    press_path: [box_depth_max]ElementId,
+    press_path: []ElementId,
     press_len: u32,
     /// The scroll box whose thumb is being dragged, or `.root`. The drag
     /// lives in its `ScrollState` until the release.
@@ -649,7 +645,8 @@ pub const Window = struct {
     scale_factor: f32,
     clear_color: records.Color,
     // Build state, owned by `Cx`.
-    open_stack: [box_depth_max]u32,
+    /// Open boxes, `build.box_depth_max` deep.
+    open_stack: []u32,
     open_depth: u32,
     component_depth: u32,
     component_depth_peak: u32,
@@ -703,14 +700,6 @@ pub const Window = struct {
         self.phase = to;
     }
 
-    /// Record how far this frame's text copies and wrapped lines reached.
-    pub fn noteLayoutArenaUse(self: *Window) void {
-        self.assertPhase(.layout);
-        const used = self.layout.arena.fixedBytesUsed();
-        assert(used <= self.layout_arena.len);
-        self.layout_arena_used_max = @max(self.layout_arena_used_max, used);
-    }
-
     pub fn assertPhase(self: *const Window, phase: Phase) void {
         if (self.phase != phase) {
             std.debug.panic("core call needs phase {t}, window is in {t}", .{ phase, self.phase });
@@ -722,7 +711,7 @@ pub const Window = struct {
     }
 
     pub fn isHovered(self: *const Window, id: ElementId) bool {
-        assert(self.hover_len <= box_depth_max);
+        assert(self.hover_len <= self.hover_path.len);
         for (self.hover_path[0..self.hover_len]) |hovered| {
             if (hovered == id) return true;
         }
@@ -875,39 +864,16 @@ comptime {
     }
 }
 
-/// The layout arena holds the frame's text copies (at most the text budget,
-/// doubled as 0.3.1's growing arena allowed) and its wrapped lines (contract
-/// decision 9). The core builds no floating elements, so each text wraps once
-/// per frame, and the layout engine caps a frame's wrapped lines at the glyph
-/// budget: a frame that wraps more lines than it can draw glyphs is almost
-/// all blank lines, a capacity-planning error that panics naming the pool.
-/// From fresh pages, so only what a frame touches becomes resident.
-fn layoutArenaBytes(limits: *const ResourceLimits) u32 {
-    const text_bytes: u64 = limits.build.text_bytes_frame_max;
-    const line_count: u64 = limits.paint.glyph_count_frame_max;
-    assert(text_bytes > 0);
-    assert(line_count > 0);
-    const line_bytes = @sizeOf(layout_mod.types.WrappedLine);
-    comptime assert(line_bytes == 12);
-    // Build copies every text before layout wraps any, so the line slices
-    // follow the copies with one alignment gap, inside the doubled text bytes.
-    const bytes = text_bytes * 2 + line_count * line_bytes;
-    assert(bytes <= std.math.maxInt(u32));
-    return @intCast(bytes);
-}
-
 fn initBuildStorage(self: *Window, gpa: std.mem.Allocator, limits: *const ResourceLimits) !void {
     const element_count = limits.build.element_count_frame_max + 1; // The window root.
-    assert(element_count <= layout_mod.engine.MAX_ELEMENTS_PER_FRAME);
+    const capacity = layout_mod.LayoutCapacity.fromLimits(limits);
+    assert(capacity.element_count_max == element_count);
     self.layout = try gpa.create(LayoutEngine);
     errdefer gpa.destroy(self.layout);
-    self.layout.* = try LayoutEngine.init(gpa);
+    self.layout.* = try LayoutEngine.init(&capacity);
     errdefer self.layout.deinit();
-    self.layout_arena = try reservation.reserve(u8, layoutArenaBytes(limits));
-    errdefer reservation.release(u8, self.layout_arena, 0);
-    self.layout_arena_used_max = 0;
-    self.layout.arena.useFixedBuffer(self.layout_arena);
-    self.layout.wrapped_line_count_frame_max = limits.paint.glyph_count_frame_max;
+    try initPaths(self, gpa, limits.build.box_depth_max);
+    errdefer deinitPaths(self, gpa);
     self.nodes = try gpa.alloc(Node, element_count);
     errdefer gpa.free(self.nodes);
     self.node_count = 0;
@@ -915,7 +881,7 @@ fn initBuildStorage(self: *Window, gpa: std.mem.Allocator, limits: *const Resour
     errdefer self.keys.deinit(gpa);
     // The debugger overlay paints into its own headroom (`reservedLimits`).
     const reserved = debugger_mod.reservedLimits(limits);
-    const capacity = records.FrameCapacity{
+    const frame_capacity = records.FrameCapacity{
         .paint_record_count_max = reserved.records.paint_record_count_frame_max,
         .hit_record_count_max = limits.records.hit_record_count_frame_max,
         .handler_count_max = limits.records.handler_count_frame_max,
@@ -924,9 +890,9 @@ fn initBuildStorage(self: *Window, gpa: std.mem.Allocator, limits: *const Resour
         .mesh_point_count_max = limits.paint.path_vertex_count_frame_max +
             limits.paint.polyline_point_count_frame_max + limits.paint.point_count_frame_max,
     };
-    try self.frames[0].initInPlace(gpa, &capacity);
+    try self.frames[0].initInPlace(gpa, &frame_capacity);
     errdefer self.frames[0].deinit(gpa);
-    try self.frames[1].initInPlace(gpa, &capacity);
+    try self.frames[1].initInPlace(gpa, &frame_capacity);
     self.built_index = 0;
 }
 
@@ -935,9 +901,35 @@ fn deinitBuildStorage(self: *Window, gpa: std.mem.Allocator) void {
     self.frames[0].deinit(gpa);
     self.keys.deinit(gpa);
     gpa.free(self.nodes);
-    reservation.release(u8, self.layout_arena, self.layout_arena_used_max);
+    deinitPaths(self, gpa);
     self.layout.deinit();
     gpa.destroy(self.layout);
+}
+
+/// The open, hover and press paths, one entry per level of box nesting.
+fn initPaths(self: *Window, gpa: std.mem.Allocator, depth_max: u32) !void {
+    assert(depth_max > 0);
+    assert(depth_max <= box_depth_ceiling);
+
+    self.open_stack = try gpa.alloc(u32, depth_max);
+    errdefer gpa.free(self.open_stack);
+
+    self.hover_path = try gpa.alloc(ElementId, depth_max);
+    errdefer gpa.free(self.hover_path);
+
+    self.press_path = try gpa.alloc(ElementId, depth_max);
+}
+
+/// Zeroed before they go back to `gpa`, which may hand them to another owner
+/// (CLAUDE.md §21); together they are at most 2.5 KiB.
+fn deinitPaths(self: *Window, gpa: std.mem.Allocator) void {
+    assert(self.press_path.len == self.open_stack.len);
+    @memset(std.mem.sliceAsBytes(self.press_path), 0);
+    @memset(std.mem.sliceAsBytes(self.hover_path), 0);
+    @memset(self.open_stack, 0);
+    gpa.free(self.press_path);
+    gpa.free(self.hover_path);
+    gpa.free(self.open_stack);
 }
 
 fn initRuntimeStorage(self: *Window, gpa: std.mem.Allocator, limits: *const ResourceLimits) !void {

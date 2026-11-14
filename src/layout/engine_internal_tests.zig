@@ -1,8 +1,8 @@
 //! Tests for engine internal data structures and low-level helpers.
 //!
 //! Covers:
-//!   - `FixedCapacityArray` fixed-capacity collection
-//!   - `open_element_stack` / `floating_roots` fixed-capacity invariants
+//!   - `BoundedList` over reserved storage
+//!   - `LayoutCapacity` derived from the budget, each pool filled exactly
 //!   - UTF-8 text wrapping
 //!   - `beginFrame` reset behavior
 //!   - Word-boundary helper (`sizing_pass.findWordBoundaries`)
@@ -22,14 +22,15 @@ const types = @import("types.zig");
 
 const LayoutEngine = engine_mod.LayoutEngine;
 const ElementDeclaration = engine_mod.ElementDeclaration;
-const FixedCapacityArray = engine_mod.FixedCapacityArray;
+const BoundedList = engine_mod.BoundedList;
 const WordInfo = engine_mod.WordInfo;
 const TextMeasurement = engine_mod.TextMeasurement;
-const MAX_ELEMENTS_PER_FRAME = engine_mod.MAX_ELEMENTS_PER_FRAME;
-const MAX_OPEN_DEPTH = engine_mod.MAX_OPEN_DEPTH;
-const MAX_FLOATING_ROOTS = engine_mod.MAX_FLOATING_ROOTS;
-const MAX_WORDS_PER_TEXT = engine_mod.MAX_WORDS_PER_TEXT;
-const MAX_LINES_PER_TEXT = engine_mod.MAX_LINES_PER_TEXT;
+const LayoutCapacity = engine_mod.LayoutCapacity;
+const ResourceLimits = @import("../core/limits.zig").ResourceLimits;
+
+/// Every engine here holds the `standard` profile's capacities, as an app on
+/// that profile would; there is no unbudgeted engine.
+const test_capacity = LayoutCapacity.fromLimits(&ResourceLimits.standard);
 
 const Sizing = types.Sizing;
 const SizingAxis = types.SizingAxis;
@@ -54,52 +55,80 @@ fn boundingBox(engine: *const LayoutEngine, index: u32) types.BoundingBox {
 // Fixed Capacity Arrays, UTF-8, Capacity Limits
 // =============================================================================
 
-test "FixedCapacityArray basic operations" {
-    var arr: FixedCapacityArray(u32, 4) = .{};
-
-    // Test append
-    try arr.append(10);
-    try arr.append(20);
-    try arr.append(30);
-    try std.testing.expectEqual(@as(usize, 3), arr.len);
-
-    // Test slice
-    const slice = arr.slice();
-    try std.testing.expectEqual(@as(usize, 3), slice.len);
-    try std.testing.expectEqual(@as(u32, 10), slice[0]);
-    try std.testing.expectEqual(@as(u32, 20), slice[1]);
-    try std.testing.expectEqual(@as(u32, 30), slice[2]);
-
-    // Test pop
-    const popped = arr.pop();
-    try std.testing.expectEqual(@as(?u32, 30), popped);
-    try std.testing.expectEqual(@as(usize, 2), arr.len);
-
-    // Test clear
-    arr.clear();
-    try std.testing.expectEqual(@as(usize, 0), arr.len);
+test "BoundedList fills its storage exactly and reports one more" {
+    // Goal: the list holds exactly its buffer's length, a further append
+    // reports `error.Overflow` without writing, and pop and clear reuse the
+    // storage from its start.
+    var buffer: [3]u32 = undefined;
+    var list: BoundedList(u32) = .{ .buffer = &buffer };
+    try std.testing.expectEqual(@as(?u32, null), list.pop());
+    try std.testing.expectEqual(@as(?u32, null), list.last());
+    try list.append(10);
+    try list.append(20);
+    try list.append(30);
+    try std.testing.expectEqualSlices(u32, &.{ 10, 20, 30 }, list.slice());
+    try std.testing.expectError(error.Overflow, list.append(40));
+    try std.testing.expectEqual(@as(u32, 3), list.len);
+    try std.testing.expectEqual(@as(?u32, 30), list.last());
+    try std.testing.expectEqual(@as(?u32, 30), list.pop());
+    try list.append(31);
+    try std.testing.expectEqualSlices(u32, &.{ 10, 20, 31 }, list.slice());
+    list.clear();
+    try std.testing.expectEqual(@as(u32, 0), list.len);
 }
 
-test "FixedCapacityArray overflow returns error" {
-    var arr: FixedCapacityArray(u32, 2) = .{};
-
-    try arr.append(1);
-    try arr.append(2);
-
-    // Third append should fail
-    const result = arr.append(3);
-    try std.testing.expectError(error.Overflow, result);
-    try std.testing.expectEqual(@as(usize, 2), arr.len);
+test "LayoutCapacity follows each profile's budget" {
+    // Goal: every capacity comes from the budget field the plan names, so a
+    // profile change moves the engine with it. Values are written out rather
+    // than recomputed with the same expressions as `fromLimits`.
+    const nano = LayoutCapacity.fromLimits(&ResourceLimits.nano);
+    try std.testing.expectEqual(@as(u32, 513), nano.element_count_max);
+    try std.testing.expectEqual(@as(u32, 64), nano.box_depth_max);
+    try std.testing.expectEqual(@as(u32, 8), nano.floating_count_max);
+    try std.testing.expectEqual(@as(u32, 1024), nano.word_count_text_max);
+    try std.testing.expectEqual(@as(u32, 1025), nano.lineCountTextMax());
+    try std.testing.expectEqual(@as(u32, 1024), nano.wrapped_line_count_frame_max);
+    // 16 KiB of text doubled, plus 1,024 lines of 12 B.
+    try std.testing.expectEqual(@as(u32, 32 * 1024 + 1024 * 12), nano.arena_bytes);
+    const large = LayoutCapacity.fromLimits(&ResourceLimits.large);
+    try std.testing.expectEqual(@as(u32, 16_384), large.element_count_max);
+    try std.testing.expectEqual(@as(u32, 64), large.floating_count_max);
+    const ceiling = LayoutCapacity.fromLimits(&ResourceLimits.ceiling);
+    try std.testing.expectEqual(@as(u32, 65_536), ceiling.element_count_max);
+    try std.testing.expectEqual(@as(u32, 128), ceiling.box_depth_max);
+    try std.testing.expectEqual(@as(u32, 255), ceiling.floating_count_max);
 }
 
-test "FixedCapacityArray pop on empty returns null" {
-    var arr: FixedCapacityArray(u32, 4) = .{};
-    const result = arr.pop();
-    try std.testing.expectEqual(@as(?u32, null), result);
+test "nano engine holds exactly its elements, depth and floating roots" {
+    // Goal: each reserved pool of a `nano` engine takes exactly its capacity
+    // with nothing dropped: 64 nested containers, then 8 floating children of
+    // the innermost, then leaves up to the 513th element. One more of any of
+    // them panics naming its budget field, which a test cannot catch; the core
+    // fails first at the same budgets (`core-box-depth`, `core-layer-count`,
+    // `core-layout-elements` in `testing/fail_fast_check.zig`).
+    const nano = LayoutCapacity.fromLimits(&ResourceLimits.nano);
+    var engine = try LayoutEngine.init(&nano);
+    defer engine.deinit();
+    for (0..2) |_| {
+        engine.beginFrame(800, 600);
+        for (0..nano.box_depth_max) |_| try engine.openElement(.{});
+        try std.testing.expectEqual(nano.box_depth_max, engine.open_element_stack.len);
+        engine.closeElement(); // Room for one floating container at a time.
+        for (0..nano.floating_count_max) |_| {
+            try engine.openElement(.{ .floating = .{} });
+            engine.closeElement();
+        }
+        try std.testing.expectEqual(nano.floating_count_max, engine.floating_roots.len);
+        while (engine.elements.len() < nano.element_count_max) try engine.text("m", .{});
+        try std.testing.expectEqual(nano.element_count_max, engine.elements.len());
+        while (engine.open_element_stack.len > 0) engine.closeElement();
+        try engine.endFrame();
+        try std.testing.expectEqual(nano.element_count_max, engine.elements.len());
+    }
 }
 
 test "open_element_stack uses fixed capacity" {
-    var engine = try LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
 
     engine.beginFrame(800, 600);
@@ -123,7 +152,7 @@ test "open_element_stack uses fixed capacity" {
 }
 
 test "floating_roots uses fixed capacity" {
-    var engine = try LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
 
     engine.beginFrame(800, 600);
@@ -171,7 +200,7 @@ test "floating_roots uses fixed capacity" {
 }
 
 test "UTF-8 text wrapping handles multi-byte characters" {
-    var engine = try LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
 
     // Mock text measurement: each codepoint is 10px wide
@@ -222,7 +251,7 @@ test "UTF-8 text wrapping handles multi-byte characters" {
 }
 
 test "UTF-8 text wrapping with emoji" {
-    var engine = try LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
 
     const mockMeasure = struct {
@@ -268,16 +297,8 @@ test "UTF-8 text wrapping with emoji" {
     try std.testing.expect(text_elem.text_data != null);
 }
 
-test "capacity constants are reasonable" {
-    // Verify our limits are sensible
-    try std.testing.expect(MAX_ELEMENTS_PER_FRAME >= 1000);
-    try std.testing.expect(MAX_OPEN_DEPTH >= 32);
-    try std.testing.expect(MAX_FLOATING_ROOTS >= 64);
-    try std.testing.expect(MAX_LINES_PER_TEXT >= 100);
-}
-
 test "beginFrame clears fixed capacity arrays" {
-    var engine = try LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
 
     // First frame
@@ -304,7 +325,8 @@ test "beginFrame clears fixed capacity arrays" {
 
 test "word-level measurement measures words not characters" {
     // This test verifies that findWordBoundaries correctly identifies word boundaries
-    var words: FixedCapacityArray(WordInfo, MAX_WORDS_PER_TEXT) = .{};
+    var word_buffer: [16]WordInfo = undefined;
+    var words: BoundedList(WordInfo) = .{ .buffer = &word_buffer };
 
     // Mock measure function that returns width = length * 10
     const measure = struct {
@@ -340,7 +362,8 @@ test "word-level measurement measures words not characters" {
 }
 
 test "word-level measurement handles newlines" {
-    var words: FixedCapacityArray(WordInfo, MAX_WORDS_PER_TEXT) = .{};
+    var word_buffer: [16]WordInfo = undefined;
+    var words: BoundedList(WordInfo) = .{ .buffer = &word_buffer };
 
     const measure = struct {
         fn measure(text: []const u8, _: u16, _: u16, _: ?f32, _: ?*anyopaque) TextMeasurement {
@@ -363,7 +386,7 @@ test "word-level measurement handles newlines" {
 /// 40 px parent at `parent_y` in a 600 px viewport, attached as a dropdown
 /// menu is: at the parent's top left, offset by the parent's height.
 fn dropdownY(parent_y: u16, float_height: f32) !f32 {
-    var engine = try LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
     engine.beginFrame(800, 600);
     try engine.openElement(.{
@@ -406,7 +429,7 @@ test "a parent-attached float opens above its parent when only that side fits" {
 }
 
 test "floating expand.width makes element match parent width" {
-    var engine = try LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
 
     engine.beginFrame(800, 600);
@@ -438,7 +461,7 @@ test "floating expand.width makes element match parent width" {
 }
 
 test "floating expand.height makes element match parent height" {
-    var engine = try LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
 
     engine.beginFrame(800, 600);
@@ -470,7 +493,7 @@ test "floating expand.height makes element match parent height" {
 }
 
 test "floating expand both dimensions" {
-    var engine = try LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
 
     engine.beginFrame(800, 600);
@@ -548,14 +571,8 @@ test "WordInfo struct has expected fields" {
     try std.testing.expect(!word.has_newline);
 }
 
-test "MAX_WORDS_PER_TEXT constant is reasonable" {
-    // Ensure we have enough capacity for typical text content
-    try std.testing.expect(MAX_WORDS_PER_TEXT >= 1000);
-    try std.testing.expect(MAX_WORDS_PER_TEXT <= 10000); // But not excessive
-}
-
 test "grow distribution gives equal space to grow elements" {
-    var engine = try LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
 
     engine.beginFrame(300, 100);
@@ -597,7 +614,7 @@ test "grow distribution gives equal space to grow elements" {
 }
 
 test "shrink distribution respects minimum constraints" {
-    var engine = try LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
 
     engine.beginFrame(100, 100); // Very small viewport
@@ -644,7 +661,7 @@ test "shrink distribution respects minimum constraints" {
 // =============================================================================
 
 test "fast path: single grow child gets full available space" {
-    var engine = try LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
 
     engine.beginFrame(400, 300);
@@ -672,7 +689,7 @@ test "fast path: single grow child gets full available space" {
 }
 
 test "fast path: all floating children falls back to slow path" {
-    var engine = try LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
 
     engine.beginFrame(400, 300);
@@ -712,7 +729,7 @@ test "fast path: all floating children falls back to slow path" {
 }
 
 test "fast path: mixed sizing children falls back to slow path" {
-    var engine = try LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
 
     engine.beginFrame(400, 100);
@@ -765,7 +782,7 @@ test "fast path: mixed sizing children falls back to slow path" {
 }
 
 test "fast path: grow with min constraint falls back to slow path" {
-    var engine = try LayoutEngine.init(std.testing.allocator);
+    var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
 
     engine.beginFrame(300, 100);

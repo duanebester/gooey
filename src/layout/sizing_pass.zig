@@ -29,16 +29,17 @@ const types = @import("types.zig");
 
 const LayoutEngine = engine_mod.LayoutEngine;
 const LayoutElement = engine_mod.LayoutElement;
-const FixedCapacityArray = engine_mod.FixedCapacityArray;
+const BoundedList = engine_mod.BoundedList;
 const WordInfo = engine_mod.WordInfo;
 const TextConfig = types.TextConfig;
 const SizingAxis = types.SizingAxis;
 const LayoutConfig = types.LayoutConfig;
 const MeasureTextFn = engine_mod.MeasureTextFn;
 
-const MAX_OPEN_DEPTH = engine_mod.MAX_OPEN_DEPTH;
-const MAX_LINES_PER_TEXT = engine_mod.MAX_LINES_PER_TEXT;
-const MAX_WORDS_PER_TEXT = engine_mod.MAX_WORDS_PER_TEXT;
+/// The passes' explicit stacks live on the call stack at the framework's
+/// depth ceiling (128 frames of a few dozen bytes) and are bounded at run time
+/// by the engine's `box_depth_max`, so no pass needs reserved scratch.
+const box_depth_ceiling = @import("../core/limits.zig").box_depth_ceiling;
 const UNCONSTRAINED_MAX = engine_mod.UNCONSTRAINED_MAX;
 
 // ============================================================================
@@ -53,7 +54,7 @@ pub fn subtreeEnd(engine: *const LayoutEngine, root: u32) u32 {
     std.debug.assert(root < count);
     var index = root;
     var steps: u32 = 0;
-    while (steps <= MAX_OPEN_DEPTH) : (steps += 1) {
+    while (steps <= engine.capacity.box_depth_max) : (steps += 1) {
         const elem = engine.elements.getConst(index);
         if (elem.next_sibling_index) |next| {
             std.debug.assert(next > root);
@@ -105,7 +106,7 @@ pub fn computeMinSizes(engine: *LayoutEngine, root: u32) void {
     }
 
     // A frame per open level: the open stack bounds the tree's depth.
-    var stack: [MAX_OPEN_DEPTH]MinSizeFrame = undefined;
+    var stack: [box_depth_ceiling]MinSizeFrame = undefined;
     stack[0] = openMinSizeFrame(engine, root);
     var depth: u32 = 1;
     var open_count: u32 = 1;
@@ -113,7 +114,7 @@ pub fn computeMinSizes(engine: *LayoutEngine, root: u32) void {
         std.debug.assert(open_count <= engine.elements.len()); // Each parent once.
         const frame = &stack[depth - 1];
         if (addChildMinSizes(engine, frame)) |child_index| {
-            std.debug.assert(depth < stack.len);
+            std.debug.assert(depth < engine.capacity.box_depth_max);
             stack[depth] = openMinSizeFrame(engine, child_index);
             depth += 1;
             open_count += 1;
@@ -281,7 +282,7 @@ pub fn computeFinalSizes(
     }
 
     // A frame per open level: the open stack bounds the tree's depth.
-    var stack: [MAX_OPEN_DEPTH]SizingFrame = undefined;
+    var stack: [box_depth_ceiling]SizingFrame = undefined;
     stack[0] = root_plan;
     var depth: u32 = 1;
     var open_count: u32 = 1;
@@ -289,7 +290,7 @@ pub fn computeFinalSizes(
         std.debug.assert(open_count <= engine.elements.len()); // Each parent once.
         var opened: SizingFrame = undefined;
         if (sizeSiblings(engine, &stack[depth - 1], &opened)) {
-            std.debug.assert(depth < stack.len);
+            std.debug.assert(depth < engine.capacity.box_depth_max);
             stack[depth] = opened;
             depth += 1;
             open_count += 1;
@@ -868,7 +869,7 @@ pub fn propagateHeightChange(engine: *LayoutEngine, parent_idx: ?u32) void {
     var idx = parent_idx;
     var depth: u32 = 0;
     while (idx) |pi| : (depth += 1) {
-        std.debug.assert(depth <= MAX_OPEN_DEPTH); // Ancestors are open containers.
+        std.debug.assert(depth <= engine.capacity.box_depth_max); // Ancestors were open.
         const parent = engine.elements.get(pi);
         const sizing = parent.config.layout.sizing.height;
 
@@ -945,18 +946,22 @@ pub fn wrapText(
     };
 
     // Pass 1: Find word boundaries and measure each word once.
-    var words: FixedCapacityArray(WordInfo, MAX_WORDS_PER_TEXT) = .{};
+    // Both passes write the engine's reserved scratch, which holds one text.
+    var words: BoundedList(WordInfo) = .{ .buffer = engine.word_scratch };
     _ = findWordBoundaries(text_str, measure_fn, config, engine.measure_text_user_data, &words);
+    engine.word_count_used_max = @max(engine.word_count_used_max, words.len);
 
     // Pass 2: Accumulate words onto lines; capture residual so the final
     // line carries the right `line_width`.
-    var lines: FixedCapacityArray(types.WrappedLine, MAX_LINES_PER_TEXT) = .{};
+    var lines: BoundedList(types.WrappedLine) = .{ .buffer = engine.line_scratch };
     var residual: LineResidual = .{};
     const max_line_width = accumulateWordsIntoLines(words.slice(), config.wrap_mode, max_width, &lines, &residual);
 
     const final_max = finalizeLastLine(text_str, residual, &lines);
+    std.debug.assert(lines.len <= words.len + 1); // `lineCountTextMax`.
+    engine.line_count_used_max = @max(engine.line_count_used_max, lines.len);
 
-    claimWrappedLines(engine, @intCast(lines.len));
+    claimWrappedLines(engine, lines.len);
     // Copy to arena for return (arena memory persists until frame end).
     const result_lines = try engine.arena.allocator().dupe(types.WrappedLine, lines.slice());
     const line_height = config.lineHeightPx();
@@ -986,7 +991,7 @@ fn accumulateWordsIntoLines(
     words: []const WordInfo,
     wrap_mode: TextConfig.WrapMode,
     max_width: f32,
-    lines: *FixedCapacityArray(types.WrappedLine, MAX_LINES_PER_TEXT),
+    lines: *BoundedList(types.WrappedLine),
     residual_out: *LineResidual,
 ) f32 {
     std.debug.assert(max_width >= 0);
@@ -1057,7 +1062,7 @@ fn accumulateWordsIntoLines(
 fn finalizeLastLine(
     text_str: []const u8,
     residual: LineResidual,
-    lines: *FixedCapacityArray(types.WrappedLine, MAX_LINES_PER_TEXT),
+    lines: *BoundedList(types.WrappedLine),
 ) f32 {
     if (residual.line_start >= text_str.len) return 0;
 
@@ -1078,8 +1083,8 @@ fn finalizeLastLine(
 /// space, so an over-budget frame names the pool instead of failing as an
 /// arena allocation.
 fn claimWrappedLines(engine: *LayoutEngine, line_count: u32) void {
-    std.debug.assert(line_count <= MAX_LINES_PER_TEXT);
-    const capacity = engine.wrapped_line_count_frame_max orelse return;
+    std.debug.assert(line_count <= engine.line_scratch.len);
+    const capacity = engine.capacity.wrapped_line_count_frame_max;
     std.debug.assert(engine.wrapped_line_count <= capacity);
     if (line_count > capacity - engine.wrapped_line_count) {
         std.debug.panic("wrapped lines exhausted: capacity {d} " ++
@@ -1092,23 +1097,20 @@ fn claimWrappedLines(engine: *LayoutEngine, line_count: u32) void {
     engine.wrapped_line_count += line_count;
 }
 
-/// Wrapped lines and words are fixed pools: a text past either capacity is a
-/// capacity-planning error, so it stops here rather than dropping the rest.
-fn appendLine(
-    lines: *FixedCapacityArray(types.WrappedLine, MAX_LINES_PER_TEXT),
-    line: types.WrappedLine,
-) void {
-    lines.append(line) catch std.debug.panic(
-        "wrapped text lines exhausted: capacity {d} (MAX_LINES_PER_TEXT), 1 requested",
-        .{MAX_LINES_PER_TEXT},
-    );
+/// One text's words and lines are fixed pools sized from the shaping bound: a
+/// text past either is a capacity-planning error, so it stops here rather than
+/// dropping the rest. The core measures every text whole first, so its own
+/// shaping check (`text.run_codepoint_count_max`) fails before this one.
+fn appendLine(lines: *BoundedList(types.WrappedLine), line: types.WrappedLine) void {
+    lines.append(line) catch std.debug.panic("layout pool 'wrap lines' exhausted: " ++
+        "capacity {d}, {d} in use, 1 requested. One text wraps into at most " ++
+        "text.run_codepoint_count_max + 1 lines.", .{ lines.buffer.len, lines.len });
 }
 
-fn appendWord(words: *FixedCapacityArray(WordInfo, MAX_WORDS_PER_TEXT), word: WordInfo) void {
-    words.append(word) catch std.debug.panic(
-        "wrapped text words exhausted: capacity {d} (MAX_WORDS_PER_TEXT), 1 requested",
-        .{MAX_WORDS_PER_TEXT},
-    );
+fn appendWord(words: *BoundedList(WordInfo), word: WordInfo) void {
+    words.append(word) catch std.debug.panic("layout pool 'wrap words' exhausted: " ++
+        "capacity {d}, {d} in use, 1 requested. One text holds at most " ++
+        "text.run_codepoint_count_max codepoints.", .{ words.buffer.len, words.len });
 }
 
 // ============================================================================
@@ -1122,7 +1124,7 @@ const WordScanState = struct {
     measure_fn: MeasureTextFn,
     config: TextConfig,
     user_data: ?*anyopaque,
-    words: *FixedCapacityArray(WordInfo, MAX_WORDS_PER_TEXT),
+    words: *BoundedList(WordInfo),
     cached_space_width: f32,
     word_start: u32 = 0,
     byte_pos: u32 = 0,
@@ -1130,14 +1132,14 @@ const WordScanState = struct {
 };
 
 /// Find word boundaries in text and measure each word exactly once.
-/// Returns the number of words appended (≤ MAX_WORDS_PER_TEXT). Caller
+/// Returns the number of words appended (≤ `words.buffer.len`). Caller
 /// supplies an empty `words` array.
 pub fn findWordBoundaries(
     text_str: []const u8,
     measure_fn: MeasureTextFn,
     config: TextConfig,
     user_data: ?*anyopaque,
-    words: *FixedCapacityArray(WordInfo, MAX_WORDS_PER_TEXT),
+    words: *BoundedList(WordInfo),
 ) u32 {
     std.debug.assert(text_str.len > 0);
     std.debug.assert(words.len == 0); // Should start empty
@@ -1193,7 +1195,7 @@ pub fn findWordBoundaries(
         emitFinalWord(&state);
     }
 
-    return @intCast(words.len);
+    return words.len;
 }
 
 /// Append a word at a newline boundary.

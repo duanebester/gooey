@@ -1318,11 +1318,12 @@ fn cursorAt(app: *CursorApp, now: *u64, x: f32, y: f32) CursorShape {
     return app.window.cursor;
 }
 
-test "boxes nest as deep as the open stack and every level lays out inside its parent" {
-    // Goal: the layout passes take every depth the build admits. They used to
+test "boxes nest exactly to build.box_depth_max and every level lays out inside its parent" {
+    // Goal: the layout passes take every depth the budget admits. They used to
     // recurse with a cap of 48 below the stack's 64, so about 47 nested boxes
     // stopped layout with a bare assertion. Method: nest the 63 boxes that fit
-    // inside the window root, each padded by 1 px around a 10 px box at the
+    // inside the window root at `nano`'s `build.box_depth_max` of 64 (one more
+    // fails fast: `core-box-depth`), each padded by 1 px around a 10 px box at the
     // bottom, and check every level's bounds: box `i` (1-based, pre-order
     // index `i` in layout) sits at `i - 1` and spans 10 + 2 × (63 − i).
     const app = try testing.allocator.create(DeepApp);
@@ -1330,7 +1331,7 @@ test "boxes nest as deep as the open stack and every level lays out inside its p
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
     defer app.deinitHeadless();
     app.tick(1);
-    const box_count: u32 = internals.window.box_depth_max - 1;
+    const box_count: u32 = gooey.ResourceLimits.nano.build.box_depth_max - 1;
     const layout = app.window.layout;
     try testing.expectEqual(box_count + 1, layout.elements.len());
     var index: u32 = 1;
@@ -1356,7 +1357,7 @@ const DeepApp = gooey.App(struct {}, deepRender, .{
 });
 
 fn deepRender(cx: *Cx) void {
-    cx.render(DeepBoxes{ .remaining = internals.window.box_depth_max - 1 });
+    cx.render(DeepBoxes{ .remaining = gooey.ResourceLimits.nano.build.box_depth_max - 1 });
 }
 
 /// Two padded boxes per component level, so the component depth budget

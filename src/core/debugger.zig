@@ -52,9 +52,9 @@ pub const enabled = switch (builtin.mode) {
 /// The overlay's headroom, reserved on top of the app's limits in safe
 /// builds. The overlay writes only quads and glyph sprites, one paint record
 /// each, so its records are its quads plus its glyphs.
-pub const overlay_quad_count_max: u32 = 129;
+pub const overlay_quad_count_max: u32 = 193;
 pub const overlay_glyph_count_max: u32 = 300;
-pub const overlay_paint_record_count_max: u32 = 430;
+pub const overlay_paint_record_count_max: u32 = 493;
 
 /// The limits a window reserves storage for: the app's, plus the overlay's
 /// headroom when the debugger is compiled in. The window still holds the app
@@ -387,12 +387,12 @@ fn nodeAt(window: *const Window, x: f32, y: f32) ?u32 {
     if (window.node_count == 0) return null;
     const elements = window.layout.elements.items();
     assert(elements.len == window.node_count);
-    var layer_level: [window_mod.box_depth_max + 1]u8 = undefined;
+    var layer_level: [window_mod.box_depth_ceiling + 1]u8 = undefined;
     var best: ?u32 = null;
     var best_level: u8 = 0;
     for (window.nodes[0..window.node_count], 0..) |*node, index| {
         const depth = node.depth;
-        assert(depth <= window_mod.box_depth_max);
+        assert(depth <= window.limits.build.box_depth_max);
         const parent_level: u8 = if (depth == 0) 0 else layer_level[depth - 1];
         const level = parent_level + @intFromBool(node.layer != null);
         layer_level[depth] = level;
@@ -510,7 +510,7 @@ fn paintOutlines(window: *Window, painter: *Painter, hovered: ?u32, selected: ?u
         while (index != records.index_none and index != 0) : (steps += 1) {
             // The root is at depth 0, so a node has fewer non-root
             // ancestors than the deepest depth (`outline_count_max`).
-            assert(steps < window_mod.box_depth_max);
+            assert(steps < window.limits.build.box_depth_max);
             if (index != selected) {
                 outline(painter, boundsOf(elements[index]), color_ancestor, color_ancestor_border);
             }
@@ -815,7 +815,7 @@ const profiler_stage_labels = [6][]const u8{
 // =============================================================================
 
 /// Outlines: the hovered element's non-root ancestors, it, and the selection.
-const outline_count_max: u32 = window_mod.box_depth_max + 2;
+const outline_count_max: u32 = window_mod.box_depth_ceiling + 2;
 /// The panel, the graph's background and target line, and one bar per frame.
 const profiler_quad_count_max: u32 = 3 + Debugger.history_count;
 const inspector_quad_count_max: u32 = 1;

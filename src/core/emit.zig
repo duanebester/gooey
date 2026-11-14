@@ -259,11 +259,11 @@ pub fn emit(window: *Window) void {
 /// popover's options sit under their combobox for the screen reader.
 fn emitAccessibility(window: *Window) void {
     const elements = window.layout.elements.items();
-    var a11y_level: [window_mod.box_depth_max + 1]u8 = undefined;
+    var a11y_level: [window_mod.box_depth_ceiling + 1]u8 = undefined;
     for (window.nodes[0..window.node_count], 0..) |*node, index| {
         if (node.kind == .text) continue;
         const depth = node.depth;
-        assert(depth <= window_mod.box_depth_max);
+        assert(depth <= window.limits.build.box_depth_max);
         const box = elements[index].computed.bounding_box;
         const bounds = Rect{ .x = box.x, .y = box.y, .width = box.width, .height = box.height };
         const parent_level: u8 = if (depth == 0) 0 else a11y_level[depth - 1];
@@ -278,7 +278,7 @@ fn emitFragment(window: *Window, layers_open: *LayerQueue, root: *const LayerRoo
     const elements = window.layout.elements.items();
     const nodes = window.nodes[0..window.node_count];
     const root_depth = nodes[root.node_index].depth;
-    var hit_scope: [window_mod.box_depth_max + 1]u32 = undefined;
+    var hit_scope: [window_mod.box_depth_ceiling + 1]u32 = undefined;
     var clips = Clips{ .entries = undefined, .len = 0, .base = root.clip };
     if (root.clip) |rect| window.built().appendPaint(.{ .clip_push = rect });
     if (root.fragment != layers.content_fragment) {
@@ -289,7 +289,7 @@ fn emitFragment(window: *Window, layers_open: *LayerQueue, root: *const LayerRoo
     while (index < nodes.len) {
         const node = &nodes[index];
         const depth = node.depth;
-        assert(depth <= window_mod.box_depth_max);
+        assert(depth <= window.limits.build.box_depth_max);
         if (index != root.node_index and depth <= root_depth) break;
         const box = elements[index].computed.bounding_box;
         const bounds = Rect{ .x = box.x, .y = box.y, .width = box.width, .height = box.height };
@@ -478,11 +478,6 @@ fn subtreeEnd(nodes: []const Node, index: u32) u32 {
 
 const layer_count_ceiling = limits_mod.layer_count_ceiling;
 
-comptime {
-    // Each layer box is a layout float.
-    assert(layer_count_ceiling <= layout_mod.engine.MAX_FLOATING_ROOTS);
-}
-
 /// Where a fragment starts: its box, the hit record its hits bubble to, and
 /// the clip it inherits (`Layer.clip = .inherit`), if any.
 const LayerRoot = struct {
@@ -506,13 +501,10 @@ const LayerQueue = struct {
         assert(self.len <= self.opened);
         const opened_max = window.limits.build.layer_count_frame_max;
         assert(opened_max <= layer_count_ceiling);
-        if (self.opened == opened_max) {
-            std.debug.panic("layers exhausted: capacity {d}, frame {d}. Raise " ++
-                "ResourceLimits.build.layer_count_frame_max.", .{
-                opened_max,
-                window.frame_number,
-            });
-        }
+        // Each layer box is a layout floating root, a pool sized from the same
+        // field, so a frame past it already failed fast during its build.
+        assert(self.opened < opened_max);
+        assert(self.opened < window.layout.floating_roots.len);
         self.roots[self.len] = .{
             .node_index = index,
             .fragment = layers.content_fragment,
@@ -844,7 +836,7 @@ fn emitText(window: *Window, node: *const Node, bounds: Rect, data: *const TextD
         _ = emitTextLine(window, content, x, bounds.y, style);
         return;
     };
-    assert(lines.len <= layout_mod.engine.MAX_LINES_PER_TEXT);
+    assert(lines.len <= window.layout.line_scratch.len);
     const pitch = data.config.lineHeightPx();
     assert(pitch > 0);
     for (lines, 0..) |line, line_index| {

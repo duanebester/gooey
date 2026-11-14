@@ -34,24 +34,88 @@ const ShadowConfig = types.ShadowConfig;
 const TextConfig = types.TextConfig;
 
 const LayoutArena = arena_mod.LayoutArena;
+const limits_mod = @import("../core/limits.zig");
 
 // ============================================================================
-// Capacity Limits
+// Capacity
 // ============================================================================
 
-pub const MAX_ELEMENTS_PER_FRAME = 16384;
+/// Every capacity one layout engine reserves at initialization. All of them
+/// come from the app's `ResourceLimits` (`fromLimits`); tests, fuzzers and
+/// benchmarks build one from a named profile, so no layout path holds a
+/// capacity the budget does not name (CLAUDE.md §2).
+///
+/// Memory per engine: `element_count_max` × 384 B of elements, `arena_bytes`,
+/// and `word_count_text_max` × (20 B + 12 B) of wrap scratch, all from fresh
+/// pages and resident only as far as frames write. At `nano` that is 0.19 MiB
+/// of elements, a 72 KiB arena and 32 KiB of scratch.
+pub const LayoutCapacity = struct {
+    /// `build.element_count_frame_max` plus the window root.
+    element_count_max: u32,
+    /// `build.box_depth_max`: the open stack, and the depth every pass's
+    /// explicit stack walks.
+    box_depth_max: u32,
+    /// `build.layer_count_frame_max`: every floating element is a layer box.
+    floating_count_max: u32,
+    /// `run_codepoint_count_max`: the core measures each text whole before
+    /// layout wraps it, so a wrapped text holds at most that many codepoints,
+    /// and each word consumes at least one.
+    word_count_text_max: u32,
+    /// `paint.glyph_count_frame_max`: a frame that wraps more lines than it
+    /// can draw glyphs is almost all blank lines.
+    wrapped_line_count_frame_max: u32,
+    /// The per-frame arena (`arenaBytes`).
+    arena_bytes: u32,
 
-/// Maximum nesting depth for open elements (e.g., nested containers)
-pub const MAX_OPEN_DEPTH = 64;
+    pub fn fromLimits(limits: *const limits_mod.ResourceLimits) LayoutCapacity {
+        std.debug.assert(limits.check() == null);
+        const capacity: LayoutCapacity = .{
+            .element_count_max = limits.build.element_count_frame_max + 1,
+            .box_depth_max = limits.build.box_depth_max,
+            .floating_count_max = limits.build.layer_count_frame_max,
+            .word_count_text_max = limits_mod.run_codepoint_count_max,
+            .wrapped_line_count_frame_max = limits.paint.glyph_count_frame_max,
+            .arena_bytes = arenaBytes(limits),
+        };
+        capacity.assertValid();
+        return capacity;
+    }
 
-/// Maximum floating elements (dropdowns, tooltips, modals)
-pub const MAX_FLOATING_ROOTS = 256;
+    /// Lines one text can wrap into: each word ends at most one line, and the
+    /// text's remainder after the last break adds one more.
+    pub fn lineCountTextMax(self: *const LayoutCapacity) u32 {
+        std.debug.assert(self.word_count_text_max > 0);
+        return self.word_count_text_max + 1;
+    }
 
-/// Maximum lines per text element when wrapping
-pub const MAX_LINES_PER_TEXT = 1024;
+    fn assertValid(self: *const LayoutCapacity) void {
+        std.debug.assert(self.element_count_max > 1); // The root and one element.
+        std.debug.assert(self.element_count_max <= limits_mod.element_count_frame_ceiling + 1);
+        std.debug.assert(self.box_depth_max > 0);
+        std.debug.assert(self.box_depth_max <= limits_mod.box_depth_ceiling);
+        std.debug.assert(self.box_depth_max <= self.element_count_max);
+        std.debug.assert(self.floating_count_max > 0);
+        std.debug.assert(self.floating_count_max <= self.element_count_max);
+        std.debug.assert(self.word_count_text_max > 0);
+        std.debug.assert(self.wrapped_line_count_frame_max > 0);
+        std.debug.assert(self.arena_bytes > 0);
+    }
 
-/// Maximum words per text element for word-level measurement caching
-pub const MAX_WORDS_PER_TEXT = 2048;
+    /// The arena holds the frame's text copies (at most the text budget,
+    /// doubled for alignment gaps between them and the line slices) and its
+    /// wrapped lines (contract decision 9), capped at the glyph budget by
+    /// `wrapped_line_count_frame_max`.
+    fn arenaBytes(limits: *const limits_mod.ResourceLimits) u32 {
+        const text_bytes: u64 = limits.build.text_bytes_frame_max;
+        const line_count: u64 = limits.paint.glyph_count_frame_max;
+        std.debug.assert(text_bytes > 0);
+        std.debug.assert(line_count > 0);
+        comptime std.debug.assert(@sizeOf(types.WrappedLine) == 12);
+        const bytes = text_bytes * 2 + line_count * @sizeOf(types.WrappedLine);
+        std.debug.assert(bytes <= std.math.maxInt(u32));
+        return @intCast(bytes);
+    }
+};
 
 /// Threshold for treating a max constraint as effectively unconstrained
 /// (detects grow elements without a meaningful upper bound in the fast path).
@@ -67,22 +131,27 @@ pub const WordInfo = struct {
 };
 
 // ============================================================================
-// Fixed Capacity Array
+// Bounded list
 // ============================================================================
 
-/// A fixed-capacity array that doesn't allocate after init — used to avoid
-/// dynamic allocation during frame rendering.
-pub fn FixedCapacityArray(comptime T: type, comptime capacity: usize) type {
+/// A list over storage the engine reserved at initialization: it never
+/// allocates, and a full list reports `error.Overflow` for its owner to fail
+/// fast with the budget field that sized it.
+pub fn BoundedList(comptime T: type) type {
     return struct {
-        buffer: [capacity]T = undefined,
-        len: usize = 0,
+        buffer: []T,
+        len: u32 = 0,
 
         const Self = @This();
 
         pub fn append(self: *Self, item: T) error{Overflow}!void {
-            if (self.len >= capacity) return error.Overflow;
-            self.buffer[self.len] = item;
-            self.len += 1;
+            std.debug.assert(self.len <= self.buffer.len);
+            if (self.len < self.buffer.len) {
+                self.buffer[self.len] = item;
+                self.len += 1;
+            } else {
+                return error.Overflow;
+            }
         }
 
         pub fn pop(self: *Self) ?T {
@@ -91,11 +160,12 @@ pub fn FixedCapacityArray(comptime T: type, comptime capacity: usize) type {
             return self.buffer[self.len];
         }
 
-        pub fn slice(self: *const Self) []const T {
-            return self.buffer[0..self.len];
+        pub fn last(self: *const Self) ?T {
+            if (self.len == 0) return null;
+            return self.buffer[self.len - 1];
         }
 
-        pub fn sliceMut(self: *Self) []T {
+        pub fn slice(self: *const Self) []const T {
             return self.buffer[0..self.len];
         }
 
@@ -166,7 +236,7 @@ pub const LayoutElement = struct {
     text_data: ?TextData = null,
 };
 
-/// Element storage: one fixed reservation of `MAX_ELEMENTS_PER_FRAME`
+/// Element storage: one reservation of `LayoutCapacity.element_count_max`
 /// elements, never grown.
 pub const ElementList = struct {
     elements: std.ArrayList(LayoutElement),
@@ -175,18 +245,17 @@ pub const ElementList = struct {
 
     const Self = @This();
 
-    /// Reserves exactly the per-frame element budget (10.1 MiB at 648 B per
-    /// element) through `core/reservation.zig`, so only the elements a frame
-    /// writes become resident. It used to round up through `ArrayList` growth
-    /// to 24,577 elements, 50% over. A failed reservation is returned rather
-    /// than ignored: an engine without it would allocate on the frame path
-    /// (CLAUDE.md §2).
-    pub fn init() error{OutOfMemory}!Self {
+    /// Reserves exactly the per-frame element budget through
+    /// `core/reservation.zig`, so only the elements a frame writes become
+    /// resident. A failed reservation is returned rather than ignored: an
+    /// engine without it would allocate on the frame path (CLAUDE.md §2).
+    pub fn init(count_max: u32) error{OutOfMemory}!Self {
+        std.debug.assert(count_max > 0);
         const list = Self{
-            .elements = try reservation.reserveList(LayoutElement, MAX_ELEMENTS_PER_FRAME),
+            .elements = try reservation.reserveList(LayoutElement, count_max),
             .element_count_max = 0,
         };
-        std.debug.assert(list.elements.capacity == MAX_ELEMENTS_PER_FRAME);
+        std.debug.assert(list.elements.capacity == count_max);
         return list;
     }
 
@@ -195,25 +264,27 @@ pub const ElementList = struct {
     }
 
     pub fn clear(self: *Self) void {
-        std.debug.assert(self.elements.items.len <= MAX_ELEMENTS_PER_FRAME);
+        std.debug.assert(self.elements.items.len <= self.elements.capacity);
         self.element_count_max = @max(self.element_count_max, self.len());
         self.elements.clearRetainingCapacity();
     }
 
     /// Exhaustion is a capacity-planning error (CLAUDE.md §2): it stops with
-    /// the pool name and capacity rather than growing a reservation no
-    /// allocator owns. `createElement` asserts the same bound before calling.
-    pub fn append(self: *Self, elem: LayoutElement) error{}!u32 {
+    /// the pool name and the budget field rather than growing a reservation no
+    /// allocator owns. The core fails first, in `cx.addNode`, at the same
+    /// budget; direct layout callers reach this one.
+    pub fn append(self: *Self, elem: LayoutElement) u32 {
         const index: u32 = @intCast(self.elements.items.len);
         if (index < self.elements.capacity) {
             self.elements.appendAssumeCapacity(elem);
         } else {
-            std.debug.panic("layout element list exhausted: capacity {d} " ++
-                "(MAX_ELEMENTS_PER_FRAME), {d} in use, 1 requested", .{
+            std.debug.panic("layout pool 'elements' exhausted: capacity {d}, {d} in use, " ++
+                "1 requested. Raise ResourceLimits.build.element_count_frame_max.", .{
                 self.elements.capacity,
                 index,
             });
         }
+        std.debug.assert(self.elements.items.len == index + 1);
         return index;
     }
 
@@ -258,42 +329,86 @@ pub const MeasureTextFn = *const fn (
 // ============================================================================
 
 pub const LayoutEngine = struct {
-    allocator: std.mem.Allocator,
+    capacity: LayoutCapacity,
     arena: LayoutArena,
+    /// The arena's reservation and its high-water mark, zeroed on release (§21).
+    arena_buffer: []u8,
+    arena_used_max: usize,
     elements: ElementList,
-    /// Stack of open container indices (fixed capacity)
-    open_element_stack: FixedCapacityArray(u32, MAX_OPEN_DEPTH) = .{},
+    /// Open container indices, `box_depth_max` deep.
+    open_element_stack: BoundedList(u32),
     root_index: ?u32 = null,
     viewport_width: f32 = 0,
     viewport_height: f32 = 0,
     measure_text_fn: ?MeasureTextFn = null,
     measure_text_user_data: ?*anyopaque = null,
-    /// Floating elements to position after main layout (fixed capacity)
-    floating_roots: FixedCapacityArray(u32, MAX_FLOATING_ROOTS) = .{},
-    /// Wrapped lines per frame, across every text. The 0.4.0 core sets it from
-    /// its glyph budget and sizes the fixed arena to match; null (the 0.3.1
-    /// runtime's growing arena) leaves only the per-text cap.
-    wrapped_line_count_frame_max: ?u32 = null,
+    /// Floating elements to position after main layout, `floating_count_max`.
+    floating_roots: BoundedList(u32),
+    /// One text's words and wrapped lines while it wraps, reserved once so a
+    /// wrap needs no stack buffer (`sizing_pass.wrapText`).
+    word_scratch: []WordInfo,
+    line_scratch: []types.WrappedLine,
+    /// The scratch tables' high-water marks, zeroed on release (§21).
+    word_count_used_max: u32 = 0,
+    line_count_used_max: u32 = 0,
+    /// Wrapped lines this frame, across every text, against
+    /// `capacity.wrapped_line_count_frame_max`.
     wrapped_line_count: u32 = 0,
 
     const Self = @This();
 
-    /// Reserves every per-frame table at initialization and returns a failed
-    /// reservation instead of ignoring it, so the frame path never allocates
-    /// to make up for it (CLAUDE.md §2, §17).
-    pub fn init(allocator: std.mem.Allocator) error{OutOfMemory}!Self {
-        const elements = try ElementList.init();
-        std.debug.assert(elements.len() == 0);
-        return .{
-            .allocator = allocator,
-            .arena = LayoutArena.init(allocator),
+    /// Reserves every per-frame table from `capacity` at initialization and
+    /// returns a failed reservation instead of ignoring it, so the frame path
+    /// never allocates to make up for it (CLAUDE.md §2, §17). Every table comes
+    /// from fresh pages (`core/reservation.zig`): resident only where written.
+    pub fn init(capacity: *const LayoutCapacity) error{OutOfMemory}!Self {
+        capacity.assertValid();
+
+        var elements = try ElementList.init(capacity.element_count_max);
+        errdefer elements.deinit();
+
+        const arena_buffer = try reservation.reserve(u8, capacity.arena_bytes);
+        errdefer reservation.release(u8, arena_buffer, 0);
+
+        const open_stack = try reservation.reserve(u32, capacity.box_depth_max);
+        errdefer reservation.release(u32, open_stack, 0);
+
+        const floating = try reservation.reserve(u32, capacity.floating_count_max);
+        errdefer reservation.release(u32, floating, 0);
+
+        const words = try reservation.reserve(WordInfo, capacity.word_count_text_max);
+        errdefer reservation.release(WordInfo, words, 0);
+
+        const lines = try reservation.reserve(types.WrappedLine, capacity.lineCountTextMax());
+
+        const engine: Self = .{
+            .capacity = capacity.*,
+            .arena = LayoutArena.init(arena_buffer),
+            .arena_buffer = arena_buffer,
+            .arena_used_max = 0,
             .elements = elements,
+            .open_element_stack = .{ .buffer = open_stack },
+            .floating_roots = .{ .buffer = floating },
+            .word_scratch = words,
+            .line_scratch = lines,
         };
+        std.debug.assert(engine.elements.len() == 0);
+        std.debug.assert(engine.open_element_stack.buffer.len == capacity.box_depth_max);
+        return engine;
     }
 
+    /// Zero every prefix any frame wrote before the pages go back (§21). The
+    /// open stack and floating roots are zeroed whole: each is at most 1 KiB.
     pub fn deinit(self: *Self) void {
+        self.arena_used_max = @max(self.arena_used_max, self.arena.bytesUsed());
+        reservation.release(types.WrappedLine, self.line_scratch, self.line_count_used_max);
+        reservation.release(WordInfo, self.word_scratch, self.word_count_used_max);
+        const floating = self.floating_roots.buffer;
+        reservation.release(u32, floating, floating.len);
+        const open_stack = self.open_element_stack.buffer;
+        reservation.release(u32, open_stack, open_stack.len);
+        reservation.release(u8, self.arena_buffer, self.arena_used_max);
         self.elements.deinit();
-        self.arena.deinit();
     }
 
     pub fn setMeasureTextFn(self: *Self, func: MeasureTextFn, user_data: ?*anyopaque) void {
@@ -302,6 +417,8 @@ pub const LayoutEngine = struct {
     }
 
     pub fn beginFrame(self: *Self, width: f32, height: f32) void {
+        self.arena_used_max = @max(self.arena_used_max, self.arena.bytesUsed());
+        std.debug.assert(self.arena_used_max <= self.arena_buffer.len);
         self.arena.reset();
         self.elements.clear();
         self.open_element_stack.len = 0;
@@ -314,7 +431,10 @@ pub const LayoutEngine = struct {
 
     pub fn openElement(self: *Self, decl: ElementDeclaration) !void {
         const index = try self.createElement(decl, .container);
-        self.open_element_stack.append(index) catch @panic("open_element_stack overflow - increase MAX_OPEN_DEPTH");
+        // `createElement` checked the room (`checkOpenDepth`); the core checks
+        // the same budget first, in `cx.checkBoxDepth`.
+        std.debug.assert(self.open_element_stack.len < self.capacity.box_depth_max);
+        self.open_element_stack.append(index) catch unreachable;
     }
 
     pub fn closeElement(self: *Self) void {
@@ -359,15 +479,10 @@ pub const LayoutEngine = struct {
     /// Create an element and link it into the tree: append it, track it as a
     /// floating root when it floats, and link it to its parent.
     fn createElement(self: *Self, decl: ElementDeclaration, elem_type: ElementType) !u32 {
-        std.debug.assert(self.elements.len() < MAX_ELEMENTS_PER_FRAME); // Prevent unbounded growth
-        std.debug.assert(elem_type != .container or self.open_element_stack.len < MAX_OPEN_DEPTH); // Depth check for containers
+        if (elem_type == .container) self.checkOpenDepth();
+        const parent_index = self.open_element_stack.last();
 
-        const parent_index = if (self.open_element_stack.len > 0)
-            self.open_element_stack.buffer[self.open_element_stack.len - 1]
-        else
-            null;
-
-        const index = try self.elements.append(.{
+        const index = self.elements.append(.{
             .config = decl,
             .parent_index = parent_index,
             .element_type = elem_type,
@@ -375,14 +490,37 @@ pub const LayoutEngine = struct {
 
         // Floating elements are positioned after the main layout.
         if (decl.floating != null) {
-            self.floating_roots.append(index) catch
-                @panic("floating_roots overflow - increase MAX_FLOATING_ROOTS");
+            self.floating_roots.append(index) catch self.floatingRootsFailed();
         }
 
         // Link to parent (or set root) and bump the parent's child_count.
         self.linkToParent(index, parent_index);
 
         return index;
+    }
+
+    /// A container past the open stack is a capacity-planning error that names
+    /// the budget field sizing it.
+    fn checkOpenDepth(self: *const Self) void {
+        const depth = self.open_element_stack.len;
+        std.debug.assert(depth <= self.capacity.box_depth_max);
+        if (depth < self.capacity.box_depth_max) return;
+        std.debug.panic("layout pool 'box depth' exhausted: capacity {d}, {d} in use, " ++
+            "1 requested. Raise ResourceLimits.build.box_depth_max.", .{
+            self.capacity.box_depth_max,
+            depth,
+        });
+    }
+
+    /// The core opens one floating element per layer box, so a frame past
+    /// this pool has more layers than `build.layer_count_frame_max` allows.
+    fn floatingRootsFailed(self: *const Self) noreturn {
+        std.debug.assert(self.floating_roots.len == self.capacity.floating_count_max);
+        std.debug.panic("layout pool 'floating roots' exhausted: capacity {d}, {d} in use, " ++
+            "1 requested. Raise ResourceLimits.build.layer_count_frame_max.", .{
+            self.capacity.floating_count_max,
+            self.floating_roots.len,
+        });
     }
 
     /// Link a newly-created element into its parent's child list. Uses

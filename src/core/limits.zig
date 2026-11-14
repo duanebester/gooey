@@ -252,9 +252,9 @@ pub const ResourceLimits = struct {
         return self.checkCoreRelationships();
     }
 
-    /// Rules between the core's budgets. A hit record and a handler belong to
-    /// an element, so neither can outnumber elements; the layout engine stores
-    /// at most `MAX_LAYOUT_ENGINE_ELEMENTS` per frame.
+    /// Rules between the core's budgets. A hit record, a handler, a layer and a
+    /// level of box nesting each belong to an element, so none can outnumber
+    /// elements.
     fn checkCoreRelationships(self: *const ResourceLimits) ?Violation {
         const element_count = self.build.element_count_frame_max;
         if (self.records.hit_record_count_frame_max > element_count) {
@@ -280,6 +280,17 @@ pub const ResourceLimits = struct {
                 self.build.key_count_frame_max,
                 element_count,
             );
+        }
+        if (self.build.layer_count_frame_max > element_count) {
+            return relationship(
+                .build,
+                "layer_count_frame_max",
+                self.build.layer_count_frame_max,
+                element_count,
+            );
+        }
+        if (self.build.box_depth_max > element_count) {
+            return relationship(.build, "box_depth_max", self.build.box_depth_max, element_count);
         }
         if (self.events.dialog_path_bytes_max > self.events.text_bytes_max) {
             return relationship(
@@ -890,12 +901,36 @@ pub const AtlasLimits = struct {
 // contract's performance sketch; the other rungs scale it to their example
 // class. `ceiling` holds the framework maxima `check` enforces.
 
-/// Elements the layout engine stores per frame (`layout/engine.zig`).
-pub const MAX_LAYOUT_ENGINE_ELEMENTS: u32 = 16_384;
+/// Most elements an app's render may build per frame. The window adds its root,
+/// so a layout engine holds at most 65,536 elements, an index range that stays
+/// well inside `u32` and keeps the `ceiling` profile's layout reservation at
+/// 24 MiB of virtual memory (65,536 × 384 B), resident only as far as frames
+/// write. Capacity no longer sets a fixed reservation: every window reserves
+/// `build.element_count_frame_max + 1` elements (`LayoutCapacity.fromLimits`).
+pub const element_count_frame_ceiling: u32 = 65_535;
 
-/// Elements an app's render may build: the layout engine's capacity less
-/// the window root the core opens around it.
-pub const MAX_APP_ELEMENTS: u32 = MAX_LAYOUT_ENGINE_ELEMENTS - 1;
+/// Deepest box nesting a build may track, the window root included. `Node.depth`
+/// is a `u8`, and the layout passes, router, emit and debugger keep their
+/// explicit stacks at this ceiling on the call stack (about 1 KiB each).
+pub const box_depth_ceiling: u32 = 128;
+
+comptime {
+    // `Node.depth` is a `u8`; the window root plus every app element is the
+    // 65,536-element layout ceiling the memory budget states.
+    assert(box_depth_ceiling <= std.math.maxInt(u8));
+    assert(element_count_frame_ceiling + 1 == 65_536);
+}
+
+/// The most codepoints one shaped run may hold, on every backend. CoreText
+/// shapes at most 2048 UTF-16 units and 1024 glyphs per CTRun, DirectWrite
+/// 2048 UTF-16 units, and the 0.4.0 core's per-tick text scratch holds the
+/// shaped glyphs of one such run with room for the shaper's growth (asserted
+/// in `core/window.zig`). A codepoint is at most two UTF-16 units and, in the
+/// scripts Gooey shapes, at most one glyph. A longer run fails shaping with
+/// `error.TextRunTooLong` before any backend sees it. A platform limit, not an
+/// app capacity: it also bounds the words (one per codepoint at most) and lines
+/// layout wraps one text into, since the core measures every text whole first.
+pub const run_codepoint_count_max: u32 = 1024;
 
 /// Most handlers one element can register (click, click-outside, key).
 pub const handler_count_element_max: u32 = 3;
@@ -916,8 +951,13 @@ pub const BuildLimits = struct {
     key_count_frame_max: u32,
     /// Bytes of text and accessibility strings copied per frame (rule 6).
     text_bytes_frame_max: u32,
-    /// Boxes with a `layer` per frame; each opens one fragment (contract §6).
+    /// Boxes with a `layer` per frame; each opens one fragment (contract §6)
+    /// and is one layout floating root.
     layer_count_frame_max: u32,
+    /// Deepest box nesting, the window root included, so an app nests
+    /// `box_depth_max - 1` levels inside it. Sizes the layout open stack and
+    /// the window's open, hover and press paths. The examples peak at 8.
+    box_depth_max: u32,
 
     pub const nano: BuildLimits = .{
         .element_count_frame_max = 512,
@@ -925,6 +965,7 @@ pub const BuildLimits = struct {
         .key_count_frame_max = 256,
         .text_bytes_frame_max = 16 * 1024,
         .layer_count_frame_max = 8,
+        .box_depth_max = 64,
     };
     pub const small: BuildLimits = .{
         .element_count_frame_max = 2_048,
@@ -932,6 +973,7 @@ pub const BuildLimits = struct {
         .key_count_frame_max = 1_024,
         .text_bytes_frame_max = 64 * 1024,
         .layer_count_frame_max = 16,
+        .box_depth_max = 64,
     };
     pub const standard: BuildLimits = .{
         .element_count_frame_max = 4_096,
@@ -939,20 +981,23 @@ pub const BuildLimits = struct {
         .key_count_frame_max = 4_096,
         .text_bytes_frame_max = 256 * 1024,
         .layer_count_frame_max = 32,
+        .box_depth_max = 64,
     };
     pub const large: BuildLimits = .{
-        .element_count_frame_max = MAX_APP_ELEMENTS,
+        .element_count_frame_max = 16_383,
         .component_depth_max = 64,
-        .key_count_frame_max = MAX_APP_ELEMENTS,
+        .key_count_frame_max = 16_383,
         .text_bytes_frame_max = 1024 * 1024,
         .layer_count_frame_max = 64,
+        .box_depth_max = 64,
     };
     pub const ceiling: BuildLimits = .{
-        .element_count_frame_max = MAX_APP_ELEMENTS,
+        .element_count_frame_max = element_count_frame_ceiling,
         .component_depth_max = MAX_COMPONENT_DEPTH,
-        .key_count_frame_max = MAX_APP_ELEMENTS,
+        .key_count_frame_max = element_count_frame_ceiling,
         .text_bytes_frame_max = 4 * 1024 * 1024,
         .layer_count_frame_max = layer_count_ceiling,
+        .box_depth_max = box_depth_ceiling,
     };
 };
 
@@ -982,13 +1027,13 @@ pub const RecordLimits = struct {
     };
     pub const large: RecordLimits = .{
         .paint_record_count_frame_max = 65_536,
-        .hit_record_count_frame_max = MAX_APP_ELEMENTS,
+        .hit_record_count_frame_max = 16_383,
         .handler_count_frame_max = 16_384,
     };
     pub const ceiling: RecordLimits = .{
         .paint_record_count_frame_max = 262_144,
-        .hit_record_count_frame_max = MAX_APP_ELEMENTS,
-        .handler_count_frame_max = MAX_APP_ELEMENTS * handler_count_element_max,
+        .hit_record_count_frame_max = element_count_frame_ceiling,
+        .handler_count_frame_max = element_count_frame_ceiling * handler_count_element_max,
     };
 };
 
@@ -1635,6 +1680,56 @@ test "check reports each negative case precisely" {
     limits.paint.quad_count_frame_max += 1;
     try std.testing.expectEqual(Violation.Rule.above_ceiling, limits.check().?.rule);
     try std.testing.expectEqualStrings("quad_count_frame_max", limits.check().?.field);
+}
+
+test "check bounds box depth and layers by their ceilings and the element count" {
+    // Goal: `build.box_depth_max` and `build.layer_count_frame_max` each sit
+    // exactly on every bound (valid), then one past it (the named violation).
+    // The ceilings come from `Node.depth` (`u8`, at most 128 levels) and the
+    // `u8` fragment index (255 layers); the relationships hold because every
+    // level of nesting and every layer is an element. A 100-element budget
+    // puts the relationship below both ceilings, so each rule is seen alone.
+    var limits = ResourceLimits.standard;
+    limits.build.box_depth_max = 0;
+    try std.testing.expectEqual(Violation.Rule.zero, limits.check().?.rule);
+    try std.testing.expectEqualStrings("box_depth_max", limits.check().?.field);
+    limits.build.box_depth_max = box_depth_ceiling;
+    try std.testing.expect(limits.check() == null);
+    limits.build.box_depth_max = box_depth_ceiling + 1;
+    try std.testing.expectEqual(Violation.Rule.above_ceiling, limits.check().?.rule);
+    try std.testing.expectEqual(box_depth_ceiling, limits.check().?.bound);
+
+    limits = ResourceLimits.nano;
+    limits.build.element_count_frame_max = 100;
+    limits.build.key_count_frame_max = 100;
+    limits.records.hit_record_count_frame_max = 100;
+    limits.records.handler_count_frame_max = 100;
+    limits.build.box_depth_max = 100;
+    try std.testing.expect(limits.check() == null);
+    limits.build.box_depth_max = 101;
+    const depth = limits.check().?;
+    try std.testing.expectEqual(Violation.Budget.build, depth.budget);
+    try std.testing.expectEqualStrings("box_depth_max", depth.field);
+    try std.testing.expectEqual(Violation.Rule.above_relationship, depth.rule);
+    try std.testing.expectEqual(@as(u32, 100), depth.bound);
+
+    limits.build.box_depth_max = 64;
+    limits.build.layer_count_frame_max = 100;
+    try std.testing.expect(limits.check() == null);
+    limits.build.layer_count_frame_max = 101;
+    const layers = limits.check().?;
+    try std.testing.expectEqualStrings("layer_count_frame_max", layers.field);
+    try std.testing.expectEqual(Violation.Rule.above_relationship, layers.rule);
+    try std.testing.expectEqual(@as(u32, 100), layers.bound);
+
+    // The element ceiling rose to 65,535 once layout stopped reserving a
+    // fixed 16,384: exact is valid, one more is not.
+    limits = ResourceLimits.ceiling;
+    try std.testing.expect(limits.check() == null);
+    try std.testing.expectEqual(element_count_frame_ceiling, limits.build.element_count_frame_max);
+    limits.build.element_count_frame_max += 1;
+    try std.testing.expectEqual(Violation.Rule.above_ceiling, limits.check().?.rule);
+    try std.testing.expectEqualStrings("element_count_frame_max", limits.check().?.field);
 }
 
 test "derived budget quantities" {

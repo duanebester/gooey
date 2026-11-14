@@ -1452,16 +1452,20 @@ fn addFailFastChecks(
             "capacity 16. Raise ResourceLimits.events.dialog_path_count_max." },
         .{ .mode = "core-component-depth", .stderr = "component depth 65 exceeds " ++
             "build.component_depth_max 64 rendering fail_fast_check.CoreApp.Nest" },
-        .{ .mode = "core-box-depth", .stderr = "build pool 'box depth' exhausted: capacity 63 " ++
-            "levels inside the window root, 63 in use, 1 requested" },
+        .{ .mode = "core-box-depth", .stderr = "build pool 'box depth' exhausted: capacity 64, " ++
+            "64 in use, 1 requested, frame 1. Raise ResourceLimits.build.box_depth_max." },
+        .{ .mode = "core-layout-elements", .stderr = "build pool 'elements' exhausted: " ++
+            "capacity 512, 512 in use, 1 requested, frame 1. Raise " ++
+            "ResourceLimits.build.element_count_frame_max." },
+        .{ .mode = "core-layer-count", .stderr = "layout pool 'floating roots' exhausted: " ++
+            "capacity 8, 8 in use, 1 requested. Raise " ++
+            "ResourceLimits.build.layer_count_frame_max." },
         .{ .mode = "core-mono-unset", .stderr = "text uses family .mono, but no second " ++
             "family is loaded; set Config.fonts.mono and " ++
             "ResourceLimits.text.fonts.mono_variants" },
-        .{ .mode = "core-wrap-lines", .stderr = "text run of 1025 codepoints exceeds " ++
+        .{ .mode = "core-wrap-run", .stderr = "text run of 1025 codepoints exceeds " ++
             "text.run_codepoint_count_max 1024, the longest run one shaping may hold in the " ++
             "262144-byte text scratch, in frame 1." },
-        .{ .mode = "core-wrap-words", .stderr = "text run of 2049 codepoints exceeds " ++
-            "text.run_codepoint_count_max 1024" },
         .{ .mode = "core-wrap-frame", .stderr = "wrapped lines exhausted: capacity 1024 " ++
             "(paint.glyph_count_frame_max), 1000 in use, 25 requested" },
         .{ .mode = "core-deinit-running", .stderr = "App.deinit on a running app: " ++
