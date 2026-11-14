@@ -4,9 +4,9 @@ A Clay-inspired declarative layout engine for building UI hierarchies with flexb
 
 This is internal machinery (`gooey.internals.layout`), not app API: apps lay out with
 `ui.box` and `ui.Style` (`docs/v0.4.0-core-contract.md` §1). The core (`src/core/cx.zig`)
-declares one element per node with no `LayoutId`, and reads each node's bounds from the
-engine's element list by index (`src/core/emit.zig`). `LayoutId`, `getBoundingBox`, and
-`getContentBox` below are used only by the engine's own tests.
+opens one element per node and reads each node's bounds from the engine's element list by
+index (`src/core/emit.zig`). The snippets below compile against v0.5.1's engine
+(`gooey.internals.layout`).
 
 ## Overview
 
@@ -307,6 +307,11 @@ fn buildLoginUI(engine: *LayoutEngine) !void {
 | `opacity`          | `f32`             | `1.0`   | Subtree opacity (0.0 transparent–1.0 opaque) |
 | `is_canvas`        | `bool`            | `false` | Whether this is a canvas element             |
 
+The layout passes read only `layout`, `scroll`, and `floating`. The paint fields
+(`background_color`, `corner_radius`, `border`, `shadow`, `opacity`, `is_canvas`,
+`user_data`) are stored on the element and read by nothing: the core paints from its own
+nodes and applies `ui.Style.opacity` itself, so it leaves them at their defaults.
+
 ### LayoutConfig
 
 | Field                    | Type                   | Default          | Description                     |
@@ -361,7 +366,8 @@ try engine.text("Hello, World!", .{
 
 ### Offset2D
 
-Shared type for 2D offsets (used in FloatingConfig and ScrollConfig):
+Shared type for 2D offsets (used in FloatingConfig and ScrollConfig), exported as
+`layout.types.Offset2D`:
 
 ```zig
 const offset = Offset2D.init(10, 20);

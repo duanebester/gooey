@@ -4,8 +4,9 @@ Gaps that `booey` (a single-pane terminal prototype) and the Jenkins terminal-mu
 research (`jenkins/docs/terminal-multiplexer-mvp.md`) found in 0.3.1, and where each stands
 on the 0.4 core (`docs/v0.4.0-core-contract.md`).
 
-Status, 2026-11-14 (v0.5.1): items 1, 2, 3, 5, and 6 are met by the core. Item 4 is met
-without a new primitive. Item 7 is open.
+Status, 2026-11-14 (`main` after #227): items 1, 2, 3, 5, and 6 are met by the core. Item 4
+is met without a new primitive. Item 7 is half met: weighted grow works, and there is no
+splitter.
 
 The 0.3.1 version of this document (2026-07-30) described fixes to code the core replaced,
 such as `CxConfig`, `ui.canvas`, the `Focusable` vtable, and the layout engine's render
@@ -55,9 +56,13 @@ error, `on_init` is the only spelling, and the core has no `on_close` to need (c
 Every pool is sized from `ResourceLimits` at init, and exhaustion panics in every build mode
 with the pool name, capacity, requested count, and frame (contract rule 4).
 
-## 7. Multiplexer conveniences: open
+## 7. Multiplexer conveniences: half met
 
-- **Weighted grow.** `Sizing.grow` takes a weight, but on v0.5.1 a weight other than 1
-  panics. `.percent` splits a parent today (`.width = .{ .percent = 0.667 }`).
-- **Splitter.** No resizable divider exists. A thin keyed `ui.box` with mouse handlers and
-  a split ratio in app state is the way to build one.
+- **Weighted grow: met (#227).** Siblings sized `.{ .grow = weight }` split the parent's
+  free main-axis space by weight, each clamped between its content minimum and its
+  `width_max` or `height_max`, so a 2:1 split is `.{ .grow = 2 }` beside `.{ .grow = 1 }`.
+  A weight must be finite and greater than 0. `.percent` still sets a fixed fraction of
+  the parent (`.width = .{ .percent = 0.667 }`).
+- **Splitter: open.** No resizable divider exists, and the public API cannot build one
+  yet: a `Box` takes clicks and keys but no pointer moves, so nothing can follow a drag.
+  Pointer dragging is part of drag and drop, deferred to 0.6.
