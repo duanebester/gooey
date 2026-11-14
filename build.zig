@@ -308,29 +308,7 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run_bench_tests.step);
         test_step.dependOn(&run_trace_report_tests.step);
 
-        // =====================================================================
-        // Layout Fuzz Targets (PR 10)
-        // =====================================================================
-        //
-        // `src/layout/fuzz.zig` declares `test "fuzz: …"` blocks that call
-        // `std.testing.fuzz`. Routing them through `b.addTest` with the
-        // layout module's transitive imports gives us `zig build fuzz` for
-        // a single-shot smoke run, and `zig build fuzz -- --fuzz` for the
-        // 0.16 infinite-mode runner.
-        const fuzz_tests = b.addTest(.{
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("src/layout/fuzz.zig"),
-                .target = target,
-                .optimize = optimize,
-                .imports = &.{
-                    .{ .name = "gooey", .module = mod },
-                },
-            }),
-        });
-        const run_fuzz = b.addRunArtifact(fuzz_tests);
-        run_fuzz.addPassthruArgs();
-        const fuzz_step = b.step("fuzz", "Run layout-engine fuzz targets (pass --fuzz for infinite mode)");
-        fuzz_step.dependOn(&run_fuzz.step);
+        addFuzz(b, mod, target, optimize, test_step);
 
         // =====================================================================
         // Layout Benchmarks
@@ -860,6 +838,7 @@ pub fn build(b: *std.Build) void {
             test_step,
         );
         addImportBan(b, test_step);
+        addFuzz(b, mod, target, optimize, test_step);
         linkLinuxLibraries(fail_fast_exe, linux_backend);
         if (!skip_shader_compile) {
             fail_fast_exe.step.dependOn(compile_shaders_step);
@@ -1057,6 +1036,37 @@ fn addWindowsExample(
     run_cmd.step.dependOn(b.getInstallStep());
     b.step(b.fmt("run-{s}", .{name}), b.fmt("Run the {s} example", .{name}))
         .dependOn(&run_cmd.step);
+}
+
+/// Adds `zig build fuzz` for the layout fuzz targets in `src/layout/fuzz.zig`:
+/// a single-shot smoke run, or `zig build fuzz -- --fuzz` for infinite mode.
+/// `test` also runs the smoke pass, so the targets compile on every CI host
+/// rather than rotting behind a step nothing runs.
+fn addFuzz(
+    b: *std.Build,
+    gooey_module: *std.Build.Module,
+    target: std.Build.ResolvedTarget,
+    optimize: std.lang.Optimize,
+    test_step: *std.Build.Step,
+) void {
+    std.debug.assert(target.result.os.tag != .freestanding);
+    std.debug.assert(test_step.owner == b);
+
+    const fuzz_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/layout/fuzz.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "gooey", .module = gooey_module },
+            },
+        }),
+    });
+    const run_fuzz = b.addRunArtifact(fuzz_tests);
+    run_fuzz.addPassthruArgs();
+    const fuzz_step = b.step("fuzz", "Run layout-engine fuzz targets (pass --fuzz for infinite mode)");
+    fuzz_step.dependOn(&run_fuzz.step);
+    test_step.dependOn(&b.addRunArtifact(fuzz_tests).step);
 }
 
 /// Generates `vulkan-1.lib`, the import library for the system Vulkan loader,
