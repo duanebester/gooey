@@ -120,17 +120,19 @@ pub const FingerprintMap = struct {
 
     /// Insert fingerprint → index. Half the buckets at most are occupied, so
     /// a free one is always found within the bucket count.
-    pub fn insert(self: *Self, fp: Fingerprint, index: u16) void {
+    pub fn insert(self: *const Self, fp: Fingerprint, index: u16) void {
         assert(fp.isValid());
         assert(index < self.buckets.len / 2);
 
-        const mask = self.buckets.len - 1;
+        const buckets = self.buckets;
+        const fingerprints = self.fingerprints;
+        const mask = buckets.len - 1;
         var bucket = self.hash(fp);
         var probes: usize = 0;
-        while (probes < self.buckets.len) : (probes += 1) {
-            if (self.buckets[bucket] == empty) {
-                self.buckets[bucket] = index + 1;
-                self.fingerprints[bucket] = fp;
+        while (probes < buckets.len) : (probes += 1) {
+            if (buckets[bucket] == empty) {
+                buckets[bucket] = index + 1;
+                fingerprints[bucket] = fp;
                 return;
             }
             bucket = (bucket + 1) & mask;
@@ -354,16 +356,12 @@ pub const Tree = struct {
 
         // Rebuild the previous fingerprint map from the used portion.
         self.prev_fingerprint_map.clear();
-        const elem_count = self.element_count;
-        for (0..elem_count) |i| {
-            const elem = &self.elements[i];
-            self.prev_fingerprints[i] = elem.fingerprint;
-            self.prev_hashes[i] = elem.contentHash();
-            // Build hash map for O(1) lookups during dirty detection
-            if (elem.fingerprint.isValid()) {
-                self.prev_fingerprint_map.insert(elem.fingerprint, @intCast(i));
-            }
-        }
+        snapshotFrame(
+            self.elements[0..self.element_count],
+            self.prev_fingerprints,
+            self.prev_hashes,
+            self.prev_fingerprint_map,
+        );
 
         // Reset current frame
         self.element_count = 0;
@@ -377,6 +375,26 @@ pub const Tree = struct {
 
         // Clear current frame fingerprint map
         self.current_fingerprint_map.clear();
+    }
+
+    /// Copy each element's fingerprint and content hash into the previous
+    /// frame's tables and index it. A hot loop over slices loaded once
+    /// (§20): writes through `self` would make the compiler reload them.
+    fn snapshotFrame(
+        elements: []const Element,
+        prev_fingerprints: []Fingerprint,
+        prev_hashes: []u32,
+        prev_map: FingerprintMap,
+    ) void {
+        assert(elements.len <= prev_fingerprints.len);
+        assert(elements.len <= prev_hashes.len);
+        for (elements, 0..) |*elem, i| {
+            prev_fingerprints[i] = elem.fingerprint;
+            prev_hashes[i] = elem.contentHash();
+            if (elem.fingerprint.isValid()) {
+                prev_map.insert(elem.fingerprint, @intCast(i));
+            }
+        }
     }
 
     /// Finalize frame. Computes dirty set and removals.
@@ -396,17 +414,18 @@ pub const Tree = struct {
         assert(self.dirty_count == 0); // Should be reset in beginFrame
         assert(self.element_count <= self.elements.len);
 
-        const elem_count = self.element_count;
-        for (0..elem_count) |i| {
-            const elem = &self.elements[i];
+        const elements = self.elements[0..self.element_count];
+        const prev_hashes = self.prev_hashes;
+        const prev_map = self.prev_fingerprint_map;
+        for (elements, 0..) |*elem, i| {
             const current_hash = elem.contentHash();
 
             // O(1) lookup using hash map instead of O(n) scan
-            const prev_idx = self.prev_fingerprint_map.find(elem.fingerprint);
+            const prev_idx = prev_map.find(elem.fingerprint);
 
             if (prev_idx) |pi| {
                 // Element existed - check if content changed
-                if (self.prev_hashes[pi] != current_hash) {
+                if (prev_hashes[pi] != current_hash) {
                     self.markDirty(@intCast(i));
 
                     // Auto-announce live region content changes
@@ -441,13 +460,13 @@ pub const Tree = struct {
         assert(self.removed_count == 0); // Should be reset in beginFrame
         assert(self.prev_count <= self.elements.len);
 
-        const prev_elem_count = self.prev_count;
-        for (0..prev_elem_count) |i| {
-            const prev_fp = self.prev_fingerprints[i];
+        const prev_fingerprints = self.prev_fingerprints[0..self.prev_count];
+        const current_map = self.current_fingerprint_map;
+        for (prev_fingerprints) |prev_fp| {
             if (!prev_fp.isValid()) continue;
 
             // O(1) lookup using hash map instead of O(n) scan
-            const found = self.current_fingerprint_map.find(prev_fp) != null;
+            const found = current_map.find(prev_fp) != null;
             if (!found) {
                 // At most one removal per previous element.
                 assert(self.removed_count < self.removed_fingerprints.len);
