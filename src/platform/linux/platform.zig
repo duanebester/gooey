@@ -199,7 +199,7 @@ pub const LinuxPlatform = struct {
     /// Register a window with the platform and return its ID.
     pub fn registerWindow(self: *Self, window: *anyopaque) !WindowId {
         std.debug.assert(@intFromPtr(window) != 0);
-        std.debug.assert(self.window_registry.count() < WindowRegistry.MAX_WINDOWS);
+        std.debug.assert(self.window_registry.count() < WindowRegistry.window_count_max);
 
         const id = try self.window_registry.register(window);
         std.debug.assert(id.isValid());
@@ -243,14 +243,14 @@ pub const LinuxPlatform = struct {
     /// that has already declared itself gone. Any open window is a sound
     /// choice: the compositor corrects us with the next `enter` event.
     pub fn reelectActiveWindow(self: *Self) void {
-        std.debug.assert(self.window_registry.count() <= WindowRegistry.MAX_WINDOWS);
+        std.debug.assert(self.window_registry.count() <= WindowRegistry.window_count_max);
 
-        // The registry is capped at MAX_WINDOWS, so one pass is bounded work.
+        // The registry is capped at window_count_max, so one pass is bounded work.
         var scanned: u32 = 0;
         var chosen: ?WindowId = null;
         var ids = self.window_registry.iterator();
         while (ids.next()) |id| {
-            std.debug.assert(scanned < WindowRegistry.MAX_WINDOWS);
+            std.debug.assert(scanned < WindowRegistry.window_count_max);
             scanned += 1;
             std.debug.assert(id.isValid());
 
@@ -273,14 +273,12 @@ pub const LinuxPlatform = struct {
     /// the compositor writing into a dead frame once the value was moved to
     /// its home. Listener setup therefore runs here as the final step instead
     /// of in a second call every caller had to remember to make.
-    pub fn initInPlace(self: *Self, allocator: std.mem.Allocator) !void {
+    pub fn initInPlace(self: *Self) !void {
         std.debug.assert(@intFromPtr(self) != 0);
 
         self.* = Self{
-            .window_registry = WindowRegistry.init(allocator),
+            .window_registry = .init(),
         };
-
-        errdefer self.window_registry.deinit();
 
         self.display = wayland.wl_display_connect(null) orelse {
             return error.FailedToConnectToDisplay;
@@ -363,7 +361,6 @@ pub const LinuxPlatform = struct {
 
     pub fn deinit(self: *Self) void {
         // Clean up window registry
-        self.window_registry.deinit();
 
         // Don't try to destroy Wayland objects if display is gone
         if (self.display == null) return;
@@ -1650,11 +1647,11 @@ pub const LinuxPlatform = struct {
 
     /// The core's renderer is its host's, so there is nothing to lock here.
     pub fn lockRenderThreads(self: *Self) void {
-        std.debug.assert(self.window_registry.count() <= WindowRegistry.MAX_WINDOWS);
+        std.debug.assert(self.window_registry.count() <= WindowRegistry.window_count_max);
     }
 
     pub fn unlockRenderThreads(self: *Self) void {
-        std.debug.assert(self.window_registry.count() <= WindowRegistry.MAX_WINDOWS);
+        std.debug.assert(self.window_registry.count() <= WindowRegistry.window_count_max);
     }
 
     // =========================================================================

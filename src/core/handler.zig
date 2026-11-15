@@ -119,8 +119,9 @@ pub const EntityPool = struct {
     }
 };
 
-/// Most entity pools one store holds: the framework's text-engine pools plus
-/// the app's `config.entities`.
+/// Framework ceiling on the entity pools one store holds: the framework's
+/// text-engine pools plus the app's `config.entities`. Each app's store holds
+/// exactly its own count, in storage `gooey.App` specializes at comptime.
 pub const entity_pool_count_max: u32 = 16;
 
 /// What a handler's `app` pointer points at: the root state, the entity
@@ -128,31 +129,34 @@ pub const entity_pool_count_max: u32 = 16;
 pub const Store = struct {
     root_state: *anyopaque,
     root_type_id: usize,
-    pools: [entity_pool_count_max]EntityPool,
+    /// Storage the app reserves for its pools; `pool_count` are registered.
+    pools: []EntityPool,
     pool_count: u32,
     /// The window's retained store, set when the window initializes, so a
     /// component's handler can target state it retained (`cx.retain`).
     retained: ?*retained_mod.Retained,
 
-    pub fn init(comptime State: type, state: *State) Store {
+    /// `pools` is the app's pool storage, one entry per pool it registers.
+    pub fn init(comptime State: type, state: *State, pools: []EntityPool) Store {
+        assert(pools.len <= entity_pool_count_max);
         return .{
             .root_state = @ptrCast(state),
             .root_type_id = typeId(State),
-            .pools = undefined,
+            .pools = pools,
             .pool_count = 0,
             .retained = null,
         };
     }
 
     pub fn registerPool(self: *Store, pool: EntityPool) void {
-        assert(self.pool_count < entity_pool_count_max);
+        assert(self.pool_count < self.pools.len);
         assert(self.findPool(pool.type_id) == null);
         self.pools[self.pool_count] = pool;
         self.pool_count += 1;
     }
 
     pub fn findPool(self: *const Store, type_id: usize) ?*const EntityPool {
-        assert(self.pool_count <= entity_pool_count_max);
+        assert(self.pool_count <= self.pools.len);
         for (self.pools[0..self.pool_count]) |*pool| {
             if (pool.type_id == type_id) return pool;
         }
@@ -175,7 +179,7 @@ pub const Store = struct {
     /// Free every app-pool slot removed during the drain. The tick calls it
     /// after the drain's last handler and before the build.
     pub fn freeRemoved(self: *Store) void {
-        assert(self.pool_count <= entity_pool_count_max);
+        assert(self.pool_count <= self.pools.len);
         for (self.pools[0..self.pool_count]) |*pool| {
             if (pool.app_pool) |app_pool| app_pool.freeRemoved();
         }
@@ -685,7 +689,7 @@ test "bind detects every method shape and passes arg and effects" {
         }
     };
     var state = State{};
-    var store = Store.init(State, &state);
+    var store = Store.init(State, &state, &.{});
     var effects = Effects.init(null, .root);
     bind(State.bump, .{}).call(&store, &effects);
     bind(State.add, .{ .arg = -5 }).call(&store, &effects);

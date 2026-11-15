@@ -88,7 +88,7 @@ pub fn run(comptime App: type, app: *App, backing: std.mem.Allocator, io: std.Io
 
     const platform = try gpa.create(WindowsPlatform);
     defer gpa.destroy(platform);
-    try platform.initInPlace(gpa);
+    try platform.initInPlace();
     defer platform.deinit();
 
     const window = try PlatformWindow.init(gpa, platform, &.{

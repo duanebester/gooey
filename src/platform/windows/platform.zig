@@ -50,7 +50,7 @@ pub const WindowsPlatform = struct {
 
     const cursor_shape_count = std.enums.values(interface_mod.CursorShape).len;
 
-    pub fn initInPlace(self: *Self, allocator: std.mem.Allocator) !void {
+    pub fn initInPlace(self: *Self) !void {
         assert(@intFromPtr(self) != 0);
 
         // Per-monitor v2 makes every size Windows reports a device-pixel size
@@ -71,13 +71,12 @@ pub const WindowsPlatform = struct {
         errdefer closeFrameTimer(frame_timer);
 
         self.* = .{
-            .window_registry = WindowRegistry.init(allocator),
+            .window_registry = .init(),
             .hinstance = hinstance,
             .cursors = loadCursors(),
             .click_settings = clickSettings(),
             .frame_timer = frame_timer,
         };
-        errdefer self.window_registry.deinit();
 
         const class = win32.WNDCLASSEXW{
             .cbSize = @sizeOf(win32.WNDCLASSEXW),
@@ -111,7 +110,6 @@ pub const WindowsPlatform = struct {
         clipboard.deinit();
         self.unregisterClass();
         closeFrameTimer(self.frame_timer);
-        self.window_registry.deinit();
     }
 
     /// Fails only while a window of the class exists, which `deinit` asserts
@@ -138,13 +136,12 @@ pub const WindowsPlatform = struct {
 
     pub fn registerWindow(self: *Self, window: *anyopaque) !WindowId {
         assert(@intFromPtr(window) != 0);
-        if (self.window_registry.count() >= WindowRegistry.MAX_WINDOWS) {
-            std.log.err("windows: window registry full ({d} windows)", .{
-                WindowRegistry.MAX_WINDOWS,
+        const id = self.window_registry.register(window) catch |err| {
+            std.log.err("windows: window registry full ({d} window): an app opens one", .{
+                WindowRegistry.window_count_max,
             });
-            return error.TooManyWindows;
-        }
-        const id = try self.window_registry.register(window);
+            return err;
+        };
         assert(id.isValid());
         return id;
     }
@@ -178,11 +175,11 @@ pub const WindowsPlatform = struct {
 
     /// The core's renderer is its host's, so there is nothing to lock here.
     pub fn lockRenderThreads(self: *Self) void {
-        assert(self.window_registry.count() <= WindowRegistry.MAX_WINDOWS);
+        assert(self.window_registry.count() <= WindowRegistry.window_count_max);
     }
 
     pub fn unlockRenderThreads(self: *Self) void {
-        assert(self.window_registry.count() <= WindowRegistry.MAX_WINDOWS);
+        assert(self.window_registry.count() <= WindowRegistry.window_count_max);
     }
 };
 

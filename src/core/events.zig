@@ -278,17 +278,19 @@ pub const ImageDecoded = struct {
 };
 
 /// A bounded single-producer, single-consumer ring for completions produced
-/// on worker threads. `tick` drains it on the main thread. Paths are copied
-/// into each slot's fixed bytes so the worker's buffer can be reused; a
-/// selection larger than one slot's bytes is a capacity-planning error.
+/// on worker threads. `tick` drains it on the main thread. A dialog's paths
+/// are copied into the path slot of its request id, so the worker's buffer
+/// can be reused: a request id is reused only after the router delivers its
+/// completion, which the drain has copied into the queue by then.
 pub const CompletionRing = struct {
     slots: []Slot,
+    /// `dialog_count_max` path slots of `path_bytes_max` bytes each.
+    paths: []u8,
+    path_bytes_max: u32,
     /// Written by the producer, read by the consumer.
     head: std.atomic.Value(u32),
     /// Written by the consumer, read by the producer.
     tail: std.atomic.Value(u32),
-
-    pub const path_bytes_max: u32 = 1024;
 
     const Slot = struct {
         kind: enum(u8) { completion, image },
@@ -297,26 +299,44 @@ pub const CompletionRing = struct {
         failure: anyerror,
         path_count: u32,
         path_len: u32,
-        path: [path_bytes_max]u8,
         image: ImageDecoded,
     };
 
-    pub fn initInPlace(self: *CompletionRing, gpa: std.mem.Allocator, count_max: u32) !void {
-        assert(count_max > 0);
-        assert(std.math.isPowerOfTwo(count_max));
-        self.slots = try gpa.alloc(Slot, count_max);
+    pub const Options = struct {
+        /// Ring slots, a power of two at or above `events.completion_count_max`.
+        count_max: u32,
+        /// `events.dialog_count_max`: request ids, so path slots.
+        dialog_count_max: u32,
+        /// `events.dialog_path_bytes_max`: one selection's joined paths.
+        dialog_path_bytes_max: u32,
+    };
+
+    pub fn initInPlace(self: *CompletionRing, gpa: std.mem.Allocator, options: Options) !void {
+        assert(options.count_max > 0);
+        assert(std.math.isPowerOfTwo(options.count_max));
+        assert(options.dialog_count_max < options.count_max);
+        assert(options.dialog_path_bytes_max > 0);
+        self.slots = try gpa.alloc(Slot, options.count_max);
+        errdefer gpa.free(self.slots);
+        const paths_bytes = @as(usize, options.dialog_count_max) * options.dialog_path_bytes_max;
+        self.paths = try gpa.alloc(u8, paths_bytes);
+        self.path_bytes_max = options.dialog_path_bytes_max;
         self.head = .init(0);
         self.tail = .init(0);
     }
 
     pub fn deinit(self: *CompletionRing, gpa: std.mem.Allocator) void {
         assert(self.slots.len > 0);
+        assert(self.paths.len % self.path_bytes_max == 0);
+        gpa.free(self.paths);
         gpa.free(self.slots);
         self.* = undefined;
     }
 
-    /// Producer side. A full ring is a capacity-planning error.
+    /// Producer side. A full ring, or paths past the request's slot, is a
+    /// capacity-planning error.
     pub fn push(self: *CompletionRing, completion: Completion) void {
+        assert(completion.request_id < self.paths.len / self.path_bytes_max);
         const head = self.head.load(.monotonic);
         const slot = self.claim(head);
         slot.kind = .completion;
@@ -328,11 +348,15 @@ pub const CompletionRing = struct {
         switch (completion.outcome) {
             .file_selected => |paths| {
                 assert(paths.consistent());
-                if (paths.bytes.len > path_bytes_max) {
-                    std.debug.panic("completion ring slot path bytes exhausted: capacity " ++
-                        "{d} bytes, {d} requested", .{ path_bytes_max, paths.bytes.len });
+                if (paths.bytes.len > self.path_bytes_max) {
+                    std.debug.panic("completion ring pool 'dialog paths' exhausted: " ++
+                        "capacity {d} bytes, {d} requested. Raise " ++
+                        "ResourceLimits.events.dialog_path_bytes_max.", .{
+                        self.path_bytes_max,
+                        paths.bytes.len,
+                    });
                 }
-                @memcpy(slot.path[0..paths.bytes.len], paths.bytes);
+                @memcpy(self.pathSlot(completion.request_id)[0..paths.bytes.len], paths.bytes);
                 slot.path_count = paths.count;
                 slot.path_len = @intCast(paths.bytes.len);
             },
@@ -340,6 +364,13 @@ pub const CompletionRing = struct {
             .failed => |failure| slot.failure = failure,
         }
         self.head.store(head +% 1, .release);
+    }
+
+    fn pathSlot(self: *const CompletionRing, request_id: u32) []u8 {
+        const start = @as(usize, request_id) * self.path_bytes_max;
+        assert(start < self.paths.len);
+        assert(self.path_bytes_max <= self.paths.len - start);
+        return self.paths[start..][0..self.path_bytes_max];
     }
 
     /// Producer side, for the image worker. Same capacity rule as `push`.
@@ -383,19 +414,19 @@ pub const CompletionRing = struct {
                 },
                 .completion => queue.push(.{ .completion = .{
                     .request_id = slot.request_id,
-                    .outcome = slotOutcome(slot),
+                    .outcome = self.slotOutcome(slot),
                 } }),
             }
         }
         self.tail.store(tail, .release);
     }
 
-    fn slotOutcome(slot: *const Slot) Completion.Outcome {
+    fn slotOutcome(self: *const CompletionRing, slot: *const Slot) Completion.Outcome {
         assert(slot.kind == .completion);
-        assert(slot.path_len <= path_bytes_max);
+        assert(slot.path_len <= self.path_bytes_max);
         return switch (slot.tag) {
             .file_selected => .{ .file_selected = .{
-                .bytes = slot.path[0..slot.path_len],
+                .bytes = self.pathSlot(slot.request_id)[0..slot.path_len],
                 .count = slot.path_count,
             } },
             .cancelled => .cancelled,
@@ -490,7 +521,11 @@ test "completion ring delivers distinct outcomes in order" {
     try queue.initInPlace(std.testing.allocator, .{ .event_count_max = 4, .text_bytes_max = 64 });
     defer queue.deinit(std.testing.allocator);
     var ring: CompletionRing = undefined;
-    try ring.initInPlace(std.testing.allocator, 4);
+    try ring.initInPlace(std.testing.allocator, .{
+        .count_max = 8,
+        .dialog_count_max = 4,
+        .dialog_path_bytes_max = 32,
+    });
     defer ring.deinit(std.testing.allocator);
     var scratch: [64]u8 = undefined;
     var fixed = std.heap.FixedBufferAllocator.init(&scratch);
@@ -511,6 +546,47 @@ test "completion ring delivers distinct outcomes in order" {
     try std.testing.expect(paths.next() == null);
     try std.testing.expect(events[1].completion.outcome == .cancelled);
     try std.testing.expectEqual(error.AccessDenied, events[2].completion.outcome.failed);
+}
+
+test "completion ring holds a selection of exactly the dialog path budget per request" {
+    // Goal: each pending dialog owns a path slot of `dialog_path_bytes_max`
+    // bytes (the ring held 1 KiB per slot before, so a selection between that
+    // and the budget panicked). Method: two dialogs complete in one drain,
+    // each with a selection filling its slot exactly, the second written
+    // before the first is drained; both arrive whole and distinct.
+    const path_bytes_max: u32 = 8;
+    var queue: EventQueue = undefined;
+    try queue.initInPlace(std.testing.allocator, .{ .event_count_max = 4, .text_bytes_max = 16 });
+    defer queue.deinit(std.testing.allocator);
+    var ring: CompletionRing = undefined;
+    try ring.initInPlace(std.testing.allocator, .{
+        .count_max = 4,
+        .dialog_count_max = 2,
+        .dialog_path_bytes_max = path_bytes_max,
+    });
+    defer ring.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 2 * path_bytes_max), ring.paths.len);
+    var scratch: [path_bytes_max]u8 = undefined;
+    var fixed = std.heap.FixedBufferAllocator.init(&scratch);
+    const first = try Paths.join(fixed.allocator(), &.{ "/a/bc", "/d" });
+    try std.testing.expectEqual(@as(usize, path_bytes_max), first.bytes.len);
+    ring.push(.{ .request_id = 1, .outcome = .{ .file_selected = first } });
+    ring.push(.{ .request_id = 0, .outcome = .{ .file_selected = .{
+        .bytes = "/abcdefg",
+        .count = 1,
+    } } });
+    @memset(&scratch, 'X');
+    var image: ?ImageDecoded = null;
+    ring.drainInto(&queue, &image);
+    const events = queue.pending();
+    try std.testing.expectEqual(@as(usize, 2), events.len);
+    try std.testing.expect(image == null);
+    try std.testing.expectEqual(@as(u32, 1), events[0].completion.request_id);
+    const selected = events[0].completion.outcome.file_selected;
+    try std.testing.expectEqualStrings("/a/bc\x00/d", selected.bytes);
+    try std.testing.expectEqual(@as(u32, 2), selected.count);
+    const whole = events[1].completion.outcome.file_selected;
+    try std.testing.expectEqualStrings("/abcdefg", whole.bytes);
 }
 
 test "paths join without copying one path and refuse platform errors" {

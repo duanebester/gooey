@@ -2087,6 +2087,7 @@ test "glyph cache re-renders a glyph whose atlas shelf was evicted" {
     try uploads.init(testing.allocator, testing.io, .{
         .storage = .cpu_texture,
         .upload_bytes_frame_max = 64,
+        .consumer_count_max = 1,
     });
     defer uploads.deinit();
     const consumer: usize = 1;
@@ -2145,6 +2146,7 @@ test "glyph cache holds exactly its budget in one frame and reuses evicted slots
     try uploads.init(testing.allocator, testing.io, .{
         .storage = .cpu_texture,
         .upload_bytes_frame_max = 64 * 1024,
+        .consumer_count_max = 1,
     });
     defer uploads.deinit();
     const consumer: usize = 1;
@@ -2208,6 +2210,7 @@ test "glyph cache hits protect their shelf in every frame they are used" {
     try uploads.init(testing.allocator, testing.io, .{
         .storage = .cpu_texture,
         .upload_bytes_frame_max = 4096,
+        .consumer_count_max = 1,
     });
     defer uploads.deinit();
     const consumer: usize = 1;

@@ -48,9 +48,8 @@ pub const MacPlatform = struct {
 
     /// Initialize in place at the caller's final address, which the core
     /// host's loop-turn callback receives.
-    pub fn initInPlace(self: *Self, allocator: std.mem.Allocator) !void {
+    pub fn initInPlace(self: *Self) !void {
         assert(@intFromPtr(self) != 0);
-        _ = allocator; // Every backend's platform takes one; AppKit needs none.
 
         const NSApp = objc.getClass("NSApplication") orelse return error.ClassNotFound;
         const app = NSApp.msgSend(objc.Object, "sharedApplication", .{});

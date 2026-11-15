@@ -12,18 +12,21 @@
 //! - Validatable: can check if ID is valid before dereferencing
 //! - Cross-platform: same ID type works on all backends
 //!
+//! ## Capacity
+//!
+//! An app opens one window (contract decision 14), so the registry holds
+//! `limits.window_count_max` slots in place and never allocates.
+//!
 //! ## Usage
 //!
 //! ```zig
-//! var registry = WindowRegistry.init(allocator);
-//! defer registry.deinit();
-//!
-//! const id = registry.register(window);
+//! var registry: WindowRegistry = .init();
+//! const id = try registry.register(window);
 //! const maybe_window = registry.get(id);
 //! ```
 
 const std = @import("std");
-const Allocator = std.mem.Allocator;
+const limits = @import("../core/limits.zig");
 
 // =============================================================================
 // WindowId
@@ -63,24 +66,24 @@ pub const WindowId = enum(u32) {
 
 /// Central registry for tracking windows by ID.
 ///
-/// Provides O(1) lookup of windows by ID, and tracks the currently active window.
-/// Thread-safe considerations: This registry is NOT thread-safe. All access should
-/// be from the main thread (where window operations occur).
+/// Holds `window_count_max` slots in place, so registration never allocates
+/// and lookup scans at most that many. Thread-safe considerations: This
+/// registry is NOT thread-safe. All access should be from the main thread
+/// (where window operations occur).
 pub const WindowRegistry = struct {
-    /// Allocator for internal data structures
-    allocator: Allocator,
-
-    /// Map from WindowId to window pointer (stored as opaque for platform independence)
-    windows: std.AutoHashMap(WindowId, *anyopaque),
+    /// Registered windows; `.invalid` marks a free slot.
+    ids: [window_count_max]WindowId,
+    /// Window pointers, stored as opaque for platform independence.
+    pointers: [window_count_max]*anyopaque,
+    window_count: u32,
 
     /// Next ID to assign (monotonically increasing)
-    next_id: u32 = 1,
+    next_id: u32,
 
     /// Currently focused/active window (null if none)
-    active_window: ?WindowId = null,
+    active_window: ?WindowId,
 
-    /// Maximum number of windows allowed (per CLAUDE.md: "put a limit on everything")
-    pub const MAX_WINDOWS: u32 = 32;
+    pub const window_count_max: u32 = limits.window_count_max;
 
     const Self = @This();
 
@@ -88,50 +91,38 @@ pub const WindowRegistry = struct {
     // Lifecycle
     // =========================================================================
 
-    /// Initialize a new WindowRegistry.
-    pub fn init(allocator: Allocator) Self {
+    pub fn init() Self {
         return .{
-            .allocator = allocator,
-            .windows = std.AutoHashMap(WindowId, *anyopaque).init(allocator),
+            .ids = @splat(.invalid),
+            .pointers = undefined,
+            .window_count = 0,
+            .next_id = 1,
+            .active_window = null,
         };
-    }
-
-    /// Clean up registry resources.
-    /// Note: Does NOT destroy the windows themselves - caller is responsible.
-    pub fn deinit(self: *Self) void {
-        // Assertions: validate state
-        std.debug.assert(self.next_id >= 1); // next_id should never wrap to 0
-
-        self.windows.deinit();
-        self.* = undefined;
     }
 
     // =========================================================================
     // Registration
     // =========================================================================
 
-    /// Register a window and return its assigned ID.
+    /// Register a window and return its assigned ID. A window past
+    /// `window_count_max` is refused: the app opens one (decision 14).
     ///
     /// The window pointer is stored as opaque to avoid coupling the registry
     /// to a specific Window type (enables cross-platform use).
-    pub fn register(self: *Self, window_ptr: *anyopaque) !WindowId {
-        // Assertions: validate inputs and limits
+    pub fn register(self: *Self, window_ptr: *anyopaque) error{TooManyWindows}!WindowId {
         std.debug.assert(@intFromPtr(window_ptr) != 0);
-        std.debug.assert(self.windows.count() < MAX_WINDOWS); // Hard limit
-
-        // Generate next ID
-        const id: WindowId = @fromBackingInt(@intCast(self.next_id));
-        std.debug.assert(id.isValid()); // Sanity check
-
-        self.next_id += 1;
-
-        // Prevent wraparound (would take billions of window creations)
-        if (self.next_id == 0) {
-            self.next_id = 1; // Skip invalid sentinel
-        }
-
-        // Store in registry
-        try self.windows.put(id, window_ptr);
+        std.debug.assert(self.window_count <= window_count_max);
+        if (self.window_count == window_count_max) return error.TooManyWindows;
+        const slot = self.slotOf(.invalid).?;
+        const id: WindowId = @fromBackingInt(self.next_id);
+        std.debug.assert(id.isValid());
+        // Skip the invalid sentinel on wraparound (billions of creations).
+        self.next_id +%= 1;
+        if (self.next_id == 0) self.next_id = 1;
+        self.ids[slot] = id;
+        self.pointers[slot] = window_ptr;
+        self.window_count += 1;
 
         // Registration deliberately does NOT elect an active window.
         //
@@ -141,27 +132,29 @@ pub const WindowRegistry = struct {
         // `getActiveWindowId` names for the same program. Each backend calls
         // `setActiveWindowId` itself, so the policy is one readable line per
         // backend and the registry stays a pure map.
-
         return id;
     }
 
     /// Unregister a window by ID.
     /// Returns the window pointer if found, null otherwise.
     pub fn unregister(self: *Self, id: WindowId) ?*anyopaque {
-        // Assertions: validate input
         std.debug.assert(id.isValid());
-
-        const result = self.windows.fetchRemove(id);
+        std.debug.assert(self.window_count <= window_count_max);
 
         // Clear active window if it was this one
         if (self.active_window) |active| {
-            if (active == id) {
-                self.active_window = null;
-            }
+            if (active == id) self.active_window = null;
         }
+        const slot = self.slotOf(id) orelse return null;
+        self.ids[slot] = .invalid;
+        self.window_count -= 1;
+        return self.pointers[slot];
+    }
 
-        if (result) |kv| {
-            return kv.value;
+    /// The slot holding `id`, or the first free slot for `.invalid`.
+    fn slotOf(self: *const Self, id: WindowId) ?u32 {
+        for (self.ids, 0..) |slot_id, slot| {
+            if (slot_id == id) return @intCast(slot);
         }
         return null;
     }
@@ -174,7 +167,8 @@ pub const WindowRegistry = struct {
     /// Returns null if the ID is invalid or not registered.
     pub fn get(self: *const Self, id: WindowId) ?*anyopaque {
         if (!id.isValid()) return null;
-        return self.windows.get(id);
+        const slot = self.slotOf(id) orelse return null;
+        return self.pointers[slot];
     }
 
     /// Get a typed window pointer by ID.
@@ -192,7 +186,7 @@ pub const WindowRegistry = struct {
     /// Check if a window ID is registered.
     pub fn contains(self: *const Self, id: WindowId) bool {
         if (!id.isValid()) return false;
-        return self.windows.contains(id);
+        return self.slotOf(id) != null;
     }
 
     // =========================================================================
@@ -228,13 +222,28 @@ pub const WindowRegistry = struct {
 
     /// Get the number of registered windows.
     pub fn count(self: *const Self) u32 {
-        return @intCast(self.windows.count());
+        std.debug.assert(self.window_count <= window_count_max);
+        return self.window_count;
     }
 
     /// Iterate over all registered window IDs.
-    pub fn iterator(self: *const Self) std.AutoHashMap(WindowId, *anyopaque).KeyIterator {
-        return self.windows.keyIterator();
+    pub fn iterator(self: *const Self) Iterator {
+        return .{ .registry = self, .slot = 0 };
     }
+
+    pub const Iterator = struct {
+        registry: *const Self,
+        slot: u32,
+
+        pub fn next(self: *Iterator) ?*const WindowId {
+            while (self.slot < window_count_max) {
+                const id = &self.registry.ids[self.slot];
+                self.slot += 1;
+                if (id.isValid()) return id;
+            }
+            return null;
+        }
+    };
 };
 
 // =============================================================================
@@ -252,45 +261,35 @@ test "WindowId - basic operations" {
 }
 
 test "WindowRegistry - register and lookup" {
-    var registry = WindowRegistry.init(std.testing.allocator);
-    defer registry.deinit();
-
-    var dummy1: u32 = 1;
-    var dummy2: u32 = 2;
-
-    const id1 = try registry.register(&dummy1);
-    const id2 = try registry.register(&dummy2);
-
-    // Assertions: IDs should be unique and valid
-    std.debug.assert(id1.isValid());
-    std.debug.assert(id2.isValid());
-    std.debug.assert(id1 != id2);
-
-    // Lookup should return correct pointers
-    const ptr1 = registry.getTyped(u32, id1);
-    const ptr2 = registry.getTyped(u32, id2);
-
-    std.debug.assert(ptr1 != null);
-    std.debug.assert(ptr2 != null);
-    std.debug.assert(ptr1.?.* == 1);
-    std.debug.assert(ptr2.?.* == 2);
+    var registry: WindowRegistry = .init();
+    var dummy: u32 = 1;
+    const id = try registry.register(&dummy);
+    try std.testing.expect(id.isValid());
+    try std.testing.expectEqual(@as(u32, 1), registry.getTyped(u32, id).?.*);
+    try std.testing.expectEqual(@as(?*anyopaque, null), registry.get(WindowId.fromRaw(99)));
+    var ids = registry.iterator();
+    try std.testing.expectEqual(id, ids.next().?.*);
+    try std.testing.expect(ids.next() == null);
 }
 
-test "WindowRegistry - unregister" {
-    var registry = WindowRegistry.init(std.testing.allocator);
-    defer registry.deinit();
+test "WindowRegistry - holds window_count_max windows, then refuses one more" {
+    // Goal: the registry is full at exactly `window_count_max` windows, the
+    // next registration is refused without changing it, and a freed slot is
+    // reused under a fresh id.
+    var registry: WindowRegistry = .init();
+    var dummies: [WindowRegistry.window_count_max + 1]u32 = @splat(0);
+    var ids: [WindowRegistry.window_count_max]WindowId = undefined;
+    for (&ids, dummies[0..ids.len]) |*id, *dummy| id.* = try registry.register(dummy);
+    try std.testing.expectEqual(WindowRegistry.window_count_max, registry.count());
+    const extra = &dummies[dummies.len - 1];
+    try std.testing.expectError(error.TooManyWindows, registry.register(extra));
+    try std.testing.expectEqual(WindowRegistry.window_count_max, registry.count());
 
-    var dummy: u32 = 42;
-    const id = try registry.register(&dummy);
-
-    std.debug.assert(registry.contains(id));
-    std.debug.assert(registry.count() == 1);
-
-    _ = registry.unregister(id);
-
-    std.debug.assert(!registry.contains(id));
-    std.debug.assert(registry.count() == 0);
-    std.debug.assert(registry.get(id) == null);
+    _ = registry.unregister(ids[0]);
+    try std.testing.expect(!registry.contains(ids[0]));
+    const again = try registry.register(extra);
+    try std.testing.expect(again != ids[0]);
+    try std.testing.expectEqual(@as(*anyopaque, extra), registry.get(again).?);
 }
 
 test "WindowRegistry - registration does not elect an active window" {
@@ -298,47 +297,31 @@ test "WindowRegistry - registration does not elect an active window" {
     // would make registration silently change focus, and the backends would
     // disagree about which window is active. Registration must leave the
     // active slot untouched.
-    var registry = WindowRegistry.init(std.testing.allocator);
-    defer registry.deinit();
-
-    var dummy1: u32 = 1;
-    var dummy2: u32 = 2;
-
-    const id1 = try registry.register(&dummy1);
-    try std.testing.expectEqual(@as(?WindowId, null), registry.getActiveWindow());
-
-    const id2 = try registry.register(&dummy2);
+    var registry: WindowRegistry = .init();
+    var dummy: u32 = 1;
+    const id = try registry.register(&dummy);
     try std.testing.expectEqual(@as(?WindowId, null), registry.getActiveWindow());
 
     // Only an explicit call elects.
-    registry.setActiveWindow(id1);
-    try std.testing.expectEqual(id1, registry.getActiveWindow().?);
-
-    registry.setActiveWindow(id2);
-    try std.testing.expectEqual(id2, registry.getActiveWindow().?);
+    registry.setActiveWindow(id);
+    try std.testing.expectEqual(id, registry.getActiveWindow().?);
 }
 
 test "WindowRegistry - unregistering the active window clears the slot" {
     // Negative space: a stale active id must never outlive its window, or a
     // later lookup would resolve focus to a freed pointer.
-    var registry = WindowRegistry.init(std.testing.allocator);
-    defer registry.deinit();
-
+    var registry: WindowRegistry = .init();
     var dummy: u32 = 7;
     const id = try registry.register(&dummy);
     registry.setActiveWindow(id);
     try std.testing.expectEqual(id, registry.getActiveWindow().?);
 
-    _ = registry.unregister(id);
+    try std.testing.expectEqual(@as(?*anyopaque, &dummy), registry.unregister(id));
     try std.testing.expectEqual(@as(?WindowId, null), registry.getActiveWindow());
+    try std.testing.expectEqual(@as(u32, 0), registry.count());
+    try std.testing.expectEqual(@as(?*anyopaque, null), registry.unregister(id));
 
     // Clearing explicitly is also valid from the empty state.
     registry.setActiveWindow(null);
     try std.testing.expectEqual(@as(?WindowId, null), registry.getActiveWindow());
-}
-
-test "WindowRegistry - count limit constant" {
-    // Verify MAX_WINDOWS is a reasonable limit
-    std.debug.assert(WindowRegistry.MAX_WINDOWS >= 1);
-    std.debug.assert(WindowRegistry.MAX_WINDOWS <= 256);
 }

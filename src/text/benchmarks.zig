@@ -338,6 +338,7 @@ const BenchAtlas = struct {
         self.uploads.init(allocator, time.benchIo(), .{
             .storage = storage,
             .upload_bytes_frame_max = 64,
+            .consumer_count_max = 1,
         }) catch unreachable;
         self.atlas.init(allocator, .{
             .kind = .text,
@@ -944,6 +945,11 @@ fn benchMeasureTextWrapped(
 // Benchmark Runners — Glyph Rasterization
 // =============================================================================
 
+/// Key the cold benchmark advances the atlas frame clock with. No renderer
+/// registers it, and 0 is never a key (`AtlasUploads.findConsumer` asserts
+/// it, so passing 0 is undefined behaviour in ReleaseFast).
+const bench_frame_key: usize = 1;
+
 /// Benchmark cold glyph rasterization: glyph cache cleared before each timed
 /// iteration, forcing full rasterize -> atlas pack -> cache insert for every
 /// glyph.  Operation count = number of unique glyphs per iteration.
@@ -962,7 +968,7 @@ fn benchGlyphRasterCold(
     // Warmup: exercises the rasterizer and platform font backend.
     for (0..3) |_| {
         // A new frame: a cleared atlas reclaims space only from past frames.
-        _ = text_sys.cache.grayscale_atlas.uploads.beginFrame(0);
+        _ = text_sys.cache.grayscale_atlas.uploads.beginFrame(bench_frame_key);
         text_sys.cache.clear();
         for (glyph_ids) |glyph_id| {
             _ = text_sys.getGlyphSubpixel(glyph_id, font_size, 0, 0) catch unreachable;
@@ -977,7 +983,7 @@ fn benchGlyphRasterCold(
 
     while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iters) {
         // A new frame: a cleared atlas reclaims space only from past frames.
-        _ = text_sys.cache.grayscale_atlas.uploads.beginFrame(0);
+        _ = text_sys.cache.grayscale_atlas.uploads.beginFrame(bench_frame_key);
         text_sys.cache.clear();
 
         const start = time.Instant.now();

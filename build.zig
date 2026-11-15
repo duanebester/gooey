@@ -1462,6 +1462,9 @@ fn addFailFastChecks(
             "fail_fast_check.CoreApp.Stranger; the root state is fail_fast_check.CoreState" },
         .{ .mode = "core-dialog-paths", .stderr = "file dialog selected 17 paths: " ++
             "capacity 16. Raise ResourceLimits.events.dialog_path_count_max." },
+        .{ .mode = "core-dialog-count", .stderr = "events pool 'dialogs' exhausted: " ++
+            "capacity 2, 2 in use, 1 requested, frame 3. Raise " ++
+            "ResourceLimits.events.dialog_count_max." },
         .{ .mode = "core-component-depth", .stderr = "component depth 65 exceeds " ++
             "build.component_depth_max 64 rendering fail_fast_check.CoreApp.Nest" },
         .{ .mode = "core-box-depth", .stderr = "build pool 'box depth' exhausted: capacity 64, " ++
@@ -1486,7 +1489,7 @@ fn addFailFastChecks(
             "ResourceLimits.text.fonts.mono_variants" },
         .{ .mode = "core-wrap-run", .stderr = "text run of 1025 codepoints exceeds " ++
             "text.run_codepoint_count_max 1024, the longest run one shaping may hold in the " ++
-            "262144-byte text scratch, in frame 1." },
+            "135424-byte text scratch, in frame 1." },
         .{ .mode = "core-wrap-frame", .stderr = "wrapped lines exhausted: capacity 1024 " ++
             "(paint.glyph_count_frame_max), 1000 in use, 25 requested" },
         .{ .mode = "core-deinit-running", .stderr = "App.deinit on a running app: " ++

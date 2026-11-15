@@ -15,7 +15,7 @@
 //! const linux = @import("gooey").platform.linux;
 //!
 //! var plat: linux.Platform = undefined;
-//! try plat.initInPlace(allocator);
+//! try plat.initInPlace();
 //! defer plat.deinit();
 //!
 //! const options = gooey.platform.WindowOptions{

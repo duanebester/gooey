@@ -149,7 +149,7 @@ pub const Host = struct {
     pub fn initInPlace(self: *Host, gpa: std.mem.Allocator, options: *const Options) !void {
         assert(options.width > 0);
         assert(options.height > 0);
-        try self.platform.initInPlace(gpa);
+        try self.platform.initInPlace();
         self.window = try WebWindow.init(gpa, &self.platform, &.{
             .title = options.title,
             .width = @floatFromInt(options.width),

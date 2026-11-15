@@ -314,17 +314,21 @@ pub fn checkSelection(window: *const Window, many: bool, count: u32, bytes_len: 
     }
 }
 
+/// The lowest free request id. Every slot holds a dialog still awaiting its
+/// completion, so a full table is a capacity-planning error (§2).
 fn freeDialogSlot(window: *Window) u32 {
+    assert(window.dialog_handlers.len == window.limits.events.dialog_count_max);
     for (window.dialog_handlers, 0..) |slot, index| {
         if (slot == null) return @intCast(index);
     }
-    std.debug.panic("file dialog requests exhausted: capacity {d}, {d} in use, 1 requested", .{
-        window_mod.dialog_count_max,
-        window_mod.dialog_count_max,
+    std.debug.panic("events pool 'dialogs' exhausted: capacity {d}, {d} in use, 1 " ++
+        "requested, frame {d}. Raise ResourceLimits.events.dialog_count_max.", .{
+        window.dialog_handlers.len,
+        window.dialog_handlers.len,
+        window.frame_number,
     });
 }
 
 comptime {
-    assert(window_mod.dialog_count_max > 0);
     assert(@sizeOf(records.Record) <= 96);
 }

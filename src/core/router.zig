@@ -910,7 +910,7 @@ fn moveFocus(window: *Window, backward: bool) void {
 }
 
 fn routeCompletion(window: *Window, completion: *const events.Completion) void {
-    assert(completion.request_id < window_mod.dialog_count_max);
+    assert(completion.request_id < window.dialog_handlers.len);
     const slot = &window.dialog_handlers[completion.request_id];
     const handler = slot.* orelse std.debug.panic("completion for unknown request {d}", .{
         completion.request_id,
