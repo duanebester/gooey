@@ -127,7 +127,7 @@ Every example in `src/examples/` is a complete app; read them next. Run one with
 | `run-counter`          | `counter.zig`              | State, handlers, components                |
 | `run-layout`           | `layout.zig`               | Popover layer, click outside, keymap       |
 | `run-actions`          | `actions.zig`              | Keymaps, key contexts, actions             |
-| `run-animation`        | `animation.zig`            | `tween`, `tweenOn`, spring `motion`        |
+| `run-animation`        | `animation.zig`            | `tween`, `tweenOn`, `motion`, `loop`       |
 | `run-dynamic-counters` | `dynamic_counters.zig`     | Entities                                   |
 | `run-accessible-form`  | `accessible_form.zig`      | Roles, headings, live regions, `announce`  |
 | `run-nested-overlay`   | `nested_overlay.zig`       | `Select` inside a `Modal`                  |
@@ -773,7 +773,7 @@ public API. This is how `TextInput` retains its engine:
 
 ### Animation
 
-`gooey.animation` has three module functions. Each keeps its state under a key and requests
+`gooey.animation` has four module functions. Each keeps its state under a key and requests
 frames only while it moves. From `animation.zig`:
 
 ```zig
@@ -794,9 +794,20 @@ frames only while it moves. From `animation.zig`:
         if (!m.visible) return;
 ```
 
+```zig
+        const phase = animation.loop(cx, .{ .name = "pulse-dot" }, pulse_period_ms);
+        assert(phase >= 0);
+        assert(phase < 1);
+        // A cosine wave from 0 at the start of each period up to 1 and back.
+        const wave = 0.5 - 0.5 * @cos(phase * 2 * std.math.pi);
+```
+
 `tween` eases from 0 to 1 after its first build and replays when its element returns.
 `tweenOn` starts at 1 and plays from 0 again whenever its trigger changes. `motion`
-springs toward shown or hidden and reports `progress`, `visible`, and `phase`. Easings are in
+springs toward shown or hidden and reports `progress`, `visible`, and `phase`. `loop` returns
+its phase in [0, 1), wrapping every `period_ms` from its first build, and requests a frame in
+every build that reads it. It never settles, so build it only while it should move: a build
+that skips it requests nothing, and a loop that returns starts again from 0. Easings are in
 `animation.Easing` (`linear`, `easeIn`, `easeOut`, `easeInOut`, `easeOutCubic`,
 `easeOutBack`); spring presets are `.snappy`, `.bouncy`, `.gentle`, `.stiff`, and `.wobbly`.
 

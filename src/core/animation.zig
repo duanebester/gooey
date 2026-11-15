@@ -1,17 +1,20 @@
-//! Tweens and spring motion: library helpers over `retain` (contract §3).
+//! Tweens, loops, and spring motion: library helpers over `retain` (contract
+//! §3).
 //!
 //! Each helper retains a small `.frame` state keyed under the box being
 //! built (`cx.id(key)`), reads the tick's clock (`cx.now()`), and asks
 //! for the next frame with `cx.requestRenderAfter` while it moves. A settled
 //! animation asks for nothing, so a window whose animations have finished
-//! draws no more frames. The state is swept like any `.frame` entry once its
-//! caller stops building it.
+//! draws no more frames. A loop never settles: it moves for as long as it is
+//! built, and stops asking once its caller stops building it. The state is
+//! swept like any `.frame` entry once its caller stops building it.
 //!
 //! Performance sketch (CLAUDE.md §7): one 64 B retained slot per animation,
 //! bounded by `ResourceLimits.retained.slot_count_64`. A call is O(1): a
-//! division and an easing curve for a tween, four acceleration evaluations
-//! (RK4) for a spring. Nothing allocates. While any animation moves the
-//! window builds one frame per display refresh, as 0.3.1 did.
+//! division and an easing curve for a tween, a remainder and a division for
+//! a loop, four acceleration evaluations (RK4) for a spring. Nothing
+//! allocates. While any animation moves the window builds one frame per
+//! display refresh, as 0.3.1 did.
 
 const std = @import("std");
 const cx_mod = @import("cx.zig");
@@ -24,6 +27,9 @@ const Key = id_mod.Key;
 
 /// The longest tween; a longer one is a programmer error.
 pub const tween_duration_ms_max: u32 = 60_000;
+
+/// The longest loop period; a longer one is a programmer error.
+pub const loop_period_ms_max: u32 = 60_000;
 
 /// The longest step a spring integrates. A longer gap between frames (a
 /// stall, or the first frame after a wake) is clamped, keeping RK4 stable.
@@ -147,9 +153,52 @@ const MotionState = struct {
     }
 };
 
+const LoopState = struct {
+    start_ns: u64,
+    /// The last build that read this loop, to tell when it returns.
+    built_frame: u64,
+    started: bool,
+
+    fn init(state: *LoopState) void {
+        state.* = .{ .start_ns = 0, .built_frame = 0, .started = false };
+    }
+};
+
 comptime {
+    assert(@sizeOf(LoopState) <= 64);
     assert(@sizeOf(TweenState) <= 64);
     assert(@sizeOf(MotionState) <= 64);
+}
+
+/// The phase of the loop keyed `key` under the box being built: time since
+/// its first build, modulo `period_ms`, as a fraction in [0, 1). It asks for
+/// a frame in every build that reads it, so a loop costs one frame per
+/// display refresh while it is built and nothing once a build skips it: that
+/// build asks for no frame. A loop that the previous build did not read
+/// starts again from 0, like a returning `tween`.
+pub fn loop(cx: *Cx, key: Key, period_ms: u32) f32 {
+    assert(period_ms > 0);
+    assert(period_ms <= loop_period_ms_max);
+    const window = cx_mod.windowOf(cx);
+    const now_ns = cx.now();
+    const state = cx.get(LoopState, cx.retain(LoopState, cx.id(key), .frame, LoopState.init));
+    const returning = state.built_frame + 1 < window.frame_number;
+    if (!state.started or returning) {
+        state.start_ns = now_ns;
+        state.started = true;
+    }
+    state.built_frame = window.frame_number;
+    assert(now_ns >= state.start_ns);
+    const period_ns = @as(u64, period_ms) * std.time.ns_per_ms;
+    const offset_ns = (now_ns - state.start_ns) % period_ns;
+    const phase: f64 = @as(f64, @floatFromInt(offset_ns)) / @as(f64, @floatFromInt(period_ns));
+    // An offset within one f32 step of the period rounds to 1: that is the wrap.
+    const phase_f32: f32 = @floatCast(phase);
+    const result: f32 = if (phase_f32 < 1) phase_f32 else 0;
+    assert(result >= 0);
+    assert(result < 1);
+    cx.requestRenderAfter(0);
+    return result;
 }
 
 /// The eased progress of the tween keyed `key` under the box being built: 0

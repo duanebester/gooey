@@ -338,8 +338,9 @@ fn pinExact() void {
             "held_key_count_max", "Keystroke",
         });
         expectDecls(gooey.animation, "gooey.animation", &.{
-            "tween_duration_ms_max", "Easing", "Tween",   "Spring", "Phase",
-            "Motion",                "tween",  "tweenOn", "motion",
+            "tween_duration_ms_max", "loop_period_ms_max", "Easing", "Tween",
+            "Spring",                "Phase",              "Motion", "tween",
+            "tweenOn",               "loop",               "motion",
         });
     }
 }

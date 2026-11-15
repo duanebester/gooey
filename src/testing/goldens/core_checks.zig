@@ -2449,7 +2449,7 @@ test "cx.requestRenderAfter renders once at the earliest deadline of the last bu
 
 /// Which helper `motionRender` builds, so each check sees only its own
 /// render requests.
-const MotionPart = enum { tween, tween_on, row, motion };
+const MotionPart = enum { tween, tween_on, row, loop, motion };
 
 const MotionState = struct {
     part: MotionPart = .tween,
@@ -2479,6 +2479,9 @@ fn motionRender(cx: *Cx) void {
             var delayed = linear;
             delayed.delay_ms = 50;
             s.value = gooey.animation.tween(cx, .{ .index = 3 }, delayed);
+        },
+        .loop => if (s.show) {
+            s.value = gooey.animation.loop(cx, .{ .name = "spin" }, 400);
         },
         .motion => s.motion = gooey.animation.motion(cx, .{ .name = "panel" }, s.show, .snappy),
     }
@@ -2550,6 +2553,48 @@ test "tweens follow the clock, wait out their delay, replay on return, and then 
     app.tick(3_200 * ms);
     try testing.expectEqual(@as(f32, 1), s.value);
     try testing.expect(motionIdle(app));
+    try testing.expectEqual(internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
+}
+
+test "a loop wraps its phase every period, and draws nothing once it is not built" {
+    // Goal: `animation.loop` follows the clock modulo its period, asks for a
+    // frame in every build that reads it, and leaves an idle window once a
+    // build skips it. Method: build a 400 ms loop from 1 s; read the phase a
+    // quarter in, one nanosecond before the wrap, and past two wraps. Hide
+    // it: that build must ask for nothing and a later tick must build
+    // nothing. Show it again: it restarts from 0.
+    const ms = std.time.ns_per_ms;
+    const app = try testing.allocator.create(MotionApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    const s = &app.state;
+    s.part = .loop;
+    app.tick(1_000 * ms);
+    try testing.expectEqual(@as(f32, 0), s.value);
+    try testing.expectEqual(@as(?u64, 1_000 * ms), app.window.renderDeadlineNs());
+    app.tick(1_100 * ms);
+    try testing.expectApproxEqAbs(@as(f32, 0.25), s.value, 1e-6);
+    try testing.expectEqual(@as(?u64, 1_100 * ms), app.window.renderDeadlineNs());
+    app.tick(1_400 * ms - 1);
+    try testing.expect(s.value < 1);
+    try testing.expect(s.value == 0 or s.value > 0.99);
+    app.tick(1_900 * ms);
+    try testing.expectApproxEqAbs(@as(f32, 0.25), s.value, 1e-6);
+
+    s.show = false;
+    s.value = -1;
+    motionBuild(app, 2_000);
+    try testing.expectEqual(@as(f32, -1), s.value);
+    try testing.expect(motionIdle(app));
+    const built = app.window.frame_number;
+    app.tick(12_000 * ms);
+    try testing.expectEqual(built, app.window.frame_number);
+    s.show = true;
+    motionBuild(app, 13_050);
+    try testing.expectEqual(@as(f32, 0), s.value);
+    app.tick(13_250 * ms);
+    try testing.expectApproxEqAbs(@as(f32, 0.5), s.value, 1e-6);
     try testing.expectEqual(internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
 }
 
@@ -2645,6 +2690,17 @@ test "animation plays its entrances, toggles, and stagger, then goes idle" {
     try testing.expect(animationSettle(app, &now) > 5);
     animationClick(app, &now, "Hide List");
     try testing.expect(animationSettle(app, &now) > 5);
+
+    // The pulse loops until it is turned off, then the window settles.
+    animationClick(app, &now, "Start Pulse");
+    for (0..120) |_| {
+        now += 16 * std.time.ns_per_ms;
+        app.tick(now);
+        try testing.expectEqual(@as(?u64, now), app.window.renderDeadlineNs());
+    }
+    animationClick(app, &now, "Stop Pulse");
+    try testing.expectEqual(@as(?u64, null), app.window.renderDeadlineNs());
+    try testing.expect(nodeNamed(&app.window, .button, "Start Pulse") != null);
     const built = app.window.frame_number;
     app.tick(now + 10 * std.time.ns_per_s);
     try testing.expectEqual(built, app.window.frame_number);
