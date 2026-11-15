@@ -834,8 +834,10 @@ The font snippets also come from `core_checks.zig`.
 
 Accessibility is a field on the box. `ui.A11y` has `role` (`gooey.accessibility.Role`),
 `label`, `value`, `checked`, `selected`, `disabled`, `heading_level` (`ui.HeadingLevel`),
-`live`, `href`, `description`, `expanded`, `has_popup`, `pos_in_set`, `set_size`, and `range`
-(`ui.A11y.Range`: `min`, `max`, `now`, and an `orientation`, for splitters and sliders).
+`live`, `href`, `description`, `expanded`, `has_popup`, `pos_in_set`, `set_size`, `range`
+(`ui.A11y.Range`: `min`, `max`, `now`, and an `orientation`, for splitters and sliders), and
+`selection` (a text field's selection in `value`, which the screen reader reports as the
+caret; a value past `ResourceLimits.a11y.value_bytes_max` is cut to the lines around it).
 The components fill it in. From
 `accessible_form.zig`:
 
