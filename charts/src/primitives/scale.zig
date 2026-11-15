@@ -11,9 +11,8 @@ const constants = @import("../constants.zig");
 const util = @import("../util.zig");
 const types = @import("../types.zig");
 
-const MAX_DATA_POINTS = constants.MAX_DATA_POINTS;
 const MAX_TICKS = constants.MAX_TICKS;
-const MAX_CATEGORIES = constants.MAX_CATEGORIES;
+const category_count_ceiling = constants.category_count_ceiling;
 const MAX_LABEL_LENGTH = constants.MAX_LABEL_LENGTH;
 
 // =============================================================================
@@ -140,9 +139,14 @@ pub const LinearScale = struct {
 
 /// Maps categorical labels to equal-width pixel bands.
 /// Used for bar charts, grouped data, etc.
+///
+/// The label storage is sized by the framework ceiling, not a chart's
+/// `category_count_max`: a band scale is a by-value primitive shared by every
+/// bar chart and axis, and making it generic would spread the capacity through
+/// `Axis`, `Grid` and `Scale`. Bar charts build it on the stack per render.
 pub const BandScale = struct {
-    labels: [MAX_CATEGORIES][MAX_LABEL_LENGTH]u8 = undefined,
-    label_lens: [MAX_CATEGORIES]u8 = @splat(0),
+    labels: [category_count_ceiling][MAX_LABEL_LENGTH]u8 = undefined,
+    label_lens: [category_count_ceiling]u8 = @splat(0),
     label_count: u32 = 0,
     range_min: f32 = 0,
     range_max: f32 = 0,
@@ -156,7 +160,7 @@ pub const BandScale = struct {
 
     /// Initialize a band scale from label slices.
     pub fn init(labels: []const []const u8, range_min: f32, range_max: f32) BandScale {
-        std.debug.assert(labels.len > 0 and labels.len <= MAX_CATEGORIES);
+        std.debug.assert(labels.len > 0 and labels.len <= category_count_ceiling);
         std.debug.assert(!std.math.isNan(range_min) and !std.math.isNan(range_max));
 
         var band_scale = BandScale{
@@ -320,16 +324,19 @@ pub const Scale = union(enum) {
 // =============================================================================
 
 /// Project `series` to pixel points in `out`, first decimated with LTTB to
-/// `lod_points` when it has more points than that; returns the count.
+/// `lod_points` when it has more points than that; returns the count. The
+/// scratch is sized by the chart's `point_count_max`, not the framework
+/// ceiling: at most `point_count_max` × 16 bytes of LTTB input and output.
 pub fn projectSeries(
-    series: *const types.Series,
+    comptime point_count_max: u32,
+    series: *const types.Series(point_count_max),
     x_scale: LinearScale,
     y_scale: LinearScale,
     lod_points: ?u32,
-    out: *[MAX_DATA_POINTS][2]f32,
+    out: *[point_count_max][2]f32,
 ) u32 {
     const len = series.data_len;
-    std.debug.assert(len <= MAX_DATA_POINTS);
+    std.debug.assert(len <= point_count_max);
     const target = lod_points orelse len;
     if (len <= target) {
         for (series.data[0..len], out[0..len]) |point, *slot| {
@@ -338,8 +345,8 @@ pub fn projectSeries(
         return len;
     }
     std.debug.assert(target >= 2);
-    var input: [MAX_DATA_POINTS]util.DecimationPoint = undefined;
-    var kept: [MAX_DATA_POINTS]util.DecimationPoint = undefined;
+    var input: [point_count_max]util.DecimationPoint = undefined;
+    var kept: [point_count_max]util.DecimationPoint = undefined;
     for (series.data[0..len], input[0..len]) |point, *slot| {
         slot.* = .{ .x = point.x, .y = point.y };
     }

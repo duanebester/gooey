@@ -30,12 +30,22 @@ const Palette = struct {
 
 const ToggleTheme = struct {};
 
+/// Chart capacities sized from the data `fillData` loads, rounded up to a power
+/// of two: 12 months of revenue and target fit 16 points, 5 sales categories
+/// fit 8, 5 traffic sources fit 8 slices, the 2-slice conversion ring fits 2,
+/// and the largest customer segment (Regular, 7 points) fits 8.
+const RevenueChart = charts.LineChart(.{ .point_count_max = 16, .series_count_max = 2 });
+const SalesChart = charts.BarChart(.{ .category_count_max = 8, .series_count_max = 1 });
+const TrafficChart = charts.PieChart(.{ .slice_count_max = 8 });
+const ConversionChart = charts.PieChart(.{ .slice_count_max = 2 });
+const SegmentChart = charts.ScatterChart(.{ .point_count_max = 8, .series_count_max = 3 });
+
 pub const State = struct {
     is_dark_theme: bool = true,
-    revenue: [2]charts.Series = undefined,
-    categories: [1]charts.CategorySeries = undefined,
+    revenue: [RevenueChart.series_count_max]RevenueChart.Series = undefined,
+    categories: [SalesChart.series_count_max]SalesChart.Series = undefined,
     traffic: [5]charts.CategoryPoint = undefined,
-    segments: [3]charts.Series = undefined,
+    segments: [SegmentChart.series_count_max]SegmentChart.Series = undefined,
 
     pub fn toggleTheme(self: *State) void {
         self.is_dark_theme = !self.is_dark_theme;
@@ -96,7 +106,8 @@ const casual_points = [_][2]f32{
     .{ 0.3, 45 }, .{ 0.5, 62 }, .{ 0.8, 78 }, .{ 0.4, 55 }, .{ 0.6, 68 }, .{ 0.9, 85 },
 };
 
-/// Fill the chart data in place: a `Series` is about 300 KiB.
+/// Fill the chart data in place. Each series is sized by its chart's capacity:
+/// a revenue series of 16 points is about 1.3 KiB, and all chart data is 6 KiB.
 fn fillData(state: *State, _: *gooey.Effects) void {
     state.revenue[0].initInPlace("Revenue", Palette.primary);
     state.revenue[1].initInPlace("Target", Palette.neutral_light);
@@ -107,7 +118,7 @@ fn fillData(state: *State, _: *gooey.Effects) void {
     }
 
     var sales = &state.categories[0];
-    sales.* = charts.CategorySeries.init("Sales", null);
+    sales.* = SalesChart.Series.init("Sales", null);
     const sales_names = [_][]const u8{ "Electronics", "Clothing", "Home", "Sports", "Books" };
     const sales_values = [_]f32{ 342, 256, 189, 145, 98 };
     for (sales_names, sales_values) |name, value| {
@@ -131,7 +142,7 @@ fn fillData(state: *State, _: *gooey.Effects) void {
 }
 
 fn fillSegment(
-    series: *charts.Series,
+    series: *SegmentChart.Series,
     name: []const u8,
     color: Color,
     points: []const [2]f32,
@@ -332,7 +343,7 @@ fn paintRevenue(state: *const State, painter: *Painter) void {
         .font_size = 11,
     };
     const legend_height = charts.Legend.calculateDimensions(&items, legend).height;
-    var chart = charts.LineChart.init(&state.revenue);
+    var chart = RevenueChart.init(&state.revenue);
     chart.width = painter.bounds.width;
     chart.height = painter.bounds.height;
     chart.margin_top = 16 + legend_height;
@@ -351,7 +362,7 @@ fn paintRevenue(state: *const State, painter: *Painter) void {
 
 fn paintCategories(state: *const State, painter: *Painter) void {
     paintCard(state, painter);
-    var chart = charts.BarChart.init(&state.categories);
+    var chart = SalesChart.init(&state.categories);
     chart.width = painter.bounds.width;
     chart.height = painter.bounds.height;
     chart.margin_top = 20;
@@ -367,7 +378,7 @@ fn paintCategories(state: *const State, painter: *Painter) void {
 
 fn paintTraffic(state: *const State, painter: *Painter) void {
     paintCard(state, painter);
-    var chart = charts.PieChart.init(&state.traffic);
+    var chart = TrafficChart.init(&state.traffic);
     chart.width = painter.bounds.width;
     chart.height = painter.bounds.height - 30;
     chart.inner_radius_ratio = 0.55;
@@ -391,7 +402,7 @@ fn paintSegments(state: *const State, painter: *Painter) void {
         .font_size = 11,
     };
     const legend_height = charts.Legend.calculateDimensions(&items, legend).height;
-    var chart = charts.ScatterChart.init(&state.segments);
+    var chart = SegmentChart.init(&state.segments);
     chart.width = painter.bounds.width;
     chart.height = painter.bounds.height;
     chart.margin_top = 16 + legend_height;
@@ -428,11 +439,11 @@ fn paintConversion(state: *const State, painter: *Painter) void {
     paintCard(state, painter);
     const conversion_percent: f32 = 3.24;
     const scale_max_percent: f32 = 10;
-    const ring = [_]charts.CategoryPoint{
+    const ring = [ConversionChart.slice_count_max]charts.CategoryPoint{
         .initColored("Converted", conversion_percent, Palette.success),
         .initColored("Remaining", scale_max_percent - conversion_percent, state.grid()),
     };
-    var chart = charts.PieChart.init(&ring);
+    var chart = ConversionChart.init(&ring);
     chart.width = painter.bounds.width;
     chart.height = painter.bounds.height - 40;
     chart.inner_radius_ratio = 0.72;

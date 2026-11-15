@@ -41,6 +41,9 @@ pub const MAX_SUMMARY_LENGTH: usize = 128;
 /// Maximum length for individual data point descriptions.
 pub const MAX_POINT_DESCRIPTION_LENGTH: usize = 64;
 
+/// Most points one chart can describe: every series of the largest chart full.
+const point_count_total_max: u32 = constants.point_count_ceiling * constants.series_count_ceiling;
+
 /// Maximum number of data points to verbalize in full description.
 /// Beyond this, we summarize with min/max/average.
 pub const VERBALIZE_THRESHOLD: usize = 8;
@@ -121,7 +124,7 @@ pub const ChartType = enum {
 /// Returns a slice into the provided buffer.
 pub fn describe(info: *const ChartInfo, buf: []u8) []const u8 {
     std.debug.assert(buf.len >= MAX_DESCRIPTION_LENGTH);
-    std.debug.assert(info.point_count <= constants.MAX_DATA_POINTS * constants.MAX_SERIES);
+    std.debug.assert(info.point_count <= point_count_total_max);
 
     // If user provided a description, use it
     if (info.description) |desc| {
@@ -146,7 +149,7 @@ pub fn describe(info: *const ChartInfo, buf: []u8) []const u8 {
 
 /// Write the chart type and overview.
 fn writeChartOverview(writer: anytype, info: *const ChartInfo) !void {
-    std.debug.assert(info.series_count <= constants.MAX_SERIES);
+    std.debug.assert(info.series_count <= constants.series_count_ceiling);
     std.debug.assert(@backingInt(info.chart_type) <= @backingInt(ChartType.scatter));
 
     try writer.print("{s}", .{info.chart_type.defaultTitle()});
@@ -213,7 +216,7 @@ fn writeDataSummary(writer: anytype, info: *const ChartInfo) !void {
 /// Generate a short summary for tooltips or live regions.
 pub fn summarize(info: *const ChartInfo, buf: []u8) []const u8 {
     std.debug.assert(buf.len >= MAX_SUMMARY_LENGTH);
-    std.debug.assert(info.point_count <= constants.MAX_DATA_POINTS * constants.MAX_SERIES);
+    std.debug.assert(info.point_count <= point_count_total_max);
 
     var writer = std.Io.Writer.fixed(buf);
 
@@ -292,13 +295,16 @@ pub fn describeScatterPoint(
 // Chart-Specific Info Builders
 // =============================================================================
 
-/// Build ChartInfo from CategorySeries (for bar charts).
+/// Build ChartInfo from CategorySeries (for bar charts). `SeriesType` is a
+/// `types.CategorySeries(category_count_max)`, such as `BarChart(...).Series`.
 pub fn infoFromCategorySeries(
-    series: []const types.CategorySeries,
+    comptime SeriesType: type,
+    series: []const SeriesType,
     chart_type: ChartType,
 ) ChartInfo {
+    comptime std.debug.assert(SeriesType == types.CategorySeries(SeriesType.capacity));
     std.debug.assert(series.len > 0);
-    std.debug.assert(series.len <= constants.MAX_SERIES);
+    std.debug.assert(series.len <= constants.series_count_ceiling);
 
     var info = ChartInfo{
         .chart_type = chart_type,
@@ -311,6 +317,7 @@ pub fn infoFromCategorySeries(
 
     // Use first series for category count and min/max
     const first = &series[0];
+    std.debug.assert(first.data_len <= constants.category_count_ceiling);
     info.point_count = first.data_len;
 
     var total: f32 = 0;
@@ -349,13 +356,16 @@ pub fn infoFromCategorySeries(
     return info;
 }
 
-/// Build ChartInfo from Series (for line/scatter charts).
+/// Build ChartInfo from Series (for line/scatter charts). `SeriesType` is a
+/// `types.Series(point_count_max)`, such as `LineChart(...).Series`.
 pub fn infoFromSeries(
-    series: []const types.Series,
+    comptime SeriesType: type,
+    series: []const SeriesType,
     chart_type: ChartType,
 ) ChartInfo {
+    comptime std.debug.assert(SeriesType == types.Series(SeriesType.capacity));
     std.debug.assert(series.len > 0);
-    std.debug.assert(series.len <= constants.MAX_SERIES);
+    std.debug.assert(series.len <= constants.series_count_ceiling);
 
     var info = ChartInfo{
         .chart_type = chart_type,
@@ -370,6 +380,7 @@ pub fn infoFromSeries(
 
     // Aggregate across all series
     for (series) |*s| {
+        std.debug.assert(s.data_len <= constants.point_count_ceiling);
         info.point_count += s.data_len;
 
         for (0..s.data_len) |i| {
@@ -401,7 +412,7 @@ pub fn infoFromCategoryPoints(
     is_donut: bool,
 ) ChartInfo {
     std.debug.assert(points.len > 0);
-    std.debug.assert(points.len <= constants.MAX_CATEGORIES);
+    std.debug.assert(points.len <= constants.slice_count_ceiling);
 
     var info = ChartInfo{
         .chart_type = if (is_donut) .donut else .pie,

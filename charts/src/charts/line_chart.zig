@@ -6,6 +6,12 @@
 //! NOTE: LineChart stores a *slice* to externally-owned series data.
 //! The caller is responsible for ensuring the data outlives the chart.
 //! This avoids embedding large arrays on the stack (per CLAUDE.md).
+//!
+//! Capacities are the app's, fixed at comptime:
+//! `const Revenue = LineChart(.{ .point_count_max = 64, .series_count_max = 2 });`
+//! sizes `Revenue.Series` and the per-render projection scratch for 64 points.
+//! Each render keeps at most one `[point_count_max][2]f32` array (8 bytes per
+//! point) plus `projectSeries`' two LTTB arrays of the same size on the stack.
 
 const std = @import("std");
 const paint = @import("../paint.zig");
@@ -22,7 +28,6 @@ const LinearScale = scale_mod.LinearScale;
 const Axis = axis_mod.Axis;
 const Grid = grid_mod.Grid;
 
-const Series = types.Series;
 const DataPoint = types.DataPoint;
 const ChartTheme = theme_mod.ChartTheme;
 
@@ -30,8 +35,6 @@ pub const Color = paint.Color;
 pub const Painter = paint.Painter;
 // NOTE: Path is ~70KB on the stack, so we avoid it and use strokeLine instead
 
-const MAX_SERIES = constants.MAX_SERIES;
-const MAX_DATA_POINTS = constants.MAX_DATA_POINTS;
 const LOD_THRESHOLD = constants.LOD_THRESHOLD;
 
 // =============================================================================
@@ -44,380 +47,415 @@ pub const default_palette = theme_mod.google_palette;
 // LineChart
 // =============================================================================
 
-pub const LineChart = struct {
-    // Data - stored as a slice to avoid large stack allocation
-    // The caller owns the underlying data; chart just references it
-    data: []const Series,
+/// A line chart drawing up to `capacity.series_count_max` series, each holding
+/// up to `capacity.point_count_max` points.
+pub fn LineChart(comptime capacity: types.PointCapacity) type {
+    capacity.check();
+    return struct {
+        // Data - stored as a slice to avoid large stack allocation
+        // The caller owns the underlying data; chart just references it
+        data: []const Series,
 
-    // Dimensions
-    width: f32 = constants.DEFAULT_WIDTH,
-    height: f32 = constants.DEFAULT_HEIGHT,
+        // Dimensions
+        width: f32 = constants.DEFAULT_WIDTH,
+        height: f32 = constants.DEFAULT_HEIGHT,
 
-    // Margins
-    margin_top: f32 = constants.DEFAULT_MARGIN_TOP,
-    margin_right: f32 = constants.DEFAULT_MARGIN_RIGHT,
-    margin_bottom: f32 = constants.DEFAULT_MARGIN_BOTTOM,
-    margin_left: f32 = constants.DEFAULT_MARGIN_LEFT,
+        // Margins
+        margin_top: f32 = constants.DEFAULT_MARGIN_TOP,
+        margin_right: f32 = constants.DEFAULT_MARGIN_RIGHT,
+        margin_bottom: f32 = constants.DEFAULT_MARGIN_BOTTOM,
+        margin_left: f32 = constants.DEFAULT_MARGIN_LEFT,
 
-    // Line styling
-    line_width: f32 = constants.DEFAULT_LINE_WIDTH,
+        // Line styling
+        line_width: f32 = constants.DEFAULT_LINE_WIDTH,
 
-    // Point markers
-    show_points: bool = true,
-    point_radius: f32 = constants.DEFAULT_POINT_RADIUS,
+        // Point markers
+        show_points: bool = true,
+        point_radius: f32 = constants.DEFAULT_POINT_RADIUS,
 
-    // Area fill
-    show_area: bool = false,
-    area_opacity: f32 = 0.3,
+        // Area fill
+        show_area: bool = false,
+        area_opacity: f32 = 0.3,
 
-    // Domain overrides (null = auto-detect from data)
-    x_domain_min: ?f32 = null,
-    x_domain_max: ?f32 = null,
-    y_domain_min: ?f32 = null,
-    y_domain_max: ?f32 = null,
+        // Domain overrides (null = auto-detect from data)
+        x_domain_min: ?f32 = null,
+        x_domain_max: ?f32 = null,
+        y_domain_min: ?f32 = null,
+        y_domain_max: ?f32 = null,
 
-    // Axes
-    show_x_axis: bool = true,
-    show_y_axis: bool = true,
-    x_axis_opts: Axis.Options = .{ .orientation = .bottom },
-    y_axis_opts: Axis.Options = .{ .orientation = .left },
+        // Axes
+        show_x_axis: bool = true,
+        show_y_axis: bool = true,
+        x_axis_opts: Axis.Options = .{ .orientation = .bottom },
+        y_axis_opts: Axis.Options = .{ .orientation = .left },
 
-    // Grid
-    show_grid: bool = true,
-    grid_opts: Grid.Options = .{ .show_horizontal = true, .show_vertical = true },
+        // Grid
+        show_grid: bool = true,
+        grid_opts: Grid.Options = .{ .show_horizontal = true, .show_vertical = true },
 
-    // Theme (optional - uses default colors if null)
-    chart_theme: ?*const ChartTheme = null,
+        // Theme (optional - uses default colors if null)
+        chart_theme: ?*const ChartTheme = null,
 
-    // Accessibility
-    accessible_title: ?[]const u8 = null,
-    accessible_description: ?[]const u8 = null,
+        // Accessibility
+        accessible_title: ?[]const u8 = null,
+        accessible_description: ?[]const u8 = null,
 
-    // Level-of-Detail (LOD) for large datasets
-    // When enabled, datasets with >LOD_THRESHOLD points use LTTB decimation
-    enable_lod: bool = true,
-    lod_target_points: u32 = LOD_THRESHOLD,
+        // Level-of-Detail (LOD) for large datasets
+        // When enabled, datasets with >LOD_THRESHOLD points use LTTB decimation
+        enable_lod: bool = true,
+        lod_target_points: u32 = LOD_THRESHOLD,
 
-    // ==========================================================================
-    // Initialization
-    // ==========================================================================
+        const Self = @This();
 
-    /// Create a line chart from a slice of series.
-    /// The slice must outlive the chart - data is NOT copied.
-    pub fn init(data: []const Series) LineChart {
-        std.debug.assert(data.len > 0);
-        std.debug.assert(data.len <= MAX_SERIES);
-        return .{ .data = data };
-    }
+        /// Most points one series holds.
+        pub const point_count_max: u32 = capacity.point_count_max;
 
-    /// Create a line chart from a single series (as a 1-element slice).
-    /// The series must outlive the chart - data is NOT copied.
-    pub fn initSingle(series: *const Series) LineChart {
-        const slice: []const Series = @as([*]const Series, @ptrCast(series))[0..1];
-        return .{ .data = slice };
-    }
+        /// Most series one chart draws.
+        pub const series_count_max: u32 = capacity.series_count_max;
 
-    // ==========================================================================
-    // Accessors
-    // ==========================================================================
+        /// The series this chart draws, sized by `point_count_max`.
+        pub const Series = types.Series(point_count_max);
 
-    pub fn seriesCount(self: *const LineChart) u32 {
-        return @intCast(self.data.len);
-    }
+        // ==========================================================================
+        // Initialization
+        // ==========================================================================
 
-    // ==========================================================================
-    // Accessibility
-    // ==========================================================================
-
-    /// Get accessibility information for this chart.
-    /// Use with `charts.describeChart()` to generate screen reader descriptions.
-    pub fn getAccessibilityInfo(self: *const LineChart) a11y.ChartInfo {
-        var info = a11y.infoFromSeries(self.data, .line);
-        info.title = self.accessible_title;
-        info.description = self.accessible_description;
-        return info;
-    }
-
-    /// Generate a full accessible description for this chart.
-    /// Returns a slice into the provided buffer.
-    pub fn describe(self: *const LineChart, buf: []u8) []const u8 {
-        const info = self.getAccessibilityInfo();
-        return a11y.describe(&info, buf);
-    }
-
-    /// Generate a short summary for tooltips or live regions.
-    pub fn summarize(self: *const LineChart, buf: []u8) []const u8 {
-        const info = self.getAccessibilityInfo();
-        return a11y.summarize(&info, buf);
-    }
-
-    // ==========================================================================
-    // Rendering
-    // ==========================================================================
-
-    /// Render the line chart, offset by the paint element's bounds.
-    pub fn render(self: *const LineChart, painter: *Painter) void {
-        // Assertions at API boundary
-        std.debug.assert(self.data.len > 0);
-        std.debug.assert(self.width > 0 and self.height > 0);
-
-        // Calculate inner bounds
-        const inner_x = painter.bounds.x + self.margin_left;
-        const inner_y = painter.bounds.y + self.margin_top;
-        const inner_width = self.width - self.margin_left - self.margin_right;
-        const inner_height = self.height - self.margin_top - self.margin_bottom;
-
-        std.debug.assert(inner_width > 0 and inner_height > 0);
-
-        // Calculate data extents
-        const x_extent = self.findXExtent();
-        const y_extent = self.findYExtent();
-
-        // Apply nice range for Y axis
-        const nice_y = util.niceRange(y_extent.min, y_extent.max, 5);
-
-        // Create scales
-        const x_scale = LinearScale.init(
-            self.x_domain_min orelse x_extent.min,
-            self.x_domain_max orelse x_extent.max,
-            inner_x,
-            inner_x + inner_width,
-        );
-
-        const y_scale = LinearScale.init(
-            self.y_domain_min orelse nice_y.min,
-            self.y_domain_max orelse nice_y.max,
-            inner_y + inner_height, // Y is inverted (0 at bottom)
-            inner_y,
-        );
-
-        // Draw grid (behind lines)
-        if (self.show_grid) {
-            self.drawGrid(painter, x_scale, y_scale, inner_x, inner_y, inner_width, inner_height);
+        /// Create a line chart from a slice of series.
+        /// The slice must outlive the chart - data is NOT copied.
+        pub fn init(data: []const Series) Self {
+            std.debug.assert(data.len > 0);
+            std.debug.assert(data.len <= series_count_max);
+            return .{ .data = data };
         }
 
-        // Draw area fills first (behind lines)
-        if (self.show_area) {
-            self.drawAreas(painter, x_scale, y_scale, inner_y + inner_height);
+        /// Create a line chart from a single series (as a 1-element slice).
+        /// The series must outlive the chart - data is NOT copied.
+        pub fn initSingle(series: *const Series) Self {
+            const slice: []const Series = @as([*]const Series, @ptrCast(series))[0..1];
+            return .{ .data = slice };
         }
 
-        // Draw lines
-        self.drawLines(painter, x_scale, y_scale);
+        // ==========================================================================
+        // Accessors
+        // ==========================================================================
 
-        // Draw point markers (on top of lines)
-        if (self.show_points) {
-            self.drawPoints(painter, x_scale, y_scale);
+        pub fn seriesCount(self: *const Self) u32 {
+            return @intCast(self.data.len);
         }
 
-        // Axes on top.
-        if (self.show_x_axis) {
-            const x_opts = Axis.themed(self.x_axis_opts, .bottom, self.chart_theme);
-            Axis.drawLinear(painter, x_scale, inner_x, inner_y + inner_height, x_opts);
+        // ==========================================================================
+        // Accessibility
+        // ==========================================================================
+
+        /// Get accessibility information for this chart.
+        /// Use with `charts.describeChart()` to generate screen reader descriptions.
+        pub fn getAccessibilityInfo(self: *const Self) a11y.ChartInfo {
+            var info = a11y.infoFromSeries(Series, self.data, .line);
+            info.title = self.accessible_title;
+            info.description = self.accessible_description;
+            return info;
         }
 
-        if (self.show_y_axis) {
-            const y_opts = Axis.themed(self.y_axis_opts, .left, self.chart_theme);
-            Axis.drawLinear(painter, y_scale, inner_x, inner_y, y_opts);
-        }
-    }
-
-    // ==========================================================================
-    // Private Helpers - Domain Calculation
-    // ==========================================================================
-
-    /// Find the min/max X values across all series.
-    fn findXExtent(self: *const LineChart) struct { min: f32, max: f32 } {
-        var min: f32 = std.math.inf(f32);
-        var max: f32 = -std.math.inf(f32);
-
-        for (self.data) |*series| {
-            const extent = series.xExtent();
-            min = @min(min, extent.min);
-            max = @max(max, extent.max);
+        /// Generate a full accessible description for this chart.
+        /// Returns a slice into the provided buffer.
+        pub fn describe(self: *const Self, buf: []u8) []const u8 {
+            const info = self.getAccessibilityInfo();
+            return a11y.describe(&info, buf);
         }
 
-        // Handle empty data case
-        if (min > max) {
-            return .{ .min = 0, .max = 1 };
+        /// Generate a short summary for tooltips or live regions.
+        pub fn summarize(self: *const Self, buf: []u8) []const u8 {
+            const info = self.getAccessibilityInfo();
+            return a11y.summarize(&info, buf);
         }
 
-        return .{ .min = min, .max = max };
-    }
+        // ==========================================================================
+        // Rendering
+        // ==========================================================================
 
-    /// Find the min/max Y values across all series.
-    fn findYExtent(self: *const LineChart) struct { min: f32, max: f32 } {
-        var min: f32 = std.math.inf(f32);
-        var max: f32 = -std.math.inf(f32);
+        /// Render the line chart, offset by the paint element's bounds.
+        pub fn render(self: *const Self, painter: *Painter) void {
+            // Assertions at API boundary
+            std.debug.assert(self.data.len > 0);
+            std.debug.assert(self.width > 0 and self.height > 0);
 
-        for (self.data) |*series| {
-            const extent = series.yExtent();
-            min = @min(min, extent.min);
-            max = @max(max, extent.max);
+            // Calculate inner bounds
+            const inner_x = painter.bounds.x + self.margin_left;
+            const inner_y = painter.bounds.y + self.margin_top;
+            const inner_width = self.width - self.margin_left - self.margin_right;
+            const inner_height = self.height - self.margin_top - self.margin_bottom;
+
+            std.debug.assert(inner_width > 0 and inner_height > 0);
+
+            // Calculate data extents
+            const x_extent = self.findXExtent();
+            const y_extent = self.findYExtent();
+
+            // Apply nice range for Y axis
+            const nice_y = util.niceRange(y_extent.min, y_extent.max, 5);
+
+            // Create scales
+            const x_scale = LinearScale.init(
+                self.x_domain_min orelse x_extent.min,
+                self.x_domain_max orelse x_extent.max,
+                inner_x,
+                inner_x + inner_width,
+            );
+
+            const y_scale = LinearScale.init(
+                self.y_domain_min orelse nice_y.min,
+                self.y_domain_max orelse nice_y.max,
+                inner_y + inner_height, // Y is inverted (0 at bottom)
+                inner_y,
+            );
+
+            // Draw grid (behind lines)
+            if (self.show_grid) {
+                self.drawGrid(
+                    painter,
+                    x_scale,
+                    y_scale,
+                    inner_x,
+                    inner_y,
+                    inner_width,
+                    inner_height,
+                );
+            }
+
+            // Draw area fills first (behind lines)
+            if (self.show_area) {
+                self.drawAreas(painter, x_scale, y_scale, inner_y + inner_height);
+            }
+
+            // Draw lines
+            self.drawLines(painter, x_scale, y_scale);
+
+            // Draw point markers (on top of lines)
+            if (self.show_points) {
+                self.drawPoints(painter, x_scale, y_scale);
+            }
+
+            // Axes on top.
+            if (self.show_x_axis) {
+                const x_opts = Axis.themed(self.x_axis_opts, .bottom, self.chart_theme);
+                Axis.drawLinear(painter, x_scale, inner_x, inner_y + inner_height, x_opts);
+            }
+
+            if (self.show_y_axis) {
+                const y_opts = Axis.themed(self.y_axis_opts, .left, self.chart_theme);
+                Axis.drawLinear(painter, y_scale, inner_x, inner_y, y_opts);
+            }
         }
 
-        // Handle empty data case
-        if (min > max) {
-            return .{ .min = 0, .max = 1 };
+        // ==========================================================================
+        // Private Helpers - Domain Calculation
+        // ==========================================================================
+
+        /// Find the min/max X values across all series.
+        fn findXExtent(self: *const Self) struct { min: f32, max: f32 } {
+            var min: f32 = std.math.inf(f32);
+            var max: f32 = -std.math.inf(f32);
+
+            for (self.data) |*series| {
+                const extent = series.xExtent();
+                min = @min(min, extent.min);
+                max = @max(max, extent.max);
+            }
+
+            // Handle empty data case
+            if (min > max) {
+                return .{ .min = 0, .max = 1 };
+            }
+
+            return .{ .min = min, .max = max };
         }
 
-        // For line charts, often want to include 0 in Y range
-        if (min > 0 and self.show_area) {
-            min = 0;
+        /// Find the min/max Y values across all series.
+        fn findYExtent(self: *const Self) struct { min: f32, max: f32 } {
+            var min: f32 = std.math.inf(f32);
+            var max: f32 = -std.math.inf(f32);
+
+            for (self.data) |*series| {
+                const extent = series.yExtent();
+                min = @min(min, extent.min);
+                max = @max(max, extent.max);
+            }
+
+            // Handle empty data case
+            if (min > max) {
+                return .{ .min = 0, .max = 1 };
+            }
+
+            // For line charts, often want to include 0 in Y range
+            if (min > 0 and self.show_area) {
+                min = 0;
+            }
+
+            return .{ .min = min, .max = max };
         }
 
-        return .{ .min = min, .max = max };
-    }
+        // ==========================================================================
+        // Private Helpers - Drawing
+        // ==========================================================================
 
-    // ==========================================================================
-    // Private Helpers - Drawing
-    // ==========================================================================
+        /// Draw grid lines.
+        fn drawGrid(
+            self: *const Self,
+            painter: *Painter,
+            x_scale: LinearScale,
+            y_scale: LinearScale,
+            x: f32,
+            y: f32,
+            w: f32,
+            h: f32,
+        ) void {
+            // Apply theme colors if available
+            var grid_opts = self.grid_opts;
+            if (self.chart_theme) |t| {
+                grid_opts.color = t.grid_color;
+            }
 
-    /// Draw grid lines.
-    fn drawGrid(
-        self: *const LineChart,
-        painter: *Painter,
-        x_scale: LinearScale,
-        y_scale: LinearScale,
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
-    ) void {
-        // Apply theme colors if available
-        var grid_opts = self.grid_opts;
-        if (self.chart_theme) |t| {
-            grid_opts.color = t.grid_color;
+            Grid.drawLinearXY(
+                painter,
+                x_scale,
+                y_scale,
+                .{ .x = x, .y = y, .width = w, .height = h },
+                self.x_axis_opts.tick_count,
+                self.y_axis_opts.tick_count,
+                grid_opts,
+            );
         }
 
-        Grid.drawLinearXY(
-            painter,
-            x_scale,
-            y_scale,
-            .{ .x = x, .y = y, .width = w, .height = h },
-            self.x_axis_opts.tick_count,
-            self.y_axis_opts.tick_count,
-            grid_opts,
-        );
-    }
+        /// Draw filled areas under lines.
+        fn drawAreas(
+            self: *const Self,
+            painter: *Painter,
+            x_scale: LinearScale,
+            y_scale: LinearScale,
+            baseline: f32,
+        ) void {
+            for (self.data, 0..) |*series, series_idx| {
+                if (series.data_len < 2) continue;
 
-    /// Draw filled areas under lines.
-    fn drawAreas(
-        self: *const LineChart,
-        painter: *Painter,
-        x_scale: LinearScale,
-        y_scale: LinearScale,
-        baseline: f32,
-    ) void {
-        for (self.data, 0..) |*series, series_idx| {
-            if (series.data_len < 2) continue;
+                const color = self.getSeriesColor(series, series_idx);
+                const area_color = Color.rgba(color.r, color.g, color.b, 0.3);
 
-            const color = self.getSeriesColor(series, series_idx);
-            const area_color = Color.rgba(color.r, color.g, color.b, 0.3);
-
-            self.drawSeriesArea(painter, series, x_scale, y_scale, baseline, area_color);
+                self.drawSeriesArea(painter, series, x_scale, y_scale, baseline, area_color);
+            }
         }
-    }
 
-    /// Fill the area between a series' line and `baseline` as one triangle
-    /// mesh: two triangles per segment, under the same projected (and
-    /// LTTB-decimated) points the line draws, so the fill meets the line.
-    /// Neighbouring segments share their vertical edge bit for bit, and the
-    /// two triangles of a segment share its diagonal, so the renderers
-    /// classify those edges as interior (`platform/mesh_edges.zig`) and the
-    /// fill tiles without the anti-aliased seams that abutting quads leave.
-    fn drawSeriesArea(
-        self: *const LineChart,
-        painter: *Painter,
-        series: *const Series,
-        x_scale: LinearScale,
-        y_scale: LinearScale,
-        baseline: f32,
-        color: Color,
-    ) void {
-        std.debug.assert(series.data_len >= 2);
-        std.debug.assert(!std.math.isNan(baseline));
-        var points: [MAX_DATA_POINTS][2]f32 = undefined;
-        const count = scale_mod.projectSeries(series, x_scale, y_scale, self.lodPoints(), &points);
-        std.debug.assert(count <= MAX_DATA_POINTS);
-        var index: u32 = 1;
-        while (index < count) : (index += 1) {
-            var triangles: [area_segment_points_max][2]f32 = undefined;
-            const used = areaSegment(&triangles, points[index - 1], points[index], baseline);
-            if (used > 0) painter.triangles(triangles[0..used], color);
+        /// Fill the area between a series' line and `baseline` as one triangle
+        /// mesh: two triangles per segment, under the same projected (and
+        /// LTTB-decimated) points the line draws, so the fill meets the line.
+        /// Neighbouring segments share their vertical edge bit for bit, and the
+        /// two triangles of a segment share its diagonal, so the renderers
+        /// classify those edges as interior (`platform/mesh_edges.zig`) and the
+        /// fill tiles without the anti-aliased seams that abutting quads leave.
+        fn drawSeriesArea(
+            self: *const Self,
+            painter: *Painter,
+            series: *const Series,
+            x_scale: LinearScale,
+            y_scale: LinearScale,
+            baseline: f32,
+            color: Color,
+        ) void {
+            std.debug.assert(series.data_len >= 2);
+            std.debug.assert(!std.math.isNan(baseline));
+            var points: [point_count_max][2]f32 = undefined;
+            const count = self.project(series, x_scale, y_scale, &points);
+            std.debug.assert(count <= point_count_max);
+            var index: u32 = 1;
+            while (index < count) : (index += 1) {
+                var triangles: [area_segment_points_max][2]f32 = undefined;
+                const used = areaSegment(&triangles, points[index - 1], points[index], baseline);
+                if (used > 0) painter.triangles(triangles[0..used], color);
+            }
         }
-    }
 
-    /// Draw all series lines.
-    fn drawLines(
-        self: *const LineChart,
-        painter: *Painter,
-        x_scale: LinearScale,
-        y_scale: LinearScale,
-    ) void {
-        for (self.data, 0..) |*series, series_idx| {
-            if (series.data_len < 2) continue;
+        /// Draw all series lines.
+        fn drawLines(
+            self: *const Self,
+            painter: *Painter,
+            x_scale: LinearScale,
+            y_scale: LinearScale,
+        ) void {
+            for (self.data, 0..) |*series, series_idx| {
+                if (series.data_len < 2) continue;
 
-            const color = self.getSeriesColor(series, series_idx);
-            self.drawSeriesLine(painter, series, x_scale, y_scale, color);
+                const color = self.getSeriesColor(series, series_idx);
+                self.drawSeriesLine(painter, series, x_scale, y_scale, color);
+            }
         }
-    }
 
-    /// Draw a series as one polyline, decimated with LTTB past `lod_target_points`.
-    fn drawSeriesLine(
-        self: *const LineChart,
-        painter: *Painter,
-        series: *const Series,
-        x_scale: LinearScale,
-        y_scale: LinearScale,
-        color: Color,
-    ) void {
-        std.debug.assert(series.data_len >= 2);
-        var points: [MAX_DATA_POINTS][2]f32 = undefined;
-        const count = scale_mod.projectSeries(series, x_scale, y_scale, self.lodPoints(), &points);
-        if (count >= 2) painter.polyline(points[0..count], self.line_width, color);
-    }
+        /// Draw a series as one polyline, decimated with LTTB past `lod_target_points`.
+        fn drawSeriesLine(
+            self: *const Self,
+            painter: *Painter,
+            series: *const Series,
+            x_scale: LinearScale,
+            y_scale: LinearScale,
+            color: Color,
+        ) void {
+            std.debug.assert(series.data_len >= 2);
+            var points: [point_count_max][2]f32 = undefined;
+            const count = self.project(series, x_scale, y_scale, &points);
+            if (count >= 2) painter.polyline(points[0..count], self.line_width, color);
+        }
 
-    /// Draw each series' markers as one point cloud, after every line.
-    fn drawPoints(
-        self: *const LineChart,
-        painter: *Painter,
-        x_scale: LinearScale,
-        y_scale: LinearScale,
-    ) void {
-        std.debug.assert(self.data.len > 0);
-        std.debug.assert(self.point_radius > 0);
-        var centers: [MAX_DATA_POINTS][2]f32 = undefined;
-        for (self.data, 0..) |*series, series_idx| {
-            if (series.data_len == 0) continue;
+        /// Draw each series' markers as one point cloud, after every line.
+        fn drawPoints(
+            self: *const Self,
+            painter: *Painter,
+            x_scale: LinearScale,
+            y_scale: LinearScale,
+        ) void {
+            std.debug.assert(self.data.len > 0);
+            std.debug.assert(self.point_radius > 0);
+            var centers: [point_count_max][2]f32 = undefined;
+            for (self.data, 0..) |*series, series_idx| {
+                if (series.data_len == 0) continue;
+                const count = self.project(series, x_scale, y_scale, &centers);
+                const color = self.getSeriesColor(series, series_idx);
+                painter.pointCloud(centers[0..count], self.point_radius, color);
+            }
+        }
+
+        /// Project `series` into `out` at this chart's LOD; returns the point count.
+        fn project(
+            self: *const Self,
+            series: *const Series,
+            x_scale: LinearScale,
+            y_scale: LinearScale,
+            out: *[point_count_max][2]f32,
+        ) u32 {
+            const lod_points: ?u32 = if (self.enable_lod) self.lod_target_points else null;
+            std.debug.assert(series.data_len <= point_count_max);
             const count = scale_mod.projectSeries(
+                point_count_max,
                 series,
                 x_scale,
                 y_scale,
-                self.lodPoints(),
-                &centers,
+                lod_points,
+                out,
             );
-            const color = self.getSeriesColor(series, series_idx);
-            painter.pointCloud(centers[0..count], self.point_radius, color);
+            std.debug.assert(count <= series.data_len);
+            return count;
         }
-    }
 
-    /// The point count series decimate to, or null with LOD off.
-    fn lodPoints(self: *const LineChart) ?u32 {
-        return if (self.enable_lod) self.lod_target_points else null;
-    }
-
-    /// Get color for a series (use series color or fall back to theme/default palette).
-    fn getSeriesColor(self: *const LineChart, series: *const Series, index: usize) Color {
-        // Priority: series explicit color > theme palette > default palette
-        if (series.color) |color| {
-            return color;
+        /// Get color for a series (use series color or fall back to theme/default palette).
+        fn getSeriesColor(self: *const Self, series: *const Series, index: usize) Color {
+            // Priority: series explicit color > theme palette > default palette
+            if (series.color) |color| {
+                return color;
+            }
+            if (self.chart_theme) |t| {
+                return t.paletteColor(index);
+            }
+            return default_palette[index % default_palette.len];
         }
-        if (self.chart_theme) |t| {
-            return t.paletteColor(index);
-        }
-        return default_palette[index % default_palette.len];
-    }
-};
+    };
+}
 
 /// A segment's area is a trapezoid of two triangles, or one triangle on the
 /// side of a crossing that lies above the baseline.
@@ -471,74 +509,78 @@ fn areaSegment(
 // Tests
 // =============================================================================
 
+/// A chart with room for two series of 16 points, enough for every test below.
+const TestChart = LineChart(.{ .point_count_max = 16, .series_count_max = 2 });
+const TestSeries = TestChart.Series;
+
 test "LineChart init from slice" {
-    var series_array = [_]Series{
-        Series.fromSlice("Test", &.{
+    var series_array = [_]TestSeries{
+        TestSeries.fromSlice("Test", &.{
             .{ .x = 0, .y = 10 },
             .{ .x = 1, .y = 20 },
             .{ .x = 2, .y = 15 },
         }, Color.hex(0xff0000)),
     };
 
-    const chart = LineChart.init(&series_array);
+    const chart = TestChart.init(&series_array);
     try std.testing.expectEqual(@as(u32, 1), chart.seriesCount());
     try std.testing.expectEqual(@as(f32, 400), chart.width);
     try std.testing.expectEqual(@as(f32, 300), chart.height);
 }
 
 test "LineChart initSingle" {
-    const series = Series.fromSlice("Revenue", &.{
+    const series = TestSeries.fromSlice("Revenue", &.{
         .{ .x = 0, .y = 100 },
         .{ .x = 1, .y = 150 },
         .{ .x = 2, .y = 125 },
     }, Color.hex(0x0000ff));
 
-    const chart = LineChart.initSingle(&series);
+    const chart = TestChart.initSingle(&series);
     try std.testing.expectEqual(@as(u32, 1), chart.seriesCount());
 }
 
 test "LineChart findXExtent" {
-    var series_array = [_]Series{
-        Series.fromSlice("A", &.{
+    var series_array = [_]TestSeries{
+        TestSeries.fromSlice("A", &.{
             .{ .x = 5, .y = 10 },
             .{ .x = 15, .y = 20 },
         }, Color.hex(0xff0000)),
-        Series.fromSlice("B", &.{
+        TestSeries.fromSlice("B", &.{
             .{ .x = 0, .y = 30 },
             .{ .x = 10, .y = 40 },
         }, Color.hex(0x00ff00)),
     };
 
-    const chart = LineChart.init(&series_array);
+    const chart = TestChart.init(&series_array);
     const extent = chart.findXExtent();
     try std.testing.expectEqual(@as(f32, 0), extent.min);
     try std.testing.expectEqual(@as(f32, 15), extent.max);
 }
 
 test "LineChart findYExtent" {
-    var series_array = [_]Series{
-        Series.fromSlice("A", &.{
+    var series_array = [_]TestSeries{
+        TestSeries.fromSlice("A", &.{
             .{ .x = 0, .y = 10 },
             .{ .x = 1, .y = 50 },
         }, Color.hex(0xff0000)),
-        Series.fromSlice("B", &.{
+        TestSeries.fromSlice("B", &.{
             .{ .x = 0, .y = 25 },
             .{ .x = 1, .y = 75 },
         }, Color.hex(0x00ff00)),
     };
 
-    const chart = LineChart.init(&series_array);
+    const chart = TestChart.init(&series_array);
     const extent = chart.findYExtent();
     try std.testing.expectEqual(@as(f32, 10), extent.min);
     try std.testing.expectEqual(@as(f32, 75), extent.max);
 }
 
 test "LineChart defaults" {
-    var series_array = [_]Series{Series.init("Test", Color.hex(0x000000))};
+    var series_array = [_]TestSeries{TestSeries.init("Test", Color.hex(0x000000))};
     series_array[0].addPoint(DataPoint.init(0, 10));
     series_array[0].addPoint(DataPoint.init(1, 20));
 
-    const chart = LineChart.init(&series_array);
+    const chart = TestChart.init(&series_array);
     try std.testing.expect(chart.show_x_axis);
     try std.testing.expect(chart.show_y_axis);
     try std.testing.expect(chart.show_grid);
@@ -551,17 +593,66 @@ test "LineChart defaults" {
 test "LineChart struct size is small" {
     // Ensure LineChart itself is small (just a slice + options + theme ptr)
     // Should be < 400 bytes (increased due to LOD fields), not ~300KB
-    const size = @sizeOf(LineChart);
+    const size = @sizeOf(TestChart);
     try std.testing.expect(size < 400);
 }
 
 test "LineChart LOD defaults" {
-    var series_array = [_]Series{Series.init("Test", Color.hex(0xff0000))};
-    const chart = LineChart.init(&series_array);
+    var series_array = [_]TestSeries{TestSeries.init("Test", Color.hex(0xff0000))};
+    const chart = TestChart.init(&series_array);
 
     // LOD should be enabled by default
     try std.testing.expect(chart.enable_lod);
     try std.testing.expectEqual(LOD_THRESHOLD, chart.lod_target_points);
+}
+
+test "LineChart fills exactly its capacity" {
+    // Goal: a chart whose series are all full projects every point, with no
+    // loss at the boundary. Methodology: two series of exactly point_count_max
+    // points, projected with and without LOD, and counted by the a11y summary.
+    const Full = LineChart(.{ .point_count_max = 8, .series_count_max = 2 });
+    var series_array: [Full.series_count_max]Full.Series = undefined;
+    for (&series_array, 0..) |*series, series_index| {
+        series.initInPlace("Full", null);
+        for (0..Full.point_count_max) |point_index| {
+            const x: f32 = @floatFromInt(point_index);
+            series.addPoint(DataPoint.init(x, @floatFromInt(series_index)));
+        }
+        try std.testing.expectEqual(Full.point_count_max, series.data_len);
+    }
+    var chart = Full.init(&series_array);
+    const x_scale = LinearScale.init(0, 7, 0, 70);
+    const y_scale = LinearScale.init(0, 1, 100, 0);
+    var points: [Full.point_count_max][2]f32 = undefined;
+    for (&series_array) |*series| {
+        const count = chart.project(series, x_scale, y_scale, &points);
+        try std.testing.expectEqual(Full.point_count_max, count);
+        try std.testing.expectEqual(@as(f32, 70), points[Full.point_count_max - 1][0]);
+    }
+    chart.enable_lod = false;
+    const count = chart.project(&series_array[1], x_scale, y_scale, &points);
+    try std.testing.expectEqual(Full.point_count_max, count);
+    const info = chart.getAccessibilityInfo();
+    try std.testing.expectEqual(Full.point_count_max * Full.series_count_max, info.point_count);
+    try std.testing.expectEqual(Full.series_count_max, info.series_count);
+}
+
+test "LineChart decimates a full series to its LOD target" {
+    // Goal: LTTB scratch sized by point_count_max holds a full series. With a
+    // target below the capacity, the projection keeps exactly the target.
+    const Full = LineChart(.{ .point_count_max = 8, .series_count_max = 1 });
+    var series = Full.Series.init("Full", null);
+    for (0..Full.point_count_max) |point_index| {
+        series.addPoint(DataPoint.init(@floatFromInt(point_index), @floatFromInt(point_index % 3)));
+    }
+    var chart = Full.initSingle(&series);
+    chart.lod_target_points = 4;
+    var points: [Full.point_count_max][2]f32 = undefined;
+    const x_scale = LinearScale.init(0, 7, 0, 70);
+    const y_scale = LinearScale.init(0, 2, 100, 0);
+    try std.testing.expectEqual(@as(u32, 4), chart.project(&series, x_scale, y_scale, &points));
+    try std.testing.expectEqual(@as(f32, 0), points[0][0]);
+    try std.testing.expectEqual(@as(f32, 70), points[3][0]);
 }
 
 test "areaSegment tiles a trapezoid, cuts at the baseline, and skips the rest" {
