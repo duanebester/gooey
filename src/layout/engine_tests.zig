@@ -630,6 +630,35 @@ test "a text of more words than one wrap batch wraps as one batch would" {
     try std.testing.expectEqual(@as(f32, 10 * word_count / 3), boundingBox(&engine, 0).height);
 }
 
+test "a word before a line break wraps and counts its space like any other" {
+    // Goal: the last word of a paragraph packs as every other word does
+    // (it ran past the column in long chat replies). Method: letters are
+    // 10 px and spaces 10 px, in 75 px. "aa bb" is 50 px with its space, not
+    // the 40 px of its words alone; "cc dd ee" is 80 px, so "ee" wraps to its
+    // own line before the break instead of overflowing; "ff" ends the text.
+    const text = "aa bb\ncc dd ee\nff";
+    var engine = try LayoutEngine.init(&test_capacity);
+    defer engine.deinit();
+    engine.setMeasureTextFn(measureTenPixelsPerCharacter, null);
+    engine.beginFrame(800, 600);
+    try engine.openElement(.{ .layout = .{
+        .sizing = .{ .width = SizingAxis.fixed(75), .height = SizingAxis.fit() },
+    } });
+    try engine.text(text, .{ .wrap_mode = .words, .font_size = 10, .line_height = 100 });
+    engine.closeElement();
+    try engine.endFrame();
+
+    const lines = engine.elements.getConst(1).text_data.?.wrapped_lines.?;
+    const expected = [_][3]u32{ .{ 0, 5, 50 }, .{ 6, 6, 50 }, .{ 12, 2, 20 }, .{ 15, 2, 20 } };
+    try std.testing.expectEqual(expected.len, lines.len);
+    for (lines, expected) |line, want| {
+        try std.testing.expectEqual(want[0], line.start_offset);
+        try std.testing.expectEqual(want[1], line.length);
+        try std.testing.expectEqual(@as(f32, @floatFromInt(want[2])), line.width);
+        try std.testing.expect(line.width <= 75);
+    }
+}
+
 fn measureTenPixelsPerCharacter(
     text: []const u8,
     _: u16,

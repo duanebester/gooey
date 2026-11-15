@@ -1026,8 +1026,23 @@ fn accumulateWordsIntoLines(
 
     for (words) |word| {
         if (word.has_newline) {
-            // Handle forced newlines - emit current line and start fresh.
-            const total_width = line_width + word.width;
+            // The word before a break packs like any other: past the width,
+            // the line so far ends first and the word starts the next one.
+            const overflows = line_width_with_space + word.width > max_width;
+            if (wrap_mode == .words and overflows and line_width > 0) {
+                appendLine(lines, .{
+                    .start_offset = line_start,
+                    .length = word.start - line_start,
+                    .width = line_width,
+                });
+                max_line_width = @max(max_line_width, line_width);
+                line_start = word.start;
+                line_width_with_space = 0;
+            }
+            // Then the break ends the line, its last word after its space; a
+            // break with no word before it ends the line at its last word.
+            const has_word = word.end > word.start;
+            const total_width = if (has_word) line_width_with_space + word.width else line_width;
             appendLine(lines, .{
                 .start_offset = line_start,
                 .length = word.end - line_start,
