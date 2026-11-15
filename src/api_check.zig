@@ -116,6 +116,13 @@ fn pinFields() void {
             _ = @FieldType(Text, name);
         }
         _ = @FieldType(@FieldType(gooey.ResourceLimits, "build"), "box_depth_max");
+        const Atlas = @FieldType(gooey.ResourceLimits, "atlas");
+        for ([_][]const u8{
+            "svg_entry_count_max",   "svg_rasterization_count_frame_max",
+            "image_entry_count_max", "image_path_bytes_max",
+        }) |name| {
+            _ = @FieldType(Atlas, name);
+        }
     }
 }
 

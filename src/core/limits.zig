@@ -118,8 +118,35 @@ pub const MAX_IMAGE_REQUESTS: u32 = 256;
 /// image (64 MiB) plus its compressed file and the decoder's row table.
 pub const MAX_IMAGE_DECODE_BYTES: u32 = 96 * 1024 * 1024;
 
+/// Most SVG cache entries any atlas budget may hold (`svg_entry_count_max`).
+pub const MAX_SVG_ENTRIES: u32 = 16_384;
+
+/// Most SVG icons any atlas budget may rasterize in one frame. Each costs 0.5
+/// to 2 ms of software rasterization, so this is a work bound, not storage.
+pub const MAX_SVG_RASTERIZATIONS_PER_FRAME: u32 = 64;
+
+/// Most image cache entries any atlas budget may hold (`image_entry_count_max`).
+pub const MAX_IMAGE_ENTRIES: u32 = 4_096;
+
+/// Longest image path any atlas budget may accept: Linux's `PATH_MAX`.
+pub const MAX_IMAGE_PATH_BYTES: u32 = 4_096;
+
+/// Frames whose atlas items count as in use at once: the frame being built.
+/// An item an open frame used is never evicted, so the SVG and image caches
+/// must hold this many frames of icons and images, and each atlas this many
+/// frames of shelves. Build and draw overlap would make it 2 (one frame
+/// building, one drawing); GPU frames in flight do not extend it, because
+/// uploads are ordered after earlier draws (contract §9).
+pub const atlas_open_frame_count_max: u32 = 1;
+
 comptime {
     assert(MAX_IMAGE_DECODE_BYTES > MAX_ATLAS_SIZE * MAX_ATLAS_SIZE * 4);
+    assert(MAX_SVG_RASTERIZATIONS_PER_FRAME <= MAX_SVG_ENTRIES);
+    assert(MAX_IMAGE_REQUESTS <= MAX_IMAGE_ENTRIES);
+    assert(atlas_open_frame_count_max >= 1);
+    // The ceiling profile must satisfy its own entry relationships.
+    assert(atlas_open_frame_count_max * MAX_SVGS_PER_FRAME <= MAX_SVG_ENTRIES);
+    assert(atlas_open_frame_count_max * MAX_IMAGES_PER_FRAME <= MAX_IMAGE_ENTRIES);
     assert(MAX_ATLAS_UPLOAD_BYTES_PER_FRAME * 3 == MAX_ATLAS_SIZE * MAX_ATLAS_SIZE * 9);
 }
 
@@ -300,6 +327,7 @@ pub const ResourceLimits = struct {
             return relationship(.build, "box_depth_max", self.build.box_depth_max, element_count);
         }
         if (self.checkA11yRelationships()) |violation| return violation;
+        if (self.checkAtlasCacheRelationships()) |violation| return violation;
         if (self.text.preedit_bytes_max > self.events.text_bytes_max) {
             return relationship(
                 .text,
@@ -323,6 +351,32 @@ pub const ResourceLimits = struct {
                 .rule = .below_relationship,
                 .value = self.records.paint_record_count_frame_max,
                 .bound = element_count,
+            };
+        }
+        return null;
+    }
+
+    /// Every icon and image an open frame draws stays cached, so the SVG and
+    /// image caches hold `atlas_open_frame_count_max` frames of them.
+    fn checkAtlasCacheRelationships(self: *const ResourceLimits) ?Violation {
+        const svg_bound = atlas_open_frame_count_max * self.paint.svg_count_frame_max;
+        if (self.atlas.svg_entry_count_max < svg_bound) {
+            return .{
+                .budget = .atlas,
+                .field = "svg_entry_count_max",
+                .rule = .below_relationship,
+                .value = self.atlas.svg_entry_count_max,
+                .bound = svg_bound,
+            };
+        }
+        const image_bound = atlas_open_frame_count_max * self.paint.image_count_frame_max;
+        if (self.atlas.image_entry_count_max < image_bound) {
+            return .{
+                .budget = .atlas,
+                .field = "image_entry_count_max",
+                .rule = .below_relationship,
+                .value = self.atlas.image_entry_count_max,
+                .bound = image_bound,
             };
         }
         return null;
@@ -750,7 +804,37 @@ pub const AtlasLimits = struct {
     /// RGBA, plus a file of up to half that again: the images example's
     /// 512² logo is a 1 MiB decode from a small file.
     image_decode_bytes_max: u32,
+    /// Rasterized icons the SVG cache keeps, one per path, size, fill and
+    /// stroke. A full cache drops icons whose atlas shelf was evicted. Every
+    /// icon drawn by an open frame stays, so this is at least
+    /// `atlas_open_frame_count_max × paint.svg_count_frame_max`.
+    svg_entry_count_max: u32,
+    /// SVG icons rasterized per frame. An icon past it is skipped this frame
+    /// and drawn by a later one, so a screen of new icons fills in over
+    /// several frames instead of stalling one. At most `svg_entry_count_max`.
+    svg_rasterization_count_frame_max: u32,
+    /// Decoded images the image cache keeps. Every image drawn by an open
+    /// frame and every landed decode needs one, so this is at least
+    /// `atlas_open_frame_count_max × paint.image_count_frame_max` and at least
+    /// `image_request_count_max`.
+    image_entry_count_max: u32,
+    /// Longest path `Painter.image` accepts; each image request entry
+    /// reserves this many bytes. A longer path fails fast naming this field.
+    image_path_bytes_max: u32,
 
+    /// Cache peaks measured over every example (0.6 plan, "Method"): lucide-demo
+    /// keeps 1,668 SVG icons at `large` and the images example 18 images. The
+    /// entry counts sit at or above each profile's per-frame icon and image
+    /// budgets, which they must hold. Four rasterizations a frame keep a
+    /// frame's icon work near 2 to 8 ms; `large` takes 16, so lucide-demo's
+    /// icons fill in within about 1.7 s instead of 7 s.
+    ///
+    /// Atlas area follows the same open-frame rule as the caches: eviction
+    /// frees whole shelves, so `atlas_open_frame_count_max` frames of a
+    /// frame's worst-case shelf area must fit each atlas side. Shelf area
+    /// depends on content, so this is a sizing rule, checked at run time by
+    /// the atlas's live-set fail-fast (the `atlas-live-set` check).
+    ///
     /// Counter-class apps: counter's glyphs hold 144 of 512 text-atlas rows at
     /// 1x and 280 at 2x (measured with shelf packing), and no nano example draws
     /// icons or images. Textures: 0.25 + 0.25 + 0.25 MiB.
@@ -766,6 +850,10 @@ pub const AtlasLimits = struct {
         .svg_path_vertex_count_max = 4 * 1024,
         .image_request_count_max = 4,
         .image_decode_bytes_max = 512 * 1024,
+        .svg_entry_count_max = 64,
+        .svg_rasterization_count_frame_max = 4,
+        .image_entry_count_max = 8,
+        .image_path_bytes_max = 1_024,
     };
 
     /// Forms and lists: todo holds 48 of 1024 text rows at 1x and 120 at 2x.
@@ -780,6 +868,10 @@ pub const AtlasLimits = struct {
         .svg_path_vertex_count_max = 8 * 1024,
         .image_request_count_max = 8,
         .image_decode_bytes_max = 2 * 1024 * 1024,
+        .svg_entry_count_max = 256,
+        .svg_rasterization_count_frame_max = 4,
+        .image_entry_count_max = 32,
+        .image_path_bytes_max = 1_024,
     };
 
     /// The glyph atlas is 2048² for Retina display text: a frame of 70 distinct
@@ -797,6 +889,10 @@ pub const AtlasLimits = struct {
         .svg_path_vertex_count_max = 16 * 1024,
         .image_request_count_max = 16,
         .image_decode_bytes_max = 8 * 1024 * 1024,
+        .svg_entry_count_max = 1_024,
+        .svg_rasterization_count_frame_max = 4,
+        .image_entry_count_max = 256,
+        .image_path_bytes_max = 1_024,
     };
 
     /// lucide-demo's visible icons hold 520 of 2048 SVG rows at 2x, and the
@@ -813,6 +909,10 @@ pub const AtlasLimits = struct {
         .svg_path_vertex_count_max = 16 * 1024,
         .image_request_count_max = 64,
         .image_decode_bytes_max = 24 * 1024 * 1024,
+        .svg_entry_count_max = 4_096,
+        .svg_rasterization_count_frame_max = 16,
+        .image_entry_count_max = 1_024,
+        .image_path_bytes_max = 1_024,
     };
 
     /// The framework ceilings themselves. Textures: 16 + 64 + 64 MiB.
@@ -826,6 +926,10 @@ pub const AtlasLimits = struct {
         .svg_path_vertex_count_max = MAX_SVG_PATH_VERTEX_COUNT,
         .image_request_count_max = MAX_IMAGE_REQUESTS,
         .image_decode_bytes_max = MAX_IMAGE_DECODE_BYTES,
+        .svg_entry_count_max = MAX_SVG_ENTRIES,
+        .svg_rasterization_count_frame_max = MAX_SVG_RASTERIZATIONS_PER_FRAME,
+        .image_entry_count_max = MAX_IMAGE_ENTRIES,
+        .image_path_bytes_max = MAX_IMAGE_PATH_BYTES,
     };
 
     /// First violated rule, or null. Every field must be in `1..=ceiling`;
@@ -882,7 +986,26 @@ pub const AtlasLimits = struct {
     }
 
     /// Cross-field rules. Every atlas item carries a 1 px border on each side.
+    /// A frame rasterizes at most the icons the cache holds, and every landed
+    /// image request needs a cache entry.
     fn checkRelationships(self: *const AtlasLimits) ?Violation {
+        if (self.svg_rasterization_count_frame_max > self.svg_entry_count_max) {
+            return relationship(
+                .atlas,
+                "svg_rasterization_count_frame_max",
+                self.svg_rasterization_count_frame_max,
+                self.svg_entry_count_max,
+            );
+        }
+        if (self.image_entry_count_max < self.image_request_count_max) {
+            return .{
+                .budget = .atlas,
+                .field = "image_entry_count_max",
+                .rule = .below_relationship,
+                .value = self.image_entry_count_max,
+                .bound = self.image_request_count_max,
+            };
+        }
         if (self.svg_size < self.svg_icon_size_max + 2) {
             return .{
                 .budget = .atlas,
@@ -1982,6 +2105,75 @@ test "check bounds each text cache field by its ceiling and its relationships" {
     try std.testing.expectEqualStrings("preedit_bytes_max", preedit.field);
     try std.testing.expectEqual(Violation.Rule.above_relationship, preedit.rule);
     try std.testing.expectEqual(limits.events.text_bytes_max, preedit.bound);
+}
+
+test "check bounds each atlas cache field by its ceiling and its relationships" {
+    // Goal: each new atlas cache field fails at 0 and one past its ceiling and
+    // passes at the ceiling; the caches hold an open frame's icons and images
+    // and every image request; a frame rasterizes no more icons than the
+    // cache holds. Method: move one field at a time from a valid budget, onto
+    // each relationship's bound (valid) and one past it.
+    inline for (.{
+        "svg_entry_count_max",
+        "svg_rasterization_count_frame_max",
+        "image_entry_count_max",
+        "image_path_bytes_max",
+    }) |field| {
+        var limits = ResourceLimits.ceiling;
+        try std.testing.expect(limits.check() == null);
+        const field_ceiling = @field(AtlasLimits.ceiling, field);
+        @field(limits.atlas, field) = 0;
+        try std.testing.expectEqual(Violation.Rule.zero, limits.check().?.rule);
+        try std.testing.expectEqualStrings(field, limits.check().?.field);
+        @field(limits.atlas, field) = field_ceiling + 1;
+        const above = limits.check().?;
+        try std.testing.expectEqual(Violation.Budget.atlas, above.budget);
+        try std.testing.expectEqualStrings(field, above.field);
+        try std.testing.expectEqual(Violation.Rule.above_ceiling, above.rule);
+        try std.testing.expectEqual(field_ceiling, above.bound);
+    }
+
+    var limits = ResourceLimits.small;
+    const icons_open = atlas_open_frame_count_max * limits.paint.svg_count_frame_max;
+    limits.atlas.svg_entry_count_max = icons_open;
+    try std.testing.expect(limits.check() == null);
+    limits.atlas.svg_entry_count_max -= 1;
+    const icons = limits.check().?;
+    try std.testing.expectEqualStrings("svg_entry_count_max", icons.field);
+    try std.testing.expectEqual(Violation.Rule.below_relationship, icons.rule);
+    try std.testing.expectEqual(limits.paint.svg_count_frame_max, icons.bound);
+
+    // `small` draws 32 images a frame and requests 8: the frame bound wins.
+    limits = ResourceLimits.small;
+    limits.atlas.image_entry_count_max = limits.paint.image_count_frame_max;
+    try std.testing.expect(limits.check() == null);
+    limits.atlas.image_entry_count_max -= 1;
+    const images = limits.check().?;
+    try std.testing.expectEqualStrings("image_entry_count_max", images.field);
+    try std.testing.expectEqual(Violation.Rule.below_relationship, images.rule);
+    try std.testing.expectEqual(limits.paint.image_count_frame_max, images.bound);
+
+    // With few images per frame, the request entries are the bound.
+    limits = ResourceLimits.small;
+    limits.paint.image_count_frame_max = 1;
+    limits.atlas.image_entry_count_max = limits.atlas.image_request_count_max;
+    try std.testing.expect(limits.check() == null);
+    limits.atlas.image_entry_count_max -= 1;
+    const requests = limits.check().?;
+    try std.testing.expectEqualStrings("image_entry_count_max", requests.field);
+    try std.testing.expectEqual(limits.atlas.image_request_count_max, requests.bound);
+
+    // Under the 64-icon work ceiling: 32 entries, so 16 icons per frame.
+    limits = ResourceLimits.small;
+    limits.paint.svg_count_frame_max = 16;
+    limits.atlas.svg_entry_count_max = 32;
+    limits.atlas.svg_rasterization_count_frame_max = limits.atlas.svg_entry_count_max;
+    try std.testing.expect(limits.check() == null);
+    limits.atlas.svg_rasterization_count_frame_max += 1;
+    const work = limits.check().?;
+    try std.testing.expectEqualStrings("svg_rasterization_count_frame_max", work.field);
+    try std.testing.expectEqual(Violation.Rule.above_relationship, work.rule);
+    try std.testing.expectEqual(limits.atlas.svg_entry_count_max, work.bound);
 }
 
 test "check bounds box depth and layers by their ceilings and the element count" {

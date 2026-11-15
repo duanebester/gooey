@@ -11,6 +11,9 @@ const Atlas = atlas_mod.Atlas;
 const Region = atlas_mod.Region;
 const UVCoords = atlas_mod.UVCoords;
 const AtlasUploads = atlas_mod.AtlasUploads;
+const limits = @import("../core/limits.zig");
+
+const assert = std.debug.assert;
 
 /// How the image should fit within its container
 pub const ObjectFit = enum {
@@ -176,6 +179,8 @@ pub const ImageAtlas = struct {
     /// Cache map. Capacity is reserved at init and never grows: a full map
     /// reclaims entries whose shelves were evicted (CLAUDE.md §2).
     cache: std.AutoHashMap(ImageKey, CachedImage),
+    /// `AtlasLimits.image_entry_count_max`: images the map holds.
+    entry_count_max: u32,
     /// Current scale factor
     scale_factor: f64,
     /// Mutex for thread-safe access in multi-window scenarios.
@@ -187,15 +192,11 @@ pub const ImageAtlas = struct {
 
     const Self = @This();
 
-    /// Maximum dimension for atlased images (larger images are clipped)
-    pub const MAX_ATLAS_DIMENSION: u32 = 2048;
-
-    /// Cached images. The images example, the largest measured user, holds 18.
-    pub const entry_count_max: u32 = 1024;
-
     pub const Options = struct {
         /// `AtlasLimits.image_size`.
         size: u32,
+        /// `AtlasLimits.image_entry_count_max`.
+        entry_count_max: u32,
         uploads: *AtlasUploads,
     };
 
@@ -207,8 +208,10 @@ pub const ImageAtlas = struct {
         io: std.Io,
         options: Options,
     ) !void {
-        std.debug.assert(scale_factor > 0);
-        std.debug.assert(options.size > 0);
+        assert(scale_factor > 0);
+        assert(options.size > 0);
+        assert(options.entry_count_max > 0);
+        assert(options.entry_count_max <= limits.MAX_IMAGE_ENTRIES);
         try self.atlas.init(
             allocator,
             .{ .kind = .image, .size = options.size, .uploads = options.uploads },
@@ -216,13 +219,14 @@ pub const ImageAtlas = struct {
         errdefer self.atlas.deinit();
         self.cache = std.AutoHashMap(ImageKey, CachedImage).init(allocator);
         errdefer self.cache.deinit();
-        try self.cache.ensureTotalCapacity(entry_count_max);
+        try self.cache.ensureTotalCapacity(options.entry_count_max);
 
         self.allocator = allocator;
+        self.entry_count_max = options.entry_count_max;
         self.io = io;
         self.scale_factor = scale_factor;
         self.mutex = .init;
-        std.debug.assert(self.cache.capacity() >= entry_count_max);
+        assert(self.cache.capacity() >= self.entry_count_max);
     }
 
     pub fn deinit(self: *Self) void {
@@ -257,18 +261,26 @@ pub const ImageAtlas = struct {
         return cached;
     }
 
-    /// Cache decoded image data. Returns `error.UploadDeferred` when this
-    /// frame's upload staging is full; the frame renders again.
+    /// Cache decoded RGBA pixels. Returns `error.UploadDeferred` when this
+    /// frame's upload staging is full; the frame renders again. The image
+    /// must fit the atlas with its 1 px border: the core's loader checks that
+    /// first and names `atlas.image_size`, so the atlas never clips or copies.
     /// Thread-safe: protected by mutex for multi-window scenarios.
-    pub fn cacheImage(
+    pub fn cacheRgba(
         self: *Self,
         key: ImageKey,
-        data: ImageData,
-    ) !CachedImage {
+        width: u32,
+        height: u32,
+        pixels: []const u8,
+    ) error{UploadDeferred}!CachedImage {
+        assert(width > 0);
+        assert(height > 0);
+        assert(width <= self.atlas.size - 2);
+        assert(height <= self.atlas.size - 2);
+        assert(pixels.len >= @as(usize, width) * height * 4);
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
 
-        // Check if already cached
         if (self.cache.get(key)) |cached| {
             if (self.atlas.isLive(cached.shelf, cached.generation)) {
                 self.atlas.touch(cached.shelf, self.atlas.uploads.frameCurrent());
@@ -276,103 +288,44 @@ pub const ImageAtlas = struct {
             }
         }
 
-        // Convert to RGBA if needed
-        const rgba_data = if (data.format == .rgba)
-            null // Use source directly
-        else
-            try data.toRgba(self.allocator);
-        defer if (rgba_data) |d| self.allocator.free(d);
-
-        const pixels = rgba_data orelse data.pixels;
-
-        // Source dimensions, clipped to the atlased maximum (no resampling).
-        const render_w = @min(data.width, MAX_ATLAS_DIMENSION);
-        const render_h = @min(data.height, MAX_ATLAS_DIMENSION);
-
-        const fits = data.width <= MAX_ATLAS_DIMENSION and data.height <= MAX_ATLAS_DIMENSION;
-        const placement = if (fits)
-            self.atlas.insert(render_w, render_h, pixels[0 .. data.width * data.height * 4])
-        else
-            try self.insertClipped(pixels, data.width, render_w, render_h);
-
-        const region_placement = placement orelse return error.UploadDeferred;
-
+        const placement = self.atlas.insert(width, height, pixels) orelse {
+            return error.UploadDeferred;
+        };
         const cached = CachedImage{
-            .region = region_placement.region,
-            .source_width = @intCast(data.width),
-            .source_height = @intCast(data.height),
-            .rendered_width = @intCast(render_w),
-            .rendered_height = @intCast(render_h),
+            .region = placement.region,
+            .source_width = @intCast(width),
+            .source_height = @intCast(height),
+            .rendered_width = @intCast(width),
+            .rendered_height = @intCast(height),
             .atlas_size = self.atlas.size,
-            .shelf = region_placement.shelf,
-            .generation = region_placement.generation,
+            .shelf = placement.shelf,
+            .generation = placement.generation,
         };
 
         self.makeRoom(key);
         self.cache.putAssumeCapacity(key, cached);
+        assert(self.cache.count() <= self.entry_count_max);
         return cached;
-    }
-
-    /// Cache image from raw RGBA data (convenience method)
-    pub fn cacheRgba(
-        self: *Self,
-        key: ImageKey,
-        width: u32,
-        height: u32,
-        pixels: []const u8,
-    ) !CachedImage {
-        return self.cacheImage(key, .{
-            .width = width,
-            .height = height,
-            .pixels = pixels,
-            .format = .rgba,
-        });
-    }
-
-    /// Insert the top-left `dest_width × dest_height` pixels of a larger image.
-    fn insertClipped(
-        self: *Self,
-        src_pixels: []const u8,
-        src_width: u32,
-        dest_width: u32,
-        dest_height: u32,
-    ) !?atlas_mod.Placement {
-        std.debug.assert(dest_width <= src_width);
-        std.debug.assert(dest_width <= MAX_ATLAS_DIMENSION);
-        const dest_stride = dest_width * 4;
-        const src_stride = src_width * 4;
-
-        // Allocate on heap - stack would be MAX_ATLAS_DIMENSION^2 * 4 = 16MB!
-        const clipped_data = try self.allocator.alloc(u8, dest_width * dest_height * 4);
-        defer self.allocator.free(clipped_data);
-
-        for (0..dest_height) |row| {
-            const src_offset = row * src_stride;
-            const dest_offset = row * dest_stride;
-
-            @memcpy(
-                clipped_data[dest_offset..][0..dest_stride],
-                src_pixels[src_offset..][0..dest_stride],
-            );
-        }
-
-        return self.atlas.insert(dest_width, dest_height, clipped_data);
     }
 
     /// Ensure `key` can be stored without growing the map: drop entries whose
     /// shelves were evicted, evicting the least recently used shelf if none
-    /// were. A map full of images used this frame fails fast.
+    /// were. A map full of images used by an open frame fails fast. Through
+    /// the core it cannot: `ResourceLimits.check` holds the map to at least a
+    /// frame's images and every request.
     fn makeRoom(self: *Self, key: ImageKey) void {
         if (self.cache.contains(key)) return;
-        if (self.cache.count() < entry_count_max) return;
+        assert(self.cache.count() <= self.entry_count_max);
+        if (self.cache.count() < self.entry_count_max) return;
         var attempt: usize = 0;
         while (attempt <= self.atlas.shelves.len) : (attempt += 1) {
             if (self.reclaimStale() > 0) return;
             if (!self.atlas.evictOne()) break;
         }
         std.debug.panic("ImageAtlas pool 'cache' exhausted: capacity {d}, {d} in use, " ++
-            "1 requested, every image used since frame {d}.", .{
-            entry_count_max,
+            "1 requested, every image used since frame {d}. " ++
+            "Raise ResourceLimits.atlas.image_entry_count_max.", .{
+            self.entry_count_max,
             self.cache.count(),
             self.atlas.uploads.frameCurrent(),
         });
@@ -403,11 +356,6 @@ pub const ImageAtlas = struct {
     /// `AtlasUploads`, so renderers read only its fixed size and format here.
     pub fn getAtlas(self: *const Self) *const Atlas {
         return &self.atlas;
-    }
-
-    /// Check if dimensions are suitable for atlasing
-    pub fn shouldAtlas(width: u32, height: u32) bool {
-        return width <= MAX_ATLAS_DIMENSION and height <= MAX_ATLAS_DIMENSION;
     }
 
     /// Result of fit calculation including UV adjustments for cropping modes
@@ -590,7 +538,7 @@ test "ImageAtlas never returns an image whose pixels were evicted" {
         testing.allocator,
         1.0,
         testing.io,
-        .{ .size = 64, .uploads = &uploads },
+        .{ .size = 64, .entry_count_max = 8, .uploads = &uploads },
     );
     defer image_atlas.deinit();
 
@@ -637,4 +585,45 @@ test "ImageAtlas never returns an image whose pixels were evicted" {
         @as(u8, 44),
         firstPixel(&image_atlas.atlas, image_atlas.get(key("e")).?),
     );
+}
+
+test "ImageAtlas holds exactly its entries, all live in one frame" {
+    // Goal: `image_entry_count_max` is exact. Method: an atlas of 8 entries
+    // caches 8 distinct images in one frame, and each then hits with its own
+    // region. (A 9th in that frame is the `image-cache` fail-fast check.)
+    const testing = std.testing;
+    var uploads: AtlasUploads = undefined;
+    try uploads.init(
+        testing.allocator,
+        testing.io,
+        .{ .storage = .cpu_texture, .upload_bytes_frame_max = 64 * 1024 },
+    );
+    defer uploads.deinit();
+    const consumer: usize = 1;
+    uploads.registerConsumer(consumer);
+    defer uploads.unregisterConsumer(consumer);
+
+    const image_atlas = try testing.allocator.create(ImageAtlas);
+    defer testing.allocator.destroy(image_atlas);
+    try image_atlas.initInPlace(
+        testing.allocator,
+        1.0,
+        testing.io,
+        .{ .size = 256, .entry_count_max = 8, .uploads = &uploads },
+    );
+    defer image_atlas.deinit();
+
+    const names = [_][]const u8{ "a", "b", "c", "d", "e", "f", "g", "h" };
+    const pixels: [8 * 8 * 4]u8 = @splat(255);
+    var regions: [names.len]Region = undefined;
+    _ = uploads.beginFrame(consumer);
+    for (names, &regions) |name, *region| {
+        const key = ImageKey.initFromPath(name, null, null, 1.0);
+        region.* = (try image_atlas.cacheRgba(key, 8, 8, &pixels)).region;
+    }
+    try testing.expectEqual(@as(u32, 8), image_atlas.cache.count());
+    for (names, regions) |name, region| {
+        const hit = image_atlas.get(ImageKey.initFromPath(name, null, null, 1.0)).?;
+        try testing.expectEqual(region, hit.region);
+    }
 }

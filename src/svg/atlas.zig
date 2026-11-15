@@ -19,6 +19,8 @@ const AtlasUploads = @import("../text/atlas.zig").AtlasUploads;
 const rasterizer = @import("rasterizer.zig");
 const limits = @import("../core/limits.zig");
 
+const assert = std.debug.assert;
+
 /// Cache key for SVG lookup
 pub const SvgKey = struct {
     /// Hash of SVG path data
@@ -78,6 +80,11 @@ pub const SvgAtlas = struct {
     /// Cache map. Capacity is reserved at init and never grows: a full map
     /// reclaims entries whose shelves were evicted (CLAUDE.md §2).
     cache: std.AutoHashMap(SvgKey, CachedSvg),
+    /// `AtlasLimits.svg_entry_count_max`: icons the map holds.
+    entry_count_max: u32,
+    /// `AtlasLimits.svg_rasterization_count_frame_max`: rasterizations one
+    /// frame may perform before the rest wait for the next frame.
+    rasterization_count_frame_max: u32,
     /// Reusable rasterization buffer, `svg_icon_size_max²` RGBA pixels.
     render_buffer: []u8,
     render_buffer_size: u32,
@@ -106,7 +113,8 @@ pub const SvgAtlas = struct {
     // Per-frame rasterization budget
     // =========================================================================
 
-    /// Number of software rasterizations performed this frame.
+    /// Software rasterizations performed this frame, at most
+    /// `rasterization_count_frame_max`.
     rasterizations_this_frame: u32 = 0,
 
     /// Set when a cache miss was skipped due to budget exhaustion.
@@ -114,19 +122,6 @@ pub const SvgAtlas = struct {
     deferred_this_frame: bool = false,
 
     const Self = @This();
-
-    /// Cached icons. lucide-demo, the largest measured user, draws 400.
-    pub const entry_count_max: u32 = 4096;
-
-    /// Maximum software rasterizations allowed per frame.
-    ///
-    /// Each rasterization costs ~0.5–2ms (parse SVG path, flatten curves,
-    /// per-pixel stroke rendering at 48×48 device pixels). At 4 per frame
-    /// that's ~2–8ms, leaving headroom for layout, GPU upload, and draw.
-    ///
-    /// A row of 16 icons progressively loads over 4 frames (~67ms) instead
-    /// of stalling a single frame for 8–32ms of pure rasterization.
-    const MAX_RASTERIZATIONS_PER_FRAME: u32 = 4;
 
     /// Scratch bytes reserved for icons of at most `icon_size_max` pixels
     /// within `budget`: exactly what the rasterizer reserves for one icon, so
@@ -162,6 +157,12 @@ pub const SvgAtlas = struct {
         icon_size_max: u32,
         /// `AtlasLimits.svg_path_bytes_max` and `svg_path_vertex_count_max`.
         raster_budget: rasterizer.RasterBudget,
+        /// `AtlasLimits.svg_entry_count_max`.
+        entry_count_max: u32,
+        /// `AtlasLimits.svg_rasterization_count_frame_max`. Each costs 0.5 to
+        /// 2 ms (parse, flatten, fill and stroke), so 4 keep a frame's icon
+        /// work near 2 to 8 ms; the rest fill in over later frames.
+        rasterization_count_frame_max: u32,
         uploads: *AtlasUploads,
     };
 
@@ -175,6 +176,10 @@ pub const SvgAtlas = struct {
     ) !void {
         std.debug.assert(options.icon_size_max > 0);
         std.debug.assert(options.icon_size_max + 2 <= options.size);
+        std.debug.assert(options.entry_count_max > 0);
+        std.debug.assert(options.entry_count_max <= limits.MAX_SVG_ENTRIES);
+        std.debug.assert(options.rasterization_count_frame_max > 0);
+        std.debug.assert(options.rasterization_count_frame_max <= options.entry_count_max);
         const buffer_size = options.icon_size_max * options.icon_size_max * 4;
         self.render_buffer = try allocator.alloc(u8, buffer_size);
         errdefer allocator.free(self.render_buffer);
@@ -191,9 +196,11 @@ pub const SvgAtlas = struct {
 
         self.cache = std.AutoHashMap(SvgKey, CachedSvg).init(allocator);
         errdefer self.cache.deinit();
-        try self.cache.ensureTotalCapacity(entry_count_max);
+        try self.cache.ensureTotalCapacity(options.entry_count_max);
 
         self.allocator = allocator;
+        self.entry_count_max = options.entry_count_max;
+        self.rasterization_count_frame_max = options.rasterization_count_frame_max;
         self.render_buffer_size = options.icon_size_max;
         self.raster_budget = options.raster_budget;
         self.scale_factor = scale_factor;
@@ -201,7 +208,7 @@ pub const SvgAtlas = struct {
         self.mutex = .init;
         self.rasterizations_this_frame = 0;
         self.deferred_this_frame = false;
-        std.debug.assert(self.cache.capacity() >= entry_count_max);
+        std.debug.assert(self.cache.capacity() >= self.entry_count_max);
     }
 
     pub fn deinit(self: *Self) void {
@@ -270,7 +277,8 @@ pub const SvgAtlas = struct {
         // Cache miss — check per-frame budget before doing expensive work.
         // This prevents a single frame from stalling on dozens of software
         // rasterizations when many uncached icons scroll into view at once.
-        if (self.rasterizations_this_frame >= MAX_RASTERIZATIONS_PER_FRAME) {
+        assert(self.rasterizations_this_frame <= self.rasterization_count_frame_max);
+        if (self.rasterizations_this_frame == self.rasterization_count_frame_max) {
             self.deferred_this_frame = true;
             return error.RasterizationDeferred;
         }
@@ -410,18 +418,22 @@ pub const SvgAtlas = struct {
 
     /// Ensure `key` can be stored without growing the map: drop entries whose
     /// shelves were evicted, evicting the least recently used shelf if none
-    /// were. A map full of icons used this frame fails fast.
+    /// were. A map full of icons used by an open frame fails fast. Through the
+    /// core it cannot: `ResourceLimits.check` holds the map to at least a
+    /// frame's icons.
     fn makeRoom(self: *Self, key: SvgKey) void {
         if (self.cache.contains(key)) return;
-        if (self.cache.count() < entry_count_max) return;
+        assert(self.cache.count() <= self.entry_count_max);
+        if (self.cache.count() < self.entry_count_max) return;
         var attempt: usize = 0;
         while (attempt <= self.atlas.shelves.len) : (attempt += 1) {
             if (self.reclaimStale() > 0) return;
             if (!self.atlas.evictOne()) break;
         }
         std.debug.panic("SvgAtlas pool 'cache' exhausted: capacity {d}, {d} in use, " ++
-            "1 requested, every icon used since frame {d}.", .{
-            entry_count_max,
+            "1 requested, every icon used since frame {d}. " ++
+            "Raise ResourceLimits.atlas.svg_entry_count_max.", .{
+            self.entry_count_max,
             self.cache.count(),
             self.atlas.uploads.frameCurrent(),
         });
@@ -691,6 +703,8 @@ test "SvgAtlas re-rasterizes an icon whose atlas shelf was evicted" {
         .size = 64,
         .icon_size_max = 32,
         .raster_budget = testRasterBudget(limits.AtlasLimits.nano),
+        .entry_count_max = limits.AtlasLimits.nano.svg_entry_count_max,
+        .rasterization_count_frame_max = 4,
         .uploads = &uploads,
     });
     defer svg_atlas.deinit();
@@ -760,4 +774,71 @@ test "SvgAtlas re-rasterizes an icon whose atlas shelf was evicted" {
         original_a,
         Harness.copy(&svg_atlas.atlas, a.region, &current),
     );
+}
+
+test "SvgAtlas holds exactly its entries and rasterizes exactly its frame budget" {
+    // Goal: `svg_entry_count_max` and `svg_rasterization_count_frame_max` are
+    // exact. Method: an atlas of 8 entries rasterizing 3 per frame. Frame 2
+    // rasterizes 3 icons and defers the 4th; frames 3 and 4 finish the 8, and
+    // every one then hits with its region. (A 9th in the same frame is the
+    // `svg-cache` fail-fast check.)
+    const testing = std.testing;
+    var uploads: AtlasUploads = undefined;
+    try uploads.init(
+        testing.allocator,
+        testing.io,
+        .{ .storage = .cpu_texture, .upload_bytes_frame_max = 64 * 1024 },
+    );
+    defer uploads.deinit();
+    const consumer: usize = 1;
+    uploads.registerConsumer(consumer);
+    defer uploads.unregisterConsumer(consumer);
+
+    const svg_atlas = try testing.allocator.create(SvgAtlas);
+    defer testing.allocator.destroy(svg_atlas);
+    try svg_atlas.initInPlace(testing.allocator, 1.0, testing.io, .{
+        .size = 256,
+        .icon_size_max = 32,
+        .raster_budget = testRasterBudget(limits.AtlasLimits.nano),
+        .entry_count_max = 8,
+        .rasterization_count_frame_max = 3,
+        .uploads = &uploads,
+    });
+    defer svg_atlas.deinit();
+
+    const paths = [_][]const u8{
+        "M0 0L24 0L0 24Z", "M1 0L24 0L0 24Z", "M2 0L24 0L0 24Z", "M3 0L24 0L0 24Z",
+        "M4 0L24 0L0 24Z", "M5 0L24 0L0 24Z", "M6 0L24 0L0 24Z", "M7 0L24 0L0 24Z",
+    };
+    var regions: [paths.len]?Region = @splat(null);
+    var frame_count: u32 = 0;
+    // Three icons a frame finish eight in three frames.
+    while (frame_count < 3) : (frame_count += 1) {
+        _ = uploads.beginFrame(consumer);
+        svg_atlas.resetFrameBudget();
+        var rasterized: u32 = 0;
+        for (paths, &regions) |path, *region| {
+            if (region.* != null) continue;
+            const result = svg_atlas.getOrRasterize(path, 24, 16, true, null);
+            if (result) |cached| {
+                region.* = cached.region;
+                rasterized += 1;
+            } else |err| {
+                try testing.expectEqual(error.RasterizationDeferred, err);
+                try testing.expect(svg_atlas.hasDeferredWork());
+            }
+        }
+        try testing.expect(rasterized <= 3);
+        if (frame_count < 2) try testing.expectEqual(@as(u32, 3), rasterized);
+    }
+    try testing.expectEqual(@as(u32, 8), svg_atlas.cache.count());
+    // Hits cost no rasterization, so all 8 resolve in one frame.
+    _ = uploads.beginFrame(consumer);
+    svg_atlas.resetFrameBudget();
+    for (paths, regions) |path, region| {
+        const hit = try svg_atlas.getOrRasterize(path, 24, 16, true, null);
+        try testing.expectEqual(region.?, hit.region);
+    }
+    try testing.expect(!svg_atlas.hasDeferredWork());
+    try testing.expectEqual(@as(u32, 8), svg_atlas.cache.count());
 }

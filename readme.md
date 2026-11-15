@@ -205,7 +205,10 @@ of box nesting (64 at every profile, the window root included), and one floating
 bridge hold `a11y.element_count_max` nodes (128 at `nano` to 8,192 at `large`). The text
 system's caches are `text.glyph_cache_count_max` glyphs, `text.shaped_run_count_max` shaped
 runs and `text.measure_slot_count_max` widths; a frame that draws more distinct glyphs than
-its glyph cache holds panics and names the field. The fields and
+its glyph cache holds panics and names the field. The SVG and image caches hold
+`atlas.svg_entry_count_max` icons and `atlas.image_entry_count_max` images, at least one
+frame's worth, and `atlas.svg_rasterization_count_frame_max` icons rasterize per frame
+(4 at most profiles, 16 at `large`); the rest fill in over later frames. The fields and
 their measurements are in `src/core/limits.zig` and `docs/v0.4.0-memory-budget.md`.
 
 ### Render with `Cx` and `ui`
