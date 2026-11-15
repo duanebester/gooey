@@ -16,6 +16,8 @@
 //! TextInput{ .id = "special", .background = Color.red }
 //! ```
 
+const assert = @import("std").debug.assert;
+
 const Color = @import("../geometry/geometry.zig").Color;
 
 /// Standard theme interface for semantic colors and styling.
@@ -159,6 +161,24 @@ pub const Theme = struct {
         _ = self;
         return color.withAlpha(alpha);
     }
+
+    /// Whether the host's own chrome (the macOS title bar) should be dark.
+    /// A theme is dark when its background is darker than its text: the
+    /// relation every legible theme states, with no threshold to tune, so a
+    /// dim grey theme with white text counts as dark. Ties count as light.
+    pub fn isDark(self: *const Theme) bool {
+        return luma(self.bg) < luma(self.text);
+    }
+
+    /// Rec. 709 luma of the stored (gamma-encoded) components, enough to
+    /// order two colours by lightness. Components outside 0 to 1 are a
+    /// malformed theme, which the bounds catch.
+    fn luma(color: Color) f32 {
+        const value = 0.2126 * color.r + 0.7152 * color.g + 0.0722 * color.b;
+        assert(value >= 0);
+        assert(value <= 1.0001); // The weights sum to 1 within f32 rounding.
+        return value;
+    }
 };
 
 // =============================================================================
@@ -208,6 +228,21 @@ test "Theme.withAlpha helper" {
     try testing.expectEqual(t.primary.r, faded.r);
     try testing.expectEqual(t.primary.g, faded.g);
     try testing.expectEqual(t.primary.b, faded.b);
+}
+
+test "Theme.isDark compares background with text, not a fixed threshold" {
+    // The presets pin both answers; the dim theme's mid-grey background
+    // (luma 0.55) would read as light under a 0.5 threshold, but its white
+    // text makes it dark. Its inverse, grey text on white, stays light.
+    try testing.expect(!Theme.light.isDark());
+    try testing.expect(Theme.dark.isDark());
+    var dim = Theme.light;
+    dim.bg = Color.rgb(0.55, 0.55, 0.55);
+    dim.text = Color.rgb(1, 1, 1);
+    try testing.expect(dim.isDark());
+    dim.bg = Color.rgb(1, 1, 1);
+    dim.text = Color.rgb(0.55, 0.55, 0.55);
+    try testing.expect(!dim.isDark());
 }
 
 test "Theme light and dark are different" {

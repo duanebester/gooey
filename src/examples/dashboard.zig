@@ -3,8 +3,8 @@
 //!
 //! The line, bar, pie, and scatter charts, the legends, and the KPI cards
 //! draw through each paint element's `Painter`; `T` toggles the dark and
-//! light chart themes. All chart data lives in `State` and is filled by
-//! `on_init`, so nothing is built or allocated while rendering.
+//! light chart themes and the app theme. All chart data lives in `State` and
+//! is filled by `on_init`, so nothing is built or allocated while rendering.
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -47,8 +47,10 @@ pub const State = struct {
     traffic: [5]charts.CategoryPoint = undefined,
     segments: [SegmentChart.series_count_max]SegmentChart.Series = undefined,
 
-    pub fn toggleTheme(self: *State) void {
+    /// The app theme follows too, so the title bar matches the charts.
+    pub fn toggleTheme(self: *State, effects: *gooey.Effects) void {
         self.is_dark_theme = !self.is_dark_theme;
+        effects.setTheme(if (self.is_dark_theme) &gooey.Theme.dark else &gooey.Theme.light);
     }
 
     fn pick(self: *const State, dark: u32, light: u32) Color {
@@ -85,6 +87,7 @@ pub const App = gooey.App(State, render, .{
     .width = 1200,
     .height = 800,
     .limits = .standard,
+    .theme = &gooey.Theme.dark, // Matches `is_dark_theme`'s default.
     .keymap = &.{.{ .keys = "t", .action = ui.action(ToggleTheme) }},
     .on_init = fillData,
 });
