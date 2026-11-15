@@ -21,6 +21,10 @@
 //! - `core-layout-elements`: renders one box more than `nano`'s 512 elements.
 //!   The layout engine holds the same budget plus the root, so the build stops
 //!   it first and layout is never asked for more.
+//! - `svg-cache`: caches 9 distinct icons in one frame in an SVG atlas of 8
+//!   `atlas.svg_entry_count_max`; every icon is in use, so none is reclaimed.
+//!   Through the core this cannot fire: the budget holds a frame's icons.
+//! - `image-cache`: the same for images, 9 into 8 `atlas.image_entry_count_max`.
 //! - `core-layer-count`: opens one layer more than `nano`'s 8. Each layer is a
 //!   layout floating root, a pool sized from `build.layer_count_frame_max`.
 //! - `core-a11y-elements`: renders one accessible box more than `nano`'s 128
@@ -49,6 +53,8 @@
 //! - `core-list-count`: a `List` of per-row heights one row past its `count_max`.
 //! - `core-mesh-points`: a polyline one point past `nano`'s polyline point limit.
 //! - `core-image-requests`: one more image path than `nano`'s image request entries.
+//! - `core-image-path`: an image path one byte past `nano`'s 1,024
+//!   `atlas.image_path_bytes_max`.
 //! - `core-pack-polylines`: one polyline more than `nano`'s polyline limit, which
 //!   pack checks: emit bounds only their points.
 //! - `core-pack-draws`: packs nine records that each start a draw into a packed
@@ -67,6 +73,8 @@ const Mode = enum {
     @"atlas-item",
     @"atlas-live-set",
     @"glyph-cache",
+    @"svg-cache",
+    @"image-cache",
     @"core-allocation",
     @"core-duplicate-key",
     @"core-component-depth",
@@ -91,6 +99,7 @@ const Mode = enum {
     @"core-list-count",
     @"core-mesh-points",
     @"core-image-requests",
+    @"core-image-path",
     @"core-pack-polylines",
     @"core-pack-draws",
     @"core-pack-clips",
@@ -108,6 +117,8 @@ pub fn main(init: std.process.Init) !void {
         .@"atlas-item" => atlasItem(init.gpa, init.io),
         .@"atlas-live-set" => atlasLiveSet(init.gpa, init.io),
         .@"glyph-cache" => glyphCache(init.gpa, init.io),
+        .@"svg-cache" => svgCache(init.gpa, init.io),
+        .@"image-cache" => imageCache(init.gpa, init.io),
         .@"core-allocation" => coreAllocation(init.gpa, init.io),
         .@"core-duplicate-key" => coreTick(init.gpa, init.io, CoreApp.duplicateKey),
         .@"core-component-depth" => coreTick(init.gpa, init.io, CoreApp.nested),
@@ -132,6 +143,7 @@ pub fn main(init: std.process.Init) !void {
         .@"core-list-count" => coreTick(init.gpa, init.io, CoreApp.longList),
         .@"core-mesh-points" => coreTick(init.gpa, init.io, CoreApp.longPolyline),
         .@"core-image-requests" => coreTick(init.gpa, init.io, CoreApp.manyImages),
+        .@"core-image-path" => coreTick(init.gpa, init.io, CoreApp.longImagePath),
         .@"core-pack-polylines" => coreTick(init.gpa, init.io, CoreApp.manyPolylines),
         .@"core-pack-draws" => corePackRecords(init.gpa, .draws),
         .@"core-pack-clips" => corePackRecords(init.gpa, .clips),
@@ -258,6 +270,85 @@ fn glyphCache(gpa: std.mem.Allocator, io: std.Io) void {
                 });
             };
         }
+    }
+}
+
+/// An atlas over its own CPU journal at frame 2, for the cache checks.
+fn cacheUploads(gpa: std.mem.Allocator, io: std.Io) *gooey.text.AtlasUploads {
+    const uploads = gpa.create(gooey.text.AtlasUploads) catch |err| {
+        std.debug.panic("setup: AtlasUploads allocation failed: {s}", .{@errorName(err)});
+    };
+    const options: gooey.text.AtlasUploads.Options = .{
+        .storage = .cpu_texture,
+        .upload_bytes_frame_max = 1024 * 1024,
+    };
+    uploads.init(gpa, io, options) catch |err| {
+        std.debug.panic("setup: AtlasUploads.init failed: {s}", .{@errorName(err)});
+    };
+    const frame = uploads.beginFrame(1);
+    std.debug.assert(frame == 2);
+    return uploads;
+}
+
+fn svgCache(gpa: std.mem.Allocator, io: std.Io) void {
+    // Nine 16 px squares, offset so each path differs, fill 9 of a 512² atlas's
+    // shelves easily: only the 8-entry map can run out.
+    const svg = gooey.internals.svg;
+    const svg_atlas = gpa.create(svg.SvgAtlas) catch |err| {
+        std.debug.panic("setup: SvgAtlas allocation failed: {s}", .{@errorName(err)});
+    };
+    const nano = gooey.ResourceLimits.nano.atlas;
+    svg_atlas.initInPlace(gpa, 1.0, io, .{
+        .size = 512,
+        .icon_size_max = nano.svg_icon_size_max,
+        .raster_budget = .{
+            .path_bytes_max = nano.svg_path_bytes_max,
+            .vertex_count_max = nano.svg_path_vertex_count_max,
+        },
+        .entry_count_max = 8,
+        .rasterization_count_frame_max = 8,
+        .uploads = cacheUploads(gpa, io),
+    }) catch |err| {
+        std.debug.panic("setup: SvgAtlas.initInPlace failed: {s}", .{@errorName(err)});
+    };
+    var index: u32 = 0;
+    while (index < 9) : (index += 1) {
+        // The 9th call is the one past the budget, in a fresh frame budget.
+        if (index == 8) svg_atlas.resetFrameBudget();
+        var path_buffer: [32]u8 = undefined;
+        const path = std.fmt.bufPrint(&path_buffer, "M{d} 0L24 0L24 24Z", .{index}) catch {
+            unreachable; // 32 bytes hold every path above.
+        };
+        _ = svg_atlas.getOrRasterize(path, 24, 16, true, null) catch |err| {
+            std.debug.panic("getOrRasterize failed instead of panicking: {s}", .{@errorName(err)});
+        };
+    }
+}
+
+fn imageCache(gpa: std.mem.Allocator, io: std.Io) void {
+    // Nine 8×8 images in a 512² atlas; only the 8-entry map can run out.
+    const image = gooey.internals.image;
+    const image_atlas = gpa.create(image.ImageAtlas) catch |err| {
+        std.debug.panic("setup: ImageAtlas allocation failed: {s}", .{@errorName(err)});
+    };
+    image_atlas.initInPlace(gpa, 1.0, io, .{
+        .size = 512,
+        .entry_count_max = 8,
+        .uploads = cacheUploads(gpa, io),
+    }) catch |err| {
+        std.debug.panic("setup: ImageAtlas.initInPlace failed: {s}", .{@errorName(err)});
+    };
+    var pixels: [8 * 8 * 4]u8 = @splat(255);
+    var index: u32 = 0;
+    while (index < 9) : (index += 1) {
+        var name_buffer: [16]u8 = undefined;
+        const name = std.fmt.bufPrint(&name_buffer, "image-{d}", .{index}) catch {
+            unreachable; // 16 bytes hold every name above.
+        };
+        const key = image.ImageKey.initFromPath(name, null, null, 1.0);
+        _ = image_atlas.cacheRgba(key, 8, 8, &pixels) catch |err| {
+            std.debug.panic("cacheRgba failed instead of panicking: {s}", .{@errorName(err)});
+        };
     }
 }
 
@@ -521,6 +612,22 @@ const CoreApp = struct {
             const path = std.fmt.comptimePrint("assets/missing-{d}.png", .{index});
             painter.image(path, painter.bounds, .{ .fit = .contain });
         }
+    }
+
+    fn longImagePath(cx: *gooey.Cx) void {
+        const nothing: u8 = 0;
+        cx.render(gooey.ui.paint(u8, &nothing, paintLongImagePath, .{
+            .width = .{ .fixed = 10 },
+            .height = .{ .fixed = 10 },
+        }));
+    }
+
+    /// One byte past `nano`'s image path budget: exactly the budget is a
+    /// valid path, and the request reserves no more.
+    fn paintLongImagePath(_: *const u8, painter: *gooey.ui.Painter) void {
+        const path_bytes = gooey.ResourceLimits.nano.atlas.image_path_bytes_max + 1;
+        const path: [path_bytes]u8 = @splat('a');
+        painter.image(&path, painter.bounds, .{ .fit = .contain });
     }
 
     fn newlinesThenM(comptime count: u32) [count + 1]u8 {

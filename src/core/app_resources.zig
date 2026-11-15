@@ -147,6 +147,8 @@ pub const AppResources = struct {
                 .path_bytes_max = atlas_limits.svg_path_bytes_max,
                 .vertex_count_max = atlas_limits.svg_path_vertex_count_max,
             },
+            .entry_count_max = atlas_limits.svg_entry_count_max,
+            .rasterization_count_frame_max = atlas_limits.svg_rasterization_count_frame_max,
             .uploads = atlas_uploads,
         });
         errdefer svg_atlas.deinit();
@@ -155,6 +157,7 @@ pub const AppResources = struct {
         errdefer allocator.destroy(image_atlas);
         try image_atlas.initInPlace(allocator, scale, io, .{
             .size = atlas_limits.image_size,
+            .entry_count_max = atlas_limits.image_entry_count_max,
             .uploads = atlas_uploads,
         });
         errdefer image_atlas.deinit();

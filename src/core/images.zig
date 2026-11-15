@@ -18,9 +18,10 @@
 //! Capacity: `AtlasLimits.image_request_count_max` entries hold images that
 //! wait for the worker and images whose decode failed, which stay failed for
 //! the session so a missing file is not re-read every frame. One more fails
-//! fast. `image_decode_bytes_max` bounds one image's file and pixels.
+//! fast. Each entry reserves `image_path_bytes_max` path bytes; a longer path
+//! fails fast. `image_decode_bytes_max` bounds one image's file and pixels.
 //!
-//! Performance sketch at `.large`: 64 entries of ~1 KiB (64 KiB) and 24 MiB
+//! Performance sketch at `.large`: 64 entries of 1 KiB of path (64 KiB) and 24 MiB
 //! of staging from fresh pages; a decode makes resident only its file and
 //! pixels (the images example's 512² logo: ~1.1 MiB). The main thread's
 //! work per tick is one hash and an entry scan (≤ 64) per missing image,
@@ -41,9 +42,6 @@ const ImageKey = image_mod.ImageKey;
 
 /// The web has no worker threads; it keeps the browser's image path.
 pub const supported = !builtin.single_threaded and !builtin.cpu.arch.isWasm();
-
-/// Longest path `Painter.image` accepts. A longer one fails fast.
-pub const path_bytes_max: u32 = 1024;
 
 /// The worker's stack. Decoders are opaque platform code (libpng,
 /// ImageIO, WIC), so it matches a common main-thread default.
@@ -69,13 +67,14 @@ const Entry = struct {
     state: State,
     source_hash: u64,
     path_len: u32,
-    path: [path_bytes_max]u8,
+    /// `AtlasLimits.image_path_bytes_max` bytes of `Loader.path_bytes`.
+    path: []u8,
 
     const State = enum(u8) { free, pending, failed };
 
     fn pathSlice(self: *const Entry) []const u8 {
         assert(self.state != .free);
-        assert(self.path_len <= path_bytes_max);
+        assert(self.path_len <= self.path.len);
         return self.path[0..self.path_len];
     }
 };
@@ -87,6 +86,8 @@ pub const Loader = struct {
     io: std.Io,
     /// Main thread only, except that the worker reads a pending entry's path.
     entries: []Entry,
+    /// Every entry's path, `image_path_bytes_max` bytes each.
+    path_bytes: []u8,
     /// Indexes of entries waiting for the worker, a power-of-two ring at
     /// least as long as `entries`; every queued index holds a pending entry,
     /// so the ring cannot overflow. The main thread writes `request_head`,
@@ -123,10 +124,18 @@ pub const Loader = struct {
     ) !void {
         assert(limits.image_request_count_max > 0);
         assert(limits.image_decode_bytes_max > 0);
+        assert(limits.image_path_bytes_max > 0);
         self.io = io;
         self.entries = try gpa.alloc(Entry, limits.image_request_count_max);
         errdefer gpa.free(self.entries);
-        for (self.entries) |*entry| entry.state = .free;
+        const path_total = @as(usize, limits.image_request_count_max) * limits.image_path_bytes_max;
+        self.path_bytes = try gpa.alloc(u8, path_total);
+        errdefer gpa.free(self.path_bytes);
+        const path_bytes_max = limits.image_path_bytes_max;
+        for (self.entries, 0..) |*entry, index| {
+            entry.state = .free;
+            entry.path = self.path_bytes[index * path_bytes_max ..][0..path_bytes_max];
+        }
         const ring_count = std.math.ceilPowerOfTwoAssert(u32, limits.image_request_count_max);
         self.requests = try gpa.alloc(u32, ring_count);
         errdefer gpa.free(self.requests);
@@ -168,6 +177,7 @@ pub const Loader = struct {
         }
         if (supported) reservation.release(u8, self.staging, self.staging_used_max);
         gpa.free(self.requests);
+        gpa.free(self.path_bytes);
         gpa.free(self.entries);
         self.* = undefined;
     }
@@ -188,8 +198,14 @@ pub const Loader = struct {
         assert(self.requests.len >= self.entries.len);
         if (!supported) std.debug.panic("Painter.image(\"{s}\") needs the native decode " ++
             "worker; the web keeps the browser's image path", .{path});
+        const path_bytes_max = self.entries[0].path.len;
         if (path.len > path_bytes_max) std.debug.panic("Painter.image path of {d} bytes " ++
-            "exceeds images.path_bytes_max ({d}): \"{s}\"", .{ path.len, path_bytes_max, path });
+            "exceeds ResourceLimits.atlas.image_path_bytes_max {d}, frame {d}: \"{s}\"", .{
+            path.len,
+            path_bytes_max,
+            frame_number,
+            path,
+        });
         if (self.find(key.source_hash) != null) return;
         const index = self.freeEntry() orelse std.debug.panic("image loader pool 'requests' " ++
             "exhausted: capacity {d} images waiting or failed, 1 requested (\"{s}\") in " ++
@@ -225,9 +241,9 @@ pub const Loader = struct {
         const pixel_bytes = @as(usize, decoded.width) * decoded.height * 4;
         assert(decoded.pixel_offset <= self.staging.len);
         assert(pixel_bytes <= self.staging.len - decoded.pixel_offset);
-        if (decoded.width > ImageAtlas.MAX_ATLAS_DIMENSION or
-            decoded.height > ImageAtlas.MAX_ATLAS_DIMENSION)
-        {
+        // The 1 px border on each side must fit too.
+        const side_max = atlas.atlas.size - 2;
+        if (decoded.width > side_max or decoded.height > side_max) {
             panicTooLarge(entry, decoded, atlas.atlas.size);
         }
         const pixels = self.staging[decoded.pixel_offset..][0..pixel_bytes];
@@ -238,10 +254,6 @@ pub const Loader = struct {
         };
         _ = atlas.cacheRgba(key, decoded.width, decoded.height, pixels) catch |err| switch (err) {
             error.UploadDeferred => return .deferred,
-            else => std.debug.panic("image atlas rejected \"{s}\": {s}", .{
-                entry.pathSlice(),
-                @errorName(err),
-            }),
         };
         entry.state = .free;
         self.release();
@@ -429,7 +441,7 @@ fn panicTooLarge(entry: *const Entry, decoded: events.ImageDecoded, atlas_size: 
         entry.pathSlice(),
         decoded.width,
         decoded.height,
-        @min(atlas_size - 2, ImageAtlas.MAX_ATLAS_DIMENSION),
+        atlas_size - 2,
         atlas_size,
     });
 }

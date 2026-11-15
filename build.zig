@@ -1498,6 +1498,14 @@ fn addFailFastChecks(
         .{ .mode = "core-image-requests", .stderr = "image loader pool 'requests' exhausted: " ++
             "capacity 4 images waiting or failed, 1 requested (\"assets/missing-4.png\") in " ++
             "frame 1. Raise ResourceLimits.atlas.image_request_count_max." },
+        .{ .mode = "core-image-path", .stderr = "Painter.image path of 1025 bytes exceeds " ++
+            "ResourceLimits.atlas.image_path_bytes_max 1024, frame 1" },
+        .{ .mode = "svg-cache", .stderr = "SvgAtlas pool 'cache' exhausted: capacity 8, " ++
+            "8 in use, 1 requested, every icon used since frame 2. " ++
+            "Raise ResourceLimits.atlas.svg_entry_count_max." },
+        .{ .mode = "image-cache", .stderr = "ImageAtlas pool 'cache' exhausted: capacity 8, " ++
+            "8 in use, 1 requested, every image used since frame 2. " ++
+            "Raise ResourceLimits.atlas.image_entry_count_max." },
         .{ .mode = "core-pack-polylines", .stderr = "Packed pool 'polylines' exhausted: " ++
             "capacity 4 (ResourceLimits.paint.polyline_count_frame_max), 4 in use, " ++
             "1 requested, frame 1." },
