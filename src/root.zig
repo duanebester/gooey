@@ -305,5 +305,7 @@ test {
         std.testing.refAllDecls(@import("platform/fbdev/clipboard.zig"));
         // Only the reservation-limit test: the rest of the file calls Vulkan.
         _ = @import("platform/linux/vk_buffers.zig");
+        // Only the present-semaphore model, which makes no Vulkan call.
+        _ = @import("platform/linux/vk_renderer.zig");
     }
 }

@@ -63,6 +63,7 @@ const Uniforms = vk_types.Uniforms;
 pub const enable_validation_layers = vk_instance.enable_validation_layers;
 
 pub const frame_count_max = vk_types.frame_count_max;
+const swapchain_image_count_max = vk_swapchain.MAX_SWAPCHAIN_IMAGES;
 
 const pipeline_count = vk_draw.pipeline_count;
 
@@ -86,7 +87,6 @@ const FrameResources = struct {
     descriptor_set: vk.DescriptorSet = null,
     fence: vk.Fence = null,
     image_available_semaphore: vk.Semaphore = null,
-    render_finished_semaphore: vk.Semaphore = null,
     command_buffer: vk.CommandBuffer = null,
 };
 
@@ -161,14 +161,23 @@ pub const VulkanRenderer = struct {
 
     // Swapchain
     swapchain: vk.Swapchain = null,
-    swapchain_images: [8]vk.Image = @splat(null),
-    swapchain_image_views: [8]vk.ImageView = @splat(null),
+    swapchain_images: [swapchain_image_count_max]vk.Image = @splat(null),
+    swapchain_image_views: [swapchain_image_count_max]vk.ImageView = @splat(null),
+    /// What each image's present waits on, signalled by the submit that drew
+    /// it: one per image, not per frame in flight. A present waits on its
+    /// semaphore asynchronously, after the frame's fence has signalled, so a
+    /// per-frame semaphore could be signalled again while the present that
+    /// waits on it is still pending (VUID-vkQueueSubmit-pSignalSemaphores-00067).
+    /// An image is acquired again only after its last present has taken the
+    /// semaphore's signal, so its own semaphore is always unsignalled by then.
+    /// Made and destroyed with the swapchain, as its images are.
+    present_semaphores: [swapchain_image_count_max]vk.Semaphore = @splat(null),
     swapchain_image_count: u32 = 0,
     swapchain_format: vk.Format = vk.VK_FORMAT_B8G8R8A8_UNORM,
     swapchain_extent: vk.Extent2D = .{ .width = 0, .height = 0 },
     swapchain_needs_recreate: bool = false,
     render_pass: vk.RenderPass = null,
-    framebuffers: [8]vk.Framebuffer = @splat(null),
+    framebuffers: [swapchain_image_count_max]vk.Framebuffer = @splat(null),
 
     // Largest framebuffer, from `ResourceLimits.window`; `resize` asserts it.
     window_limits: WindowLimits = undefined,
@@ -391,8 +400,8 @@ pub const VulkanRenderer = struct {
         // Reset only now that the frame is certain to be submitted: a fence
         // left unsignalled would block the next wait on it forever.
         _ = vk.vkResetFences(self.device, 1, (&resources.fence)[0..1]);
-        self.submit(resources, image_index != null);
-        if (image_index) |index| self.present(resources, index);
+        self.submit(resources, image_index);
+        if (image_index) |index| self.present(index);
         self.recording = false;
         self.staging_lane_used = 0;
         self.current_frame = (self.current_frame + 1) % self.frame_count;
@@ -552,11 +561,13 @@ pub const VulkanRenderer = struct {
     }
 
     /// Submit the frame's command buffer. With an image, it waits for the
-    /// image and signals presentation; without one it carries only uploads.
-    fn submit(self: *Self, frame: *const FrameResources, has_image: bool) void {
+    /// image and signals that image's present; without one it carries only
+    /// uploads.
+    fn submit(self: *Self, frame: *const FrameResources, image_index: ?u32) void {
         assert(self.graphics_queue != null);
         const wait_stages = [_]u32{vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
-        const semaphore_count: u32 = @intFromBool(has_image);
+        const semaphore_count: u32 = @intFromBool(image_index != null);
+        const present_semaphore = if (image_index) |index| self.presentSemaphore(index) else null;
         const submit_info = vk.SubmitInfo{
             .sType = vk.VK_STRUCTURE_TYPE_SUBMIT_INFO,
             .pNext = null,
@@ -566,19 +577,20 @@ pub const VulkanRenderer = struct {
             .commandBufferCount = 1,
             .pCommandBuffers = (&frame.command_buffer)[0..1],
             .signalSemaphoreCount = semaphore_count,
-            .pSignalSemaphores = (&frame.render_finished_semaphore)[0..1],
+            .pSignalSemaphores = (&present_semaphore)[0..1],
         };
         const result = vk.vkQueueSubmit(self.graphics_queue, 1, (&submit_info)[0..1], frame.fence);
         if (result != vk.SUCCESS) failFast("vkQueueSubmit", result);
     }
 
-    fn present(self: *Self, frame: *const FrameResources, image_index: u32) void {
+    fn present(self: *Self, image_index: u32) void {
         assert(image_index < self.swapchain_image_count);
+        const present_semaphore = self.presentSemaphore(image_index);
         const present_info = vk.PresentInfoKHR{
             .sType = vk.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
             .pNext = null,
             .waitSemaphoreCount = 1,
-            .pWaitSemaphores = (&frame.render_finished_semaphore)[0..1],
+            .pWaitSemaphores = (&present_semaphore)[0..1],
             .swapchainCount = 1,
             .pSwapchains = (&self.swapchain)[0..1],
             .pImageIndices = (&image_index)[0..1],
@@ -590,6 +602,15 @@ pub const VulkanRenderer = struct {
             vk.SUBOPTIMAL_KHR, vk.ERROR_OUT_OF_DATE_KHR => self.swapchain_needs_recreate = true,
             else => failFast("vkQueuePresentKHR", result),
         }
+    }
+
+    /// The semaphore between drawing swapchain image `image_index` and
+    /// presenting it (see `present_semaphores`).
+    fn presentSemaphore(self: *const Self, image_index: u32) vk.Semaphore {
+        assert(image_index < self.swapchain_image_count);
+        const semaphore = self.present_semaphores[image_index];
+        assert(semaphore != null);
+        return semaphore;
     }
 
     /// Fail fast on a Vulkan error the renderer cannot recover from, naming
@@ -646,11 +667,14 @@ pub const VulkanRenderer = struct {
         }
     }
 
-    /// Recreate the swapchain and its framebuffers for a new extent.
+    /// Recreate the swapchain, its framebuffers, and its present semaphores
+    /// for a new extent.
     ///
     /// Nothing Gooey allocates is resized: the render pass depends only on the
     /// format, there is no multisampled target, and the swapchain images belong
     /// to the driver, bounded by the window budget and the frames in flight.
+    /// The present semaphores follow the images, at most
+    /// `swapchain_image_count_max`.
     fn recreateSwapchain(self: *Self, extent: vk.Extent2D) !void {
         assert(extent.width <= self.window_limits.framebuffer_width_max);
         assert(extent.height <= self.window_limits.framebuffer_height_max);
@@ -667,6 +691,11 @@ pub const VulkanRenderer = struct {
             self.frame_count,
             old_swapchain,
         );
+        // The frames' fences cover their submits but not their presents,
+        // which may still wait on the old swapchain's present semaphores.
+        _ = vk.vkQueueWaitIdle(self.present_queue);
+        vk_buffers.destroySemaphores(self.device, &self.present_semaphores);
+        if (old_swapchain) |old| vk.vkDestroySwapchainKHR(self.device, old, null);
         self.swapchain = sc.swapchain;
         self.swapchain_images = sc.images;
         self.swapchain_image_views = sc.image_views;
@@ -674,7 +703,8 @@ pub const VulkanRenderer = struct {
         self.swapchain_extent = sc.extent;
         // The render pass was made for the format, which a resize keeps.
         assert(sc.format == self.swapchain_format);
-        if (old_swapchain) |old| vk.vkDestroySwapchainKHR(self.device, old, null);
+        const count = self.swapchain_image_count;
+        try vk_buffers.createSemaphores(self.device, self.present_semaphores[0..count]);
 
         try vk_swapchain.createFramebuffers(
             self.device,
@@ -731,9 +761,9 @@ pub const VulkanRenderer = struct {
         self.instance = null;
     }
 
-    /// Swapchain, render pass and framebuffers. None of them is Gooey memory:
-    /// the swapchain images belong to the driver, bounded by the window budget
-    /// (extent) and the frames in flight (count).
+    /// Swapchain, present semaphores, render pass and framebuffers. None of
+    /// them is Gooey memory: the swapchain images belong to the driver,
+    /// bounded by the window budget (extent) and the frames in flight (count).
     fn initSwapchainTargets(self: *Self, extent: vk.Extent2D) !void {
         assert(self.device != null);
         assert(self.swapchain == null);
@@ -753,6 +783,9 @@ pub const VulkanRenderer = struct {
         self.swapchain_extent = sc.extent;
         errdefer self.destroySwapchainTargets();
 
+        const count = self.swapchain_image_count;
+        try vk_buffers.createSemaphores(self.device, self.present_semaphores[0..count]);
+
         self.render_pass = try vk_swapchain.createRenderPass(self.device, self.swapchain_format);
         try vk_swapchain.createFramebuffers(
             self.device,
@@ -764,8 +797,9 @@ pub const VulkanRenderer = struct {
         );
     }
 
-    /// Framebuffers, render pass, image views, then the swapchain, bracketed
-    /// by the window system's teardown hooks once the device is idle.
+    /// Framebuffers, render pass, image views, present semaphores, then the
+    /// swapchain, bracketed by the window system's teardown hooks once the
+    /// device is idle.
     fn destroySwapchainTargets(self: *Self) void {
         assert(self.device != null);
         _ = vk.vkDeviceWaitIdle(self.device);
@@ -774,6 +808,7 @@ pub const VulkanRenderer = struct {
         self.render_pass = null;
         if (self.native_surface) |*native| native.swapchainDestroyBegin();
         vk_swapchain.destroyImageViews(self.device, &self.swapchain_image_views);
+        vk_buffers.destroySemaphores(self.device, &self.present_semaphores);
         if (self.swapchain) |swapchain| vk.vkDestroySwapchainKHR(self.device, swapchain, null);
         self.swapchain = null;
         self.swapchain_image_count = 0;
@@ -794,7 +829,6 @@ pub const VulkanRenderer = struct {
         for (self.frames[0..self.frame_count], 0..) |*frame, index| {
             frame.fence = sync.in_flight_fences[index];
             frame.image_available_semaphore = sync.image_available_semaphores[index];
-            frame.render_finished_semaphore = sync.render_finished_semaphores[index];
             frame.command_buffer = command_buffers.render[index];
             assert(frame.fence != null);
         }
@@ -807,8 +841,6 @@ pub const VulkanRenderer = struct {
             frame.fence = null;
             if (frame.image_available_semaphore) |s| vk.vkDestroySemaphore(self.device, s, null);
             frame.image_available_semaphore = null;
-            if (frame.render_finished_semaphore) |s| vk.vkDestroySemaphore(self.device, s, null);
-            frame.render_finished_semaphore = null;
             frame.command_buffer = null;
         }
         if (self.command_pool) |pool| vk.vkDestroyCommandPool(self.device, pool, null);
@@ -1031,4 +1063,40 @@ fn logicalSize(size_px: u32, scale_factor: f32) f32 {
     assert(size_px > 0);
     assert(scale_factor > 0);
     return @as(f32, @floatFromInt(size_px)) / scale_factor;
+}
+
+test "present semaphores are never signalled while a present still waits on them" {
+    // VUID-vkQueueSubmit-pSignalSemaphores-00067: a submit must not signal a
+    // binary semaphore that a present may still wait on. Methodology: a
+    // model presentation engine, where a present's wait on its semaphore is
+    // only known to be done once the engine hands its image out again. Each
+    // turn acquires an image, signals `presentSemaphore` for it, and rotates
+    // the frame in flight as `draw` does; the model fails on any signal of a
+    // semaphore whose last present has not released its image. Acquire
+    // orders cover FIFO round robin and a mailbox-like order, with more
+    // images than frames in flight, where per-frame semaphores collide.
+    const handles: [swapchain_image_count_max]u8 = @splat(0);
+    const orders = [_][]const u32{
+        &.{ 0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2 },
+        &.{ 0, 1, 2, 3, 1, 0, 3, 2, 0, 1, 3, 2 },
+    };
+    for (orders) |order| {
+        var renderer = VulkanRenderer{};
+        renderer.frame_count = 2;
+        renderer.swapchain_image_count = 4;
+        for (renderer.present_semaphores[0..4], 0..) |*semaphore, index| {
+            semaphore.* = @ptrCast(@constCast(&handles[index]));
+        }
+        // The semaphore each image's last present waits on, until released.
+        var waiting: [swapchain_image_count_max]vk.Semaphore = @splat(null);
+        for (order) |image_index| {
+            assert(image_index < renderer.swapchain_image_count);
+            // Acquiring the image proves its last present is done.
+            waiting[image_index] = null;
+            const semaphore = renderer.presentSemaphore(image_index);
+            for (waiting) |pending| try std.testing.expect(pending != semaphore);
+            waiting[image_index] = semaphore;
+            renderer.current_frame = (renderer.current_frame + 1) % renderer.frame_count;
+        }
+    }
 }
