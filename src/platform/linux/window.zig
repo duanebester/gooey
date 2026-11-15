@@ -740,7 +740,9 @@ pub const Window = struct {
     }
 
     /// Queue `event` for the core's next drain. Only a key the keymap claims
-    /// counts as handled, so every other key still reaches the IME. While the
+    /// counts as handled, so every other key still reaches the IME, and only
+    /// a press the router will act on (`Query.pressClaims`), so a press on
+    /// empty chrome still moves or resizes an undecorated window. While the
     /// IME holds marked text it owns every key (Escape cancels the
     /// composition, Return accepts a candidate), so a key down is neither
     /// queued nor claimed: no binding or `on_key` handler may act on a
@@ -754,6 +756,10 @@ pub const Window = struct {
         binding.schedule_tick(binding.context);
         return switch (event) {
             .key_down => |key| binding.query.keymapClaims(key),
+            .mouse_down => |mouse| binding.query.pressClaims(.{
+                .x = @floatCast(mouse.position.x),
+                .y = @floatCast(mouse.position.y),
+            }),
             else => false,
         };
     }

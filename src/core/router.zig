@@ -84,6 +84,36 @@ pub const Query = struct {
         if (debugger.isToggle(&key)) return true;
         return findAction(self.window, &key) != null;
     }
+
+    /// Whether the drain will act on a press at `point`: it lands on a
+    /// scrollbar, or a record on its press path has `on_click`, takes focus,
+    /// or starts a gesture (`Box.draggable`, `Box.on_pointer_drag`). Clicks
+    /// fire on release, so a platform drawing its own window frame asks this
+    /// at the press and moves or resizes the window only when it is false.
+    pub fn pressClaims(self: *const Query, point: Point) bool {
+        assert(self.window.phase != .build);
+        assert(std.math.isFinite(point.x));
+        assert(std.math.isFinite(point.y));
+        const frame = self.window.rendered();
+        var index = hitIndex(frame, point);
+        var depth: u32 = 0;
+        while (index != index_none) : (depth += 1) {
+            assert(depth <= window_mod.box_depth_ceiling);
+            const record = &frame.hits[index];
+            if (record.on_click != index_none) return true;
+            if (record.focusable) return true;
+            if (record.on_pointer_drag != index_none) return true;
+            if (record.drag_type != 0) return true;
+            if (record.scroll) {
+                const retained = &self.window.retained;
+                if (retained.findConst(window_mod.ScrollState, record.id)) |state| {
+                    if (state.scrollbarAt(point.x, point.y) != null) return true;
+                }
+            }
+            index = record.parent;
+        }
+        return false;
+    }
 };
 
 /// The deepest hit record containing `point`, or `index_none`. Records
