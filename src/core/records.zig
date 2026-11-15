@@ -12,6 +12,7 @@ const id_mod = @import("id.zig");
 const geometry = @import("../geometry/geometry.zig");
 const handler_mod = @import("handler.zig");
 const a11y_types = @import("../accessibility/types.zig");
+const TextSelection = @import("../accessibility/element.zig").TextSelection;
 const CursorShape = @import("../platform/interface.zig").CursorShape;
 const debugger = @import("debugger.zig");
 
@@ -225,6 +226,8 @@ pub const A11yNode = struct {
     set_size: ?u16,
     /// `A11y.range`: a splitter's or slider's position in its range.
     range: ?Range,
+    /// `A11y.selection` in the kept `value`.
+    selection: ?TextSelection,
 
     pub const Range = struct {
         min: f32,

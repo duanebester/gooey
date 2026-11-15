@@ -410,13 +410,21 @@ profile change resizes the frame's node pool, the tree and the platform bridge t
 | `a11y.element_count_max`            | 128 to 16,384        | Panics: "elements"         |
 | `a11y.announcement_count_frame_max` | 4 to 64 per build    | Panics: "announcements"    |
 | `a11y.announcement_bytes_frame_max` | 512 B to 16 KiB      | Panics: "announcement bytes" |
+| `a11y.value_bytes_max`              | 1 KiB to 32 KiB      | Cut to the caret's lines   |
 | `build.box_depth_max`               | the tree's depth     | Panics: "box depth"        |
 | `build.text_bytes_frame_max`        | 16 KiB to 4 MiB      | Panics: "text bytes"       |
 | `poll_interval_ns`                  | 1 s                  | None: it is the poll period |
 
 By profile, `nano`, `small`, `standard`, `large`, and `ceiling`: elements 128, 512, 2,048,
 8,192, and 16,384; announcements 4, 8, 16, 16, and 64; announcement bytes 512, 1 KiB,
-2 KiB, 4 KiB, and 16 KiB.
+2 KiB, 4 KiB, and 16 KiB; value bytes 1 KiB, 4 KiB, 8 KiB, 16 KiB, and 32 KiB.
+
+A text field's value longer than `a11y.value_bytes_max`, such as a `CodeEditor`'s
+document, is cut to the whole lines around its `A11y.selection`, as native text views
+expose the text near the caret rather than the document, and the selection the screen
+reader reports moves with the cut. The cut moves only when the caret crosses a multiple
+of half the budget, so most caret steps read as selection changes, not value changes.
+`check()` holds `a11y.value_bytes_max` to at most `build.text_bytes_frame_max`.
 
 `check()` holds `a11y.element_count_max` to at most `build.element_count_frame_max`
 (every node is an element) and the announcement bytes to at least one per announcement.

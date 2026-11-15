@@ -2358,6 +2358,94 @@ test "code_editor lists a folder in a List and opens its files on the core" {
     try testing.expectEqual(internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
 }
 
+/// Numbered lines of 16 bytes, "line 0000000001\n", up to `bytes` bytes; the
+/// last line is cut short when `bytes` is not a multiple of 16.
+fn editorLines(dir: std.Io.Dir, name: []const u8, bytes: usize) !void {
+    const data = try testing.allocator.alloc(u8, bytes);
+    defer testing.allocator.free(data);
+
+    var line: [16]u8 = undefined;
+    var offset: usize = 0;
+    var index: u32 = 0;
+    while (offset < bytes) : (index += 1) {
+        _ = try std.fmt.bufPrint(&line, "line {d:0>10}\n", .{index});
+        const count = @min(line.len, bytes - offset);
+        @memcpy(data[offset..][0..count], line[0..count]);
+        offset += count;
+    }
+    try dir.writeFile(testing.io, .{ .sub_path = name, .data = data });
+}
+
+/// The editor's accessibility value, which must be whole lines of `source`
+/// within `a11y.value_bytes_max`; returns where it starts in `source`.
+fn editorValueStart(app: *code_editor.App) !usize {
+    const node = nodeNamed(&app.window, .textarea, "Enter your code here...").?;
+    const value = app.window.rendered().text(node.value).?;
+    try testing.expect(value.len <= code_editor.limits.a11y.value_bytes_max);
+    const start = std.mem.indexOf(u8, app.state.source, value).?;
+    try testing.expect(start == 0 or app.state.source[start - 1] == '\n');
+    const end = start + value.len;
+    try testing.expect(end == app.state.source.len or app.state.source[end - 1] == '\n');
+    return start;
+}
+
+test "code_editor opens a file of up to its editor's bytes and says the caret's lines" {
+    // Goal: a file larger than the frame's 64 KiB of text opens, and a
+    // screen reader gets the lines around the caret, not the document (the
+    // whole copy exhausted the frame's text bytes on any file over 64 KiB).
+    // Method: open a file one byte past 64 KiB and one of exactly
+    // `text.editor.bytes_max`; the value must be whole lines of the file
+    // within `a11y.value_bytes_max`. Then click the smaller file's text and
+    // type a marker (the full one takes no more): the value must hold it,
+    // with the reported caret right after it.
+    var folder = std.testing.tmpDir(.{ .iterate = true });
+    defer folder.cleanup();
+    const frame_text_bytes = code_editor.limits.build.text_bytes_frame_max;
+    try editorLines(folder.dir, "over.txt", frame_text_bytes + 1);
+    try editorLines(folder.dir, "full.txt", code_editor.limits.text.editor.bytes_max);
+    var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const path_len = try folder.dir.realPath(testing.io, &path_buffer);
+
+    const app = try testing.allocator.create(code_editor.App);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var dialog = FolderDialog{ .path = path_buffer[0..path_len] };
+    app.window.file_dialog = .{ .context = &dialog, .open = FolderDialog.open };
+    var now: u64 = 0;
+    app.tick(now);
+    const open = nodeNamed(&app.window, .button, "Open Folder").?.bounds;
+    clickAt(app, &now, open.x + 4, open.y + 4);
+    now += 1;
+    app.tick(now);
+
+    editorClickRow(app, &now, "full.txt");
+    try testing.expectEqual(code_editor.FileStatus.displaying_code, app.state.status);
+    try testing.expectEqual(code_editor.limits.text.editor.bytes_max, app.state.source.len);
+    _ = try editorValueStart(app);
+    editorClickRow(app, &now, "over.txt");
+    try testing.expectEqual(code_editor.FileStatus.displaying_code, app.state.status);
+    try testing.expectEqual(@as(usize, frame_text_bytes + 1), app.state.source.len);
+    _ = try editorValueStart(app);
+
+    const editor = nodeNamed(&app.window, .textarea, "Enter your code here...").?.bounds;
+    clickAt(app, &now, editor.x + editor.width / 2, editor.y + 40);
+    app.window.queue.push(.{ .input = .{ .text_input = .{ .text = "@@" } } });
+    now += 1;
+    app.tick(now);
+    now += 1;
+    app.tick(now);
+    const start = try editorValueStart(app);
+    const node = nodeNamed(&app.window, .textarea, "Enter your code here...").?;
+    const value = app.window.rendered().text(node.value).?;
+    const marker = std.mem.indexOf(u8, value, "@@").?;
+    try testing.expect(node.state.focused);
+    try testing.expectEqual(marker + 2, node.selection.?.start);
+    try testing.expectEqual(marker + 2, node.selection.?.end);
+    try testing.expectEqual(start + marker, std.mem.indexOf(u8, app.state.source, "@@").?);
+    try testing.expectEqual(internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
+}
+
 /// Chat rows of 0.3.1's virtual_list_example: its five message heights in
 /// its ten-row pattern, read from the app's state as a real app's would be.
 const ChatState = struct {

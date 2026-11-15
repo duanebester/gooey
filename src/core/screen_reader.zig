@@ -82,14 +82,11 @@ fn push(tree: *a11y.Tree, frame: *const records.Frame, node: *const records.A11y
         .width = node.bounds.width,
         .height = node.bounds.height,
     };
-    // The focused text field's selection is the frame's IME answer, so the
-    // bridge can report caret moves without a second accessibility field.
-    if (frame.ime) |ime| {
-        if (ime.owner == node.id) {
-            assert(ime.selected_start <= ime.selected_end);
-            assert(ime.selected_end <= node.value.len);
-            element.selection = .{ .start = ime.selected_start, .end = ime.selected_end };
-        }
+    // The bridges read `selection` as the focused text field's caret.
+    if (node.selection) |selection| {
+        assert(selection.start <= selection.end);
+        assert(selection.end <= node.value.len);
+        if (node.state.focused) element.selection = selection;
     }
     assert(element.role == node.role);
 }
@@ -172,6 +169,7 @@ test "a full nano frame publishes every node and announcement into a nano tree" 
             .pos_in_set = null,
             .set_size = null,
             .range = null,
+            .selection = null,
         });
     }
     for (0..nano.a11y.announcement_count_frame_max) |_| {

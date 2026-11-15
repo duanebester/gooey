@@ -27,6 +27,7 @@ pub const Role = a11y_types.Role;
 pub const HeadingLevel = a11y_types.HeadingLevel;
 pub const Live = a11y_types.Live;
 pub const Orientation = a11y_types.Orientation;
+pub const TextSelection = @import("../accessibility/element.zig").TextSelection;
 
 pub const Direction = enum { row, column };
 
@@ -214,6 +215,12 @@ pub const A11y = struct {
     /// The position of a focusable separator (a splitter) or a slider within
     /// its range, which screen readers report beside `value`.
     range: ?Range = null,
+    /// A text field's selection in `value`, at code point boundaries. The
+    /// frame keeps at most `ResourceLimits.a11y.value_bytes_max` bytes of a
+    /// value: a longer one is cut to the whole lines around the selection,
+    /// or to its start without one, and the selection moves with the cut.
+    /// While the box is focused, the screen reader reports it as the caret.
+    selection: ?TextSelection = null,
 
     /// `orientation` is the axis the control divides or moves along: a
     /// `vertical` splitter stands between left and right panes. VoiceOver

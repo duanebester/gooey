@@ -18,6 +18,7 @@ const element = @import("element.zig");
 const retained = @import("retained.zig");
 const text_engine = @import("text_engine.zig");
 const window_mod = @import("window.zig");
+const a11y_value = @import("a11y_value.zig");
 const debugger = @import("debugger.zig");
 const layout_mod = @import("../layout/layout.zig");
 const text_mod = @import("../text/mod.zig");
@@ -320,7 +321,9 @@ pub const Cx = struct {
         node.hit = box.key != null or scroll != null or box.focusable or box.on_click != null or
             box.on_click_outside != null or box.on_key != null or
             box.key_context != null or box.actions.len > 0 or box.style.cursor != null;
-        if (box.a11y) |*a11y| node.a11y = copyA11y(frame, a11y);
+        if (box.a11y) |*a11y| {
+            node.a11y = copyA11y(frame, a11y, window.limits.a11y.value_bytes_max);
+        }
         resolveAppearance(window, node, &box.style);
         pushOpen(window, index);
         self.renderChild(children);
@@ -442,16 +445,27 @@ fn checkLayer(box: *const element.Box) void {
 }
 
 /// Copy a box's accessibility annotation into the frame, strings included.
-fn copyA11y(frame: *records.Frame, a11y: *const element.A11y) window_mod.A11yBuilt {
+/// The value keeps at most `value_bytes_max` bytes around its selection
+/// (`a11y_value.window`), so a long document cannot exhaust the frame's text.
+fn copyA11y(
+    frame: *records.Frame,
+    a11y: *const element.A11y,
+    value_bytes_max: u32,
+) window_mod.A11yBuilt {
     if (a11y.range) |range| {
         assert(range.min <= range.max);
         assert(range.now >= range.min);
         assert(range.now <= range.max);
     }
+    const value = a11y.value orelse "";
+    if (a11y.selection) |selection| assert(selection.end <= value.len);
+    const kept = a11y_value.window(value, a11y.selection, value_bytes_max);
+    assert(kept.end - kept.start <= value_bytes_max);
     return .{
         .role = a11y.role,
         .label = frame.copyText(a11y.label orelse ""),
-        .value = frame.copyText(a11y.value orelse ""),
+        .value = frame.copyText(value[kept.start..kept.end]),
+        .selection = if (a11y.selection) |selection| a11y_value.relative(selection, kept) else null,
         .href = frame.copyText(a11y.href orelse ""),
         .description = frame.copyText(a11y.description orelse ""),
         .checked = a11y.checked,

@@ -394,6 +394,14 @@ pub const ResourceLimits = struct {
                 element_count,
             );
         }
+        if (self.a11y.value_bytes_max > self.build.text_bytes_frame_max) {
+            return relationship(
+                .a11y,
+                "value_bytes_max",
+                self.a11y.value_bytes_max,
+                self.build.text_bytes_frame_max,
+            );
+        }
         const announcement_count = self.a11y.announcement_count_frame_max;
         if (self.a11y.announcement_bytes_frame_max < announcement_count) {
             return .{
@@ -1513,33 +1521,49 @@ pub const A11yLimits = struct {
     announcement_count_frame_max: u32,
     /// Bytes of those announcements' text, copied out of the handlers.
     announcement_bytes_frame_max: u32,
+    /// Bytes of one node's `value` the frame keeps. A longer value, such as
+    /// an editor's whole document, is cut to the lines around its
+    /// `A11y.selection` (the caret), as native text views expose the text
+    /// near the caret rather than the document; the cut comes from
+    /// `build.text_bytes_frame_max`, so it is at most that.
+    value_bytes_max: u32,
 
     pub const nano: A11yLimits = .{
         .element_count_max = 128,
         .announcement_count_frame_max = 4,
         .announcement_bytes_frame_max = 512,
+        .value_bytes_max = 1024,
     };
     pub const small: A11yLimits = .{
         .element_count_max = 512,
         .announcement_count_frame_max = 8,
         .announcement_bytes_frame_max = 1024,
+        .value_bytes_max = 4 * 1024,
     };
     pub const standard: A11yLimits = .{
         .element_count_max = 2_048,
         .announcement_count_frame_max = 16,
         .announcement_bytes_frame_max = 2048,
+        .value_bytes_max = 8 * 1024,
     };
     pub const large: A11yLimits = .{
         .element_count_max = 8_192,
         .announcement_count_frame_max = 16,
         .announcement_bytes_frame_max = 4096,
+        .value_bytes_max = 16 * 1024,
     };
     pub const ceiling: A11yLimits = .{
         .element_count_max = a11y_element_count_ceiling,
         .announcement_count_frame_max = 64,
         .announcement_bytes_frame_max = 16 * 1024,
+        .value_bytes_max = a11y_value_bytes_ceiling,
     };
 };
+
+/// The macOS bridge hands a value to AppKit as one string and asserts it is at
+/// most 65,535 bytes; a screen reader reads a few lines around the caret, so
+/// 32 KiB is ample and stays under it.
+pub const a11y_value_bytes_ceiling: u32 = 32 * 1024;
 
 /// The accessibility tree indexes elements with `u16` and reserves `0xFFFF`
 /// as "none"; its fingerprint map holds twice as many buckets, a power of two.
@@ -1548,6 +1572,7 @@ pub const a11y_element_count_ceiling: u32 = 16_384;
 comptime {
     assert(a11y_element_count_ceiling < std.math.maxInt(u16));
     assert(2 * a11y_element_count_ceiling <= std.math.maxInt(u16));
+    assert(a11y_value_bytes_ceiling <= std.math.maxInt(u16));
 }
 
 /// Every `u32` field of a flat budget must be in `1..=ceiling`.
@@ -2013,13 +2038,15 @@ test "check reports each negative case precisely" {
 
 test "check bounds each a11y field by its ceiling and its relationships" {
     // Goal: every `ResourceLimits.a11y` field fails at 0 and one past its
-    // ceiling and passes at the ceiling; nodes never outnumber elements and
-    // announcement bytes never fall below one per announcement. Method: start
-    // from `ceiling` (every field at its ceiling) and move one field at a time.
+    // ceiling and passes at the ceiling; nodes never outnumber elements,
+    // announcement bytes never fall below one per announcement, and a value
+    // fits the frame's text bytes. Method: start from `ceiling` (every field
+    // at its ceiling) and move one field at a time.
     inline for (.{
         "element_count_max",
         "announcement_count_frame_max",
         "announcement_bytes_frame_max",
+        "value_bytes_max",
     }) |field| {
         var limits = ResourceLimits.ceiling;
         try std.testing.expect(limits.check() == null);
@@ -2052,6 +2079,15 @@ test "check bounds each a11y field by its ceiling and its relationships" {
     try std.testing.expectEqualStrings("announcement_bytes_frame_max", bytes.field);
     try std.testing.expectEqual(Violation.Rule.below_relationship, bytes.rule);
     try std.testing.expectEqual(limits.a11y.announcement_count_frame_max, bytes.bound);
+
+    limits = ResourceLimits.nano;
+    limits.a11y.value_bytes_max = limits.build.text_bytes_frame_max;
+    try std.testing.expect(limits.check() == null);
+    limits.a11y.value_bytes_max += 1;
+    const value = limits.check().?;
+    try std.testing.expectEqualStrings("value_bytes_max", value.field);
+    try std.testing.expectEqual(Violation.Rule.above_relationship, value.rule);
+    try std.testing.expectEqual(limits.build.text_bytes_frame_max, value.bound);
 }
 
 test "check bounds each text cache field by its ceiling and its relationships" {
