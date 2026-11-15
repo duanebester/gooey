@@ -61,6 +61,15 @@ pub const Query = struct {
         return ime.cursor_rect;
     }
 
+    /// The text field the rendered frame's IME answers are for, or null when
+    /// none is focused. A host ends the IME's composition when it changes,
+    /// since the core discards the old field's preedit (`Engine.prepare`).
+    pub fn imeOwner(self: *const Query) ?ElementId {
+        const ime = self.window.rendered().ime orelse return null;
+        assert(ime.owner.isKeyed());
+        return ime.owner;
+    }
+
     pub fn imeSelectedRange(self: *const Query) ?records.TextRange {
         const ime = self.window.rendered().ime orelse return null;
         assert(ime.selected_start <= ime.selected_end);

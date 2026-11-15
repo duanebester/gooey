@@ -162,6 +162,8 @@ pub const Host = struct {
     // Main thread only.
     quit: bool,
     ime_enabled: bool,
+    /// The text field the IME composed for at the last `syncIme`.
+    ime_owner: ?core_window.ElementId,
     /// The cursor last set on the window.
     cursor: core_element.CursorShape,
     /// The viewport last pushed to the core; zero before the first push.
@@ -208,6 +210,7 @@ pub const Host = struct {
         self.presentable = .init(false);
         self.quit = false;
         self.ime_enabled = false;
+        self.ime_owner = null;
         self.cursor = .default;
         self.viewport_sent = .{ .width = 0, .height = 0, .scale_factor = 0 };
         self.screen_reader_requested = false;
@@ -508,6 +511,7 @@ pub const Host = struct {
     /// follows the caret rect the core's `Query` answers. The window tells
     /// the IME only when the rect moved.
     fn syncIme(self: *Host) void {
+        self.endStaleComposition();
         const caret = self.query.imeCursorRect() orelse {
             if (self.ime_enabled) self.window.setImeEnabled(false);
             self.ime_enabled = false;
@@ -518,6 +522,22 @@ pub const Host = struct {
         if (!self.ime_enabled) self.window.setImeEnabled(true);
         self.ime_enabled = true;
         self.window.setImeCursorRect(caret.x, caret.y, caret.width, caret.height);
+    }
+
+    /// One input context serves every text field, so the IME never sees
+    /// Gooey's focus move, and a click does not end its composition. When the
+    /// focused field changes, cancel it, as an edit control ends its own on
+    /// losing focus, so the IME does not compose into the next field (or, once
+    /// the context is detached, bring the composition back later). Cancelled,
+    /// not completed: focus has moved, so a completed result would land in
+    /// the next field. The core has already dropped the old field's preedit.
+    fn endStaleComposition(self: *Host) void {
+        const owner = self.query.imeOwner();
+        if (std.meta.eql(owner, self.ime_owner)) return;
+        const previous = self.ime_owner;
+        self.ime_owner = owner;
+        if (previous == null) return;
+        if (self.ime_enabled) self.window.cancelImeComposition();
     }
 
     // =========================================================================

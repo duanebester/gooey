@@ -114,6 +114,16 @@ pub extern "imm32" fn ImmAssociateContextEx(
     hIMC: ?HIMC,
     dwFlags: u32,
 ) callconv(.winapi) win32.BOOL;
+// `ImmNotifyIME` action and index that cancel the composition string.
+pub const NI_COMPOSITIONSTR: u32 = 0x0015;
+pub const CPS_CANCEL: u32 = 0x0004;
+
+pub extern "imm32" fn ImmNotifyIME(
+    hIMC: HIMC,
+    dwAction: u32,
+    dwIndex: u32,
+    dwValue: u32,
+) callconv(.winapi) win32.BOOL;
 pub extern "imm32" fn ImmReleaseContext(hWnd: win32.HWND, hIMC: HIMC) callconv(.winapi) win32.BOOL;
 pub extern "imm32" fn ImmGetCompositionStringW(
     hIMC: HIMC,

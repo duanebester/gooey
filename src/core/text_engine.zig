@@ -221,7 +221,13 @@ pub fn Engine(comptime kind: Kind) type {
         /// Restart the blink after an edit, then show the caret for the phase
         /// `now_ns` falls in and return the delay to the next toggle (null while
         /// unfocused, when the caret does not blink). Called once per build.
+        ///
+        /// An unfocused engine discards its preedit: the IME composes for the
+        /// focused field only, and the host cancels its composition when that
+        /// field changes (`Query.imeOwner`), so a kept preedit would show a
+        /// composition nothing can commit, and the next one would repeat it.
         pub fn prepare(self: *Self, focused: bool, now_ns: u64) ?u32 {
+            if (!focused) self.preedit_len = 0;
             if (self.caret_moved or !focused) {
                 self.caret_moved = false;
                 self.caret_moved_ns = now_ns;

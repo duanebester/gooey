@@ -642,6 +642,19 @@ pub const Window = struct {
         if (enabled) self.applyImePlacement();
     }
 
+    /// Cancel the IME's composition, if any: the IME clears it and sends a
+    /// `WM_IME_COMPOSITION` cancellation, which the focused field ignores.
+    pub fn cancelImeComposition(self: *Self) void {
+        assert(self.core != null);
+        const hwnd = self.hwnd orelse return;
+        const context = ime.ImmGetContext(hwnd) orelse return;
+        defer _ = ime.ImmReleaseContext(hwnd, context);
+
+        // FALSE also answers a context with no composition, the usual case,
+        // so it reports nothing to handle.
+        _ = ime.ImmNotifyIME(context, ime.NI_COMPOSITIONSTR, ime.CPS_CANCEL, 0);
+    }
+
     /// Ask for one `WM_MOUSELEAVE` when the pointer next leaves the client.
     fn trackPointerLeave(self: *Self) void {
         assert(self.hwnd != null);
