@@ -95,11 +95,18 @@ pub fn PieChart(comptime capacity: types.SliceCapacity) type {
         // ==========================================================================
 
         /// Create a pie chart from a slice of category points.
-        /// The slice must outlive the chart - data is NOT copied.
+        /// The slice must outlive the chart - data is NOT copied. More slices than
+        /// `slice_count_max` is a capacity-planning error: fail fast and name the
+        /// field to raise rather than silently draw a subset.
         pub fn init(data: []const CategoryPoint) Self {
             std.debug.assert(data.len > 0);
-            std.debug.assert(data.len <= slice_count_max);
-            return .{ .data = data };
+            if (data.len > slice_count_max) {
+                std.debug.panic("pie chart of {d} slices: capacity {d}. " ++
+                    "Raise the chart's slice_count_max.", .{ data.len, slice_count_max });
+            }
+            const chart: Self = .{ .data = data };
+            std.debug.assert(chart.sliceCount() <= slice_count_max);
+            return chart;
         }
 
         // ==========================================================================

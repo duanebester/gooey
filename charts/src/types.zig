@@ -442,7 +442,8 @@ test "Series addPoint" {
 
 test "Series fills exactly its capacity" {
     // Goal: the last slot below the capacity is usable, by both fromSlice and
-    // addPoint. One more point panics, which is not testable in-process.
+    // addPoint. One more point panics: the `chart-points` mode of
+    // src/testing/fail_fast_check.zig checks that in a child process.
     const Small = Series(4);
     const full = Small.fromSlice("Full", &.{
         .{ .x = 0, .y = 1 }, .{ .x = 1, .y = 2 }, .{ .x = 2, .y = 3 }, .{ .x = 3, .y = 4 },

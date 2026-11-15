@@ -64,10 +64,16 @@
 //!   nine clips (eight plus the unbounded clip).
 //! - `core-capabilities-meshes`: checks a frame holding a polyline against a
 //!   renderer that reports no mesh support.
+//! - `chart-points`: fills a line chart series of 4 `point_count_max` exactly,
+//!   then adds a fifth point.
+//! - `chart-categories`: builds a bar chart series of 2 `category_count_max`
+//!   from 3 categories.
+//! - `chart-slices`: draws a pie chart of 2 `slice_count_max` from 3 slices.
 
 const std = @import("std");
 const gooey = @import("gooey");
 const components = @import("gooey-components");
+const charts = @import("gooey-charts");
 
 const Mode = enum {
     @"font-variant",
@@ -106,6 +112,9 @@ const Mode = enum {
     @"core-pack-draws",
     @"core-pack-clips",
     @"core-capabilities-meshes",
+    @"chart-points",
+    @"chart-categories",
+    @"chart-slices",
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -151,6 +160,9 @@ pub fn main(init: std.process.Init) !void {
         .@"core-pack-draws" => corePackRecords(init.gpa, .draws),
         .@"core-pack-clips" => corePackRecords(init.gpa, .clips),
         .@"core-capabilities-meshes" => coreCapabilitiesMeshes(init.gpa),
+        .@"chart-points" => chartPoints(),
+        .@"chart-categories" => chartCategories(),
+        .@"chart-slices" => chartSlices(),
     }
     std.debug.print("unreachable: {s} did not panic\n", .{@tagName(mode)});
 }
@@ -908,4 +920,38 @@ fn coreCapabilitiesMeshes(gpa: std.mem.Allocator) void {
     } });
     internals.pack.pack(frame, target);
     internals.backend.checkCapabilities(.{ .meshes = false }, target);
+}
+
+fn chartPoints() void {
+    // Four points fill the series exactly; the fifth names the field to raise.
+    const Chart = charts.LineChart(.{ .point_count_max = 4, .series_count_max = 1 });
+    var series = Chart.Series.init("rev", null);
+    var index: u32 = 0;
+    while (index < Chart.point_count_max) : (index += 1) {
+        series.addPoint(charts.DataPoint.init(@floatFromInt(index), 1));
+    }
+    std.debug.assert(series.data_len == Chart.point_count_max);
+    series.addPoint(charts.DataPoint.init(4, 1));
+}
+
+fn chartCategories() void {
+    // Three categories built into a series of two.
+    const Chart = charts.BarChart(.{ .category_count_max = 2, .series_count_max = 1 });
+    _ = Chart.Series.fromSlice("sales", &.{
+        .{ .label = "A", .value = 1 },
+        .{ .label = "B", .value = 2 },
+        .{ .label = "C", .value = 3 },
+    }, null);
+}
+
+fn chartSlices() void {
+    // Three slices drawn by a pie of two.
+    const Chart = charts.PieChart(.{ .slice_count_max = 2 });
+    const slices = [_]charts.CategoryPoint{
+        charts.CategoryPoint.init("A", 1),
+        charts.CategoryPoint.init("B", 2),
+        charts.CategoryPoint.init("C", 3),
+    };
+    comptime std.debug.assert(slices.len == Chart.slice_count_max + 1);
+    _ = Chart.init(&slices);
 }
