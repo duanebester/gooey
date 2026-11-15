@@ -912,6 +912,7 @@ pub const TextInput = struct {
                 .label = self.accessible_name orelse self.placeholder,
                 .description = self.accessible_description,
                 .value = if (engine.len > 0) engine.text() else null,
+                .selection = .{ .start = engine.selectionStart(), .end = engine.selectionEnd() },
             },
         }, .{
             ui.paint(InputEngine, engine, paintInput, .{
@@ -1076,6 +1077,7 @@ pub const TextArea = struct {
                 .role = .textarea,
                 .label = self.placeholder,
                 .value = if (engine.len > 0) engine.text() else null,
+                .selection = .{ .start = engine.selectionStart(), .end = engine.selectionEnd() },
             },
         }, .{
             ui.paint(AreaEngine, engine, paintArea, .{
@@ -1309,6 +1311,7 @@ pub const CodeEditor = struct {
                 .role = .textarea,
                 .label = if (self.placeholder.len > 0) self.placeholder else "Code editor",
                 .value = if (engine.len > 0) engine.text() else null,
+                .selection = .{ .start = engine.selectionStart(), .end = engine.selectionEnd() },
             },
         }, .{
             ui.box(.{ .style = .{

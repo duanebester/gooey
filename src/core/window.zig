@@ -407,6 +407,7 @@ pub const A11yBuilt = struct {
     pos_in_set: ?u16,
     set_size: ?u16,
     range: ?element.A11y.Range,
+    selection: ?element.TextSelection,
 };
 
 /// A pointer capture (`Box.on_pointer_drag`, contract §5): from a press on

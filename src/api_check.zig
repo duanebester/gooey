@@ -93,9 +93,10 @@ fn pinFields() void {
         }
         const A11y = gooey.ui.A11y;
         for ([_][]const u8{
-            "role",     "label",         "value",      "checked",  "selected",
-            "disabled", "heading_level", "live",       "href",     "description",
-            "expanded", "has_popup",     "pos_in_set", "set_size", "range",
+            "role",      "label",         "value",      "checked",  "selected",
+            "disabled",  "heading_level", "live",       "href",     "description",
+            "expanded",  "has_popup",     "pos_in_set", "set_size", "range",
+            "selection",
         }) |name| {
             _ = @FieldType(A11y, name);
         }
@@ -123,6 +124,7 @@ fn pinFields() void {
         }) |name| {
             _ = @FieldType(Atlas, name);
         }
+        _ = @FieldType(@FieldType(gooey.ResourceLimits, "a11y"), "value_bytes_max");
     }
 }
 

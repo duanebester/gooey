@@ -99,6 +99,7 @@ test {
     _ = lifecycle;
     _ = layers;
     _ = @import("screen_reader.zig");
+    _ = @import("a11y_value.zig");
     _ = @import("keymap.zig");
     _ = @import("clipboard.zig");
     _ = @import("text_history.zig");

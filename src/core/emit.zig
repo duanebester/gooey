@@ -827,6 +827,7 @@ fn emitA11y(window: *Window, node: *const Node, bounds: Rect, level: u8) u8 {
             .now = range.now,
             .orientation = range.orientation,
         } else null,
+        .selection = a11y.selection,
     });
     return 1;
 }
