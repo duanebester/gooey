@@ -13,6 +13,7 @@
 //!   pointer capture, and cancelled when the page takes the gesture away
 
 const input = @import("../../input/events.zig");
+const event_ring = @import("event_ring.zig");
 
 /// Packed mouse event - exactly 24 bytes
 /// Layout matches JavaScript writer:
@@ -80,43 +81,9 @@ comptime {
     if (@sizeOf(RawMouseEvent) != 24) @compileError("RawMouseEvent must be exactly 24 bytes");
 }
 
-pub const RING_SIZE = 32; // Power of 2, handles rapid clicks
-
-/// Lock-free Single-Producer Single-Consumer ring buffer
-pub const MouseEventRing = extern struct {
-    write_head: u32 align(4) = 0, // JS increments
-    read_head: u32 align(4) = 0, // Zig increments
-    events: [RING_SIZE]RawMouseEvent = undefined,
-
-    const Self = @This();
-
-    pub fn hasEvents(self: *volatile Self) bool {
-        return self.write_head != self.read_head;
-    }
-
-    pub fn pop(self: *volatile Self) ?RawMouseEvent {
-        const write = self.write_head;
-        const read = self.read_head;
-
-        if (read == write) return null;
-
-        const event = self.events[read & (RING_SIZE - 1)];
-        self.read_head = read +% 1;
-        return event;
-    }
-
-    pub fn count(self: *const volatile Self) u32 {
-        return self.write_head -% self.read_head;
-    }
-};
-
-comptime {
-    // Header (8 bytes) + events (32 * 24 = 768 bytes) = 776 bytes
-    if (@sizeOf(MouseEventRing) != 8 + RING_SIZE * 24) @compileError("MouseEventRing size mismatch");
-}
-
 // Global instance
-pub var g_mouse_ring: MouseEventRing = .{};
+/// Events reserved by the core host from `events.queue_count_max`.
+pub var g_mouse_ring: event_ring.EventRing(RawMouseEvent) = .{};
 
 // Export pointer for JS
 fn getMouseRingPtr() callconv(.c) [*]u8 {

@@ -24,6 +24,7 @@ const cpu = @import("../cpu/renderer.zig");
 const input = @import("../../input/events.zig");
 const framebuffer_mod = @import("framebuffer.zig");
 const evdev = @import("evdev.zig");
+const core_events = @import("../../core/events.zig");
 const FbdevWindow = @import("window.zig").Window;
 
 const assert = std.debug.assert;
@@ -108,11 +109,18 @@ pub const FbdevPlatform = struct {
         return window;
     }
 
-    /// Deliver what each readable device queued. A device that reports an
-    /// error or hangup, or fails to read, is closed and forgotten so the loop
-    /// does not wake for it again. Walks from the last device because removal
-    /// moves the last device into the removed slot.
-    pub fn dispatchInput(self: *Self, pollfds: []const posix.pollfd) void {
+    /// Deliver what each readable device queued, reading from each only as
+    /// many raw events as `queue` has room for, at `evdev.Batch.capacity`
+    /// events each; the rest wait in the kernel until a tick drains the
+    /// queue. A device that reports an error or hangup, or fails to read, is
+    /// closed and forgotten so the loop does not wake for it again. Walks
+    /// from the last device because removal moves the last device into the
+    /// removed slot.
+    pub fn dispatchInput(
+        self: *Self,
+        pollfds: []const posix.pollfd,
+        queue: *const core_events.EventQueue,
+    ) void {
         assert(pollfds.len == self.devices.count);
         assert(pollfds.len <= evdev.device_count_max);
         const lost_mask = posix.POLL.ERR | posix.POLL.HUP | posix.POLL.NVAL;
@@ -123,8 +131,9 @@ pub const FbdevPlatform = struct {
             const device = &self.devices.devices[index];
             const revents = pollfds[index].revents;
             var lost = revents & lost_mask != 0;
-            if (!lost and revents & posix.POLL.IN != 0) {
-                if (evdev.readEvents(device, &raw_events)) |raws| {
+            const raw_count_max = evdev.rawCountMax(queue.room());
+            if (!lost and revents & posix.POLL.IN != 0 and raw_count_max > 0) {
+                if (evdev.readEvents(device, raw_events[0..raw_count_max])) |raws| {
                     for (raws) |raw| {
                         var batch = evdev.Batch{};
                         self.translator.feed(device, raw, &batch);

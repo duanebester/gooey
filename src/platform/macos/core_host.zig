@@ -574,17 +574,20 @@ fn openDialog(
     });
     const paths = switch (request.kind) {
         .open => |options| paths: {
-            const result = file_dialog.promptForPaths(scratch, options) orelse return .cancelled;
-            if (result.paths.len == 0) return .cancelled;
+            const prompt = file_dialog.promptForPaths(scratch, options);
+            const result = (prompt catch |err| return .{ .failed = err }) orelse return .cancelled;
+            assert(result.paths.len > 0);
             if (!options.multiple) assert(result.paths.len == 1);
             break :paths core_events.Paths.join(scratch, result.paths);
         },
         .save => |options| paths: {
-            const path = file_dialog.promptForNewPath(scratch, options) orelse return .cancelled;
+            const prompt = file_dialog.promptForNewPath(scratch, options);
+            const path = (prompt catch |err| return .{ .failed = err }) orelse return .cancelled;
             break :paths core_events.Paths.join(scratch, &.{path});
         },
     };
-    return .{ .file_selected = paths catch |err| return .{ .failed = err } };
+    const joined = paths catch return .{ .failed = file_dialog.scratchFull() };
+    return .{ .file_selected = joined };
 }
 
 /// The text engines' clipboard on the platform's 0.3.1 path, main thread.

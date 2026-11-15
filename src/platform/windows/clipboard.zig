@@ -31,11 +31,14 @@
 //!
 //! ## Bounds
 //!
-//! - Text: `text_bytes_max` (64 KiB) of UTF-8 copied, as on Linux and fbdev.
-//!   A longer copy is refused with a warning, never truncated. A paste is cut
-//!   at a codepoint boundary to the caller's buffer.
-//! - Copy block: at most `copy_block_bytes_max` (256 KiB + 2 B), reached when
-//!   every byte is a lone LF.
+//! - Text: the core copies at most its clipboard, sized from the app's
+//!   `ResourceLimits.text` (the largest `bytes_max` of a text kind with
+//!   engines), so a copy is whole up to `text_bytes_max`, that size at the
+//!   text ceiling (16 MiB). A paste is cut at a codepoint boundary to the
+//!   caller's buffer.
+//! - Copy block: four bytes per text byte plus two, at most
+//!   `copy_block_bytes_max` (64 MiB + 2 B), reached when every byte is a lone
+//!   LF. The block is sized from the text, so a short copy allocates little.
 //! - Paste scan: at most `2 * out.len + 1` units are examined, so a huge or
 //!   unterminated clipboard block costs bounded work.
 //! - Contention: another process holding the clipboard makes `OpenClipboard`
@@ -45,11 +48,17 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const win32 = @import("win32.zig");
+const limits = @import("../../core/limits.zig");
 
 const assert = std.debug.assert;
 
-/// Largest text copied or pasted, in UTF-8 bytes.
-pub const text_bytes_max: u32 = 64 * 1024;
+/// Largest text the core can copy, in UTF-8 bytes: its clipboard size at the
+/// text ceiling. The app's own size is at most this.
+pub const text_bytes_max: u32 = @max(
+    limits.TextLimits.ceiling.input.bytes_max,
+    limits.TextLimits.ceiling.area.bytes_max,
+    limits.TextLimits.ceiling.editor.bytes_max,
+);
 
 /// Copy expands a lone LF to two units; every other UTF-8 sequence becomes no
 /// more UTF-16 units than it has bytes (1→1, 2→1, 3→1, 4→2).
@@ -74,6 +83,7 @@ comptime {
     // `CF_UNICODETEXT` is UTF-16LE, read and written here as native `u16`.
     assert(builtin.cpu.arch.endian() == .little);
     assert(copy_block_bytes_max == 4 * text_bytes_max + 2);
+    assert(text_bytes_max == 16 * 1024 * 1024); // The editor ceiling.
 }
 
 /// Create the owner window. Part of `WindowsPlatform` initialization.
@@ -144,20 +154,15 @@ pub fn readText(out: []u8) u32 {
     return written;
 }
 
-/// Replace the clipboard text. Returns false, leaving the clipboard as it
-/// was, when the text is longer than `text_bytes_max`, is not UTF-8, the copy
+/// Replace the clipboard text, which fits the core's clipboard. Returns false,
+/// leaving the clipboard as it was, when the text is not UTF-8, the copy
 /// block cannot be allocated, or the clipboard is busy. Returns false with the
 /// clipboard left empty when `SetClipboardData` fails after `EmptyClipboard`;
 /// see `clipboardPublish`.
 pub fn setText(text: []const u8) bool {
     const owner = owner_hwnd orelse unreachable; // Copy before `init`.
-    if (text.len > text_bytes_max) {
-        std.log.warn("windows: copy of {d} bytes exceeds {d}; refused", .{
-            text.len,
-            text_bytes_max,
-        });
-        return false;
-    }
+    // The core never copies more than its clipboard (`ResourceLimits.text`).
+    assert(text.len <= text_bytes_max);
     if (!std.unicode.utf8ValidateSlice(text)) {
         std.log.warn("windows: copy of invalid UTF-8 refused", .{});
         return false;
@@ -490,23 +495,23 @@ test "system clipboard round-trips text and line endings" {
     try testing.expectEqual(@as(u32, 0), readText(&out));
 }
 
-test "system clipboard fills to text_bytes_max and refuses one byte more intact" {
-    // Capacity test: the largest copy, in the worst case for block size
-    // (every byte a lone LF), succeeds and round-trips; one byte more is
-    // refused and leaves the previous text in place.
+test "system clipboard copies text_bytes_max whole and keeps it on a refused copy" {
+    // Capacity test: the largest copy the core can make, in the worst case
+    // for block size (every byte a lone LF), succeeds and round-trips. A
+    // longer copy cannot reach here (the core clips to its clipboard, and
+    // `setText` asserts it); a refused copy leaves the previous text in place.
     try testOwnerInit();
     defer deinit();
 
-    const text = try testing.allocator.alloc(u8, text_bytes_max + 1);
+    const text = try testing.allocator.alloc(u8, text_bytes_max);
     defer testing.allocator.free(text);
     @memset(text, '\n');
 
-    try testing.expect(setText(text[0..text_bytes_max]));
-    try testing.expect(!setText(text));
+    try testing.expect(setText(text));
     try testing.expect(!setText("\xFF")); // Invalid UTF-8.
 
-    const out = try testing.allocator.alloc(u8, text_bytes_max);
+    const out = try testing.allocator.alloc(u8, text_bytes_max + 1);
     defer testing.allocator.free(out);
     try testing.expectEqual(text_bytes_max, readText(out));
-    try testing.expectEqualSlices(u8, text[0..text_bytes_max], out);
+    try testing.expectEqualSlices(u8, text, out[0..text_bytes_max]);
 }

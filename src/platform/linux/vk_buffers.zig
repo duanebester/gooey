@@ -174,9 +174,6 @@ pub const MemoryPool = struct {
     offset: vk.DeviceSize = 0,
     memory_type_index: u32 = 0,
 
-    /// Hard cap on sub-allocations per pool (CLAUDE.md Rule #4).
-    const MAX_POOL_ALLOCATIONS: u32 = 64;
-
     pub const Options = struct {
         /// Names the reservation in failure reports.
         name: []const u8,

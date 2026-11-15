@@ -78,7 +78,7 @@ Still open:
   slices with an allocator. The core passes the tick's reserved text scratch, so nothing
   allocates after init, but the type still reads as an ownership transfer. Bounded request
   slots would make that explicit.
-- **Failure and cancellation on macOS.** An allocation failure in the AppKit dialog comes
-  back as `cancelled` (`src/platform/macos/file_dialog.zig`), so decision 7 does not hold
-  there yet.
+- **Failure and cancellation.** Fixed in 0.6: every backend reports a dialog that failed,
+  a selection the scratch cannot hold included (`error.DialogPathTooLong`, logged with
+  `ResourceLimits.events.dialog_path_bytes_max`), as `failed`, never `cancelled`.
 - **The web** has no file dialogs (a known gap since 0.4.0).

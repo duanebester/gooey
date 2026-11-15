@@ -181,20 +181,54 @@ fn routeInput(window: *Window, event: *const input.InputEvent) void {
             if (!window.drag.keyboard) keyToFocus(window, event);
         },
         .scroll => |scroll| wheel(window, event, pointOf(scroll.position)),
-        .pointer_cancelled => {
-            if (window.scroll_drag != .root) endScrollDrag(window);
-            if (window.capture.id != .root) {
-                finishCapture(window, event, .cancel, capturePoint(window));
-            }
-            if (window.drag.keyboard) {
-                endKeyboardDrag(window);
-            } else {
-                if (window.drag.phase != .idle) cancelDrag(window);
-            }
-            window.press_len = 0;
-        },
+        .pointer_cancelled => cancelPointer(window, event),
+        .focus_lost => |*lost| focusLost(window, lost),
         else => {},
     }
+}
+
+/// The platform took the pointer gesture away: a capture or a drag cancels
+/// instead of ending, so nothing drops or commits.
+fn cancelPointer(window: *Window, event: *const input.InputEvent) void {
+    assert(event.* == .pointer_cancelled);
+    if (window.scroll_drag != .root) endScrollDrag(window);
+    if (window.capture.id != .root) {
+        finishCapture(window, event, .cancel, capturePoint(window));
+    }
+    if (window.drag.keyboard) {
+        endKeyboardDrag(window);
+    } else {
+        if (window.drag.phase != .idle) cancelDrag(window);
+    }
+    window.press_len = 0;
+    assert(window.capture.id == .root);
+}
+
+/// One event for everything a focus loss let go of: the gesture cancels as
+/// `pointer_cancelled` does, then each held key is released as its own
+/// `key_up`, as a platform reporting them one by one would deliver them.
+fn focusLost(window: *Window, lost: *const input.FocusLostEvent) void {
+    if (lost.pointer_cancelled) {
+        const cancelled: input.InputEvent = .pointer_cancelled;
+        cancelPointer(window, &cancelled);
+    }
+    var keys = lost.keys_held.iterator(.{});
+    var released: u32 = 0;
+    while (keys.next()) |value| : (released += 1) {
+        assert(released < input.held_key_count_max);
+        const key: input.KeyCode = @fromBackingInt(@as(u16, @intCast(value)));
+        assert(key != .unknown);
+        const up: input.InputEvent = .{ .key_up = .{
+            .key = key,
+            .modifiers = .{},
+            .characters = null,
+            .characters_ignoring_modifiers = null,
+            .is_repeat = false,
+        } };
+        // Typing reaches no text field during a keyboard drag.
+        if (!window.drag.keyboard) keyToFocus(window, &up);
+    }
+    assert(released == lost.keys_held.count());
 }
 
 /// Escape cancels a capture or a drag and goes no further, as 0.3.1's drag

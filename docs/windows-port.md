@@ -268,7 +268,13 @@ do (contract rule 1). `gooey.App.main` selects it with one `.windows` arm in
   waits for it while handling sent messages only.
 - **File dialogs.** Opened by the drain on the main thread, between handlers; the Common
   Item Dialog runs its own modal loop with the window disabled, so no tick runs until it
-  closes. Cancel and failure both complete as `cancelled`, as on macOS and Linux.
+  closes. A cancel completes as `cancelled` and a failure as `failed` with its error, as on
+  macOS and Linux. The folder and suggested name are encoded into a buffer the host reserves
+  from `events.dialog_path_bytes_max`, and the paths into the core's text scratch.
+- **Input intake.** The loop dispatches a message only while the core queue has
+  `input_room_count_min` (3) free slots: an IME update pushes its commit and its preedit,
+  and the next tick pushes a resize before the drain. A focus loss is one `focus_lost`
+  event carrying the cancelled gesture and every held key, which the core releases.
 - **UI Automation.** The core publishes each rendered frame's nodes to the bridge on the
   main thread, where clients' calls also arrive, through the window's `uia_host`. A
   client's first root request makes the host poll for a screen reader and render at the
@@ -288,15 +294,16 @@ widgets select it with one `.windows` arm.
   LF never reaches a `TextArea` and other applications see its line breaks. A lone CR
   passes through unchanged in both directions. Unpaired surrogates from other applications
   paste as U+FFFD.
-- **Failure.** A refused copy (too long, invalid UTF-8, clipboard busy) leaves the clipboard
+- **Failure.** A refused copy (invalid UTF-8, clipboard busy) leaves the clipboard
   as it was. If `EmptyClipboard` succeeds and `SetClipboardData` then fails, the clipboard
   is left empty; `setText` still returns false and frees the block.
-- **Bounds.** 64 KiB of UTF-8 in each direction, as on Linux and fbdev; longer text is
-  refused with a warning, never truncated. Paste scans at most 128 Ki units. A clipboard
+- **Bounds.** A copy is whole up to the core's clipboard, sized from `ResourceLimits.text`
+  (at most 16 MiB at the ceiling). Paste is cut at a codepoint to the core's paste buffer
+  and scans at most twice its bytes in units. A clipboard
   held by another process gets 5 attempts 5 ms apart, so it stalls the UI thread for at
   most 20 ms.
 - **Allocation.** The system clipboard takes ownership of a `GlobalAlloc` block the copying
-  process fills, so copy makes one allocation of at most 256 KiB, freed on every failure
+  process fills, so copy makes one allocation of four bytes per text byte, freed on every failure
   path. Paste returns caller-allocated text because the shared `getText` contract does.
   Both conflict with section 2 and belong to the phase 6 services redesign
   (`docs/platform_interface_design.md`), which no backend has done yet.

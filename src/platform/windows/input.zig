@@ -18,13 +18,14 @@
 //! Held buttons are a set, so a second button's release keeps the capture
 //! the first press took. Every held button reports `mouse_dragged` motion,
 //! inside the client or not, and the window releases capture only when the
-//! last button goes up. Losing capture (`WM_CAPTURECHANGED`) or keyboard
-//! focus with a button held forgets every held button and reports one
-//! `pointer_cancelled`, not a `mouse_up`: the gesture was taken away, so a
-//! drag must cancel rather than drop or commit where the pointer happened to
-//! be. Capture loss calls no `ReleaseCapture`: the capture is already gone.
-//! The window calls `translate` for these messages more than once (focus
-//! loss also releases held keys, one per call) until it returns null.
+//! last button goes up. Losing capture (`WM_CAPTURECHANGED`) with a button
+//! held forgets every held button and reports one `pointer_cancelled`, not a
+//! `mouse_up`: the gesture was taken away, so a drag must cancel rather than
+//! drop or commit where the pointer happened to be. Capture loss calls no
+//! `ReleaseCapture`: the capture is already gone. Losing keyboard focus
+//! (`WM_KILLFOCUS`) reports one `focus_lost` carrying the cancelled gesture
+//! and every held key, which the core releases (decision R3 of the 0.6
+//! budget plan), so every message translates to at most one event.
 //!
 //! `pointer_inside` means `mouse_entered` was reported and `mouse_exited` was
 //! not. After the last release the window re-arms leave tracking, which
@@ -78,16 +79,15 @@ pub const mouse_button_count: u32 = @typeInfo(MouseButton).@"enum".field_names.l
 const button_bits_all: u8 = @intCast(win32.MK_LBUTTON | win32.MK_RBUTTON | win32.MK_MBUTTON);
 
 /// One past the largest key code `keyCodeFromVirtualKey` returns other than
-/// `.unknown`: the capacity of `Translator.keys_held`, and so the most key
-/// releases one focus loss can report.
-pub const key_code_count_max: u32 = 128;
+/// `.unknown`: the capacity of `Translator.keys_held`.
+pub const key_code_count_max: u32 = input.held_key_count_max;
 
-const KeySet = std.StaticBitSet(key_code_count_max);
+const KeySet = input.HeldKeys;
 
-/// The most events one focus loss reports: one `pointer_cancelled` for the
-/// held buttons, then every held key. Kept at a button count's room, a bound
-/// above the one event needed.
-pub const focus_lost_event_count_max: u32 = mouse_button_count + key_code_count_max;
+/// The most events `Translator.translate` reports for one message, focus
+/// loss included; the window's burst (`window.input_burst_count_max`)
+/// covers it.
+pub const message_event_count_max: u32 = 1;
 
 comptime {
     assert(mouse_button_count == 3);
@@ -211,6 +211,12 @@ pub const Translator = struct {
                     .track_leave = self.pointer_inside,
                 };
             },
+            .focus_lost => |lost| {
+                assert(self.buttons_held == 0);
+                assert(message_id == win32.WM_KILLFOCUS);
+                if (!lost.pointer_cancelled) return PointerActions.none;
+                return .{ .capture = .release, .track_leave = self.pointer_inside };
+            },
             .mouse_up => {
                 if (self.buttons_held != 0) return PointerActions.none;
                 // A lost capture is already gone, and another window in this
@@ -288,31 +294,25 @@ pub const Translator = struct {
         return .pointer_cancelled;
     }
 
-    /// Cancel a held-button gesture, then release one held key per call,
-    /// after the window lost keyboard focus: their real releases go to the
-    /// window that gained it, so without these a drag never ends and a key
-    /// stays down. Null once
-    /// nothing is held. Keys release with no modifiers, which are released
-    /// too. A pending surrogate half and the click sequence are dropped, so
-    /// the first click after focus returns is a single click.
+    /// After the window lost keyboard focus, forget every held button and
+    /// key and report them in one `focus_lost`: their real releases go to
+    /// the window that gained focus, so without it a drag never ends and a
+    /// key stays down. Null when nothing is held. A pending surrogate half
+    /// and the click sequence are dropped, so the first click after focus
+    /// returns is a single click.
     fn focusLost(self: *Translator, context: *const Context) ?input.InputEvent {
         assert(context.scale_factor > 0);
         self.high_surrogate = null;
         self.click_button = null;
-        if (self.buttons_held != 0) return self.captureLost(context);
-
-        const key_value = self.keys_held.findFirstSet() orelse return null;
-        assert(key_value < key_code_count_max);
-        self.keys_held.unset(key_value);
-        const key: KeyCode = @fromBackingInt(@as(u16, @intCast(key_value)));
-        assert(key != .unknown);
-        return .{ .key_up = .{
-            .key = key,
-            .modifiers = .{},
-            .characters = null,
-            .characters_ignoring_modifiers = null,
-            .is_repeat = false,
-        } };
+        const lost = input.FocusLostEvent{
+            .pointer_cancelled = self.buttons_held != 0,
+            .keys_held = self.keys_held,
+        };
+        self.buttons_held = 0;
+        self.keys_held = .empty;
+        assert(self.keys_held.count() == 0);
+        if (!lost.pointer_cancelled and lost.keys_held.count() == 0) return null;
+        return .{ .focus_lost = lost };
     }
 
     fn buttonDown(
@@ -1066,11 +1066,10 @@ test "key repeat is reported only for presses" {
     try testing.expect(!translator.translate(&release, &testContext(0)).?.key_up.is_repeat);
 }
 
-test "focus loss cancels a held button, then releases held keys, once each" {
-    // Methodology: hold the left button, Shift, and A, lose focus, and call
-    // `translate` as the window does: until it returns null. The button's
-    // gesture is cancelled once, then each key released once, with no
-    // modifiers.
+test "focus loss reports the held button and keys in one event" {
+    // Methodology: hold the left button, Shift, and A, lose focus, and
+    // translate the loss as the window does. One `focus_lost` carries the
+    // cancelled gesture and both keys; a second translation reports nothing.
     var translator = Translator.init(test_settings);
     const context = testContext(0);
     const focus_lost = Message{ .id = win32.WM_KILLFOCUS, .wparam = 0, .lparam = 0 };
@@ -1082,20 +1081,42 @@ test "focus loss cancels a held button, then releases held keys, once each" {
     _ = translator.translate(&letter, &context).?;
     try testing.expectEqual(@as(usize, 2), translator.keys_held.count());
 
-    const button = step(&translator, focus_lost).?;
-    try testing.expect(button.event == .pointer_cancelled);
-    try expectActions(button.actions, .release, false);
-    var released = [_]KeyCode{ .unknown, .unknown };
-    for (&released) |*key| {
-        const event = translator.translate(&focus_lost, &context).?.key_up;
-        try testing.expect(!event.modifiers.shift);
-        key.* = event.key;
-    }
-    // Lowest key code first: A is 0x00, Shift is 0x38.
-    try testing.expectEqual(KeyCode.a, released[0]);
-    try testing.expectEqual(KeyCode.shift, released[1]);
+    const lost = step(&translator, focus_lost).?;
+    try testing.expect(lost.event.focus_lost.pointer_cancelled);
+    try expectActions(lost.actions, .release, false);
+    const keys = lost.event.focus_lost.keys_held;
+    try testing.expectEqual(@as(usize, 2), keys.count());
+    try testing.expect(keys.isSet(@backingInt(KeyCode.a)));
+    try testing.expect(keys.isSet(@backingInt(KeyCode.shift)));
     try testing.expect(translator.translate(&focus_lost, &context) == null);
     try testing.expectEqual(@as(u8, 0), translator.buttons_held);
+    try testing.expectEqual(@as(usize, 0), translator.keys_held.count());
+}
+
+test "focus loss with every key held stays within message_event_count_max" {
+    // Capacity test: hold every virtual key that maps to a key code, plus
+    // every button, then lose focus. The loss is one event, within the
+    // window's per-message burst, however many keys are down.
+    var translator = Translator.init(test_settings);
+    const context = testContext(0);
+    var expected: KeySet = .empty;
+    var virtual_key: u32 = 0;
+    while (virtual_key < 256) : (virtual_key += 1) {
+        const press = Message{ .id = win32.WM_KEYDOWN, .wparam = virtual_key, .lparam = 0 };
+        const event = translator.translate(&press, &context) orelse continue;
+        if (event.key_down.key != .unknown) expected.set(@backingInt(event.key_down.key));
+    }
+    _ = step(&translator, mouseMessage(win32.WM_LBUTTONDOWN, win32.MK_LBUTTON, 4, 4)).?;
+    _ = step(&translator, mouseMessage(win32.WM_RBUTTONDOWN, win32.MK_RBUTTON, 4, 4)).?;
+    try testing.expect(expected.count() > 64); // More than `nano`'s queue.
+
+    const focus_lost = Message{ .id = win32.WM_KILLFOCUS, .wparam = 0, .lparam = 0 };
+    const event = translator.translate(&focus_lost, &context).?;
+    try testing.expect(event.focus_lost.pointer_cancelled);
+    try testing.expect(event.focus_lost.keys_held.eql(expected));
+    // The burst is one event: a second translation reports nothing.
+    comptime assert(message_event_count_max == 1);
+    try testing.expect(translator.translate(&focus_lost, &context) == null);
 }
 
 test "focus loss with nothing held reports nothing and resets click and text state" {

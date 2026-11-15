@@ -47,6 +47,7 @@ const window_mod = @import("window.zig");
 const clipboard = @import("clipboard.zig");
 const file_dialog = @import("file_dialog.zig");
 const core_window = @import("../../core/window.zig");
+const core_limits = @import("../../core/limits.zig");
 const backend = @import("../../core/backend.zig");
 const renderer_choice = @import("renderer.zig");
 const core_element = @import("../../core/element.zig");
@@ -79,6 +80,16 @@ const join_wait_count_max: u32 = 1 << 20;
 
 /// `SetWaitableTimer` counts due times in 100 ns intervals.
 const timer_interval_ns: u64 = 100;
+
+/// Free queue slots the loop needs before it dispatches a message: the
+/// window's largest burst, plus the resize `syncViewport` pushes at the start
+/// of the next tick, before the drain.
+pub const input_room_count_min: u32 = window_mod.input_burst_count_max + 1;
+
+comptime {
+    // Every profile's queue holds the largest host burst (`ResourceLimits.check`).
+    assert(input_room_count_min <= core_limits.input_burst_count_max);
+}
 
 /// Run `App` until its window closes. Everything is reserved before
 /// `finishInit`; the core's guard owns every allocation, the platform's too.
@@ -170,6 +181,9 @@ pub const Host = struct {
     viewport_sent: Viewport,
     /// A UI Automation client asked for the root since the last tick.
     screen_reader_requested: bool,
+    /// The save dialog's folder and suggested name as UTF-16, sized from
+    /// `ResourceLimits.events.dialog_path_bytes_max` at init.
+    dialog_wide: []u16,
 
     // Render thread only.
     /// When the next present may start, on `nowNs`.
@@ -220,6 +234,11 @@ pub const Host = struct {
         // `Window.init` built the swapchain and before this host existed.
         self.viewport = .{ .size_px = .{ .width = 0, .height = 0 }, .scale_factor = 0 };
         self.swapchain_failure_logged = false;
+        const path_bytes_max = options.core.limits.events.dialog_path_bytes_max;
+        const wide_count = file_dialog.wideUnitCount(path_bytes_max);
+        self.dialog_wide = try options.core.gpa.alloc(u16, wide_count);
+        errdefer options.core.gpa.free(self.dialog_wide);
+
         try self.initHandles();
         errdefer self.deinitHandles();
         self.bindWindow();
@@ -290,6 +309,8 @@ pub const Host = struct {
         }
         self.unbindWindow();
         self.deinitHandles();
+        self.core.gpa.free(self.dialog_wide);
+        self.dialog_wide = &.{};
         assert(self.stopping.load(.acquire));
     }
 
@@ -379,7 +400,7 @@ pub const Host = struct {
             self.turn();
             if (self.quit) break;
             self.waitForMessages();
-            if (!platform_mod.dispatchMessageBatch()) break;
+            if (!platform_mod.dispatchMessageBatch(&self.core.queue, input_room_count_min)) break;
         }
         assert(self.core.phase == .idle);
     }
@@ -724,9 +745,9 @@ fn onClose(window: *PlatformWindow) bool {
 // =============================================================================
 
 /// The core's file dialog service, on the main thread after the drain. The
-/// Common Item Dialog runs its own modal loop with the window disabled; it
-/// reports cancel and failure alike as no selection (failures are logged),
-/// so both arrive as `cancelled`, as on macOS and Linux.
+/// Common Item Dialog runs its own modal loop with the window disabled. A
+/// cancel arrives as `cancelled`; a failure, logged by `file_dialog`, as
+/// `failed` with its error.
 fn openDialog(
     context: *anyopaque,
     scratch: std.mem.Allocator,
@@ -739,17 +760,20 @@ fn openDialog(
     assert(host.core.phase == .drain);
     const paths = switch (request.kind) {
         .open => |options| paths: {
-            const result = file_dialog.promptForPaths(scratch, options) orelse return .cancelled;
-            if (result.paths.len == 0) return .cancelled;
+            const prompt = file_dialog.promptForPaths(scratch, options);
+            const result = (prompt catch |err| return .{ .failed = err }) orelse return .cancelled;
+            assert(result.paths.len > 0);
             if (!options.multiple) assert(result.paths.len == 1);
             break :paths core_events.Paths.join(scratch, result.paths);
         },
         .save => |options| paths: {
-            const path = file_dialog.promptForNewPath(scratch, options) orelse return .cancelled;
+            const prompt = file_dialog.promptForNewPath(scratch, host.dialog_wide, options);
+            const path = (prompt catch |err| return .{ .failed = err }) orelse return .cancelled;
             break :paths core_events.Paths.join(scratch, &.{path});
         },
     };
-    return .{ .file_selected = paths catch |err| return .{ .failed = err } };
+    const joined = paths catch return .{ .failed = file_dialog.scratchFull() };
+    return .{ .file_selected = joined };
 }
 
 // =============================================================================

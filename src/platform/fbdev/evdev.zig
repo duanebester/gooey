@@ -16,7 +16,9 @@
 //! - At most `device_count_max` devices are opened, from the first
 //!   `device_scan_max` event nodes.
 //! - Each read takes at most `raw_batch_max` events per device, and one raw
-//!   event produces at most `Batch.capacity` Gooey events.
+//!   event produces at most `Batch.capacity` Gooey events, so the host reads
+//!   no more raw events than the core queue has room for `Batch.capacity`
+//!   events each (`FbdevPlatform.dispatchInput`).
 
 const std = @import("std");
 const posix = std.posix;
@@ -563,15 +565,26 @@ fn probeAxis(fd: posix.fd_t, axis: u16) ?AxisRange {
     return .{ .minimum = info.minimum, .maximum = info.maximum };
 }
 
-/// Read up to `raw_batch_max` pending events from a non-blocking device.
-/// Returns an empty slice when nothing is pending, and `error.DeviceLost` when
-/// the device can no longer be read (unplugged or revoked).
+/// Raw events one read may take with `room` free queue slots: each produces
+/// at most `Batch.capacity` events.
+pub fn rawCountMax(room: u32) u32 {
+    const count = @min(raw_batch_max, room / Batch.capacity);
+    assert(count * Batch.capacity <= room);
+    assert(count <= raw_batch_max);
+    return count;
+}
+
+/// Read up to `buffer.len` (at most `raw_batch_max`) pending events from a
+/// non-blocking device. Returns an empty slice when nothing is pending, and
+/// `error.DeviceLost` when the device can no longer be read (unplugged or
+/// revoked).
 pub fn readEvents(
     device: *const Device,
-    buffer: *[raw_batch_max]RawEvent,
+    buffer: []RawEvent,
 ) error{DeviceLost}![]const RawEvent {
     assert(device.fd >= 0);
-    assert(buffer.len == raw_batch_max);
+    assert(buffer.len > 0);
+    assert(buffer.len <= raw_batch_max);
     const bytes = std.mem.sliceAsBytes(buffer);
     const count = posix.read(device.fd, bytes) catch |err| switch (err) {
         error.WouldBlock => return buffer[0..0],
@@ -590,6 +603,20 @@ pub fn readEvents(
 // =============================================================================
 
 const testing = std.testing;
+
+test "rawCountMax reads only what the queue has room for" {
+    // Boundary test: one raw event needs a whole batch of room, so one slot
+    // short of a batch reads nothing, exactly a batch reads one, and room
+    // past `raw_batch_max` batches still reads `raw_batch_max`.
+    const batch = Batch.capacity;
+    try testing.expectEqual(@as(u32, 0), rawCountMax(0));
+    try testing.expectEqual(@as(u32, 0), rawCountMax(batch - 1));
+    try testing.expectEqual(@as(u32, 1), rawCountMax(batch));
+    try testing.expectEqual(@as(u32, 1), rawCountMax(2 * batch - 1));
+    const full = raw_batch_max * batch;
+    try testing.expectEqual(raw_batch_max, rawCountMax(full));
+    try testing.expectEqual(raw_batch_max, rawCountMax(full + batch));
+}
 
 fn testEvent(event_type: u16, code: u16, value: i32) RawEvent {
     return .{ .seconds = 1, .microseconds = 0, .type = event_type, .code = code, .value = value };

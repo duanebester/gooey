@@ -13,10 +13,14 @@
 //!
 //! Resource sketch: everything is reserved in `init` from the app's guard,
 //! the renderer and platform window included; the guard panics on any later
-//! allocation. Per frame at most `forward_count_max` (82) ring entries are
-//! read and at most the queue's free slots are pushed: a burst larger than
-//! the queue stays in its ring for the next frame, which bounds both storage
-//! and latency. The core then does at most one tick of bounded work.
+//! allocation. The key, mouse and scroll rings each hold
+//! `events.queue_count_max` events (rounded up to a power of two), the text
+//! buffer `events.text_bytes_max` bytes and the composition buffer
+//! `text.preedit_bytes_max` bytes, all reserved in `init`. Per frame each
+//! ring gives at most its capacity and the queue takes at most its free
+//! slots: a burst larger than the queue stays in its ring for the next frame,
+//! which bounds both storage and latency. The core then does at most one
+//! tick of bounded work.
 
 const std = @import("std");
 const imports = @import("imports.zig");
@@ -45,17 +49,6 @@ const assert = std.debug.assert;
 const WebPlatform = platform_mod.WebPlatform;
 const WebWindow = window_mod.WebWindow;
 const WebRenderer = renderer_mod.WebRenderer;
-
-/// Every ring entry one frame can find: keys, one text chunk, one
-/// composition update, scrolls, and mouse events.
-const forward_count_max: u32 = key_events.RING_SIZE + 1 + 1 + scroll_events.RING_SIZE +
-    mouse_events.RING_SIZE;
-
-comptime {
-    assert(forward_count_max == 82);
-    // Text and composition bytes always fit the smallest event text budget.
-    assert(text_buffer.BUFFER_SIZE + composition_buffer.BUFFER_SIZE <= 4 * 1024);
-}
 
 /// The browser exports for one app type. `gooey.App` references this on
 /// WASM, which analyzes the `@export` block below.
@@ -150,6 +143,7 @@ pub const Host = struct {
         assert(options.width > 0);
         assert(options.height > 0);
         try self.platform.initInPlace();
+        try reserveInput(gpa, &options.limits);
         self.window = try WebWindow.init(gpa, &self.platform, &.{
             .title = options.title,
             .width = @floatFromInt(options.width),
@@ -329,10 +323,27 @@ pub const Host = struct {
     }
 };
 
-/// Move ring entries into the queue while it has room; the rest wait.
+/// Reserve the rings and buffers JavaScript writes into, from the app's
+/// budget: a ring holds what the core queue takes in one frame, the text
+/// buffer one chunk of queue text, and the composition buffer one preedit.
+fn reserveInput(gpa: std.mem.Allocator, limits: *const ResourceLimits) !void {
+    const ring_capacity = std.math.ceilPowerOfTwoAssert(u32, limits.events.queue_count_max);
+    try key_events.g_key_ring.reserve(gpa, ring_capacity);
+    try mouse_events.g_mouse_ring.reserve(gpa, ring_capacity);
+    try scroll_events.g_scroll_ring.reserve(gpa, ring_capacity);
+    try text_buffer.g_text_buffer.reserve(gpa, limits.events.text_bytes_max);
+    try composition_buffer.g_composition_buffer.reserve(gpa, limits.text.preedit_bytes_max);
+    assert(key_events.g_key_ring.capacity >= limits.events.queue_count_max);
+    assert(limits.text.preedit_bytes_max <= limits.events.text_bytes_max);
+}
+
+/// Move ring entries into the queue while it has room; the rest wait. A
+/// ring gives at most its capacity in one frame.
 fn forwardRing(queue: *core_events.EventQueue, ring: anytype, comptime convert: anytype) void {
     const Ring = @typeInfo(@TypeOf(ring)).pointer.child;
     const volatile_ring: *volatile Ring = ring;
+    const forward_count_max = volatile_ring.capacity;
+    assert(forward_count_max > 0);
     var forwarded: u32 = 0;
     while (forwarded < forward_count_max) : (forwarded += 1) {
         if (!hasRoom(queue)) return;

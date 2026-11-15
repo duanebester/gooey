@@ -408,6 +408,15 @@ pub const ResourceLimits = struct {
                 dialog_bound,
             );
         }
+        if (self.events.queue_count_max < input_burst_count_max) {
+            return .{
+                .budget = .events,
+                .field = "queue_count_max",
+                .rule = .below_relationship,
+                .value = self.events.queue_count_max,
+                .bound = input_burst_count_max,
+            };
+        }
         return null;
     }
 
@@ -1302,6 +1311,14 @@ pub const RetainedLimits = struct {
     };
 };
 
+/// Free queue slots the largest native host burst needs: a host reads more
+/// input only while the queue has room for its whole burst, so every
+/// profile's queue holds at least this (`ResourceLimits.check`). Each host
+/// declares its own burst and asserts it is at most this: Wayland 256 (one
+/// read of libwayland's 4 KiB buffer), fbdev 8 (one evdev packet), Windows 3
+/// (one message, plus the resize the next tick pushes).
+pub const input_burst_count_max: u32 = 256;
+
 /// Event queue and completion ring (contract §5).
 pub const EventLimits = struct {
     queue_count_max: u32,
@@ -1320,7 +1337,7 @@ pub const EventLimits = struct {
     dialog_count_max: u32,
 
     pub const nano: EventLimits = .{
-        .queue_count_max = 64,
+        .queue_count_max = 256,
         .completion_count_max = 16,
         .text_bytes_max = 4 * 1024,
         .dialog_path_count_max = 16,
@@ -1328,7 +1345,7 @@ pub const EventLimits = struct {
         .dialog_count_max = 2,
     };
     pub const small: EventLimits = .{
-        .queue_count_max = 128,
+        .queue_count_max = 256,
         .completion_count_max = 32,
         .text_bytes_max = 8 * 1024,
         .dialog_path_count_max = 32,
@@ -1983,6 +2000,21 @@ test "named profiles are valid and ordered" {
     try std.testing.expectEqual(@as(u32, 3), ResourceLimits.standard.frame.in_flight_count);
     try std.testing.expectEqual(@as(usize, 1), FontLimits.nano.variants.len);
     try std.testing.expectEqual(@as(usize, 4), FontLimits.small.variants.len);
+}
+
+test "check holds every queue to the largest input burst" {
+    // Boundary test: a queue of exactly `input_burst_count_max` is valid; one
+    // slot less names the queue with the burst as its bound.
+    var limits = ResourceLimits.nano;
+    limits.events.queue_count_max = input_burst_count_max;
+    try std.testing.expectEqual(@as(?Violation, null), limits.check());
+    limits.events.queue_count_max = input_burst_count_max - 1;
+    const violation = limits.check().?;
+    try std.testing.expectEqual(Violation.Budget.events, violation.budget);
+    try std.testing.expectEqualStrings("queue_count_max", violation.field);
+    try std.testing.expectEqual(Violation.Rule.below_relationship, violation.rule);
+    try std.testing.expectEqual(input_burst_count_max - 1, violation.value);
+    try std.testing.expectEqual(input_burst_count_max, violation.bound);
 }
 
 test "check reports each negative case precisely" {

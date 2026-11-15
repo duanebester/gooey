@@ -23,7 +23,9 @@
 //! Resource sketch: one eventfd, the window's panel-sized back buffer and the
 //! CPU renderer's scratch (both reserved by the window at init), and no
 //! thread. Per turn: one poll, at most `evdev.raw_batch_max` events per
-//! device, at most one tick, and at most one raster of the panel. Every
+//! device and never more than the core queue has room for (input waits in
+//! the kernel while it has less than `input_room_count_min`), at most one
+//! tick, and at most one raster of the panel. Every
 //! allocation happens before `finishInit`; the core's guard panics on any
 //! later one, the window's and the platform's included.
 
@@ -36,6 +38,7 @@ const clipboard = @import("clipboard.zig");
 const evdev = @import("evdev.zig");
 const input = @import("../../input/events.zig");
 const core_window = @import("../../core/window.zig");
+const core_limits = @import("../../core/limits.zig");
 const backend = @import("../../core/backend.zig");
 const core_router = @import("../../core/router.zig");
 const core_events = @import("../../core/events.zig");
@@ -50,6 +53,15 @@ const Outcome = core_events.Completion.Outcome;
 
 /// Pollable descriptors: every input device plus the wake eventfd.
 const poll_fd_count_max: u32 = evdev.device_count_max + 1;
+
+/// Free queue slots the loop needs before it reads input: the events one raw
+/// event can produce. The host pushes nothing else into the queue.
+pub const input_room_count_min: u32 = evdev.Batch.capacity;
+
+comptime {
+    // Every profile's queue holds the largest host burst (`ResourceLimits.check`).
+    assert(input_room_count_min <= core_limits.input_burst_count_max);
+}
 
 /// Run `App` until its window closes. Everything is reserved before
 /// `finishInit`; the core's guard owns every allocation, the platform's too.
@@ -118,6 +130,8 @@ pub const Host = struct {
         self.window = window;
         self.core = core;
         self.query = .{ .window = core };
+        try clipboard.reserve(core.gpa, @intCast(core.clipboard_bytes.len));
+        errdefer clipboard.release(core.gpa);
         self.wake_fd = try eventFd();
         self.tick_scheduled = .init(true);
         self.presented_ns = null;
@@ -163,6 +177,7 @@ pub const Host = struct {
         self.core.file_dialog = null;
         self.core.images.bindWake(null);
         self.core.clipboard.service = null;
+        clipboard.release(self.core.gpa);
         _ = std.c.close(self.wake_fd);
         self.wake_fd = -1;
     }
@@ -230,8 +245,13 @@ pub const Host = struct {
         var pollfds: [poll_fd_count_max]posix.pollfd = undefined;
         const devices = self.platform.devices.slice();
         assert(devices.len < poll_fd_count_max);
+        // A queue without room for one raw event's events waits for the tick
+        // that drains it rather than waking for input it cannot take; errors
+        // and hangups still wake it.
+        const reading = self.core.queue.room() >= input_room_count_min;
+        const device_events: i16 = if (reading) posix.POLL.IN else 0;
         for (devices, pollfds[0..devices.len]) |device, *pollfd| {
-            pollfd.* = .{ .fd = device.fd, .events = posix.POLL.IN, .revents = 0 };
+            pollfd.* = .{ .fd = device.fd, .events = device_events, .revents = 0 };
         }
         const wake_index = devices.len;
         pollfds[wake_index] = .{ .fd = self.wake_fd, .events = posix.POLL.IN, .revents = 0 };
@@ -242,7 +262,7 @@ pub const Host = struct {
             return false;
         };
         if ((pollfds[wake_index].revents & posix.POLL.IN) != 0) drain(self.wake_fd);
-        self.platform.dispatchInput(pollfds[0..wake_index]);
+        self.platform.dispatchInput(pollfds[0..wake_index], &self.core.queue);
         return true;
     }
 
