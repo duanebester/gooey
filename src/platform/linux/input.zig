@@ -8,6 +8,8 @@ const input = @import("../../input/events.zig");
 const geometry = @import("../../geometry/geometry.zig");
 const wayland = @import("wayland.zig");
 
+const assert = std.debug.assert;
+
 // =============================================================================
 // Evdev Keycode Constants
 // =============================================================================
@@ -88,6 +90,7 @@ pub const evdev = struct {
     pub const KEY_BACKSPACE: u32 = 14;
     pub const KEY_DELETE: u32 = 111;
     pub const KEY_CAPSLOCK: u32 = 58;
+    pub const KEY_SCROLLLOCK: u32 = 70;
 
     // Arrow keys
     pub const KEY_LEFT: u32 = 105;
@@ -662,36 +665,168 @@ pub const ClickTracker = struct {
 };
 
 // =============================================================================
-// Key Repeat Detection
+// Key Repeat
 // =============================================================================
 
-/// Key repeat state tracker
-pub const KeyRepeatTracker = struct {
-    /// Currently pressed keys (bitset for common keys)
-    pressed_keys: std.bit_set.Static(256) = .empty,
+/// Client-side key repeat for one seat's keyboard.
+///
+/// Wayland leaves repeat to the client: `wl_keyboard.repeat_info` gives a rate
+/// in keys per second and a delay in milliseconds, and the compositor sends one
+/// `pressed` and one `released` per physical keystroke. This arms a deadline on
+/// each press; the event loop sleeps until it (`timeoutMs`) and takes at most
+/// one repeat per turn (`fire`), so a stalled loop slows the cadence instead of
+/// bursting a backlog into the event queue. Timing follows GTK 4: the first
+/// repeat comes `delay_ms` after the press, the rest every `interval_ms` on a
+/// fixed grid, and any modifier or lock key event stops the repeat.
+///
+/// Some compositors synthesize repeats anyway, in two shapes: a second
+/// `pressed` for a key never released, and a release immediately re-pressed
+/// every interval. `press` classifies both as `.synthesized`, which the
+/// platform forwards as a repeat while the timer stays off, so exactly one
+/// source owns the cadence and no character is typed twice.
+///
+/// Times are monotonic milliseconds from the caller, so tests drive the clock.
+pub const KeyRepeat = struct {
+    /// Milliseconds between repeats; zero while repeat is off, which is the
+    /// state before `repeat_info` and after a rate of zero.
+    interval_ms: u32 = 0,
+    /// Milliseconds a key is held before its first repeat.
+    delay_ms: u32 = 0,
+    /// The key the timer repeats, or 0 for none (evdev 0 is KEY_RESERVED).
+    repeat_key: u32 = 0,
+    /// When `repeat_key` repeats next.
+    deadline_ms: u64 = 0,
+    /// The latest press not yet released, tracked even while repeat is off: a
+    /// second `pressed` for it can only come from the compositor.
+    held_key: u32 = 0,
+    /// The latest release and its time, to recognize a re-press that only a
+    /// compositor's repeat could make.
+    released_key: u32 = 0,
+    released_ms: u64 = 0,
 
-    const Self = @This();
+    /// A release re-pressed within this many milliseconds is a compositor
+    /// repeat: no hand re-presses a key that fast.
+    pub const repress_gap_ms_max: u64 = 60;
 
-    /// Check if a key is already pressed (repeat) and mark it as pressed
-    pub fn checkAndPress(self: *Self, evdev_key: u32) bool {
-        if (evdev_key >= 256) return false;
+    pub const Press = enum { fresh, synthesized };
 
-        const was_pressed = self.pressed_keys.isSet(evdev_key);
-        self.pressed_keys.set(evdev_key);
-        return was_pressed;
+    /// Apply `repeat_info`. A rate of zero or less turns repeat off and stops
+    /// any armed repeat; the protocol forbids negative values, so a negative
+    /// delay is read as zero rather than trusted.
+    pub fn configure(self: *KeyRepeat, rate_per_second: i32, delay_ms: i32) void {
+        self.delay_ms = @intCast(@max(delay_ms, 0));
+        if (rate_per_second > 0) {
+            // A rate above 1000 Hz still repeats once per millisecond.
+            self.interval_ms = @max(@divFloor(1000, @as(u32, @intCast(rate_per_second))), 1);
+            assert(self.interval_ms >= 1);
+        } else {
+            self.interval_ms = 0;
+            self.repeat_key = 0;
+        }
+        assert(self.delay_ms <= std.math.maxInt(i32));
+        if (self.interval_ms == 0) assert(self.repeat_key == 0);
     }
 
-    /// Mark a key as released
-    pub fn release(self: *Self, evdev_key: u32) void {
-        if (evdev_key >= 256) return;
-        self.pressed_keys.unset(evdev_key);
+    /// Record a `pressed` event at `now_ms`. A fresh press of a repeating key
+    /// arms the timer for it, replacing any other key's repeat; a modifier or
+    /// lock key stops the repeat. A synthesized press stops the timer, which
+    /// stays off until the next fresh press.
+    pub fn press(self: *KeyRepeat, key: u32, now_ms: u64) Press {
+        if (key != 0 and key == self.held_key) {
+            self.repeat_key = 0;
+            return .synthesized;
+        }
+        const gap_ms = now_ms -| self.released_ms;
+        const repressed = key != 0 and key == self.released_key and gap_ms <= repress_gap_ms_max;
+        self.held_key = key;
+        self.released_key = 0;
+        if (repressed) {
+            self.repeat_key = 0;
+            return .synthesized;
+        }
+        if (repeats(key) and self.interval_ms > 0) {
+            self.repeat_key = key;
+            self.deadline_ms = now_ms + self.delay_ms;
+        } else {
+            self.repeat_key = 0;
+        }
+        assert(self.held_key == key);
+        if (self.repeat_key != 0) assert(self.deadline_ms >= now_ms);
+        return .fresh;
     }
 
-    /// Reset all key states (e.g., on focus loss)
-    pub fn reset(self: *Self) void {
-        self.pressed_keys = .empty;
+    /// Record a `released` event at `now_ms`. Releasing the repeating key or
+    /// any modifier stops the repeat; releasing another key leaves it running.
+    pub fn release(self: *KeyRepeat, key: u32, now_ms: u64) void {
+        if (key == self.repeat_key or !repeats(key)) self.repeat_key = 0;
+        if (key == self.held_key) self.held_key = 0;
+        self.released_key = key;
+        self.released_ms = now_ms;
+        assert(self.repeat_key != key or key == 0);
+        assert(self.held_key != key or key == 0);
+    }
+
+    /// Forget every key, for keyboard focus moving away or back: the
+    /// compositor sends no release for a key held while focus leaves.
+    pub fn clear(self: *KeyRepeat) void {
+        self.repeat_key = 0;
+        self.held_key = 0;
+        self.released_key = 0;
+        assert(self.timeoutMs(0) == null);
+    }
+
+    /// Stop the timer and keep the held key, for an input method taking the
+    /// keyboard while a key repeats.
+    pub fn stop(self: *KeyRepeat) void {
+        self.repeat_key = 0;
+        assert(self.timeoutMs(0) == null);
+    }
+
+    /// Milliseconds from `now_ms` until the next repeat, 0 when one is due,
+    /// or null when none is armed.
+    pub fn timeoutMs(self: *const KeyRepeat, now_ms: u64) ?u32 {
+        if (self.repeat_key == 0) return null;
+        assert(self.interval_ms > 0);
+        if (now_ms >= self.deadline_ms) return 0;
+        return @intCast(@min(self.deadline_ms - now_ms, std.math.maxInt(i32)));
+    }
+
+    /// The key to repeat at `now_ms`, or null. Returns at most one repeat per
+    /// call. The next deadline stays on the interval grid, so the rate matches
+    /// `repeat_info`; a deadline already passed restarts the grid at `now_ms`.
+    pub fn fire(self: *KeyRepeat, now_ms: u64) ?u32 {
+        const key = self.repeat_key;
+        if (key == 0) return null;
+        if (now_ms < self.deadline_ms) return null;
+        assert(self.interval_ms > 0);
+        const next_ms = self.deadline_ms + self.interval_ms;
+        self.deadline_ms = if (next_ms > now_ms) next_ms else now_ms + self.interval_ms;
+        assert(self.deadline_ms > now_ms);
+        assert(self.deadline_ms - now_ms <= self.interval_ms);
+        return key;
     }
 };
+
+/// Whether holding `key` repeats it. Modifier and lock keys never repeat, as
+/// in xkeyboard-config's keymaps; holding Shift sends one Shift press.
+pub fn repeats(key: u32) bool {
+    return switch (key) {
+        0,
+        evdev.KEY_LEFTSHIFT,
+        evdev.KEY_RIGHTSHIFT,
+        evdev.KEY_LEFTCTRL,
+        evdev.KEY_RIGHTCTRL,
+        evdev.KEY_LEFTALT,
+        evdev.KEY_RIGHTALT,
+        evdev.KEY_LEFTMETA,
+        evdev.KEY_RIGHTMETA,
+        evdev.KEY_CAPSLOCK,
+        evdev.KEY_NUMLOCK,
+        evdev.KEY_SCROLLLOCK,
+        => false,
+        else => true,
+    };
+}
 
 // =============================================================================
 // Tests
@@ -744,22 +879,114 @@ test "click tracker" {
     try testing.expectEqual(@as(u32, 1), tracker.recordClick(2500, 100, 100, wayland.BTN_LEFT));
 }
 
-test "key repeat tracker" {
+test "key repeat: a held key repeats at repeat_info's rate after its delay" {
+    // A spec-following compositor sends one `pressed` for a held key and
+    // nothing more, so every repeat must come from the client's timer.
+    // Methodology: replay GNOME's repeat_info(33, 500) and a 1 s hold, turning
+    // the loop exactly when `timeoutMs` says, as the core host does, then
+    // count the repeats and check both sides of each deadline.
     const testing = std.testing;
+    var repeat = KeyRepeat{};
+    repeat.configure(33, 500);
+    try testing.expectEqual(@as(u32, 30), repeat.interval_ms);
 
-    var tracker = KeyRepeatTracker{};
+    try testing.expectEqual(KeyRepeat.Press.fresh, repeat.press(evdev.KEY_A, 1000));
+    try testing.expectEqual(@as(?u32, 500), repeat.timeoutMs(1000));
+    try testing.expectEqual(@as(?u32, null), repeat.fire(1499));
+    try testing.expectEqual(@as(?u32, evdev.KEY_A), repeat.fire(1500));
+    try testing.expectEqual(@as(?u32, 30), repeat.timeoutMs(1500));
+    try testing.expectEqual(@as(?u32, null), repeat.fire(1529));
 
-    // First press - not a repeat
-    try testing.expect(!tracker.checkAndPress(evdev.KEY_A));
+    // Repeats at 1500, 1530, ..., 1980: (1980 - 1500) / 30 + 1 = 17.
+    var count: u32 = 1;
+    var now_ms: u64 = 1500;
+    while (now_ms < 2000) : (count += 1) {
+        assert(count < 100);
+        now_ms += repeat.timeoutMs(now_ms).?;
+        if (now_ms >= 2000) break;
+        try testing.expectEqual(@as(?u32, evdev.KEY_A), repeat.fire(now_ms));
+    }
+    try testing.expectEqual(@as(u32, 17), count);
 
-    // Second press - is a repeat
-    try testing.expect(tracker.checkAndPress(evdev.KEY_A));
+    repeat.release(evdev.KEY_A, 2000);
+    try testing.expectEqual(@as(?u32, null), repeat.timeoutMs(2000));
+    try testing.expectEqual(@as(?u32, null), repeat.fire(10_000));
+}
 
-    // Release
-    tracker.release(evdev.KEY_A);
+test "key repeat: rate zero, stalls, and what stops a repeat" {
+    // Each case pairs the last state that repeats with the first that must
+    // not. Methodology: explicit clock values against the scheduler.
+    const testing = std.testing;
+    var repeat = KeyRepeat{};
 
-    // Press again - not a repeat
-    try testing.expect(!tracker.checkAndPress(evdev.KEY_A));
+    // Before repeat_info, and at rate zero, nothing repeats; a rate of zero
+    // also stops a repeat already armed.
+    try testing.expectEqual(KeyRepeat.Press.fresh, repeat.press(evdev.KEY_A, 0));
+    try testing.expectEqual(@as(?u32, null), repeat.timeoutMs(0));
+    repeat.release(evdev.KEY_A, 100);
+    repeat.configure(10, 200);
+    _ = repeat.press(evdev.KEY_A, 1000);
+    try testing.expectEqual(@as(?u32, 200), repeat.timeoutMs(1000));
+    repeat.configure(0, 200);
+    try testing.expectEqual(@as(?u32, null), repeat.fire(5000));
+
+    // A loop stalled past nine deadlines gets one repeat, and the grid
+    // restarts from that turn instead of bursting the missed ones.
+    repeat.configure(10, 200);
+    repeat.clear();
+    _ = repeat.press(evdev.KEY_A, 1000);
+    try testing.expectEqual(@as(?u32, evdev.KEY_A), repeat.fire(2100));
+    try testing.expectEqual(@as(?u32, 100), repeat.timeoutMs(2100));
+    try testing.expectEqual(@as(?u32, null), repeat.fire(2199));
+
+    // Releasing another key keeps the repeat; the latest press takes it over.
+    repeat.release(evdev.KEY_C, 2150);
+    try testing.expectEqual(@as(?u32, 50), repeat.timeoutMs(2150));
+    _ = repeat.press(evdev.KEY_B, 2160);
+    try testing.expectEqual(@as(?u32, 200), repeat.timeoutMs(2160));
+    try testing.expectEqual(@as(?u32, evdev.KEY_B), repeat.fire(2360));
+
+    // A modifier press or release stops it, as in GTK.
+    try testing.expectEqual(KeyRepeat.Press.fresh, repeat.press(evdev.KEY_LEFTSHIFT, 2400));
+    try testing.expectEqual(@as(?u32, null), repeat.timeoutMs(2400));
+    _ = repeat.press(evdev.KEY_C, 2500);
+    repeat.release(evdev.KEY_LEFTSHIFT, 2510);
+    try testing.expectEqual(@as(?u32, null), repeat.timeoutMs(2510));
+
+    // Keyboard focus leaving forgets the held key.
+    _ = repeat.press(evdev.KEY_D, 3000);
+    repeat.clear();
+    try testing.expectEqual(@as(?u32, null), repeat.fire(4000));
+    try testing.expectEqual(KeyRepeat.Press.fresh, repeat.press(evdev.KEY_D, 4000));
+}
+
+test "key repeat: compositor repeats are forwarded, never doubled" {
+    // Some compositors repeat for the client, as a `pressed` for a key never
+    // released or as press/release pairs one interval apart. Methodology:
+    // replay both shapes and check each beat classifies as `.synthesized`
+    // and the timer stays off, while a hand's re-press 61 ms after the
+    // release, one past the gap, is fresh again.
+    const testing = std.testing;
+    var repeat = KeyRepeat{};
+    repeat.configure(25, 600);
+
+    try testing.expectEqual(KeyRepeat.Press.fresh, repeat.press(evdev.KEY_A, 0));
+    try testing.expectEqual(KeyRepeat.Press.synthesized, repeat.press(evdev.KEY_A, 600));
+    try testing.expectEqual(@as(?u32, null), repeat.timeoutMs(600));
+    repeat.release(evdev.KEY_A, 700);
+
+    _ = repeat.press(evdev.KEY_B, 1000);
+    repeat.release(evdev.KEY_B, 1599);
+    try testing.expectEqual(KeyRepeat.Press.synthesized, repeat.press(evdev.KEY_B, 1600));
+    repeat.release(evdev.KEY_B, 1600);
+    try testing.expectEqual(KeyRepeat.Press.synthesized, repeat.press(evdev.KEY_B, 1640));
+    try testing.expectEqual(@as(?u32, null), repeat.fire(5000));
+
+    repeat.release(evdev.KEY_B, 1640);
+    try testing.expectEqual(KeyRepeat.Press.synthesized, repeat.press(evdev.KEY_B, 1700));
+    repeat.release(evdev.KEY_B, 1700);
+    try testing.expectEqual(KeyRepeat.Press.fresh, repeat.press(evdev.KEY_B, 1761));
+    try testing.expectEqual(@as(?u32, 600), repeat.timeoutMs(1761));
 }
 
 test "IME text input event" {
