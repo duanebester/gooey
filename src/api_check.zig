@@ -181,14 +181,38 @@ fn pinNamespaces() void {
     }
 }
 
-/// `Cx`'s most-used methods: every render function calls these.
+/// `Cx`'s methods: it is opaque, so these are everything a render function
+/// or component reaches during a build.
 fn pinCx() void {
     comptime {
-        _ = @TypeOf(gooey.Cx.state);
-        _ = @TypeOf(gooey.Cx.render);
-        _ = @TypeOf(gooey.Cx.on);
-        _ = @TypeOf(gooey.Cx.theme);
-        _ = @TypeOf(gooey.Cx.drag);
+        const Cx = gooey.Cx;
+        _ = @TypeOf(Cx.state);
+        _ = @TypeOf(Cx.render);
+        _ = @TypeOf(Cx.on);
+        _ = @TypeOf(Cx.id);
+        _ = @TypeOf(Cx.theme);
+        _ = @TypeOf(Cx.fontMetrics);
+        _ = @TypeOf(Cx.hovered);
+        _ = @TypeOf(Cx.focused);
+        _ = @TypeOf(Cx.requestRenderAfter);
+        _ = @TypeOf(Cx.now);
+        _ = @TypeOf(Cx.limits);
+        _ = @TypeOf(Cx.bounds);
+        _ = @TypeOf(Cx.scroll);
+        _ = @TypeOf(Cx.retain);
+        _ = @TypeOf(Cx.get);
+        _ = @TypeOf(Cx.release);
+        _ = @TypeOf(Cx.drag);
+        for ([_][]const u8{ "offset_x", "offset_y", "viewport" }) |name| {
+            _ = @FieldType(Cx.ScrollPosition, name);
+        }
+        // Opaque: no field, `window` included, is reachable from a `*Cx`.
+        if (@typeInfo(Cx) != .@"opaque") @compileError("gooey.Cx must stay opaque");
+        // A `Painter` exposes only the paint element's bounds.
+        if (@typeInfo(gooey.Painter).@"struct".field_names.len != 1) {
+            @compileError("gooey.Painter must carry only its bounds");
+        }
+        _ = @FieldType(gooey.Painter, "bounds");
     }
 }
 

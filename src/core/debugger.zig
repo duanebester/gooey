@@ -486,16 +486,17 @@ const color_bad = Color.hsla(0.0, 0.8, 0.5, 1.0);
 fn paintOverlay(window: *Window, state: *Debugger) void {
     assert(state.mode != .disabled);
     if (window.resources.text_system.getMetrics() == null) return;
-    var painter = Painter{
+    var paint_target = emit_mod.PaintTarget{
         .window = window,
-        .bounds = .{ .x = 0, .y = 0, .width = window.width, .height = window.height },
         .clip_depth = 0,
+        .painter = .{ .bounds = .{ .x = 0, .y = 0, .width = window.width, .height = window.height } },
     };
+    const painter = &paint_target.painter;
     const selected = findNode(window, state.selected);
     state.info = if (selected) |index| elementInfo(window, index) else null;
     const hovered = if (window.pointer) |point| nodeAt(window, point.x, point.y) else null;
-    paintOutlines(window, &painter, hovered, selected);
-    const text = Text{ .painter = &painter, .size = text_size };
+    paintOutlines(window, painter, hovered, selected);
+    const text = Text{ .painter = painter, .size = text_size };
     switch (state.mode) {
         .inspector => paintInspector(text, window.width, state.info),
         .profiler => paintProfiler(text, window.width, state),

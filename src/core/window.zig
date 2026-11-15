@@ -30,7 +30,6 @@ const layout_mod = @import("../layout/layout.zig");
 const text_mod = @import("../text/mod.zig");
 const app_resources = @import("app_resources.zig");
 const a11y_types = @import("../accessibility/types.zig");
-const cx_mod = @import("cx.zig");
 const keymap_mod = @import("keymap.zig");
 const A11ySystem = @import("a11y_system.zig").A11ySystem;
 const screen_reader_mod = @import("screen_reader.zig");
@@ -594,7 +593,6 @@ pub const Window = struct {
     packed_frame: PackedFrame,
     text_scratch: []u8,
     text_scratch_allocator: std.heap.FixedBufferAllocator,
-    cx: cx_mod.Cx,
     presenter: ?Presenter,
     file_dialog: ?FileDialogService,
     // Interaction state, owned by the router.
@@ -845,7 +843,6 @@ pub noinline fn initInPlace(self: *Window, gpa: std.mem.Allocator, options: *con
     assert(self.store.retained == null);
     self.store.retained = &self.retained;
     self.resources.text_system.useRunAllocator(self.text_scratch_allocator.allocator());
-    self.cx = .{ .window = self };
     self.presenter = null;
     self.file_dialog = null;
     self.focus = .root;

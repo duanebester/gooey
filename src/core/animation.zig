@@ -1,7 +1,7 @@
 //! Tweens and spring motion: library helpers over `retain` (contract §3).
 //!
 //! Each helper retains a small `.frame` state keyed under the box being
-//! built (`cx.id(key)`), reads the tick's clock (`window.now_ns`), and asks
+//! built (`cx.id(key)`), reads the tick's clock (`cx.now()`), and asks
 //! for the next frame with `cx.requestRenderAfter` while it moves. A settled
 //! animation asks for nothing, so a window whose animations have finished
 //! draws no more frames. The state is swept like any `.frame` entry once its
@@ -159,7 +159,7 @@ comptime {
 /// (0.3.1's `tween`).
 pub fn tween(cx: *Cx, key: Key, options: Tween) f32 {
     checkTween(options);
-    const window = cx.window;
+    const window = cx_mod.windowOf(cx);
     const state = cx.get(TweenState, cx.retain(TweenState, cx.id(key), .frame, TweenState.init));
     const returning = state.built_frame + 1 < window.frame_number;
     if (!state.started) {
@@ -176,7 +176,7 @@ pub fn tween(cx: *Cx, key: Key, options: Tween) f32 {
 /// (0.3.1's `tweenOn`).
 pub fn tweenOn(cx: *Cx, key: Key, trigger: u64, options: Tween) f32 {
     checkTween(options);
-    const window = cx.window;
+    const window = cx_mod.windowOf(cx);
     const state = cx.get(TweenState, cx.retain(TweenState, cx.id(key), .frame, TweenState.init));
     if (!state.started) {
         state.restart(window.now_ns);
@@ -202,7 +202,7 @@ fn checkTween(options: Tween) void {
 fn advance(cx: *Cx, state: *TweenState, options: Tween) f32 {
     assert(state.started);
     if (state.finished) return options.easing(1);
-    const now_ns = cx.window.now_ns;
+    const now_ns = cx.now();
     assert(now_ns >= state.start_ns);
     const elapsed_ns = now_ns - state.start_ns;
     const delay_ns = @as(u64, options.delay_ms) * std.time.ns_per_ms;
@@ -233,7 +233,7 @@ fn advance(cx: *Cx, state: *TweenState, options: Tween) f32 {
 pub fn motion(cx: *Cx, key: Key, show: bool, spring: Spring) Motion {
     assert(spring.stiffness > 0);
     assert(spring.damping >= 0);
-    const now_ns = cx.window.now_ns;
+    const now_ns = cx.now();
     const state = cx.get(MotionState, cx.retain(MotionState, cx.id(key), .frame, MotionState.init));
     const target: f32 = if (show) 1 else 0;
     if (state.target != target) {

@@ -25,7 +25,8 @@ const retained = @import("retained.zig");
 const history_mod = @import("text_history.zig");
 const clipboard_mod = @import("clipboard.zig");
 const input = @import("../input/mod.zig");
-const Cx = @import("cx.zig").Cx;
+const cx_mod = @import("cx.zig");
+const Cx = cx_mod.Cx;
 const Color = @import("../geometry/geometry.zig").Color;
 const Point = @import("router.zig").Point;
 const wheelOffset = @import("window.zig").wheelOffset;
@@ -245,13 +246,13 @@ pub fn Engine(comptime kind: Kind) type {
         /// `prepare` on the window clock, asking the window to render at the
         /// caret's next toggle. Components call it once per build.
         pub fn blink(self: *Self, cx: *Cx, focused: bool) void {
-            assert(cx.window.phase == .build);
+            assert(cx_mod.windowOf(cx).phase == .build);
             if (!focused and self.preedit_len > 0) {
                 self.commitPreedit();
                 // Components built before this one read the old bound text.
                 cx.requestRenderAfter(0);
             }
-            const delay_ms = self.prepare(focused, cx.window.now_ns) orelse return;
+            const delay_ms = self.prepare(focused, cx.now()) orelse return;
             cx.requestRenderAfter(delay_ms);
         }
 
@@ -548,7 +549,7 @@ pub fn Engine(comptime kind: Kind) type {
             assert(origin.text_y >= 0);
             const click = self.pending_click orelse return;
             self.pending_click = null;
-            const frame = cx.window.rendered();
+            const frame = cx_mod.windowOf(cx).rendered();
             const bounds = for (frame.hits[0..frame.hit_count]) |*hit| {
                 if (hit.id == self.view.id) break hit.bounds;
             } else return;
@@ -566,7 +567,7 @@ pub fn Engine(comptime kind: Kind) type {
                 return self.selectLine(start);
             }
             const x = click.x - bounds.x - origin.text_x;
-            const text_system = cx.window.resources.text_system;
+            const text_system = cx_mod.windowOf(cx).resources.text_system;
             const column = columnAt(text_system, self.bytes[start..self.lineEnd(start)], x);
             self.moveTo(start + column, false);
         }

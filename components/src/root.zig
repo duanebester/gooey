@@ -1,7 +1,8 @@
 //! Gooey Components: library controls (`Button`, `Checkbox`, `Select`,
 //! `Modal`, `List`, `TextInput`, `TextArea`, `CodeEditor`) and the Lucide icon
-//! set. Each control composes `ui.box`, `ui.text`, and `ui.paint`; only
-//! `List` reaches into `gooey.internals`, for the scroll state its box keeps.
+//! set. Each control composes `ui.box`, `ui.text`, and `ui.paint` through the
+//! public API alone: `zig build import-ban` fails on any `gooey.internals`
+//! reference here, so a control can do only what an app can.
 //!
 //! Their geometry and colours match the 0.3.1 components, so the core's
 //! counter and todo goldens can be compared with the 0.3.1 goldens.
@@ -676,7 +677,6 @@ pub fn List(comptime Row: type) type {
         style: ui.Style = .{},
 
         const Self = @This();
-        const ScrollState = gooey.internals.window.ScrollState;
         const uniform = @hasDecl(Row, "row_height");
 
         pub fn render(self: Self, cx: *Cx) void {
@@ -685,12 +685,17 @@ pub fn List(comptime Row: type) type {
             self.checkStyle();
             if (!uniform) self.checkCount();
             const key = Key{ .name = self.key };
-            // The box retains this state by its key; retaining it first
-            // reads the offset and viewport the router and last emit left.
-            const handle = cx.retain(ScrollState, cx.id(key), .frame, ScrollState.init);
-            const range = self.visibleRows(cx, cx.get(ScrollState, handle));
+            // The offset and viewport the wheel, scrollbar, and last emit
+            // left; none before the box first renders.
+            const position = cx.scroll(cx.id(key)) orelse Cx.ScrollPosition{
+                .offset_x = 0,
+                .offset_y = 0,
+                .viewport = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
+            };
+            const range = self.visibleRows(cx, &position);
             assert(range.start <= range.end);
             assert(range.end <= self.count);
+            self.checkRowsVisible(cx, range.end - range.start);
             var style = self.style;
             style.width = .{ .grow = 1 };
             style.height = .{ .grow = 1 };
@@ -716,6 +721,18 @@ pub fn List(comptime Row: type) type {
             assert(self.style.direction == .column);
         }
 
+        /// Each row in view is at least one element (its keyed box), so
+        /// the frame's element budget bounds the rows one build may emit.
+        /// A viewport that shows more fails here, naming the list.
+        fn checkRowsVisible(self: Self, cx: *Cx, rows_visible: u32) void {
+            const element_count_max = cx.limits().build.element_count_frame_max;
+            if (rows_visible <= element_count_max) return;
+            std.debug.panic("List \"{s}\": {d} rows in view, more than " ++
+                "build.element_count_frame_max {d}. Raise it or show fewer rows.", .{
+                self.key, rows_visible, element_count_max,
+            });
+        }
+
         fn checkCount(self: Self) void {
             if (self.count <= Row.count_max) return;
             std.debug.panic("List \"{s}\" of {d} rows: capacity {d}. Raise {s}.count_max.", .{
@@ -727,7 +744,7 @@ pub fn List(comptime Row: type) type {
         /// one the viewport shows, partial rows included, and the heights
         /// above and below them. An unmeasured viewport shows one row; the
         /// emit that measures it requests the render that fills it.
-        fn visibleRows(self: Self, cx: *Cx, state: *const ScrollState) ListRange {
+        fn visibleRows(self: Self, cx: *Cx, state: *const Cx.ScrollPosition) ListRange {
             const padding = self.style.padding;
             const rows_height = self.contentHeight(cx);
             const content_height = rows_height + padding.top + padding.bottom;
@@ -770,8 +787,8 @@ pub fn List(comptime Row: type) type {
         fn uniformRows(view_top: f32, view_height: f32, count: u32, gap: f32) ListRange {
             const row_pitch = pitch(gap);
             const first: u32 = @intFromFloat(@floor(@max(0, view_top) / row_pitch));
+            assert(view_height >= 0);
             const shown: u32 = @intFromFloat(@ceil(view_height / row_pitch));
-            assert(shown <= list_rows_visible_max);
             const start = @min(first, count);
             const end = @min(count, start + shown + 1);
             const above = row_pitch * @as(f32, @floatFromInt(start));
@@ -797,7 +814,6 @@ pub fn List(comptime Row: type) type {
             const view_bottom = view_top + view_height;
             while (index < count) : (index += 1) {
                 if (index > start and top >= view_bottom) break;
-                if (index - start > list_rows_visible_max) break;
                 top += listRowHeight(Row, cx, index) + gap;
             }
             return .{ .start = start, .end = index, .above = above, .below = top };
@@ -811,11 +827,6 @@ pub fn List(comptime Row: type) type {
 }
 
 const ListRange = struct { start: u32, end: u32, above: f32, below: f32 };
-
-/// Rows a viewport can show: one as tall as the tallest framebuffer, of
-/// 1 px rows. A taller viewport (a list inside a taller scrolled box) fails
-/// fast rather than building rows past any screen.
-const list_rows_visible_max: u32 = gooey.internals.limits.MAX_FRAMEBUFFER_HEIGHT;
 
 /// The longest list of per-row heights: each render sums them all, and
 /// 65,536 calls stay well inside a frame.
@@ -839,7 +850,7 @@ fn ListRows(comptime Row: type) type {
         pub fn render(self: @This(), cx: *Cx) void {
             assert(self.start <= self.end);
             assert(self.end <= self.count);
-            assert(self.end - self.start <= list_rows_visible_max + 1);
+            assert(self.end - self.start <= cx.limits().build.element_count_frame_max);
             var index = self.start;
             while (index < self.end) : (index += 1) {
                 const gap: f32 = if (index + 1 < self.count) self.gap else 0;
@@ -1365,15 +1376,9 @@ pub const CodeEditor = struct {
     ) f32 {
         assert(self.rows == null);
         assert(line_height > 0);
-        const window = cx.window;
-        const frame = window.rendered();
-        const stale = frame.viewport_width != window.width or
-            frame.viewport_height != window.height;
-        if (stale) cx.requestRenderAfter(0);
-        const bounds = for (frame.hits[0..frame.hit_count]) |*hit| {
-            if (hit.id == id) break hit.bounds;
-        } else {
-            if (!stale) cx.requestRenderAfter(0);
+        // After a resize `bounds` asks for the render that reads the new size.
+        const bounds = cx.bounds(id) orelse {
+            cx.requestRenderAfter(0);
             return line_height;
         };
         var chrome = self.border_width * 2 + self.padding * 2;
