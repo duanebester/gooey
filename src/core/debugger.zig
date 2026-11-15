@@ -489,6 +489,7 @@ fn paintOverlay(window: *Window, state: *Debugger) void {
     var paint_target = emit_mod.PaintTarget{
         .window = window,
         .clip_depth = 0,
+        .culled = false,
         .painter = .{ .bounds = .{ .x = 0, .y = 0, .width = window.width, .height = window.height } },
     };
     const painter = &paint_target.painter;

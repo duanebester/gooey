@@ -313,7 +313,10 @@ const TodoRow = struct {
 Sizes are `.fit` (the default), `.{ .grow = weight }`, `.{ .fixed = px }`, or
 `.{ .percent = fraction }`. Colors are theme tokens (`.surface`, `.primary`, `.text`,
 `.muted`, ...) or literals (`.{ .rgba = Color.rgb(...) }`). A box with `.scroll = .{}`
-scrolls; give it a `key` so its offset is kept.
+scrolls; give it a `key` so its offset is kept. What a scroll or clip box hides draws
+nothing: its paint records and glyphs follow the viewport, not the content, so a long
+transcript needs no larger paint or glyph budget. Hidden rows keep their hit records and
+accessibility nodes, so Tab, focus and the screen reader still reach them.
 
 The `Cx` methods:
 
