@@ -654,6 +654,80 @@ test "a scroll box's thumb drags and its track jumps, as 0.3.1's did" {
     try testing.expectEqual(gooey.ElementId.root, app.window.scroll_drag);
 }
 
+/// What `readsRender` saw through the public reads in its last build.
+const ReadsState = struct {
+    position: ?Cx.ScrollPosition = null,
+    bounds: ?ui.Rect = null,
+    now_ns: u64 = 0,
+    builds: u32 = 0,
+};
+
+const ReadsApp = gooey.App(ReadsState, readsRender, .{
+    .title = "Reads",
+    .width = 300,
+    .height = 300,
+    .limits = gooey.ResourceLimits.small,
+});
+
+/// A 60 px scroll box of three 30 px rows under a 20 px spacer, which reads
+/// its own position and bounds before rendering, as `List` does.
+fn readsRender(cx: *Cx) void {
+    const state = cx.state(ReadsState);
+    const key = gooey.Key{ .name = "reads" };
+    state.position = cx.scroll(cx.id(key));
+    state.bounds = cx.bounds(cx.id(key));
+    state.now_ns = cx.now();
+    state.builds += 1;
+    cx.render(ui.box(.{ .style = .{ .height = .{ .fixed = 20 } } }, .{}));
+    cx.render(ui.box(.{ .key = key, .style = .{
+        .width = .{ .fixed = 200 },
+        .height = .{ .fixed = 60 },
+        .scroll = .{},
+    } }, .{ScrollRows{}}));
+}
+
+test "cx.scroll, cx.bounds, and cx.now read the last frame and the tick from render" {
+    // Goal: the public reads that replaced `cx.window` report what the
+    // router, layout, and tick left, in the build that follows them.
+    // Method: before the box first renders both reads are null; after the
+    // first frame they hold its layout (y 20, 60 px tall); a 20 px wheel is
+    // routed before the next build, which must see offset 20, not 0. The
+    // clock is the tick's own stamp, which no other source would give.
+    const app = try testing.allocator.create(ReadsApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 1_000;
+    app.tick(now);
+    try testing.expect(app.state.position == null);
+    try testing.expect(app.state.bounds == null);
+    try testing.expectEqual(@as(u64, 1_000), app.state.now_ns);
+
+    now = 5_000;
+    app.tick(now);
+    try testing.expectEqual(@as(u64, 5_000), app.state.now_ns);
+    const bounds = app.state.bounds.?;
+    try testing.expectEqual(@as(f32, 20), bounds.y);
+    try testing.expectEqual(@as(f32, 60), bounds.height);
+    const settled = app.state.position.?;
+    try testing.expectEqual(@as(f32, 0), settled.offset_y);
+    try testing.expectEqual(bounds.y, settled.viewport.y);
+    try testing.expectEqual(bounds.height, settled.viewport.height);
+
+    const direction: f32 = if (@import("builtin").os.tag == .macos) -1 else 1;
+    app.window.queue.push(.{ .input = .{ .scroll = .{
+        .position = .{ .x = bounds.x + 10, .y = bounds.y + 10 },
+        .delta = .{ .x = 0, .y = 20 * direction },
+        .modifiers = .{},
+    } } });
+    const builds = app.state.builds;
+    now += 1;
+    app.tick(now);
+    try testing.expectEqual(builds + 1, app.state.builds);
+    try testing.expectEqual(@as(f32, 20), app.state.position.?.offset_y);
+    try testing.expectEqual(@as(f32, 0), app.state.position.?.offset_x);
+}
+
 const NanoScrollApp = gooey.App(struct {}, scrollRender, .{
     .title = "Scroll",
     .width = 300,
@@ -3591,7 +3665,7 @@ fn paintCounts(frame: *const internals.records.Frame) PaintCounts {
 /// is culled when packed.
 fn fullPaint(_: *const u8, painter: *ui.Painter) void {
     const paint_limits = full_limits.paint;
-    const frame = painter.window.built();
+    const frame = internals.emit.targetOf(painter).window.built();
     const line: [64]u8 = @splat('x');
     var row: u32 = 0;
     while (paintCounts(frame).glyphs < paint_limits.glyph_count_frame_max) : (row += 1) {

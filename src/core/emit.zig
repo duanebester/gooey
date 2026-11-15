@@ -40,21 +40,22 @@ const TextAlignment = layout_mod.TextConfig.TextAlignment;
 const ObjectFit = image_mod.ObjectFit;
 const ImageAtlas = image_mod.ImageAtlas;
 
-/// Drawing access for `ui.paint` functions, valid during emit only.
+/// Drawing access for `ui.paint` functions, valid during emit only and only
+/// through the pointer the paint function receives: the painter is a field
+/// of a `PaintTarget`, and its methods find the window from their own
+/// address, so the public type carries nothing but its bounds.
 pub const Painter = struct {
-    window: *Window,
     /// The paint element's laid-out bounds.
     bounds: Rect,
-    clip_depth: u32,
 
     pub fn theme(self: *const Painter) *const element.Theme {
-        return self.window.theme;
+        return targetOf(self).window.theme;
     }
 
     pub fn quad(self: *Painter, value: records.Quad) void {
         assert(value.bounds.width >= 0);
         assert(value.bounds.height >= 0);
-        self.window.built().appendPaint(.{ .quad = value });
+        targetOf(self).window.built().appendPaint(.{ .quad = value });
     }
 
     pub fn fill(self: *Painter, bounds: Rect, color: Color) void {
@@ -64,21 +65,23 @@ pub const Painter = struct {
     }
 
     pub fn pushClip(self: *Painter, bounds: Rect) void {
-        assert(self.clip_depth < clip_depth_max);
-        checkClipDepth(self.window, self.clip_depth);
-        self.clip_depth += 1;
-        self.window.built().appendPaint(.{ .clip_push = bounds });
+        const paint_target = targetOf(self);
+        assert(paint_target.clip_depth < clip_depth_max);
+        checkClipDepth(paint_target.window, paint_target.clip_depth);
+        paint_target.clip_depth += 1;
+        paint_target.window.built().appendPaint(.{ .clip_push = bounds });
     }
 
     pub fn popClip(self: *Painter) void {
-        assert(self.clip_depth > 0);
-        self.clip_depth -= 1;
-        self.window.built().appendPaint(.clip_pop);
+        const paint_target = targetOf(self);
+        assert(paint_target.clip_depth > 0);
+        paint_target.clip_depth -= 1;
+        paint_target.window.built().appendPaint(.clip_pop);
     }
 
     /// Draw one line of text with its top at `y`; returns its width.
     pub fn text(self: *Painter, content: []const u8, x: f32, y: f32, style: TextStyle) f32 {
-        return emitTextLine(self.window, content, x, y, style);
+        return emitTextLine(targetOf(self).window, content, x, y, style);
     }
 
     /// Draw one line of text on `baseline`; returns its width.
@@ -89,26 +92,27 @@ pub const Painter = struct {
         baseline: f32,
         style: TextStyle,
     ) f32 {
-        return emitTextBaseline(self.window, content, x, baseline, style);
+        return emitTextBaseline(targetOf(self).window, content, x, baseline, style);
     }
 
     pub fn measureText(self: *const Painter, content: []const u8, style: TextStyle) f32 {
         if (content.len == 0) return 0;
-        const text_system = self.window.resources.text_system;
+        const window = targetOf(self).window;
+        const text_system = window.resources.text_system;
         const metrics = text_system.getMetricsFor(style.family);
         const width = text_system.measureText(style.family, content, style.variant) catch |err| {
-            window_mod.textFailed(self.window, content, err);
+            window_mod.textFailed(window, content, err);
         };
         return width * @as(f32, @floatFromInt(style.size)) / metrics.point_size;
     }
 
     pub fn fontMetrics(self: *const Painter) text_mod.Metrics {
-        return self.window.resources.text_system.getMetrics().?;
+        return targetOf(self).window.resources.text_system.getMetrics().?;
     }
 
     /// Draw an SVG path from the SVG atlas.
     pub fn svg(self: *Painter, path: []const u8, bounds: Rect, options: SvgStyle) void {
-        emitSvg(self.window, path, bounds, options);
+        emitSvg(targetOf(self).window, path, bounds, options);
     }
 
     /// Fill a triangle list, three points per triangle, in window
@@ -117,7 +121,7 @@ pub const Painter = struct {
     pub fn triangles(self: *Painter, points: []const [2]f32, color: Color) void {
         assert(points.len > 0);
         assert(points.len % 3 == 0);
-        emitTriangles(self.window, points, color);
+        emitTriangles(targetOf(self).window, points, color);
     }
 
     /// A line `width` wide: an axis-aligned line is a quad, any other two
@@ -155,7 +159,7 @@ pub const Painter = struct {
         assert(radius >= 0);
         assert(!std.math.isNan(center[0]) and !std.math.isNan(center[1]));
         var points: [3 * (circle_sides_max - 2)][2]f32 = undefined;
-        const count = circlePoints(&points, center, radius, self.window.scale_factor);
+        const count = circlePoints(&points, center, radius, targetOf(self).window.scale_factor);
         self.triangles(points[0..count], color);
     }
 
@@ -163,7 +167,7 @@ pub const Painter = struct {
     pub fn polyline(self: *Painter, points: []const [2]f32, width: f32, color: Color) void {
         assert(points.len >= 2);
         assert(width > 0);
-        emitPointMesh(self.window, points, .{
+        emitPointMesh(targetOf(self).window, points, .{
             .topology = .strip_expanded,
             .width = width,
             .color = color,
@@ -174,7 +178,7 @@ pub const Painter = struct {
     pub fn pointCloud(self: *Painter, centers: []const [2]f32, radius: f32, color: Color) void {
         assert(centers.len >= 1);
         assert(radius > 0);
-        emitPointMesh(self.window, centers, .{
+        emitPointMesh(targetOf(self).window, centers, .{
             .topology = .point_instanced,
             .width = radius,
             .color = color,
@@ -186,16 +190,32 @@ pub const Painter = struct {
     /// worker and draws nothing, so the box's own background shows; the
     /// decoded image lands a few frames later and requests a render.
     pub fn image(self: *Painter, path: []const u8, bounds: Rect, options: ImageStyle) void {
-        emitImage(self.window, path, bounds, options);
+        emitImage(targetOf(self).window, path, bounds, options);
     }
 
     /// Answer the platform's IME questions for this frame (`Query`).
     pub fn imeCursor(self: *Painter, ime: records.Ime) void {
         assert(ime.owner.isKeyed());
         assert(ime.selected_start <= ime.selected_end);
-        self.window.built().ime = ime;
+        targetOf(self).window.built().ime = ime;
     }
 };
+
+/// What a `Painter` draws into, for emit and the debugger: the window and the
+/// paint clip stack's depth, which box clips and the paint function share.
+pub const PaintTarget = struct {
+    window: *Window,
+    clip_depth: u32,
+    painter: Painter,
+};
+
+/// The target around a painter that emit or the debugger handed out.
+pub fn targetOf(painter: *const Painter) *PaintTarget {
+    const paint_target: *const PaintTarget = @alignCast(@fieldParentPtr("painter", painter));
+    assert(paint_target.clip_depth <= clip_depth_max);
+    assert(paint_target.window.phase != .idle);
+    return @constCast(paint_target);
+}
 
 pub const TextStyle = struct {
     size: u16,
@@ -837,11 +857,15 @@ fn emitA11y(window: *Window, node: *const Node, bounds: Rect, level: u8) u8 {
 fn emitPaint(window: *Window, node: *const Node, bounds: Rect, box_clip_depth: u32) void {
     const paint_fn = node.paint_fn.?;
     assert(box_clip_depth < clip_depth_max);
-    var painter = Painter{ .window = window, .bounds = bounds, .clip_depth = box_clip_depth };
-    paint_fn(node.paint_data.?, @ptrCast(&painter));
-    if (painter.clip_depth != box_clip_depth) {
+    var paint_target = PaintTarget{
+        .window = window,
+        .clip_depth = box_clip_depth,
+        .painter = .{ .bounds = bounds },
+    };
+    paint_fn(node.paint_data.?, @ptrCast(&paint_target.painter));
+    if (paint_target.clip_depth != box_clip_depth) {
         std.debug.panic("a paint function returned with {d} clips pushed", .{
-            painter.clip_depth - box_clip_depth,
+            paint_target.clip_depth - box_clip_depth,
         });
     }
 }

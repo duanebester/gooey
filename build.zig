@@ -1386,8 +1386,9 @@ fn addNativeExample(
 }
 
 /// Adds `zig build import-ban` (`src/tools/import_ban.zig`), which fails when a
-/// file or `@import` reaches a 0.3.1 path phase 6 deleted, and makes `test`
-/// run it and its own tests. It reads the tree, so it runs on the host.
+/// file or `@import` reaches a 0.3.1 path phase 6 deleted, or when components
+/// or charts reference `gooey.internals`, and makes `test` run it and its own
+/// tests. It reads the tree, so it runs on the host.
 fn addImportBan(b: *std.Build, test_step: *std.Build.Step) void {
     const module = b.createModule(.{
         .root_source_file = b.path("src/tools/import_ban.zig"),
@@ -1399,7 +1400,8 @@ fn addImportBan(b: *std.Build, test_step: *std.Build.Step) void {
     run.setCwd(b.path("."));
     // The tree is the input, which Zig's cache cannot see, so run every time.
     run.has_side_effects = true;
-    b.step("import-ban", "Fail on imports of deleted 0.3.1 paths").dependOn(&run.step);
+    const description = "Fail on deleted 0.3.1 paths and on internals in components or charts";
+    b.step("import-ban", description).dependOn(&run.step);
     test_step.dependOn(&run.step);
 
     const tests = b.addTest(.{ .root_module = module });

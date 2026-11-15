@@ -29,6 +29,7 @@ pub const ElementId = id_mod.ElementId;
 pub const Key = id_mod.Key;
 pub const Handler = handler_mod.Handler;
 pub const Window = window_mod.Window;
+const ResourceLimits = window_mod.ResourceLimits;
 const Node = window_mod.Node;
 const index_none = records.index_none;
 
@@ -49,13 +50,36 @@ pub fn Drag(comptime T: type) type {
     };
 }
 
-pub const Cx = struct {
-    window: *Window,
+/// The window a `Cx` builds, for the core's own modules (`text_engine`,
+/// `animation`). A `*Cx` is the window's address under an opaque type, so an
+/// app or component holding one reaches only `Cx`'s methods.
+pub fn windowOf(cx: *const Cx) *Window {
+    const window: *Window = @ptrCast(@alignCast(@constCast(cx)));
+    assert(window.phase != .idle);
+    return window;
+}
+
+/// The build context of `window`: the same address under the opaque type.
+pub fn of(window: *Window) *Cx {
+    return @ptrCast(window);
+}
+
+/// Opaque, so the window behind it stays internal (contract "Shape"): what
+/// an app or component reads during a build is these methods.
+pub const Cx = opaque {
+    /// What `Cx.scroll` reports about a scroll box.
+    pub const ScrollPosition = struct {
+        /// How far the content is scrolled, in pixels from its start.
+        offset_x: f32,
+        offset_y: f32,
+        /// The box's bounds at the last emit, unclipped; zero before its first.
+        viewport: records.Rect,
+    };
 
     /// The app's root state. In Debug and ReleaseSafe a wrong `T` panics on
     /// the first frame (approved decision 2).
     pub fn state(self: *Cx, comptime T: type) *T {
-        const store = self.window.store;
+        const store = windowOf(self).store;
         if (comptime std.debug.runtime_safety) {
             if (store.root_type_id != handler_mod.typeId(T)) {
                 std.debug.panic("cx.state({s}): the root state is {s}", .{
@@ -68,19 +92,19 @@ pub const Cx = struct {
     }
 
     pub fn theme(self: *const Cx) *const element.Theme {
-        return self.window.theme;
+        return windowOf(self).theme;
     }
 
     /// The text system's base font metrics, for components that size boxes
     /// around a line of text.
     pub fn fontMetrics(self: *const Cx) text_mod.Metrics {
-        return self.window.resources.text_system.getMetrics() orelse
+        return windowOf(self).resources.text_system.getMetrics() orelse
             std.debug.panic("cx.fontMetrics: no font is loaded", .{});
     }
 
     /// The id a child box with `key` gets under the box being built.
     pub fn id(self: *const Cx, key: Key) ElementId {
-        const window = self.window;
+        const window = windowOf(self);
         window.assertPhase(.build);
         assert(window.open_depth > 0);
         const parent = window.nodes[window.open_stack[window.open_depth - 1]].id;
@@ -88,7 +112,7 @@ pub const Cx = struct {
     }
 
     pub fn hovered(self: *const Cx, target: ElementId) bool {
-        return self.window.isHovered(target);
+        return windowOf(self).isHovered(target);
     }
 
     /// Render again no later than `delay_ms` from now, for a view that
@@ -96,22 +120,82 @@ pub const Cx = struct {
     /// while the view depends on the clock: the window keeps the earliest
     /// request of the last build, and a build that asks for none clears it.
     pub fn requestRenderAfter(self: *Cx, delay_ms: u32) void {
-        const window = self.window;
+        const window = windowOf(self);
         window.assertPhase(.build);
         assert(delay_ms <= window_mod.render_delay_ms_max);
         const deadline = window.now_ns + @as(u64, delay_ms) * std.time.ns_per_ms;
         window.build_deadline_ns = @min(window.build_deadline_ns, deadline);
     }
 
+    /// The tick's clock in nanoseconds: the time the host stamped on this
+    /// frame. Every read in one build returns the same value, and it never
+    /// decreases from frame to frame. Its zero is the host's, so use
+    /// differences, and `requestRenderAfter` while a view follows it.
+    pub fn now(self: *const Cx) u64 {
+        const window = windowOf(self);
+        window.assertPhase(.build);
+        return window.now_ns;
+    }
+
+    /// The app's resource budget (`Config.limits`), for a component that
+    /// bounds its own per-frame work by the same fields the core enforces.
+    pub fn limits(self: *const Cx) *const ResourceLimits {
+        const window = windowOf(self);
+        assert(window.limits.build.element_count_frame_max > 0);
+        return &window.limits;
+    }
+
+    /// Keyed element `target`'s bounds in the last laid-out frame, as
+    /// `effects.bounds` reports them to handlers, or null when that frame
+    /// did not have it. After a resize the first build still reads the old
+    /// layout, so a read then asks for one more render: a view sized from
+    /// these bounds settles at the new size in the next build.
+    pub fn bounds(self: *Cx, target: ElementId) ?records.Rect {
+        assert(target.isKeyed());
+        const window = windowOf(self);
+        window.assertPhase(.build);
+        const frame = window.rendered();
+        if (frame.viewport_width != window.width) {
+            self.requestRenderAfter(0);
+        } else {
+            if (frame.viewport_height != window.height) self.requestRenderAfter(0);
+        }
+        assert(frame.hit_count <= frame.hits.len);
+        for (frame.hits[0..frame.hit_count]) |*hit| {
+            if (hit.id == target) return hit.bounds;
+        }
+        return null;
+    }
+
+    /// Keyed scroll box `target`'s offset and last measured viewport, or null
+    /// before it first renders. A component reads it before rendering the
+    /// box, for example to build only the rows in view (`List`); the offset
+    /// is the one the wheel, scrollbar, and last emit left.
+    pub fn scroll(self: *const Cx, target: ElementId) ?ScrollPosition {
+        assert(target.isKeyed());
+        const window = windowOf(self);
+        window.assertPhase(.build);
+        const retained_scroll = window.retained.find(window_mod.ScrollState, target) orelse
+            return null;
+        assert(retained_scroll.axes.x or retained_scroll.axes.y);
+        assert(retained_scroll.offset_x >= 0);
+        assert(retained_scroll.offset_y >= 0);
+        return .{
+            .offset_x = retained_scroll.offset_x,
+            .offset_y = retained_scroll.offset_y,
+            .viewport = retained_scroll.viewport,
+        };
+    }
+
     pub fn focused(self: *const Cx, target: ElementId) bool {
-        return self.window.isFocused(target);
+        return windowOf(self).isFocused(target);
     }
 
     /// The drag in progress, once past its threshold, if its payload is a
     /// `T`: for dimming its source, restyling the target it is `over`, and
     /// placing a preview at `x`, `y` on a `.drag` layer.
     pub fn drag(self: *const Cx, comptime T: type) ?Drag(T) {
-        const active = &self.window.drag;
+        const active = &windowOf(self).drag;
         if (active.phase != .active) return null;
         assert(active.type_id != 0);
         if (active.type_id != handler_mod.typeId(T)) return null;
@@ -139,7 +223,7 @@ pub const Cx = struct {
     }
 
     fn checkTarget(self: *Cx, comptime State: type, handler: Handler, name: []const u8) void {
-        const store = self.window.store;
+        const store = windowOf(self).store;
         const target = handler.target;
         if (target.isRoot()) {
             if (store.root_type_id == target.type_id) return;
@@ -159,7 +243,7 @@ pub const Cx = struct {
                 .slot = target.slot,
                 .generation = target.generation,
             };
-            _ = self.window.retained.get(State, handle);
+            _ = windowOf(self).retained.get(State, handle);
             return;
         };
         if (target.slot < pool.generations.len) {
@@ -177,7 +261,7 @@ pub const Cx = struct {
         lifetime: retained.Lifetime,
         comptime init: fn (value: *T) void,
     ) retained.Handle(T) {
-        const window = self.window;
+        const window = windowOf(self);
         assert(window.phase == .build);
         if (T == text_engine.InputEngine) {
             return window.inputs.retain(target, lifetime, window.frame_number, init);
@@ -196,7 +280,7 @@ pub const Cx = struct {
     }
 
     pub fn get(self: *Cx, comptime T: type, handle: retained.Handle(T)) *T {
-        const window = self.window;
+        const window = windowOf(self);
         assert(window.phase != .idle);
         if (T == text_engine.InputEngine) return window.inputs.get(handle);
         if (T == text_engine.AreaEngine) return window.areaPool().get(handle);
@@ -212,17 +296,17 @@ pub const Cx = struct {
     }
 
     pub fn release(self: *Cx, comptime T: type, handle: retained.Handle(T)) void {
-        assert(self.window.phase != .idle);
+        assert(windowOf(self).phase != .idle);
         comptime assert(T != text_engine.InputEngine);
         comptime assert(T != text_engine.AreaEngine);
         comptime assert(T != text_engine.EditorEngine);
-        self.window.retained.release(T, handle);
+        windowOf(self).retained.release(T, handle);
     }
 
     /// Render a child: an element, a component, a tuple, an optional, or an
     /// array or slice of components.
     pub fn render(self: *Cx, child: anytype) void {
-        const window = self.window;
+        const window = windowOf(self);
         window.assertPhase(.build);
         window.component_depth += 1;
         defer window.component_depth -= 1;
@@ -276,13 +360,13 @@ pub const Cx = struct {
     }
 
     fn buildBox(self: *Cx, box: *const element.Box, children: anytype) void {
-        const window = self.window;
+        const window = windowOf(self);
         checkLayer(box);
         checkKeyed(window, box);
         const parent_index = window.open_stack[window.open_depth - 1];
         const box_id = resolveId(window, parent_index, box.key);
-        const scroll = retainScroll(window, box, box_id);
-        const scroll_state: ?*const window_mod.ScrollState = if (scroll) |handle|
+        const scroll_handle = retainScroll(window, box, box_id);
+        const scroll_state: ?*const window_mod.ScrollState = if (scroll_handle) |handle|
             window.retained.get(window_mod.ScrollState, handle)
         else
             null;
@@ -292,8 +376,8 @@ pub const Cx = struct {
         });
         const node = window.node(index);
         const frame = window.built();
-        node.scroll = scroll;
-        node.clip = box.style.clip == .clip or scroll != null;
+        node.scroll = scroll_handle;
+        node.clip = box.style.clip == .clip or scroll_handle != null;
         node.layer = box.layer;
         node.focusable = box.focusable;
         node.tab_stop = box.focusable and box.tab_stop;
@@ -318,8 +402,8 @@ pub const Cx = struct {
         node.cursor = box.style.cursor;
         // `on_pointer_drag`, `draggable`, and `drop_target` require a key
         // (`checkKeyed`), so each takes a record.
-        node.hit = box.key != null or scroll != null or box.focusable or box.on_click != null or
-            box.on_click_outside != null or box.on_key != null or
+        node.hit = box.key != null or scroll_handle != null or box.focusable or
+            box.on_click != null or box.on_click_outside != null or box.on_key != null or
             box.key_context != null or box.actions.len > 0 or box.style.cursor != null;
         if (box.a11y) |*a11y| {
             node.a11y = copyA11y(frame, a11y, window.limits.a11y.value_bytes_max);
@@ -331,7 +415,7 @@ pub const Cx = struct {
     }
 
     fn buildText(self: *Cx, content: []const u8, style: *const element.Text) void {
-        const window = self.window;
+        const window = windowOf(self);
         const parent_index = window.open_stack[window.open_depth - 1];
         const size = style.size orelse window.theme.font_size_base;
         assert(size > 0);
@@ -383,7 +467,7 @@ pub const Cx = struct {
         paint_fn: *const fn (data: *const Data, painter: *element.Painter) void,
         style: *const element.Style,
     ) void {
-        const window = self.window;
+        const window = windowOf(self);
         const parent_index = window.open_stack[window.open_depth - 1];
         const index = openNode(window, .paint, autoId(window, parent_index), style);
         const node = window.node(index);

@@ -109,7 +109,7 @@ fn buildFrame(comptime App: type, window: *Window) void {
     const build_ns = debugger.stamp(window);
     debugger.beginBuild();
     cx_mod.beginBuild(window);
-    App.render(&window.cx);
+    App.render(cx_mod.of(window));
     cx_mod.endBuild(window);
 
     window.setPhase(.build, .layout);

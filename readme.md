@@ -319,7 +319,14 @@ The `Cx` methods:
 | `cx.hovered(id)`, `cx.focused(id)`   | Pointer and focus state, for choosing a style.           |
 | `cx.theme()`, `cx.fontMetrics()`     | The active theme and base font metrics.                  |
 | `cx.requestRenderAfter(delay_ms)`    | Render again by then; renew it every frame you need it.  |
+| `cx.now()`                           | The tick's clock in nanoseconds; use differences.        |
+| `cx.bounds(id)`                      | A keyed element's bounds in the last laid-out frame.     |
+| `cx.scroll(id)`                      | A keyed scroll box's offset and last viewport.           |
+| `cx.limits()`                        | The app's `ResourceLimits`, for bounding per-frame work. |
 | `cx.retain`, `cx.get`, `cx.release`  | Retained state and entity reads.                         |
+| `cx.drag(T)`                         | The drag in progress, if its payload is a `T`.           |
+
+`Cx` is opaque: these methods are all a render function or component can reach.
 
 Hover is not a style field. A component reads `cx.hovered(cx.id(key))` and picks a style, as
 `lucide_demo.zig` does for its icon cells.
@@ -433,8 +440,8 @@ Open dialogs take `gooey.PathPromptOptions` (`files`, `directories`, `multiple`)
 selection's path count and bytes are bounded by `limits.events`. `Paths.iterator()` walks
 every path of a multiple selection.
 
-**Timers.** There is no timer API. A view that changes with the clock calls
-`cx.requestRenderAfter(delay_ms)` in every render that needs the next one.
+**Timers.** There is no timer API. A view that changes with the clock reads `cx.now()` and
+calls `cx.requestRenderAfter(delay_ms)` in every render that needs the next one.
 
 **Background work.** There is no public API for it. Handlers run on the main thread, and the
 completions they receive come from file dialogs.
@@ -721,8 +728,10 @@ must stay valid until the frame is emitted, so point it at state or a constant.
 
 ## Components
 
-`gooey-components` is library code on the public API; only `List` reaches into
-`gooey.internals`, for its scroll state. Import it as `@import("gooey-components")`.
+`gooey-components` is library code on the public API alone: `List` reads its offset with
+`cx.scroll` and `CodeEditor` its size with `cx.bounds`, as an app would. `zig build
+import-ban` fails if `components/` or `charts/` reference `gooey.internals`. Import it as
+`@import("gooey-components")`.
 
 | Component       | Notes                                                                       |
 | --------------- | --------------------------------------------------------------------------- |

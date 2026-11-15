@@ -8,6 +8,11 @@
 //! `components`, and `charts`, and the `test` step depends on it, so CI fails
 //! on the first reintroduced path with its file and line.
 //!
+//! It also seals the public boundary: library code under `components` and
+//! `charts` may use only what an app can, so any `internals` reference there
+//! (`gooey.internals`, or an alias of `gooey` followed by `.internals`) fails
+//! with its file and line. Comments are not code and are not checked.
+//!
 //! Bounds: at most `file_count_max` source files, each smaller than
 //! `file_bytes_max` bytes; a tree past either fails fast and names the limit.
 
@@ -50,6 +55,9 @@ pub const banned_paths = [_][]const u8{
 };
 
 const roots = [_][]const u8{ "src", "components", "charts" };
+
+/// The library trees that build on the public API alone.
+pub const sealed_roots = [_][]const u8{ "components/", "charts/" };
 
 const file_count_max: u32 = 4_096;
 const file_bytes_max: u32 = 1 << 20;
@@ -94,7 +102,7 @@ pub fn main(init: std.process.Init) !void {
     }
     assert(file_count > 0);
     if (violation_count > 0) {
-        std.debug.print("import-ban: {d} reference(s) to deleted 0.3.1 paths\n", .{
+        std.debug.print("import-ban: {d} banned reference(s)\n", .{
             violation_count,
         });
         std.process.exit(1);
@@ -117,10 +125,17 @@ fn checkFile(path: []const u8, bytes: []const u8) u32 {
         std.debug.print("{s}: file is at deleted 0.3.1 path {s}\n", .{ path, banned });
         count += 1;
     }
+    const sealed = sealedPath(path);
     var line_number: u32 = 0;
     var lines = std.mem.splitScalar(u8, bytes, '\n');
     while (lines.next()) |line| {
         line_number += 1;
+        if (sealed and reachesInternals(line)) {
+            std.debug.print("{s}:{d}: library code references gooey.internals\n", .{
+                path, line_number,
+            });
+            count += 1;
+        }
         var rest = line;
         while (std.mem.indexOf(u8, rest, "@import(\"")) |start| {
             rest = rest[start + "@import(\"".len ..];
@@ -182,6 +197,22 @@ pub fn resolveImport(
     return buffer[0..length];
 }
 
+/// Whether `path` is library code that may use only the public API.
+pub fn sealedPath(path: []const u8) bool {
+    assert(path.len > 0);
+    for (sealed_roots) |root| {
+        assert(root[root.len - 1] == '/');
+        if (std.mem.startsWith(u8, path, root)) return true;
+    }
+    return false;
+}
+
+/// Whether the code on `line`, before any `//` comment, names `.internals`.
+pub fn reachesInternals(line: []const u8) bool {
+    const code_end = std.mem.indexOf(u8, line, "//") orelse line.len;
+    return std.mem.indexOf(u8, line[0..code_end], ".internals") != null;
+}
+
 /// The banned entry `path` falls under, or null.
 pub fn bannedPath(path: []const u8) ?[]const u8 {
     assert(path.len > 0);
@@ -239,4 +270,20 @@ test "checkFile counts banned imports only" {
         "const cx = @" ++ "import(\"../cx.zig\");\n";
     try std.testing.expectEqual(@as(u32, 1), checkFile("src/core/element.zig", source));
     try std.testing.expectEqual(@as(u32, 0), checkFile("src/core/element.zig", "const a = 1;"));
+}
+
+test "library code may not reach gooey.internals" {
+    // Goal: components and charts fail on an internals reference in code,
+    // through `gooey` or an alias, while comments and src may name it.
+    // Method: check one-line sources under each root. The fixtures are split
+    // so this file's own scan, which is under src, stays clean either way.
+    const reference = "const S = gooey" ++ ".internals.window.ScrollState;";
+    const aliased = "const limits = g" ++ ".internals.limits;";
+    const comment = "// Never use gooey" ++ ".internals here.";
+    try std.testing.expectEqual(@as(u32, 1), checkFile("components/src/root.zig", reference));
+    try std.testing.expectEqual(@as(u32, 1), checkFile("charts/src/paint.zig", aliased));
+    try std.testing.expectEqual(@as(u32, 0), checkFile("charts/src/paint.zig", comment));
+    try std.testing.expectEqual(@as(u32, 0), checkFile("src/core/benchmarks.zig", reference));
+    try std.testing.expect(!sealedPath("src/components.zig"));
+    try std.testing.expect(sealedPath("charts/src/root.zig"));
 }
