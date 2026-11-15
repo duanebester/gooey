@@ -45,7 +45,9 @@
 //! one event queue, one surface wrapper, at most one frame callback, one
 //! frame in flight, and at most one open file dialog with its D-Bus
 //! connection and a `dialog_path_bytes_max` path buffer. Per turn the main
-//! thread runs at most one tick, one dispatch, and one non-blocking read of
+//! thread runs at most one tick, one dispatch (with libwayland 1.25, at most
+//! `dispatch_single_count_max` single events, each only while the core queue
+//! has `input_room_count_single` free slots), and one non-blocking read of
 //! the dialog's connection that handles at most
 //! `PortalRequest.messages_per_poll_max` messages; per compositor frame the
 //! render thread does at most one pack and one draw. Every allocation happens
@@ -91,17 +93,37 @@ const refresh_rate_mhz_max: i32 = 1_000_000;
 /// empties the queue; more arrive only if another thread reads in between.
 const prepare_read_rounds_max: u32 = 1024;
 
-/// Free queue slots the loop needs before it dispatches the display, the
-/// burst Duane approved for this PR: 4 KiB of libwayland's read buffer at
-/// 16 B per queued event. It is not yet a hard bound: a 24 B key press
-/// queues two events, and the render thread's reads add to what one
-/// dispatch delivers. The next PR moves every read to this thread and
-/// declares the real burst (341 events plus 3 the host pushes).
+/// The most core events one Wayland event pushes: a key press queues its
+/// key_down and its character, a pointer leave mid-drag its pointer_cancelled
+/// and mouse_exited, and a text-input-v3 `done` its commit and its preedit.
+/// Every other handler pushes at most one.
+pub const dispatch_event_count_max: u32 = 2;
+
+/// The most core events the host pushes between two drains outside dispatch:
+/// a file dialog's completion (`pollDialog`, before the dispatch) and a key
+/// repeat's key_down and character (`fireKeyRepeat`, after it).
+pub const host_event_count_max: u32 = 3;
+
+/// Free queue slots the loop needs before it dispatches one Wayland event
+/// with libwayland 1.25's `wl_display_dispatch_pending_single`: a hard bound.
+pub const input_room_count_single: u32 = dispatch_event_count_max + host_event_count_max;
+
+/// Free queue slots the loop needs before it dispatches all pending events,
+/// the fallback before libwayland 1.25: 4 KiB of libwayland's read buffer at
+/// 16 B per queued event. It is a soft bound: a 24 B key press queues two
+/// events, and the render thread's reads add to what one dispatch delivers.
+/// Past it the queue fails fast naming `ResourceLimits.events`.
 pub const input_room_count_min: u32 = 4096 / 16;
+
+/// Bound on single dispatches per call. A 4 KiB read holds at most 512 of the
+/// smallest (8 B) Wayland messages; past this the loop yields to a tick.
+const dispatch_single_count_max: u32 = 4096 / 8;
 
 comptime {
     // Every profile's queue holds the largest host burst (`ResourceLimits.check`).
     assert(input_room_count_min <= core_limits.input_burst_count_max);
+    assert(input_room_count_single <= input_room_count_min);
+    assert(input_room_count_single == 5);
 }
 
 const frame_callback_listener = wayland.CallbackListener{ .done = frameCallbackDone };
@@ -171,6 +193,9 @@ pub const Host = struct {
     query: core_router.Query,
     display: *wayland.Display,
     display_fd: posix.fd_t,
+    /// libwayland 1.25's single dispatch, or null on older libwayland, where
+    /// the loop dispatches everything pending behind `input_room_count_min`.
+    dispatch_single: ?wayland.DispatchPendingSingle,
     /// Wakes the main loop: `scheduleTick` from either thread.
     main_wake_fd: posix.fd_t,
     /// Wakes the render thread: a published frame, or `deinit`.
@@ -287,6 +312,7 @@ pub const Host = struct {
         self.display = self.platform.display orelse return error.NoDisplay;
         self.display_fd = wayland.wl_display_get_fd(self.display);
         assert(self.display_fd >= 0);
+        self.dispatch_single = wayland.lookupDispatchPendingSingle();
         self.main_wake_fd = try eventFd();
         errdefer _ = std.c.close(self.main_wake_fd);
         self.render_wake_fd = try eventFd();
@@ -453,14 +479,14 @@ pub const Host = struct {
         if (pending and !in_flight) self.scheduleTick();
     }
 
-    /// Wait for the display or the wake fd, then dispatch the main queue,
-    /// only while the core queue has `input_room_count_min` free slots.
-    /// Returns false when the connection failed.
+    /// Wait for the display or the wake fd, then dispatch the main queue
+    /// while the core queue has room (`dispatchMain`). Returns false when the
+    /// connection failed.
     fn waitForEvents(self: *Host) bool {
-        // A queue without room for one read's events dispatches nothing until
-        // a tick drains it; what arrives meanwhile waits in the socket or in
-        // libwayland's queue.
-        if (self.core.queue.room() < input_room_count_min) {
+        // A queue without room for a dispatch's events dispatches nothing
+        // until a tick drains it; what arrives meanwhile waits in the socket
+        // or in libwayland's queue.
+        if (self.core.queue.room() < self.inputRoomCountMin()) {
             assert(self.core.queue.count > 0);
             self.scheduleTick();
             return true;
@@ -468,7 +494,12 @@ pub const Host = struct {
         var rounds: u32 = 0;
         while (wayland.wl_display_prepare_read(self.display) != 0) : (rounds += 1) {
             assert(rounds < prepare_read_rounds_max);
-            if (wayland.wl_display_dispatch_pending(self.display) < 0) return false;
+            switch (self.dispatchMain()) {
+                .failed => return false,
+                .drained => {},
+                // Events wait in libwayland's queue for a tick to make room.
+                .held => return true,
+            }
         }
         // A passed render deadline schedules a tick here; a due key repeat
         // makes the poll return at once.
@@ -496,9 +527,46 @@ pub const Host = struct {
         } else {
             wayland.wl_display_cancel_read(self.display);
         }
-        if (wayland.wl_display_dispatch_pending(self.display) < 0) return false;
+        if (self.dispatchMain() == .failed) return false;
         if ((fds[1].revents & posix.POLL.IN) != 0) drain(self.main_wake_fd);
         return true;
+    }
+
+    /// Free queue slots one `dispatchMain` call needs before it may start.
+    fn inputRoomCountMin(self: *const Host) u32 {
+        const single = self.dispatch_single != null;
+        const room = if (single) input_room_count_single else input_room_count_min;
+        assert(room >= input_room_count_single);
+        assert(room <= core_limits.input_burst_count_max);
+        return room;
+    }
+
+    const Dispatch = enum { drained, held, failed };
+
+    /// Dispatch the main queue. With libwayland 1.25, one event at a time
+    /// while the core queue keeps `input_room_count_single` free slots, so no
+    /// burst can overflow it: `held` means events still wait in libwayland's
+    /// queue and a tick is scheduled to make room. Before 1.25, everything
+    /// pending at once, behind the soft `input_room_count_min`.
+    fn dispatchMain(self: *Host) Dispatch {
+        const single = self.dispatch_single orelse {
+            // As before 1.25 support: a round of `waitForEvents`' prepare
+            // loop may dispatch again below the room it checked once.
+            if (wayland.wl_display_dispatch_pending(self.display) < 0) return .failed;
+            return .drained;
+        };
+        var dispatched: u32 = 0;
+        while (dispatched < dispatch_single_count_max) : (dispatched += 1) {
+            if (self.core.queue.room() < input_room_count_single) break;
+            const count = single(self.display);
+            if (count < 0) return .failed;
+            if (count == 0) return .drained;
+            assert(count == 1);
+        }
+        // The queue is short of room, or this call dispatched its bound.
+        assert(self.core.queue.count > 0 or dispatched == dispatch_single_count_max);
+        self.scheduleTick();
+        return .held;
     }
 
     /// Read the open dialog's connection without blocking and, once its

@@ -542,6 +542,24 @@ pub const Message = extern struct {
 pub extern "wayland-client" fn wl_display_connect(name: ?[*:0]const u8) ?*Display;
 pub extern "wayland-client" fn wl_display_disconnect(display: *Display) void;
 pub extern "wayland-client" fn wl_display_dispatch_pending(display: *Display) c_int;
+
+/// `wl_display_dispatch_pending_single` (libwayland 1.25): dispatch at most one
+/// event of the default queue; returns 1, 0 when the queue is empty, or -1.
+pub const DispatchPendingSingle = *const fn (display: *Display) callconv(.c) c_int;
+
+/// Look `wl_display_dispatch_pending_single` up in the loaded libwayland, or
+/// null before 1.25. A runtime lookup, because a weak extern cannot say "absent"
+/// here: Zig 0.17's linker binds it to a PLT stub that is never null, and the
+/// self-hosted linker refuses to link it at all. Call during initialization.
+pub fn lookupDispatchPendingSingle() ?DispatchPendingSingle {
+    // Null is glibc's and musl's RTLD_DEFAULT: every object already loaded,
+    // libwayland-client included, since this file links it.
+    const symbol = std.c.dlsym(null, "wl_display_dispatch_pending_single") orelse return null;
+    const single: DispatchPendingSingle = @ptrCast(@alignCast(symbol));
+    std.debug.assert(@intFromPtr(single) != 0);
+    return single;
+}
+
 pub extern "wayland-client" fn wl_display_roundtrip(display: *Display) c_int;
 pub extern "wayland-client" fn wl_display_flush(display: *Display) c_int;
 pub extern "wayland-client" fn wl_display_get_fd(display: *Display) c_int;
