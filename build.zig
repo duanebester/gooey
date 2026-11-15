@@ -1492,9 +1492,8 @@ fn addFailFastChecks(
         .{ .mode = "core-mono-unset", .stderr = "text uses family .mono, but no second " ++
             "family is loaded; set Config.fonts.mono and " ++
             "ResourceLimits.text.fonts.mono_variants" },
-        .{ .mode = "core-wrap-run", .stderr = "text run of 1025 codepoints exceeds " ++
-            "text.run_codepoint_count_max 1024, the longest run one shaping may hold in the " ++
-            "135424-byte text scratch, in frame 1." },
+        .{ .mode = "core-wrap-text", .stderr = "wrapped lines exhausted: capacity 1024 " ++
+            "(paint.glyph_count_frame_max), 1024 in use by one text, 1 requested" },
         .{ .mode = "core-wrap-frame", .stderr = "wrapped lines exhausted: capacity 1024 " ++
             "(paint.glyph_count_frame_max), 1000 in use, 25 requested" },
         .{ .mode = "core-deinit-running", .stderr = "App.deinit on a running app: " ++

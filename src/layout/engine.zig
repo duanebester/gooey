@@ -46,7 +46,8 @@ const limits_mod = @import("../core/limits.zig");
 /// capacity the budget does not name (CLAUDE.md §2).
 ///
 /// Memory per engine: `element_count_max` × 384 B of elements, `arena_bytes`,
-/// and `word_count_text_max` × (20 B + 12 B) of wrap scratch, all from fresh
+/// `word_count_text_max` × 20 B of word scratch and
+/// `wrapped_line_count_frame_max` × 12 B of line scratch, all from fresh
 /// pages and resident only as far as frames write. At `nano` that is 0.19 MiB
 /// of elements, a 72 KiB arena and 32 KiB of scratch.
 pub const LayoutCapacity = struct {
@@ -57,12 +58,14 @@ pub const LayoutCapacity = struct {
     box_depth_max: u32,
     /// `build.layer_count_frame_max`: every floating element is a layer box.
     floating_count_max: u32,
-    /// `run_codepoint_count_max`: the core measures each text whole before
-    /// layout wraps it, so a wrapped text holds at most that many codepoints,
-    /// and each word consumes at least one.
+    /// Words one wrap batch measures before packing them onto lines
+    /// (`sizing_pass.wrapText`); a longer text wraps in several batches, so
+    /// this bounds the scratch, not a text. `run_codepoint_count_max`, a
+    /// batch as long as one shaping run of one-codepoint words.
     word_count_text_max: u32,
     /// `paint.glyph_count_frame_max`: a frame that wraps more lines than it
-    /// can draw glyphs is almost all blank lines.
+    /// can draw glyphs is almost all blank lines. One text's lines may take
+    /// all of them, so the line scratch holds this many.
     wrapped_line_count_frame_max: u32,
     /// The per-frame arena (`arenaBytes`).
     arena_bytes: u32,
@@ -79,13 +82,6 @@ pub const LayoutCapacity = struct {
         };
         capacity.assertValid();
         return capacity;
-    }
-
-    /// Lines one text can wrap into: each word ends at most one line, and the
-    /// text's remainder after the last break adds one more.
-    pub fn lineCountTextMax(self: *const LayoutCapacity) u32 {
-        std.debug.assert(self.word_count_text_max > 0);
-        return self.word_count_text_max + 1;
     }
 
     fn assertValid(self: *const LayoutCapacity) void {
@@ -344,8 +340,8 @@ pub const LayoutEngine = struct {
     measure_text_user_data: ?*anyopaque = null,
     /// Floating elements to position after main layout, `floating_count_max`.
     floating_roots: BoundedList(u32),
-    /// One text's words and wrapped lines while it wraps, reserved once so a
-    /// wrap needs no stack buffer (`sizing_pass.wrapText`).
+    /// One wrap batch's words and one text's wrapped lines while it wraps,
+    /// reserved once so a wrap needs no stack buffer (`sizing_pass.wrapText`).
     word_scratch: []WordInfo,
     line_scratch: []types.WrappedLine,
     /// The scratch tables' high-water marks, zeroed on release (§21).
@@ -379,7 +375,8 @@ pub const LayoutEngine = struct {
         const words = try reservation.reserve(WordInfo, capacity.word_count_text_max);
         errdefer reservation.release(WordInfo, words, 0);
 
-        const lines = try reservation.reserve(types.WrappedLine, capacity.lineCountTextMax());
+        const line_count = capacity.wrapped_line_count_frame_max;
+        const lines = try reservation.reserve(types.WrappedLine, line_count);
 
         const engine: Self = .{
             .capacity = capacity.*,

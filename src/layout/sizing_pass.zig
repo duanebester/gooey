@@ -919,12 +919,19 @@ pub const WrapResult = struct {
     max_line_width: f32,
 };
 
-/// Wrap text into lines based on available width. Two-pass algorithm:
-///   1. `findWordBoundaries` measures each word ONCE.
-///   2. `accumulateWordsIntoLines` packs measured words onto lines and
-///      returns the residual state so the final line preserves its width.
-/// Returns a slice allocated from the per-frame arena, so it is safe to
-/// stash on `TextData.wrapped_lines` for the rest of the frame.
+/// Wrap text into lines based on available width. Two passes per batch:
+///   1. `scanWords` measures each word ONCE, until the word scratch is full
+///      or the text ends.
+///   2. `accumulateWordsIntoLines` packs the batch's words onto lines,
+///      carrying the line in progress into the next batch.
+/// A text of any length wraps exactly as it would in one batch: the word
+/// scratch bounds a batch, not a text, and the frame's line budget bounds
+/// the lines. Returns a slice allocated from the per-frame arena, so it is
+/// safe to stash on `TextData.wrapped_lines` for the rest of the frame.
+///
+/// Work: one measurement per word (cached by the text system) and one line
+/// record per line; batches of `word_count_text_max` words keep the scratch
+/// at 20 KiB whatever the text's length.
 pub fn wrapText(
     engine: *LayoutEngine,
     text_str: []const u8,
@@ -934,9 +941,8 @@ pub fn wrapText(
     std.debug.assert(max_width >= 0 or config.wrap_mode == .none);
     std.debug.assert(text_str.len <= std.math.maxInt(u32)); // Ensure offsets fit in u32
 
-    // Short-circuit on no-op inputs. `findWordBoundaries` requires
-    // `text_str.len > 0`, so the empty-text gate must live here at the
-    // public boundary.
+    // Short-circuit on no-op inputs. `scanWords` requires `text_str.len > 0`,
+    // so the empty-text gate must live here at the public boundary.
     if (config.wrap_mode == .none or max_width <= 0 or text_str.len == 0) {
         return .{ .lines = &.{}, .total_height = 0, .max_line_width = 0 };
     }
@@ -945,20 +951,31 @@ pub fn wrapText(
         return .{ .lines = &.{}, .total_height = 0, .max_line_width = 0 };
     };
 
-    // Pass 1: Find word boundaries and measure each word once.
-    // Both passes write the engine's reserved scratch, which holds one text.
     var words: BoundedList(WordInfo) = .{ .buffer = engine.word_scratch };
-    _ = findWordBoundaries(text_str, measure_fn, config, engine.measure_text_user_data, &words);
-    engine.word_count_used_max = @max(engine.word_count_used_max, words.len);
-
-    // Pass 2: Accumulate words onto lines; capture residual so the final
-    // line carries the right `line_width`.
+    const user_data = engine.measure_text_user_data;
+    var scan = WordScanState.init(text_str, measure_fn, config, user_data, &words);
     var lines: BoundedList(types.WrappedLine) = .{ .buffer = engine.line_scratch };
     var residual: LineResidual = .{};
-    const max_line_width = accumulateWordsIntoLines(words.slice(), config.wrap_mode, max_width, &lines, &residual);
+    var max_line_width: f32 = 0;
+    // Each full batch consumes at least one word, hence one byte.
+    var batch_count: u32 = 0;
+    while (true) : (batch_count += 1) {
+        std.debug.assert(batch_count <= text_str.len);
+        words.len = 0;
+        const done = scanWords(&scan);
+        engine.word_count_used_max = @max(engine.word_count_used_max, words.len);
+        const batch_max = accumulateWordsIntoLines(
+            words.slice(),
+            config.wrap_mode,
+            max_width,
+            &lines,
+            &residual,
+        );
+        max_line_width = @max(max_line_width, batch_max);
+        if (done) break;
+    }
 
     const final_max = finalizeLastLine(text_str, residual, &lines);
-    std.debug.assert(lines.len <= words.len + 1); // `lineCountTextMax`.
     engine.line_count_used_max = @max(engine.line_count_used_max, lines.len);
 
     claimWrappedLines(engine, lines.len);
@@ -980,27 +997,32 @@ pub fn wrapText(
 const LineResidual = struct {
     line_start: u32 = 0,
     line_width: f32 = 0,
+    /// `line_width` plus the last word's trailing space, so a word in the
+    /// next batch packs as it would in this one.
+    line_width_with_space: f32 = 0,
 };
 
 /// Walk pre-measured words and pack them onto lines. The two-flavor state
 /// (`line_width` without trailing space, `line_width_with_space` with it)
 /// matters because trailing whitespace should never push a word off-screen.
-/// Returns the running `max_line_width`; the trailing line is emitted by
-/// `finalizeLastLine` using `residual_out`.
+/// `residual` carries the line in progress in from the previous batch and
+/// out to the next one, or to `finalizeLastLine` after the last. Returns the
+/// widest line this batch finished.
 fn accumulateWordsIntoLines(
     words: []const WordInfo,
     wrap_mode: TextConfig.WrapMode,
     max_width: f32,
     lines: *BoundedList(types.WrappedLine),
-    residual_out: *LineResidual,
+    residual: *LineResidual,
 ) f32 {
     std.debug.assert(max_width >= 0);
     std.debug.assert(wrap_mode != .none);
 
     var max_line_width: f32 = 0;
-    var line_start: u32 = 0; // byte offset where current line starts
-    var line_width: f32 = 0; // accumulated width of current line (without trailing space)
-    var line_width_with_space: f32 = 0; // line width including trailing space
+    // The line in progress, carried in from the previous batch.
+    var line_start: u32 = residual.line_start; // byte offset where current line starts
+    var line_width: f32 = residual.line_width; // width without trailing space
+    var line_width_with_space: f32 = residual.line_width_with_space;
 
     for (words) |word| {
         if (word.has_newline) {
@@ -1052,7 +1074,11 @@ fn accumulateWordsIntoLines(
         }
     }
 
-    residual_out.* = .{ .line_start = line_start, .line_width = line_width };
+    residual.* = .{
+        .line_start = line_start,
+        .line_width = line_width,
+        .line_width_with_space = line_width_with_space,
+    };
     return max_line_width;
 }
 
@@ -1097,20 +1123,22 @@ fn claimWrappedLines(engine: *LayoutEngine, line_count: u32) void {
     engine.wrapped_line_count += line_count;
 }
 
-/// One text's words and lines are fixed pools sized from the shaping bound: a
-/// text past either is a capacity-planning error, so it stops here rather than
-/// dropping the rest. The core measures every text whole first, so its own
-/// shaping check (`text.run_codepoint_count_max`) fails before this one.
+/// One text's lines share the frame's budget: the scratch holds as many as
+/// the frame may wrap, so a single text past it is a capacity-planning error
+/// that stops here, naming the same field as `claimWrappedLines`.
 fn appendLine(lines: *BoundedList(types.WrappedLine), line: types.WrappedLine) void {
-    lines.append(line) catch std.debug.panic("layout pool 'wrap lines' exhausted: " ++
-        "capacity {d}, {d} in use, 1 requested. One text wraps into at most " ++
-        "text.run_codepoint_count_max + 1 lines.", .{ lines.buffer.len, lines.len });
+    lines.append(line) catch std.debug.panic("wrapped lines exhausted: capacity {d} " ++
+        "(paint.glyph_count_frame_max), {d} in use by one text, 1 requested", .{
+        lines.buffer.len,
+        lines.len,
+    });
 }
 
+/// `scanWords` stops a batch before the scratch fills.
 fn appendWord(words: *BoundedList(WordInfo), word: WordInfo) void {
-    words.append(word) catch std.debug.panic("layout pool 'wrap words' exhausted: " ++
-        "capacity {d}, {d} in use, 1 requested. One text holds at most " ++
-        "text.run_codepoint_count_max codepoints.", .{ words.buffer.len, words.len });
+    std.debug.assert(words.len < words.buffer.len);
+    std.debug.assert(word.start <= word.end);
+    words.append(word) catch unreachable;
 }
 
 // ============================================================================
@@ -1129,11 +1157,33 @@ const WordScanState = struct {
     word_start: u32 = 0,
     byte_pos: u32 = 0,
     in_word: bool = false,
+
+    /// Cache the space width: constant for a given font_id/font_size, it
+    /// saves a measure call per word boundary.
+    fn init(
+        text: []const u8,
+        measure_fn: MeasureTextFn,
+        config: TextConfig,
+        user_data: ?*anyopaque,
+        words: *BoundedList(WordInfo),
+    ) WordScanState {
+        std.debug.assert(text.len > 0);
+        std.debug.assert(words.len == 0);
+        const space = measure_fn(" ", config.font_id, config.font_size, null, user_data);
+        return .{
+            .text = text,
+            .measure_fn = measure_fn,
+            .config = config,
+            .user_data = user_data,
+            .words = words,
+            .cached_space_width = space.width,
+        };
+    }
 };
 
 /// Find word boundaries in text and measure each word exactly once.
-/// Returns the number of words appended (≤ `words.buffer.len`). Caller
-/// supplies an empty `words` array.
+/// Returns the number of words appended. Caller supplies an empty `words`
+/// array with room for every word of `text_str`.
 pub fn findWordBoundaries(
     text_str: []const u8,
     measure_fn: MeasureTextFn,
@@ -1141,25 +1191,27 @@ pub fn findWordBoundaries(
     user_data: ?*anyopaque,
     words: *BoundedList(WordInfo),
 ) u32 {
+    var state = WordScanState.init(text_str, measure_fn, config, user_data, words);
+    const done = scanWords(&state);
+    std.debug.assert(done);
+    return words.len;
+}
+
+/// Scan from where the last batch stopped, appending each word measured
+/// once, until `words` is full or the text ends. Returns whether the text
+/// ended; a full batch resumes at the codepoint it stopped before. Each
+/// codepoint appends at most one word, so a free slot at the top of the
+/// loop is room for it.
+fn scanWords(state: *WordScanState) bool {
+    const text_str = state.text;
     std.debug.assert(text_str.len > 0);
-    std.debug.assert(words.len == 0); // Should start empty
+    std.debug.assert(state.words.len == 0); // Each batch starts empty.
+    std.debug.assert(state.byte_pos <= text_str.len);
 
-    // Cache space width — constant for a given font_id/font_size, avoids redundant
-    // measure calls per word boundary (typically 100s of calls per text block).
-    var state: WordScanState = .{
-        .text = text_str,
-        .measure_fn = measure_fn,
-        .config = config,
-        .user_data = user_data,
-        .words = words,
-        .cached_space_width = measure_fn(" ", config.font_id, config.font_size, null, user_data).width,
-    };
-
-    // Use UTF-8 view for proper multi-byte character handling
-    const utf8_view = std.unicode.Utf8View.initUnchecked(text_str);
-    var iter = utf8_view.iterator();
-
-    while (iter.nextCodepointSlice()) |codepoint_slice| {
+    var iter = std.unicode.Utf8Iterator{ .bytes = text_str, .i = state.byte_pos };
+    while (state.byte_pos < text_str.len) {
+        if (state.words.len == state.words.buffer.len) return false;
+        const codepoint_slice = iter.nextCodepointSlice().?;
         const codepoint_len: u32 = @intCast(codepoint_slice.len);
         const c = codepoint_slice[0]; // First byte for ASCII checks
         const is_ascii = codepoint_len == 1;
@@ -1167,14 +1219,14 @@ pub fn findWordBoundaries(
         const is_newline = is_ascii and c == '\n';
 
         if (is_newline) {
-            emitOnNewline(&state);
+            emitOnNewline(state);
             state.in_word = false;
             state.word_start = state.byte_pos + codepoint_len;
             state.byte_pos += codepoint_len;
             continue;
         } else if (is_space) {
             if (state.in_word) {
-                emitOnSpace(&state);
+                emitOnSpace(state);
                 state.in_word = false;
             }
             // Skip leading/consecutive spaces - next word starts after this space
@@ -1188,14 +1240,16 @@ pub fn findWordBoundaries(
         }
 
         state.byte_pos += codepoint_len;
+        std.debug.assert(iter.i == state.byte_pos);
     }
 
-    // Final word (no trailing space/newline)
+    // Final word (no trailing space/newline): one more slot.
     if (state.in_word and state.word_start < text_str.len) {
-        emitFinalWord(&state);
+        if (state.words.len == state.words.buffer.len) return false;
+        emitFinalWord(state);
+        state.in_word = false;
     }
-
-    return words.len;
+    return true;
 }
 
 /// Append a word at a newline boundary.

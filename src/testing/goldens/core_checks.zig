@@ -205,6 +205,79 @@ test "a run past 128 glyphs places every glyph, as text and as a TextArea line" 
     }
 }
 
+/// 750 copies of "abc ", 3,000 codepoints: past one shaping run, as one
+/// unwrapped line or wrapped at 400 px.
+const LongTextState = struct {
+    wrap: bool = false,
+
+    const text = blk: {
+        @setEvalBranchQuota(100_000);
+        var bytes: [3_000]u8 = undefined;
+        for (0..750) |index| @memcpy(bytes[index * 4 ..][0..4], "abc ");
+        break :blk bytes;
+    };
+};
+
+const LongTextApp = gooey.App(LongTextState, longTextRender, .{
+    .title = "Long text",
+    .width = 400,
+    .height = 200,
+    .limits = .standard,
+});
+
+fn longTextRender(cx: *Cx) void {
+    const state = cx.state(LongTextState);
+    cx.render(ui.box(.{ .style = .{ .width = .{ .grow = 1 } } }, .{
+        ui.text(&LongTextState.text, .{ .wrap = if (state.wrap) .words else .none }),
+    }));
+}
+
+test "a text past one shaping run draws and wraps as one run would" {
+    // Goal: one `ui.text` of any length (it panicked past 1,024 codepoints).
+    // Method: 3,000 codepoints of "abc " at 16 px, where the synthetic face
+    // advances 8 px a letter and 4 px a space, 28 px a copy. Unwrapped,
+    // every glyph must sit where one run would put it, across the runs it is
+    // shaped in, and the text measures 750 copies. Wrapped at 400 px, a line
+    // holds 14 copies (388 px without its trailing space), so 54 lines of 56
+    // codepoints, each starting at the left edge one line below the last.
+    inline for (.{ false, true }) |wrap| {
+        const app = try testing.allocator.create(LongTextApp);
+        defer testing.allocator.destroy(app);
+        try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+        defer app.deinitHeadless();
+        app.state.wrap = wrap;
+        app.tick(0);
+        const frame = app.window.rendered();
+        // The synthetic face draws a box for a space too; the last wrapped
+        // line drops its trailing space.
+        try testing.expectEqual(@as(u32, if (wrap) 2_999 else 3_000), spriteCount(frame));
+        var first: ?internals.records.Rect = null;
+        var codepoint: u32 = 0;
+        var previous_y: f32 = 0;
+        for (frame.paint[0..frame.paint_count]) |record| {
+            if (record != .sprite) continue;
+            const bounds = record.sprite.bounds;
+            if (first == null) first = bounds;
+            const column = if (wrap) codepoint % 56 else codepoint;
+            const x: f32 = @floatFromInt(column / 4 * 28 + column % 4 * 8);
+            try testing.expectApproxEqAbs(first.?.x + x, bounds.x, 0.001);
+            if (column == 0 and codepoint > 0) {
+                try testing.expect(bounds.y > previous_y);
+            } else if (codepoint > 0) {
+                try testing.expectEqual(previous_y, bounds.y);
+            }
+            previous_y = bounds.y;
+            codepoint += 1;
+        }
+        const text_element = app.window.layout.elements.items()[2];
+        if (wrap) {
+            try testing.expectEqual(@as(usize, 54), text_element.text_data.?.wrapped_lines.?.len);
+        } else {
+            try testing.expectEqual(@as(f32, 750 * 28), text_element.computed.bounding_box.width);
+        }
+    }
+}
+
 fn deliverAll(app: *LongRunApp, now: *u64, inputs: []const gooey.input.InputEvent) void {
     for (inputs) |event| app.window.queue.push(.{ .input = event });
     now.* += 1;

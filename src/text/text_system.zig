@@ -1199,12 +1199,39 @@ pub const TextSystem = struct {
         return self.cache.getOrRenderSubpixel(face, glyph_id, font_size, subpixel_x, subpixel_y);
     }
 
-    /// Simple width measurement.
+    /// Simple width measurement, of any length: a text past one shaping run
+    /// is measured run by run (`runLength`), which splits only where no
+    /// glyph joins its neighbour, so the sum is the whole text's width.
+    /// Work: one pass to find the runs, then one `measureRun` each.
+    pub fn measureText(
+        self: *Self,
+        family: FontFamily,
+        text: []const u8,
+        variant: FontVariant,
+    ) !f32 {
+        if (text.len <= ShapedRunCache.MAX_TEXT_LEN) return self.measureRun(family, text, variant);
+        var width: f32 = 0;
+        var rest = text;
+        // Each run takes at least one byte, so the bytes bound the runs.
+        var run_count: usize = 0;
+        while (rest.len > 0) : (run_count += 1) {
+            std.debug.assert(run_count < text.len);
+            const length = runLength(rest);
+            std.debug.assert(length > 0);
+            std.debug.assert(length <= rest.len);
+            width += try self.measureRun(family, rest[0..length], variant);
+            rest = rest[length..];
+        }
+        std.debug.assert(width >= 0);
+        return width;
+    }
+
+    /// One shaping run's width.
     /// Zero-alloc fast path: on a shape cache hit, reads width directly from the
     /// cache entry under the mutex — no glyph array copy, no allocator call
     /// (~200x faster than the alloc+memcpy+free path: ~25 ns vs ~5200 ns warm).
     /// On web, uses a single JS call instead of character-by-character iteration.
-    pub fn measureText(
+    fn measureRun(
         self: *Self,
         family: FontFamily,
         text: []const u8,
@@ -2279,6 +2306,43 @@ fn copyRegion(atlas: *const Atlas, region: atlas_mod.Region, out: []u8) usize {
     return @as(usize, region.width) * region.height;
 }
 
+/// The bytes of `text`'s first shaping run. A text of at most
+/// `ShapedRunCache.MAX_TEXT_LEN` (512) bytes is one run, so it keeps its own
+/// cache entries. A longer one ends just after its last line break or space
+/// within those 512 bytes, where no glyph joins its neighbour, so its runs
+/// hit the width cache frame after frame and together measure and place as
+/// the whole text would. With no break in the first 512 bytes it ends at the
+/// first break after them, and an unbroken word at `run_codepoint_count_max`
+/// codepoints, the bound only the shapers know. `measureText` and
+/// `render.placeText` walk a text run by run, so no text length reaches it.
+///
+/// Work: one pass over at most the run's bytes plus one codepoint.
+pub fn runLength(text: []const u8) usize {
+    std.debug.assert(text.len > 0);
+    std.debug.assert(text.len <= std.math.maxInt(u32));
+    comptime std.debug.assert(ShapedRunCache.MAX_TEXT_LEN <= run_codepoint_count_max);
+    if (text.len <= ShapedRunCache.MAX_TEXT_LEN) return text.len;
+    var offset: usize = 0;
+    var codepoints: u32 = 0;
+    var break_end: usize = 0;
+    while (offset < text.len) : (offset += 1) {
+        const byte = text[offset];
+        // A continuation byte belongs to the codepoint already counted.
+        if (byte & 0xC0 == 0x80) continue;
+        // The codepoint before this one started inside the cacheable size, so
+        // a break found up to here ends within it.
+        if (offset >= ShapedRunCache.MAX_TEXT_LEN and break_end > 0) return break_end;
+        if (codepoints == run_codepoint_count_max) {
+            std.debug.assert(break_end == 0);
+            return offset;
+        }
+        codepoints += 1;
+        if (byte == ' ' or byte == '\n' or byte == '\t') break_end = offset + 1;
+    }
+    std.debug.assert(codepoints <= run_codepoint_count_max);
+    return text.len;
+}
+
 /// The codepoints in `text`, counting lead bytes, so invalid UTF-8 still
 /// yields a bound rather than an error.
 pub fn codepointCount(text: []const u8) u32 {
@@ -2289,4 +2353,32 @@ pub fn codepointCount(text: []const u8) u32 {
     }
     std.debug.assert(count <= text.len);
     return count;
+}
+
+test "runLength splits at the last break within the cacheable size, or at the bound" {
+    // Goal: runs keep their width-cache entries (at most 512 bytes) and never
+    // join glyphs. Method: a 512-byte text is one run; 600 bytes of "abc "
+    // end after the space that ends at byte 512, and 7-byte words after the
+    // one ending at byte 511, not the next at 518; with no break in the
+    // first 512 bytes a run ends at the first break after them; an unbroken
+    // word of two-byte codepoints ends at the codepoint bound, not a byte one.
+    const at_size: [ShapedRunCache.MAX_TEXT_LEN]u8 = @splat('a');
+    try std.testing.expectEqual(at_size.len, runLength(&at_size));
+    const words = repeatText("abc ", 150);
+    try std.testing.expectEqual(@as(usize, 512), runLength(&words));
+    try std.testing.expectEqual(@as(usize, 88), runLength(words[512..]));
+    const sevens = repeatText("abcdef ", 100);
+    try std.testing.expectEqual(@as(usize, 511), runLength(&sevens));
+    const late = repeatText("b", 600) ++ " x".* ++ repeatText("c", 100);
+    try std.testing.expectEqual(@as(usize, 601), runLength(&late));
+    const wide = repeatText("\u{e9}", run_codepoint_count_max + 1);
+    try std.testing.expectEqual(@as(usize, 2 * run_codepoint_count_max), runLength(&wide));
+}
+
+/// `count` copies of `unit`, built at compile time for the tests above.
+fn repeatText(comptime unit: []const u8, comptime count: usize) [unit.len * count]u8 {
+    @setEvalBranchQuota(100_000);
+    var bytes: [unit.len * count]u8 = undefined;
+    for (0..count) |index| @memcpy(bytes[index * unit.len ..][0..unit.len], unit);
+    return bytes;
 }

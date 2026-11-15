@@ -86,7 +86,6 @@ test "LayoutCapacity follows each profile's budget" {
     try std.testing.expectEqual(@as(u32, 64), nano.box_depth_max);
     try std.testing.expectEqual(@as(u32, 8), nano.floating_count_max);
     try std.testing.expectEqual(@as(u32, 1024), nano.word_count_text_max);
-    try std.testing.expectEqual(@as(u32, 1025), nano.lineCountTextMax());
     try std.testing.expectEqual(@as(u32, 1024), nano.wrapped_line_count_frame_max);
     // 16 KiB of text doubled, plus 1,024 lines of 12 B.
     try std.testing.expectEqual(@as(u32, 32 * 1024 + 1024 * 12), nano.arena_bytes);
