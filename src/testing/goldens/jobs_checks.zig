@@ -259,6 +259,14 @@ const Harness = struct {
         }
         std.debug.panic("jobs_checks: {d} wakes not reached", .{count});
     }
+
+    fn waitForStarted(_: *Harness, count: u32) void {
+        for (0..wait_count_max) |_| {
+            if (job_started_count.load(.acquire) >= count) return;
+            testing.io.sleep(.fromMilliseconds(1), .awake) catch unreachable;
+        }
+        std.debug.panic("jobs_checks: {d} started jobs not reached", .{count});
+    }
 };
 
 fn finished(state: *const State) bool {
@@ -368,7 +376,10 @@ test "stop races a job blocked in post and one posting in a loop, 200 times" {
     // Goal: no shutdown race leaks a worker, delivers after stop, or
     // deadlocks. Method: per round, one job floods the result pool (and
     // blocks), one counts with a gate, and one sleeps; stop at a varying
-    // point; every job must have returned when on_deinit runs.
+    // point; every job must have returned when on_deinit runs. Every fourth
+    // round waits until all four jobs run before stopping, so the check
+    // covers stopping running jobs even where the stop always wins the race
+    // against a worker that is just waking (as on macOS).
     var full_rounds: u32 = 0;
     for (0..200) |round| {
         var harness: Harness = undefined;
@@ -382,6 +393,7 @@ test "stop races a job blocked in post and one posting in a loop, 200 times" {
         // One more, so a stop can land as its worker wakes: a job whose
         // worker has not started it when the app stops never runs.
         _ = harness.spawn(Sleep, .{ .seconds = 60 });
+        if (round % 4 == 1) harness.waitForStarted(1 + spawned);
         harness.deinit();
         const started = deinit_saw_started.load(.acquire);
         try testing.expectEqual(started, deinit_saw_returned.load(.acquire));
@@ -391,9 +403,8 @@ test "stop races a job blocked in post and one posting in a loop, 200 times" {
         try testing.expect(started <= 1 + spawned);
         if (started == 1 + spawned) full_rounds += 1;
     }
-    // Most rounds start every job before the stop; the check would pass
-    // vacuously if none did.
-    try testing.expect(full_rounds > 0);
+    // The waiting rounds start every job before the stop.
+    try testing.expect(full_rounds >= 50);
 }
 
 test "the background example streams its fetch without polling" {
