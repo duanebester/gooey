@@ -78,6 +78,7 @@ pub const CachedGlyph = cache.CachedGlyph;
 // High-level API
 const text_system = @import("text_system.zig");
 pub const TextSystem = text_system.TextSystem;
+pub const TextSizeKey = text_system.TextSizeKey;
 /// True in builds that select the deterministic synthetic text backend.
 pub const is_synthetic = text_system.is_synthetic;
 pub const ShapedRunCache = text_system.ShapedRunCache;

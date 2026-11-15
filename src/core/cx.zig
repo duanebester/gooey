@@ -441,8 +441,56 @@ pub const Cx = opaque {
         node.font_size = size;
         node.family = style.family;
         node.variant = variant;
+        window.layout.text(content, textConfig(window, style)) catch |err| {
+            layoutFailed(window, err);
+        };
+    }
+
+    /// The size `ui.text(content, style)` takes in a parent whose content is
+    /// `max_width` wide, measured as layout will size it: wrapped at the same
+    /// words when `style.wrap` wraps, one line when it does not. For sizing a
+    /// row from its content during render, such as a `List` row's `height`.
+    /// Allocates nothing and adds no element; each call measures each word
+    /// once through the text system's shaped-run cache.
+    pub fn measureText(
+        self: *Cx,
+        content: []const u8,
+        style: element.Text,
+        max_width: f32,
+    ) TextSize {
+        const window = windowOf(self);
+        window.assertPhase(.build);
+        assert(std.math.isFinite(max_width));
+        assert(max_width >= 0);
+        assert(content.len <= std.math.maxInt(u32));
+        const config = textConfig(window, &style);
+        const text_system = window.resources.text_system;
+        const key: text_mod.TextSizeKey = .{
+            .text_hash = std.hash.Wyhash.hash(0, content),
+            .text_len = @intCast(content.len),
+            .max_width_bits = @bitCast(max_width),
+            .style = @as(u64, config.font_id) | @as(u64, config.font_size) << 16 |
+                @as(u64, config.line_height) << 32 | @as(u64, @backingInt(config.wrap_mode)) << 48,
+        };
+        if (text_system.text_size_cache.get(key)) |size| {
+            return .{ .width = size[0], .height = size[1] };
+        }
+        const measured = window.layout.measureText(content, config, max_width);
+        assert(measured.width >= 0);
+        assert(measured.height >= 0);
+        text_system.text_size_cache.put(key, measured.width, measured.height);
+        return .{ .width = measured.width, .height = measured.height };
+    }
+
+    pub const TextSize = struct { width: f32, height: f32 };
+
+    /// The layout engine's text configuration for a `ui.text` style.
+    fn textConfig(window: *const Window, style: *const element.Text) layout_mod.TextConfig {
+        const size = style.size orelse window.theme.font_size_base;
+        assert(size > 0);
+        const variant = text_mod.FontVariant.init(style.weight, style.italic);
         const metrics = window.resources.text_system.getMetricsFor(style.family);
-        window.layout.text(content, .{
+        return .{
             .font_id = style.family.fontId(variant),
             .font_size = size,
             .line_height = lineHeightPercent(&metrics, style.line_height orelse 100),
@@ -456,7 +504,7 @@ pub const Cx = opaque {
                 .center => .center,
                 .right => .right,
             },
-        }) catch |err| layoutFailed(window, err);
+        };
     }
 
     /// The layout engine's line height is a percent of the font size; the

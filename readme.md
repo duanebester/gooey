@@ -220,7 +220,8 @@ of box nesting (64 at every profile, the window root included), and one floating
 `build.layer_count_frame_max` layer. The accessibility tree and the platform screen-reader
 bridge hold `a11y.element_count_max` nodes (128 at `nano` to 8,192 at `large`). The text
 system's caches are `text.glyph_cache_count_max` glyphs, `text.shaped_run_count_max` shaped
-runs and `text.measure_slot_count_max` widths; a frame that draws more distinct glyphs than
+runs, `text.measure_slot_count_max` widths and `text.text_size_slot_count_max` sizes of
+measured texts; a frame that draws more distinct glyphs than
 its glyph cache holds panics and names the field. The SVG and image caches hold
 `atlas.svg_entry_count_max` icons and `atlas.image_entry_count_max` images, at least one
 frame's worth, and `atlas.svg_rasterization_count_frame_max` icons rasterize per frame
@@ -354,6 +355,7 @@ The `Cx` methods:
 | `cx.now()`                           | The tick's clock in nanoseconds; use differences.        |
 | `cx.bounds(id)`                      | A keyed element's bounds in the last laid-out frame.     |
 | `cx.scroll(id)`                      | A keyed scroll box's offset and last viewport.           |
+| `cx.measureText(text, style, width)` | The size `ui.text` takes at that width, to size rows.    |
 | `cx.limits()`                        | The app's `ResourceLimits`, for bounding per-frame work. |
 | `cx.retain`, `cx.get`, `cx.release`  | Retained state and entity reads.                         |
 | `cx.drag(T)`                         | The drag in progress, if its payload is a `T`.           |
@@ -868,8 +870,9 @@ import-ban` fails if `components/` or `charts/` reference `gooey.internals`. Imp
 ```
 
 A `List` row has an `index: u32` field and declares either one height for every row
-(`pub const row_height`) or a height per row (`pub fn height(cx, index)` with
-`pub const count_max`). `.anchor = .end` keeps a list on its last row while it is there,
+(`pub const row_height`) or a height per row (`pub fn height(cx, index, width)` with
+`pub const count_max`), which can size the row from its text with `cx.measureText` at the
+row's `width`. `.anchor = .end` keeps a list on its last row while it is there,
 and `List(Row).scrollTo(effects, list_id, index, .center)` brings row `index` into view from
 a handler, where `list_id` is `cx.id(.{ .name = key })` taken beside the list. From
 `virtual_list_example.zig`:
@@ -889,13 +892,32 @@ pub const MessageRow = struct {
 
     pub const count_max: u32 = message_count;
 
-    pub fn height(_: *Cx, index: u32) f32 {
+    pub fn height(cx: *Cx, index: u32, width: f32) f32 {
         assert(index < message_count);
-        return messages[index].height();
+        assert(width >= 0);
+        const message = &messages[index];
+        switch (message.kind) {
+            .image => return image_height,
+            .system => {
+                const line = cx.measureText(message.content, system_text, width);
+                return line.height + system_padding_y * 2;
+            },
+            else => {
+                const text_width = @max(0, width - bubble_padding_x * 2);
+                const body = cx.measureText(message.content, body_text, text_width);
+                var row_height = body.height + bubble_padding_y * 2;
+                if (!isMe(message)) {
+                    const sender = cx.measureText(message.sender, sender_text, text_width);
+                    row_height += sender.height + bubble_gap;
+                }
+                assert(row_height > 0);
+                return row_height;
+            },
+        }
     }
 ```
 
-The row's `render` follows in the file.
+The row's `render` draws with the same styles and padding, so each bubble fits its text.
 
 `gooey-charts` draws bar, line, pie, and scatter charts through a `Painter`. Keep series in
 state and fill them in `on_init`. See [charts/README.md](charts/README.md) and

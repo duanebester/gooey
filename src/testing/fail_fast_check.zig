@@ -587,7 +587,7 @@ const CoreApp = struct {
 
         pub const count_max: u32 = 64;
 
-        pub fn height(_: *gooey.Cx, _: u32) f32 {
+        pub fn height(_: *gooey.Cx, _: u32, _: f32) f32 {
             return 10;
         }
 

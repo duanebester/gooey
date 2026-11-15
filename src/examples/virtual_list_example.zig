@@ -1,8 +1,11 @@
 //! Virtual list on the 0.4.0 core: 1,000 chat messages of five heights in a
 //! `List` that builds only the messages in view.
 //!
-//! Each message's height follows from its type, so the list sums them
-//! without measuring; `MessageRow.count_max` bounds that sum. Top, Bottom,
+//! Each text message is as tall as its text wraps at the list's width,
+//! measured with `cx.measureText` in the same styles the bubble draws, so a
+//! narrower window makes taller bubbles; `MessageRow.count_max` bounds the
+//! sum the list takes of them. An image keeps its placeholder's fixed
+//! height. Top, Bottom,
 //! and Jump move the list through `List.scrollTo`, as 0.3.1's buttons did;
 //! its Prev and Next selection and scroll readout are left out.
 //!
@@ -33,17 +36,6 @@ pub const Message = struct {
     kind: MessageType,
     sender: []const u8,
     content: []const u8,
-
-    pub fn height(self: *const Message) f32 {
-        return switch (self.kind) {
-            .text_short => 48,
-            // Two wrapped lines under the sender's name.
-            .text_medium => 80,
-            .text_long => 120,
-            .image => 180,
-            .system => 32,
-        };
-    }
 };
 
 /// Built at compile time, so no message is allocated or initialized at run
@@ -118,7 +110,7 @@ pub fn render(cx: *Cx) void {
         ui.box(.{ .style = .{ .direction = .row, .width = .{ .grow = 1 }, .gap = 8 } }, .{
             ui.text("Virtual List Demo", .{ .size = 18, .weight = .bold, .color = .text }),
             ui.box(.{ .style = .{ .width = .{ .grow = 1 } } }, .{}),
-            ui.text("Variable-height items - each height from its message type", .{
+            ui.text("Variable-height items - each measured from its text", .{
                 .size = 12,
                 .color = .muted,
             }),
@@ -164,16 +156,42 @@ pub const MessageRow = struct {
 
     pub const count_max: u32 = message_count;
 
-    pub fn height(_: *Cx, index: u32) f32 {
+    /// The bubble's text at `width` plus the bubble's padding, and the
+    /// sender's line above it for others' messages: the styles `render`
+    /// draws with, so the row fits its bubble exactly.
+    pub fn height(cx: *Cx, index: u32, width: f32) f32 {
         assert(index < message_count);
-        return messages[index].height();
+        assert(width >= 0);
+        const message = &messages[index];
+        switch (message.kind) {
+            .image => return image_height,
+            .system => {
+                const line = cx.measureText(message.content, system_text, width);
+                return line.height + system_padding_y * 2;
+            },
+            else => {
+                const text_width = @max(0, width - bubble_padding_x * 2);
+                const body = cx.measureText(message.content, body_text, text_width);
+                var row_height = body.height + bubble_padding_y * 2;
+                if (!isMe(message)) {
+                    const sender = cx.measureText(message.sender, sender_text, text_width);
+                    row_height += sender.height + bubble_gap;
+                }
+                assert(row_height > 0);
+                return row_height;
+            },
+        }
+    }
+
+    /// "Alice" is "me": her messages are blue with white text.
+    fn isMe(message: *const Message) bool {
+        return std.mem.eql(u8, message.sender, "Alice");
     }
 
     pub fn render(self: MessageRow, cx: *Cx) void {
         assert(self.index < message_count);
         const message = &messages[self.index];
-        // "Alice" is "me": her messages are blue with white text.
-        const is_me = std.mem.eql(u8, message.sender, "Alice");
+        const is_me = isMe(message);
         const text_color: ui.ColorToken = .{ .rgba = if (is_me) Color.white else Color.black };
         switch (message.kind) {
             .system => cx.render(ui.box(.{ .style = .{
@@ -181,7 +199,7 @@ pub const MessageRow = struct {
                 .width = .{ .grow = 1 },
                 .height = .{ .grow = 1 },
                 .alignment = .center,
-            } }, .{ui.text(message.content, .{ .size = 11, .color = .muted })})),
+            } }, .{ui.text(message.content, system_text)})),
             .image => cx.render(ui.box(.{ .style = .{
                 .width = .{ .grow = 1 },
                 .height = .{ .grow = 1 },
@@ -193,21 +211,19 @@ pub const MessageRow = struct {
             else => {
                 var style = bubble;
                 style.background = .{ .rgba = if (is_me) sent_color else received_color };
-                // Long messages wrap inside the bubble; `height` leaves room
-                // for the lines each type's text takes.
-                const content = ui.text(message.content, .{
-                    .size = 14,
-                    .color = text_color,
-                    .wrap = .words,
-                });
+                // Long messages wrap inside the bubble, at the width
+                // `height` measured them.
+                var content_style = body_text;
+                content_style.color = text_color;
+                const content = ui.text(message.content, content_style);
                 if (is_me) {
                     cx.render(ui.box(.{ .style = style }, .{content}));
                 } else {
                     cx.render(ui.box(.{ .style = style }, .{
-                        ui.text(message.sender, .{
-                            .size = 11,
-                            .weight = .bold,
-                            .color = text_color,
+                        ui.text(message.sender, sender_style: {
+                            var style_sender = sender_text;
+                            style_sender.color = text_color;
+                            break :sender_style style_sender;
                         }),
                         content,
                     }));
@@ -216,11 +232,21 @@ pub const MessageRow = struct {
         }
     }
 
+    const bubble_padding_x: f32 = 12;
+    const bubble_padding_y: f32 = 8;
+    const bubble_gap: f32 = 2;
+    const system_padding_y: f32 = 8;
+    const image_height: f32 = 180;
+
+    const body_text: ui.Text = .{ .size = 14, .wrap = .words };
+    const sender_text: ui.Text = .{ .size = 11, .weight = .bold };
+    const system_text: ui.Text = .{ .size = 11, .color = .muted };
+
     const bubble: ui.Style = .{
         .width = .{ .grow = 1 },
         .height = .{ .grow = 1 },
-        .padding = .symmetric(12, 8),
+        .padding = .symmetric(bubble_padding_x, bubble_padding_y),
         .corner_radius = .all(16),
-        .gap = 2,
+        .gap = bubble_gap,
     };
 };

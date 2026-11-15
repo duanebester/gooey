@@ -655,9 +655,12 @@ pub fn Modal(comptime Child: type) type {
 ///
 /// - `row_height: f32`, one height for every row, as 0.3.1's uniform list.
 ///   The rows in view follow from the offset in constant time.
-/// - `fn height(cx: *Cx, index: u32) f32` and `count_max: u32`, a height per
-///   row, as 0.3.1's virtual list. Each render sums every row's height, so
-///   `count_max` bounds that work; a longer list fails fast.
+/// - `fn height(cx: *Cx, index: u32, width: f32) f32` and `count_max: u32`,
+///   a height per row, as 0.3.1's virtual list. `width` is the row's width,
+///   the viewport's less the list's padding (0 before the first emit), so a
+///   row can size from its content with `cx.measureText`. Each render sums
+///   every row's height, so `count_max` bounds that work; a longer list
+///   fails fast.
 ///
 /// Each row sits in a box keyed by its index, so state a row keys survives
 /// scrolling. `gap` separates rows, and `style` dresses the scroll box
@@ -715,7 +718,8 @@ pub fn List(comptime Row: type) type {
                 .target = null,
                 .at_end = true,
             };
-            const range = self.visibleRows(cx, &position);
+            const width = self.rowWidth(&position);
+            const range = self.visibleRows(cx, &position, width);
             assert(range.start <= range.end);
             assert(range.end <= self.count);
             self.checkRowsVisible(cx, range.end - range.start);
@@ -730,6 +734,7 @@ pub fn List(comptime Row: type) type {
                     .end = range.end,
                     .count = self.count,
                     .gap = self.gap,
+                    .width = width,
                 },
                 spacer(range.below),
             }));
@@ -767,17 +772,26 @@ pub fn List(comptime Row: type) type {
         /// one the viewport shows, partial rows included, and the heights
         /// above and below them. An unmeasured viewport shows one row; the
         /// emit that measures it requests the render that fills it.
-        fn visibleRows(self: Self, cx: *Cx, state: *const Cx.ScrollPosition) ListRange {
+        fn visibleRows(
+            self: Self,
+            cx: *Cx,
+            state: *const Cx.ScrollPosition,
+            width: f32,
+        ) ListRange {
             const padding = self.style.padding;
-            const rows_height = self.contentHeight(cx);
+            const rows_height = self.contentHeight(cx, width);
             const content_height = rows_height + padding.top + padding.bottom;
             const offset_max = @max(0, content_height - state.viewport.height);
-            const offset = std.math.clamp(self.offsetFor(cx, state, offset_max), 0, offset_max);
-            const view_top = offset - padding.top;
+            const offset = self.offsetFor(cx, state, .{ .offset_max = offset_max, .width = width });
+            const view_top = std.math.clamp(offset, 0, offset_max) - padding.top;
             const range = if (uniform)
                 uniformRows(view_top, state.viewport.height, self.count, self.gap)
             else
-                variableRows(cx, view_top, state.viewport.height, self.count, self.gap);
+                self.variableRows(cx, .{
+                    .top = view_top,
+                    .height = state.viewport.height,
+                    .width = width,
+                });
             const end_top = if (uniform)
                 pitch(self.gap) * @as(f32, @floatFromInt(range.end))
             else
@@ -798,8 +812,9 @@ pub fn List(comptime Row: type) type {
             self: Self,
             cx: *Cx,
             state: *const Cx.ScrollPosition,
-            offset_max: f32,
+            options: struct { offset_max: f32, width: f32 },
         ) f32 {
+            const offset_max = options.offset_max;
             assert(offset_max >= 0);
             if (state.target) |target| switch (target) {
                 .start => return 0,
@@ -810,10 +825,11 @@ pub fn List(comptime Row: type) type {
                     if (index >= self.count) return state.offset_y;
                     const padding = self.style.padding;
                     const view = state.viewport.height - padding.top - padding.bottom;
-                    const top = self.rowTop(cx, @intCast(index));
+                    const top = self.rowTop(cx, @intCast(index), options.width);
                     // A row's box holds the gap below it, but for the last.
                     const gap: f32 = if (index + 1 < self.count) self.gap else 0;
-                    const height = listRowHeight(Row, cx, @intCast(index)) + gap;
+                    const row_height = listRowHeight(Row, cx, @intCast(index), options.width);
+                    const height = row_height + gap;
                     return alignRow(child.alignment, top, height, @max(0, view), state.offset_y);
                 },
             };
@@ -822,25 +838,36 @@ pub fn List(comptime Row: type) type {
         }
 
         /// Row `index`'s top within the rows, gaps included.
-        fn rowTop(self: Self, cx: *Cx, index: u32) f32 {
+        fn rowTop(self: Self, cx: *Cx, index: u32, width: f32) f32 {
             assert(index < self.count);
             const gaps = self.gap * @as(f32, @floatFromInt(index));
             if (uniform) return Row.row_height * @as(f32, @floatFromInt(index)) + gaps;
             var top: f32 = gaps;
             var row: u32 = 0;
-            while (row < index) : (row += 1) top += listRowHeight(Row, cx, row);
+            while (row < index) : (row += 1) top += listRowHeight(Row, cx, row, width);
             return top;
         }
 
         /// Every row's height and the gaps between them.
-        fn contentHeight(self: Self, cx: *Cx) f32 {
+        fn contentHeight(self: Self, cx: *Cx, width: f32) f32 {
             if (self.count == 0) return 0;
             const gaps = self.gap * @as(f32, @floatFromInt(self.count - 1));
             if (uniform) return Row.row_height * @as(f32, @floatFromInt(self.count)) + gaps;
             var total: f32 = gaps;
             var index: u32 = 0;
-            while (index < self.count) : (index += 1) total += listRowHeight(Row, cx, index);
+            while (index < self.count) : (index += 1) {
+                total += listRowHeight(Row, cx, index, width);
+            }
             return total;
+        }
+
+        /// A row's width: the viewport's less the list's side padding.
+        fn rowWidth(self: Self, state: *const Cx.ScrollPosition) f32 {
+            const padding = self.style.padding;
+            assert(state.viewport.width >= 0);
+            const width = @max(0, state.viewport.width - padding.left - padding.right);
+            assert(width <= state.viewport.width);
+            return width;
         }
 
         fn pitch(gap: f32) f32 {
@@ -864,22 +891,23 @@ pub fn List(comptime Row: type) type {
         /// view are skipped, then rows are taken until one starts at or past
         /// the view's bottom, and always one. `below` carries the end row's
         /// top for `visibleRows` to subtract.
-        fn variableRows(cx: *Cx, view_top: f32, view_height: f32, count: u32, gap: f32) ListRange {
+        fn variableRows(self: Self, cx: *Cx, view: ListView) ListRange {
+            const count = self.count;
             assert(count <= Row.count_max);
-            assert(view_height >= 0);
+            assert(view.height >= 0);
             var top: f32 = 0;
             var index: u32 = 0;
             while (index < count) : (index += 1) {
-                const height = listRowHeight(Row, cx, index);
-                if (top + height > view_top) break;
-                top += height + gap;
+                const height = listRowHeight(Row, cx, index, view.width);
+                if (top + height > view.top) break;
+                top += height + self.gap;
             }
             const start = index;
             const above = top;
-            const view_bottom = view_top + view_height;
+            const view_bottom = view.top + view.height;
             while (index < count) : (index += 1) {
                 if (index > start and top >= view_bottom) break;
-                top += listRowHeight(Row, cx, index) + gap;
+                top += listRowHeight(Row, cx, index, view.width) + self.gap;
             }
             return .{ .start = start, .end = index, .above = above, .below = top };
         }
@@ -892,6 +920,10 @@ pub fn List(comptime Row: type) type {
 }
 
 const ListRange = struct { start: u32, end: u32, above: f32, below: f32 };
+
+/// The list's view in row coordinates: its top past the first row, its
+/// height, and the rows' width.
+const ListView = struct { top: f32, height: f32, width: f32 };
 
 /// The offset that shows a row box at `top`, `height` tall, in a view of
 /// `view` px, as the core's layout aligns a scroll target's child.
@@ -914,8 +946,12 @@ fn alignRow(alignment: ui.ScrollAlignment, top: f32, height: f32, view: f32, cur
 /// 65,536 calls stay well inside a frame.
 pub const list_count_max: u32 = 65_536;
 
-fn listRowHeight(comptime Row: type, cx: *Cx, index: u32) f32 {
-    const height: f32 = if (@hasDecl(Row, "row_height")) Row.row_height else Row.height(cx, index);
+fn listRowHeight(comptime Row: type, cx: *Cx, index: u32, width: f32) f32 {
+    assert(width >= 0);
+    const height: f32 = if (@hasDecl(Row, "row_height"))
+        Row.row_height
+    else
+        Row.height(cx, index, width);
     assert(height >= 0);
     return height;
 }
@@ -928,6 +964,8 @@ fn ListRows(comptime Row: type) type {
         end: u32,
         count: u32,
         gap: f32,
+        /// The rows' width, which `Row.height` measures against.
+        width: f32,
 
         pub fn render(self: @This(), cx: *Cx) void {
             assert(self.start <= self.end);
@@ -936,7 +974,7 @@ fn ListRows(comptime Row: type) type {
             var index = self.start;
             while (index < self.end) : (index += 1) {
                 const gap: f32 = if (index + 1 < self.count) self.gap else 0;
-                const height = listRowHeight(Row, cx, index);
+                const height = listRowHeight(Row, cx, index, self.width);
                 cx.render(ui.box(.{ .key = .{ .index = index }, .style = .{
                     .width = .{ .grow = 1 },
                     .height = .{ .fixed = height + gap },

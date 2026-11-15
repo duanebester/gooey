@@ -1447,6 +1447,15 @@ pub const TextLimits = struct {
     /// `measure_probe_count + 1`; it evicts the least recently used in a probe
     /// window.
     measure_slot_count_max: u32,
+    /// Slots of the size cache `cx.measureText` keeps, a power of two of at
+    /// least `measure_probe_count + 1`: one per text, style and width a frame
+    /// measures, so a `List` that sizes rows from content re-wraps only rows
+    /// that changed. It evicts the least recently used in a probe window, so
+    /// a frame that measures more texts than this re-wraps some each frame
+    /// (time, not correctness). One slot per distinct text: virtual-list
+    /// measures about 1,500 texts a frame but only 8 distinct ones; a chat of
+    /// 400 distinct 800-byte messages takes 400, a tenth of `standard`.
+    text_size_slot_count_max: u32,
     /// Bytes of IME composition (preedit) one text engine and the platform
     /// window keep. The OS supplies it, so a longer one is cut at a code point
     /// boundary and logged, not a panic. It travels through the event queue's
@@ -1461,6 +1470,7 @@ pub const TextLimits = struct {
         "glyph_cache_count_max",
         "shaped_run_count_max",
         "measure_slot_count_max",
+        "text_size_slot_count_max",
         "preedit_bytes_max",
     };
 
@@ -1469,6 +1479,7 @@ pub const TextLimits = struct {
         .glyph_cache_count_max = 512,
         .shaped_run_count_max = 64,
         .measure_slot_count_max = 256,
+        .text_size_slot_count_max = 256,
         .preedit_bytes_max = 256,
         .input = .{ .count_max = 4, .bytes_max = 1024, .undo_depth_max = 32 },
         .area = .{ .count_max = 0, .bytes_max = 16 * 1024, .undo_depth_max = 32 },
@@ -1479,6 +1490,7 @@ pub const TextLimits = struct {
         .glyph_cache_count_max = 1_024,
         .shaped_run_count_max = 128,
         .measure_slot_count_max = 1_024,
+        .text_size_slot_count_max = 1_024,
         .preedit_bytes_max = 256,
         .input = .{ .count_max = 16, .bytes_max = 4 * 1024, .undo_depth_max = 64 },
         .area = .{ .count_max = 2, .bytes_max = 64 * 1024, .undo_depth_max = 64 },
@@ -1489,6 +1501,7 @@ pub const TextLimits = struct {
         .glyph_cache_count_max = 4_096,
         .shaped_run_count_max = 256,
         .measure_slot_count_max = 2_048,
+        .text_size_slot_count_max = 4_096,
         .preedit_bytes_max = 1_024,
         .input = .{ .count_max = 64, .bytes_max = 8 * 1024, .undo_depth_max = 64 },
         .area = .{ .count_max = 4, .bytes_max = 128 * 1024, .undo_depth_max = 128 },
@@ -1499,6 +1512,7 @@ pub const TextLimits = struct {
         .glyph_cache_count_max = 8_192,
         .shaped_run_count_max = 512,
         .measure_slot_count_max = 4_096,
+        .text_size_slot_count_max = 8_192,
         .preedit_bytes_max = 1_024,
         .input = .{ .count_max = 128, .bytes_max = 8 * 1024, .undo_depth_max = 128 },
         .area = .{ .count_max = 8, .bytes_max = 128 * 1024, .undo_depth_max = 256 },
@@ -1512,6 +1526,7 @@ pub const TextLimits = struct {
         .glyph_cache_count_max = 16_384,
         .shaped_run_count_max = 1_024,
         .measure_slot_count_max = 16_384,
+        .text_size_slot_count_max = 65_536,
         .preedit_bytes_max = 4_000,
         .input = .{ .count_max = 1_024, .bytes_max = 64 * 1024, .undo_depth_max = 1_024 },
         .area = .{ .count_max = 256, .bytes_max = 1024 * 1024, .undo_depth_max = 1_024 },
@@ -1572,24 +1587,28 @@ pub const TextLimits = struct {
                 };
             }
         }
-        const slots = self.measure_slot_count_max;
-        if (slots <= measure_probe_count) {
-            return .{
-                .budget = .text,
-                .field = "measure_slot_count_max",
-                .rule = .below_relationship,
-                .value = slots,
-                .bound = measure_probe_count + 1,
-            };
-        }
-        if (!std.math.isPowerOfTwo(slots)) {
-            return .{
-                .budget = .text,
-                .field = "measure_slot_count_max",
-                .rule = .not_power_of_two,
-                .value = slots,
-                .bound = std.math.ceilPowerOfTwoAssert(u32, slots),
-            };
+        // Both set-associative caches mask a hash into a power-of-two table
+        // and probe a window of `measure_probe_count` slots.
+        inline for (.{ "measure_slot_count_max", "text_size_slot_count_max" }) |name| {
+            const slots: u32 = @field(self, name);
+            if (slots <= measure_probe_count) {
+                return .{
+                    .budget = .text,
+                    .field = name,
+                    .rule = .below_relationship,
+                    .value = slots,
+                    .bound = measure_probe_count + 1,
+                };
+            }
+            if (!std.math.isPowerOfTwo(slots)) {
+                return .{
+                    .budget = .text,
+                    .field = name,
+                    .rule = .not_power_of_two,
+                    .value = slots,
+                    .bound = std.math.ceilPowerOfTwoAssert(u32, slots),
+                };
+            }
         }
         return null;
     }
@@ -1601,6 +1620,7 @@ pub const measure_probe_count: u32 = 8;
 
 comptime {
     assert(std.math.isPowerOfTwo(TextLimits.ceiling.measure_slot_count_max));
+    assert(std.math.isPowerOfTwo(TextLimits.ceiling.text_size_slot_count_max));
     // Glyph indexes plus one, and twice as many hash slots, fit a `u16`.
     assert(2 * TextLimits.ceiling.glyph_cache_count_max < std.math.maxInt(u16));
 }
@@ -2224,6 +2244,7 @@ test "check bounds each text cache field by its ceiling and its relationships" {
         "glyph_cache_count_max",
         "shaped_run_count_max",
         "measure_slot_count_max",
+        "text_size_slot_count_max",
         "preedit_bytes_max",
     }) |field| {
         var limits = ResourceLimits.ceiling;
@@ -2241,18 +2262,22 @@ test "check bounds each text cache field by its ceiling and its relationships" {
     }
 
     var limits = ResourceLimits.nano;
-    limits.text.measure_slot_count_max = 16;
-    try std.testing.expect(limits.check() == null);
-    limits.text.measure_slot_count_max = measure_probe_count;
-    const window = limits.check().?;
-    try std.testing.expectEqualStrings("measure_slot_count_max", window.field);
-    try std.testing.expectEqual(Violation.Rule.below_relationship, window.rule);
-    try std.testing.expectEqual(measure_probe_count + 1, window.bound);
-    // 9 passes the window rule, so only the power-of-two rule can stop it.
-    limits.text.measure_slot_count_max = measure_probe_count + 1;
-    const odd = limits.check().?;
-    try std.testing.expectEqual(Violation.Rule.not_power_of_two, odd.rule);
-    try std.testing.expectEqual(@as(u32, 16), odd.bound);
+    inline for (.{ "measure_slot_count_max", "text_size_slot_count_max" }) |field| {
+        limits = ResourceLimits.nano;
+        @field(limits.text, field) = 16;
+        try std.testing.expect(limits.check() == null);
+        @field(limits.text, field) = measure_probe_count;
+        const window = limits.check().?;
+        try std.testing.expectEqualStrings(field, window.field);
+        try std.testing.expectEqual(Violation.Rule.below_relationship, window.rule);
+        try std.testing.expectEqual(measure_probe_count + 1, window.bound);
+        // 9 passes the window rule, so only the power-of-two rule can stop it.
+        @field(limits.text, field) = measure_probe_count + 1;
+        const odd = limits.check().?;
+        try std.testing.expectEqualStrings(field, odd.field);
+        try std.testing.expectEqual(Violation.Rule.not_power_of_two, odd.rule);
+        try std.testing.expectEqual(@as(u32, 16), odd.bound);
+    }
 
     // Every profile's queue holds more text than the preedit ceiling, so the
     // queue shrinks to 2,048 bytes (`nano`'s dialog paths still fit) first.

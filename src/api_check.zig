@@ -279,6 +279,9 @@ fn pinCx() void {
             _ = @FieldType(Cx.ScrollPosition, name);
         }
         _ = @as(Cx.ScrollPosition.Target, .end);
+        const measure: fn (*Cx, []const u8, gooey.ui.Text, f32) Cx.TextSize = Cx.measureText;
+        _ = measure;
+        _ = @as(Cx.TextSize, .{ .width = 0, .height = 0 });
         // Opaque: no field, `window` included, is reachable from a `*Cx`.
         if (@typeInfo(Cx) != .@"opaque") @compileError("gooey.Cx must stay opaque");
         // A `Painter` exposes only the paint element's bounds.
@@ -319,7 +322,7 @@ fn pinExact() void {
             "ScrollPosition", "state",   "theme",              "fontMetrics", "id",
             "hovered",        "focused", "requestRenderAfter", "now",         "limits",
             "bounds",         "scroll",  "drag",               "on",          "retain",
-            "get",            "release", "render",
+            "get",            "release", "render",             "measureText", "TextSize",
         });
         expectDecls(gooey.text, "gooey.text", &.{
             "Metrics",     "FontWeight",     "FontFamily",
