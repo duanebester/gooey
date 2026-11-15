@@ -525,7 +525,11 @@ test "ImageAtlas never returns an image whose pixels were evicted" {
     try uploads.init(
         testing.allocator,
         testing.io,
-        .{ .storage = .cpu_texture, .upload_bytes_frame_max = 64 },
+        .{
+            .storage = .cpu_texture,
+            .upload_bytes_frame_max = 64,
+            .consumer_count_max = 1,
+        },
     );
     defer uploads.deinit();
     const consumer: usize = 1;
@@ -596,7 +600,11 @@ test "ImageAtlas holds exactly its entries, all live in one frame" {
     try uploads.init(
         testing.allocator,
         testing.io,
-        .{ .storage = .cpu_texture, .upload_bytes_frame_max = 64 * 1024 },
+        .{
+            .storage = .cpu_texture,
+            .upload_bytes_frame_max = 64 * 1024,
+            .consumer_count_max = 1,
+        },
     );
     defer uploads.deinit();
     const consumer: usize = 1;

@@ -208,7 +208,9 @@ runs and `text.measure_slot_count_max` widths; a frame that draws more distinct 
 its glyph cache holds panics and names the field. The SVG and image caches hold
 `atlas.svg_entry_count_max` icons and `atlas.image_entry_count_max` images, at least one
 frame's worth, and `atlas.svg_rasterization_count_frame_max` icons rasterize per frame
-(4 at most profiles, 16 at `large`); the rest fill in over later frames. The fields and
+(4 at most profiles, 16 at `large`); the rest fill in over later frames. At most
+`events.dialog_count_max` file dialogs wait for their outcome at once (2 at `nano`, 8 at
+`standard`); one more panics and names the field. The fields and
 their measurements are in `src/core/limits.zig` and `docs/v0.4.0-memory-budget.md`.
 
 ### Render with `Cx` and `ui`

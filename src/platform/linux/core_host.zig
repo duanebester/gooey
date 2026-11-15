@@ -109,7 +109,7 @@ pub fn run(comptime App: type, app: *App, backing: std.mem.Allocator, io: std.Io
 
     const platform = try gpa.create(LinuxPlatform);
     defer gpa.destroy(platform);
-    try platform.initInPlace(gpa);
+    try platform.initInPlace();
     defer platform.deinit();
 
     const window = try PlatformWindow.init(gpa, platform, &.{
@@ -853,7 +853,7 @@ fn openDialog(
     const host: *Host = @ptrCast(@alignCast(context));
     _ = scratch; // The Response's paths are decoded into `dialog_paths`.
     assert(host.core.phase == .drain);
-    assert(request_id < core_window.dialog_count_max);
+    assert(request_id < host.core.dialog_handlers.len);
     if (host.dialog) |open| {
         std.log.warn("core host: file dialog request {d} failed: request {d} is still open", .{
             request_id,

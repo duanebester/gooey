@@ -167,6 +167,9 @@ pub fn App(
         guard: lifecycle.LifecycleGuard,
         state: State,
         store: handler_mod.Store,
+        /// The store's pool table: the app's entity pools, then the window's
+        /// text-engine pools, sized exactly at comptime.
+        store_pools: [config.entities.len + engine_pool_count_max]handler_mod.EntityPool,
         /// One pool per `config.entities` type, in list order.
         entity_pools: [config.entities.len]entities_mod.Pool,
         resources: app_resources.AppResources,
@@ -249,7 +252,7 @@ pub fn App(
             assert(scale_factor > 0);
             const gpa = self.guard.allocator();
             self.state = .{};
-            self.store = handler_mod.Store.init(State, &self.state);
+            self.store = handler_mod.Store.init(State, &self.state, &self.store_pools);
             try self.initEntityPools(gpa);
             errdefer self.deinitEntityPools(gpa);
             try self.resources.initOwnedInPlace(gpa, io, scale_factor, .{

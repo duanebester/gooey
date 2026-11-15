@@ -690,7 +690,11 @@ test "SvgAtlas re-rasterizes an icon whose atlas shelf was evicted" {
     try uploads.init(
         testing.allocator,
         testing.io,
-        .{ .storage = .cpu_texture, .upload_bytes_frame_max = 64 },
+        .{
+            .storage = .cpu_texture,
+            .upload_bytes_frame_max = 64,
+            .consumer_count_max = 1,
+        },
     );
     defer uploads.deinit();
     const consumer: usize = 1;
@@ -787,7 +791,11 @@ test "SvgAtlas holds exactly its entries and rasterizes exactly its frame budget
     try uploads.init(
         testing.allocator,
         testing.io,
-        .{ .storage = .cpu_texture, .upload_bytes_frame_max = 64 * 1024 },
+        .{
+            .storage = .cpu_texture,
+            .upload_bytes_frame_max = 64 * 1024,
+            .consumer_count_max = 1,
+        },
     );
     defer uploads.deinit();
     const consumer: usize = 1;

@@ -125,6 +125,7 @@ fn pinFields() void {
             _ = @FieldType(Atlas, name);
         }
         _ = @FieldType(@FieldType(gooey.ResourceLimits, "a11y"), "value_bytes_max");
+        _ = @FieldType(@FieldType(gooey.ResourceLimits, "events"), "dialog_count_max");
     }
 }
 

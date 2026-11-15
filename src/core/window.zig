@@ -65,47 +65,24 @@ pub fn wheelOffset(delta: f32) f32 {
 /// is `limits.build.box_depth_max`, asserted where the scratch is written.
 pub const box_depth_ceiling = limits_mod.box_depth_ceiling;
 
-/// Bytes of text-system scratch per tick for shaped runs on a shape-cache
-/// miss: one run of `MAX_GLYPHS_PER_ENTRY` glyphs, several times over for
-/// the shaper's own growth, reset at the start of every tick.
-pub const text_scratch_bytes: u32 = 256 * 1024;
-
-comptime {
-    // A file dialog's platform code allocates its paths and their slices from
-    // the text scratch, and `events.Paths.join` copies them once more, so a
-    // selection within every profile's limits always fits.
-    const dialog = limits_mod.EventLimits.ceiling;
-    assert(2 * dialog.dialog_path_bytes_max + 16 * dialog.dialog_path_count_max <=
-        text_scratch_bytes);
-}
-
-comptime {
-    // The longest run every shaper accepts fits the scratch four times over:
-    // the web shaper holds codepoints, byte offsets, and a growing glyph list
-    // in it at once, and the run's owner frees it before the next run shapes.
-    const run_bytes = text_mod.run_codepoint_count_max * @sizeOf(text_mod.ShapedGlyph);
-    assert(4 * run_bytes <= text_scratch_bytes);
-}
-
 /// Fail fast on text the core cannot shape or measure (CLAUDE.md §2): a run
 /// past the shapers' bound is a capacity error and names it.
-pub fn textFailed(frame_number: u64, content: []const u8, err: anyerror) noreturn {
+pub fn textFailed(window: *const Window, content: []const u8, err: anyerror) noreturn {
     if (err == error.TextRunTooLong) {
         std.debug.panic("text run of {d} codepoints exceeds text.run_codepoint_count_max " ++
             "{d}, the longest run one shaping may hold in the {d}-byte text scratch, in " ++
             "frame {d}. Split the text into shorter runs.", .{
             text_mod.codepointCount(content),
             text_mod.run_codepoint_count_max,
-            text_scratch_bytes,
-            frame_number,
+            window.text_scratch.len,
+            window.frame_number,
         });
     }
-    std.debug.panic("text shaping failed in frame {d}: {s}", .{ frame_number, @errorName(err) });
+    std.debug.panic("text shaping failed in frame {d}: {s}", .{
+        window.frame_number,
+        @errorName(err),
+    });
 }
-
-/// File dialogs awaiting their completion. One opens per tick, and its
-/// completion is delivered the next tick, so a handful covers bursts.
-pub const dialog_count_max: u32 = 8;
 
 /// `render_deadline_ns` when the last build asked for no timed render.
 pub const deadline_none: u64 = std.math.maxInt(u64);
@@ -682,7 +659,9 @@ pub const Window = struct {
     debugger: debugger_mod.State,
     /// Per-frame phase timestamps (`-Dframe-trace`); `void` when off.
     trace: frame_trace.State,
-    dialog_handlers: [dialog_count_max]?handler_mod.Handler,
+    /// One slot per pending file dialog, indexed by its request id
+    /// (`limits.events.dialog_count_max` slots).
+    dialog_handlers: []?handler_mod.Handler,
     dialogs_opened: u32,
     now_ns: u64,
     width: f32,
@@ -891,7 +870,6 @@ pub noinline fn initInPlace(self: *Window, gpa: std.mem.Allocator, options: *con
     self.pending_font = null;
     self.announcements.clear();
     self.dialogs_opened = 0;
-    self.dialog_handlers = @splat(null);
     self.now_ns = 0;
     self.width = options.width;
     self.height = options.height;
@@ -999,11 +977,15 @@ fn initRuntimeStorage(self: *Window, gpa: std.mem.Allocator, limits: *const Reso
         .text_bytes_max = limits.events.text_bytes_max,
     });
     errdefer self.queue.deinit(gpa);
-    try self.completions.initInPlace(
-        gpa,
-        std.math.ceilPowerOfTwoAssert(u32, limits.events.completion_count_max),
-    );
+    try self.completions.initInPlace(gpa, .{
+        .count_max = std.math.ceilPowerOfTwoAssert(u32, limits.events.completion_count_max),
+        .dialog_count_max = limits.events.dialog_count_max,
+        .dialog_path_bytes_max = limits.events.dialog_path_bytes_max,
+    });
     errdefer self.completions.deinit(gpa);
+    self.dialog_handlers = try gpa.alloc(?handler_mod.Handler, limits.events.dialog_count_max);
+    errdefer gpa.free(self.dialog_handlers);
+    @memset(self.dialog_handlers, null);
     try self.images.initInPlace(gpa, self.resources.io, &self.completions, &limits.atlas);
     errdefer self.images.deinit(gpa);
     try self.retained.initInPlace(gpa, &.{
@@ -1037,7 +1019,7 @@ fn initRuntimeStorage(self: *Window, gpa: std.mem.Allocator, limits: *const Reso
     errdefer gpa.free(self.dialog_request_bytes);
     try initRenderTargets(self, limits);
     errdefer deinitRenderTargets(self);
-    self.text_scratch = try gpa.alloc(u8, text_scratch_bytes);
+    self.text_scratch = try gpa.alloc(u8, limits_mod.textScratchBytes(&limits.events));
     errdefer gpa.free(self.text_scratch);
     self.text_scratch_allocator = std.heap.FixedBufferAllocator.init(self.text_scratch);
     // Headless until a host binds its platform's bridge (`bindScreenReader`).
@@ -1111,6 +1093,7 @@ fn deinitRuntimeStorage(self: *Window, gpa: std.mem.Allocator) void {
     self.retained.deinit(gpa);
     // The worker pushes onto the completion ring until it is joined.
     self.images.deinit(gpa);
+    gpa.free(self.dialog_handlers);
     self.completions.deinit(gpa);
     self.queue.deinit(gpa);
 }

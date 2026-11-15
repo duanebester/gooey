@@ -777,7 +777,7 @@ fn measureText(
     const metrics = text_system.getMetricsFor(family);
     const scale = @as(f32, @floatFromInt(font_size)) / metrics.point_size;
     const width = text_system.measureText(family, content, variant) catch |err| {
-        window_mod.textFailed(window.frame_number, content, err);
+        window_mod.textFailed(window, content, err);
     };
     return .{ .width = width * scale, .height = metrics.line_height * scale };
 }

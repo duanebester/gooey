@@ -48,14 +48,13 @@ pub const FbdevPlatform = struct {
 
     const Self = @This();
 
-    pub fn initInPlace(self: *Self, allocator: std.mem.Allocator) !void {
+    pub fn initInPlace(self: *Self) !void {
         assert(@intFromPtr(self) != 0);
         self.* = .{
-            .window_registry = WindowRegistry.init(allocator),
+            .window_registry = .init(),
             .translator = undefined,
             .scale_factor = scaleFromEnvironment(),
         };
-        errdefer self.window_registry.deinit();
 
         const path = std.c.getenv("GOOEY_FBDEV") orelse "/dev/fb0";
         self.framebuffer.open(path) catch |err| {
@@ -85,7 +84,6 @@ pub const FbdevPlatform = struct {
         assert(self.window == null);
         self.devices.closeAll();
         self.framebuffer.close();
-        self.window_registry.deinit();
     }
 
     /// Logical size of the panel: the size of the one window.
@@ -163,7 +161,6 @@ pub const FbdevPlatform = struct {
 
     pub fn registerWindow(self: *Self, window: *anyopaque) !WindowId {
         assert(@intFromPtr(window) != 0);
-        if (self.window_registry.count() >= 1) return error.MultipleWindowsUnsupported;
         const id = try self.window_registry.register(window);
         assert(id.isValid());
         return id;

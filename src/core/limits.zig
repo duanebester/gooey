@@ -36,6 +36,7 @@ const assert = std.debug.assert;
 // not between comptime values, so Zig resolves it.
 const packed_frame = @import("packed_frame.zig");
 const FontVariant = @import("../text/types.zig").FontVariant;
+const ShapedGlyph = @import("../text/types.zig").ShapedGlyph;
 
 // =============================================================================
 // Rendering Limits (absolute framework ceilings)
@@ -139,7 +140,18 @@ pub const MAX_IMAGE_PATH_BYTES: u32 = 4_096;
 /// uploads are ordered after earlier draws (contract §9).
 pub const atlas_open_frame_count_max: u32 = 1;
 
+/// Windows one app opens: one (contract decision 14). The platform window
+/// registry and the atlas upload journal's consumers are sized from it; a
+/// multi-window core would make it a `WindowLimits` field.
+pub const window_count_max: u32 = 1;
+
+/// Image decodes the worker holds in the completion ring at once: it decodes
+/// one request at a time and waits for the drain to take the result.
+pub const image_decode_outstanding_max: u32 = 1;
+
 comptime {
+    assert(window_count_max == 1);
+    assert(image_decode_outstanding_max == 1);
     assert(MAX_IMAGE_DECODE_BYTES > MAX_ATLAS_SIZE * MAX_ATLAS_SIZE * 4);
     assert(MAX_SVG_RASTERIZATIONS_PER_FRAME <= MAX_SVG_ENTRIES);
     assert(MAX_IMAGE_REQUESTS <= MAX_IMAGE_ENTRIES);
@@ -336,14 +348,7 @@ pub const ResourceLimits = struct {
                 self.events.text_bytes_max,
             );
         }
-        if (self.events.dialog_path_bytes_max > self.events.text_bytes_max) {
-            return relationship(
-                .events,
-                "dialog_path_bytes_max",
-                self.events.dialog_path_bytes_max,
-                self.events.text_bytes_max,
-            );
-        }
+        if (self.checkEventRelationships()) |violation| return violation;
         if (self.records.paint_record_count_frame_max < element_count) {
             return .{
                 .budget = .records,
@@ -378,6 +383,30 @@ pub const ResourceLimits = struct {
                 .value = self.atlas.image_entry_count_max,
                 .bound = image_bound,
             };
+        }
+        return null;
+    }
+
+    /// The queue copies a dialog's paths, and each pending dialog completes
+    /// into the ring beside the image worker's one outstanding decode.
+    fn checkEventRelationships(self: *const ResourceLimits) ?Violation {
+        if (self.events.dialog_path_bytes_max > self.events.text_bytes_max) {
+            return relationship(
+                .events,
+                "dialog_path_bytes_max",
+                self.events.dialog_path_bytes_max,
+                self.events.text_bytes_max,
+            );
+        }
+        assert(self.events.completion_count_max > 0);
+        const dialog_bound = self.events.completion_count_max - image_decode_outstanding_max;
+        if (self.events.dialog_count_max > dialog_bound) {
+            return relationship(
+                .events,
+                "dialog_count_max",
+                self.events.dialog_count_max,
+                dialog_bound,
+            );
         }
         return null;
     }
@@ -1096,13 +1125,31 @@ comptime {
 /// The most codepoints one shaped run may hold, on every backend. CoreText
 /// shapes at most 2048 UTF-16 units and 1024 glyphs per CTRun, DirectWrite
 /// 2048 UTF-16 units, and the 0.4.0 core's per-tick text scratch holds the
-/// shaped glyphs of one such run with room for the shaper's growth (asserted
-/// in `core/window.zig`). A codepoint is at most two UTF-16 units and, in the
+/// shaped glyphs of one such run with room for the shaper's growth
+/// (`textScratchBytes`). A codepoint is at most two UTF-16 units and, in the
 /// scripts Gooey shapes, at most one glyph. A longer run fails shaping with
 /// `error.TextRunTooLong` before any backend sees it. A platform limit, not an
 /// app capacity: it also bounds the words (one per codepoint at most) and lines
 /// layout wraps one text into, since the core measures every text whole first.
 pub const run_codepoint_count_max: u32 = 1024;
+
+/// Bytes of one window's per-tick text scratch, from its event budget. Two
+/// tenants can hold it at once: the shaped glyphs of the run a frame in
+/// flight left there, four times over because the web shaper holds
+/// codepoints, byte offsets and a growing glyph list at once; and a file
+/// dialog that runs in the next drain, whose platform code allocates its
+/// paths and their slices there before `events.Paths.join` copies them once
+/// more. The scratch resets only between frames, so it holds both together.
+pub fn textScratchBytes(events: *const EventLimits) u32 {
+    assert(events.dialog_path_bytes_max > 0);
+    assert(events.dialog_path_count_max > 0);
+    const run_bytes: u32 = run_codepoint_count_max * @sizeOf(ShapedGlyph);
+    const dialog_bytes: u32 = 2 * events.dialog_path_bytes_max +
+        @sizeOf([]const u8) * events.dialog_path_count_max;
+    const scratch_bytes = 4 * run_bytes + dialog_bytes;
+    assert(scratch_bytes > dialog_bytes);
+    return scratch_bytes;
+}
 
 /// Most handlers one element can register (click, click-outside, key).
 pub const handler_count_element_max: u32 = 3;
@@ -1267,6 +1314,10 @@ pub const EventLimits = struct {
     /// request's folder and suggested name together. At most
     /// `text_bytes_max`, since the queue copies the paths.
     dialog_path_bytes_max: u32,
+    /// File dialogs awaiting their completion at once (async requests, §2).
+    /// Each completes into the completion ring beside the image worker's one
+    /// outstanding decode, so it is below `completion_count_max`.
+    dialog_count_max: u32,
 
     pub const nano: EventLimits = .{
         .queue_count_max = 64,
@@ -1274,6 +1325,7 @@ pub const EventLimits = struct {
         .text_bytes_max = 4 * 1024,
         .dialog_path_count_max = 16,
         .dialog_path_bytes_max = 2 * 1024,
+        .dialog_count_max = 2,
     };
     pub const small: EventLimits = .{
         .queue_count_max = 128,
@@ -1281,6 +1333,7 @@ pub const EventLimits = struct {
         .text_bytes_max = 8 * 1024,
         .dialog_path_count_max = 32,
         .dialog_path_bytes_max = 4 * 1024,
+        .dialog_count_max = 4,
     };
     pub const standard: EventLimits = .{
         .queue_count_max = 256,
@@ -1288,6 +1341,7 @@ pub const EventLimits = struct {
         .text_bytes_max = 16 * 1024,
         .dialog_path_count_max = 64,
         .dialog_path_bytes_max = 8 * 1024,
+        .dialog_count_max = 8,
     };
     pub const large: EventLimits = .{
         .queue_count_max = 512,
@@ -1295,6 +1349,7 @@ pub const EventLimits = struct {
         .text_bytes_max = 64 * 1024,
         .dialog_path_count_max = 256,
         .dialog_path_bytes_max = 32 * 1024,
+        .dialog_count_max = 8,
     };
     pub const ceiling: EventLimits = .{
         .queue_count_max = 4_096,
@@ -1302,6 +1357,7 @@ pub const EventLimits = struct {
         .text_bytes_max = 1024 * 1024,
         .dialog_path_count_max = 1_024,
         .dialog_path_bytes_max = 64 * 1024,
+        .dialog_count_max = 64,
     };
 };
 
@@ -2212,6 +2268,33 @@ test "check bounds each atlas cache field by its ceiling and its relationships" 
     try std.testing.expectEqual(limits.atlas.svg_entry_count_max, work.bound);
 }
 
+test "check bounds dialog_count_max by its ceiling and the completion ring" {
+    // Goal: `events.dialog_count_max` fails at 0 and one past its ceiling,
+    // passes at the ceiling, and leaves one completion slot for the image
+    // worker's decode. Method: move it onto each bound (valid), then one past.
+    var limits = ResourceLimits.ceiling;
+    limits.events.dialog_count_max = 0;
+    try std.testing.expectEqual(Violation.Rule.zero, limits.check().?.rule);
+    try std.testing.expectEqualStrings("dialog_count_max", limits.check().?.field);
+    limits.events.dialog_count_max = EventLimits.ceiling.dialog_count_max;
+    try std.testing.expect(limits.check() == null);
+    limits.events.dialog_count_max += 1;
+    const above = limits.check().?;
+    try std.testing.expectEqual(Violation.Budget.events, above.budget);
+    try std.testing.expectEqual(Violation.Rule.above_ceiling, above.rule);
+    try std.testing.expectEqual(EventLimits.ceiling.dialog_count_max, above.bound);
+
+    // `nano` completes 16 at once: 15 dialogs and the decode.
+    limits = ResourceLimits.nano;
+    limits.events.dialog_count_max = limits.events.completion_count_max - 1;
+    try std.testing.expect(limits.check() == null);
+    limits.events.dialog_count_max += 1;
+    const ring = limits.check().?;
+    try std.testing.expectEqualStrings("dialog_count_max", ring.field);
+    try std.testing.expectEqual(Violation.Rule.above_relationship, ring.rule);
+    try std.testing.expectEqual(@as(u32, 15), ring.bound);
+}
+
 test "check bounds box depth and layers by their ceilings and the element count" {
     // Goal: `build.box_depth_max` and `build.layer_count_frame_max` each sit
     // exactly on every bound (valid), then one past it (the named violation).
@@ -2284,6 +2367,15 @@ test "derived budget quantities" {
     try std.testing.expect(PaintLimits.small.paintBytes() < 1_142 * 1024);
     try std.testing.expect(paint.paintBytes() < 2_894 * 1024);
     try std.testing.expect(PaintLimits.large.paintBytes() < 34 * 1024 * 1024);
+
+    // The text scratch holds a run's glyphs four times over plus one
+    // dialog's paths twice and their slices, worked by hand for `nano`.
+    const run_bytes = 1_024 * @sizeOf(ShapedGlyph);
+    const nano_dialog = 2 * 2_048 + 16 * @sizeOf([]const u8);
+    const nano_scratch = textScratchBytes(&EventLimits.nano);
+    try std.testing.expectEqual(@as(u32, 4 * run_bytes + nano_dialog), nano_scratch);
+    try std.testing.expect(nano_scratch < textScratchBytes(&EventLimits.large));
+    try std.testing.expect(textScratchBytes(&EventLimits.ceiling) < 512 * 1024);
 }
 
 test "text.fonts reports each broken face set under its own field" {

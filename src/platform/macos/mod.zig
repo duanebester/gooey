@@ -15,7 +15,7 @@
 //! const macos = @import("gooey").platform.macos;
 //!
 //! var plat: macos.Platform = undefined;
-//! try plat.initInPlace(allocator);
+//! try plat.initInPlace();
 //! defer plat.deinit();
 //!
 //! const options = macos.WindowOptions{ .title = "My App" };

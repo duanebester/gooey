@@ -59,7 +59,7 @@ pub fn run(comptime App: type, app: *App, backing: std.mem.Allocator, io: std.Io
 
     const platform = try gpa.create(FbdevPlatform);
     defer gpa.destroy(platform);
-    try platform.initInPlace(gpa);
+    try platform.initInPlace();
     defer platform.deinit();
 
     // The window covers the panel; `width` and `height` are ignored.

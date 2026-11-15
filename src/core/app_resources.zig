@@ -17,7 +17,8 @@ const Allocator = std.mem.Allocator;
 
 const text_mod = @import("../text/mod.zig");
 const TextSystem = text_mod.TextSystem;
-const TextLimits = @import("limits.zig").TextLimits;
+const limits_mod = @import("limits.zig");
+const TextLimits = limits_mod.TextLimits;
 
 const svg_mod = @import("../svg/mod.zig");
 const SvgAtlas = svg_mod.SvgAtlas;
@@ -91,6 +92,21 @@ pub const AppResources = struct {
         return self;
     }
 
+    /// Load the app's primary family, or the system sans-serif, and its mono
+    /// family when it names one.
+    fn loadFonts(text_system: *TextSystem, font_config: *const FontConfig) !void {
+        std.debug.assert(font_config.font_size > 0);
+        std.debug.assert(font_config.font_size < 1000);
+        if (font_config.font_name) |name| {
+            try text_system.loadFont(name, font_config.font_size);
+        } else {
+            try text_system.loadSystemFont(.sans_serif, font_config.font_size);
+        }
+        if (font_config.mono) |source| {
+            try text_system.loadMonoFont(source, font_config.font_size);
+        }
+    }
+
     /// In-place owning init for callers that need to avoid a stack temp.
     /// Marked `noinline` so ReleaseSmall doesn't fold the stack frame back
     /// into the caller (WASM stack budget — CLAUDE.md §14).
@@ -118,6 +134,7 @@ pub const AppResources = struct {
         try atlas_uploads.init(allocator, io, .{
             .storage = platform.atlas_storage,
             .upload_bytes_frame_max = atlas_limits.upload_bytes_frame_max,
+            .consumer_count_max = limits_mod.window_count_max,
         });
         errdefer atlas_uploads.deinit();
 
@@ -129,14 +146,7 @@ pub const AppResources = struct {
         });
         errdefer text_system.deinit();
 
-        if (font_config.font_name) |name| {
-            try text_system.loadFont(name, font_config.font_size);
-        } else {
-            try text_system.loadSystemFont(.sans_serif, font_config.font_size);
-        }
-        if (font_config.mono) |source| {
-            try text_system.loadMonoFont(source, font_config.font_size);
-        }
+        try loadFonts(text_system, &font_config);
 
         const svg_atlas = try allocator.create(SvgAtlas);
         errdefer allocator.destroy(svg_atlas);

@@ -655,6 +655,7 @@ const TestAtlas = struct {
         try self.uploads.init(testing.allocator, testing.io, .{
             .storage = storage,
             .upload_bytes_frame_max = 64 * 64 * 4,
+            .consumer_count_max = 1,
         });
         errdefer self.uploads.deinit();
         self.uploads.registerConsumer(consumer);

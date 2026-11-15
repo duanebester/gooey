@@ -43,6 +43,7 @@
 //!   which is keyed and on screen but not draggable.
 //! - `core-dialog-target`: names a non-root state as a file dialog's completion handler.
 //! - `core-dialog-paths`: a dialog selects one path more than `dialog_path_count_max`.
+//! - `core-dialog-count`: one file dialog more than `events.dialog_count_max` stays open.
 //! - `core-mono-unset`: draws `.family = .mono` text in an app with no `fonts.mono`.
 //! - `core-wrap-run`: one text of 1,025 newlines and letters, one codepoint past
 //!   `text.run_codepoint_count_max`, which also sizes layout's per-text word
@@ -92,6 +93,7 @@ const Mode = enum {
     @"core-start-drag-target",
     @"core-dialog-target",
     @"core-dialog-paths",
+    @"core-dialog-count",
     @"core-mono-unset",
     @"core-wrap-run",
     @"core-wrap-frame",
@@ -136,6 +138,7 @@ pub fn main(init: std.process.Init) !void {
         .@"core-start-drag-target" => coreStartDragTarget(init.gpa, init.io),
         .@"core-dialog-target" => coreDialogTarget(init.gpa, init.io),
         .@"core-dialog-paths" => coreDialogPaths(init.gpa, init.io),
+        .@"core-dialog-count" => coreDialogCount(init.gpa, init.io),
         .@"core-mono-unset" => coreTick(init.gpa, init.io, CoreApp.monoText),
         .@"core-wrap-run" => coreTick(init.gpa, init.io, CoreApp.wrapRun),
         .@"core-wrap-frame" => coreTick(init.gpa, init.io, CoreApp.wrapFrame),
@@ -185,7 +188,12 @@ fn atlasHarness(gpa: std.mem.Allocator, io: std.Io, kind: gooey.text.AtlasKind) 
     const uploads = gpa.create(text.AtlasUploads) catch |err| {
         std.debug.panic("setup: AtlasUploads allocation failed: {s}", .{@errorName(err)});
     };
-    uploads.init(gpa, io, .{ .storage = .cpu_texture, .upload_bytes_frame_max = 64 }) catch |err| {
+    const upload_options: text.AtlasUploads.Options = .{
+        .storage = .cpu_texture,
+        .upload_bytes_frame_max = 64,
+        .consumer_count_max = 1,
+    };
+    uploads.init(gpa, io, upload_options) catch |err| {
         std.debug.panic("setup: AtlasUploads.init failed: {s}", .{@errorName(err)});
     };
     const atlas = gpa.create(text.Atlas) catch |err| {
@@ -237,6 +245,7 @@ fn glyphCache(gpa: std.mem.Allocator, io: std.Io) void {
     const upload_options: text.AtlasUploads.Options = .{
         .storage = .cpu_texture,
         .upload_bytes_frame_max = 1024 * 1024,
+        .consumer_count_max = 1,
     };
     uploads.init(gpa, io, upload_options) catch |err| {
         std.debug.panic("setup: AtlasUploads.init failed: {s}", .{@errorName(err)});
@@ -281,6 +290,7 @@ fn cacheUploads(gpa: std.mem.Allocator, io: std.Io) *gooey.text.AtlasUploads {
     const options: gooey.text.AtlasUploads.Options = .{
         .storage = .cpu_texture,
         .upload_bytes_frame_max = 1024 * 1024,
+        .consumer_count_max = 1,
     };
     uploads.init(gpa, io, options) catch |err| {
         std.debug.panic("setup: AtlasUploads.init failed: {s}", .{@errorName(err)});
@@ -670,6 +680,42 @@ fn coreDialogPaths(gpa: std.mem.Allocator, io: std.Io) void {
     app.window.file_dialog = .{ .context = &context, .open = TooManyPaths.open };
     clickCenter(app);
 }
+
+/// Open `nano`'s two file dialogs, which stay open as a portal's do, then
+/// one more: each click requests one, and one opens per tick.
+fn coreDialogCount(gpa: std.mem.Allocator, io: std.Io) void {
+    const app = initCoreApp(gooey.App(CoreState, CoreApp.manyButton, core_config), gpa, io);
+    var context: u8 = 0;
+    app.window.file_dialog = .{ .context = &context, .open = StaysOpen.open };
+    const dialog_count_max = gooey.ResourceLimits.nano.events.dialog_count_max;
+    app.tick(1);
+    var opened: u32 = 0;
+    while (opened <= dialog_count_max) : (opened += 1) {
+        std.debug.assert(app.window.dialogs_opened == opened);
+        const point = gooey.input.MouseEvent{
+            .position = .{ .x = 50, .y = 50 },
+            .button = .left,
+            .click_count = 1,
+            .modifiers = .{},
+        };
+        app.window.queue.push(.{ .input = .{ .mouse_down = point } });
+        app.window.queue.push(.{ .input = .{ .mouse_up = point } });
+        app.tick(2 + opened);
+    }
+    unreachable;
+}
+
+/// A dialog service whose dialogs never close.
+const StaysOpen = struct {
+    fn open(
+        _: *anyopaque,
+        _: std.mem.Allocator,
+        _: u32,
+        _: gooey.internals.handler.FileDialogRequest,
+    ) ?gooey.internals.events.Completion.Outcome {
+        return null;
+    }
+};
 
 /// A dialog service that selects one path more than `nano` allows.
 const TooManyPaths = struct {

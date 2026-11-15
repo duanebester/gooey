@@ -18,8 +18,8 @@ pub const WebPlatform = struct {
     const Self = @This();
 
     /// Initialize in place, as every backend's platform is.
-    pub fn initInPlace(self: *Self, allocator: std.mem.Allocator) !void {
-        self.window_registry = WindowRegistry.init(allocator);
+    pub fn initInPlace(self: *Self) !void {
+        self.window_registry = .init();
         // Not running yet. `run` is the only place this becomes true: the host
         // consults `isRunning` after every frame to decide whether to schedule
         // another, and reporting true here would invite a frame against an

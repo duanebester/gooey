@@ -70,9 +70,6 @@ pub const Pending = struct {
     bytes: []const u8,
 };
 
-/// Bound on registered consumers: one per window (multi-window registry bound).
-pub const consumer_count_max: u32 = 32;
-
 /// Record offsets are 4-byte aligned: Vulkan buffer-to-image copies and Metal
 /// blits require offsets aligned to the 4-byte RGBA texel.
 pub const record_alignment: u32 = 4;
@@ -100,7 +97,9 @@ pub const AtlasUploads = struct {
     /// Journal sequence of `records[0]`. Sequences count records ever staged.
     sequence_base: u64,
 
-    consumers: [consumer_count_max]Consumer,
+    /// One slot per window that may render (`Options.consumer_count_max`);
+    /// key 0 marks a free slot.
+    consumers: []Consumer,
     consumer_count: u32,
 
     /// Atlas frame clock. Advanced by every consumer's `beginFrame`; read by
@@ -124,12 +123,16 @@ pub const AtlasUploads = struct {
         storage: AtlasStorage,
         /// `AtlasLimits.upload_bytes_frame_max`.
         upload_bytes_frame_max: u32,
+        /// Renderers consuming the journal at once: one per window, so
+        /// `limits.window_count_max` in an app.
+        consumer_count_max: u32,
     };
 
     /// Reserve the journal. Pages are not written here, so they become resident
     /// only as uploads touch them.
     pub fn init(self: *Self, allocator: std.mem.Allocator, io: std.Io, options: Options) !void {
         assert(options.upload_bytes_frame_max >= record_bytes_min);
+        assert(options.consumer_count_max > 0);
         const staged = options.storage == .gpu_upload;
         const byte_capacity: u32 = if (staged) options.upload_bytes_frame_max else 0;
         const record_capacity: u32 = byte_capacity / record_bytes_min;
@@ -137,6 +140,8 @@ pub const AtlasUploads = struct {
         self.bytes = try allocator.alloc(u8, byte_capacity);
         errdefer allocator.free(self.bytes);
         self.records = try allocator.alloc(Upload, record_capacity);
+        errdefer allocator.free(self.records);
+        self.consumers = try allocator.alloc(Consumer, options.consumer_count_max);
 
         self.allocator = allocator;
         self.io = io;
@@ -145,7 +150,7 @@ pub const AtlasUploads = struct {
         self.byte_count = 0;
         self.record_count = 0;
         self.sequence_base = 0;
-        self.consumers = @splat(.{ .key = 0, .sequence_next = 0, .frame_open = 0 });
+        @memset(self.consumers, .{ .key = 0, .sequence_next = 0, .frame_open = 0 });
         self.consumer_count = 0;
         self.frame = 1;
         self.frame_deferred = 0;
@@ -160,13 +165,18 @@ pub const AtlasUploads = struct {
         try self.init(
             allocator,
             io,
-            .{ .storage = .gpu_upload, .upload_bytes_frame_max = record_bytes_min },
+            .{
+                .storage = .gpu_upload,
+                .upload_bytes_frame_max = record_bytes_min,
+                .consumer_count_max = 1,
+            },
         );
         assert(self.consumer_count == 0);
     }
 
     pub fn deinit(self: *Self) void {
         assert(self.consumer_count == 0);
+        self.allocator.free(self.consumers);
         self.allocator.free(self.records);
         self.allocator.free(self.bytes);
         self.* = undefined;
@@ -183,11 +193,12 @@ pub const AtlasUploads = struct {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         assert(self.findConsumer(key) == null);
-        if (self.consumer_count == consumer_count_max) {
+        if (self.consumer_count == self.consumers.len) {
             std.debug.panic("AtlasUploads pool 'consumers' exhausted: capacity {d}, " ++
-                "{d} in use, 1 requested.", .{ consumer_count_max, self.consumer_count });
+                "{d} in use, 1 requested. One renderer registers per window " ++
+                "(limits.window_count_max).", .{ self.consumers.len, self.consumer_count });
         }
-        for (&self.consumers) |*consumer| {
+        for (self.consumers) |*consumer| {
             if (consumer.key != 0) continue;
             // Records staged before registration describe items the caller
             // condemns; this consumer starts after them.
@@ -302,7 +313,7 @@ pub const AtlasUploads = struct {
     /// frame, or the current frame when none is open.
     pub fn frameProtectedLocked(self: *const Self) u64 {
         var frame_min = self.frame;
-        for (&self.consumers) |*consumer| {
+        for (self.consumers) |*consumer| {
             if (consumer.key == 0) continue;
             if (consumer.frame_open == 0) continue;
             frame_min = @min(frame_min, consumer.frame_open);
@@ -314,7 +325,7 @@ pub const AtlasUploads = struct {
     /// Records before this sequence have reached every consumer's texture.
     pub fn sequenceRetiredLocked(self: *const Self) u64 {
         var sequence_min = self.sequenceEnd();
-        for (&self.consumers) |*consumer| {
+        for (self.consumers) |*consumer| {
             if (consumer.key == 0) continue;
             sequence_min = @min(sequence_min, consumer.sequence_next);
         }
@@ -375,7 +386,7 @@ pub const AtlasUploads = struct {
 
     fn findConsumer(self: *Self, key: usize) ?*Consumer {
         assert(key != 0);
-        for (&self.consumers) |*consumer| {
+        for (self.consumers) |*consumer| {
             if (consumer.key == key) return consumer;
         }
         return null;
@@ -420,9 +431,12 @@ const testing = std.testing;
 fn testUploads(storage: AtlasStorage, upload_bytes: u32) !*AtlasUploads {
     const uploads = try testing.allocator.create(AtlasUploads);
     errdefer testing.allocator.destroy(uploads);
+    // Two consumers, as two windows would register: the journal's retirement
+    // and frame protection follow the slowest of them.
     try uploads.init(testing.allocator, testing.io, .{
         .storage = storage,
         .upload_bytes_frame_max = upload_bytes,
+        .consumer_count_max = 2,
     });
     return uploads;
 }
