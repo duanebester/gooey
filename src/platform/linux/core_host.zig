@@ -179,6 +179,8 @@ pub const Host = struct {
     ime_enabled: bool,
     /// The IME rect last sent to the compositor, while enabled.
     ime_rect: ?records.Rect,
+    /// The text field the IME composed for at the last `syncIme`.
+    ime_owner: ?core_window.ElementId,
     /// The cursor last set on the window.
     cursor: core_element.CursorShape,
     /// The portal dialog that is open, at most one (`openDialog`).
@@ -236,6 +238,7 @@ pub const Host = struct {
         self.quit = false;
         self.ime_enabled = false;
         self.ime_rect = null;
+        self.ime_owner = null;
         self.cursor = .default;
         self.dialog = null;
         self.frame_callback = null;
@@ -541,6 +544,7 @@ pub const Host = struct {
     /// text input is focused and the compositor has entered the surface, with
     /// the caret rect the core's `Query` answers.
     fn syncIme(self: *Host) void {
+        self.endStaleComposition();
         const rect = self.query.imeCursorRect();
         const wanted = rect != null and self.window.ime_active;
         if (!wanted) {
@@ -559,6 +563,29 @@ pub const Host = struct {
         }
         self.window.setImeCursorRect(caret.x, caret.y, caret.width, caret.height);
         self.ime_rect = caret;
+    }
+
+    /// One text-input-v3 object serves every text field, so the input method
+    /// never sees Gooey's focus move. When the focused field changes with a
+    /// composition left, disable and enable again, as a toolkit does between
+    /// widgets, so the input method resets instead of composing into the next
+    /// field. The core has already committed the preedit into the old field
+    /// (`Engine.commitPreedit`), so it lands there before the disable. A
+    /// click needs none of this on GNOME, whose compositor resets the input
+    /// method on a press (committing or clearing, as the engine chooses),
+    /// but an app's `effects.focus` does.
+    fn endStaleComposition(self: *Host) void {
+        const owner = self.query.imeOwner();
+        if (std.meta.eql(owner, self.ime_owner)) return;
+        self.ime_owner = owner;
+        if (!self.window.hasMarkedText()) return;
+        self.window.clearMarkedText();
+        assert(!self.window.hasMarkedText());
+        if (!self.ime_enabled) return;
+        self.window.disableIme();
+        self.window.enableIme();
+        // A re-enabled text input has no caret rect until one is sent.
+        self.ime_rect = null;
     }
 
     // =========================================================================

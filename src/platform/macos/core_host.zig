@@ -148,6 +148,8 @@ pub const Host = struct {
     /// The IME caret rect of the last rendered frame `syncIme` saw, and the
     /// marked text length the last built frame drained. Main thread only.
     ime_rect: ?records.Rect,
+    /// The text field the IME composed for at the last `syncIme`.
+    ime_owner: ?core_window.ElementId,
     built_frame_number: u64,
     built_marked_length_utf16: c_ulong,
     /// Render thread only, `-Dframe-trace` builds: drawables awaiting their
@@ -184,6 +186,7 @@ pub const Host = struct {
         self.viewport_clamp_logged = false;
         self.cursor = .default;
         self.ime_rect = null;
+        self.ime_owner = null;
         self.built_frame_number = 0;
         self.built_marked_length_utf16 = 0;
         if (frame_trace.enabled) self.presented = .{};
@@ -325,12 +328,33 @@ fn syncIme(host: *Host) void {
         host.built_frame_number = host.core.frame_number;
         host.built_marked_length_utf16 = host.window.marked_length_utf16;
     }
+    endStaleComposition(host);
     const rect = host.query.imeCursorRect();
     if (std.meta.eql(rect, host.ime_rect)) return;
     host.ime_rect = rect;
     const context = host.window.ns_view.msgSend(objc.c.id, "inputContext", .{});
     if (context == null) return;
     objc.Object.fromId(context).msgSend(void, "invalidateCharacterCoordinates", .{});
+}
+
+/// The view is one first responder for every text field, so AppKit never
+/// sees Gooey's focus move. When the focused field changes with marked text
+/// left, the input method would go on composing into the next field, which
+/// would show the whole composition as its own. The core has already
+/// committed it into the old field (`Engine.commitPreedit`), so the input
+/// method only forgets it here: an `insertText:` now would land in the field
+/// that has focus, a second time. A click reaches the input method first
+/// (`mouseDown:`); one that commits there does so into the old field.
+fn endStaleComposition(host: *Host) void {
+    const owner = host.query.imeOwner();
+    if (std.meta.eql(owner, host.ime_owner)) return;
+    host.ime_owner = owner;
+    if (!host.window.hasMarkedText()) return;
+    host.window.clearMarkedText();
+    assert(!host.window.hasMarkedText());
+    const context = host.window.ns_view.msgSend(objc.c.id, "inputContext", .{});
+    if (context == null) return;
+    objc.Object.fromId(context).msgSend(void, "discardMarkedText", .{});
 }
 
 /// Set the cursor the tick resolved from the hovered record, only when it

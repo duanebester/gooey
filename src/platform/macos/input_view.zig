@@ -199,8 +199,20 @@ fn isFlipped(_: objc.c.id, _: objc.c.SEL) callconv(.c) bool {
 // Mouse Method Implementations
 // =============================================================================
 
+/// The input method sees a click first, as NSTextView lets it: one that
+/// lands outside the marked text (`characterIndexForPoint:`) commits the
+/// composition through `insertText:`, which queues ahead of the click, so it
+/// reaches the field that owns it before the click moves focus. The click
+/// is queued whether or not the input method used it: the view cannot tell
+/// a click on the marked text from one elsewhere.
 fn mouseDown(self: objc.c.id, _: objc.c.SEL, event: objc.c.id) callconv(.c) void {
     const window = getWindow(self) orelse return;
+    if (window.hasMarkedText()) {
+        const context = objc.Object.fromId(self).msgSend(objc.c.id, "inputContext", .{});
+        if (context != null) {
+            _ = objc.Object.fromId(context).msgSend(bool, "handleEvent:", .{event});
+        }
+    }
     _ = window.handleInput(parseMouseEvent(self, event, .mouse_down));
 }
 
@@ -556,10 +568,16 @@ fn insertText(
     _ = window.handleInput(.{ .text_input = .{ .text = str } });
 }
 
+/// Every point is outside the marked text: the view does not map points to
+/// characters. Index 0 would tell an input method that a click landed on the
+/// composition's first character, so it would keep composing instead of
+/// committing (`mouseDown:`).
 fn characterIndexForPoint(_: objc.c.id, _: objc.c.SEL, _: NSPoint) callconv(.c) c_ulong {
-    // Return 0 - we don't support click-to-position in IME candidate window
-    return 0;
+    return ns_not_found;
 }
+
+/// `NSNotFound`, `NSIntegerMax`, as an unsigned index.
+const ns_not_found: c_ulong = std.math.maxInt(c_long);
 
 fn firstRectForCharacterRange(
     self: objc.c.id,
