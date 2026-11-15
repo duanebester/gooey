@@ -947,14 +947,72 @@ pub fn wrapText(
         return .{ .lines = &.{}, .total_height = 0, .max_line_width = 0 };
     }
 
-    const measure_fn = engine.measure_text_fn orelse {
+    if (engine.measure_text_fn == null) {
         return .{ .lines = &.{}, .total_height = 0, .max_line_width = 0 };
-    };
+    }
 
+    var lines: BoundedList(types.WrappedLine) = .{ .buffer = engine.line_scratch };
+    const max_line_width = wrapLines(engine, text_str, config, max_width, &lines);
+    claimWrappedLines(engine, lines.len);
+    // Copy to arena for return (arena memory persists until frame end).
+    const result_lines = try engine.arena.allocator().dupe(types.WrappedLine, lines.slice());
+    const line_height = config.lineHeightPx();
+    const total_height = line_height * @as(f32, @floatFromInt(@max(1, result_lines.len)));
+
+    return .{
+        .lines = result_lines,
+        .total_height = total_height,
+        .max_line_width = max_line_width,
+    };
+}
+
+/// A text's size wrapped at `max_width` as layout would size it, without
+/// keeping its lines: `cx.measureText` sizes a row from content during the
+/// build, before layout. Unwrapped text is one measured line, as
+/// `LayoutEngine.text` measures it. Uses the line scratch, which is free
+/// until layout wraps at `endFrame`, and claims nothing from the frame.
+pub fn measureWrapped(
+    engine: *LayoutEngine,
+    text_str: []const u8,
+    config: TextConfig,
+    max_width: f32,
+) engine_mod.TextMeasurement {
+    std.debug.assert(max_width >= 0);
+    std.debug.assert(text_str.len <= std.math.maxInt(u32));
+    const measure_fn = engine.measure_text_fn.?;
+    const user_data = engine.measure_text_user_data;
+    const one_line = measure_fn(text_str, config.font_id, config.font_size, null, user_data);
+    if (config.wrap_mode == .none or max_width <= 0 or text_str.len == 0) return one_line;
+    var lines: BoundedList(types.WrappedLine) = .{ .buffer = engine.line_scratch };
+    const max_line_width = wrapLines(engine, text_str, config, max_width, &lines);
+    // A text of only spaces wraps to no lines; layout keeps its measure.
+    if (lines.len == 0) return one_line;
+    const line_count: f32 = @floatFromInt(lines.len);
+    const result: engine_mod.TextMeasurement = .{
+        .width = max_line_width,
+        .height = config.lineHeightPx() * line_count,
+    };
+    std.debug.assert(result.width >= 0);
+    std.debug.assert(result.height > 0);
+    return result;
+}
+
+/// Wrap `text_str` into `lines`, batch by batch through the word scratch,
+/// and return the widest line. Shared by layout's wrap and `measureWrapped`
+/// so a measured text and a laid-out one break at the same words.
+fn wrapLines(
+    engine: *LayoutEngine,
+    text_str: []const u8,
+    config: TextConfig,
+    max_width: f32,
+    lines: *BoundedList(types.WrappedLine),
+) f32 {
+    std.debug.assert(text_str.len > 0);
+    std.debug.assert(lines.len == 0);
+    const measure_fn = engine.measure_text_fn.?;
     var words: BoundedList(WordInfo) = .{ .buffer = engine.word_scratch };
     const user_data = engine.measure_text_user_data;
     var scan = WordScanState.init(text_str, measure_fn, config, user_data, &words);
-    var lines: BoundedList(types.WrappedLine) = .{ .buffer = engine.line_scratch };
     var residual: LineResidual = .{};
     var max_line_width: f32 = 0;
     // Each full batch consumes at least one word, hence one byte.
@@ -968,27 +1026,15 @@ pub fn wrapText(
             words.slice(),
             config.wrap_mode,
             max_width,
-            &lines,
+            lines,
             &residual,
         );
         max_line_width = @max(max_line_width, batch_max);
         if (done) break;
     }
-
-    const final_max = finalizeLastLine(text_str, residual, &lines);
+    const final_max = finalizeLastLine(text_str, residual, lines);
     engine.line_count_used_max = @max(engine.line_count_used_max, lines.len);
-
-    claimWrappedLines(engine, lines.len);
-    // Copy to arena for return (arena memory persists until frame end).
-    const result_lines = try engine.arena.allocator().dupe(types.WrappedLine, lines.slice());
-    const line_height = config.lineHeightPx();
-    const total_height = line_height * @as(f32, @floatFromInt(@max(1, result_lines.len)));
-
-    return .{
-        .lines = result_lines,
-        .total_height = total_height,
-        .max_line_width = @max(max_line_width, final_max),
-    };
+    return @max(max_line_width, final_max);
 }
 
 /// Carryover from the accumulator into `finalizeLastLine`: the byte offset

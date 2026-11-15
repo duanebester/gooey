@@ -278,6 +278,80 @@ test "a text past one shaping run draws and wraps as one run would" {
     }
 }
 
+/// Texts `cx.measureText` measures during render, each also laid out in a
+/// box as wide as its `max_width`, for the measure check.
+const MeasureState = struct {
+    measured: [measure_cases.len]Cx.TextSize = undefined,
+};
+
+const MeasureCase = struct { content: []const u8, style: ui.Text, max_width: f32 };
+
+const measure_cases = [_]MeasureCase{
+    // "abc abc" is 52 px, a third copy 80 px: two lines at 60 px.
+    .{ .content = "abc abc abc", .style = .{ .wrap = .words }, .max_width = 60 },
+    .{ .content = "abc abc abc", .style = .{ .wrap = .none }, .max_width = 60 },
+    .{ .content = "ab\n\ncd", .style = .{ .wrap = .newlines }, .max_width = 300 },
+    .{
+        .content = "abc abc abc",
+        .style = .{ .wrap = .words, .line_height = 150 },
+        .max_width = 60,
+    },
+    .{ .content = "   ", .style = .{ .wrap = .words }, .max_width = 60 },
+    .{ .content = "abcabcabcabc abc", .style = .{ .wrap = .words, .size = 32 }, .max_width = 100 },
+    // 3,000 codepoints, past one shaping run: 54 lines of 388 px.
+    .{ .content = &LongTextState.text, .style = .{ .wrap = .words }, .max_width = 400 },
+};
+
+const MeasureApp = gooey.App(MeasureState, measureRender, .{
+    .title = "Measure",
+    .width = 400,
+    .height = 200,
+    .limits = .standard,
+});
+
+fn measureRender(cx: *Cx) void {
+    const state = cx.state(MeasureState);
+    inline for (measure_cases, 0..) |case, index| {
+        state.measured[index] = cx.measureText(case.content, case.style, case.max_width);
+        cx.render(ui.box(.{ .style = .{ .width = .{ .fixed = case.max_width } } }, .{
+            ui.text(case.content, case.style),
+        }));
+    }
+}
+
+test "cx.measureText sizes a text as layout lays it out" {
+    // Goal: a row sized with `cx.measureText` fits the text layout then
+    // draws in it. Method: each case is measured during render and laid out
+    // in a box as wide as its `max_width`; the text element layout sizes
+    // must match the measure. The synthetic face advances 8 px a letter and
+    // 4 px a space at 16 px, so the widths are also checked by hand: two
+    // lines of 52 px, one of 80 px, and 54 lines of 388 px for the text
+    // past one shaping run.
+    const app = try testing.allocator.create(MeasureApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    app.tick(0);
+    const measured = &app.state.measured;
+    var case_index: u32 = 0;
+    for (app.window.layout.elements.items()) |*element| {
+        if (element.text_data == null) continue;
+        const bounds = element.computed.bounding_box;
+        try testing.expectApproxEqAbs(bounds.width, measured[case_index].width, 0.001);
+        try testing.expectApproxEqAbs(bounds.height, measured[case_index].height, 0.001);
+        case_index += 1;
+    }
+    try testing.expectEqual(@as(u32, measure_cases.len), case_index);
+    const line_height = measured[1].height;
+    try testing.expectEqual(@as(f32, 52), measured[0].width);
+    try testing.expectApproxEqAbs(line_height * 2, measured[0].height, 0.5);
+    try testing.expectEqual(@as(f32, 80), measured[1].width);
+    try testing.expectApproxEqAbs(line_height * 3, measured[2].height, 1);
+    try testing.expect(measured[3].height > measured[0].height);
+    try testing.expectEqual(@as(f32, 388), measured[6].width);
+    try testing.expectApproxEqAbs(line_height * 54, measured[6].height, 27);
+}
+
 fn deliverAll(app: *LongRunApp, now: *u64, inputs: []const gooey.input.InputEvent) void {
     for (inputs) |event| app.window.queue.push(.{ .input = event });
     now.* += 1;
@@ -3069,7 +3143,7 @@ const ChatRow = struct {
 
     pub const count_max: u32 = 1000;
 
-    pub fn height(cx: *Cx, index: u32) f32 {
+    pub fn height(cx: *Cx, index: u32, _: f32) f32 {
         return cx.state(ChatState).heights[index % 10];
     }
 
@@ -3169,7 +3243,7 @@ const SteerRow = struct {
 
     pub const count_max: u32 = 1000;
 
-    pub fn height(_: *Cx, index: u32) f32 {
+    pub fn height(_: *Cx, index: u32, _: f32) f32 {
         return steer_heights[index % 3];
     }
 
@@ -3373,11 +3447,15 @@ fn listChildren(window: *internals.window.Window, rows: []internals.records.Rect
     return .{ .list = frame.hits[list_index.?].bounds, .count = count };
 }
 
-test "virtual_list builds the chat messages in view at their heights, to the last" {
-    // Goal: the virtual_list port end to end, with the lifecycle guard
-    // proving no allocation after init. Methodology: each row built must be
-    // its message's height plus the 8 px gap, the first at the list's top
-    // padding; wheeled to the end, the last row must end at the padding.
+test "virtual_list sizes each chat bubble to its measured text, to the last" {
+    // Goal: the virtual_list port end to end, with rows sized by
+    // `cx.measureText` and the lifecycle guard proving no allocation after
+    // init. Methodology: the List gives each row the height its `height`
+    // measured, and layout then wraps the bubble's text on its own; a row
+    // that measured differently from layout leaves the text short of, or
+    // past, the bubble's 8 px bottom padding. Every wrapped body in view must
+    // end exactly there, some on more than one line, at the top and at the
+    // end of the list.
     const App = virtual_list.App;
     const app = try testing.allocator.create(App);
     defer testing.allocator.destroy(app);
@@ -3389,16 +3467,10 @@ test "virtual_list builds the chat messages in view at their heights, to the las
     app.tick(now);
     var rows: [64]internals.records.Rect = undefined;
     var children = listChildren(&app.window, &rows);
-    try testing.expect(children.count >= 5);
+    try testing.expect(children.count >= 4);
     try testing.expect(children.count < 20);
     try testing.expectEqual(children.list.y + 8, rows[0].y);
-    // Hit bounds are clipped to the list, so the partial last row is shorter.
-    // The buttons above it put the list at a fractional y, so heights carry
-    // the rounding of a clip intersection.
-    for (rows[0 .. children.count - 1], 0..) |row, index| {
-        const height = virtual_list.messages[index].height() + 8;
-        try testing.expectApproxEqAbs(height, row.height, 0.001);
-    }
+    try expectBubblesFit(&app.window);
     // Rows past the view's bottom are not built.
     const last = rows[children.count - 1];
     try testing.expect(last.y < children.list.y + children.list.height);
@@ -3406,10 +3478,31 @@ test "virtual_list builds the chat messages in view at their heights, to the las
     listWheel(app, &now, 100_000);
     children = listChildren(&app.window, &rows);
     const end = rows[children.count - 1];
-    try testing.expectApproxEqAbs(virtual_list.messages[999].height(), end.height, 0.001);
     const list_bottom = children.list.y + children.list.height - 8;
-    try testing.expectApproxEqAbs(list_bottom, end.y + end.height, 0.001);
+    // The offset sums 1,000 measured heights in f32: within a hundredth of a pixel.
+    try testing.expectApproxEqAbs(list_bottom, end.y + end.height, 0.01);
+    try expectBubblesFit(&app.window);
     try testing.expectEqual(internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
+}
+
+/// Each word-wrapped text laid out last frame ends at its bubble's bottom
+/// padding (8 px), and at least one of them wraps to several lines.
+fn expectBubblesFit(window: *internals.window.Window) !void {
+    const elements = window.layout.elements.items();
+    var checked: u32 = 0;
+    var wrapped: u32 = 0;
+    for (elements) |*element| {
+        const text_data = element.text_data orelse continue;
+        if (text_data.config.wrap_mode != .words) continue;
+        const text_box = element.computed.bounding_box;
+        const bubble = elements[element.parent_index.?].computed.bounding_box;
+        const text_bottom = text_box.y + text_box.height;
+        try testing.expectApproxEqAbs(bubble.y + bubble.height - 8, text_bottom, 0.01);
+        checked += 1;
+        if (text_data.wrapped_lines.?.len > 1) wrapped += 1;
+    }
+    try testing.expect(checked >= 3);
+    try testing.expect(wrapped >= 1);
 }
 
 fn tableHeader(app: *data_table.App, now: *u64, label: []const u8) void {

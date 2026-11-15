@@ -413,6 +413,20 @@ pub const LayoutEngine = struct {
         self.measure_text_user_data = user_data;
     }
 
+    /// `content` as a text element with `config` sizes in a parent whose
+    /// content is `max_width` wide, without adding an element: wrapped by
+    /// layout's own word breaking, one measured line when it does not wrap.
+    pub fn measureText(
+        self: *Self,
+        content: []const u8,
+        config: types.TextConfig,
+        max_width: f32,
+    ) TextMeasurement {
+        std.debug.assert(self.measure_text_fn != null);
+        std.debug.assert(config.font_size > 0);
+        return sizing_pass.measureWrapped(self, content, config, max_width);
+    }
+
     pub fn beginFrame(self: *Self, width: f32, height: f32) void {
         self.arena_used_max = @max(self.arena_used_max, self.arena.bytesUsed());
         std.debug.assert(self.arena_used_max <= self.arena_buffer.len);

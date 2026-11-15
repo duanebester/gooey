@@ -590,6 +590,134 @@ pub const MeasureCache = struct {
 };
 
 // =============================================================================
+// Text Size Cache - Wrapped Sizes for `cx.measureText`
+// =============================================================================
+
+/// One text measured as layout sizes it: its bytes' hash and length, the
+/// layout style packed into `style`, and the wrap width's bits. A 64-bit hash
+/// of the bytes stands for them, as it does for shaped runs.
+pub const TextSizeKey = struct {
+    text_hash: u64,
+    text_len: u32,
+    max_width_bits: u32,
+    style: u64,
+
+    pub fn eql(a: TextSizeKey, b: TextSizeKey) bool {
+        return a.text_hash == b.text_hash and a.text_len == b.text_len and
+            a.max_width_bits == b.max_width_bits and a.style == b.style;
+    }
+};
+
+const TextSizeEntry = struct {
+    key: TextSizeKey,
+    width: f32,
+    height: f32,
+    last_access: u32,
+    valid: bool,
+};
+
+/// Sizes of whole wrapped texts, so `cx.measureText` wraps a text once per
+/// style and width rather than every frame: a `List` sums every row's height
+/// each render. Set-associative with LRU eviction in a window of
+/// `measure_probe_count` slots, like `MeasureCache`, so a lookup costs one
+/// hash of the text and at most eight compares, and a miss costs one wrap.
+/// Memory at `standard` (4,096 slots × 40 B): 160 KiB of fresh pages,
+/// resident as texts are measured.
+pub const TextSizeCache = struct {
+    /// `text.text_size_slot_count_max` slots, a power of two; zero is empty.
+    slots: []TextSizeEntry,
+    written: bool,
+    access_counter: u32,
+
+    const Self = @This();
+    const probe_count: usize = limits_mod.measure_probe_count;
+
+    comptime {
+        assert(@sizeOf(TextSizeEntry) == 40);
+    }
+
+    pub fn init(slot_count: u32) error{OutOfMemory}!Self {
+        assert(std.math.isPowerOfTwo(slot_count));
+        assert(slot_count > probe_count);
+        const self: Self = .{
+            .slots = try reservation.reserveZeroed(TextSizeEntry, slot_count),
+            .written = false,
+            .access_counter = 0,
+        };
+        assert(!self.slots[0].valid);
+        return self;
+    }
+
+    /// Zero the slots if any were written, then release them (§21).
+    pub fn deinit(self: *Self) void {
+        const used = if (self.written) self.slots.len else 0;
+        reservation.release(TextSizeEntry, self.slots, used);
+        self.* = undefined;
+    }
+
+    /// The cached width and height, or null; a hit becomes most recent.
+    pub fn get(self: *Self, key: TextSizeKey) ?[2]f32 {
+        const mask = self.slots.len - 1;
+        const start_slot = @as(usize, @truncate(key.text_hash)) & mask;
+        for (0..probe_count) |offset| {
+            const slot = &self.slots[(start_slot + offset) & mask];
+            // `put` fills the first empty slot, so an empty one ends the key.
+            if (!slot.valid) return null;
+            if (TextSizeKey.eql(slot.key, key)) {
+                self.access_counter += 1;
+                slot.last_access = self.access_counter;
+                assert(slot.width >= 0);
+                assert(slot.height >= 0);
+                return .{ slot.width, slot.height };
+            }
+        }
+        return null;
+    }
+
+    /// Store a size in the first empty slot of the key's window, else over
+    /// that window's least recently used.
+    pub fn put(self: *Self, key: TextSizeKey, width: f32, height: f32) void {
+        assert(width >= 0);
+        assert(height >= 0);
+        const mask = self.slots.len - 1;
+        const start_slot = @as(usize, @truncate(key.text_hash)) & mask;
+        var victim_index: usize = start_slot;
+        var oldest_access: u32 = std.math.maxInt(u32);
+        for (0..probe_count) |offset| {
+            const index = (start_slot + offset) & mask;
+            const slot = &self.slots[index];
+            if (!slot.valid or TextSizeKey.eql(slot.key, key)) {
+                victim_index = index;
+                break;
+            }
+            if (slot.last_access < oldest_access) {
+                oldest_access = slot.last_access;
+                victim_index = index;
+            }
+        }
+        self.access_counter += 1;
+        self.slots[victim_index] = .{
+            .key = key,
+            .width = width,
+            .height = height,
+            .last_access = self.access_counter,
+            .valid = true,
+        };
+        self.written = true;
+        assert(self.slots[victim_index].valid);
+    }
+
+    /// Drop every size, for a font reload (`TextSystem.clearCaches`).
+    pub fn clear(self: *Self) void {
+        if (self.written) {
+            for (self.slots) |*slot| slot.valid = false;
+        }
+        assert(!self.slots[0].valid);
+        assert(!self.slots[self.slots.len - 1].valid);
+    }
+};
+
+// =============================================================================
 // Platform Selection (compile-time)
 // =============================================================================
 
@@ -693,6 +821,8 @@ pub const TextSystem = struct {
     /// Cache for text widths (fixed capacity, pre-allocated). Covers the full
     /// MAX_TEXT_LEN range that `shape_cache` cannot -- see `MeasureCache`.
     measure_cache: MeasureCache,
+    /// Wrapped text sizes for `cx.measureText` (see `TextSizeCache`).
+    text_size_cache: TextSizeCache,
     /// IO instance for mutex operations. Stored on the struct because lock
     /// sites run on CVDisplayLink threads that have no access to `*Cx` and
     /// therefore cannot reach `cx.io()`. Io is a pair of pointers into the
@@ -774,6 +904,8 @@ pub const TextSystem = struct {
         self.shape_cache = try ShapedRunCache.init(text_limits.shaped_run_count_max);
         errdefer self.shape_cache.deinit();
         self.measure_cache = try MeasureCache.init(text_limits.measure_slot_count_max);
+        errdefer self.measure_cache.deinit();
+        self.text_size_cache = try TextSizeCache.init(text_limits.text_size_slot_count_max);
         self.shape_cache_mutex = .init;
         self.glyph_cache_mutex = .init;
 
@@ -807,6 +939,7 @@ pub const TextSystem = struct {
         self.cache.deinit();
         self.shape_cache.deinit();
         self.measure_cache.deinit();
+        self.text_size_cache.deinit();
         self.* = undefined;
     }
 
@@ -954,6 +1087,7 @@ pub const TextSystem = struct {
         self.shape_cache_mutex.lockUncancelable(self.io);
         self.shape_cache.clear();
         self.measure_cache.clear();
+        self.text_size_cache.clear();
         self.shape_cache_mutex.unlock(self.io);
     }
 
@@ -1919,6 +2053,43 @@ fn fillTestText(buf: []u8, seed: u32) void {
 
     // The seed must fit, or distinct seeds could alias.
     std.debug.assert(remaining == 0);
+}
+
+test "TextSizeCache holds its slot count, then evicts the least recently used" {
+    // Goal: the eviction contract of `text.text_size_slot_count_max`. Method:
+    // one key per slot (its hash is its slot), so the cache is filled exactly
+    // and every key must hit. One more key on slot 0 finds its whole probe
+    // window full and must evict that window's least recently used, key 0
+    // (read first), leaving every other key cached.
+    const testing = std.testing;
+    const slot_count: u32 = 64;
+    var cache = try TextSizeCache.init(slot_count);
+    defer cache.deinit();
+    var index: u32 = 0;
+    while (index < slot_count) : (index += 1) {
+        cache.put(textSizeKey(index), @floatFromInt(index), 20);
+    }
+    index = 0;
+    while (index < slot_count) : (index += 1) {
+        const size = cache.get(textSizeKey(index)).?;
+        try testing.expectEqual(@as(f32, @floatFromInt(index)), size[0]);
+    }
+    var extra = textSizeKey(slot_count);
+    extra.max_width_bits = 1;
+    try testing.expect(cache.get(extra) == null);
+    cache.put(extra, 99, 40);
+    try testing.expectEqual(@as(f32, 40), cache.get(extra).?[1]);
+    try testing.expect(cache.get(textSizeKey(0)) == null);
+    index = 1;
+    while (index < slot_count) : (index += 1) {
+        try testing.expect(cache.get(textSizeKey(index)) != null);
+    }
+    cache.clear();
+    try testing.expect(cache.get(textSizeKey(1)) == null);
+}
+
+fn textSizeKey(index: u32) TextSizeKey {
+    return .{ .text_hash = index, .text_len = 1, .max_width_bits = 0, .style = 0 };
 }
 
 test "MeasureCache stores widths the shape cache refuses" {
