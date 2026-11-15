@@ -312,15 +312,19 @@ pub const LineChart = struct {
             if (series.data_len < 2) continue;
 
             const color = self.getSeriesColor(series, series_idx);
-            // Debug: use full opacity to test if triangles render
             const area_color = Color.rgba(color.r, color.g, color.b, 0.3);
 
             self.drawSeriesArea(painter, series, x_scale, y_scale, baseline, area_color);
         }
     }
 
-    /// Draw area for a single series using multiple rectangles for smoother fills.
-    /// Subdivides each segment into smaller strips with interpolated heights.
+    /// Fill the area between a series' line and `baseline` as one triangle
+    /// mesh: two triangles per segment, under the same projected (and
+    /// LTTB-decimated) points the line draws, so the fill meets the line.
+    /// Neighbouring segments share their vertical edge bit for bit, and the
+    /// two triangles of a segment share its diagonal, so the renderers
+    /// classify those edges as interior (`platform/mesh_edges.zig`) and the
+    /// fill tiles without the anti-aliased seams that abutting quads leave.
     fn drawSeriesArea(
         self: *const LineChart,
         painter: *Painter,
@@ -330,42 +334,16 @@ pub const LineChart = struct {
         baseline: f32,
         color: Color,
     ) void {
-        _ = self;
-
-        if (series.data_len < 2) return;
-
-        const SUBDIVISIONS: u32 = 4; // 4 rectangles per segment for smoother appearance
-
-        var i: u32 = 0;
-        while (i < series.data_len - 1) : (i += 1) {
-            const p1 = &series.data[i];
-            const p2 = &series.data[i + 1];
-
-            const x1 = x_scale.scale(p1.x);
-            const y1 = y_scale.scale(p1.y);
-            const x2 = x_scale.scale(p2.x);
-            const y2 = y_scale.scale(p2.y);
-
-            const segment_width = x2 - x1;
-            if (segment_width <= 0) continue;
-
-            const sub_width = segment_width / @as(f32, @floatFromInt(SUBDIVISIONS));
-
-            // Draw multiple rectangles with interpolated heights
-            var j: u32 = 0;
-            while (j < SUBDIVISIONS) : (j += 1) {
-                const t = @as(f32, @floatFromInt(j)) / @as(f32, @floatFromInt(SUBDIVISIONS));
-                const sub_x = x1 + t * segment_width;
-                const sub_y = y1 + t * (y2 - y1);
-                const h = baseline - sub_y;
-
-                if (h > 0) {
-                    painter.fill(
-                        .{ .x = sub_x, .y = sub_y, .width = sub_width, .height = h },
-                        color,
-                    );
-                }
-            }
+        std.debug.assert(series.data_len >= 2);
+        std.debug.assert(!std.math.isNan(baseline));
+        var points: [MAX_DATA_POINTS][2]f32 = undefined;
+        const count = scale_mod.projectSeries(series, x_scale, y_scale, self.lodPoints(), &points);
+        std.debug.assert(count <= MAX_DATA_POINTS);
+        var index: u32 = 1;
+        while (index < count) : (index += 1) {
+            var triangles: [area_segment_points_max][2]f32 = undefined;
+            const used = areaSegment(&triangles, points[index - 1], points[index], baseline);
+            if (used > 0) painter.triangles(triangles[0..used], color);
         }
     }
 
@@ -440,6 +418,54 @@ pub const LineChart = struct {
         return default_palette[index % default_palette.len];
     }
 };
+
+/// A segment's area is a trapezoid of two triangles, or one triangle on the
+/// side of a crossing that lies above the baseline.
+const area_segment_points_max: u32 = 6;
+
+/// The triangles filling the area between the segment `from`-`to` and the
+/// horizontal `baseline` (screen y grows down, so "above" is a smaller y),
+/// written to `out`; returns their point count, a multiple of three. A
+/// segment that crosses the baseline keeps only its part above it, and one
+/// at or below it fills nothing, and so does one that runs backwards in x.
+/// Triangles wind clockwise on screen.
+fn areaSegment(
+    out: *[area_segment_points_max][2]f32,
+    from: [2]f32,
+    to: [2]f32,
+    baseline: f32,
+) u32 {
+    std.debug.assert(!std.math.isNan(from[1]));
+    std.debug.assert(!std.math.isNan(to[1]));
+    const height_from = baseline - from[1];
+    const height_to = baseline - to[1];
+    const base_from = [2]f32{ from[0], baseline };
+    const base_to = [2]f32{ to[0], baseline };
+    if (to[0] <= from[0]) return 0;
+    if (height_from >= 0 and height_to >= 0) {
+        var count: u32 = 0;
+        if (height_to > 0) {
+            out[0..3].* = .{ from, to, base_to };
+            count += 3;
+        }
+        if (height_from > 0) {
+            out[count..][0..3].* = .{ from, base_to, base_from };
+            count += 3;
+        }
+        return count;
+    }
+    if (height_from <= 0 and height_to <= 0) return 0;
+    // One end lies above the baseline and the other below: cut at the crossing.
+    const t = height_from / (height_from - height_to);
+    std.debug.assert(t > 0);
+    std.debug.assert(t < 1);
+    const crossing = [2]f32{ from[0] + t * (to[0] - from[0]), baseline };
+    out[0..3].* = if (height_from > 0)
+        .{ from, crossing, base_from }
+    else
+        .{ crossing, to, base_to };
+    return 3;
+}
 
 // =============================================================================
 // Tests
@@ -536,4 +562,54 @@ test "LineChart LOD defaults" {
     // LOD should be enabled by default
     try std.testing.expect(chart.enable_lod);
     try std.testing.expectEqual(LOD_THRESHOLD, chart.lod_target_points);
+}
+
+test "areaSegment tiles a trapezoid, cuts at the baseline, and skips the rest" {
+    // Goal: the area under a segment is covered exactly once, and only above
+    // the baseline. Methodology: the triangle areas must sum to the area the
+    // segment encloses with the baseline, worked out by hand, and a segment
+    // crossing the baseline must keep the side above it, cut at its crossing.
+    var out: [area_segment_points_max][2]f32 = undefined;
+    // From 10 to 30 above a baseline at 100, 40 wide: (10 + 30) / 2 * 40.
+    var count = areaSegment(&out, .{ 0, 90 }, .{ 40, 70 }, 100);
+    try std.testing.expectEqual(@as(u32, 6), count);
+    try std.testing.expectEqual(@as(f32, 800), trianglesArea(out[0..count]));
+    // The two triangles share the vertical edges' corners exactly.
+    try std.testing.expectEqual([2]f32{ 40, 100 }, out[2]);
+    try std.testing.expectEqual([2]f32{ 0, 100 }, out[5]);
+    // One end on the baseline: one triangle, 20 * 10 / 2.
+    count = areaSegment(&out, .{ 0, 100 }, .{ 10, 80 }, 100);
+    try std.testing.expectEqual(@as(u32, 3), count);
+    try std.testing.expectEqual(@as(f32, 100), trianglesArea(out[0..count]));
+    // 20 above, then 60 below: crosses at a quarter of 40 px, so 10 * 20 / 2.
+    count = areaSegment(&out, .{ 0, 80 }, .{ 40, 160 }, 100);
+    try std.testing.expectEqual(@as(u32, 3), count);
+    try std.testing.expectEqual([2]f32{ 10, 100 }, out[1]);
+    try std.testing.expectEqual(@as(f32, 100), trianglesArea(out[0..count]));
+    // The mirror image keeps the other end.
+    count = areaSegment(&out, .{ 0, 160 }, .{ 40, 80 }, 100);
+    try std.testing.expectEqual(@as(u32, 3), count);
+    try std.testing.expectEqual([2]f32{ 30, 100 }, out[0]);
+    try std.testing.expectEqual(@as(f32, 100), trianglesArea(out[0..count]));
+    // At or below the baseline, vertical, or backwards: nothing.
+    try std.testing.expectEqual(@as(u32, 0), areaSegment(&out, .{ 0, 100 }, .{ 40, 120 }, 100));
+    try std.testing.expectEqual(@as(u32, 0), areaSegment(&out, .{ 5, 50 }, .{ 5, 60 }, 100));
+    try std.testing.expectEqual(@as(u32, 0), areaSegment(&out, .{ 40, 50 }, .{ 0, 60 }, 100));
+}
+
+/// The summed areas of a triangle list, each counted positive.
+fn trianglesArea(points: []const [2]f32) f32 {
+    std.debug.assert(points.len % 3 == 0);
+    var total: f32 = 0;
+    var index: usize = 0;
+    while (index < points.len) : (index += 3) {
+        const a = points[index];
+        const b = points[index + 1];
+        const c = points[index + 2];
+        const cross = (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]);
+        // Clockwise on screen, where y grows down, is a positive cross product.
+        std.debug.assert(cross >= 0);
+        total += cross / 2;
+    }
+    return total;
 }
