@@ -108,7 +108,7 @@ const casual_points = [_][2]f32{
 
 /// Fill the chart data in place. Each series is sized by its chart's capacity:
 /// a revenue series of 16 points is about 1.3 KiB, and all chart data is 6 KiB.
-fn fillData(state: *State, _: *gooey.Effects) void {
+fn fillData(state: *State, _: gooey.Init, _: *gooey.Effects) void {
     state.revenue[0].initInPlace("Revenue", Palette.primary);
     state.revenue[1].initInPlace("Target", Palette.neutral_light);
     for (revenue_points, target_points, 1..) |revenue, target, month| {

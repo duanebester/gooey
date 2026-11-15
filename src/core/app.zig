@@ -25,6 +25,7 @@ const text_mod = @import("../text/mod.zig");
 const web_host = @import("../platform/web/core_host.zig");
 const entities_mod = @import("entities.zig");
 const text_engine = @import("text_engine.zig");
+const jobs_mod = @import("jobs.zig");
 
 const assert = std.debug.assert;
 
@@ -36,6 +37,21 @@ pub const Theme = element.Theme;
 pub const Effects = handler_mod.Effects;
 pub const Window = window_mod.Window;
 pub const Cx = cx_mod.Cx;
+
+/// What `Config.on_init` receives from the process: its io (files, sockets,
+/// clocks, the io jobs run on) and its environment variables. Headless apps
+/// and the web get their io and an empty environment.
+pub const Init = struct {
+    io: std.Io,
+    environ: *const std.process.Environ.Map,
+};
+
+/// The environment of an app without a process environment: headless and
+/// the web. Never written, so its allocator is never called.
+const environ_empty: std.process.Environ.Map = .{
+    .array_hash_map = .empty,
+    .allocator = std.mem.Allocator.failing,
+};
 
 /// A keymap entry (contract §7): `.{ .keys = "cmd-z", .action = ui.action(Undo) }`.
 pub const Binding = keymap_mod.Binding;
@@ -53,7 +69,15 @@ pub fn Config(comptime State: type) type {
         keymap: []const Binding = &.{},
         entities: []const type = &.{},
         fonts: Fonts = .{},
-        on_init: ?*const fn (state: *State, effects: *Effects) void = null,
+        /// Background job types `Effects.spawn` may start (`gooey.Job`);
+        /// non-empty starts `limits.events.job_count_max` workers at init.
+        jobs: []const type = &.{},
+        /// The last initialization work, with the process's io and
+        /// environment; an app keeps what it needs from `init` in `State`.
+        on_init: ?*const fn (state: *State, init: Init, effects: *Effects) void = null,
+        /// Runs once at shutdown, after every job worker has returned and
+        /// before anything is freed, so no job can reach `State` afterwards.
+        on_deinit: ?*const fn (state: *State) void = null,
     };
 }
 
@@ -101,6 +125,38 @@ fn checkFonts(comptime State: type, comptime config: Config(State)) void {
         if (config.fonts.mono == null and mono_faces > 0) {
             @compileError("gooey.App: limits.text.fonts.mono_variants reserves faces but " ++
                 "fonts.mono is null");
+        }
+    }
+}
+
+/// Reject a job list that cannot work (`Config.jobs`), naming the type and
+/// the `ResourceLimits.events` field it exceeds.
+fn checkJobs(comptime types: []const type, comptime limits: *const ResourceLimits) void {
+    comptime {
+        for (types, 0..) |T, index| {
+            jobs_mod.checkSpec(T);
+            const name = @typeName(T);
+            if (@sizeOf(T.Input) > limits.events.job_input_bytes_max) {
+                @compileError(std.fmt.comptimePrint("gooey.App: job {s}'s Input is {d} " ++
+                    "bytes, above ResourceLimits.events.job_input_bytes_max {d}", .{
+                    name,
+                    @sizeOf(T.Input),
+                    limits.events.job_input_bytes_max,
+                }));
+            }
+            if (@sizeOf(T.Result) > limits.events.job_result_bytes_max) {
+                @compileError(std.fmt.comptimePrint("gooey.App: job {s}'s Result is {d} " ++
+                    "bytes, above ResourceLimits.events.job_result_bytes_max {d}", .{
+                    name,
+                    @sizeOf(T.Result),
+                    limits.events.job_result_bytes_max,
+                }));
+            }
+            for (types[0..index]) |Earlier| {
+                if (Earlier == T) {
+                    @compileError("gooey.App: job type " ++ name ++ " is listed twice");
+                }
+            }
         }
     }
 }
@@ -159,6 +215,7 @@ pub fn App(
             }));
         }
         checkEntities(State, config.entities);
+        checkJobs(config.jobs, &config.limits);
         assert(config.width > 0);
         assert(config.height > 0);
         checkFonts(State, config);
@@ -174,6 +231,11 @@ pub fn App(
         entity_pools: [config.entities.len]entities_mod.Pool,
         resources: app_resources.AppResources,
         window: Window,
+        /// What `on_init` receives: set before initialization starts.
+        process: Init,
+        /// `Config.jobs` as the ids the job pool checks spawns against.
+        /// Type ids are addresses, known only at run time.
+        job_type_ids: [config.jobs.len]usize,
 
         const Self = @This();
 
@@ -212,6 +274,7 @@ pub fn App(
             options: HeadlessOptions,
         ) !void {
             assert(options.scale_factor > 0);
+            self.process = .{ .io = io, .environ = &environ_empty };
             self.beginInit(backing);
             try self.initCore(io, options.scale_factor);
             self.finishInit();
@@ -235,6 +298,7 @@ pub fn App(
             };
             const self = try init.gpa.create(Self);
             defer init.gpa.destroy(self);
+            self.process = .{ .io = init.io, .environ = init.environ_map };
             try host.run(Self, self, init.gpa, init.io);
         }
 
@@ -252,6 +316,9 @@ pub fn App(
             assert(scale_factor > 0);
             const gpa = self.guard.allocator();
             self.state = .{};
+            inline for (config.jobs, 0..) |T, index| {
+                self.job_type_ids[index] = handler_mod.typeId(T);
+            }
             self.store = handler_mod.Store.init(State, &self.state, &self.store_pools);
             try self.initEntityPools(gpa);
             errdefer self.deinitEntityPools(gpa);
@@ -271,7 +338,14 @@ pub fn App(
                 .keymap = keymap,
                 .store = &self.store,
                 .resources = &self.resources,
+                .job_types = &self.job_type_ids,
             });
+        }
+
+        /// The web host's `process`: the browser io and no environment.
+        pub fn setBrowserProcess(self: *Self, io: std.Io) void {
+            assert(comptime builtin.cpu.arch.isWasm());
+            self.process = .{ .io = io, .environ = &environ_empty };
         }
 
         /// Run `on_init`, the last initialization work, then enter `running`:
@@ -281,7 +355,8 @@ pub fn App(
             if (config.on_init) |on_init| {
                 var effects = Effects.init(null, .root);
                 effects.store = &self.store;
-                on_init(&self.state, &effects);
+                effects.jobs = &self.window.jobs;
+                on_init(&self.state, self.process, &effects);
                 assert(effects.file_dialog == null);
                 // Entities on_init removed leave before the first build.
                 self.store.freeRemoved();
@@ -301,11 +376,15 @@ pub fn App(
         /// Leave `running`, the only way out of it: no tick runs afterwards,
         /// and frees through the guard are expected. A host defers it right
         /// after `finishInit`, so it runs before any deferred teardown frees
-        /// the host, the platform window, or the core.
+        /// the host, the platform window, or the core. Every job worker is
+        /// cancelled and has returned before `on_deinit` sees the state.
         pub fn stop(self: *Self) void {
             assert(self.guard.lifecycle == .running);
             assert(self.window.phase == .idle);
+            self.window.jobs.stop();
             self.guard.enterDeinitializing();
+            if (config.on_deinit) |on_deinit| on_deinit(&self.state);
+            assert(self.window.jobs.stopped);
         }
 
         /// Free everything `initCore` reserved. A running app must `stop`

@@ -22,6 +22,7 @@ const Clipboard = @import("clipboard.zig").Clipboard;
 const entities = @import("entities.zig");
 const retained_mod = @import("retained.zig");
 const records = @import("records.zig");
+const jobs = @import("jobs.zig");
 
 const assert = std.debug.assert;
 
@@ -259,6 +260,16 @@ pub const Effects = struct {
     drop: ?Drop,
     /// A keyboard drag to start (`startDrag`), applied after the handler.
     drag_start: ?ElementId,
+    /// The job pool `spawn` and `cancelJob` reach, set by the router and by
+    /// `App` for `on_init`.
+    jobs: ?*jobs.Pool,
+    /// The job result or end being delivered, set by the router.
+    job: ?jobs.Delivery,
+
+    pub const JobId = jobs.JobId;
+    pub const JobHandlers = jobs.Handlers;
+    pub const JobDone = jobs.Done;
+    pub const JobOutcome = jobs.Outcome;
 
     pub const Drop = struct { type_id: usize, payload: u64 };
 
@@ -310,6 +321,8 @@ pub const Effects = struct {
             .rendered = null,
             .drop = null,
             .drag_start = null,
+            .jobs = null,
+            .job = null,
         };
     }
 
@@ -363,6 +376,58 @@ pub const Effects = struct {
         assert(id.isKeyed());
         assert(self.drag_start == null);
         self.drag_start = id;
+    }
+
+    /// Start background job `Job`, a type in `Config.jobs`, with a copy of
+    /// `input`. `run` executes off the main thread (on the web, after this
+    /// drain); each result it posts arrives at `handlers.on_result` in a
+    /// later drain, then `handlers.on_done` once. The slot is claimed at
+    /// once; a full table (`ResourceLimits.events.job_count_max`) panics.
+    pub fn spawn(
+        self: *Effects,
+        comptime Job: type,
+        job_input: *const Job.Input,
+        handlers: JobHandlers,
+    ) JobId {
+        comptime jobs.checkSpec(Job);
+        assert(handlers.on_done.target.isRoot());
+        if (handlers.on_result) |on_result| assert(on_result.target.isRoot());
+        const pool = self.jobs orelse std.debug.panic("effects.spawn({s}) outside a handler " ++
+            "or on_init", .{@typeName(Job)});
+        return pool.spawn(typeId(Job), jobs.erasedRun(Job), std.mem.asBytes(job_input), handlers);
+    }
+
+    /// Cancel job `id`: its posts return false, results it posted that were
+    /// not delivered yet are dropped, and its `on_done` reports `.cancelled`.
+    /// A job's `run` that is blocked outside Io stops when it next checks
+    /// `job.cancelled()` or posts. A finished job's id does nothing.
+    pub fn cancelJob(self: *Effects, id: JobId) void {
+        const pool = self.jobs orelse std.debug.panic("effects.cancelJob outside a handler", .{});
+        pool.cancel(id);
+    }
+
+    /// The result being delivered to `on_result`, when it is `Job`'s; valid
+    /// until the handler returns.
+    pub fn jobResult(self: *const Effects, comptime Job: type) ?*const Job.Result {
+        comptime jobs.checkSpec(Job);
+        const delivery = self.job orelse return null;
+        if (delivery.type_id != typeId(Job)) return null;
+        const bytes = delivery.result orelse return null;
+        return @ptrCast(bytes);
+    }
+
+    /// The job ending, inside its `on_done`; null in any other handler.
+    pub fn jobDone(self: *const Effects) ?JobDone {
+        const delivery = self.job orelse return null;
+        const done = delivery.done orelse return null;
+        assert(done.id.slot == delivery.id.slot);
+        return done;
+    }
+
+    /// The job whose result or end is being delivered.
+    pub fn jobId(self: *const Effects) ?JobId {
+        const delivery = self.job orelse return null;
+        return delivery.id;
     }
 
     /// The completion being delivered, for `FileDialogRequest.on_complete`.

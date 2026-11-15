@@ -398,15 +398,19 @@ pub const ResourceLimits = struct {
                 self.events.text_bytes_max,
             );
         }
-        assert(self.events.completion_count_max > 0);
-        const dialog_bound = self.events.completion_count_max - image_decode_outstanding_max;
-        if (self.events.dialog_count_max > dialog_bound) {
-            return relationship(
-                .events,
-                "dialog_count_max",
-                self.events.dialog_count_max,
-                dialog_bound,
-            );
+        // The ring holds every completion that can be outstanding at once:
+        // each pending dialog, the image worker's one decode, each held job
+        // result slot, and each job's end.
+        const completion_bound = self.events.dialog_count_max + image_decode_outstanding_max +
+            self.events.job_result_count_max + self.events.job_count_max;
+        if (self.events.completion_count_max < completion_bound) {
+            return .{
+                .budget = .events,
+                .field = "completion_count_max",
+                .rule = .below_relationship,
+                .value = self.events.completion_count_max,
+                .bound = completion_bound,
+            };
         }
         if (self.events.queue_count_max < input_burst_count_max) {
             return .{
@@ -1333,8 +1337,19 @@ pub const EventLimits = struct {
     dialog_path_bytes_max: u32,
     /// File dialogs awaiting their completion at once (async requests, §2).
     /// Each completes into the completion ring beside the image worker's one
-    /// outstanding decode, so it is below `completion_count_max`.
+    /// outstanding decode and the jobs' deliveries, so the ring holds
+    /// `dialog_count_max + 1 + job_result_count_max + job_count_max`.
     dialog_count_max: u32,
+    /// Background jobs running at once (`Effects.spawn`), one worker thread
+    /// each when the app registers `Config.jobs`. One more spawn fails fast.
+    job_count_max: u32,
+    /// Bytes of one job's `Input`, copied into its slot at spawn.
+    job_input_bytes_max: u32,
+    /// Results posted and not yet delivered, across all jobs. A post that
+    /// finds every slot held waits on its worker until a drain frees one.
+    job_result_count_max: u32,
+    /// Bytes of one job's `Result`, copied into a result slot at post.
+    job_result_bytes_max: u32,
 
     pub const nano: EventLimits = .{
         .queue_count_max = 256,
@@ -1343,6 +1358,10 @@ pub const EventLimits = struct {
         .dialog_path_count_max = 16,
         .dialog_path_bytes_max = 2 * 1024,
         .dialog_count_max = 2,
+        .job_count_max = 2,
+        .job_input_bytes_max = 256,
+        .job_result_count_max = 8,
+        .job_result_bytes_max = 1 * 1024,
     };
     pub const small: EventLimits = .{
         .queue_count_max = 256,
@@ -1351,6 +1370,10 @@ pub const EventLimits = struct {
         .dialog_path_count_max = 32,
         .dialog_path_bytes_max = 4 * 1024,
         .dialog_count_max = 4,
+        .job_count_max = 4,
+        .job_input_bytes_max = 1 * 1024,
+        .job_result_count_max = 16,
+        .job_result_bytes_max = 2 * 1024,
     };
     pub const standard: EventLimits = .{
         .queue_count_max = 256,
@@ -1359,6 +1382,10 @@ pub const EventLimits = struct {
         .dialog_path_count_max = 64,
         .dialog_path_bytes_max = 8 * 1024,
         .dialog_count_max = 8,
+        .job_count_max = 8,
+        .job_input_bytes_max = 4 * 1024,
+        .job_result_count_max = 32,
+        .job_result_bytes_max = 4 * 1024,
     };
     pub const large: EventLimits = .{
         .queue_count_max = 512,
@@ -1367,6 +1394,10 @@ pub const EventLimits = struct {
         .dialog_path_count_max = 256,
         .dialog_path_bytes_max = 32 * 1024,
         .dialog_count_max = 8,
+        .job_count_max = 16,
+        .job_input_bytes_max = 16 * 1024,
+        .job_result_count_max = 64,
+        .job_result_bytes_max = 16 * 1024,
     };
     pub const ceiling: EventLimits = .{
         .queue_count_max = 4_096,
@@ -1375,6 +1406,10 @@ pub const EventLimits = struct {
         .dialog_path_count_max = 1_024,
         .dialog_path_bytes_max = 64 * 1024,
         .dialog_count_max = 64,
+        .job_count_max = 64,
+        .job_input_bytes_max = 256 * 1024,
+        .job_result_count_max = 256,
+        .job_result_bytes_max = 64 * 1024,
     };
 };
 
@@ -2316,15 +2351,48 @@ test "check bounds dialog_count_max by its ceiling and the completion ring" {
     try std.testing.expectEqual(Violation.Rule.above_ceiling, above.rule);
     try std.testing.expectEqual(EventLimits.ceiling.dialog_count_max, above.bound);
 
-    // `nano` completes 16 at once: 15 dialogs and the decode.
+    // `nano` completes 16 at once: 5 dialogs, the decode, 8 held job
+    // results, and the ends of 2 jobs.
     limits = ResourceLimits.nano;
-    limits.events.dialog_count_max = limits.events.completion_count_max - 1;
+    limits.events.dialog_count_max = 5;
     try std.testing.expect(limits.check() == null);
     limits.events.dialog_count_max += 1;
     const ring = limits.check().?;
-    try std.testing.expectEqualStrings("dialog_count_max", ring.field);
-    try std.testing.expectEqual(Violation.Rule.above_relationship, ring.rule);
-    try std.testing.expectEqual(@as(u32, 15), ring.bound);
+    try std.testing.expectEqualStrings("completion_count_max", ring.field);
+    try std.testing.expectEqual(Violation.Rule.below_relationship, ring.rule);
+    try std.testing.expectEqual(@as(u32, 17), ring.bound);
+}
+
+test "check bounds the job fields by their ceilings and the completion ring" {
+    // Goal: each job field fails at 0 and one past its ceiling, and a job
+    // delivery past the ring's room names the ring. Method: move each field
+    // onto its bound, then one past; then grow `nano`'s held results until
+    // the ring holds exactly every outstanding completion, then one more.
+    inline for (.{
+        "job_count_max",
+        "job_input_bytes_max",
+        "job_result_count_max",
+        "job_result_bytes_max",
+    }) |name| {
+        var limits = ResourceLimits.ceiling;
+        @field(limits.events, name) = 0;
+        try std.testing.expectEqualStrings(name, limits.check().?.field);
+        @field(limits.events, name) = @field(EventLimits.ceiling, name);
+        try std.testing.expect(limits.check() == null);
+        @field(limits.events, name) += 1;
+        const above = limits.check().?;
+        try std.testing.expectEqualStrings(name, above.field);
+        try std.testing.expectEqual(Violation.Rule.above_ceiling, above.rule);
+    }
+    var limits = ResourceLimits.nano;
+    const room = limits.events.completion_count_max - limits.events.dialog_count_max -
+        image_decode_outstanding_max - limits.events.job_count_max;
+    limits.events.job_result_count_max = room;
+    try std.testing.expect(limits.check() == null);
+    limits.events.job_result_count_max += 1;
+    const ring = limits.check().?;
+    try std.testing.expectEqualStrings("completion_count_max", ring.field);
+    try std.testing.expectEqual(limits.events.completion_count_max + 1, ring.bound);
 }
 
 test "check bounds box depth and layers by their ceilings and the element count" {

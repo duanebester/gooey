@@ -240,6 +240,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "dashboard", .source = "src/examples/dashboard.zig" },
             .{ .name = "splitter", .source = "src/examples/splitter.zig" },
             .{ .name = "drag-drop", .source = "src/examples/drag_drop.zig" },
+            .{ .name = "background", .source = "src/examples/background.zig" },
         };
         // `zig build run` runs todo, the default example (contract decision 15).
         var todo_exe: ?*std.Build.Step.Compile = null;
@@ -620,6 +621,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "dashboard", .source = "src/examples/dashboard.zig" },
             .{ .name = "splitter", .source = "src/examples/splitter.zig" },
             .{ .name = "drag-drop", .source = "src/examples/drag_drop.zig" },
+            .{ .name = "background", .source = "src/examples/background.zig" },
         };
         // `zig build run` runs todo, the default example (contract decision 15).
         var todo_install: ?*std.Build.Step.InstallArtifact = null;
@@ -974,6 +976,7 @@ fn addWindowsBuilds(
         .{ .name = "dynamic-counters", .source = "src/examples/dynamic_counters.zig" },
         .{ .name = "splitter", .source = "src/examples/splitter.zig" },
         .{ .name = "drag-drop", .source = "src/examples/drag_drop.zig" },
+        .{ .name = "background", .source = "src/examples/background.zig" },
     };
     for (examples) |example| {
         addWindowsExample(
@@ -1285,6 +1288,7 @@ fn addMacosCoreExampleTypecheck(
         "animation",
         "splitter",
         "drag_drop",
+        "background",
     };
     for (examples) |name| {
         const exe = b.addExecutable(.{
@@ -1467,6 +1471,9 @@ fn addFailFastChecks(
             "fail_fast_check.CoreApp.Stranger; the root state is fail_fast_check.CoreState" },
         .{ .mode = "core-dialog-paths", .stderr = "file dialog selected 17 paths: " ++
             "capacity 16. Raise ResourceLimits.events.dialog_path_count_max." },
+        .{ .mode = "core-job-count", .stderr = "events pool 'jobs' exhausted: capacity 2, " ++
+            "2 in use, 1 requested (fail_fast_check.Nap). Raise " ++
+            "ResourceLimits.events.job_count_max." },
         .{ .mode = "core-dialog-count", .stderr = "events pool 'dialogs' exhausted: " ++
             "capacity 2, 2 in use, 1 requested, frame 3. Raise " ++
             "ResourceLimits.events.dialog_count_max." },
@@ -1748,6 +1755,12 @@ fn addWasmBuilds(b: *std.Build, frame_trace: FrameTraceChoice) void {
         .description = "Build the -Dwasm-example example for web into web/example",
         .source = example_source,
         .output_dir = "web/example",
+    });
+    addWasmExample(b, modules, wasm_target, .{
+        .step_name = "wasm-background",
+        .description = "Build the background example for web",
+        .source = "src/examples/background.zig",
+        .output_dir = "web/background",
     });
     addWasmExample(b, modules, wasm_target, .{
         .step_name = "wasm-splitter",
@@ -2083,8 +2096,15 @@ fn addGoldens(
         .optimize = optimize,
         .imports = example_imports,
     });
+    const background_mod = b.createModule(.{
+        .root_source_file = b.path("src/examples/background.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = example_imports,
+    });
     const goldens_imports: []const std.Build.Module.Import = &.{
         .{ .name = "accessible_form_example", .module = accessible_form_mod },
+        .{ .name = "background_example", .module = background_mod },
         .{ .name = "actions_example", .module = actions_mod },
         .{ .name = "animation_example", .module = animation_mod },
         .{ .name = "code_editor_example", .module = code_editor_mod },

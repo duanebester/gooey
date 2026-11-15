@@ -102,6 +102,47 @@ pub const Event = union(enum) {
     window: WindowEvent,
 };
 
+/// One delivery from a background job (`jobs.zig`): a result it posted, or
+/// its end. Core-internal: the drain collects these into a `JobInbox` and the
+/// router turns each into a call of the job's `on_result` or `on_done`.
+pub const JobEntry = struct {
+    /// The job's slot and the generation it was spawned in.
+    slot: u32,
+    generation: u32,
+    kind: Kind,
+    /// The result slot holding the posted bytes, for `.result`.
+    result_index: u32,
+    /// How `run` ended, for `.done`.
+    outcome: Outcome,
+    /// The error `run` returned, for `outcome == .failed`.
+    failure: anyerror,
+
+    pub const Kind = enum(u8) { result, done };
+    pub const Outcome = enum(u8) { finished, cancelled, failed };
+
+    pub const result_index_none: u32 = std.math.maxInt(u32);
+};
+
+/// The job deliveries one drain took from the completion ring, in ring
+/// order. Its capacity is the ring's, so a drain can never overfill it, and
+/// job deliveries never take event-queue slots that input needs.
+pub const JobInbox = struct {
+    entries: []JobEntry,
+    count: u32,
+
+    pub fn pending(self: *const JobInbox) []const JobEntry {
+        assert(self.count <= self.entries.len);
+        return self.entries[0..self.count];
+    }
+
+    fn add(self: *JobInbox, entry: JobEntry) void {
+        assert(self.count < self.entries.len);
+        if (entry.kind == .result) assert(entry.result_index != JobEntry.result_index_none);
+        self.entries[self.count] = entry;
+        self.count += 1;
+    }
+};
+
 pub const QueueCapacity = struct {
     event_count_max: u32,
     text_bytes_max: u32,
@@ -286,8 +327,10 @@ pub const ImageDecoded = struct {
     failure: ?anyerror,
 };
 
-/// A bounded single-producer, single-consumer ring for completions produced
-/// on worker threads. `tick` drains it on the main thread. A dialog's paths
+/// A bounded multi-producer, single-consumer ring for completions produced
+/// on worker threads: the image worker's decodes and background jobs'
+/// results and ends. Producers serialize on `producer_mutex`; the consumer,
+/// `tick` on the main thread, takes no lock. A dialog's paths
 /// are copied into the path slot of its request id, so the worker's buffer
 /// can be reused: a request id is reused only after the router delivers its
 /// completion, which the drain has copied into the queue by then.
@@ -300,15 +343,19 @@ pub const CompletionRing = struct {
     head: std.atomic.Value(u32),
     /// Written by the consumer, read by the producer.
     tail: std.atomic.Value(u32),
+    /// Held by a producer from claiming a slot to publishing it.
+    producer_mutex: std.Io.Mutex,
+    io: std.Io,
 
     const Slot = struct {
-        kind: enum(u8) { completion, image },
+        kind: enum(u8) { completion, image, job },
         request_id: u32,
         tag: std.meta.Tag(Completion.Outcome),
         failure: anyerror,
         path_count: u32,
         path_len: u32,
         image: ImageDecoded,
+        job: JobEntry,
     };
 
     pub const Options = struct {
@@ -318,6 +365,8 @@ pub const CompletionRing = struct {
         dialog_count_max: u32,
         /// `events.dialog_path_bytes_max`: one selection's joined paths.
         dialog_path_bytes_max: u32,
+        /// For the producers' mutex.
+        io: std.Io,
     };
 
     pub fn initInPlace(self: *CompletionRing, gpa: std.mem.Allocator, options: Options) !void {
@@ -332,6 +381,8 @@ pub const CompletionRing = struct {
         self.path_bytes_max = options.dialog_path_bytes_max;
         self.head = .init(0);
         self.tail = .init(0);
+        self.producer_mutex = .init;
+        self.io = options.io;
     }
 
     pub fn deinit(self: *CompletionRing, gpa: std.mem.Allocator) void {
@@ -346,6 +397,8 @@ pub const CompletionRing = struct {
     /// capacity-planning error.
     pub fn push(self: *CompletionRing, completion: Completion) void {
         assert(completion.request_id < self.paths.len / self.path_bytes_max);
+        self.producer_mutex.lockUncancelable(self.io);
+        defer self.producer_mutex.unlock(self.io);
         const head = self.head.load(.monotonic);
         const slot = self.claim(head);
         slot.kind = .completion;
@@ -388,10 +441,27 @@ pub const CompletionRing = struct {
             assert(decoded.width > 0);
             assert(decoded.height > 0);
         }
+        self.producer_mutex.lockUncancelable(self.io);
+        defer self.producer_mutex.unlock(self.io);
         const head = self.head.load(.monotonic);
         const slot = self.claim(head);
         slot.kind = .image;
         slot.image = decoded;
+        self.head.store(head +% 1, .release);
+    }
+
+    /// Producer side, for a background job's result or end. The job pool
+    /// holds back results past its result slots and each job ends once, so
+    /// `ResourceLimits.check` proves the ring cannot fill from jobs.
+    pub fn pushJob(self: *CompletionRing, entry: JobEntry) void {
+        if (entry.kind == .result) assert(entry.result_index != JobEntry.result_index_none);
+        if (entry.kind == .done) assert(entry.result_index == JobEntry.result_index_none);
+        self.producer_mutex.lockUncancelable(self.io);
+        defer self.producer_mutex.unlock(self.io);
+        const head = self.head.load(.monotonic);
+        const slot = self.claim(head);
+        slot.kind = .job;
+        slot.job = entry;
         self.head.store(head +% 1, .release);
     }
 
@@ -408,9 +478,17 @@ pub const CompletionRing = struct {
         return &self.slots[head & (@as(u32, @intCast(self.slots.len)) - 1)];
     }
 
-    /// Consumer side: move every completion into `queue`, and the image
-    /// decode, of which the worker has at most one outstanding, into `image`.
-    pub fn drainInto(self: *CompletionRing, queue: *EventQueue, image: *?ImageDecoded) void {
+    /// Consumer side: move every completion into `queue`, the image decode,
+    /// of which the worker has at most one outstanding, into `image`, and
+    /// every job delivery into `jobs`, which must be empty.
+    pub fn drainInto(
+        self: *CompletionRing,
+        queue: *EventQueue,
+        image: *?ImageDecoded,
+        jobs: *JobInbox,
+    ) void {
+        assert(jobs.count == 0);
+        assert(jobs.entries.len >= self.slots.len);
         const head = self.head.load(.acquire);
         var tail = self.tail.load(.monotonic);
         assert(head -% tail <= self.slots.len);
@@ -425,6 +503,7 @@ pub const CompletionRing = struct {
                     .request_id = slot.request_id,
                     .outcome = self.slotOutcome(slot),
                 } }),
+                .job => jobs.add(slot.job),
             }
         }
         self.tail.store(tail, .release);
@@ -534,6 +613,7 @@ test "completion ring delivers distinct outcomes in order" {
         .count_max = 8,
         .dialog_count_max = 4,
         .dialog_path_bytes_max = 32,
+        .io = std.testing.io,
     });
     defer ring.deinit(std.testing.allocator);
     var scratch: [64]u8 = undefined;
@@ -544,7 +624,10 @@ test "completion ring delivers distinct outcomes in order" {
     ring.pushImage(.{ .entry = 7, .width = 2, .height = 3, .pixel_offset = 5, .failure = null });
     ring.push(.{ .request_id = 3, .outcome = .{ .failed = error.AccessDenied } });
     var image: ?ImageDecoded = null;
-    ring.drainInto(&queue, &image);
+    var job_entries: [8]JobEntry = undefined;
+    var jobs: JobInbox = .{ .entries = &job_entries, .count = 0 };
+    ring.drainInto(&queue, &image, &jobs);
+    try std.testing.expectEqual(@as(u32, 0), jobs.count);
     const events = queue.pending();
     try std.testing.expectEqual(@as(usize, 3), events.len);
     try std.testing.expectEqual(@as(u32, 7), image.?.entry);
@@ -572,6 +655,7 @@ test "completion ring holds a selection of exactly the dialog path budget per re
         .count_max = 4,
         .dialog_count_max = 2,
         .dialog_path_bytes_max = path_bytes_max,
+        .io = std.testing.io,
     });
     defer ring.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 2 * path_bytes_max), ring.paths.len);
@@ -586,7 +670,10 @@ test "completion ring holds a selection of exactly the dialog path budget per re
     } } });
     @memset(&scratch, 'X');
     var image: ?ImageDecoded = null;
-    ring.drainInto(&queue, &image);
+    var job_entries: [8]JobEntry = undefined;
+    var jobs: JobInbox = .{ .entries = &job_entries, .count = 0 };
+    ring.drainInto(&queue, &image, &jobs);
+    try std.testing.expectEqual(@as(u32, 0), jobs.count);
     const events = queue.pending();
     try std.testing.expectEqual(@as(usize, 2), events.len);
     try std.testing.expect(image == null);

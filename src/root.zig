@@ -48,6 +48,13 @@ const accessibility_mod = @import("accessibility/mod.zig");
 
 pub const App = core.App;
 pub const Config = core.Config;
+/// What `Config.on_init` receives from the process: `io` and `environ`.
+pub const Init = core.Init;
+/// A background job's handle to the framework, passed to its `run`:
+/// `post` a result, check `cancelled`, reach `io` (`Effects.spawn`).
+pub const Job = core.Job;
+/// A spawned job, for `Effects.cancelJob` and to tell deliveries apart.
+pub const JobId = core.JobId;
 pub const Cx = core.Cx;
 pub const ui = core.ui;
 pub const Handler = core.Handler;
@@ -171,6 +178,7 @@ pub const internals = struct {
     pub const packed_frame = core.packed_frame;
     pub const window = core.window;
     pub const lifecycle = core.lifecycle;
+    pub const jobs = core.jobs;
     pub const text_engine = core.text_engine;
     pub const debugger = core.debugger;
     pub const limits = @import("core/limits.zig");

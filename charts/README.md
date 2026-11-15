@@ -34,7 +34,7 @@ const SalesChart = charts.BarChart(.{ .category_count_max = 4, .series_count_max
 
 const State = struct { sales: [SalesChart.series_count_max]SalesChart.Series = undefined };
 
-fn initSales(state: *State, _: *gooey.Effects) void {
+fn initSales(state: *State, _: gooey.Init, _: *gooey.Effects) void {
     const sales = &state.sales[0];
     sales.* = SalesChart.Series.init("Sales", charts.Color.hex(0x4285f4));
     sales.addPoint(charts.CategoryPoint.init("Q1", 30));

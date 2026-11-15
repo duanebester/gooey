@@ -983,6 +983,22 @@ fn routeCompletion(window: *Window, completion: *const events.Completion) void {
     _ = invoke(window, handler, null, completion, .root);
 }
 
+/// Deliver one job result or end (`Effects.spawn`): call the job's
+/// `on_result` or `on_done` like any root handler, then free what the
+/// delivery held. A cancelled job's results are dropped here.
+pub fn routeJob(window: *Window, entry: *const events.JobEntry) void {
+    window.assertPhase(.drain);
+    const delivery = window.jobs.delivery(entry) orelse return;
+    assert(delivery.handler.target.isRoot());
+    var effects = handler_mod.Effects.init(null, .root);
+    effects.job = delivery;
+    call(window, delivery.handler, &effects);
+    if (effects.click_request) |id| clickRequested(window, id, null);
+    window.jobs.finishDelivery(entry);
+    // The handler changed state the screen shows.
+    window.render_requested = true;
+}
+
 /// Invoke one handler and apply its effects, then the click it requested,
 /// if any. Returns whether the handler stopped propagation.
 fn invoke(
@@ -1023,6 +1039,7 @@ fn call(window: *Window, handler: handler_mod.Handler, effects: *handler_mod.Eff
     assert(!effects.propagation_stopped);
     effects.clipboard = &window.clipboard;
     effects.store = window.store;
+    effects.jobs = &window.jobs;
     effects.rendered = window.rendered();
     handler.call(window.store, effects);
     if (effects.render_requested) window.render_requested = true;

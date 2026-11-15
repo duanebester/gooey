@@ -21,6 +21,7 @@ const records = @import("records.zig");
 const handler_mod = @import("handler.zig");
 const events = @import("events.zig");
 const images_mod = @import("images.zig");
+const jobs_mod = @import("jobs.zig");
 const retained_mod = @import("retained.zig");
 const text_engine = @import("text_engine.zig");
 const clipboard_mod = @import("clipboard.zig");
@@ -555,6 +556,9 @@ pub const FileDialogService = struct {
     ) ?events.Completion.Outcome,
 };
 
+/// The host's thread-safe wake (`Window.bindWake`).
+pub const WakeService = images_mod.WakeService;
+
 pub const Window = struct {
     gpa: std.mem.Allocator,
     limits: ResourceLimits,
@@ -573,6 +577,11 @@ pub const Window = struct {
     completions: events.CompletionRing,
     /// The image decode worker and its requests (`Painter.image`).
     images: images_mod.Loader,
+    /// Background jobs (`Effects.spawn`) and their workers.
+    jobs: jobs_mod.Pool,
+    /// The job deliveries the drain took from `completions`, as many as
+    /// the ring holds.
+    job_inbox: events.JobInbox,
     retained: retained_mod.Retained,
     inputs: text_engine.InputPool,
     /// Reserved only when `limits.text.area.count_max > 0`; retaining an
@@ -778,6 +787,15 @@ pub const Window = struct {
         assert(self.screen_reader.bridgeAddressValid());
     }
 
+    /// Bind or unbind the host's thread-safe wake: the image worker and job
+    /// workers call it after pushing onto the completion ring, so a result
+    /// is drawn without waiting for input.
+    pub fn bindWake(self: *Window, service: ?images_mod.WakeService) void {
+        self.images.bindWake(service);
+        self.jobs.bindWake(service);
+        if (service == null) assert(self.jobs.wake == null);
+    }
+
     /// Return to the headless bridge before the native window goes away.
     pub fn unbindScreenReader(self: *Window) void {
         assert(self.phase == .idle);
@@ -818,6 +836,9 @@ pub const Options = struct {
     keymap: []const keymap_mod.Compiled,
     store: *handler_mod.Store,
     resources: *AppResources,
+    /// `Config.jobs` as `handler.typeId`s, in static storage; empty starts
+    /// no workers.
+    job_types: []const usize = &.{},
 };
 
 pub noinline fn initInPlace(self: *Window, gpa: std.mem.Allocator, options: *const Options) !void {
@@ -834,7 +855,7 @@ pub noinline fn initInPlace(self: *Window, gpa: std.mem.Allocator, options: *con
     self.resources = options.resources;
     try initBuildStorage(self, gpa, limits);
     errdefer deinitBuildStorage(self, gpa);
-    try initRuntimeStorage(self, gpa, limits);
+    try initRuntimeStorage(self, gpa, limits, options.job_types);
     errdefer deinitRuntimeStorage(self, gpa);
 
     self.store.registerPool(self.inputs.entityPool());
@@ -976,7 +997,12 @@ fn deinitPaths(self: *Window, gpa: std.mem.Allocator) void {
     gpa.free(self.open_stack);
 }
 
-fn initRuntimeStorage(self: *Window, gpa: std.mem.Allocator, limits: *const ResourceLimits) !void {
+fn initRuntimeStorage(
+    self: *Window,
+    gpa: std.mem.Allocator,
+    limits: *const ResourceLimits,
+    job_types: []const usize,
+) !void {
     try self.queue.initInPlace(gpa, .{
         .event_count_max = limits.events.queue_count_max,
         .text_bytes_max = limits.events.text_bytes_max,
@@ -986,13 +1012,21 @@ fn initRuntimeStorage(self: *Window, gpa: std.mem.Allocator, limits: *const Reso
         .count_max = std.math.ceilPowerOfTwoAssert(u32, limits.events.completion_count_max),
         .dialog_count_max = limits.events.dialog_count_max,
         .dialog_path_bytes_max = limits.events.dialog_path_bytes_max,
+        .io = self.resources.io,
     });
     errdefer self.completions.deinit(gpa);
+    self.job_inbox = .{
+        .entries = try gpa.alloc(events.JobEntry, self.completions.slots.len),
+        .count = 0,
+    };
+    errdefer gpa.free(self.job_inbox.entries);
     self.dialog_handlers = try gpa.alloc(?handler_mod.Handler, limits.events.dialog_count_max);
     errdefer gpa.free(self.dialog_handlers);
     @memset(self.dialog_handlers, null);
     try self.images.initInPlace(gpa, self.resources.io, &self.completions, &limits.atlas);
     errdefer self.images.deinit(gpa);
+    try self.jobs.initInPlace(gpa, self.resources.io, &self.completions, &limits.events, job_types);
+    errdefer self.jobs.deinit(gpa);
     try self.retained.initInPlace(gpa, &.{
         .slot_counts = .{
             limits.retained.slot_count_64,
@@ -1096,9 +1130,11 @@ fn deinitRuntimeStorage(self: *Window, gpa: std.mem.Allocator) void {
     if (self.areas_reserved) self.areas.deinit(gpa);
     self.inputs.deinit(gpa);
     self.retained.deinit(gpa);
-    // The worker pushes onto the completion ring until it is joined.
+    // The workers push onto the completion ring until they are joined.
+    self.jobs.deinit(gpa);
     self.images.deinit(gpa);
     gpa.free(self.dialog_handlers);
+    gpa.free(self.job_inbox.entries);
     self.completions.deinit(gpa);
     self.queue.deinit(gpa);
 }
