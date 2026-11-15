@@ -81,7 +81,7 @@ pub const State = struct {
     sort_direction: SortDirection = .none,
 
     /// The same rows as 0.3.1, from its seeded generator.
-    fn init(self: *State, _: *Effects) void {
+    fn init(self: *State, _: gooey.Init, _: *Effects) void {
         var seed: u64 = 12345;
         for (&self.rows, &self.order, 0..) |*row, *order, index| {
             const first = nextRandom(&seed);

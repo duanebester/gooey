@@ -67,6 +67,7 @@ pub fn Exports(comptime App: type) type {
             assert(app == null);
             const backing = std.heap.wasm_allocator;
             const self = try backing.create(App);
+            self.setBrowserProcess(io_mod.browser);
             self.beginInit(backing);
             const gpa = self.guard.allocator();
             const created = try gpa.create(Host);

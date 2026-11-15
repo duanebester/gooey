@@ -285,7 +285,7 @@ pub const Host = struct {
         self.core.presenter = .{ .context = self, .draw = draw };
         self.core.file_dialog = .{ .context = self, .open = openDialog };
         // The decode worker wakes the main loop when an image lands.
-        self.core.images.bindWake(.{ .context = self, .wake = scheduleTickErased });
+        self.core.bindWake(.{ .context = self, .wake = scheduleTickErased });
         self.core.clipboard.service = .{
             .context = self,
             .read = clipboardRead,
@@ -323,7 +323,7 @@ pub const Host = struct {
         self.core.resources.unregisterAtlasConsumer(self.core.atlas_consumer_key);
         self.core.presenter = null;
         self.core.file_dialog = null;
-        self.core.images.bindWake(null);
+        self.core.bindWake(null);
         self.core.clipboard.service = null;
         // Withdraws the UI Automation root before the window is destroyed.
         self.core.unbindScreenReader();

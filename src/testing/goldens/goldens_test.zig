@@ -14,6 +14,7 @@ const compare = @import("compare.zig");
 
 test {
     _ = @import("core_checks.zig");
+    _ = @import("jobs_checks.zig");
 }
 
 const TextBuffer = gooey.testing.record_dump.TextBuffer;

@@ -22,6 +22,9 @@ fn pinSurface() void {
     comptime {
         _ = @TypeOf(gooey.App);
         _ = gooey.Config;
+        _ = gooey.Init;
+        _ = @TypeOf(gooey.Job);
+        _ = gooey.JobId;
         _ = gooey.Cx;
         _ = gooey.ui;
         _ = gooey.Handler;
@@ -137,7 +140,23 @@ fn pinFields() void {
             _ = @FieldType(Atlas, name);
         }
         _ = @FieldType(@FieldType(gooey.ResourceLimits, "a11y"), "value_bytes_max");
-        _ = @FieldType(@FieldType(gooey.ResourceLimits, "events"), "dialog_count_max");
+        const Events = @FieldType(gooey.ResourceLimits, "events");
+        for ([_][]const u8{
+            "dialog_count_max",     "job_count_max",        "job_input_bytes_max",
+            "job_result_count_max", "job_result_bytes_max",
+        }) |name| {
+            _ = @FieldType(Events, name);
+        }
+        const AppConfig = gooey.Config(struct {});
+        for ([_][]const u8{ "jobs", "on_init", "on_deinit" }) |name| {
+            _ = @FieldType(AppConfig, name);
+        }
+        for ([_][]const u8{ "io", "environ" }) |name| {
+            _ = @FieldType(gooey.Init, name);
+        }
+        for ([_][]const u8{ "slot", "generation" }) |name| {
+            _ = @FieldType(gooey.JobId, name);
+        }
     }
 }
 
@@ -164,6 +183,23 @@ fn pinEffects() void {
         _ = @TypeOf(Effects.bounds);
         _ = @TypeOf(Effects.dropPayload);
         _ = @TypeOf(Effects.startDrag);
+        _ = @TypeOf(Effects.spawn);
+        _ = @TypeOf(Effects.cancelJob);
+        _ = @TypeOf(Effects.jobResult);
+        _ = @TypeOf(Effects.jobDone);
+        _ = @TypeOf(Effects.jobId);
+        for ([_][]const u8{ "on_result", "on_done" }) |name| {
+            _ = @FieldType(Effects.JobHandlers, name);
+        }
+        for ([_][]const u8{ "id", "outcome" }) |name| {
+            _ = @FieldType(Effects.JobDone, name);
+        }
+        _ = Effects.JobOutcome.finished;
+        _ = Effects.JobOutcome.cancelled;
+        _ = @FieldType(Effects.JobOutcome, "failed");
+        for ([_][]const u8{ "io", "cancelled", "post" }) |name| {
+            if (!@hasDecl(gooey.Job(u8), name)) @compileError("gooey.Job lost " ++ name);
+        }
         const drag_fields = .{ "phase", "x", "y", "start_x", "start_y", "button", "modifiers" };
         for (drag_fields) |name| {
             _ = @FieldType(Effects.PointerDrag, name);
@@ -237,14 +273,15 @@ fn pinCx() void {
 fn pinExact() void {
     comptime {
         expectDecls(gooey, "gooey", &.{
-            "App",            "Config",      "Cx",                "ui",
-            "Handler",        "Effects",     "Entity",            "ElementId",
-            "Key",            "Lifetime",    "Handle",            "Drag",
-            "Theme",          "Painter",     "PathPromptOptions", "SavePromptOptions",
-            "Paths",          "InputEngine", "AreaEngine",        "EditorEngine",
-            "ResourceLimits", "FontLimits",  "FontSource",        "Color",
-            "animation",      "input",       "text",              "accessibility",
-            "log",            "std_options", "testing",           "internals",
+            "App",         "Config",            "Init",              "Job",
+            "JobId",       "Cx",                "ui",                "Handler",
+            "Effects",     "Entity",            "ElementId",         "Key",
+            "Lifetime",    "Handle",            "Drag",              "Theme",
+            "Painter",     "PathPromptOptions", "SavePromptOptions", "Paths",
+            "InputEngine", "AreaEngine",        "EditorEngine",      "ResourceLimits",
+            "FontLimits",  "FontSource",        "Color",             "animation",
+            "input",       "text",              "accessibility",     "log",
+            "std_options", "testing",           "internals",
         });
         expectDecls(gooey.ui, "gooey.ui", &.{
             "box",         "text",          "paint",      "Paint",       "when",

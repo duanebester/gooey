@@ -44,6 +44,8 @@
 //! - `core-dialog-target`: names a non-root state as a file dialog's completion handler.
 //! - `core-dialog-paths`: a dialog selects one path more than `dialog_path_count_max`.
 //! - `core-dialog-count`: one file dialog more than `events.dialog_count_max` stays open.
+//! - `core-job-count`: spawns one background job more than `nano`'s 2
+//!   `events.job_count_max` while both slots run.
 //! - `core-mono-unset`: draws `.family = .mono` text in an app with no `fonts.mono`.
 //! - `core-wrap-run`: one text of 1,025 newlines and letters, one codepoint past
 //!   `text.run_codepoint_count_max`, which also sizes layout's per-text word
@@ -100,6 +102,7 @@ const Mode = enum {
     @"core-dialog-target",
     @"core-dialog-paths",
     @"core-dialog-count",
+    @"core-job-count",
     @"core-mono-unset",
     @"core-wrap-run",
     @"core-wrap-frame",
@@ -148,6 +151,7 @@ pub fn main(init: std.process.Init) !void {
         .@"core-dialog-target" => coreDialogTarget(init.gpa, init.io),
         .@"core-dialog-paths" => coreDialogPaths(init.gpa, init.io),
         .@"core-dialog-count" => coreDialogCount(init.gpa, init.io),
+        .@"core-job-count" => coreJobCount(init.gpa, init.io),
         .@"core-mono-unset" => coreTick(init.gpa, init.io, CoreApp.monoText),
         .@"core-wrap-run" => coreTick(init.gpa, init.io, CoreApp.wrapRun),
         .@"core-wrap-frame" => coreTick(init.gpa, init.io, CoreApp.wrapFrame),
@@ -713,6 +717,36 @@ fn coreDialogCount(gpa: std.mem.Allocator, io: std.Io) void {
         app.window.queue.push(.{ .input = .{ .mouse_down = point } });
         app.window.queue.push(.{ .input = .{ .mouse_up = point } });
         app.tick(2 + opened);
+    }
+    unreachable;
+}
+
+/// A job that sleeps until the app stops.
+const Nap = struct {
+    pub const Input = struct { seconds: u32 };
+    pub const Result = struct { never: u8 };
+
+    pub fn run(input: *const Input, job: *gooey.Job(Result)) !void {
+        try job.io().sleep(.fromSeconds(input.seconds), .awake);
+    }
+};
+
+fn coreJobCount(gpa: std.mem.Allocator, io: std.Io) void {
+    const config = comptime blk: {
+        var with_jobs = core_config;
+        with_jobs.jobs = &.{Nap};
+        break :blk with_jobs;
+    };
+    const app = initCoreApp(gooey.App(CoreState, CoreApp.empty, config), gpa, io);
+    var effects = gooey.Effects.init(null, .root);
+    effects.jobs = &app.window.jobs;
+    const job_count_max = gooey.ResourceLimits.nano.events.job_count_max;
+    var spawned: u32 = 0;
+    // Exactly the capacity, then one more.
+    while (spawned <= job_count_max) : (spawned += 1) {
+        _ = effects.spawn(Nap, &.{ .seconds = 60 }, .{
+            .on_done = effects.handler(CoreState.picked),
+        });
     }
     unreachable;
 }

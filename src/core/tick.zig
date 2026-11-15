@@ -227,16 +227,22 @@ fn applyFont(window: *Window) void {
 /// in this drain; one that stays open completes in a later tick.
 fn drain(window: *Window) bool {
     window.setPhase(.idle, .drain);
-    window.completions.drainInto(&window.queue, &window.images.landed);
+    window.completions.drainInto(&window.queue, &window.images.landed, &window.job_inbox);
     // A landed decode is uploaded and drawn by the next build's emit.
     if (window.images.landed != null) window.render_requested = true;
     const pending = window.queue.pending();
     for (pending) |*event| router.route(window, event);
     window.queue.clear();
+    // Job results and ends, after input, in the order they were posted.
+    for (window.job_inbox.pending()) |*entry| router.routeJob(window, entry);
+    window.job_inbox.count = 0;
     // Copy and cut reach the platform after the drain, outside any handler.
     window.clipboard.flush();
     // Entities removed by this drain's handlers leave before the build.
     window.store.freeRemoved();
+    // Without worker threads, jobs spawned by this drain run here, between
+    // handlers; what they post is delivered by the next drain.
+    if (window.jobs.runQueued()) window.render_requested = true;
     var dialog_ran = false;
     if (window.pending_dialog) |request| {
         window.pending_dialog = null;
