@@ -9,7 +9,11 @@
 //!
 //! If a pinned name disappears, `zig build test` (which reaches this file
 //! from `root.zig`'s test block) fails at comptime at that name's line.
+//! `pinExact` closes the other direction: a public name added to the root
+//! or to one of its namespaces without a line here fails too, so this file
+//! describes the whole surface.
 
+const std = @import("std");
 const gooey = @import("root.zig");
 
 /// The flat names: the app entry point, render context, element
@@ -27,7 +31,6 @@ fn pinSurface() void {
         _ = gooey.Key;
         _ = gooey.Lifetime;
         _ = gooey.Handle;
-        _ = gooey.Query;
         _ = @TypeOf(gooey.Drag);
         _ = gooey.Theme;
         _ = gooey.Painter;
@@ -58,6 +61,15 @@ fn pinUi() void {
         _ = @TypeOf(gooey.ui.Paint);
         _ = gooey.ui.Box;
         _ = gooey.ui.Style;
+        _ = gooey.ui.Direction;
+        _ = gooey.ui.Layer;
+        _ = gooey.ui.Anchor;
+        _ = gooey.ui.Scroll;
+        _ = gooey.ui.ClipPolicy;
+        _ = gooey.ui.CursorShape;
+        _ = gooey.ui.PointerEvents;
+        _ = gooey.ui.KeyContext;
+        _ = gooey.ui.ActionBinding;
         _ = gooey.ui.DragSource;
         _ = gooey.ui.DropTarget;
         _ = gooey.ui.Text;
@@ -173,6 +185,10 @@ fn pinNamespaces() void {
         _ = gooey.input.Keystroke;
         _ = @TypeOf(gooey.text.codepointCount);
         _ = gooey.text.run_codepoint_count_max;
+        _ = gooey.text.Metrics;
+        _ = gooey.text.FontWeight;
+        _ = gooey.text.FontFamily;
+        _ = gooey.text.FontVariant;
         _ = gooey.accessibility.Role;
         _ = gooey.accessibility.State;
         _ = gooey.accessibility.Live;
@@ -216,6 +232,81 @@ fn pinCx() void {
     }
 }
 
+/// The exact public names of the root and its namespaces: one missing or
+/// one extra fails with the namespace and both lists.
+fn pinExact() void {
+    comptime {
+        expectDecls(gooey, "gooey", &.{
+            "App",            "Config",      "Cx",                "ui",
+            "Handler",        "Effects",     "Entity",            "ElementId",
+            "Key",            "Lifetime",    "Handle",            "Drag",
+            "Theme",          "Painter",     "PathPromptOptions", "SavePromptOptions",
+            "Paths",          "InputEngine", "AreaEngine",        "EditorEngine",
+            "ResourceLimits", "FontLimits",  "FontSource",        "Color",
+            "animation",      "input",       "text",              "accessibility",
+            "log",            "std_options", "testing",           "internals",
+        });
+        expectDecls(gooey.ui, "gooey.ui", &.{
+            "box",         "text",          "paint",      "Paint",       "when",
+            "action",      "Box",           "Style",      "Direction",   "Layer",
+            "Anchor",      "Scroll",        "ClipPolicy", "CursorShape", "PointerEvents",
+            "KeyContext",  "ActionBinding", "DragSource", "DropTarget",  "Text",
+            "Sizing",      "Edges",         "Corners",    "Alignment",   "Border",
+            "Shadow",      "ColorToken",    "Color",      "A11y",        "Role",
+            "Orientation", "HeadingLevel",  "Painter",    "PaintText",   "PaintSvg",
+            "PaintImage",  "ObjectFit",     "Rect",
+        });
+        expectDecls(gooey.Cx, "gooey.Cx", &.{
+            "ScrollPosition", "state",   "theme",              "fontMetrics", "id",
+            "hovered",        "focused", "requestRenderAfter", "now",         "limits",
+            "bounds",         "scroll",  "drag",               "on",          "retain",
+            "get",            "release", "render",
+        });
+        expectDecls(gooey.text, "gooey.text", &.{
+            "Metrics",     "FontWeight",     "FontFamily",
+            "FontVariant", "codepointCount", "run_codepoint_count_max",
+        });
+        expectDecls(gooey.accessibility, "gooey.accessibility", &.{
+            "Role", "State", "Live", "HeadingLevel", "Orientation",
+        });
+        expectDecls(gooey.input, "gooey.input", &.{
+            "events",             "InputEvent",       "MouseEvent",     "MouseButton",
+            "ScrollEvent",        "KeyEvent",         "KeyCode",        "Modifiers",
+            "TextInputEvent",     "CompositionEvent", "FocusLostEvent", "HeldKeys",
+            "held_key_count_max", "Keystroke",
+        });
+        expectDecls(gooey.animation, "gooey.animation", &.{
+            "tween_duration_ms_max", "Easing", "Tween",   "Spring", "Phase",
+            "Motion",                "tween",  "tweenOn", "motion",
+        });
+    }
+}
+
+fn expectDecls(
+    comptime T: type,
+    comptime name: []const u8,
+    comptime names: []const []const u8,
+) void {
+    // Each name is compared with every pinned one: at most 40 by 40 here.
+    @setEvalBranchQuota(100_000);
+    const decls = switch (@typeInfo(T)) {
+        .@"struct" => |info| info.decl_names,
+        .@"opaque" => |info| info.decl_names,
+        else => @compileError(name ++ " is not a namespace"),
+    };
+    for (names) |expected| {
+        if (!@hasDecl(T, expected)) {
+            @compileError(name ++ " lost pinned name '" ++ expected ++ "'");
+        }
+    }
+    for (decls) |actual| {
+        for (names) |expected| {
+            if (std.mem.eql(u8, actual, expected)) break;
+        } else @compileError(name ++ " has unpinned public name '" ++ actual ++
+            "': pin it in src/api_check.zig or make it private");
+    }
+}
+
 test "public API surface compiles" {
     comptime {
         pinSurface();
@@ -224,5 +315,6 @@ test "public API surface compiles" {
         pinEffects();
         pinNamespaces();
         pinCx();
+        pinExact();
     }
 }

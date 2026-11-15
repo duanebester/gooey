@@ -57,7 +57,7 @@ test "the IME rect query is answered synchronously from the rendered frame" {
     defer testing.allocator.destroy(driver);
     try driver.initInPlace(testing.allocator, testing.io, &traces.todo);
     defer driver.deinit();
-    const query = gooey.Query{ .window = &driver.app.window };
+    const query = internals.Query{ .window = &driver.app.window };
 
     driver.frame();
     try testing.expectEqual(@as(?internals.records.Rect, null), query.imeCursorRect());
@@ -309,7 +309,7 @@ test "a TextArea takes lines, follows the caret, and places it where clicked" {
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
     defer app.deinitHeadless();
-    const query = gooey.Query{ .window = &app.window };
+    const query = internals.Query{ .window = &app.window };
     var now: u64 = 0;
     app.tick(now);
     const inset: f32 = 9; // The default padding and border.
@@ -404,7 +404,7 @@ test "a CodeEditor indents with Tab, selects a line from its gutter, and scrolls
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
     defer app.deinitHeadless();
-    const query = gooey.Query{ .window = &app.window };
+    const query = internals.Query{ .window = &app.window };
     const text_x: f32 = 1 + 50 + 1 + 8;
     const text_y: f32 = 1 + 8;
     var now: u64 = 0;
@@ -950,7 +950,7 @@ test "a modal blocks the pointer on every fragment opened before it" {
     defer app.deinitHeadless();
     var now: u64 = 0;
     app.tick(now);
-    const query = gooey.Query{ .window = &app.window };
+    const query = internals.Query{ .window = &app.window };
     const frame = app.window.rendered();
     try testing.expect(frame.modal_hit_start > 0);
     const below = frame.hits[0..frame.modal_hit_start];
@@ -1810,7 +1810,7 @@ test "keymapClaims answers from the rendered focus path" {
     defer testing.allocator.destroy(driver);
     try driver.initInPlace(testing.allocator, testing.io, &traces.actions);
     defer driver.deinit();
-    const query = gooey.Query{ .window = &driver.app.window };
+    const query = internals.Query{ .window = &driver.app.window };
     const save = chord(.s, .{ .cmd = true });
     driver.frame();
     try testing.expect(!query.keymapClaims(save));
@@ -1908,7 +1908,7 @@ test "pressClaims takes presses on controls and leaves empty chrome to the windo
     // The first emit measures the list's overflow; its track needs a second.
     now += 1;
     app.tick(now);
-    const query = gooey.Query{ .window = &app.window };
+    const query = internals.Query{ .window = &app.window };
 
     // The button, at the top-left corner, on its plain child, and in the strip.
     try testing.expect(query.pressClaims(.{ .x = 1, .y = 1 }));
@@ -2270,7 +2270,7 @@ test "accessible_form commits a composition into the field that lost focus" {
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
     defer app.deinitHeadless();
-    const query = gooey.Query{ .window = &app.window };
+    const query = internals.Query{ .window = &app.window };
     var now: u64 = 0;
     app.tick(now);
     const name_field = "Full name, required field";
@@ -4655,7 +4655,7 @@ test "pointer_events none passes the pointer to the box below but keeps its keys
     try testing.expect(!frame.hits[1].pointer);
     try testing.expectEqual(frame.hits[0].bounds, frame.hits[1].bounds);
 
-    const query = gooey.Query{ .window = &app.window };
+    const query = internals.Query{ .window = &app.window };
     try testing.expectEqual(@as(?gooey.ElementId, below_id), query.hitTest(.{ .x = 70, .y = 70 }));
     clickAt(app, &now, 70, 70);
     try testing.expectEqual(@as(u32, 1), app.state.below_clicks);
@@ -5223,7 +5223,7 @@ test "a drag preview never takes the pointer and adds no accessibility node" {
     scrollMouse(app, &now, dragged(131, 20));
     try testing.expectEqual(probeId("near"), app.window.drag.over);
     const frame = app.window.rendered();
-    const query: gooey.Query = .{ .window = &app.window };
+    const query: internals.Query = .{ .window = &app.window };
     try testing.expectEqual(probeId("near"), query.hitTest(.{ .x = 131, .y = 20 }).?);
     var preview_found = false;
     for (frame.hits[0..frame.hit_count]) |*record| {

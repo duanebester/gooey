@@ -57,7 +57,7 @@ const time = struct {
     };
 };
 
-const a11y = gooey.accessibility;
+const a11y = gooey.internals.accessibility;
 const Tree = a11y.Tree;
 const fingerprint = a11y.fingerprint;
 const Fingerprint = fingerprint.Fingerprint;

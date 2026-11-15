@@ -8,12 +8,11 @@ box's own `ElementId` and laid-out bounds identify the node.
 The public names are:
 
 - `gooey.ui.A11y`: the annotation struct that `ui.Box.a11y` takes.
-- `gooey.accessibility.Role`, `gooey.accessibility.State`, and `gooey.accessibility.Live`.
-  `gooey.ui.Role` is the same enum as `gooey.accessibility.Role`.
+- `gooey.accessibility.Role`, `State`, `Live`, `HeadingLevel`, and `Orientation`, and
+  nothing else. `gooey.ui.Role` is the same enum as `gooey.accessibility.Role`.
 
-`gooey.accessibility` also declares the framework's tree, bridges, and debug helpers. They
-are not pinned by `src/api_check.zig`, and neither is anything in `gooey.internals`, so do
-not build on them.
+The framework's tree, bridges, and debug helpers live in `gooey.internals.accessibility`.
+Nothing in `gooey.internals` is pinned by `src/api_check.zig`, so do not build on it.
 
 ## Contents
 
