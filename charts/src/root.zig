@@ -2,7 +2,9 @@
 //!
 //! Charts draw into a core `ui.paint` element through its `Painter`, with
 //! zero dynamic allocation during render. Chart data lives in app state, so
-//! it outlives the paint function.
+//! it outlives the paint function. Every chart type takes its capacities at
+//! comptime, checked against the framework ceilings (`point_count_ceiling` and
+//! friends), and exposes the series type those capacities size.
 //!
 //! ## Quick Start
 //!
@@ -11,10 +13,12 @@
 //! const charts = @import("gooey-charts");
 //! const ui = gooey.ui;
 //!
-//! const State = struct { sales: [1]charts.CategorySeries = undefined };
+//! const Sales = charts.BarChart(.{ .category_count_max = 4, .series_count_max = 1 });
+//!
+//! const State = struct { sales: [1]Sales.Series = undefined };
 //!
 //! fn paintSales(state: *const State, painter: *ui.Painter) void {
-//!     var chart = charts.BarChart.init(&state.sales);
+//!     var chart = Sales.init(&state.sales);
 //!     chart.width = painter.bounds.width;
 //!     chart.height = painter.bounds.height;
 //!     chart.render(painter);
@@ -82,16 +86,20 @@ const line_chart = @import("charts/line_chart.zig");
 const pie_chart = @import("charts/pie_chart.zig");
 const scatter_chart = @import("charts/scatter_chart.zig");
 
-/// Renders categorical data as vertical or horizontal bars.
+/// Renders categorical data as vertical or horizontal bars:
+/// `BarChart(.{ .category_count_max = 12, .series_count_max = 2 })`.
 pub const BarChart = bar_chart.BarChart;
 
-/// Renders continuous X/Y data as connected lines with optional markers.
+/// Renders continuous X/Y data as connected lines with optional markers:
+/// `LineChart(.{ .point_count_max = 512, .series_count_max = 4 })`.
 pub const LineChart = line_chart.LineChart;
 
-/// Renders categorical data as circular slices (pie) or ring segments (donut).
+/// Renders categorical data as circular slices (pie) or ring segments (donut):
+/// `PieChart(.{ .slice_count_max = 8 })`.
 pub const PieChart = pie_chart.PieChart;
 
-/// Renders X/Y data as scattered points with optional size encoding (bubble chart).
+/// Renders X/Y data as scattered points with optional size encoding (bubble chart):
+/// `ScatterChart(.{ .point_count_max = 512, .series_count_max = 4 })`.
 pub const ScatterChart = scatter_chart.ScatterChart;
 
 /// Point shapes available for scatter charts.
@@ -138,11 +146,26 @@ pub const DataPoint = types.DataPoint;
 /// A data point with a categorical label and numeric value.
 pub const CategoryPoint = types.CategoryPoint;
 
-/// A named series of data points with a color.
+/// A named series of up to `point_count_max` data points with a color:
+/// `Series(point_count_max)`. Usually named through `LineChart(...).Series`.
 pub const Series = types.Series;
 
-/// A named series of category points with a color.
+/// A named series of up to `category_count_max` category points with a color:
+/// `CategorySeries(category_count_max)`. Usually named through `BarChart(...).Series`.
 pub const CategorySeries = types.CategorySeries;
+
+// =============================================================================
+// Capacities
+// =============================================================================
+
+/// Line and scatter chart capacities: `.{ .point_count_max, .series_count_max }`.
+pub const PointCapacity = types.PointCapacity;
+
+/// Bar chart capacities: `.{ .category_count_max, .series_count_max }`.
+pub const CategoryCapacity = types.CategoryCapacity;
+
+/// Pie and donut chart capacity: `.{ .slice_count_max }`.
+pub const SliceCapacity = types.SliceCapacity;
 
 // =============================================================================
 // Core Types (from Gooey)
@@ -155,9 +178,12 @@ pub const Painter = paint.Painter;
 // Constants
 // =============================================================================
 
-pub const MAX_DATA_POINTS = constants.MAX_DATA_POINTS;
-pub const MAX_SERIES = constants.MAX_SERIES;
-pub const MAX_CATEGORIES = constants.MAX_CATEGORIES;
+/// Framework ceilings: no app capacity may exceed these.
+pub const point_count_ceiling = constants.point_count_ceiling;
+pub const series_count_ceiling = constants.series_count_ceiling;
+pub const category_count_ceiling = constants.category_count_ceiling;
+pub const slice_count_ceiling = constants.slice_count_ceiling;
+
 pub const MAX_TICKS = constants.MAX_TICKS;
 pub const MAX_LEGEND_ITEMS = constants.MAX_LEGEND_ITEMS;
 pub const MAX_LABEL_LENGTH = constants.MAX_LABEL_LENGTH;

@@ -2,15 +2,22 @@
 //!
 //! Hard limits for all chart data structures.
 //! Per CLAUDE.md: "Put a limit on everything" - every loop, queue, and buffer needs a hard cap.
+//!
+//! App data capacities are not set here: every chart type takes its capacities at comptime
+//! from the app (`LineChart(.{ .point_count_max = 512, .series_count_max = 4 })`). The
+//! `*_ceiling` constants are the framework ceilings those capacities are checked against.
 
-/// Maximum data points per series (e.g., line chart points)
-pub const MAX_DATA_POINTS: u32 = 4096;
+/// Framework ceiling on the points one series may hold (line and scatter charts).
+pub const point_count_ceiling: u32 = 4096;
 
-/// Maximum number of series per chart (e.g., multiple lines on a line chart)
-pub const MAX_SERIES: u32 = 16;
+/// Framework ceiling on the series one chart may draw.
+pub const series_count_ceiling: u32 = 16;
 
-/// Maximum categories for categorical charts (e.g., bar chart labels)
-pub const MAX_CATEGORIES: u32 = 256;
+/// Framework ceiling on the categories one categorical series may hold (bar charts).
+pub const category_count_ceiling: u32 = 256;
+
+/// Framework ceiling on the slices one pie or donut chart may draw.
+pub const slice_count_ceiling: u32 = 64;
 
 /// Maximum tick marks per axis
 pub const MAX_TICKS: u32 = 32;
@@ -55,33 +62,32 @@ pub const DEFAULT_GRID_LINE_WIDTH: f32 = 1.0;
 /// Charts with more points than this use data decimation (LTTB algorithm)
 pub const LOD_THRESHOLD: u32 = 1000;
 
-/// Maximum polygon vertices for area fill optimization
-/// Area fill uses single polygon instead of 4×(N-1) rectangles
-pub const MAX_AREA_POLYGON_VERTICES: u32 = MAX_DATA_POINTS * 2 + 2;
-
 // =============================================================================
 // Compile-time assertions (per CLAUDE.md: assert compile-time constants)
 // =============================================================================
 
 comptime {
     // Ensure limits are sensible
-    std.debug.assert(MAX_DATA_POINTS > 0);
-    std.debug.assert(MAX_SERIES > 0);
-    std.debug.assert(MAX_CATEGORIES > 0);
+    std.debug.assert(point_count_ceiling > 0);
+    std.debug.assert(series_count_ceiling > 0);
+    std.debug.assert(category_count_ceiling > 0);
+    std.debug.assert(slice_count_ceiling > 0);
     std.debug.assert(MAX_TICKS > 0);
     std.debug.assert(MAX_LEGEND_ITEMS > 0);
     std.debug.assert(MAX_LABEL_LENGTH > 0);
 
     // Ensure ticks fit in category count (for band scales)
-    std.debug.assert(MAX_TICKS <= MAX_CATEGORIES);
+    std.debug.assert(MAX_TICKS <= category_count_ceiling);
 
     // Ensure series count fits in legend
-    std.debug.assert(MAX_SERIES <= MAX_LEGEND_ITEMS);
+    std.debug.assert(series_count_ceiling <= MAX_LEGEND_ITEMS);
+
+    // Pie slices are categories: a pie never holds more than a bar series.
+    std.debug.assert(slice_count_ceiling <= category_count_ceiling);
 
     // Performance constants validation
     std.debug.assert(LOD_THRESHOLD > 0);
-    std.debug.assert(LOD_THRESHOLD <= MAX_DATA_POINTS);
-    std.debug.assert(MAX_AREA_POLYGON_VERTICES >= 4); // Minimum for a quad
+    std.debug.assert(LOD_THRESHOLD <= point_count_ceiling);
 }
 
 const std = @import("std");
@@ -91,14 +97,14 @@ const std = @import("std");
 // =============================================================================
 
 test "constants are valid" {
-    try std.testing.expect(MAX_DATA_POINTS == 4096);
-    try std.testing.expect(MAX_SERIES == 16);
-    try std.testing.expect(MAX_CATEGORIES == 256);
+    try std.testing.expect(point_count_ceiling == 4096);
+    try std.testing.expect(series_count_ceiling == 16);
+    try std.testing.expect(category_count_ceiling == 256);
+    try std.testing.expect(slice_count_ceiling == 64);
     try std.testing.expect(MAX_TICKS == 32);
     try std.testing.expect(MAX_LABEL_LENGTH == 64);
 }
 
 test "performance constants are valid" {
     try std.testing.expect(LOD_THRESHOLD == 1000);
-    try std.testing.expect(MAX_AREA_POLYGON_VERTICES == MAX_DATA_POINTS * 2 + 2);
 }

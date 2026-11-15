@@ -84,14 +84,17 @@ const charts = @import("gooey-charts");
 const ui = gooey.ui;
 const State = struct {};
 
+// Capacities are the app's: four quarters, one series.
+const SalesChart = charts.BarChart(.{ .category_count_max = 4, .series_count_max = 1 });
+
 // Data stored in static memory (survives paint callback)
-var quarterly_sales: charts.CategorySeries = undefined;
-var chart_data: [1]charts.CategorySeries = undefined;
+var quarterly_sales: SalesChart.Series = undefined;
+var chart_data: [1]SalesChart.Series = undefined;
 var data_initialized: bool = false;
 
 fn ensureDataInitialized() void {
     if (data_initialized) return;
-    quarterly_sales = charts.CategorySeries.init("Sales 2024", charts.Color.hex(0x4285f4));
+    quarterly_sales = SalesChart.Series.init("Sales 2024", charts.Color.hex(0x4285f4));
     quarterly_sales.addPoint(charts.CategoryPoint.init("Q1", 42));
     quarterly_sales.addPoint(charts.CategoryPoint.init("Q2", 58));
     quarterly_sales.addPoint(charts.CategoryPoint.init("Q3", 35));
@@ -102,7 +105,7 @@ fn ensureDataInitialized() void {
 
 fn paintBarChart(_: *const State, painter: *ui.Painter) void {
     ensureDataInitialized();
-    var chart = charts.BarChart.init(&chart_data);
+    var chart = SalesChart.init(&chart_data);
     chart.width = painter.bounds.width;
     chart.height = painter.bounds.height;
     chart.render(painter);
@@ -112,10 +115,13 @@ fn paintBarChart(_: *const State, painter: *ui.Painter) void {
 ### Simple Line Chart
 
 ```gooey/docs/charts.md#L93-118
-var line_data: [2]charts.Series = undefined;
+// Up to 64 points in each of 2 series: a series is about 4.9 KB.
+const TrendChart = charts.LineChart(.{ .point_count_max = 64, .series_count_max = 2 });
+
+var line_data: [TrendChart.series_count_max]TrendChart.Series = undefined;
 
 fn ensureLineDataInitialized() void {
-    // Use initInPlace to avoid 304KB return-by-value stack allocation
+    // initInPlace avoids a return-by-value copy of the whole series
     line_data[0].initInPlace("Revenue", charts.Color.hex(0x34a853));
     line_data[0].addPoint(charts.DataPoint.init(1, 45));
     line_data[0].addPoint(charts.DataPoint.init(2, 52));
@@ -129,7 +135,7 @@ fn ensureLineDataInitialized() void {
 }
 
 fn paintLineChart(_: *const State, painter: *ui.Painter) void {
-    var chart = charts.LineChart.init(&line_data);
+    var chart = TrendChart.init(&line_data);
     chart.width = painter.bounds.width;
     chart.height = painter.bounds.height;
     chart.line_width = 2.5;
@@ -236,7 +242,10 @@ Following Gooey's `CLAUDE.md` principles, the charts library is designed to prev
 ### Design Principles
 
 1. **Static Allocation** — Pre-allocate arrays for data points, legend items
-2. **Hard Limits** — `MAX_DATA_POINTS = 4096`, `MAX_SERIES = 16`
+2. **App Capacities** — Every chart type takes required comptime capacities
+   (`LineChart(.{ .point_count_max = 512, .series_count_max = 4 })`), checked at
+   compile time against the framework ceilings (`point_count_ceiling = 4096`,
+   `series_count_ceiling = 16`). A full series panics, naming the capacity to raise.
 3. **No Recursion** — Iterative rendering
 4. **Fail Fast** — Assert on invalid data, don't silently clamp
 5. **Slice-Based Data** — Charts reference external data, not embed it
@@ -245,18 +254,19 @@ Following Gooey's `CLAUDE.md` principles, the charts library is designed to prev
 
 #### Problem 1: Large Embedded Arrays
 
-Embedding `[MAX_SERIES]CategorySeries` (~305KB) directly in chart structs causes stack overflow.
+Embedding `[series_count_ceiling]CategorySeries(category_count_ceiling)` (~380KB)
+directly in chart structs causes stack overflow.
 
 ```gooey/docs/charts.md#L226-237
-// ❌ BAD: Embeds ~305KB in struct
-pub const BarChart = struct {
-    data: [MAX_SERIES]CategorySeries = undefined,  // ~305KB!
+// ❌ BAD: Embeds ~380KB in struct
+return struct {
+    data: [series_count_max]Series = undefined,  // ~380KB at the ceilings!
     // ...
 };
 
 // ✅ GOOD: Just a 16-byte slice pointer
-pub const BarChart = struct {
-    data: []const CategorySeries,  // 16 bytes (pointer + length)
+return struct {
+    data: []const Series,  // 16 bytes (pointer + length)
     // ...
 };
 ```
@@ -268,8 +278,8 @@ pub const BarChart = struct {
 Using `|series|` in a for loop copies the entire struct onto the stack each iteration.
 
 ```gooey/docs/charts.md#L245-254
-// Series is 304KB! This copies 304KB per iteration:
-for (self.data) |series| {        // ❌ BAD: copies 304KB to stack
+// A Series(4096) is 304KB! This copies 304KB per iteration:
+for (self.data) |series| {        // ❌ BAD: copies the whole series to stack
     const extent = series.xExtent();
 }
 
@@ -283,10 +293,11 @@ for (self.data) |*series| {
 
 #### Problem 3: Return-by-Value Copies
 
-`Series.init()` returns a 304KB struct by value, causing stack overflow.
+`Series.init()` returns the whole series by value: 304KB at `point_count_max = 4096`,
+which overflows the stack.
 
 ```gooey/docs/charts.md#L262-273
-// Series is 304KB! This puts 304KB on the stack:
+// A Series(4096) is 304KB! This puts 304KB on the stack:
 var series = Series.init("Revenue", color);  // ❌ BAD
 
 // Assigning to static memory still uses stack as intermediate:
@@ -296,10 +307,11 @@ line_chart_data[0] = Series.init("Revenue", color);  // ❌ BAD
 line_chart_data[0].initInPlace("Revenue", color);
 
 // Implementation must be noinline to prevent stack frame combining
-pub noinline fn initInPlace(self: *Series, name: []const u8, color: Color) void { ... }
+pub noinline fn initInPlace(self: *Self, name: []const u8, color: ?Color) void { ... }
 ```
 
-**Rule:** For structs > 50KB, use `initInPlace()` methods marked `noinline`.
+**Rule:** For structs > 50KB, use `initInPlace()` methods marked `noinline`. Small
+capacities keep series small: a `Series(64)` is about 4.9KB.
 
 #### Problem 4: Path Struct is ~70KB
 
@@ -326,8 +338,8 @@ painter.circle(.{ cx, cy }, radius, color);           // Individual points
 | LineChart      | < 300 bytes | Same                                |
 | PieChart       | < 100 bytes | Same                                |
 | ScatterChart   | < 300 bytes | Same                                |
-| CategorySeries | ~19KB       | Store in static/heap, pass by slice |
-| Series         | ~304KB      | Store in static/heap, pass by slice |
+| CategorySeries | 92 bytes × `category_count_max` (~23KB at 256) | Static/heap, by slice |
+| Series         | 76 bytes × `point_count_max` (~304KB at 4096)  | Static/heap, by slice |
 
 ---
 
@@ -363,43 +375,77 @@ pub const CategoryPoint = struct {
 };
 ```
 
+### Capacities
+
+Every chart type is a function of a capacity struct and exposes the series type it
+sizes. Capacities are required: there is no default. Each must be at least 1 and at
+most its framework ceiling, or compilation fails naming the field and the ceiling.
+
+```zig
+pub const PointCapacity = struct { point_count_max: u32, series_count_max: u32 };
+pub const CategoryCapacity = struct { category_count_max: u32, series_count_max: u32 };
+pub const SliceCapacity = struct { slice_count_max: u32 };
+
+const Revenue = charts.LineChart(.{ .point_count_max = 512, .series_count_max = 4 });
+var revenue: [4]Revenue.Series = undefined;  // Revenue.Series == charts.Series(512)
+```
+
+Filling a series past its capacity is a capacity-planning error and panics:
+`chart series 'Revenue' full: capacity 512 points, 1 requested. Raise the chart's
+point_count_max.`
+
 ### Series
 
-For XY data with multiple points:
+For XY data with multiple points, `Series(point_count_max)`:
 
 ```gooey/docs/charts.md#L341-354
-pub const Series = struct {
-    name: [MAX_LABEL_LENGTH]u8,
-    data: [MAX_DATA_POINTS]DataPoint,
-    data_len: u32,
-    color: ?Color = null,  // null = use theme palette
+pub fn Series(comptime point_count_max: u32) type {
+    return struct {
+        name: [MAX_LABEL_LENGTH]u8,
+        data: [point_count_max]DataPoint,
+        data_len: u32,
+        color: ?Color = null,  // null = use theme palette
 
-    pub fn init(name: []const u8, color: ?Color) Series;       // ❌ Returns 304KB
-    pub fn initInPlace(self: *Series, name: []const u8, color: ?Color) void;  // ✅ Safe
+        pub const capacity: u32 = point_count_max;
 
-    pub fn addPoint(self: *Series, point: DataPoint) void;
-    pub fn xExtent(self: *const Series) struct { min: f32, max: f32 };
-    pub fn yExtent(self: *const Series) struct { min: f32, max: f32 };
-};
+        pub fn init(name: []const u8, color: ?Color) Self;  // Copies the series
+        pub fn initInPlace(self: *Self, name: []const u8, color: ?Color) void;  // ✅ Safe
+        pub fn fromSlice(name: []const u8, points: []const struct { x: f32, y: f32 },
+            color: ?Color) Self;
+
+        pub fn getName(self: *const Self) []const u8;
+        pub fn getData(self: *const Self) []const DataPoint;
+        pub fn addPoint(self: *Self, point: DataPoint) void;  // Panics when full
+        pub fn xExtent(self: *const Self) struct { min: f32, max: f32 };
+        pub fn yExtent(self: *const Self) struct { min: f32, max: f32 };
+    };
+}
 ```
 
 ### CategorySeries
 
-For categorical data with multiple points:
+For categorical data with multiple points, `CategorySeries(category_count_max)`:
 
 ```gooey/docs/charts.md#L360-371
-pub const CategorySeries = struct {
-    name: [MAX_LABEL_LENGTH]u8,
-    data: [MAX_CATEGORIES]CategoryPoint,
-    data_len: u32,
-    color: ?Color = null,
+pub fn CategorySeries(comptime category_count_max: u32) type {
+    return struct {
+        name: [MAX_LABEL_LENGTH]u8,
+        data: [category_count_max]CategoryPoint,
+        data_len: u32,
+        color: ?Color = null,
 
-    pub fn init(name: []const u8, color: ?Color) CategorySeries;
-    pub fn initInPlace(self: *CategorySeries, name: []const u8, color: ?Color) void;
+        pub const capacity: u32 = category_count_max;
 
-    pub fn addPoint(self: *CategorySeries, point: CategoryPoint) void;
-    pub fn maxValue(self: *const CategorySeries) f32;
-};
+        pub fn init(name: []const u8, color: ?Color) Self;
+        pub fn initInPlace(self: *Self, name: []const u8, color: ?Color) void;
+        pub fn fromSlice(name: []const u8,
+            points: []const struct { label: []const u8, value: f32 }, color: ?Color) Self;
+
+        pub fn addPoint(self: *Self, point: CategoryPoint) void;  // Panics when full
+        pub fn maxValue(self: *const Self) f32;
+        pub fn minValue(self: *const Self) f32;
+    };
+}
 ```
 
 ---
@@ -408,12 +454,14 @@ pub const CategorySeries = struct {
 
 ### BarChart
 
-Renders categorical data as vertical bars.
+Renders categorical data as vertical bars. `BarChart(.{ .category_count_max,
+.series_count_max })` returns the chart type; `BarChart(...).Series` is
+`CategorySeries(category_count_max)`.
 
 ```gooey/docs/charts.md#L381-420
-pub const BarChart = struct {
-    // Data (slice to external storage)
-    data: []const CategorySeries,
+pub fn BarChart(comptime capacity: CategoryCapacity) type { return struct {
+    // Data (slice to external storage), at most series_count_max series
+    data: []const Series,
 
     // Dimensions
     width: f32 = 400,
@@ -450,23 +498,27 @@ pub const BarChart = struct {
     accessible_title: ?[]const u8 = null,
     accessible_description: ?[]const u8 = null,
 
-    pub fn init(data: []const CategorySeries) BarChart;
-    pub fn initSingle(series: *const CategorySeries) BarChart;
-    pub fn seriesCount(self: *const BarChart) u32;
-    pub fn render(self: *const BarChart, painter: *Painter) void;
+    pub const category_count_max: u32 = capacity.category_count_max;
+    pub const series_count_max: u32 = capacity.series_count_max;
+    pub const Series = CategorySeries(category_count_max);
+
+    pub fn init(data: []const Series) Self;  // Asserts 0 < data.len <= series_count_max
+    pub fn initSingle(series: *const Series) Self;
+    pub fn seriesCount(self: *const Self) u32;
+    pub fn render(self: *const Self, painter: *Painter) void;
 
     // Accessibility
-    pub fn getAccessibilityInfo(self: *const BarChart) accessibility.ChartInfo;
-    pub fn describe(self: *const BarChart, buf: []u8) []const u8;
-    pub fn summarize(self: *const BarChart, buf: []u8) []const u8;
-};
+    pub fn getAccessibilityInfo(self: *const Self) accessibility.ChartInfo;
+    pub fn describe(self: *const Self, buf: []u8) []const u8;
+    pub fn summarize(self: *const Self, buf: []u8) []const u8;
+}; }
 ```
 
 **Example:**
 
 ```gooey/docs/charts.md#L424-438
 fn paintBarChart(_: *const State, painter: *ui.Painter) void {
-    var chart = charts.BarChart.init(&bar_data);
+    var chart = SalesChart.init(&bar_data);
     chart.width = painter.bounds.width;
     chart.height = painter.bounds.height;
     chart.corner_radius = 4;
@@ -484,10 +536,13 @@ fn paintBarChart(_: *const State, painter: *ui.Painter) void {
 ### LineChart
 
 Renders XY data as connected lines with optional area fill and point markers.
+`LineChart(.{ .point_count_max, .series_count_max })` returns the chart type;
+`LineChart(...).Series` is `Series(point_count_max)`, and the per-render projection
+scratch is `[point_count_max][2]f32`, so it scales with the app's data, not the ceiling.
 
 ```gooey/docs/charts.md#L446-499
-pub const LineChart = struct {
-    // Data (slice to external storage)
+pub fn LineChart(comptime capacity: PointCapacity) type { return struct {
+    // Data (slice to external storage), at most series_count_max series
     data: []const Series,
 
     // Dimensions
@@ -536,16 +591,20 @@ pub const LineChart = struct {
     enable_lod: bool = true,
     lod_target_points: u32 = 1000,
 
-    pub fn init(data: []const Series) LineChart;
-    pub fn initSingle(series: *const Series) LineChart;
-    pub fn seriesCount(self: *const LineChart) u32;
-    pub fn render(self: *const LineChart, painter: *Painter) void;
+    pub const point_count_max: u32 = capacity.point_count_max;
+    pub const series_count_max: u32 = capacity.series_count_max;
+    pub const Series = charts.Series(point_count_max);
+
+    pub fn init(data: []const Series) Self;  // Asserts 0 < data.len <= series_count_max
+    pub fn initSingle(series: *const Series) Self;
+    pub fn seriesCount(self: *const Self) u32;
+    pub fn render(self: *const Self, painter: *Painter) void;
 
     // Accessibility
-    pub fn getAccessibilityInfo(self: *const LineChart) accessibility.ChartInfo;
-    pub fn describe(self: *const LineChart, buf: []u8) []const u8;
-    pub fn summarize(self: *const LineChart, buf: []u8) []const u8;
-};
+    pub fn getAccessibilityInfo(self: *const Self) accessibility.ChartInfo;
+    pub fn describe(self: *const Self, buf: []u8) []const u8;
+    pub fn summarize(self: *const Self, buf: []u8) []const u8;
+}; }
 ```
 
 **Example with Legend:**
@@ -568,7 +627,7 @@ fn paintLineChart(_: *const State, painter: *ui.Painter) void {
     const legend_dims = charts.Legend.calculateDimensions(&legend_items, legend_opts);
 
     // Create chart with room for legend
-    var chart = charts.LineChart.init(&line_data);
+    var chart = TrendChart.init(&line_data);
     chart.width = w;
     chart.height = h;
     chart.margin_top = 10 + legend_dims.height;
@@ -586,11 +645,14 @@ fn paintLineChart(_: *const State, painter: *ui.Painter) void {
 
 ### PieChart
 
-Renders categorical data as pie or donut charts.
+Renders categorical data as pie or donut charts. `PieChart(.{ .slice_count_max })`
+returns the chart type; its data is a plain `[]const CategoryPoint` of at most
+`slice_count_max` slices (ceiling `slice_count_ceiling = 64`).
 
 ```gooey/docs/charts.md#L540-579
-pub const PieChart = struct {
+pub fn PieChart(comptime capacity: SliceCapacity) type { return struct {
     pub const LabelPosition = enum { inside, outside, none };
+    pub const slice_count_max: u32 = capacity.slice_count_max;
 
     // Data (slice to external storage)
     data: []const CategoryPoint,
@@ -617,14 +679,14 @@ pub const PieChart = struct {
     // Theme
     chart_theme: ?*const ChartTheme = null,
 
-    pub fn init(data: []const CategoryPoint) PieChart;
-    pub fn render(self: *const PieChart, painter: *Painter) void;
-    pub fn hitTest(self: *const PieChart, x: f32, y: f32) ?usize;
+    pub fn init(data: []const CategoryPoint) Self;  // Asserts 0 < data.len <= slice_count_max
+    pub fn render(self: *const Self, painter: *Painter) void;
+    pub fn hitTest(self: *const Self, x: f32, y: f32) ?usize;
 
     // Accessibility
-    pub fn getAccessibilityInfo(self: *const PieChart) accessibility.ChartInfo;
-    pub fn describe(self: *const PieChart, buf: []u8) []const u8;
-};
+    pub fn getAccessibilityInfo(self: *const Self) accessibility.ChartInfo;
+    pub fn describe(self: *const Self, buf: []u8) []const u8;
+}; }
 ```
 
 **Gap Modes:**
@@ -637,8 +699,10 @@ pub const PieChart = struct {
 **Example (Pie vs Donut):**
 
 ```gooey/docs/charts.md#L593-610
+const ShareChart = charts.PieChart(.{ .slice_count_max = 8 });
+
 fn paintPieChart(_: *const State, painter: *ui.Painter) void {
-    var chart = charts.PieChart.init(&pie_data);
+    var chart = ShareChart.init(&pie_data);
     chart.width = painter.bounds.width;
     chart.height = painter.bounds.height;
     chart.inner_radius_ratio = 0;  // Full pie (no hole)
@@ -647,7 +711,7 @@ fn paintPieChart(_: *const State, painter: *ui.Painter) void {
 }
 
 fn paintDonutChart(_: *const State, painter: *ui.Painter) void {
-    var chart = charts.PieChart.init(&donut_data);
+    var chart = ShareChart.init(&donut_data);
     chart.width = painter.bounds.width;
     chart.height = painter.bounds.height;
     chart.inner_radius_ratio = 0.55;  // 55% hole
@@ -659,10 +723,12 @@ fn paintDonutChart(_: *const State, painter: *ui.Painter) void {
 ### ScatterChart
 
 Renders XY data as individual points with multiple shape options.
+`ScatterChart(.{ .point_count_max, .series_count_max })` returns the chart type;
+`ScatterChart(...).Series` is `Series(point_count_max)`.
 
 ```gooey/docs/charts.md#L618-665
-pub const ScatterChart = struct {
-    // Data (slice to external storage)
+pub fn ScatterChart(comptime capacity: PointCapacity) type { return struct {
+    // Data (slice to external storage), at most series_count_max series
     data: []const Series,
 
     // Dimensions
@@ -701,11 +767,15 @@ pub const ScatterChart = struct {
     // Theme
     chart_theme: ?*const ChartTheme = null,
 
-    pub fn init(data: []const Series) ScatterChart;
-    pub fn initSingle(series: *const Series) ScatterChart;
-    pub fn render(self: *const ScatterChart, painter: *Painter) void;
-    pub fn hitTest(self: *const ScatterChart, px: f32, py: f32) ?HitResult;
-};
+    pub const point_count_max: u32 = capacity.point_count_max;
+    pub const series_count_max: u32 = capacity.series_count_max;
+    pub const Series = charts.Series(point_count_max);
+
+    pub fn init(data: []const Series) Self;  // Asserts 0 < data.len <= series_count_max
+    pub fn initSingle(series: *const Series) Self;
+    pub fn render(self: *const Self, painter: *Painter) void;
+    pub fn hitTest(self: *const Self, px: f32, py: f32) ?HitResult;
+}; }
 
 pub const PointShape = enum { circle, square, triangle, diamond };
 ```
@@ -742,7 +812,7 @@ Transforms categorical data to pixel positions (for bar charts).
 
 ```gooey/docs/charts.md#L699-714
 pub const BandScale = struct {
-    labels: [MAX_CATEGORIES][]const u8,
+    labels: [category_count_ceiling][MAX_LABEL_LENGTH]u8,  // Framework ceiling
     label_count: u32,
     range_min: f32,
     range_max: f32,
@@ -945,7 +1015,7 @@ const dark_theme = charts.ChartTheme.dark;
 const light_theme = charts.ChartTheme.light;
 
 // Apply to chart
-var chart = charts.LineChart.init(&data);
+var chart = TrendChart.init(&data);
 chart.chart_theme = &dark_theme;
 
 // Series without explicit colors use theme palette
@@ -1056,7 +1126,8 @@ pub fn summarize(self: *const Chart, buf: []u8) []const u8;
 | **Batched polylines**   | `line_chart.zig` | 1 draw call for N points (was N calls) |
 | **Instanced points**    | `line_chart.zig` | `pointCloud()` for markers             |
 | **Triangle fan slices** | `pie_chart.zig`  | Avoids 70KB Path struct                |
-| **Slice-based data**    | All charts       | 16-byte pointer vs 300KB embedded      |
+| **Slice-based data**    | All charts       | 16-byte pointer vs embedded series     |
+| **App capacities**      | All charts       | Storage and scratch sized by app data  |
 | **O(n) algorithms**     | All charts       | No nested loops over data              |
 | **LOD decimation**      | `line_chart.zig` | LTTB algorithm for >1000 points        |
 
@@ -1110,8 +1181,9 @@ pub const PERF_WARNING_THRESHOLD_NS: i128 = 8_000_000;  // 8ms warning threshold
 LTTB (Largest-Triangle-Three-Buckets) algorithm enables smooth rendering of 10K+ point datasets:
 
 ```gooey/docs/charts.md#L1117-1122
-// LineChart LOD support
-var chart = charts.LineChart.init(&large_data);
+// LineChart LOD support: up to 10K points need a capacity at the ceiling
+const LargeChart = charts.LineChart(.{ .point_count_max = 4096, .series_count_max = 1 });
+var chart = LargeChart.init(&large_data);
 chart.enable_lod = true;           // Enable automatic decimation
 chart.lod_target_points = 1000;    // Target point count after decimation
 chart.render(painter);
@@ -1122,10 +1194,14 @@ chart.render(painter);
 ## Constants & Limits
 
 ```gooey/docs/charts.md#L1130-1141
-// Per CLAUDE.md — hard limits on everything
-pub const MAX_DATA_POINTS: u32 = 4096;     // Per series
-pub const MAX_SERIES: u32 = 16;             // Per chart
-pub const MAX_CATEGORIES: u32 = 256;        // For bar/pie charts
+// Per CLAUDE.md — hard limits on everything.
+// Framework ceilings: each chart's comptime capacities must not exceed these.
+pub const point_count_ceiling: u32 = 4096;     // Points per series (line, scatter)
+pub const series_count_ceiling: u32 = 16;      // Series per chart
+pub const category_count_ceiling: u32 = 256;   // Categories per series (bar)
+pub const slice_count_ceiling: u32 = 64;       // Slices per pie/donut
+
+// Algorithm bounds
 pub const MAX_TICKS: u32 = 32;              // Per axis
 pub const MAX_LEGEND_ITEMS: u32 = 32;
 pub const MAX_LABEL_LENGTH: u32 = 64;       // Characters
@@ -1161,8 +1237,17 @@ pub const PointShape = @import("charts/scatter_chart.zig").PointShape;
 // Data types
 pub const DataPoint = @import("types.zig").DataPoint;
 pub const CategoryPoint = @import("types.zig").CategoryPoint;
-pub const Series = @import("types.zig").Series;
-pub const CategorySeries = @import("types.zig").CategorySeries;
+pub const Series = @import("types.zig").Series;                 // fn (u32) type
+pub const CategorySeries = @import("types.zig").CategorySeries; // fn (u32) type
+
+// Capacities and ceilings
+pub const PointCapacity = @import("types.zig").PointCapacity;
+pub const CategoryCapacity = @import("types.zig").CategoryCapacity;
+pub const SliceCapacity = @import("types.zig").SliceCapacity;
+pub const point_count_ceiling = constants.point_count_ceiling;
+pub const series_count_ceiling = constants.series_count_ceiling;
+pub const category_count_ceiling = constants.category_count_ceiling;
+pub const slice_count_ceiling = constants.slice_count_ceiling;
 
 // Theme
 pub const ChartTheme = @import("theme.zig").ChartTheme;

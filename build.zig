@@ -392,7 +392,7 @@ pub fn build(b: *std.Build) void {
         }
         text_bench_step.dependOn(&text_bench_run.step);
 
-        _ = addFailFastChecks(b, mod, components_mod, target, optimize, test_step);
+        _ = addFailFastChecks(b, mod, components_mod, charts_mod, target, optimize, test_step);
         addImportBan(b, test_step);
 
         // =====================================================================
@@ -837,6 +837,7 @@ pub fn build(b: *std.Build) void {
             b,
             mod,
             components_mod,
+            charts_mod,
             target,
             optimize,
             test_step,
@@ -1416,6 +1417,7 @@ fn addFailFastChecks(
     b: *std.Build,
     gooey_module: *std.Build.Module,
     components_module: *std.Build.Module,
+    charts_module: *std.Build.Module,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     test_step: *std.Build.Step,
@@ -1429,6 +1431,7 @@ fn addFailFastChecks(
             .imports = &.{
                 .{ .name = "gooey", .module = gooey_module },
                 .{ .name = "gooey-components", .module = components_module },
+                .{ .name = "gooey-charts", .module = charts_module },
             },
         }),
     });
@@ -1520,6 +1523,12 @@ fn addFailFastChecks(
             "frame 1." },
         .{ .mode = "core-capabilities-meshes", .stderr = "Packed frame 1 holds 1 meshes, but " ++
             "its renderer reports Capabilities.meshes = false." },
+        .{ .mode = "chart-points", .stderr = "chart series 'rev' full: capacity 4 points, " ++
+            "1 requested. Raise the chart's point_count_max." },
+        .{ .mode = "chart-categories", .stderr = "chart series 'sales' full: capacity 2 " ++
+            "categories, 3 requested. Raise the chart's category_count_max." },
+        .{ .mode = "chart-slices", .stderr = "pie chart of 3 slices: capacity 2. " ++
+            "Raise the chart's slice_count_max." },
     };
     for (checks) |check| {
         const run = b.addRunArtifact(exe);
