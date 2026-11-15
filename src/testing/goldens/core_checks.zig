@@ -669,6 +669,139 @@ test "a scroll box clips its content, clamps its offset, and passes the wheel on
     try testing.expectEqual(@as(f32, 30), view.inner_offset);
 }
 
+/// A 200 px scroll box of 100 focusable 24 px rows, each with a one-line
+/// label, then a wrapped text of 200 lines: 2,400 px of rows and 200 lines
+/// of text, of which the box shows 200 px.
+const CullApp = gooey.App(struct {}, cullRender, .{
+    .title = "Cull",
+    .width = 400,
+    .height = 300,
+    .limits = .standard,
+});
+
+const cull_row_count: u32 = 100;
+const cull_row_height: f32 = 24;
+const cull_row_color = ui.Color.rgb(0.2, 0.4, 0.6);
+const cull_label = "row text";
+
+fn cullRender(cx: *Cx) void {
+    const long = comptime blk: {
+        @setEvalBranchQuota(10_000);
+        var bytes: [800]u8 = undefined;
+        for (0..200) |index| @memcpy(bytes[index * 4 ..][0..4], "abc\n");
+        break :blk bytes;
+    };
+    cx.render(ui.box(.{ .key = .{ .name = "log" }, .style = .{
+        .width = .{ .fixed = 300 },
+        .height = .{ .fixed = 200 },
+        .scroll = .{},
+    } }, .{
+        CullRows{},
+        ui.text(&long, .{ .wrap = .words }),
+    }));
+}
+
+const CullRows = struct {
+    pub fn render(_: CullRows, cx: *Cx) void {
+        var index: u32 = 0;
+        while (index < cull_row_count) : (index += 1) {
+            cx.render(ui.box(.{
+                .key = .{ .index = index },
+                .focusable = true,
+                .a11y = .{ .role = .listitem, .label = cull_label },
+                .style = .{
+                    .width = .{ .grow = 1 },
+                    .height = .{ .fixed = cull_row_height },
+                    .background = .{ .rgba = cull_row_color },
+                },
+            }, .{ui.text(cull_label, .{ .size = 16 })}));
+        }
+    }
+};
+
+/// The row fills drawn and the topmost one's y; the glyphs and the lowest's y.
+const CullCount = struct { fills: u32, top: f32, sprites: u32, sprite_bottom: f32 };
+
+fn cullCount(frame: *const internals.records.Frame) CullCount {
+    var count = CullCount{
+        .fills = 0,
+        .top = std.math.floatMax(f32),
+        .sprites = 0,
+        .sprite_bottom = 0,
+    };
+    for (frame.paint[0..frame.paint_count]) |record| {
+        switch (record) {
+            .quad => |quad| {
+                if (quad.fill.r != cull_row_color.r or quad.fill.b != cull_row_color.b) continue;
+                count.fills += 1;
+                count.top = @min(count.top, quad.bounds.y);
+            },
+            .sprite => |sprite| {
+                count.sprites += 1;
+                count.sprite_bottom = @max(count.sprite_bottom, sprite.bounds.y);
+            },
+            else => {},
+        }
+    }
+    return count;
+}
+
+test "a scroll box draws only what is in view, and keeps every row's hit and node" {
+    // Goal: paint follows the viewport, not the content (culling), while
+    // hit testing, Tab and the screen reader still see every row. Method: a
+    // 200 px box of 100 rows of 24 px and a 200-line text below them. Rows
+    // 0 to 8 meet the clip (row 8 spans 192 to 216), so 9 fills draw, and
+    // only labels within a line of the clip draw glyphs: at most rows 0 to
+    // 9, 8 glyphs each, and none of the long text. Every row keeps its hit
+    // record and its accessibility node. Wheeled to 1,200 px, rows 50 to 58
+    // draw, the first at the box's top. Tab then focuses row 0, out of view,
+    // through its hit record, and the reveal scrolls it back in.
+    const app = try testing.allocator.create(CullApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    now += 1;
+    app.tick(now);
+
+    var count = cullCount(app.window.rendered());
+    try testing.expectEqual(@as(u32, 9), count.fills);
+    try testing.expectEqual(@as(f32, 0), count.top);
+    try testing.expect(count.sprites >= 9 * cull_label.len);
+    try testing.expect(count.sprites <= 10 * cull_label.len);
+    try testing.expect(count.sprite_bottom < 200 + cull_row_height);
+    const frame = app.window.rendered();
+    var focusable: u32 = 0;
+    for (frame.hits[0..frame.hit_count]) |*record| {
+        if (record.focusable) focusable += 1;
+    }
+    try testing.expectEqual(cull_row_count, focusable);
+    var items: u32 = 0;
+    for (frame.a11y[0..frame.a11y_count]) |*node| {
+        if (node.role == .listitem) items += 1;
+    }
+    try testing.expectEqual(cull_row_count, items);
+
+    const direction: f32 = if (@import("builtin").os.tag == .macos) -1 else 1;
+    app.window.queue.push(.{ .input = .{ .scroll = .{
+        .position = .{ .x = 100, .y = 100 },
+        .delta = .{ .x = 0, .y = 1_200 * direction },
+        .modifiers = .{},
+    } } });
+    now += 1;
+    app.tick(now);
+    count = cullCount(app.window.rendered());
+    try testing.expectEqual(@as(u32, 9), count.fills);
+    try testing.expectEqual(@as(f32, 0), count.top);
+
+    pressKey(app, &now, .tab, .{});
+    try expectFocused(&app.window, .listitem, cull_label);
+    count = cullCount(app.window.rendered());
+    try testing.expectEqual(@as(f32, 0), count.top);
+    try testing.expect(count.fills <= 10);
+}
+
 fn scrollMouse(app: anytype, now: *u64, event: gooey.input.InputEvent) void {
     app.window.queue.push(.{ .input = event });
     now.* += 1;
@@ -3330,6 +3463,18 @@ fn imageSprites(
     return count;
 }
 
+/// Resize the window to `height` before its first frame, so a test that
+/// checks every element's paint sees content a scroll box would cull.
+fn showWhole(app: anytype, height: f32) void {
+    assert(app.window.frame_number == 0);
+    assert(height > app.window.height);
+    app.window.queue.push(.{ .window = .{ .resized = .{
+        .width = app.window.width,
+        .height = height,
+        .scale_factor = app.window.scale_factor,
+    } } });
+}
+
 test "images: one decode lands off the main thread and draws every cell" {
     // Goal: the async loader's contract. Methodology: the images example
     // draws one file in 18 cells. The first frame queues one request and
@@ -3344,6 +3489,8 @@ test "images: one decode lands off the main thread and draws every cell" {
     var wake = WakeCounter{};
     app.window.images.bindWake(.{ .context = &wake, .wake = WakeCounter.wake });
     defer app.window.images.bindWake(null);
+    // Tall enough to show every cell: a cell scrolled out draws nothing.
+    showWhole(app, 2_000);
     var now: u64 = 0;
     app.tick(now);
     var sprites: [32]internals.records.Sprite = undefined;
@@ -3445,6 +3592,8 @@ test "dashboard draws every chart within .standard and t switches its theme" {
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 2 });
     defer app.deinitHeadless();
+    // Tall enough to show every chart: a chart scrolled out draws nothing.
+    showWhole(app, 2_000);
     app.tick(0);
 
     const Cloud = struct { radius: f32, alpha: f32, blue: f32 };

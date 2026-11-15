@@ -11,8 +11,22 @@
 //! bounds its hits by the clip; a scroll box then measures its content and
 //! draws its scrollbar, adding two quads.
 //!
-//! Work per tick: one visit per node plus one per glyph, each appending a
-//! fixed-size record; at `.standard` that is at most ~28,000 records.
+//! Culling: a box fill, shadow, paint element or text line wholly outside the
+//! clip around it (a row scrolled out of its scroll box) writes no paint
+//! records and shapes no glyphs; a clip box scrolled out writes no clip pair.
+//! Its hit record stays, clipped to nothing, so Tab order, focus reveal,
+//! `Effects.bounds` and drop targets still see it, and its accessibility node
+//! stays with its laid-out bounds, so a screen reader reads and walks content
+//! out of view, as it does a web page or a native table's rows. Paint
+//! functions still run, culled, so text widths and IME answers hold.
+//!
+//! Work per tick: one visit per node, one hit and at most one accessibility
+//! record per box, and paint records only for what meets its clip: a scroll
+//! box of N wrapped lines costs the lines in view plus one margin line each
+//! side per text (`linesInView`, constant time), each line one sprite per
+//! glyph. Paint and glyph budgets therefore follow the viewport: a 1,000 px
+//! box of 20 px lines draws at most about 54 lines, however long its content.
+//! At `.standard` a frame is at most ~28,000 records.
 
 const std = @import("std");
 const records = @import("records.zig");
@@ -55,7 +69,9 @@ pub const Painter = struct {
     pub fn quad(self: *Painter, value: records.Quad) void {
         assert(value.bounds.width >= 0);
         assert(value.bounds.height >= 0);
-        targetOf(self).window.built().appendPaint(.{ .quad = value });
+        const paint_target = targetOf(self);
+        if (paint_target.culled) return;
+        paint_target.window.built().appendPaint(.{ .quad = value });
     }
 
     pub fn fill(self: *Painter, bounds: Rect, color: Color) void {
@@ -69,6 +85,7 @@ pub const Painter = struct {
         assert(paint_target.clip_depth < clip_depth_max);
         checkClipDepth(paint_target.window, paint_target.clip_depth);
         paint_target.clip_depth += 1;
+        if (paint_target.culled) return;
         paint_target.window.built().appendPaint(.{ .clip_push = bounds });
     }
 
@@ -76,12 +93,15 @@ pub const Painter = struct {
         const paint_target = targetOf(self);
         assert(paint_target.clip_depth > 0);
         paint_target.clip_depth -= 1;
+        if (paint_target.culled) return;
         paint_target.window.built().appendPaint(.clip_pop);
     }
 
     /// Draw one line of text with its top at `y`; returns its width.
     pub fn text(self: *Painter, content: []const u8, x: f32, y: f32, style: TextStyle) f32 {
-        return emitTextLine(targetOf(self).window, content, x, y, style);
+        const paint_target = targetOf(self);
+        if (paint_target.culled) return self.measureText(content, style);
+        return emitTextLine(paint_target.window, content, x, y, style);
     }
 
     /// Draw one line of text on `baseline`; returns its width.
@@ -92,7 +112,9 @@ pub const Painter = struct {
         baseline: f32,
         style: TextStyle,
     ) f32 {
-        return emitTextBaseline(targetOf(self).window, content, x, baseline, style);
+        const paint_target = targetOf(self);
+        if (paint_target.culled) return self.measureText(content, style);
+        return emitTextBaseline(paint_target.window, content, x, baseline, style);
     }
 
     pub fn measureText(self: *const Painter, content: []const u8, style: TextStyle) f32 {
@@ -112,7 +134,9 @@ pub const Painter = struct {
 
     /// Draw an SVG path from the SVG atlas.
     pub fn svg(self: *Painter, path: []const u8, bounds: Rect, options: SvgStyle) void {
-        emitSvg(targetOf(self).window, path, bounds, options);
+        const paint_target = targetOf(self);
+        if (paint_target.culled) return;
+        emitSvg(paint_target.window, path, bounds, options);
     }
 
     /// Fill a triangle list, three points per triangle, in window
@@ -121,7 +145,9 @@ pub const Painter = struct {
     pub fn triangles(self: *Painter, points: []const [2]f32, color: Color) void {
         assert(points.len > 0);
         assert(points.len % 3 == 0);
-        emitTriangles(targetOf(self).window, points, color);
+        const paint_target = targetOf(self);
+        if (paint_target.culled) return;
+        emitTriangles(paint_target.window, points, color);
     }
 
     /// A line `width` wide: an axis-aligned line is a quad, any other two
@@ -167,7 +193,9 @@ pub const Painter = struct {
     pub fn polyline(self: *Painter, points: []const [2]f32, width: f32, color: Color) void {
         assert(points.len >= 2);
         assert(width > 0);
-        emitPointMesh(targetOf(self).window, points, .{
+        const paint_target = targetOf(self);
+        if (paint_target.culled) return;
+        emitPointMesh(paint_target.window, points, .{
             .topology = .strip_expanded,
             .width = width,
             .color = color,
@@ -178,7 +206,9 @@ pub const Painter = struct {
     pub fn pointCloud(self: *Painter, centers: []const [2]f32, radius: f32, color: Color) void {
         assert(centers.len >= 1);
         assert(radius > 0);
-        emitPointMesh(targetOf(self).window, centers, .{
+        const paint_target = targetOf(self);
+        if (paint_target.culled) return;
+        emitPointMesh(paint_target.window, centers, .{
             .topology = .point_instanced,
             .width = radius,
             .color = color,
@@ -188,9 +218,12 @@ pub const Painter = struct {
     /// Draw the image file at `path` into `bounds`, placed by `options.fit`.
     /// The first frame that draws a path queues its decode on the image
     /// worker and draws nothing, so the box's own background shows; the
-    /// decoded image lands a few frames later and requests a render.
+    /// decoded image lands a few frames later and requests a render. A
+    /// culled element queues no decode, so an image loads once it scrolls in.
     pub fn image(self: *Painter, path: []const u8, bounds: Rect, options: ImageStyle) void {
-        emitImage(targetOf(self).window, path, bounds, options);
+        const paint_target = targetOf(self);
+        if (paint_target.culled) return;
+        emitImage(paint_target.window, path, bounds, options);
     }
 
     /// Answer the platform's IME questions for this frame (`Query`).
@@ -206,6 +239,10 @@ pub const Painter = struct {
 pub const PaintTarget = struct {
     window: *Window,
     clip_depth: u32,
+    /// The element lies wholly outside the clip around it, such as a row
+    /// scrolled out of its scroll box: the function still runs, so its IME
+    /// answer and text widths hold, but it writes no paint records.
+    culled: bool,
     painter: Painter,
 };
 
@@ -340,9 +377,10 @@ fn emitFragment(window: *Window, layers_open: *LayerQueue, root: *const LayerRoo
             continue;
         }
         clips.extend(depth, bounds);
+        const clip = clips.current();
         switch (node.kind) {
             .box, .paint => {
-                emitAppearance(window, node, bounds);
+                emitAppearance(window, node, bounds, clip);
                 const hit_bounds = clips.clipped(bounds);
                 hit_scope[depth] = emitHit(window, node, hit_bounds, .{
                     .parent = parent_hit,
@@ -353,10 +391,19 @@ fn emitFragment(window: *Window, layers_open: *LayerQueue, root: *const LayerRoo
                 if (window.focus_visible and takes_focus and window.isFocused(node.id)) {
                     ring = focusRing(window, &clips, node, bounds);
                 }
-                if (node.kind == .paint) emitPaint(window, node, bounds, clips.paintDepth());
+                if (node.kind == .paint) {
+                    const culled = if (clip) |rect| !bounds.overlaps(rect) else false;
+                    emitPaint(window, node, bounds, .{
+                        .clip_depth = clips.paintDepth(),
+                        .culled = culled,
+                    });
+                }
                 if (node.clip) clips.open(window, node, index, bounds);
             },
-            .text => emitText(window, node, bounds, &elements[index].text_data.?),
+            .text => emitText(window, node, bounds, .{
+                .data = &elements[index].text_data.?,
+                .clip = clip,
+            }),
         }
         index += 1;
     }
@@ -592,6 +639,10 @@ const Clips = struct {
         bounds: Rect,
         /// The intersected clip rect, which bounds the subtree's hits.
         rect: Rect,
+        /// The rect has area, so its push and pop are in the paint records.
+        /// A clip box scrolled out of view writes neither, and nothing
+        /// inside it draws (`Clips.current` is empty).
+        drawn: bool,
         /// The children's right and bottom edges, as laid out (offset applied).
         extent_right: f32,
         extent_bottom: f32,
@@ -644,12 +695,14 @@ const Clips = struct {
             if (state.maxX() > 0) rect.height = @max(0, rect.height - scrollbar_room);
         }
         rect = self.clipped(rect);
-        window.built().appendPaint(.{ .clip_push = rect });
+        const drawn = rect.width > 0 and rect.height > 0;
+        if (drawn) window.built().appendPaint(.{ .clip_push = rect });
         self.entries[self.len] = .{
             .depth = node.depth,
             .node_index = index,
             .bounds = bounds,
             .rect = rect,
+            .drawn = drawn,
             .extent_right = bounds.x,
             .extent_bottom = bounds.y,
         };
@@ -662,8 +715,12 @@ const Clips = struct {
         while (self.len > 0) {
             const entry = &self.entries[self.len - 1];
             if (entry.depth < depth) break;
-            window.built().appendPaint(.clip_pop);
-            if (window.nodes[entry.node_index].scroll) |handle| finishScroll(window, entry, handle);
+            if (entry.drawn) window.built().appendPaint(.clip_pop);
+            // The scrollbars draw in the clip around the box.
+            const outer = if (self.len > 1) self.entries[self.len - 2].rect else self.base;
+            if (window.nodes[entry.node_index].scroll) |handle| {
+                finishScroll(window, entry, handle, outer);
+            }
             self.len -= 1;
         }
         if (self.len > 0) assert(self.entries[self.len - 1].depth < depth);
@@ -704,6 +761,7 @@ fn finishScroll(
     window: *Window,
     entry: *const Clips.Entry,
     handle: retained_mod.Handle(window_mod.ScrollState),
+    outer: ?Rect,
 ) void {
     const state = window.retained.get(window_mod.ScrollState, handle);
     const padding = window.layout.elements.items()[entry.node_index].config.layout.padding;
@@ -727,8 +785,9 @@ fn finishScroll(
     window.built().paint_opacity = window.nodes[entry.node_index].opacity;
     inline for (.{ window_mod.ScrollAxis.y, window_mod.ScrollAxis.x }) |axis| {
         if (state.track(axis)) |bar| {
+            const shown = if (outer) |rect| bar.overlaps(rect) else true;
             const dragged = state.dragging == axis;
-            emitScrollbar(window, bar, state.thumb(axis, bar), dragged);
+            if (shown) emitScrollbar(window, bar, state.thumb(axis, bar), dragged);
         }
     }
 }
@@ -754,10 +813,13 @@ fn emitScrollbar(window: *Window, track: Rect, thumb: Rect, dragged: bool) void 
     } });
 }
 
-fn emitAppearance(window: *Window, node: *const Node, bounds: Rect) void {
+/// A box's shadow and fill, each culled when it lies wholly outside `clip`,
+/// such as a row scrolled out of its scroll box.
+fn emitAppearance(window: *Window, node: *const Node, bounds: Rect, clip: ?Rect) void {
     const frame = window.built();
     if (node.shadow) |shadow| {
-        if (shadow.blur > 0) frame.appendPaint(.{ .quad = .{
+        const shown = if (clip) |rect| shadowBounds(bounds, shadow).overlaps(rect) else true;
+        if (shadow.blur > 0 and shown) frame.appendPaint(.{ .quad = .{
             .bounds = bounds,
             .fill = node.shadow_color,
             .border = .none,
@@ -768,6 +830,9 @@ fn emitAppearance(window: *Window, node: *const Node, bounds: Rect) void {
         } });
     }
     if (node.background == null and node.border.width == 0) return;
+    if (clip) |rect| {
+        if (!bounds.overlaps(rect)) return;
+    }
     frame.appendPaint(.{ .quad = .{
         .bounds = bounds,
         .fill = node.background orelse Color.transparent,
@@ -775,6 +840,20 @@ fn emitAppearance(window: *Window, node: *const Node, bounds: Rect) void {
         .corners = node.corners,
         .blur = 0,
     } });
+}
+
+/// How far a shadow can reach: its box moved by its offset and grown by twice
+/// its blur, the extent pack culls by and the shader draws.
+fn shadowBounds(bounds: Rect, shadow: element.Shadow) Rect {
+    assert(shadow.blur >= 0);
+    assert(bounds.width >= 0);
+    const spread = shadow.blur * 2;
+    return .{
+        .x = bounds.x + shadow.offset_x - spread,
+        .y = bounds.y + shadow.offset_y - spread,
+        .width = bounds.width + spread * 2,
+        .height = bounds.height + spread * 2,
+    };
 }
 
 /// `parent` is the nearest enclosing hit record: for a layer's box, the
@@ -852,14 +931,19 @@ fn emitA11y(window: *Window, node: *const Node, bounds: Rect, level: u8) u8 {
     return 1;
 }
 
-/// `box_clip_depth` is the box clips already open around the element, which
-/// share the paint clip stack with the paint function's own.
-fn emitPaint(window: *Window, node: *const Node, bounds: Rect, box_clip_depth: u32) void {
+/// `clip_depth` is the box clips already open around the element, which
+/// share the paint clip stack with the paint function's own. A culled
+/// element's function runs with a painter that writes no records.
+const PaintPlace = struct { clip_depth: u32, culled: bool };
+
+fn emitPaint(window: *Window, node: *const Node, bounds: Rect, place: PaintPlace) void {
     const paint_fn = node.paint_fn.?;
+    const box_clip_depth = place.clip_depth;
     assert(box_clip_depth < clip_depth_max);
     var paint_target = PaintTarget{
         .window = window,
         .clip_depth = box_clip_depth,
+        .culled = place.culled,
         .painter = .{ .bounds = bounds },
     };
     paint_fn(node.paint_data.?, @ptrCast(&paint_target.painter));
@@ -872,8 +956,14 @@ fn emitPaint(window: *Window, node: *const Node, bounds: Rect, box_clip_depth: u
 
 /// One glyph run per wrapped line (contract decision 9), pitched by the layout's
 /// line height and aligned within the parent's content width, as 0.3.1's
-/// `emitTextCommands` places them.
-fn emitText(window: *Window, node: *const Node, bounds: Rect, data: *const TextData) void {
+/// `emitTextCommands` places them. Only lines whose box meets `clip` draw:
+/// lines are pitched evenly, so the rows in view follow from the clip by
+/// division, and a text of thousands of lines in a scroll box costs the lines
+/// on screen, not its length.
+const TextPlace = struct { data: *const TextData, clip: ?Rect };
+
+fn emitText(window: *Window, node: *const Node, bounds: Rect, place: TextPlace) void {
+    const data = place.data;
     const content = window.built().text(node.text) orelse return;
     assert(content.len == data.text.len);
     const style: TextStyle = .{
@@ -884,22 +974,60 @@ fn emitText(window: *Window, node: *const Node, bounds: Rect, data: *const TextD
     };
     const align_width = if (data.container_width > 0) data.container_width else bounds.width;
     const alignment = data.config.alignment;
+    const pitch = data.config.lineHeightPx();
+    assert(pitch > 0);
     const lines = data.wrapped_lines orelse {
         const x = bounds.x + alignOffset(alignment, align_width, data.measured_width);
+        const box = lineBox(x, bounds.y, data.measured_width, @max(pitch, bounds.height));
+        if (place.clip) |rect| {
+            if (!box.overlaps(rect)) return;
+        }
         _ = emitTextLine(window, content, x, bounds.y, style);
         return;
     };
     assert(lines.len <= window.layout.line_scratch.len);
-    const pitch = data.config.lineHeightPx();
-    assert(pitch > 0);
-    for (lines, 0..) |line, line_index| {
+    const shown = linesInView(bounds.y, pitch, @intCast(lines.len), place.clip);
+    assert(shown.start <= shown.end);
+    assert(shown.end <= lines.len);
+    for (lines[shown.start..shown.end], shown.start..) |line, line_index| {
         assert(line.start_offset <= content.len);
         assert(line.length <= content.len - line.start_offset);
         const x = bounds.x + alignOffset(alignment, align_width, line.width);
         const y = bounds.y + @as(f32, @floatFromInt(line_index)) * pitch;
+        // A line scrolled out sideways, in a box that scrolls along x.
+        if (place.clip) |rect| {
+            if (!lineBox(x, y, line.width, pitch).overlaps(rect)) continue;
+        }
         const run = content[line.start_offset..][0..line.length];
         _ = emitTextLine(window, run, x, y, style);
     }
+}
+
+/// A line's box with a margin of one pitch around it, for glyphs that reach
+/// past it (accents, descenders, italic overhang), so culling never drops a
+/// line that draws a pixel inside the clip.
+fn lineBox(x: f32, y: f32, width: f32, height: f32) Rect {
+    assert(width >= 0);
+    assert(height > 0);
+    const margin = height;
+    return .{ .x = x - margin, .y = y - margin, .width = width + margin * 2, .height = height * 3 };
+}
+
+const LineRange = struct { start: u32, end: u32 };
+
+/// The lines of a text at `top`, one per `pitch`, that the clip's rows can
+/// show, with one line of margin each side (`lineBox`); all of them with no
+/// clip. Work: constant, whatever the line count.
+fn linesInView(top: f32, pitch: f32, count: u32, clip: ?Rect) LineRange {
+    assert(pitch > 0);
+    const rect = clip orelse return .{ .start = 0, .end = count };
+    const count_f: f32 = @floatFromInt(count);
+    const first = std.math.clamp(@floor((rect.y - top) / pitch) - 1, 0, count_f);
+    const last = std.math.clamp(@ceil((rect.y + rect.height - top) / pitch) + 1, first, count_f);
+    const range = LineRange{ .start = @intFromFloat(first), .end = @intFromFloat(last) };
+    assert(range.start <= range.end);
+    assert(range.end <= count);
+    return range;
 }
 
 fn alignOffset(alignment: TextAlignment, align_width: f32, line_width: f32) f32 {

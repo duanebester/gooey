@@ -35,6 +35,15 @@ pub const Rect = struct {
         return x < self.x + self.width and y < self.y + self.height;
     }
 
+    /// Whether the two rects share any area. Touching edges share none, so a
+    /// rect that only touches a clip draws no pixel inside it.
+    pub fn overlaps(self: Rect, other: Rect) bool {
+        assert(self.width >= 0);
+        assert(other.width >= 0);
+        if (self.x + self.width <= other.x or other.x + other.width <= self.x) return false;
+        return self.y + self.height > other.y and other.y + other.height > self.y;
+    }
+
     /// The overlap of two rects; zero-sized at `self`'s origin when none.
     pub fn intersect(self: Rect, other: Rect) Rect {
         assert(self.width >= 0);
