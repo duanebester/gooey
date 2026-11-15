@@ -221,13 +221,8 @@ pub fn Engine(comptime kind: Kind) type {
         /// Restart the blink after an edit, then show the caret for the phase
         /// `now_ns` falls in and return the delay to the next toggle (null while
         /// unfocused, when the caret does not blink). Called once per build.
-        ///
-        /// An unfocused engine discards its preedit: the IME composes for the
-        /// focused field only, and the host cancels its composition when that
-        /// field changes (`Query.imeOwner`), so a kept preedit would show a
-        /// composition nothing can commit, and the next one would repeat it.
         pub fn prepare(self: *Self, focused: bool, now_ns: u64) ?u32 {
-            if (!focused) self.preedit_len = 0;
+            if (!focused) assert(self.preedit_len == 0);
             if (self.caret_moved or !focused) {
                 self.caret_moved = false;
                 self.caret_moved_ns = now_ns;
@@ -251,6 +246,11 @@ pub fn Engine(comptime kind: Kind) type {
         /// caret's next toggle. Components call it once per build.
         pub fn blink(self: *Self, cx: *Cx, focused: bool) void {
             assert(cx.window.phase == .build);
+            if (!focused and self.preedit_len > 0) {
+                self.commitPreedit();
+                // Components built before this one read the old bound text.
+                cx.requestRenderAfter(0);
+            }
             const delay_ms = self.prepare(focused, cx.window.now_ns) orelse return;
             cx.requestRenderAfter(delay_ms);
         }
@@ -311,6 +311,19 @@ pub fn Engine(comptime kind: Kind) type {
                 return self.replace(self.selectionStart(), self.selectionEnd(), value);
             }
             self.replaceAsStep(self.selectionStart(), self.selectionEnd(), value);
+        }
+
+        /// Commit the preedit as typed text, as native text fields and GPUI do
+        /// when focus leaves mid-composition: the IME composes for the focused
+        /// field only, and the host makes it forget the composition once that
+        /// field changes (`Query.imeOwner`), so the field that showed the text
+        /// keeps it. The binding follows, as after a key.
+        pub fn commitPreedit(self: *Self) void {
+            assert(self.preedit_len > 0);
+            assert(self.preedit_len <= self.preedit.len);
+            self.insert(self.preedit[0..self.preedit_len]);
+            assert(self.preedit_len == 0);
+            if (self.bind) |binding| binding.* = self.text();
         }
 
         /// `replace` as its own undo step, never merged with typing around it.

@@ -569,9 +569,11 @@ pub const Host = struct {
     /// never sees Gooey's focus move. When the focused field changes with a
     /// composition left, disable and enable again, as a toolkit does between
     /// widgets, so the input method resets instead of composing into the next
-    /// field. The core has already dropped the old field's preedit. A click
-    /// needs none of this on GNOME, whose compositor resets the input method
-    /// on a press, but an app's `effects.focus` does.
+    /// field. The core has already committed the preedit into the old field
+    /// (`Engine.commitPreedit`), so it lands there before the disable. A
+    /// click needs none of this on GNOME, whose compositor resets the input
+    /// method on a press (committing or clearing, as the engine chooses),
+    /// but an app's `effects.focus` does.
     fn endStaleComposition(self: *Host) void {
         const owner = self.query.imeOwner();
         if (std.meta.eql(owner, self.ime_owner)) return;

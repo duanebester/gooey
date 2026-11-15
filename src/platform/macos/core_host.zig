@@ -340,11 +340,11 @@ fn syncIme(host: *Host) void {
 /// The view is one first responder for every text field, so AppKit never
 /// sees Gooey's focus move. When the focused field changes with marked text
 /// left, the input method would go on composing into the next field, which
-/// would show the whole composition as its own. The composition is
-/// discarded, not committed: focus has moved, so a commit would land in the
-/// next field, and the core has already dropped the old field's preedit. A
-/// click reaches the input method first (`mouseDown:`), which can commit
-/// into the old field before the click moves focus.
+/// would show the whole composition as its own. The core has already
+/// committed it into the old field (`Engine.commitPreedit`), so the input
+/// method only forgets it here: an `insertText:` now would land in the field
+/// that has focus, a second time. A click reaches the input method first
+/// (`mouseDown:`); one that commits there does so into the old field.
 fn endStaleComposition(host: *Host) void {
     const owner = host.query.imeOwner();
     if (std.meta.eql(owner, host.ime_owner)) return;

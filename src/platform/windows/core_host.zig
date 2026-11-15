@@ -528,9 +528,11 @@ pub const Host = struct {
     /// Gooey's focus move, and a click does not end its composition. When the
     /// focused field changes, cancel it, as an edit control ends its own on
     /// losing focus, so the IME does not compose into the next field (or, once
-    /// the context is detached, bring the composition back later). Cancelled,
-    /// not completed: focus has moved, so a completed result would land in
-    /// the next field. The core has already dropped the old field's preedit.
+    /// the context is detached, bring the composition back later). The core
+    /// has already committed it into the old field (`Engine.commitPreedit`),
+    /// so it is cancelled here, not completed: this runs after the tick that
+    /// moved focus, so `CPS_COMPLETE`'s result would reach the field that has
+    /// focus now, a second time.
     fn endStaleComposition(self: *Host) void {
         const owner = self.query.imeOwner();
         if (std.meta.eql(owner, self.ime_owner)) return;

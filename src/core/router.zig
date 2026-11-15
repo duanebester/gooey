@@ -62,8 +62,9 @@ pub const Query = struct {
     }
 
     /// The text field the rendered frame's IME answers are for, or null when
-    /// none is focused. A host ends the IME's composition when it changes,
-    /// since the core discards the old field's preedit (`Engine.prepare`).
+    /// none is focused. A host makes the IME forget its composition when it
+    /// changes, since the core commits it into the old field
+    /// (`Engine.commitPreedit`).
     pub fn imeOwner(self: *const Query) ?ElementId {
         const ime = self.window.rendered().ime orelse return null;
         assert(ime.owner.isKeyed());

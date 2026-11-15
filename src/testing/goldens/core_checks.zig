@@ -2071,14 +2071,15 @@ fn formInput(app: *accessible_form.App, now: *u64, event: gooey.input.InputEvent
     app.tick(now.*);
 }
 
-test "accessible_form drops a composition its field lost focus with" {
-    // Goal: a preedit left in a field that loses focus is discarded, and the
-    // IME's answers move to the field that took focus, so hosts can end the
-    // composition there (`Query.imeOwner`). A kept preedit showed underlined
-    // text nothing could commit, and kept every key from its field: keys go
-    // to the IME while a field composes. Method: commit "ab" in Full Name,
-    // compose "に", click Email, click Full Name again and press Backspace;
-    // it must delete the "b" and leave Email empty.
+test "accessible_form commits a composition into the field that lost focus" {
+    // Goal: a preedit left in a field that loses focus is committed there,
+    // as native text fields and GPUI do, and the IME's answers move to the
+    // field that took focus, so hosts can make the IME forget it there
+    // (`Query.imeOwner`). A kept preedit showed underlined text nothing could
+    // commit and kept every key from its field; a discarded one lost text.
+    // Method: commit "ab" in Full Name, compose "に", click Email and type
+    // "x"; Full Name must read "abに" and Email only "x". Backspace back in
+    // Full Name must delete the "に", so the field no longer composes.
     const app = try testing.allocator.create(accessible_form.App);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -2092,14 +2093,21 @@ test "accessible_form drops a composition its field lost focus with" {
     const name_id = formNode(app, .textbox, name_field).?.id;
     formInput(app, &now, .{ .composition = .{ .text = "に" } });
     try testing.expectEqual(name_id, query.imeOwner().?);
+    try testing.expectEqualStrings("ab", app.state.name);
 
-    formClick(app, &now, .textbox, email_field);
+    formType(app, &now, email_field, "x");
     try testing.expectEqual(formNode(app, .textbox, email_field).?.id, query.imeOwner().?);
+    try testing.expectEqualStrings("abに", app.state.name);
+    try testing.expectEqualStrings("x", app.state.email);
+    const frame = app.window.rendered();
+    const name_node = formNode(app, .textbox, name_field).?;
+    try testing.expectEqualStrings("abに", frame.text(name_node.value).?);
+
     formClick(app, &now, .textbox, name_field);
     try testing.expectEqual(name_id, query.imeOwner().?);
     formInput(app, &now, .{ .key_down = chord(.delete, .{}) });
-    try testing.expectEqualStrings("a", app.state.name);
-    try testing.expectEqualStrings("", app.state.email);
+    try testing.expectEqualStrings("ab", app.state.name);
+    try testing.expectEqualStrings("x", app.state.email);
     try testing.expectEqual(internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
 }
 
