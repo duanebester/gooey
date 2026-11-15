@@ -1,11 +1,11 @@
 //! Swapchain lifecycle, render pass, and framebuffers.
 //!
 //! Free functions with targeted parameters — each takes only what it needs.
-//! The swapchain and its framebuffers are the only objects re-created on
-//! resize: the WSI requires a new swapchain per extent, and its images belong
-//! to the driver. Gooey bounds them instead: the extent never exceeds
-//! `ResourceLimits.window` (the caller fits it) and the image count follows the
-//! frames in flight. There is no multisampled target: the renderer draws at one
+//! The swapchain, its framebuffers, and the renderer's per-image present
+//! semaphores are the only objects re-created on resize: the WSI requires a
+//! new swapchain per extent, and its images belong to the driver. Gooey
+//! bounds them instead: the extent never exceeds `ResourceLimits.window` (the
+//! caller fits it) and the image count follows the frames in flight. There is no multisampled target: the renderer draws at one
 //! sample per pixel and every pipeline anti-aliases analytically, so nothing
 //! Gooey allocates depends on the window size.
 

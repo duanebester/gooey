@@ -34,9 +34,10 @@ pub const SubAllocation = struct {
     mapped: ?*anyopaque,
 };
 
+/// Per-frame sync objects. The semaphores a present waits on are per
+/// swapchain image instead (`createSemaphores`), made with the swapchain.
 pub const SyncObjects = struct {
     image_available_semaphores: [frame_count_max]vk.Semaphore,
-    render_finished_semaphores: [frame_count_max]vk.Semaphore,
     in_flight_fences: [frame_count_max]vk.Fence,
 
     /// Destroy all sync objects. Safe to call with null entries.
@@ -45,8 +46,6 @@ pub const SyncObjects = struct {
         for (0..frame_count_max) |i| {
             if (self.image_available_semaphores[i]) |sem| vk.vkDestroySemaphore(device, sem, null);
             self.image_available_semaphores[i] = null;
-            if (self.render_finished_semaphores[i]) |sem| vk.vkDestroySemaphore(device, sem, null);
-            self.render_finished_semaphores[i] = null;
             if (self.in_flight_fences[i]) |fence| vk.vkDestroyFence(device, fence, null);
             self.in_flight_fences[i] = null;
         }
@@ -460,8 +459,8 @@ pub fn allocateCommandBuffers(
 // Public API — Synchronization
 // =============================================================================
 
-/// Create all synchronization objects: per-frame semaphores and fences,
-/// plus a dedicated transfer fence.
+/// Create the per-frame synchronization objects: one acquire semaphore and
+/// one fence per frame in flight.
 ///
 /// All fences are created in the signaled state so the first vkWaitForFences
 /// call succeeds immediately.
@@ -472,7 +471,6 @@ pub fn createSyncObjects(device: vk.Device, frame_count: u32) SyncError!SyncObje
 
     var result: SyncObjects = .{
         .image_available_semaphores = @as([frame_count_max]vk.Semaphore, @splat(null)),
-        .render_finished_semaphores = @as([frame_count_max]vk.Semaphore, @splat(null)),
         .in_flight_fences = @as([frame_count_max]vk.Fence, @splat(null)),
     };
     errdefer result.destroy(device);
@@ -493,14 +491,43 @@ pub fn createSyncObjects(device: vk.Device, frame_count: u32) SyncError!SyncObje
         var res = vk.vkCreateSemaphore(device, &semaphore_info, null, &result.image_available_semaphores[i]);
         if (!vk.succeeded(res)) return SyncError.SyncObjectCreationFailed;
 
-        res = vk.vkCreateSemaphore(device, &semaphore_info, null, &result.render_finished_semaphores[i]);
-        if (!vk.succeeded(res)) return SyncError.SyncObjectCreationFailed;
-
         res = vk.vkCreateFence(device, &fence_info, null, &result.in_flight_fences[i]);
         if (!vk.succeeded(res)) return SyncError.SyncObjectCreationFailed;
     }
 
     return result;
+}
+
+/// Create one binary semaphore in each null entry of `out`. On failure the
+/// entries created so far are destroyed and every entry is null again.
+pub fn createSemaphores(device: vk.Device, out: []vk.Semaphore) SyncError!void {
+    assert(device != null);
+    assert(out.len > 0);
+    errdefer destroySemaphores(device, out);
+    const semaphore_info = vk.SemaphoreCreateInfo{
+        .sType = vk.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+        .pNext = null,
+        .flags = 0,
+    };
+    for (out) |*semaphore| {
+        assert(semaphore.* == null);
+        const result = vk.vkCreateSemaphore(device, &semaphore_info, null, semaphore);
+        if (!vk.succeeded(result)) {
+            semaphore.* = null;
+            return SyncError.SyncObjectCreationFailed;
+        }
+        assert(semaphore.* != null);
+    }
+}
+
+/// Destroy every semaphore in `semaphores` and null the entries. Null
+/// entries are skipped.
+pub fn destroySemaphores(device: vk.Device, semaphores: []vk.Semaphore) void {
+    assert(device != null);
+    for (semaphores) |*semaphore| {
+        if (semaphore.*) |handle| vk.vkDestroySemaphore(device, handle, null);
+        semaphore.* = null;
+    }
 }
 
 // =============================================================================
