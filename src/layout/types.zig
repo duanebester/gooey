@@ -547,8 +547,31 @@ pub const FloatingConfig = struct {
 pub const ScrollConfig = struct {
     horizontal: bool = false,
     vertical: bool = false,
+    /// The offset children are placed at. With a `target`, the position pass
+    /// resolves it against this frame's content and writes the offset it
+    /// used back here, for the caller to keep.
     scroll_offset: Offset2D = .{},
+    target: ScrollTarget = .none,
 };
+
+/// Where a scroll container's offset comes from this frame: `scroll_offset`
+/// (`.none`), or a place in the content the position pass measures: its
+/// start or end, an offset clamped to it, or one child brought into view.
+pub const ScrollTarget = union(enum) {
+    none,
+    start,
+    end,
+    offset: Offset2D,
+    child: ScrollChild,
+};
+
+pub const ScrollChild = struct {
+    /// The child's element index; it must be a direct, non-floating child.
+    index: u32,
+    alignment: ScrollAlignment,
+};
+
+pub const ScrollAlignment = enum { start, center, end, nearest };
 
 // ============================================================================
 // Text Config

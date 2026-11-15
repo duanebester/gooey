@@ -802,6 +802,179 @@ test "a scroll box draws only what is in view, and keeps every row's hit and nod
     try testing.expect(count.fills <= 10);
 }
 
+/// A "go" button above a 200 px scroll box anchored at its end, holding
+/// `count` rows of 24 px keyed by index. "go" scrolls the box to `target`;
+/// "add" appends five rows.
+const FollowState = struct {
+    count: u32 = 20,
+    target: ui.ScrollTarget = .end,
+
+    fn log() gooey.ElementId {
+        return gooey.ElementId.root.child(.{ .name = "page" }).child(.{ .name = "log" });
+    }
+
+    pub fn go(self: *FollowState, effects: *Effects) void {
+        effects.scrollTo(log(), self.target);
+    }
+
+    pub fn add(self: *FollowState) void {
+        self.count += 5;
+    }
+};
+
+const FollowApp = gooey.App(FollowState, followRender, .{
+    .title = "Follow",
+    .width = 300,
+    .height = 300,
+    .limits = .small,
+});
+
+const follow_row_height: f32 = 24;
+
+fn followRender(cx: *Cx) void {
+    const state = cx.state(FollowState);
+    const button: ui.Style = .{ .width = .{ .fixed = 50 }, .height = .{ .fixed = 30 } };
+    cx.render(ui.box(.{ .key = .{ .name = "page" }, .style = .{ .width = .{ .grow = 1 } } }, .{
+        ui.box(.{ .style = .{ .direction = .row } }, .{
+            ui.box(.{
+                .key = .{ .name = "go" },
+                .on_click = cx.on(FollowState.go, .{}),
+                .style = button,
+            }, .{}),
+            ui.box(.{
+                .key = .{ .name = "add" },
+                .on_click = cx.on(FollowState.add, .{}),
+                .style = button,
+            }, .{}),
+        }),
+        ui.box(.{ .key = .{ .name = "log" }, .style = .{
+            .width = .{ .fixed = 200 },
+            .height = .{ .fixed = 200 },
+            .scroll = .{ .anchor = .end },
+        } }, .{FollowRows{ .count = state.count }}),
+    }));
+}
+
+const FollowRows = struct {
+    count: u32,
+
+    pub fn render(self: FollowRows, cx: *Cx) void {
+        var index: u32 = 0;
+        while (index < self.count) : (index += 1) {
+            cx.render(ui.box(.{ .key = .{ .index = index }, .style = .{
+                .width = .{ .grow = 1 },
+                .height = .{ .fixed = follow_row_height },
+            } }, .{}));
+        }
+    }
+};
+
+/// Press and release at (`x`, `y`) and build one frame: what that frame shows
+/// is what the click asked for, with no frame between.
+fn clickOnce(app: anytype, now: *u64, x: f32, y: f32) void {
+    app.window.queue.push(.{ .input = .{ .mouse_down = mouse(x, y) } });
+    app.window.queue.push(.{ .input = .{ .mouse_up = mouse(x, y) } });
+    now.* += 1;
+    app.tick(now.*);
+}
+
+fn followOffset(app: *FollowApp) f32 {
+    const State = internals.window.ScrollState;
+    return app.window.retained.find(State, FollowState.log()).?.offset_y;
+}
+
+/// Row `index`'s top in the frame on screen, relative to the box's top.
+fn followRowTop(app: *FollowApp, index: u32) f32 {
+    const frame = app.window.rendered();
+    const log = FollowState.log();
+    var box_top: f32 = 0;
+    var row_top: ?f32 = null;
+    for (frame.hits[0..frame.hit_count]) |*record| {
+        if (record.id == log) box_top = record.bounds.y;
+    }
+    // A row's hit is clipped by the box, so read its laid-out top instead.
+    for (app.window.nodes[0..app.window.node_count], 0..) |*node, position| {
+        if (node.id != log.child(.{ .index = index })) continue;
+        row_top = app.window.layout.elements.items()[position].computed.bounding_box.y;
+    }
+    return row_top.? - box_top;
+}
+
+test "an end-anchored scroll box follows its content until scrolled away" {
+    // Goal: `Scroll.anchor = .end` and `effects.scrollTo`, each resolved in
+    // the frame that builds them. Method: 20 rows of 24 px in a 200 px box
+    // (480 px, at most 280 px of offset) start at the end. Five more rows
+    // move the end to 400 in the frame that adds them. A wheel 50 px up
+    // releases the anchor, so five more stay at 350; a wheel back to the end
+    // pins it again. Then "go" moves it to the start, an offset clamped to
+    // the content, a child at each alignment, and the end, each in the frame
+    // the click builds.
+    const app = try testing.allocator.create(FollowApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    try testing.expectEqual(@as(f32, 280), followOffset(app));
+    try testing.expectEqual(@as(f32, 200 - follow_row_height), followRowTop(app, 19));
+    now += 1;
+    app.tick(now);
+
+    clickOnce(app, &now, 75, 15);
+    try testing.expectEqual(@as(u32, 25), app.state.count);
+    try testing.expectEqual(@as(f32, 400), followOffset(app));
+    try testing.expectEqual(@as(f32, 200 - follow_row_height), followRowTop(app, 24));
+
+    scrollWheelAt(app, &now, 100, 100, -50);
+    try testing.expectEqual(@as(f32, 350), followOffset(app));
+    clickOnce(app, &now, 75, 15);
+    try testing.expectEqual(@as(f32, 350), followOffset(app));
+    scrollWheelAt(app, &now, 100, 100, 500);
+    try testing.expectEqual(@as(f32, 520), followOffset(app));
+    clickOnce(app, &now, 75, 15);
+    try testing.expectEqual(@as(f32, 640), followOffset(app));
+
+    const Case = struct { target: ui.ScrollTarget, offset: f32 };
+    const cases = [_]Case{
+        .{ .target = .start, .offset = 0 },
+        .{ .target = .{ .offset = .{ .y = 100 } }, .offset = 100 },
+        .{ .target = .{ .offset = .{ .y = 5_000 } }, .offset = 640 },
+        // Row 3 spans 72 to 96: its start, centred (84 - 100), clamped to
+        // 0, and its end at the box's (96 - 200), clamped.
+        .{ .target = .{ .child = .{ .key = .{ .index = 3 }, .alignment = .start } }, .offset = 72 },
+        .{
+            .target = .{ .child = .{ .key = .{ .index = 20 }, .alignment = .center } },
+            .offset = 392,
+        },
+        .{ .target = .{ .child = .{ .key = .{ .index = 20 }, .alignment = .end } }, .offset = 304 },
+        // Nearest from 304: row 20 shows whole, so nothing moves; row 2
+        // (48 to 72) is above, so it lands at the top.
+        .{ .target = .{ .child = .{ .key = .{ .index = 20 } } }, .offset = 304 },
+        .{ .target = .{ .child = .{ .key = .{ .index = 2 } } }, .offset = 48 },
+        .{ .target = .{ .child = .{ .key = .{ .index = 99 } } }, .offset = 48 },
+        .{ .target = .end, .offset = 640 },
+    };
+    for (cases) |case| {
+        app.state.target = case.target;
+        clickOnce(app, &now, 25, 15);
+        try testing.expectEqual(case.offset, followOffset(app));
+    }
+    // Back at the end, the anchor follows again.
+    clickOnce(app, &now, 75, 15);
+    try testing.expectEqual(@as(f32, 760), followOffset(app));
+}
+
+fn scrollWheelAt(app: anytype, now: *u64, x: f32, y: f32, down: f32) void {
+    const direction: f32 = if (@import("builtin").os.tag == .macos) -1 else 1;
+    app.window.queue.push(.{ .input = .{ .scroll = .{
+        .position = .{ .x = x, .y = y },
+        .delta = .{ .x = 0, .y = down * direction },
+        .modifiers = .{},
+    } } });
+    now.* += 1;
+    app.tick(now.*);
+}
+
 fn scrollMouse(app: anytype, now: *u64, event: gooey.input.InputEvent) void {
     app.window.queue.push(.{ .input = event });
     now.* += 1;
@@ -2989,6 +3162,118 @@ fn listOffset(window: *internals.window.Window) *const internals.window.ScrollSt
     unreachable;
 }
 
+/// Rows of 40, 64, and 100 px in turn, for a `List` that scrolls from a
+/// handler and follows its end.
+const SteerRow = struct {
+    index: u32,
+
+    pub const count_max: u32 = 1000;
+
+    pub fn height(_: *Cx, index: u32) f32 {
+        return steer_heights[index % 3];
+    }
+
+    pub fn render(self: SteerRow, cx: *Cx) void {
+        var label: [16]u8 = undefined;
+        cx.render(ui.box(.{
+            .style = .{ .width = .{ .grow = 1 }, .height = .{ .grow = 1 } },
+            .a11y = .{ .role = .listitem, .label = listRowLabel(&label, self.index) },
+        }, .{}));
+    }
+};
+
+const steer_heights = [_]f32{ 40, 64, 100 };
+
+const SteerState = struct {
+    count: u32 = 900,
+    row: u32 = 450,
+    alignment: ui.ScrollAlignment = .start,
+
+    pub fn go(self: *SteerState, effects: *Effects) void {
+        const list = gooey.ElementId.root.child(.{ .name = "rows" });
+        components.List(SteerRow).scrollTo(effects, list, self.row, self.alignment);
+    }
+
+    pub fn add(self: *SteerState) void {
+        self.count += 1;
+    }
+};
+
+const SteerApp = gooey.App(SteerState, steerRender, .{
+    .title = "Steer",
+    .width = 300,
+    .height = 330,
+    .limits = gooey.ResourceLimits.small,
+});
+
+fn steerRender(cx: *Cx) void {
+    const state = cx.state(SteerState);
+    const button: ui.Style = .{ .width = .{ .fixed = 50 }, .height = .{ .fixed = 30 } };
+    cx.render(.{
+        ui.box(.{ .style = .{ .direction = .row } }, .{
+            ui.box(.{
+                .key = .{ .name = "go" },
+                .on_click = cx.on(SteerState.go, .{}),
+                .style = button,
+            }, .{}),
+            ui.box(.{
+                .key = .{ .name = "add" },
+                .on_click = cx.on(SteerState.add, .{}),
+                .style = button,
+            }, .{}),
+        }),
+        components.List(SteerRow){
+            .key = "rows",
+            .count = state.count,
+            .gap = 8,
+            .anchor = .end,
+            .style = .{ .padding = .all(8) },
+        },
+    });
+}
+
+test "a List scrolls to a row and follows its end in the frame that asks" {
+    // Goal: `List.scrollTo` and `List.anchor = .end` build the rows they
+    // land on in the same frame, where the core's layout puts them. Method:
+    // a 300 px list (30 px below the buttons, padded by 8) of rows of 40,
+    // 64, and 100 px with 8 px gaps, a 228 px cycle. It starts at its end,
+    // row 899 ending at the padding; one more row moves the end in the frame
+    // that adds it. Row 450 (150 cycles down, 34,200 px) then lands at the
+    // top of the padding, and row 10 (three cycles plus 40 + 8, 732 px; its
+    // box 64 px and the 8 px gap below) is centred in the 284 px view, its
+    // top at 30 + 8 + 142 - 36 = 144.
+    const app = try testing.allocator.create(SteerApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    now += 1;
+    app.tick(now);
+    var rows = listRows(&app.window, 899);
+    try testing.expectEqual(@as(f32, 330 - 8), rows.row.?.y + rows.row.?.height);
+
+    clickOnce(app, &now, 75, 15);
+    rows = listRows(&app.window, 900);
+    try testing.expectEqual(@as(f32, 330 - 8), rows.row.?.y + rows.row.?.height);
+
+    clickOnce(app, &now, 25, 15);
+    rows = listRows(&app.window, 450);
+    try testing.expectEqual(@as(f32, 30 + 8), rows.row.?.y);
+    try testing.expectEqual(@as(f32, 34_200), listOffset(&app.window).offset_y);
+
+    app.state.row = 10;
+    app.state.alignment = .center;
+    clickOnce(app, &now, 25, 15);
+    rows = listRows(&app.window, 10);
+    try testing.expectEqual(@as(f32, 144), rows.row.?.y);
+    // Scrolled away from the end, a new row does not move the list.
+    clickOnce(app, &now, 75, 15);
+    rows = listRows(&app.window, 10);
+    try testing.expectEqual(@as(f32, 144), rows.row.?.y);
+    try testing.expectEqual(internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
+}
+
 test "a List of per-row heights builds the rows in view, spaced by its gap and padding" {
     // Goal: variable row heights, as 0.3.1's virtual list, with the
     // lifecycle guard proving no allocation after init. Methodology: 1,000
@@ -3108,8 +3393,11 @@ test "virtual_list builds the chat messages in view at their heights, to the las
     try testing.expect(children.count < 20);
     try testing.expectEqual(children.list.y + 8, rows[0].y);
     // Hit bounds are clipped to the list, so the partial last row is shorter.
+    // The buttons above it put the list at a fractional y, so heights carry
+    // the rounding of a clip intersection.
     for (rows[0 .. children.count - 1], 0..) |row, index| {
-        try testing.expectEqual(virtual_list.messages[index].height() + 8, row.height);
+        const height = virtual_list.messages[index].height() + 8;
+        try testing.expectApproxEqAbs(height, row.height, 0.001);
     }
     // Rows past the view's bottom are not built.
     const last = rows[children.count - 1];
@@ -3118,8 +3406,9 @@ test "virtual_list builds the chat messages in view at their heights, to the las
     listWheel(app, &now, 100_000);
     children = listChildren(&app.window, &rows);
     const end = rows[children.count - 1];
-    try testing.expectEqual(virtual_list.messages[999].height(), end.height);
-    try testing.expectEqual(children.list.y + children.list.height - 8, end.y + end.height);
+    try testing.expectApproxEqAbs(virtual_list.messages[999].height(), end.height, 0.001);
+    const list_bottom = children.list.y + children.list.height - 8;
+    try testing.expectApproxEqAbs(list_bottom, end.y + end.height, 0.001);
     try testing.expectEqual(internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
 }
 

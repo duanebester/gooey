@@ -2,11 +2,9 @@
 //! `List` that builds only the messages in view.
 //!
 //! Each message's height follows from its type, so the list sums them
-//! without measuring; `MessageRow.count_max` bounds that sum. 0.3.1's Top,
-//! Bottom, Jump, Prev, and Next buttons and its visible-range and
-//! scroll-percent readout move the scroll offset or read it, which waits on
-//! the List `scroll_to` decision, so the port leaves them out; selection
-//! went with them, since only those buttons selected a message.
+//! without measuring; `MessageRow.count_max` bounds that sum. Top, Bottom,
+//! and Jump move the list through `List.scrollTo`, as 0.3.1's buttons did;
+//! its Prev and Next selection and scroll readout are left out.
 //!
 //! Run with: zig build run-virtual-list
 
@@ -83,7 +81,20 @@ fn generateMessages() [message_count]Message {
     return result;
 }
 
-pub const State = struct {};
+pub const State = struct {
+    pub fn top(_: *State, list: gooey.ElementId, effects: *gooey.Effects) void {
+        effects.scrollTo(list, .start);
+    }
+
+    pub fn bottom(_: *State, list: gooey.ElementId, effects: *gooey.Effects) void {
+        effects.scrollTo(list, .end);
+    }
+
+    /// Message 500, centred, as 0.3.1's Jump did.
+    pub fn jump(_: *State, list: gooey.ElementId, effects: *gooey.Effects) void {
+        List(MessageRow).scrollTo(effects, list, 500, .center);
+    }
+};
 
 pub const App = gooey.App(State, render, .{
     .title = "VirtualList Example - Variable Height Items",
@@ -96,7 +107,8 @@ pub const App = gooey.App(State, render, .{
 pub const main = App.main;
 
 pub fn render(cx: *Cx) void {
-    cx.render(ui.box(.{ .style = .{
+    const list = cx.id(.{ .name = "page" }).child(.{ .name = "chat-list" });
+    cx.render(ui.box(.{ .key = .{ .name = "page" }, .style = .{
         .width = .{ .grow = 1 },
         .height = .{ .grow = 1 },
         .background = .bg,
@@ -121,6 +133,17 @@ pub fn render(cx: *Cx) void {
                 .size = 12,
                 .color = .muted,
             }),
+        }),
+        ui.box(.{ .style = .{ .direction = .row, .gap = 8 } }, .{
+            components.Button{ .label = "Top", .on_click = cx.on(State.top, .{ .arg = list }) },
+            components.Button{
+                .label = "Bottom",
+                .on_click = cx.on(State.bottom, .{ .arg = list }),
+            },
+            components.Button{
+                .label = "Jump to 500",
+                .on_click = cx.on(State.jump, .{ .arg = list }),
+            },
         }),
         List(MessageRow){
             .key = "chat-list",

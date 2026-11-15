@@ -170,6 +170,13 @@ pub const ScrollState = struct {
     /// The box's bounds at the last emit, unclipped.
     viewport: records.Rect,
     axes: element.Scroll,
+    /// An `Effects.scrollTo` the next build hands its layout, which resolves
+    /// it against that frame's content; emit clears it.
+    target: ?Target,
+    /// The offset was at the content's end along every axis it scrolls, as
+    /// of its last move or measurement: a box with `Scroll.anchor = .end`
+    /// follows the end while this holds (`clamp`).
+    at_end: bool,
     /// The thumb the pointer is dragging, as 0.3.1's scroll containers do,
     /// with the pointer coordinate and offset along that axis at the press.
     dragging: ?ScrollAxis,
@@ -182,6 +189,25 @@ pub const ScrollState = struct {
     pub const scrollbar_padding: f32 = 2;
     pub const scrollbar_room: f32 = scrollbar_size + scrollbar_padding;
     pub const scrollbar_thumb_min: f32 = 30;
+    /// How near the end an offset counts as at it, for rounding in a
+    /// scrollbar drag or a fractional wheel delta.
+    pub const end_slop_px: f32 = 0.5;
+
+    /// `element.ScrollTarget` with its child's key resolved to an id, since
+    /// a name key's bytes do not outlive the handler. An index key is kept,
+    /// so a `List` builds the row it names.
+    pub const Target = union(enum) {
+        start,
+        end,
+        offset: element.ScrollOffset,
+        child: Child,
+
+        pub const Child = struct {
+            id: ElementId,
+            index: ?u64,
+            alignment: element.ScrollAlignment,
+        };
+    };
 
     pub fn init(self: *ScrollState) void {
         self.* = .{
@@ -191,6 +217,8 @@ pub const ScrollState = struct {
             .content_height = 0,
             .viewport = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
             .axes = .{},
+            .target = null,
+            .at_end = true,
             .dragging = null,
             .drag_pointer_start = 0,
             .drag_offset_start = 0,
@@ -221,16 +249,29 @@ pub const ScrollState = struct {
         };
     }
 
-    /// Keep the offset inside the last measured content. Returns whether
-    /// it moved.
+    /// Keep the offset inside the last measured content and note whether it
+    /// rests at the end. Every move goes through here (the wheel, the
+    /// scrollbar, focus reveal, a resolved `scrollTo`, a measurement), so a
+    /// move away from the end releases `Scroll.anchor = .end` and a move back
+    /// pins it. Returns whether the offset moved.
     pub fn clamp(self: *ScrollState) bool {
         const x = std.math.clamp(self.offset_x, 0, self.maxX());
         const y = std.math.clamp(self.offset_y, 0, self.maxY());
         const moved = x != self.offset_x or y != self.offset_y;
         self.offset_x = x;
         self.offset_y = y;
+        const end_x = x >= self.maxX() - end_slop_px;
+        const end_y = y >= self.maxY() - end_slop_px;
+        self.at_end = end_x and end_y;
         assert(self.offset_y >= 0);
         return moved;
+    }
+
+    /// Whether the next layout places the box at its content's end: a
+    /// pending `.end`, or an `.end` anchor still pinned.
+    pub fn followsEnd(self: *const ScrollState) bool {
+        if (self.target) |target| return target == .end;
+        return self.axes.anchor == .end and self.at_end;
     }
 
     /// Scroll by a wheel delta, as 0.3.1's scroll containers do: offsets
@@ -242,6 +283,8 @@ pub const ScrollState = struct {
         assert(std.math.isFinite(delta_y));
         const before_x = self.offset_x;
         const before_y = self.offset_y;
+        // The person's scroll wins over a request not yet laid out.
+        self.target = null;
         if (self.maxX() > 0) self.offset_x += wheelOffset(delta_x);
         if (self.maxY() > 0) self.offset_y += wheelOffset(delta_y);
         _ = self.clamp();
@@ -314,6 +357,7 @@ pub const ScrollState = struct {
     pub fn press(self: *ScrollState, x: f32, y: f32) bool {
         assert(self.dragging == null);
         const axis = self.scrollbarAt(x, y) orelse return false;
+        self.target = null;
         const bar = self.track(axis).?;
         const along = if (axis == .y) y else x;
         if (self.thumb(axis, bar).contains(x, y)) {

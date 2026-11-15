@@ -83,6 +83,11 @@ fn pinUi() void {
         _ = gooey.ui.Orientation;
         _ = gooey.ui.HeadingLevel;
         _ = gooey.ui.Rect;
+        _ = gooey.ui.ScrollAnchor;
+        _ = gooey.ui.ScrollTarget;
+        _ = gooey.ui.ScrollOffset;
+        _ = gooey.ui.ScrollChild;
+        _ = gooey.ui.ScrollAlignment;
     }
 }
 
@@ -157,6 +162,20 @@ fn pinFields() void {
         for ([_][]const u8{ "slot", "generation" }) |name| {
             _ = @FieldType(gooey.JobId, name);
         }
+        for ([_][]const u8{ "x", "y", "anchor" }) |name| {
+            _ = @FieldType(gooey.ui.Scroll, name);
+        }
+        _ = @as(gooey.ui.ScrollAnchor, .end);
+        _ = @as(gooey.ui.ScrollTarget, .start);
+        _ = @as(gooey.ui.ScrollTarget, .end);
+        _ = @as(gooey.ui.ScrollTarget, .{ .offset = .{ .x = 0, .y = 0 } });
+        _ = @as(gooey.ui.ScrollTarget, .{ .child = .{
+            .key = .{ .index = 0 },
+            .alignment = .nearest,
+        } });
+        _ = @as(gooey.ui.ScrollAlignment, .start);
+        _ = @as(gooey.ui.ScrollAlignment, .center);
+        _ = @as(gooey.ui.ScrollAlignment, .end);
     }
 }
 
@@ -200,6 +219,7 @@ fn pinEffects() void {
         for ([_][]const u8{ "io", "cancelled", "post" }) |name| {
             if (!@hasDecl(gooey.Job(u8), name)) @compileError("gooey.Job lost " ++ name);
         }
+        _ = @TypeOf(Effects.scrollTo);
         const drag_fields = .{ "phase", "x", "y", "start_x", "start_y", "button", "modifiers" };
         for (drag_fields) |name| {
             _ = @FieldType(Effects.PointerDrag, name);
@@ -255,9 +275,10 @@ fn pinCx() void {
         _ = @TypeOf(Cx.get);
         _ = @TypeOf(Cx.release);
         _ = @TypeOf(Cx.drag);
-        for ([_][]const u8{ "offset_x", "offset_y", "viewport" }) |name| {
+        for ([_][]const u8{ "offset_x", "offset_y", "viewport", "target", "at_end" }) |name| {
             _ = @FieldType(Cx.ScrollPosition, name);
         }
+        _ = @as(Cx.ScrollPosition.Target, .end);
         // Opaque: no field, `window` included, is reachable from a `*Cx`.
         if (@typeInfo(Cx) != .@"opaque") @compileError("gooey.Cx must stay opaque");
         // A `Painter` exposes only the paint element's bounds.
@@ -284,14 +305,15 @@ fn pinExact() void {
             "std_options", "testing",           "internals",
         });
         expectDecls(gooey.ui, "gooey.ui", &.{
-            "box",         "text",          "paint",      "Paint",       "when",
-            "action",      "Box",           "Style",      "Direction",   "Layer",
-            "Anchor",      "Scroll",        "ClipPolicy", "CursorShape", "PointerEvents",
-            "KeyContext",  "ActionBinding", "DragSource", "DropTarget",  "Text",
-            "Sizing",      "Edges",         "Corners",    "Alignment",   "Border",
-            "Shadow",      "ColorToken",    "Color",      "A11y",        "Role",
-            "Orientation", "HeadingLevel",  "Painter",    "PaintText",   "PaintSvg",
-            "PaintImage",  "ObjectFit",     "Rect",
+            "box",          "text",          "paint",           "Paint",        "when",
+            "action",       "Box",           "Style",           "Direction",    "Layer",
+            "Anchor",       "Scroll",        "ClipPolicy",      "CursorShape",  "PointerEvents",
+            "KeyContext",   "ActionBinding", "DragSource",      "DropTarget",   "Text",
+            "Sizing",       "Edges",         "Corners",         "Alignment",    "Border",
+            "Shadow",       "ColorToken",    "Color",           "A11y",         "Role",
+            "Orientation",  "HeadingLevel",  "Painter",         "PaintText",    "PaintSvg",
+            "PaintImage",   "ObjectFit",     "Rect",            "ScrollAnchor", "ScrollTarget",
+            "ScrollOffset", "ScrollChild",   "ScrollAlignment",
         });
         expectDecls(gooey.Cx, "gooey.Cx", &.{
             "ScrollPosition", "state",   "theme",              "fontMetrics", "id",
