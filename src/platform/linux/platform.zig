@@ -1054,6 +1054,9 @@ pub const LinuxPlatform = struct {
 
     /// Without server-side decorations, a left press the app did not handle
     /// resizes the window from its edges or moves it from its title bar area.
+    /// Content wins at the edges too: GTK's resize border lies in the shadow
+    /// outside the window, but these 8 px are inside it, where a press on an
+    /// edge-flush button, text field, or scrollbar must reach the app.
     fn startPointerMoveOrResize(self: *Self, window: *LinuxWindow) void {
         std.debug.assert(!window.has_server_decorations);
         const border_width: f64 = 8.0;

@@ -312,6 +312,13 @@ pub const Retained = struct {
     /// `T` retained for `id`, if any, without touching it: for the router,
     /// which reads state the last build retained (a scroll offset).
     pub fn find(self: *Retained, comptime T: type, id: ElementId) ?*T {
+        const value = self.findConst(T, id) orelse return null;
+        // The caller holds `self` mutably, so the value is mutable too.
+        return @constCast(value);
+    }
+
+    /// `find` for a reader that must not change the state: `Query`.
+    pub fn findConst(self: *const Retained, comptime T: type, id: ElementId) ?*const T {
         assert(id.isKeyed());
         const slab = &self.slabs[comptime classOf(T)];
         const slot = slab.find(id, handler_mod.typeId(T)) orelse return null;

@@ -1750,6 +1750,118 @@ test "keymapClaims answers from the rendered focus path" {
     try testing.expect(!query.keymapClaims(chord(.a, .{})));
 }
 
+const ChromeState = struct {
+    clicks: u32 = 0,
+
+    pub fn click(self: *ChromeState) void {
+        self.clicks += 1;
+    }
+
+    pub fn drag(_: *ChromeState, effects: *Effects) void {
+        assert(effects.pointerDrag() != null);
+    }
+};
+
+/// A 300 by 200 window drawn without server decorations, as Linux draws
+/// it: a 32 px toolbar holding a button flush with the top-left corner, an
+/// empty title strip, and a focusable box flush with the top-right corner;
+/// below it a draggable card at x 0 to 40, a pointer-drag splitter at x 40
+/// to 46, and a list at x 200 to 300 whose content overflows, so its
+/// scrollbar track spans x 290 to 298.
+const ChromeApp = gooey.App(ChromeState, chromeRender, .{
+    .title = "Chrome",
+    .width = 300,
+    .height = 200,
+    .limits = .nano,
+});
+
+fn chromeRender(cx: *Cx) void {
+    const fixed = struct {
+        fn size(width: f32, height: f32) ui.Style {
+            return .{ .width = .{ .fixed = width }, .height = .{ .fixed = height } };
+        }
+    };
+    var list = fixed.size(100, 168);
+    list.scroll = .{};
+    const grow: ui.Style = .{ .width = .{ .grow = 1 }, .height = .{ .grow = 1 } };
+    cx.render(ui.box(.{ .style = grow }, .{
+        ui.box(.{ .style = .{ .direction = .row, .width = .{ .grow = 1 } } }, .{
+            ui.box(.{
+                .key = .{ .name = "close" },
+                .style = fixed.size(40, 32),
+                .on_click = cx.on(ChromeState.click, .{}),
+            }, .{ui.box(.{ .style = fixed.size(20, 20) }, .{})}),
+            ui.box(.{ .style = .{ .width = .{ .grow = 1 } } }, .{}),
+            ui.box(.{
+                .key = .{ .name = "search" },
+                .style = fixed.size(60, 32),
+                .focusable = true,
+            }, .{}),
+        }),
+        ui.box(.{ .style = .{ .direction = .row, .width = .{ .grow = 1 } } }, .{
+            ui.box(.{
+                .key = .{ .name = "card" },
+                .style = fixed.size(40, 40),
+                .draggable = .of(u32, 1),
+            }, .{}),
+            ui.box(.{
+                .key = .{ .name = "splitter" },
+                .style = fixed.size(6, 40),
+                .on_pointer_drag = cx.on(ChromeState.drag, .{}),
+            }, .{}),
+            ui.box(.{ .style = .{ .width = .{ .grow = 1 } } }, .{}),
+            ui.box(.{ .key = .{ .name = "list" }, .style = list }, .{
+                ui.box(.{ .style = fixed.size(90, 400) }, .{}),
+            }),
+        }),
+    }));
+}
+
+test "pressClaims takes presses on controls and leaves empty chrome to the window" {
+    // Goal: Linux moves an undecorated window from its top 32 px and resizes
+    // it from its 8 px edges only on a press the app does not handle. Clicks
+    // fire on release, so the platform asks `pressClaims` at the press; before
+    // it, every press counted as unhandled and the toolbar's buttons moved the
+    // window. Methodology: probe each kind of handled press inside the title
+    // strip or an edge, where a wrong answer starts a move or resize, and the
+    // empty strip, edges, and background beside them, which must stay free.
+    const app = try testing.allocator.create(ChromeApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    // The first emit measures the list's overflow; its track needs a second.
+    now += 1;
+    app.tick(now);
+    const query = gooey.Query{ .window = &app.window };
+
+    // The button, at the top-left corner, on its plain child, and in the strip.
+    try testing.expect(query.pressClaims(.{ .x = 1, .y = 1 }));
+    try testing.expect(query.pressClaims(.{ .x = 10, .y = 10 }));
+    try testing.expect(query.pressClaims(.{ .x = 39, .y = 31 }));
+    try testing.expect(!query.pressClaims(.{ .x = 40, .y = 16 }));
+    try testing.expect(!query.pressClaims(.{ .x = 150, .y = 1 }));
+    try testing.expect(!query.pressClaims(.{ .x = 239, .y = 31 }));
+    // Focus, at the top-right corner.
+    try testing.expect(query.pressClaims(.{ .x = 299, .y = 1 }));
+    // A drag source on the left edge and a pointer-drag box beside it.
+    try testing.expect(query.pressClaims(.{ .x = 1, .y = 50 }));
+    try testing.expect(query.pressClaims(.{ .x = 45, .y = 50 }));
+    try testing.expect(!query.pressClaims(.{ .x = 47, .y = 50 }));
+    try testing.expect(!query.pressClaims(.{ .x = 1, .y = 150 }));
+    try testing.expect(!query.pressClaims(.{ .x = 120, .y = 199 }));
+    // The scrollbar track on the right edge, but not the list beside it or
+    // the 2 px between the track and the edge.
+    try testing.expect(query.pressClaims(.{ .x = 294, .y = 100 }));
+    try testing.expect(!query.pressClaims(.{ .x = 289, .y = 100 }));
+    try testing.expect(!query.pressClaims(.{ .x = 299, .y = 100 }));
+
+    // The claimed corner press is a click the router delivers on release.
+    clickAt(app, &now, 1, 1);
+    try testing.expectEqual(@as(u32, 1), app.state.clicks);
+}
+
 fn chord(key: gooey.input.KeyCode, modifiers: gooey.input.Modifiers) gooey.input.KeyEvent {
     return .{
         .key = key,

@@ -313,25 +313,33 @@ pub const ScrollState = struct {
     /// whether the point was on a scrollbar.
     pub fn press(self: *ScrollState, x: f32, y: f32) bool {
         assert(self.dragging == null);
+        const axis = self.scrollbarAt(x, y) orelse return false;
+        const bar = self.track(axis).?;
+        const along = if (axis == .y) y else x;
+        if (self.thumb(axis, bar).contains(x, y)) {
+            self.dragging = axis;
+            self.drag_pointer_start = along;
+            self.drag_offset_start = self.offset(axis).*;
+        } else {
+            const start = if (axis == .y) bar.y else bar.x;
+            const length = if (axis == .y) bar.height else bar.width;
+            self.offset(axis).* = (along - start) / length * self.max(axis);
+            _ = self.clamp();
+        }
+        return true;
+    }
+
+    /// The scrollbar whose track holds (`x`, `y`), the vertical one first
+    /// where they cross; null when the point is on neither.
+    pub fn scrollbarAt(self: *const ScrollState, x: f32, y: f32) ?ScrollAxis {
+        assert(std.math.isFinite(x));
+        assert(std.math.isFinite(y));
         inline for (.{ ScrollAxis.y, ScrollAxis.x }) |axis| {
             if (self.track(axis)) |bar| {
-                if (bar.contains(x, y)) {
-                    const along = if (axis == .y) y else x;
-                    if (self.thumb(axis, bar).contains(x, y)) {
-                        self.dragging = axis;
-                        self.drag_pointer_start = along;
-                        self.drag_offset_start = self.offset(axis).*;
-                    } else {
-                        const start = if (axis == .y) bar.y else bar.x;
-                        const length = if (axis == .y) bar.height else bar.width;
-                        self.offset(axis).* = (along - start) / length * self.max(axis);
-                        _ = self.clamp();
-                    }
-                    return true;
-                }
+                if (bar.contains(x, y)) return axis;
             }
         }
-        return false;
+        return null;
     }
 
     /// Follow a dragged thumb: the pointer's travel along the track, scaled
