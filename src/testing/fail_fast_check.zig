@@ -47,10 +47,10 @@
 //! - `core-job-count`: spawns one background job more than `nano`'s 2
 //!   `events.job_count_max` while both slots run.
 //! - `core-mono-unset`: draws `.family = .mono` text in an app with no `fonts.mono`.
-//! - `core-wrap-run`: one text of 1,025 newlines and letters, one codepoint past
-//!   `text.run_codepoint_count_max`, which also sizes layout's per-text word
-//!   and line scratch. Layout measures it whole first, so the shaping bound
-//!   stops it on every platform before the scratch could fill.
+//! - `core-wrap-text`: one text of 1,024 newlines and a letter, 1,025 lines,
+//!   one past `nano`'s frame line budget, which one text may fill alone. A
+//!   text's length is otherwise unbounded: layout and emit split it into
+//!   shaping runs, so `text.run_codepoint_count_max` never stops a text.
 //! - `core-wrap-frame`: wraps two texts into one line past the frame's glyph budget.
 //! - `core-deinit-running`: frees a running app without stopping it first.
 //! - `core-list-count`: a `List` of per-row heights one row past its `count_max`.
@@ -104,7 +104,7 @@ const Mode = enum {
     @"core-dialog-count",
     @"core-job-count",
     @"core-mono-unset",
-    @"core-wrap-run",
+    @"core-wrap-text",
     @"core-wrap-frame",
     @"core-deinit-running",
     @"core-list-count",
@@ -153,7 +153,7 @@ pub fn main(init: std.process.Init) !void {
         .@"core-dialog-count" => coreDialogCount(init.gpa, init.io),
         .@"core-job-count" => coreJobCount(init.gpa, init.io),
         .@"core-mono-unset" => coreTick(init.gpa, init.io, CoreApp.monoText),
-        .@"core-wrap-run" => coreTick(init.gpa, init.io, CoreApp.wrapRun),
+        .@"core-wrap-text" => coreTick(init.gpa, init.io, CoreApp.wrapText),
         .@"core-wrap-frame" => coreTick(init.gpa, init.io, CoreApp.wrapFrame),
         .@"core-deinit-running" => coreDeinitRunning(init.gpa, init.io),
         .@"core-list-count" => coreTick(init.gpa, init.io, CoreApp.longList),
@@ -559,9 +559,9 @@ const CoreApp = struct {
         cx.render(gooey.ui.text("code", .{ .family = .mono }));
     }
 
-    /// One empty word and line per newline, then "m": 1,025 codepoints, one
-    /// past the run bound that also sizes layout's word and line scratch.
-    fn wrapRun(cx: *gooey.Cx) void {
+    /// One line per newline, then "m": 1,025 lines, one past `nano`'s
+    /// 1,024 wrapped lines a frame, all in one text.
+    fn wrapText(cx: *gooey.Cx) void {
         const run = comptime newlinesThenM(gooey.text.run_codepoint_count_max);
         cx.render(gooey.ui.text(&run, .{ .wrap = .words }));
     }

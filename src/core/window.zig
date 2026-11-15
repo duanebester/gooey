@@ -65,16 +65,16 @@ pub fn wheelOffset(delta: f32) f32 {
 /// is `limits.build.box_depth_max`, asserted where the scratch is written.
 pub const box_depth_ceiling = limits_mod.box_depth_ceiling;
 
-/// Fail fast on text the core cannot shape or measure (CLAUDE.md §2): a run
-/// past the shapers' bound is a capacity error and names it.
+/// Fail fast on text the core cannot shape or measure (CLAUDE.md §2). Every
+/// core path splits a text into shaping runs first (`text_system.runLength`),
+/// so a run past the shapers' bound is a programmer error in that split.
 pub fn textFailed(window: *const Window, content: []const u8, err: anyerror) noreturn {
     if (err == error.TextRunTooLong) {
-        std.debug.panic("text run of {d} codepoints exceeds text.run_codepoint_count_max " ++
-            "{d}, the longest run one shaping may hold in the {d}-byte text scratch, in " ++
-            "frame {d}. Split the text into shorter runs.", .{
+        std.debug.panic("a shaping run of {d} codepoints passed " ++
+            "text.run_codepoint_count_max {d} in frame {d}: the text was not split into " ++
+            "runs (text_system.runLength)", .{
             text_mod.codepointCount(content),
             text_mod.run_codepoint_count_max,
-            window.text_scratch.len,
             window.frame_number,
         });
     }

@@ -240,8 +240,11 @@ element constructors:
 - `ui.box(box, children)`: a container. `ui.Box` holds per-element fields (`key`, `style`,
   `layer`, `focusable`, `tab_stop`, `key_context`, `on_click`, `on_click_outside`, `on_key`,
   `on_pointer_drag`, `draggable`, `drop_target`, `actions`, `a11y`).
-- `ui.text(content, text)`: a text run. `ui.Text` has `size`, `color`, `weight`, `italic`,
-  `family`, `wrap`, `line_height`, and `alignment`.
+- `ui.text(content, text)`: a text of any length. `ui.Text` has `size`, `color`, `weight`,
+  `italic`, `family`, `wrap`, `line_height`, and `alignment`. Layout shapes a long text in
+  runs split at spaces and line breaks, so it wraps and draws as one run would; its bytes
+  count against `limits.build.text_bytes_frame_max` and its lines against
+  `limits.paint.glyph_count_frame_max`.
 - `ui.paint(Data, &data, paint_fn, style)`: a leaf drawn with a `Painter`.
 - `ui.when(condition, render_fn)`: renders `render_fn` only when `condition` holds.
 

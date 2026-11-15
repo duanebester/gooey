@@ -228,10 +228,10 @@ fn placeGlyph(cached: CachedGlyph, device_x: f32, device_y: f32, scale_factor: f
 // =============================================================================
 
 /// Shape `text` and hand each placed glyph to `sink.glyph(placed)`, in
-/// order, returning the run's width. Glyphs land where the 0.3.1 runtime
-/// placed them. The glyph cache may rasterize on a miss; the shaped run is
-/// copied into a stack
-/// buffer, so only a shape-cache miss uses the text system's allocator.
+/// order, returning its width. Glyphs land where the 0.3.1 runtime placed
+/// them. A text past one shaping run is placed run by run
+/// (`text_system.runLength`), each starting where the last one's advance
+/// ended, so it lands as one run would; the bound is the shapers' detail.
 pub fn placeText(
     text_system: *TextSystem,
     text: []const u8,
@@ -245,7 +245,51 @@ pub fn placeText(
 ) !f32 {
     std.debug.assert(font_size > 0);
     std.debug.assert(scale_factor > 0);
-    if (text.len == 0) return 0;
+    var width: f32 = 0;
+    var rest = text;
+    // Each run takes at least one byte, so the bytes bound the runs.
+    var run_count: usize = 0;
+    while (rest.len > 0) : (run_count += 1) {
+        std.debug.assert(run_count < text.len);
+        const length = text_system_mod.runLength(rest);
+        std.debug.assert(length <= rest.len);
+        const run = rest[0..length];
+        width += try placeRun(text_system, run, x + width, baseline_y, .{
+            .scale_factor = scale_factor,
+            .font_size = font_size,
+            .family = family,
+            .variant = variant,
+        }, sink);
+        rest = rest[length..];
+    }
+    std.debug.assert(width >= 0);
+    return width;
+}
+
+const RunStyle = struct {
+    scale_factor: f32,
+    font_size: f32,
+    family: FontFamily,
+    variant: FontVariant,
+};
+
+/// One shaping run of `placeText`. The glyph cache may rasterize on a miss;
+/// the shaped run is copied into a stack buffer, so only a shape-cache miss
+/// uses the text system's allocator.
+fn placeRun(
+    text_system: *TextSystem,
+    text: []const u8,
+    x: f32,
+    baseline_y: f32,
+    style: RunStyle,
+    sink: anytype,
+) !f32 {
+    const font_size = style.font_size;
+    const scale_factor = style.scale_factor;
+    const family = style.family;
+    const variant = style.variant;
+    std.debug.assert(text.len > 0);
+    std.debug.assert(text_system_mod.runLength(text) == text.len);
     if (text_system.getMetrics() == null) return error.NoFontLoaded;
     // Each family scales by its own regular face (`loadMonoFont`).
     const metrics = text_system.getMetricsFor(family);

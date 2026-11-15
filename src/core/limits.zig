@@ -1142,8 +1142,9 @@ comptime {
 /// (`textScratchBytes`). A codepoint is at most two UTF-16 units and, in the
 /// scripts Gooey shapes, at most one glyph. A longer run fails shaping with
 /// `error.TextRunTooLong` before any backend sees it. A platform limit, not an
-/// app capacity: it also bounds the words (one per codepoint at most) and lines
-/// layout wraps one text into, since the core measures every text whole first.
+/// app capacity: measurement and glyph placement split a longer text into runs
+/// after a space or line break (`text_system.runLength`), and layout wraps it
+/// in batches of this many words, so no text's length reaches it.
 pub const run_codepoint_count_max: u32 = 1024;
 
 /// Bytes of one window's per-tick text scratch, from its event budget. Two

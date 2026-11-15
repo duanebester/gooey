@@ -103,8 +103,8 @@ pub const animation = core.animation;
 pub const input = @import("input/mod.zig");
 
 /// The font types text styles name (`ui.Text`, `ui.PaintText`), the metrics
-/// `cx.fontMetrics` and `painter.fontMetrics` return, and the one-run limit
-/// with the count that checks it.
+/// `cx.fontMetrics` and `painter.fontMetrics` return, and the longest line a
+/// text engine holds (`run_codepoint_count_max`) with the count that checks it.
 pub const text = struct {
     pub const Metrics = text_mod.Metrics;
     pub const FontWeight = text_mod.FontWeight;
