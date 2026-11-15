@@ -159,7 +159,7 @@ fn fontVariant(gpa: std.mem.Allocator, io: std.Io) void {
     // The standard set loads regular, medium, semibold, bold, italic, and bold
     // italic. Light is a valid variant that the set omits, so measuring it must
     // name the variant and the loaded set instead of substituting another face.
-    const text = gooey.text;
+    const text = gooey.internals.text;
     const text_system = gpa.create(text.TextSystem) catch |err| {
         std.debug.panic("setup: TextSystem allocation failed: {s}", .{@errorName(err)});
     };
@@ -183,8 +183,8 @@ fn fontVariant(gpa: std.mem.Allocator, io: std.Io) void {
 }
 
 /// A 64² CPU-texture atlas of `kind` over its own journal, at frame 2.
-fn atlasHarness(gpa: std.mem.Allocator, io: std.Io, kind: gooey.text.AtlasKind) *gooey.text.Atlas {
-    const text = gooey.text;
+fn atlasHarness(gpa: std.mem.Allocator, io: std.Io, kind: gooey.internals.text.AtlasKind) *gooey.internals.text.Atlas {
+    const text = gooey.internals.text;
     const uploads = gpa.create(text.AtlasUploads) catch |err| {
         std.debug.panic("setup: AtlasUploads allocation failed: {s}", .{@errorName(err)});
     };
@@ -232,7 +232,7 @@ fn glyphCache(gpa: std.mem.Allocator, io: std.Io) void {
     // `text.glyph_cache_count_max` exactly, then one more, all in one frame,
     // so no entry may be evicted. The 1,024 px atlas and 1 MiB upload budget
     // hold every glyph, so the cache is the pool that runs out.
-    const text = gooey.text;
+    const text = gooey.internals.text;
     const glyph_count_max = gooey.ResourceLimits.nano.text.glyph_cache_count_max;
     const letters = "abcdefghijklmnopqrstuvwxyzA";
     const size_min: u32 = 8;
@@ -283,11 +283,11 @@ fn glyphCache(gpa: std.mem.Allocator, io: std.Io) void {
 }
 
 /// An atlas over its own CPU journal at frame 2, for the cache checks.
-fn cacheUploads(gpa: std.mem.Allocator, io: std.Io) *gooey.text.AtlasUploads {
-    const uploads = gpa.create(gooey.text.AtlasUploads) catch |err| {
+fn cacheUploads(gpa: std.mem.Allocator, io: std.Io) *gooey.internals.text.AtlasUploads {
+    const uploads = gpa.create(gooey.internals.text.AtlasUploads) catch |err| {
         std.debug.panic("setup: AtlasUploads allocation failed: {s}", .{@errorName(err)});
     };
-    const options: gooey.text.AtlasUploads.Options = .{
+    const options: gooey.internals.text.AtlasUploads.Options = .{
         .storage = .cpu_texture,
         .upload_bytes_frame_max = 1024 * 1024,
         .consumer_count_max = 1,

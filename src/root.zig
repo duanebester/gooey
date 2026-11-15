@@ -4,12 +4,15 @@
 //! (`App`), the render context (`Cx`), element constructors (`ui`), handlers
 //! (`Handler`, `Effects`), identity (`ElementId`, `Key`), retained state
 //! (`Lifetime`, `Handle`), and the resource budget (`ResourceLimits`). The
-//! `input`, `text`, and `accessibility` namespaces hold the types handlers and
-//! accessibility fields name.
+//! `input`, `text`, and `accessibility` namespaces hold the types handlers,
+//! text styles, and accessibility fields name, and nothing else.
+//! `src/api_check.zig` pins every public name here.
 //!
 //! `internals` is the framework's own machinery (records, the window, the
-//! platform layer, the packed frame). Tests, the goldens, and library components
-//! reach into it; it is not part of the API and may change in any release.
+//! platform layer and its `Query`, the text and accessibility systems, the
+//! packed frame). Tests, the goldens, and benchmarks reach into it; it is not
+//! part of the API and may change in any release. Components and charts may
+//! not (`zig build import-ban`).
 //!
 //! ## Quick start
 //!
@@ -36,6 +39,8 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const core = @import("core/root.zig");
+const text_mod = @import("text/mod.zig");
+const accessibility_mod = @import("accessibility/mod.zig");
 
 // =============================================================================
 // Public surface
@@ -52,7 +57,6 @@ pub const ElementId = core.ElementId;
 pub const Key = core.Key;
 pub const Lifetime = core.Lifetime;
 pub const Handle = core.Handle;
-pub const Query = core.Query;
 pub const Drag = core.Drag;
 pub const Theme = core.Theme;
 pub const Painter = core.Painter;
@@ -91,12 +95,27 @@ pub const animation = core.animation;
 /// Input events: keycodes, mouse buttons, modifiers, and keystrokes.
 pub const input = @import("input/mod.zig");
 
-/// Text measurement helpers and limits (`codepointCount`,
-/// `run_codepoint_count_max`).
-pub const text = @import("text/mod.zig");
+/// The font types text styles name (`ui.Text`, `ui.PaintText`), the metrics
+/// `cx.fontMetrics` and `painter.fontMetrics` return, and the one-run limit
+/// with the count that checks it.
+pub const text = struct {
+    pub const Metrics = text_mod.Metrics;
+    pub const FontWeight = text_mod.FontWeight;
+    pub const FontFamily = text_mod.FontFamily;
+    pub const FontVariant = text_mod.FontVariant;
+    pub const codepointCount = text_mod.codepointCount;
+    pub const run_codepoint_count_max = text_mod.run_codepoint_count_max;
+};
 
-/// Accessibility roles, states, and live-region politeness for `ui.A11y`.
-pub const accessibility = @import("accessibility/mod.zig");
+/// Accessibility roles, states, live-region politeness, heading levels, and
+/// orientations for `ui.A11y`.
+pub const accessibility = struct {
+    pub const Role = accessibility_mod.Role;
+    pub const State = accessibility_mod.State;
+    pub const Live = accessibility_mod.Live;
+    pub const HeadingLevel = accessibility_mod.HeadingLevel;
+    pub const Orientation = accessibility_mod.Orientation;
+};
 
 /// Platform-aware logger. Works on native and WASM without
 /// `std_options`. Pair with the `gooey.std_options` one-liner if you
@@ -123,7 +142,7 @@ else
 
 /// Testing utilities and mock implementations. Compiled for tests and for the
 /// synthetic-text build the goldens tools use, so production builds carry none.
-pub const testing = if (builtin.is_test or text.is_synthetic)
+pub const testing = if (builtin.is_test or text_mod.is_synthetic)
     @import("testing/mod.zig")
 else
     struct {};
@@ -158,6 +177,9 @@ pub const internals = struct {
     pub const backend = @import("core/backend.zig");
     pub const fixed_array = @import("core/fixed_array.zig");
     pub const interface_verify = @import("core/interface_verify.zig");
+    /// The platform host's read-only view of the rendered frame (IME rects,
+    /// accessibility, hit tests); only hosts and tests get one.
+    pub const Query = core.router.Query;
 
     // The layers beneath the core.
     pub const geometry = @import("geometry/mod.zig");
@@ -165,6 +187,8 @@ pub const internals = struct {
     pub const platform = @import("platform/mod.zig");
     pub const image = @import("image/mod.zig");
     pub const svg = @import("svg/mod.zig");
+    pub const text = text_mod;
+    pub const accessibility = accessibility_mod;
 };
 
 // =============================================================================
@@ -219,7 +243,7 @@ test {
         // Borrow the namespace aliases without shadowing them.
         const lay = internals.layout;
         const plat = internals.platform;
-        const txt = text;
+        const txt = internals.text;
         const inp = input;
         const img = internals.image;
 

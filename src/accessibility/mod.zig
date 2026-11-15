@@ -18,7 +18,7 @@
 //! ## Usage
 //!
 //! ```zig
-//! const a11y = @import("gooey").accessibility;
+//! const a11y = @import("gooey").internals.accessibility;
 //!
 //! // Create accessibility system
 //! var accessibility = try a11y.Accessibility.init(allocator);

@@ -39,7 +39,6 @@ pub const ElementId = id.ElementId;
 pub const Key = id.Key;
 pub const Lifetime = retained.Lifetime;
 pub const Handle = retained.Handle;
-pub const Query = router.Query;
 pub const Drag = cx.Drag;
 pub const Theme = element.Theme;
 pub const Painter = emit.Painter;
@@ -62,6 +61,17 @@ pub const ui = struct {
     pub const action = element.action;
     pub const Box = element.Box;
     pub const Style = element.Style;
+    // The types `Box` and `Style` fields name, for helpers that take or
+    // return one (`fn row(direction: ui.Direction) ui.Style`).
+    pub const Direction = element.Direction;
+    pub const Layer = element.Layer;
+    pub const Anchor = element.Anchor;
+    pub const Scroll = element.Scroll;
+    pub const ClipPolicy = element.ClipPolicy;
+    pub const CursorShape = element.CursorShape;
+    pub const PointerEvents = element.PointerEvents;
+    pub const KeyContext = element.KeyContext;
+    pub const ActionBinding = element.ActionBinding;
     pub const DragSource = element.DragSource;
     pub const DropTarget = element.DropTarget;
     pub const Text = element.Text;

@@ -146,8 +146,15 @@ platform.
 
 ## Building blocks
 
-The public surface is `src/root.zig`, and `src/api_check.zig` pins it. `gooey.internals` is
+The public surface is `src/root.zig`, and `src/api_check.zig` lists every public name in it,
+so a name added or removed without updating that list fails the build. `gooey.internals` is
 not API and may change in any release.
+
+`ui` also names the types `Box` and `Style` fields take (`ui.Direction`, `ui.Layer`,
+`ui.Anchor`, `ui.Scroll`, `ui.ClipPolicy`, `ui.CursorShape`, `ui.PointerEvents`,
+`ui.KeyContext`, `ui.ActionBinding`), for helpers that take or return one.
+`gooey.text` holds the font types text styles name and `Metrics`; `gooey.accessibility`
+holds the `ui.A11y` enums.
 
 ### App, Config, and ResourceLimits
 

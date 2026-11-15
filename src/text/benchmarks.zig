@@ -53,7 +53,7 @@ const time = struct {
     };
 };
 
-const text = gooey.text;
+const text = gooey.internals.text;
 
 /// The benchmarks' text budget: one face (`nano`'s) and `standard`'s caches,
 /// with `small`'s 1,024 width slots, the sizes every cache had before they
