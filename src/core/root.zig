@@ -71,6 +71,12 @@ pub const ui = struct {
     pub const Layer = element.Layer;
     pub const Anchor = element.Anchor;
     pub const Scroll = element.Scroll;
+    // `Effects.scrollTo` targets and `Scroll.anchor`.
+    pub const ScrollAnchor = element.ScrollAnchor;
+    pub const ScrollTarget = element.ScrollTarget;
+    pub const ScrollOffset = element.ScrollOffset;
+    pub const ScrollChild = element.ScrollChild;
+    pub const ScrollAlignment = element.ScrollAlignment;
     pub const ClipPolicy = element.ClipPolicy;
     pub const CursorShape = element.CursorShape;
     pub const PointerEvents = element.PointerEvents;

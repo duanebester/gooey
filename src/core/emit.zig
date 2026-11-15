@@ -691,6 +691,12 @@ const Clips = struct {
             // Keep the scrollbar outside the clip, using the overflow the last
             // emit measured; `finishScroll` re-renders when it changes.
             const state = window.retained.get(window_mod.ScrollState, handle);
+            // The offset this frame's layout placed the children at, which a
+            // `scrollTo` or an `.end` anchor resolved against this content.
+            const applied = window.layout.elements.items()[index].config.scroll.?.scroll_offset;
+            state.offset_x = applied.x;
+            state.offset_y = applied.y;
+            state.target = null;
             if (state.maxY() > 0) rect.width = @max(0, rect.width - scrollbar_room);
             if (state.maxX() > 0) rect.height = @max(0, rect.height - scrollbar_room);
         }

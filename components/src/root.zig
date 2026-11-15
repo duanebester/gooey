@@ -663,6 +663,9 @@ pub fn Modal(comptime Child: type) type {
 /// scrolling. `gap` separates rows, and `style` dresses the scroll box
 /// (background, border, corners, padding). The list grows to fill its
 /// parent: a viewport sized by its rows would add one row per frame.
+/// `anchor = .end` keeps it at its last row while it is there, as
+/// `Scroll.anchor` does, and `scrollTo` brings a row into view from a
+/// handler; either builds the rows it lands on in the same frame.
 pub fn List(comptime Row: type) type {
     comptime {
         assert(@FieldType(Row, "index") == u32);
@@ -675,8 +678,26 @@ pub fn List(comptime Row: type) type {
         count: u32,
         gap: f32 = 0,
         style: ui.Style = .{},
+        anchor: ui.ScrollAnchor = .start,
 
         const Self = @This();
+
+        /// Bring row `index` of the list with id `list` into view, after
+        /// the handler returns: `list` is `cx.id(.{ .name = key })` taken in
+        /// the render that builds the list, under the same parent. An index
+        /// past the last row moves nothing.
+        pub fn scrollTo(
+            effects: *gooey.Effects,
+            list: gooey.ElementId,
+            index: u32,
+            alignment: ui.ScrollAlignment,
+        ) void {
+            assert(list.isKeyed());
+            effects.scrollTo(list, .{ .child = .{
+                .key = .{ .index = index },
+                .alignment = alignment,
+            } });
+        }
         const uniform = @hasDecl(Row, "row_height");
 
         pub fn render(self: Self, cx: *Cx) void {
@@ -691,6 +712,8 @@ pub fn List(comptime Row: type) type {
                 .offset_x = 0,
                 .offset_y = 0,
                 .viewport = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
+                .target = null,
+                .at_end = true,
             };
             const range = self.visibleRows(cx, &position);
             assert(range.start <= range.end);
@@ -699,7 +722,7 @@ pub fn List(comptime Row: type) type {
             var style = self.style;
             style.width = .{ .grow = 1 };
             style.height = .{ .grow = 1 };
-            style.scroll = .{};
+            style.scroll = .{ .anchor = self.anchor };
             cx.render(ui.box(.{ .key = key, .style = style }, .{
                 spacer(range.above),
                 ListRows(Row){
@@ -749,7 +772,7 @@ pub fn List(comptime Row: type) type {
             const rows_height = self.contentHeight(cx);
             const content_height = rows_height + padding.top + padding.bottom;
             const offset_max = @max(0, content_height - state.viewport.height);
-            const offset = std.math.clamp(state.offset_y, 0, offset_max);
+            const offset = std.math.clamp(self.offsetFor(cx, state, offset_max), 0, offset_max);
             const view_top = offset - padding.top;
             const range = if (uniform)
                 uniformRows(view_top, state.viewport.height, self.count, self.gap)
@@ -765,6 +788,48 @@ pub fn List(comptime Row: type) type {
             var result = range;
             result.below = below;
             return result;
+        }
+
+        /// Where the core's layout will put the offset this frame, so the
+        /// rows it shows are the ones built: a pending `scrollTo` resolved
+        /// as layout resolves it (`position_pass.resolveScrollTarget`), the
+        /// end while an `.end` anchor is pinned, else the retained offset.
+        fn offsetFor(
+            self: Self,
+            cx: *Cx,
+            state: *const Cx.ScrollPosition,
+            offset_max: f32,
+        ) f32 {
+            assert(offset_max >= 0);
+            if (state.target) |target| switch (target) {
+                .start => return 0,
+                .end => return offset_max,
+                .offset => |offset| return offset.y,
+                .child => |child| {
+                    const index = child.index orelse return state.offset_y;
+                    if (index >= self.count) return state.offset_y;
+                    const padding = self.style.padding;
+                    const view = state.viewport.height - padding.top - padding.bottom;
+                    const top = self.rowTop(cx, @intCast(index));
+                    // A row's box holds the gap below it, but for the last.
+                    const gap: f32 = if (index + 1 < self.count) self.gap else 0;
+                    const height = listRowHeight(Row, cx, @intCast(index)) + gap;
+                    return alignRow(child.alignment, top, height, @max(0, view), state.offset_y);
+                },
+            };
+            if (self.anchor == .end and state.at_end) return offset_max;
+            return state.offset_y;
+        }
+
+        /// Row `index`'s top within the rows, gaps included.
+        fn rowTop(self: Self, cx: *Cx, index: u32) f32 {
+            assert(index < self.count);
+            const gaps = self.gap * @as(f32, @floatFromInt(index));
+            if (uniform) return Row.row_height * @as(f32, @floatFromInt(index)) + gaps;
+            var top: f32 = gaps;
+            var row: u32 = 0;
+            while (row < index) : (row += 1) top += listRowHeight(Row, cx, row);
+            return top;
         }
 
         /// Every row's height and the gaps between them.
@@ -827,6 +892,23 @@ pub fn List(comptime Row: type) type {
 }
 
 const ListRange = struct { start: u32, end: u32, above: f32, below: f32 };
+
+/// The offset that shows a row box at `top`, `height` tall, in a view of
+/// `view` px, as the core's layout aligns a scroll target's child.
+fn alignRow(alignment: ui.ScrollAlignment, top: f32, height: f32, view: f32, current: f32) f32 {
+    assert(height >= 0);
+    assert(view >= 0);
+    return switch (alignment) {
+        .start => top,
+        .center => top + height / 2 - view / 2,
+        .end => top + height - view,
+        .nearest => blk: {
+            if (top < current or height > view) break :blk top;
+            const overshoot = top + height - (current + view);
+            break :blk if (overshoot > 0) current + overshoot else current;
+        },
+    };
+}
 
 /// The longest list of per-row heights: each render sums them all, and
 /// 65,536 calls stay well inside a frame.

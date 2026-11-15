@@ -1068,6 +1068,28 @@ fn call(window: *Window, handler: handler_mod.Handler, effects: *handler_mod.Eff
         window.render_requested = true;
     }
     if (effects.drag_start) |id| startKeyboardDrag(window, id);
+    if (effects.scroll_request) |request| requestScroll(window, request);
+}
+
+/// `effects.scrollTo`: hand the target to the box's retained state for the
+/// next layout. A child's key becomes its id now, since a name's bytes do not
+/// outlive the handler; an index key is kept for a `List` to build its row.
+fn requestScroll(window: *Window, request: handler_mod.Effects.ScrollRequest) void {
+    assert(request.id.isKeyed());
+    const ScrollState = window_mod.ScrollState;
+    const state = window.retained.find(ScrollState, request.id) orelse return;
+    state.target = switch (request.target) {
+        .start => .start,
+        .end => .end,
+        .offset => |offset| .{ .offset = offset },
+        .child => |child| .{ .child = .{
+            .id = request.id.child(child.key),
+            .index = if (child.key == .index) child.key.index else null,
+            .alignment = child.alignment,
+        } },
+    };
+    window.render_requested = true;
+    assert(state.target != null);
 }
 
 fn isKeyboard(event: *const input.InputEvent) bool {

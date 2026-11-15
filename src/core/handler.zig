@@ -23,6 +23,7 @@ const entities = @import("entities.zig");
 const retained_mod = @import("retained.zig");
 const records = @import("records.zig");
 const jobs = @import("jobs.zig");
+const ScrollTarget = @import("element.zig").ScrollTarget;
 
 const assert = std.debug.assert;
 
@@ -265,11 +266,14 @@ pub const Effects = struct {
     jobs: ?*jobs.Pool,
     /// The job result or end being delivered, set by the router.
     job: ?jobs.Delivery,
+    /// A scroll box to move (`scrollTo`), applied after the handler.
+    scroll_request: ?ScrollRequest,
 
     pub const JobId = jobs.JobId;
     pub const JobHandlers = jobs.Handlers;
     pub const JobDone = jobs.Done;
     pub const JobOutcome = jobs.Outcome;
+    pub const ScrollRequest = struct { id: ElementId, target: ScrollTarget };
 
     pub const Drop = struct { type_id: usize, payload: u64 };
 
@@ -323,6 +327,7 @@ pub const Effects = struct {
             .drag_start = null,
             .jobs = null,
             .job = null,
+            .scroll_request = null,
         };
     }
 
@@ -428,6 +433,26 @@ pub const Effects = struct {
     pub fn jobId(self: *const Effects) ?JobId {
         const delivery = self.job orelse return null;
         return delivery.id;
+    }
+
+    /// Move keyed scroll box `id` (`Style.scroll`) to `target`, after this
+    /// handler returns; at most one per handler. The next layout resolves it
+    /// against that frame's content, so `.end` reaches content this handler
+    /// added, and clamps it to the content. A wheel or scrollbar press before
+    /// that build wins over it. An `id` that is not a scroll box on screen
+    /// moves nothing. A `.child` that the next build does not render under
+    /// the box is dropped.
+    pub fn scrollTo(self: *Effects, id: ElementId, target: ScrollTarget) void {
+        assert(id.isKeyed());
+        assert(self.scroll_request == null);
+        switch (target) {
+            .offset => |offset| {
+                assert(std.math.isFinite(offset.x));
+                assert(std.math.isFinite(offset.y));
+            },
+            else => {},
+        }
+        self.scroll_request = .{ .id = id, .target = target };
     }
 
     /// The completion being delivered, for `FileDialogRequest.on_complete`.

@@ -74,6 +74,15 @@ pub const Cx = opaque {
         offset_y: f32,
         /// The box's bounds at the last emit, unclipped; zero before its first.
         viewport: records.Rect,
+        /// An `Effects.scrollTo` this build's layout will resolve, with a
+        /// child's key resolved to its id and an index key kept, so a
+        /// windowed list builds the row it names.
+        target: ?Target,
+        /// The offset rests at the content's end; a box anchored `.end`
+        /// follows the end while this holds. True before the first emit.
+        at_end: bool,
+
+        pub const Target = window_mod.ScrollState.Target;
     };
 
     /// The app's root state. In Debug and ReleaseSafe a wrong `T` panics on
@@ -184,6 +193,8 @@ pub const Cx = opaque {
             .offset_x = retained_scroll.offset_x,
             .offset_y = retained_scroll.offset_y,
             .viewport = retained_scroll.viewport,
+            .target = retained_scroll.target,
+            .at_end = retained_scroll.at_end,
         };
     }
 
@@ -374,6 +385,8 @@ pub const Cx = opaque {
             .scroll = scroll_state,
             .layer = box.layer,
         });
+        // A layer floats outside its parent's flow, so it is never revealed.
+        if (box.key != null and box.layer == null) revealChild(window, parent_index, index, box_id);
         const node = window.node(index);
         const frame = window.built();
         node.scroll = scroll_handle;
@@ -723,10 +736,42 @@ fn openNodeWith(
         .horizontal = axes.x,
         .vertical = axes.y,
         .scroll_offset = .{ .x = options.scroll.?.offset_x, .y = options.scroll.?.offset_y },
+        .target = scrollTarget(options.scroll.?),
     };
     if (options.layer) |layer| decl.floating = floating(layer.anchor);
     window.layout.openElement(decl) catch |err| layoutFailed(window, err);
     return index;
+}
+
+/// What the layout resolves a scroll box's offset against this frame: a
+/// pending `Effects.scrollTo`, else the end while an `.end` anchor is
+/// pinned. A child target waits for its child to open (`revealChild`).
+fn scrollTarget(state: *const window_mod.ScrollState) layout_mod.ScrollTarget {
+    if (state.target) |target| return switch (target) {
+        .start => .start,
+        .end => .end,
+        .offset => |offset| .{ .offset = .{ .x = offset.x, .y = offset.y } },
+        .child => .none,
+    };
+    if (state.followsEnd()) return .end;
+    return .none;
+}
+
+/// When the box just opened at `index` is the child a pending
+/// `Effects.scrollTo` names in its parent scroll box, hand the parent's
+/// layout its element index, so this frame's layout brings it into view.
+fn revealChild(window: *Window, parent_index: u32, index: u32, box_id: ElementId) void {
+    assert(parent_index < index);
+    const handle = window.nodes[parent_index].scroll orelse return;
+    const state = window.retained.get(window_mod.ScrollState, handle);
+    const target = state.target orelse return;
+    if (target != .child) return;
+    if (target.child.id != box_id) return;
+    const alignment: layout_mod.ScrollAlignment = switch (target.child.alignment) {
+        inline else => |value| @field(layout_mod.ScrollAlignment, @tagName(value)),
+    };
+    const parent = window.layout.elements.get(parent_index);
+    parent.config.scroll.?.target = .{ .child = .{ .index = index, .alignment = alignment } };
 }
 
 /// A layer's anchor as layout floating: its top-left corner at the offset

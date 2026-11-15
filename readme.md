@@ -333,6 +333,13 @@ nothing: its paint records and glyphs follow the viewport, not the content, so a
 transcript needs no larger paint or glyph budget. Hidden rows keep their hit records and
 accessibility nodes, so Tab, focus and the screen reader still reach them.
 
+`.scroll = .{ .anchor = .end }` follows its content's end while it is there, as a chat
+transcript does: new content scrolls into view in the frame it appears, scrolling up
+releases it, and scrolling back to the end pins it again. A handler moves a scroll box with
+`effects.scrollTo(id, target)`: `.start`, `.end`, `.{ .offset = .{ .y = px } }`, or
+`.{ .child = .{ .key = key, .alignment = .center } }`, resolved against the next frame's
+content.
+
 The `Cx` methods:
 
 | Method                               | Use                                                      |
@@ -428,6 +435,7 @@ returns.
 | `spawn(Job, &input, handlers)`           | Start a background job; see below.                  |
 | `cancelJob(id)`                          | Cancel a job; its `on_done` reports `.cancelled`.   |
 | `jobResult(Job)`, `jobDone()`, `jobId()` | The job result or end being delivered.              |
+| `scrollTo(id, target)`                   | Scroll a box: start, end, offset, or keyed child.   |
 
 **File dialogs.** A handler requests a dialog and names the handler that receives the
 outcome. The dialog opens on the main thread after the handler returns, and the outcome
@@ -861,7 +869,10 @@ import-ban` fails if `components/` or `charts/` reference `gooey.internals`. Imp
 
 A `List` row has an `index: u32` field and declares either one height for every row
 (`pub const row_height`) or a height per row (`pub fn height(cx, index)` with
-`pub const count_max`). From `virtual_list_example.zig`:
+`pub const count_max`). `.anchor = .end` keeps a list on its last row while it is there,
+and `List(Row).scrollTo(effects, list_id, index, .center)` brings row `index` into view from
+a handler, where `list_id` is `cx.id(.{ .name = key })` taken beside the list. From
+`virtual_list_example.zig`:
 
 ```zig
         List(MessageRow){
@@ -992,7 +1003,7 @@ pub const std_options = gooey.std_options;
 - **Cut in 0.4.0:** multi-window (one window per app), liquid glass, custom shaders, and
   post-processing.
 - **Deferred:** drag and drop between apps or with the OS, edge auto-scroll during a drag,
-  tooltip layers, and programmatic scrolling (`List` has no `scroll_to`).
+  and tooltip layers.
 
 ## Platforms
 

@@ -125,12 +125,26 @@ fn planChildPositions(engine: *LayoutEngine, parent_index: u32) PositionFrame {
     // Sum non-floating child sizes and count them along the main axis.
     const totals = sumChildrenAlongMainAxis(engine, first_child, is_horizontal);
     if (totals.child_count == 0) {
-        frame.cursor = null; // Only floating children: nothing flows here.
+        // Only floating children: nothing flows here, and a scroll target
+        // finds no content to move through.
+        if (parent.config.scroll != null) {
+            engine.elements.get(parent_index).config.scroll.?.target = .none;
+        }
+        frame.cursor = null;
         return frame;
     }
 
     // Convert distribution mode into concrete gap + start offset.
     const dist = distributionParams(layout, content_box, totals);
+    if (parent.config.scroll) |scroll| {
+        if (scroll.target != .none) {
+            resolveScrollTarget(engine, parent_index, .{
+                .totals = totals,
+                .dist = dist,
+                .is_horizontal = is_horizontal,
+            });
+        }
+    }
     const offset_x: f32 = if (parent.config.scroll) |s| -s.scroll_offset.x else 0;
     const offset_y: f32 = if (parent.config.scroll) |s| -s.scroll_offset.y else 0;
     frame.next_x = content_box.x + offset_x + if (is_horizontal) dist.start_offset else 0;
@@ -139,6 +153,119 @@ fn planChildPositions(engine: *LayoutEngine, parent_index: u32) PositionFrame {
     frame.has_grandchildren = totals.has_grandchildren;
     std.debug.assert(frame.gap >= 0);
     return frame;
+}
+
+/// The flow children's extent, as `planChildPositions` lays them out.
+const ContentPlan = struct {
+    totals: MainAxisTotals,
+    dist: DistributionParams,
+    is_horizontal: bool,
+};
+
+/// Resolve a scroll container's `target` against the content this frame laid
+/// out, before its children are placed, so the frame that adds content can
+/// already show its end. The offset is clamped to the content, along the
+/// axes the container scrolls, and written back to `scroll_offset`; the
+/// target is consumed. The content's extent is what emit measures: the
+/// flow children's main-axis run from the content box's start, and their
+/// widest cross size.
+///
+/// Work: one walk over the container's children.
+fn resolveScrollTarget(engine: *LayoutEngine, parent_index: u32, plan: ContentPlan) void {
+    const parent = engine.elements.get(parent_index);
+    const scroll = &parent.config.scroll.?;
+    std.debug.assert(scroll.target != .none);
+    std.debug.assert(plan.totals.child_count > 0);
+    const is_horizontal = plan.is_horizontal;
+    const content_box = parent.computed.content_box;
+    const gaps = plan.dist.effective_gap * @as(f32, @floatFromInt(plan.totals.child_count - 1));
+    const main_length = plan.dist.start_offset + plan.totals.total_size + gaps;
+    const cross_length = crossExtent(engine, parent.first_child_index.?, is_horizontal);
+    const width = if (is_horizontal) main_length else cross_length;
+    const height = if (is_horizontal) cross_length else main_length;
+    const max_x: f32 = if (scroll.horizontal) @max(0, width - content_box.width) else 0;
+    const max_y: f32 = if (scroll.vertical) @max(0, height - content_box.height) else 0;
+    var offset = scroll.scroll_offset;
+    switch (scroll.target) {
+        .none => unreachable,
+        .start => offset = .{ .x = 0, .y = 0 },
+        .end => offset = .{ .x = max_x, .y = max_y },
+        .offset => |target| offset = target,
+        .child => |child| {
+            const span = childSpan(engine, parent.first_child_index.?, child.index, plan);
+            const view = if (is_horizontal) content_box.width else content_box.height;
+            const current = if (is_horizontal) offset.x else offset.y;
+            const along = alignSpan(child.alignment, span, view, current);
+            if (is_horizontal) offset.x = along else offset.y = along;
+        },
+    }
+    scroll.scroll_offset = .{
+        .x = std.math.clamp(offset.x, 0, max_x),
+        .y = std.math.clamp(offset.y, 0, max_y),
+    };
+    scroll.target = .none;
+    std.debug.assert(scroll.scroll_offset.x <= max_x);
+    std.debug.assert(scroll.scroll_offset.y <= max_y);
+}
+
+/// The widest flow child across the main axis.
+fn crossExtent(engine: *const LayoutEngine, first_child: u32, is_horizontal: bool) f32 {
+    var extent: f32 = 0;
+    var child_index: ?u32 = first_child;
+    var visited: u32 = 0;
+    while (child_index) |index| : (visited += 1) {
+        std.debug.assert(visited < engine.elements.len());
+        const child = engine.elements.getConst(index);
+        if (child.config.floating == null) {
+            const computed = &child.computed;
+            const size = if (is_horizontal) computed.sized_height else computed.sized_width;
+            extent = @max(extent, size);
+        }
+        child_index = child.next_sibling_index;
+    }
+    std.debug.assert(extent >= 0);
+    return extent;
+}
+
+const Span = struct { start: f32, size: f32 };
+
+/// Where flow child `target` starts along the main axis, from the content
+/// box's start, and its size there.
+fn childSpan(engine: *const LayoutEngine, first_child: u32, target: u32, plan: ContentPlan) Span {
+    std.debug.assert(target >= first_child);
+    const is_horizontal = plan.is_horizontal;
+    var start = plan.dist.start_offset;
+    var child_index: ?u32 = first_child;
+    var visited: u32 = 0;
+    while (child_index) |index| : (visited += 1) {
+        std.debug.assert(visited < engine.elements.len());
+        const child = engine.elements.getConst(index);
+        const size = if (is_horizontal) child.computed.sized_width else child.computed.sized_height;
+        if (index == target) {
+            std.debug.assert(child.config.floating == null);
+            return .{ .start = start, .size = size };
+        }
+        if (child.config.floating == null) start += size + plan.dist.effective_gap;
+        child_index = child.next_sibling_index;
+    }
+    unreachable; // The core names only a child it opened under this container.
+}
+
+/// The offset that places `span` in a view of `view` px as `alignment` says;
+/// `.nearest` keeps `current` when the span already shows whole.
+fn alignSpan(alignment: types.ScrollAlignment, span: Span, view: f32, current: f32) f32 {
+    std.debug.assert(span.size >= 0);
+    std.debug.assert(view >= 0);
+    return switch (alignment) {
+        .start => span.start,
+        .center => span.start + span.size / 2 - view / 2,
+        .end => span.start + span.size - view,
+        .nearest => blk: {
+            if (span.start < current or span.size > view) break :blk span.start;
+            const overshoot = span.start + span.size - (current + view);
+            break :blk if (overshoot > 0) current + overshoot else current;
+        },
+    };
 }
 
 /// Place `frame`'s remaining children until one has grandchildren: plan it

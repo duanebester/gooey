@@ -116,7 +116,45 @@ pub const Shadow = struct {
 };
 
 pub const ClipPolicy = enum { none, clip };
-pub const Scroll = struct { x: bool = false, y: bool = true };
+/// `Style.scroll`: the axes the box scrolls along, and where it rests.
+pub const Scroll = struct {
+    x: bool = false,
+    y: bool = true,
+    /// `.end` keeps the box at the end of its content while it is there, as
+    /// a chat transcript or a log follows new lines: content that grows
+    /// scrolls into view in the frame it appears. Moving away from the end
+    /// (the wheel, the scrollbar, keyboard focus, `Effects.scrollTo`)
+    /// releases it, and coming back to the end pins it again. It starts
+    /// pinned.
+    anchor: ScrollAnchor = .start,
+};
+
+pub const ScrollAnchor = enum { start, end };
+
+/// Where `Effects.scrollTo` moves a scroll box. The next layout resolves it
+/// against that frame's content, so `.end` reaches content added in the
+/// same handler, and clamps it to the content.
+pub const ScrollTarget = union(enum) {
+    start,
+    end,
+    /// Logical pixels from the content's start.
+    offset: ScrollOffset,
+    /// The box's direct child with this key, placed by `alignment`. A
+    /// `List`'s rows are its children keyed by index (`List.scrollTo`).
+    child: ScrollChild,
+};
+
+pub const ScrollOffset = struct { x: f32 = 0, y: f32 = 0 };
+
+pub const ScrollChild = struct {
+    key: Key,
+    alignment: ScrollAlignment = .nearest,
+};
+
+/// `.nearest` moves as little as shows the child whole, or its start when
+/// it is taller than the box; the others put its start, centre, or end at
+/// the box's.
+pub const ScrollAlignment = enum { start, center, end, nearest };
 /// The platform's shape, so hosts apply a resolved cursor without a mapping.
 pub const CursorShape = @import("../platform/interface.zig").CursorShape;
 /// `.none` makes the box itself transparent to the pointer, as CSS
