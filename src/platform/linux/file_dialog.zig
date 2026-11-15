@@ -8,10 +8,17 @@
 //!
 //! - Uses `org.freedesktop.portal.FileChooser` interface
 //! - Communicates via session D-Bus
-//! - Blocking API (`promptForPaths`, `promptForNewPath`) that waits for the
-//!   portal's Response signal, and `PortalRequest`, which the core host polls
-//!   from its event loop so the window keeps running while the dialog is open
+//! - `PortalRequest`, which the core host polls from its event loop so the
+//!   window keeps running while the dialog is open
 //! - Converts `file://` URIs to filesystem paths
+//!
+//! ## Bounds
+//!
+//! The host passes one buffer of `requestBytes(dialog_path_bytes_max)` bytes,
+//! reserved at init: `begin` terminates the save request's folder and name
+//! there (the core's request copy holds both in `dialog_path_bytes_max`
+//! bytes), and `poll` decodes the Response's paths into it. A selection past
+//! the budget fails fast in the core (`tick.checkSelection`).
 //!
 //! ## Requirements
 //!
@@ -35,82 +42,19 @@ pub const SavePromptOptions = interface_mod.SavePromptOptions;
 // Constants
 // =============================================================================
 
-const PORTAL_TIMEOUT_MS: c_int = 120_000; // 2 minutes for user interaction
-const SIGNAL_WAIT_TIMEOUT_MS: c_int = 500; // Poll interval for signal
-const MAX_SIGNAL_WAIT_ITERATIONS: u32 = 300; // Total wait ~2.5 minutes
-const MAX_URIS: usize = 1024;
-const MAX_PATH_LEN: usize = 4096;
 /// Most URIs one Response may carry before it is treated as malformed; the
 /// app's own limit (`dialog_path_count_max`) is far lower and fails fast.
 const response_uri_count_max: u32 = 1 << 20;
 /// Joins the paths of a `Selection`, as in the core's `events.Paths`.
 const separator: u8 = 0;
 
-// =============================================================================
-// Open Dialog
-// =============================================================================
-
-/// Show a file/directory open dialog (blocking/modal).
-/// Returns null if user cancels or on error.
-/// Caller owns returned PathPromptResult and must call deinit().
-pub fn promptForPaths(
-    allocator: std.mem.Allocator,
-    options: PathPromptOptions,
-) ?PathPromptResult {
-    std.debug.assert(options.files or options.directories);
-    return promptForPathsInternal(allocator, &options) catch |err| {
-        logError("promptForPaths failed", err);
-        return null;
-    };
-}
-
-fn promptForPathsInternal(
-    allocator: std.mem.Allocator,
-    options: *const PathPromptOptions,
-) !?PathPromptResult {
-    var request: PortalRequest = undefined;
-    try request.begin(.{ .open = options });
-    defer request.end();
-
-    // Wait for the Response signal; its paths come from `allocator`.
-    return waitForResponse(allocator, &request.connection, request.handlePath());
-}
-
-// =============================================================================
-// Save Dialog
-// =============================================================================
-
-/// Show a file save dialog (blocking/modal).
-/// Returns null if user cancels or on error.
-/// Caller owns returned path and must free with allocator.
-pub fn promptForNewPath(
-    allocator: std.mem.Allocator,
-    options: SavePromptOptions,
-) ?[]const u8 {
-    if (options.suggested_name) |name| std.debug.assert(name.len > 0);
-    return promptForNewPathInternal(allocator, &options) catch |err| {
-        logError("promptForNewPath failed", err);
-        return null;
-    };
-}
-
-fn promptForNewPathInternal(
-    allocator: std.mem.Allocator,
-    options: *const SavePromptOptions,
-) !?[]const u8 {
-    var request: PortalRequest = undefined;
-    try request.begin(.{ .save = options });
-    defer request.end();
-
-    // Wait for the Response signal and keep the first path. A save dialog
-    // returns one URI; any others and the array are freed.
-    const handle_path = request.handlePath();
-    const result = try waitForResponse(allocator, &request.connection, handle_path) orelse
-        return null;
-    std.debug.assert(result.paths.len > 0);
-    defer allocator.free(result.paths);
-    for (result.paths[1..]) |path| allocator.free(path);
-    return result.paths[0];
+/// Bytes of the host's dialog buffer for `dialog_path_bytes_max`: the paths
+/// of a selection, or a save request's folder and name with a terminator
+/// each.
+pub fn requestBytes(path_bytes_max: u32) u32 {
+    std.debug.assert(path_bytes_max > 0);
+    std.debug.assert(path_bytes_max < std.math.maxInt(u32) - 2);
+    return path_bytes_max + 2;
 }
 
 // =============================================================================
@@ -157,8 +101,11 @@ pub const PortalRequest = struct {
     };
 
     /// Connect, subscribe to the Response, and send the call. On success the
-    /// dialog is open and `end` or `close` must follow.
-    pub fn begin(self: *PortalRequest, options: Options) !void {
+    /// dialog is open and `end` or `close` must follow. `strings` holds the
+    /// save request's terminated folder and name while the call is built;
+    /// the host sized it with `requestBytes`.
+    pub fn begin(self: *PortalRequest, options: Options, strings: []u8) !void {
+        std.debug.assert(strings.len >= 2);
         switch (options) {
             .open => |open| std.debug.assert(open.files or open.directories),
             .save => |save| if (save.suggested_name) |name| std.debug.assert(name.len > 0),
@@ -186,7 +133,7 @@ pub const PortalRequest = struct {
             return error.ContainerFailed;
         switch (options) {
             .open => |open| try appendOpenOptions(&dict_iter, self.token(), open),
-            .save => |save| try appendSaveOptions(&dict_iter, self.token(), save),
+            .save => |save| try appendSaveOptions(&dict_iter, self.token(), save, strings),
         }
         if (!iter.closeContainer(&dict_iter)) return error.ContainerFailed;
 
@@ -314,6 +261,7 @@ fn appendSaveOptions(
     dict_iter: *dbus.MessageIter,
     request_token: [:0]const u8,
     options: *const SavePromptOptions,
+    strings: []u8,
 ) !void {
     std.debug.assert(request_token.len > 0);
     if (options.suggested_name) |name| std.debug.assert(name.len > 0);
@@ -324,54 +272,23 @@ fn appendSaveOptions(
     // modal
     try appendDictEntryBool(dict_iter, "modal", true);
 
-    // current_folder (starting directory)
+    // current_folder (starting directory), a terminated byte array.
+    var used: usize = 0;
     if (options.directory) |dir| {
-        try appendDictEntryBytes(dict_iter, "current_folder", dir);
+        const folder = terminated(strings, dir);
+        used = folder.len + 1;
+        try appendDictEntryBytes(dict_iter, "current_folder", folder[0 .. folder.len + 1]);
     }
 
     // current_name (suggested filename)
     if (options.suggested_name) |name| {
-        var name_buf: [256:0]u8 = undefined;
-        const name_z = toSentinelSlice(name, &name_buf) orelse return error.NameTooLong;
-        try appendDictEntryString(dict_iter, "current_name", name_z);
+        try appendDictEntryString(dict_iter, "current_name", terminated(strings[used..], name));
     }
 }
 
 // =============================================================================
 // Response Handling
 // =============================================================================
-
-/// Wait for the portal Response signal and convert its URIs to paths. The
-/// strings belong to the signal message, so they are converted into
-/// `allocator` before the message is freed; nothing else is allocated.
-fn waitForResponse(
-    allocator: std.mem.Allocator,
-    conn: *dbus.Connection,
-    handle_path: [:0]const u8,
-) !?PathPromptResult {
-    // buildHandlePath produces every handle under the portal's request path.
-    const request_path_prefix = "/org/freedesktop/portal/desktop/request/";
-    std.debug.assert(handle_path.len > request_path_prefix.len);
-    std.debug.assert(std.mem.startsWith(u8, handle_path, request_path_prefix));
-    var iterations: u32 = 0;
-
-    while (iterations < MAX_SIGNAL_WAIT_ITERATIONS) : (iterations += 1) {
-        // Read any available data
-        _ = conn.readWrite(SIGNAL_WAIT_TIMEOUT_MS);
-
-        // Process all pending messages
-        while (conn.popMessage()) |*msg_ptr| {
-            var signal_msg = msg_ptr.*;
-            defer signal_msg.deinit();
-
-            if (!isResponse(&signal_msg, handle_path)) continue;
-            var uris = try responseUris(&signal_msg) orelse return null;
-            return urisToPathResult(allocator, &uris);
-        }
-    }
-
-    return error.Timeout;
-}
 
 /// Whether `message` is the Response signal of the request at `handle_path`.
 fn isResponse(message: *dbus.Message, handle_path: [:0]const u8) bool {
@@ -439,28 +356,6 @@ fn responseUris(signal_msg: *dbus.Message) !?dbus.MessageIter {
 // URI/Path Conversion
 // =============================================================================
 
-/// Convert file:// URI to filesystem path
-fn uriToPath(allocator: std.mem.Allocator, uri: []const u8) ?[]const u8 {
-    const prefix = "file://";
-    if (!std.mem.startsWith(u8, uri, prefix)) {
-        // Not a file URI, try to use as-is
-        return allocator.dupe(u8, uri) catch return null;
-    }
-
-    // Decode percent-encoded characters; decoding never lengthens the path.
-    var decoded = allocator.alloc(u8, uri.len - prefix.len) catch return null;
-    const decoded_len = decodeUri(uri, decoded);
-    std.debug.assert(decoded_len <= decoded.len);
-
-    // Shrink to actual size by duplicating to right size
-    const result = allocator.dupe(u8, decoded[0..decoded_len]) catch {
-        allocator.free(decoded);
-        return null;
-    };
-    allocator.free(decoded);
-    return result;
-}
-
 /// Decode one URI to a path: strip `file://` and decode percent escapes, or
 /// keep a URI without that prefix as it is. Writes the prefix of the path
 /// that fits `out` and returns the path's whole length.
@@ -519,37 +414,6 @@ fn joinUris(array: *dbus.MessageIter, out: []u8) !Selection {
     if (count == 0) return error.NoUrisInResponse;
     std.debug.assert(bytes_len >= count);
     return .{ .count = count, .bytes_len = bytes_len };
-}
-
-/// Convert the response's `as` URI array to paths in `allocator`, keeping
-/// at most `MAX_URIS`. Returns null when there are none or one fails to
-/// convert (out of scratch).
-fn urisToPathResult(allocator: std.mem.Allocator, array: *dbus.MessageIter) ?PathPromptResult {
-    std.debug.assert(array.getArgType() == dbus.TYPE_ARRAY);
-    var count_iter = array.recurse();
-    var count: usize = 0;
-    while (count_iter.getArgType() == dbus.TYPE_STRING and count < MAX_URIS) {
-        count += 1;
-        if (!count_iter.next()) break;
-    }
-    if (count == 0) return null;
-
-    // Every URI must convert: the result owns exactly `count` paths, so
-    // `PathPromptResult.deinit` frees the array at the size it was allocated.
-    const paths = allocator.alloc([]const u8, count) catch return null;
-    var converted: usize = 0;
-    var uri_iter = array.recurse();
-    while (converted < count) : (converted += 1) {
-        const path = if (uri_iter.getString()) |uri| uriToPath(allocator, uri) else null;
-        paths[converted] = path orelse {
-            for (paths[0..converted]) |done| allocator.free(done);
-            allocator.free(paths);
-            return null;
-        };
-        _ = uri_iter.next();
-    }
-    std.debug.assert(converted == count);
-    return .{ .paths = paths, .allocator = allocator };
 }
 
 // =============================================================================
@@ -642,8 +506,11 @@ fn appendDictEntryBool(dict_iter: *dbus.MessageIter, key: [:0]const u8, value: b
     if (!dict_iter.closeContainer(&entry)) return error.ContainerFailed;
 }
 
-/// Append a dict entry with byte array value: {key: variant<ay>}
+/// Append a dict entry with byte array value: {key: variant<ay>}. The portal
+/// expects the bytes NUL-terminated, so `value` ends with its terminator.
 fn appendDictEntryBytes(dict_iter: *dbus.MessageIter, key: [:0]const u8, value: []const u8) !void {
+    std.debug.assert(value.len > 0);
+    std.debug.assert(value[value.len - 1] == 0);
     var entry = dict_iter.openContainer(dbus.TYPE_DICT_ENTRY, null) orelse
         return error.ContainerFailed;
 
@@ -651,13 +518,7 @@ fn appendDictEntryBytes(dict_iter: *dbus.MessageIter, key: [:0]const u8, value: 
 
     var variant = entry.openContainer(dbus.TYPE_VARIANT, "ay") orelse return error.ContainerFailed;
 
-    // Append path bytes with null terminator (portal expects null-terminated byte array)
-    var path_with_null: [MAX_PATH_LEN + 1]u8 = undefined;
-    if (value.len >= MAX_PATH_LEN) return error.PathTooLong;
-    @memcpy(path_with_null[0..value.len], value);
-    path_with_null[value.len] = 0;
-
-    if (!variant.appendBytes(path_with_null[0 .. value.len + 1])) return error.AppendFailed;
+    if (!variant.appendBytes(value)) return error.AppendFailed;
     if (!entry.closeContainer(&variant)) return error.ContainerFailed;
 
     if (!dict_iter.closeContainer(&entry)) return error.ContainerFailed;
@@ -667,12 +528,14 @@ fn appendDictEntryBytes(dict_iter: *dbus.MessageIter, key: [:0]const u8, value: 
 // Utilities
 // =============================================================================
 
-/// Convert slice to sentinel-terminated slice (copies to buffer)
-fn toSentinelSlice(slice: []const u8, buf: []u8) ?[:0]const u8 {
-    if (slice.len >= buf.len) return null;
-    @memcpy(buf[0..slice.len], slice);
-    buf[slice.len] = 0;
-    return buf[0..slice.len :0];
+/// Copy `text` into the front of `target` with a terminator. The core's
+/// request copy bounds every string a request holds, so it always fits.
+fn terminated(target: []u8, text: []const u8) [:0]const u8 {
+    std.debug.assert(text.len < target.len);
+    std.debug.assert(std.mem.indexOfScalar(u8, text, 0) == null);
+    @memcpy(target[0..text.len], text);
+    target[text.len] = 0;
+    return target[0..text.len :0];
 }
 
 /// Log error for debugging (only in debug builds)
@@ -687,31 +550,35 @@ fn logError(context: []const u8, err: anyerror) void {
 // =============================================================================
 
 test "URI to path conversion" {
-    const allocator = std.testing.allocator;
+    var out: [32]u8 = undefined;
 
     // Simple path
-    {
-        const path = uriToPath(allocator, "file:///home/user/test.txt");
-        try std.testing.expect(path != null);
-        defer allocator.free(path.?);
-        try std.testing.expectEqualStrings("/home/user/test.txt", path.?);
-    }
+    var len = decodeUri("file:///home/user/test.txt", &out);
+    try std.testing.expectEqualStrings("/home/user/test.txt", out[0..len]);
 
     // Percent-encoded path
-    {
-        const path = uriToPath(allocator, "file:///home/user/my%20file.txt");
-        try std.testing.expect(path != null);
-        defer allocator.free(path.?);
-        try std.testing.expectEqualStrings("/home/user/my file.txt", path.?);
-    }
+    len = decodeUri("file:///home/user/my%20file.txt", &out);
+    try std.testing.expectEqualStrings("/home/user/my file.txt", out[0..len]);
 
     // Non-file URI (returned as-is)
-    {
-        const path = uriToPath(allocator, "/direct/path/test.txt");
-        try std.testing.expect(path != null);
-        defer allocator.free(path.?);
-        try std.testing.expectEqualStrings("/direct/path/test.txt", path.?);
-    }
+    len = decodeUri("/direct/path/test.txt", &out);
+    try std.testing.expectEqualStrings("/direct/path/test.txt", out[0..len]);
+
+    // A path longer than `out` reports its whole length and writes a prefix.
+    var short: [4]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 19), decodeUri("file:///home/user/test.txt", &short));
+    try std.testing.expectEqualStrings("/hom", &short);
+}
+
+test "terminated fills its target exactly" {
+    // Capacity test: a request's folder and name fill `requestBytes` of
+    // their combined length exactly, a terminator each.
+    var strings: [requestBytes(7)]u8 = undefined;
+    const folder = terminated(&strings, "/tmp");
+    try std.testing.expectEqualStrings("/tmp", folder);
+    const name = terminated(strings[folder.len + 1 ..], "a.c");
+    try std.testing.expectEqualStrings("a.c", name);
+    try std.testing.expectEqual(@as(u8, 0), strings[strings.len - 1]);
 }
 
 test "token generation produces valid identifier" {

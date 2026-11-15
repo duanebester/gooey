@@ -94,6 +94,15 @@ pub const Uploads = struct {
         return count;
     }
 
+    /// Bytes of `words` and each staging copy: every record's descriptor,
+    /// then the frame's pixels.
+    pub fn wordsBytes(atlas: *const limits_mod.AtlasLimits) u64 {
+        const pixel_bytes_max = std.mem.alignForward(u64, atlas.upload_bytes_frame_max, 4);
+        const bytes = @as(u64, recordCountMax(atlas)) * descriptor_bytes + pixel_bytes_max;
+        assert(bytes > pixel_bytes_max);
+        return bytes;
+    }
+
     pub fn init(
         self: *Self,
         device: *const dx11_device.Device,
@@ -102,10 +111,12 @@ pub const Uploads = struct {
     ) dx11_resources.ResourceError!void {
         assert(frame_count > 0);
         assert(frame_count <= limits_mod.MAX_FRAMES_IN_FLIGHT);
+        // `Dx11Renderer.initResources` refused a budget past the bound.
+        assert(wordsBytes(atlas) <= dx11_resources.buffer_bytes_max);
         self.record_count_max = recordCountMax(atlas);
         self.pixel_bytes_max = std.mem.alignForward(u32, atlas.upload_bytes_frame_max, 4);
         const bytes = self.record_count_max * descriptor_bytes + self.pixel_bytes_max;
-        assert(bytes <= dx11_resources.buffer_bytes_max);
+        assert(bytes == wordsBytes(atlas));
 
         try self.initShaders(device);
         errdefer self.releaseShaders();

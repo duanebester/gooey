@@ -2,6 +2,14 @@
 //!
 //! Provides file open (NSOpenPanel) and save (NSSavePanel) dialogs.
 //! Uses synchronous/modal presentation for simplicity.
+//!
+//! The prompts return null for a cancel and an error for a failure, which
+//! the core host reports as `.failed`, never as `.cancelled`. Paths are
+//! copied into `scratch`, the core's text scratch, which holds a selection
+//! of `ResourceLimits.events.dialog_path_bytes_max` bytes
+//! (`limits.textScratchBytes`); a selection it cannot hold fails with
+//! `error.DialogPathTooLong`, logged with the field to raise. One within the
+//! scratch but past the budget fails fast in the core (`tick.checkSelection`).
 
 const std = @import("std");
 const objc = @import("objc");
@@ -18,19 +26,27 @@ pub const PathPromptOptions = interface_mod.PathPromptOptions;
 pub const PathPromptResult = interface_mod.PathPromptResult;
 pub const SavePromptOptions = interface_mod.SavePromptOptions;
 
+pub const DialogError = error{
+    /// AppKit is missing a panel class, which only a broken process sees.
+    DialogUnavailable,
+    /// The scratch cannot hold the selection.
+    DialogPathTooLong,
+    /// A selected URL has no file system representation.
+    PathUnrepresentable,
+};
+
 // ============================================================================
 // Open Dialog
 // ============================================================================
 
-/// Show a file/directory open dialog (blocking/modal).
-/// Returns null if user cancels or on error.
-/// Caller owns returned PathPromptResult and must call deinit().
+/// Show a file/directory open dialog (blocking/modal). Returns null if the
+/// user cancels. The paths live in `scratch`.
 pub fn promptForPaths(
-    allocator: std.mem.Allocator,
+    scratch: std.mem.Allocator,
     options: PathPromptOptions,
-) ?PathPromptResult {
+) DialogError!?PathPromptResult {
     assert(options.files or options.directories);
-    const NSOpenPanel = objc.getClass("NSOpenPanel") orelse return null;
+    const NSOpenPanel = objc.getClass("NSOpenPanel") orelse return error.DialogUnavailable;
     const panel = NSOpenPanel.msgSend(objc.Object, "openPanel", .{});
 
     // Configure panel options
@@ -52,51 +68,39 @@ pub fn promptForPaths(
     if (response != @backingInt(appkit.NSModalResponse.OK)) {
         return null; // User cancelled
     }
+    const result = try openPaths(scratch, panel.msgSend(objc.Object, "URLs", .{}));
+    if (!options.multiple) assert(result.paths.len == 1);
+    return result;
+}
 
-    // Extract selected URLs
-    const urls = panel.msgSend(objc.Object, "URLs", .{});
+/// Copy every selected URL's path into `scratch`. A path that cannot be
+/// copied fails the selection instead of being left out of it.
+fn openPaths(scratch: std.mem.Allocator, urls: objc.Object) DialogError!PathPromptResult {
     const count: usize = urls.msgSend(usize, "count", .{});
+    if (count == 0) return error.PathUnrepresentable; // AppKit reported OK with nothing.
 
-    if (count == 0) {
-        return null;
+    const paths = scratch.alloc([]const u8, count) catch return scratchFull();
+    for (paths, 0..) |*path, index| {
+        assert(index < count);
+        const url = urls.msgSend(objc.Object, "objectAtIndex:", .{@as(c_ulong, index)});
+        path.* = try nsUrlToPath(scratch, url);
     }
-
-    // Allocate paths array
-    var paths = allocator.alloc([]const u8, count) catch return null;
-    var valid_count: usize = 0;
-
-    for (0..count) |i| {
-        const url = urls.msgSend(objc.Object, "objectAtIndex:", .{@as(c_ulong, i)});
-        if (nsUrlToPath(allocator, url)) |path| {
-            paths[valid_count] = path;
-            valid_count += 1;
-        }
-    }
-
-    if (valid_count == 0) {
-        allocator.free(paths);
-        return null;
-    }
-
-    return .{
-        .paths = paths[0..valid_count],
-        .allocator = allocator,
-    };
+    assert(paths.len == count);
+    return .{ .paths = paths, .allocator = scratch };
 }
 
 // ============================================================================
 // Save Dialog
 // ============================================================================
 
-/// Show a file save dialog (blocking/modal).
-/// Returns null if user cancels or on error.
-/// Caller owns returned path and must free with allocator.
+/// Show a file save dialog (blocking/modal). Returns null if the user
+/// cancels. The path lives in `scratch`.
 pub fn promptForNewPath(
-    allocator: std.mem.Allocator,
+    scratch: std.mem.Allocator,
     options: SavePromptOptions,
-) ?[]const u8 {
+) DialogError!?[]const u8 {
     if (options.suggested_name) |name| assert(name.len > 0);
-    const NSSavePanel = objc.getClass("NSSavePanel") orelse return null;
+    const NSSavePanel = objc.getClass("NSSavePanel") orelse return error.DialogUnavailable;
     const panel = NSSavePanel.msgSend(objc.Object, "savePanel", .{});
 
     panel.msgSend(void, "setCanCreateDirectories:", .{true});
@@ -130,21 +134,32 @@ pub fn promptForNewPath(
 
     // Get result URL
     const url = panel.msgSend(objc.Object, "URL", .{});
-    return nsUrlToPath(allocator, url);
+    return try nsUrlToPath(scratch, url);
 }
 
 // ============================================================================
 // Helpers
 // ============================================================================
 
-/// Convert NSURL to Zig string (owned by caller)
-fn nsUrlToPath(allocator: std.mem.Allocator, url: objc.Object) ?[]const u8 {
+/// Copy the URL's file system path into `scratch`.
+fn nsUrlToPath(scratch: std.mem.Allocator, url: objc.Object) DialogError![]const u8 {
     // fileSystemRepresentation returns a C string (UTF-8, null-terminated)
     const cstr: ?[*:0]const u8 = url.msgSend(?[*:0]const u8, "fileSystemRepresentation", .{});
-    if (cstr) |ptr| {
-        return allocator.dupe(u8, std.mem.span(ptr)) catch null;
-    }
-    return null;
+    const ptr = cstr orelse {
+        std.log.warn("macos: file dialog selected a URL with no file system path", .{});
+        return error.PathUnrepresentable;
+    };
+    const path = scratch.dupe(u8, std.mem.span(ptr)) catch return scratchFull();
+    assert(path.len > 0);
+    return path;
+}
+
+/// The core's text scratch cannot hold the selection: its paths are past the
+/// app's `dialog_path_bytes_max` (`limits.textScratchBytes`).
+pub fn scratchFull() DialogError {
+    std.log.err("macos: file dialog selection does not fit the dialog scratch. " ++
+        "Raise ResourceLimits.events.dialog_path_bytes_max.", .{});
+    return error.DialogPathTooLong;
 }
 
 /// Create NSString from Zig slice

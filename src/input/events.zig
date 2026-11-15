@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const geometry = @import("../geometry/geometry.zig");
 
 /// Virtual key codes (based on macOS keycodes, used cross-platform)
@@ -202,6 +203,31 @@ pub const TouchEvent = struct {
     id: i32,
 };
 
+/// Key codes a `FocusLostEvent` can hold: every `KeyCode` but `.unknown`
+/// is below it.
+pub const held_key_count_max: u32 = 128;
+
+pub const HeldKeys = std.StaticBitSet(held_key_count_max);
+
+/// What a window held when it lost keyboard focus, reported as one event
+/// rather than one release each, so a focus loss costs one queue slot
+/// however many keys were down. Their real releases go to the window that
+/// gained focus.
+pub const FocusLostEvent = struct {
+    /// A pointer gesture was in progress: it cancels as `pointer_cancelled`.
+    pointer_cancelled: bool,
+    /// Keys reported down and not yet up, by `KeyCode` value. Each releases
+    /// with no modifiers.
+    keys_held: HeldKeys,
+};
+
+comptime {
+    @setEvalBranchQuota(4096);
+    for (std.enums.values(KeyCode)) |key| {
+        if (key != .unknown) assert(@backingInt(key) < held_key_count_max);
+    }
+}
+
 pub const InputEvent = union(enum) {
     mouse_down: MouseEvent,
     mouse_up: MouseEvent,
@@ -226,6 +252,10 @@ pub const InputEvent = union(enum) {
     /// grab, or the window losing focus with a button held). A pointer drag
     /// in progress cancels instead of ending, so nothing drops or commits.
     pointer_cancelled,
+    /// The window lost keyboard focus with a gesture or keys held. Reported
+    /// by platforms that track held keys themselves (Windows); the core
+    /// cancels the gesture and releases each key.
+    focus_lost: FocusLostEvent,
 };
 
 // Goal: `KeyCode.from` must resolve every named virtual keycode to its tag and

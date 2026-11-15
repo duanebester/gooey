@@ -4,7 +4,9 @@
 //!
 //! The API matches `macos/file_dialog.zig` and `linux/file_dialog.zig`:
 //! `promptForPaths` and `promptForNewPath` block until the user chooses or
-//! cancels, and return caller-owned paths or null.
+//! cancels, and return paths in the caller's scratch, null for a cancel, or
+//! the error that failed the dialog, which the core host reports as
+//! `.failed`, never as `.cancelled`.
 //!
 //! ## Behaviour
 //!
@@ -33,24 +35,29 @@
 //!
 //! ## Allocation and bounds (CLAUDE.md sections 2 and 4)
 //!
-//! The shared contract returns heap paths owned by the caller, as on every
-//! backend, which conflicts with section 2; replacing it with bounded request
-//! slots is phase 6 of `docs/platform_interface_design.md`. Everything else is
-//! fixed and on the stack, at most about 65 KiB per call:
+//! Every buffer comes from the app's `ResourceLimits.events`, reserved by the
+//! core before the event loop:
 //!
-//! - The suggested file name: `text_units_max + 1` units, about 1 KiB, alive
-//!   until the dialog is released.
-//! - The save dialog's folder: `path_units_max + 1` units, 64 KiB, in one leaf.
-//! - Results: at most `path_count_max` paths of at most `path_units_max`
-//!   units each. A longer path or a larger selection is refused, never
-//!   truncated. The result is at most 1,024 × 98,301 B in the worst case;
-//!   ordinary paths are below 260 units.
+//! - Results are allocated in the core's text scratch, which holds a
+//!   selection of `dialog_path_bytes_max` bytes and `dialog_path_count_max`
+//!   paths (`limits.textScratchBytes`). A selection the scratch cannot hold
+//!   fails with `error.DialogPathTooLong`, logged with the field to raise;
+//!   one within the scratch but past the budget fails fast in the core
+//!   (`tick.checkSelection`), as on macOS and Linux.
+//! - The save dialog's folder and suggested name: the host's wide buffer of
+//!   `wideUnitCount(dialog_path_bytes_max)` units, which the core's request
+//!   copy (both strings, at most `dialog_path_bytes_max` bytes together)
+//!   always fits. The name stays there until the dialog is released.
+//! - Scans: at most `path_count_ceiling` items, the selection ceiling of
+//!   every budget, and at most `path_units_max` units per path, Windows' own
+//!   limit. A longer path or a larger selection fails, never truncated.
 //!
 //! The shell allocates its own strings (`GetDisplayName`), freed here with
 //! `CoTaskMemFree` on every path.
 
 const std = @import("std");
 const interface_mod = @import("../interface.zig");
+const limits = @import("../../core/limits.zig");
 const shell = @import("shell.zig");
 const win32 = @import("win32.zig");
 
@@ -61,26 +68,35 @@ pub const PathPromptOptions = interface_mod.PathPromptOptions;
 pub const PathPromptResult = interface_mod.PathPromptResult;
 pub const SavePromptOptions = interface_mod.SavePromptOptions;
 
-/// Longest suggested file name, in UTF-16 units excluding the terminator.
-pub const text_units_max: u32 = 512;
-
 /// Longest path, in UTF-16 units excluding the terminator: Windows' limit
 /// for extended-length paths.
 pub const path_units_max: u32 = 32_767;
 
-/// Most paths one open dialog may return.
-pub const path_count_max: u32 = 1_024;
+/// Most paths one open dialog may return: the selection ceiling of every
+/// budget. An app's own `dialog_path_count_max` is checked by the core.
+pub const path_count_ceiling: u32 = limits.EventLimits.ceiling.dialog_path_count_max;
 
-const DialogError = error{
+/// Why a dialog failed. `Cancelled` stays inside this file: the prompts
+/// return null for it.
+pub const DialogError = error{
     Cancelled,
     ComFailed,
+    DialogPathTooLong,
     OptionInvalid,
     OptionTooLong,
-    OutOfMemory,
     PathTooLong,
     SelectionEmpty,
     TooManyPaths,
 };
+
+/// UTF-16 units of the save dialog's wide buffer for request strings of
+/// `path_bytes_max` bytes together: WTF-8 needs at least one byte per unit,
+/// plus a terminator for each of the folder and the name.
+pub fn wideUnitCount(path_bytes_max: u32) u32 {
+    assert(path_bytes_max > 0);
+    assert(path_bytes_max <= limits.EventLimits.ceiling.dialog_path_bytes_max);
+    return path_bytes_max + 2;
+}
 
 /// Whether `comEnter` initialized COM on this thread, so `comLeave` must
 /// balance it.
@@ -89,7 +105,8 @@ const Apartment = enum { entered, foreign };
 comptime {
     // WTF-8 needs at most three bytes per UTF-16 unit.
     assert(@as(u64, path_units_max) * 3 < std.math.maxInt(u32));
-    assert(text_units_max < path_units_max);
+    assert(path_count_ceiling > 0);
+    assert(path_count_ceiling <= std.math.maxInt(u32) / @sizeOf([]const u8));
 }
 
 // =============================================================================
@@ -97,34 +114,43 @@ comptime {
 // =============================================================================
 
 /// Show a file or folder open dialog (blocking, modal). Returns null if the
-/// user cancels or on error. The caller owns the result and calls `deinit`.
-pub fn promptForPaths(allocator: Allocator, options: PathPromptOptions) ?PathPromptResult {
+/// user cancels, or the error that failed it, logged here. The paths live in
+/// `scratch`, the core's text scratch.
+pub fn promptForPaths(
+    scratch: Allocator,
+    options: PathPromptOptions,
+) DialogError!?PathPromptResult {
     assert(options.files or options.directories);
 
     const apartment = comEnter();
     defer comLeave(apartment);
 
-    const open = dialogCreate(
+    const open = try dialogCreate(
         shell.IFileOpenDialog,
         &shell.CLSID_FileOpenDialog,
         &shell.IID_IFileOpenDialog,
-    ) orelse return null;
+    );
     defer open.dialog().release();
 
-    openConfigure(open.dialog(), &options) catch |err| {
-        dialogFailed("open", err);
-        return null;
-    };
-    dialogShow(open.dialog()) catch |err| {
-        dialogFailed("open", err);
-        return null;
-    };
-    const result = openResults(allocator, open) catch |err| {
-        dialogFailed("open", err);
+    const result = openRun(scratch, open, &options) catch |err| {
+        try dialogFailed("open", err);
         return null;
     };
     assert(result.paths.len > 0);
-    assert(result.paths.len <= path_count_max);
+    assert(result.paths.len <= path_count_ceiling);
+    return result;
+}
+
+fn openRun(
+    scratch: Allocator,
+    open: *shell.IFileOpenDialog,
+    options: *const PathPromptOptions,
+) DialogError!PathPromptResult {
+    assert(options.files or options.directories);
+    try openConfigure(open.dialog(), options);
+    try dialogShow(open.dialog());
+    const result = try openResults(scratch, open);
+    if (!options.multiple) assert(result.paths.len == 1);
     return result;
 }
 
@@ -158,7 +184,7 @@ fn openFlags(flags_default: u32, options: *const PathPromptOptions) u32 {
     return flags;
 }
 
-fn openResults(allocator: Allocator, open: *shell.IFileOpenDialog) DialogError!PathPromptResult {
+fn openResults(scratch: Allocator, open: *shell.IFileOpenDialog) DialogError!PathPromptResult {
     var items_result: ?*shell.IShellItemArray = null;
     try comChecked(open.vtable.GetResults(open, &items_result), "GetResults");
     assert(items_result != null); // COM: success returns an interface.
@@ -168,41 +194,42 @@ fn openResults(allocator: Allocator, open: *shell.IFileOpenDialog) DialogError!P
     var count: u32 = 0;
     try comChecked(items.vtable.GetCount(items, &count), "GetCount");
     if (count == 0) return error.SelectionEmpty;
-    if (count <= path_count_max) {
+    if (count <= path_count_ceiling) {
         // Within the bound; collected below.
     } else {
-        std.log.warn("windows: {d} paths selected exceed {d}; refused", .{
+        std.log.err("windows: file dialog selected {d} paths, past the ceiling of " ++
+            "ResourceLimits.events.dialog_path_count_max ({d}).", .{
             count,
-            path_count_max,
+            path_count_ceiling,
         });
         return error.TooManyPaths;
     }
 
-    const paths = try allocator.alloc([]const u8, count);
-    errdefer allocator.free(paths);
+    const paths = scratch.alloc([]const u8, count) catch return scratchFull();
+    errdefer scratch.free(paths);
 
     var filled: u32 = 0;
-    errdefer for (paths[0..filled]) |path| allocator.free(path);
+    errdefer for (paths[0..filled]) |path| scratch.free(path);
     while (filled < count) : (filled += 1) {
-        paths[filled] = try arrayItemPath(allocator, items, filled);
+        paths[filled] = try arrayItemPath(scratch, items, filled);
     }
     assert(filled == count);
-    return .{ .paths = paths, .allocator = allocator };
+    return .{ .paths = paths, .allocator = scratch };
 }
 
 fn arrayItemPath(
-    allocator: Allocator,
+    scratch: Allocator,
     items: *shell.IShellItemArray,
     index: u32,
 ) DialogError![]const u8 {
-    assert(index < path_count_max);
+    assert(index < path_count_ceiling);
     var item_result: ?*shell.IShellItem = null;
     try comChecked(items.vtable.GetItemAt(items, index, &item_result), "GetItemAt");
     assert(item_result != null); // COM: success returns an interface.
     const item = item_result.?;
     defer item.release();
 
-    return itemPath(allocator, item);
+    return itemPath(scratch, item);
 }
 
 // =============================================================================
@@ -210,59 +237,71 @@ fn arrayItemPath(
 // =============================================================================
 
 /// Show a file save dialog (blocking, modal). Returns null if the user
-/// cancels or on error. The caller owns the path and frees it with
-/// `allocator`.
-pub fn promptForNewPath(allocator: Allocator, options: SavePromptOptions) ?[]const u8 {
+/// cancels, or the error that failed it, logged here. The path lives in
+/// `scratch`; `wide` is the host's buffer of `wideUnitCount` units for the
+/// folder and suggested name.
+pub fn promptForNewPath(
+    scratch: Allocator,
+    wide: []u16,
+    options: SavePromptOptions,
+) DialogError!?[]const u8 {
     if (options.suggested_name) |name| assert(name.len > 0);
     if (options.directory) |directory| assert(directory.len > 0);
 
     const apartment = comEnter();
     defer comLeave(apartment);
 
-    const save = dialogCreate(
+    const save = try dialogCreate(
         shell.IFileSaveDialog,
         &shell.CLSID_FileSaveDialog,
         &shell.IID_IFileSaveDialog,
-    ) orelse return null;
+    );
     defer save.dialog().release();
 
-    var file_name: [text_units_max + 1]u16 = undefined;
-    saveConfigure(save.dialog(), &options, &file_name) catch |err| {
-        dialogFailed("save", err);
-        return null;
-    };
-    dialogShow(save.dialog()) catch |err| {
-        dialogFailed("save", err);
-        return null;
-    };
-    const path = savePath(allocator, save.dialog()) catch |err| {
-        dialogFailed("save", err);
+    const path = saveRun(scratch, wide, save.dialog(), &options) catch |err| {
+        try dialogFailed("save", err);
         return null;
     };
     assert(std.unicode.wtf8ValidateSlice(path));
     return path;
 }
 
-/// `file_name` holds the suggested name's UTF-16 copy and stays in the
-/// caller's frame until the dialog is released, so correctness does not
-/// depend on whether the dialog copies it.
+fn saveRun(
+    scratch: Allocator,
+    wide: []u16,
+    dialog: *shell.IFileDialog,
+    options: *const SavePromptOptions,
+) DialogError![]const u8 {
+    assert(wide.len >= 2);
+    try saveConfigure(dialog, options, wide);
+    try dialogShow(dialog);
+    return savePath(scratch, dialog);
+}
+
+/// `wide` holds the suggested name's UTF-16 copy, then the folder's, and
+/// stays the host's until the dialog is released, so correctness does not
+/// depend on whether the dialog copies them. The core's request copy holds
+/// both in `dialog_path_bytes_max` bytes, so they fit `wideUnitCount` units.
 fn saveConfigure(
     dialog: *shell.IFileDialog,
     options: *const SavePromptOptions,
-    file_name: *[text_units_max + 1]u16,
+    wide: []u16,
 ) DialogError!void {
+    assert(wide.len >= 2);
     var flags_default: u32 = 0;
     try comChecked(dialog.vtable.GetOptions(dialog, &flags_default), "GetOptions");
     try comChecked(dialog.vtable.SetOptions(dialog, saveFlags(flags_default)), "SetOptions");
 
+    var used: usize = 0;
     if (options.suggested_name) |name| {
         assert(name.len > 0);
-        const wide = try wideEncode(file_name, name);
-        assert(wide.len <= text_units_max);
-        try comChecked(dialog.vtable.SetFileName(dialog, wide), "SetFileName");
+        const file_name = try wideEncode(wide, name);
+        used = file_name.len + 1;
+        try comChecked(dialog.vtable.SetFileName(dialog, file_name), "SetFileName");
     }
     if (options.directory) |directory| {
-        try dialogFolderSet(dialog, directory);
+        assert(used < wide.len);
+        try dialogFolderSet(dialog, wide[used..], directory);
     }
 }
 
@@ -276,14 +315,14 @@ fn saveFlags(flags_default: u32) u32 {
     return flags;
 }
 
-fn savePath(allocator: Allocator, dialog: *shell.IFileDialog) DialogError![]const u8 {
+fn savePath(scratch: Allocator, dialog: *shell.IFileDialog) DialogError![]const u8 {
     var item_result: ?*shell.IShellItem = null;
     try comChecked(dialog.vtable.GetResult(dialog, &item_result), "GetResult");
     assert(item_result != null); // COM: success returns an interface.
     const item = item_result.?;
     defer item.release();
 
-    return itemPath(allocator, item);
+    return itemPath(scratch, item);
 }
 
 // =============================================================================
@@ -317,7 +356,7 @@ fn dialogCreate(
     comptime Dialog: type,
     class: *const shell.GUID,
     interface: *const shell.GUID,
-) ?*Dialog {
+) DialogError!*Dialog {
     comptime assert(@hasDecl(Dialog, "dialog"));
     var object: ?*anyopaque = null;
     const result = shell.CoCreateInstance(
@@ -334,7 +373,7 @@ fn dialogCreate(
     std.log.warn("windows: file dialog creation failed (HRESULT 0x{X:0>8})", .{
         hresultBits(result),
     });
-    return null;
+    return error.ComFailed;
 }
 
 /// Show the dialog, owned by the thread's active window so it is modal to
@@ -348,10 +387,14 @@ fn dialogShow(dialog: *shell.IFileDialog) DialogError!void {
 
 /// Open the dialog in `directory`. A folder the shell cannot resolve is not
 /// an error: the dialog opens where it would have without the option.
-fn dialogFolderSet(dialog: *shell.IFileDialog, directory: []const u8) DialogError!void {
-    var buffer: [path_units_max + 1]u16 = undefined;
-    const path = try wideEncode(&buffer, directory);
-    assert(path.len <= path_units_max);
+fn dialogFolderSet(
+    dialog: *shell.IFileDialog,
+    wide: []u16,
+    directory: []const u8,
+) DialogError!void {
+    assert(wide.len > 0);
+    const path = try wideEncode(wide, directory);
+    assert(path.len <= directory.len);
 
     var object: ?*anyopaque = null;
     const result = shell.SHCreateItemFromParsingName(path, null, &shell.IID_IShellItem, &object);
@@ -367,8 +410,8 @@ fn dialogFolderSet(dialog: *shell.IFileDialog, directory: []const u8) DialogErro
     }
 }
 
-/// A caller-owned WTF-8 copy of the item's file system path.
-fn itemPath(allocator: Allocator, item: *shell.IShellItem) DialogError![]const u8 {
+/// A WTF-8 copy of the item's file system path in `scratch`.
+fn itemPath(scratch: Allocator, item: *shell.IShellItem) DialogError![]const u8 {
     var name_result: ?[*:0]u16 = null;
     const result = item.vtable.GetDisplayName(item, shell.SIGDN_FILESYSPATH, &name_result);
     try comChecked(result, "GetDisplayName");
@@ -380,7 +423,7 @@ fn itemPath(allocator: Allocator, item: *shell.IShellItem) DialogError![]const u
         std.log.warn("windows: selected path exceeds {d} units; refused", .{path_units_max});
         return error.PathTooLong;
     };
-    return pathDecode(allocator, units);
+    return pathDecode(scratch, units) catch return scratchFull();
 }
 
 fn comChecked(result: shell.HRESULT, method: []const u8) DialogError!void {
@@ -393,12 +436,22 @@ fn comChecked(result: shell.HRESULT, method: []const u8) DialogError!void {
     return error.ComFailed;
 }
 
-fn dialogFailed(kind: []const u8, err: DialogError) void {
+/// Returns for a cancel, the user's choice; any other error is logged and
+/// returned, for the core host to report as `.failed`.
+fn dialogFailed(kind: []const u8, err: DialogError) DialogError!void {
     assert(kind.len > 0);
-    switch (err) {
-        error.Cancelled => {}, // The user's choice, not a failure.
-        else => std.log.warn("windows: {s} dialog failed: {s}", .{ kind, @errorName(err) }),
-    }
+    if (err == error.Cancelled) return;
+    assert(err != error.Cancelled);
+    std.log.warn("windows: {s} dialog failed: {s}", .{ kind, @errorName(err) });
+    return err;
+}
+
+/// The core's text scratch cannot hold the selection: its paths are past the
+/// app's `dialog_path_bytes_max` (`limits.textScratchBytes`).
+pub fn scratchFull() DialogError {
+    std.log.err("windows: file dialog selection does not fit the dialog scratch. " ++
+        "Raise ResourceLimits.events.dialog_path_bytes_max.", .{});
+    return error.DialogPathTooLong;
 }
 
 fn hresultBits(result: shell.HRESULT) u32 {
@@ -453,8 +506,8 @@ fn unitsTerminated(units: [*:0]const u16, unit_count_max: u32) ?[]const u16 {
     return null;
 }
 
-/// A caller-owned WTF-8 copy of `units`.
-fn pathDecode(allocator: Allocator, units: []const u16) DialogError![]const u8 {
+/// A WTF-8 copy of `units` in `allocator`.
+fn pathDecode(allocator: Allocator, units: []const u16) Allocator.Error![]const u8 {
     assert(units.len <= path_units_max);
     const byte_count = std.unicode.calcWtf8Len(units);
     assert(byte_count <= 3 * units.len);
@@ -583,11 +636,11 @@ test "system open dialog accepts every option and fails cleanly before Show" {
     const apartment = comEnter();
     defer comLeave(apartment);
 
-    const open = dialogCreate(
+    const open = try dialogCreate(
         shell.IFileOpenDialog,
         &shell.CLSID_FileOpenDialog,
         &shell.IID_IFileOpenDialog,
-    ) orelse return error.TestDialogCreation;
+    );
     defer open.dialog().release();
 
     const options: PathPromptOptions = .{ .files = true, .directories = false, .multiple = true };
@@ -606,19 +659,28 @@ test "system save dialog accepts every option" {
     const apartment = comEnter();
     defer comLeave(apartment);
 
-    const save = dialogCreate(
+    const save = try dialogCreate(
         shell.IFileSaveDialog,
         &shell.CLSID_FileSaveDialog,
         &shell.IID_IFileSaveDialog,
-    ) orelse return error.TestDialogCreation;
+    );
     defer save.dialog().release();
 
+    // Capacity test: the name and folder fill the wide buffer for exactly
+    // their bytes together (the name's emoji takes 4 bytes and 2 units, so
+    // the buffer is 2 units roomier than needed); a buffer short by more
+    // than that fails instead of truncating.
     const options: SavePromptOptions = .{
         .suggested_name = "untitled \u{1F389}.txt",
         .directory = "Z:\\gooey\\no such folder", // Unresolved: logged and ignored.
     };
-    var file_name: [text_units_max + 1]u16 = undefined;
-    try saveConfigure(save.dialog(), &options, &file_name);
+    const bytes = options.suggested_name.?.len + options.directory.?.len;
+    var wide: [wideUnitCount(bytes)]u16 = undefined;
+    try saveConfigure(save.dialog(), &options, &wide);
+    try testing.expectError(
+        error.OptionTooLong,
+        saveConfigure(save.dialog(), &options, wide[0 .. wide.len - 3]),
+    );
 
     var flags: u32 = 0;
     try comChecked(save.dialog().vtable.GetOptions(save.dialog(), &flags), "GetOptions");

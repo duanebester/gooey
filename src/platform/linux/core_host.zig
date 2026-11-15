@@ -91,6 +91,19 @@ const refresh_rate_mhz_max: i32 = 1_000_000;
 /// empties the queue; more arrive only if another thread reads in between.
 const prepare_read_rounds_max: u32 = 1024;
 
+/// Free queue slots the loop needs before it dispatches the display, the
+/// burst Duane approved for this PR: 4 KiB of libwayland's read buffer at
+/// 16 B per queued event. It is not yet a hard bound: a 24 B key press
+/// queues two events, and the render thread's reads add to what one
+/// dispatch delivers. The next PR moves every read to this thread and
+/// declares the real burst (341 events plus 3 the host pushes).
+pub const input_room_count_min: u32 = 4096 / 16;
+
+comptime {
+    // Every profile's queue holds the largest host burst (`ResourceLimits.check`).
+    assert(input_room_count_min <= core_limits.input_burst_count_max);
+}
+
 const frame_callback_listener = wayland.CallbackListener{ .done = frameCallbackDone };
 
 /// The window draws with the CPU renderer (`wayland_cpu`) rather than Vulkan.
@@ -185,8 +198,10 @@ pub const Host = struct {
     cursor: core_element.CursorShape,
     /// The portal dialog that is open, at most one (`openDialog`).
     dialog: ?PendingDialog,
-    /// A Response's paths, decoded here before the queue copies them:
-    /// `limits.events.dialog_path_bytes_max` bytes, reserved at init.
+    /// A save request's terminated folder and name while `openDialog` sends
+    /// the call, then the Response's paths, decoded here before the queue
+    /// copies them: `file_dialog.requestBytes` of
+    /// `limits.events.dialog_path_bytes_max`, reserved at init.
     dialog_paths: []u8,
 
     // Render thread only.
@@ -254,8 +269,11 @@ pub const Host = struct {
             &options.core.limits.window,
         );
         self.downscaled = false;
-        self.dialog_paths = try options.gpa.alloc(u8, path_bytes_max);
+        self.dialog_paths = try options.gpa.alloc(u8, file_dialog.requestBytes(path_bytes_max));
         errdefer options.gpa.free(self.dialog_paths);
+        const clipboard_bytes: u32 = @intCast(options.core.clipboard_bytes.len);
+        try clipboard.getState().reserveCopy(options.gpa, clipboard_bytes);
+        errdefer clipboard.getState().releaseCopy(options.gpa);
 
         try self.initWayland();
         errdefer self.deinitWayland();
@@ -349,6 +367,7 @@ pub const Host = struct {
         }
         self.unbindWindow();
         self.deinitWayland();
+        clipboard.getState().releaseCopy(self.gpa);
         self.gpa.free(self.dialog_paths);
         assert(self.stopping.load(.acquire));
         assert(self.dialog == null);
@@ -434,9 +453,18 @@ pub const Host = struct {
         if (pending and !in_flight) self.scheduleTick();
     }
 
-    /// Wait for the display or the wake fd, then dispatch the main queue.
+    /// Wait for the display or the wake fd, then dispatch the main queue,
+    /// only while the core queue has `input_room_count_min` free slots.
     /// Returns false when the connection failed.
     fn waitForEvents(self: *Host) bool {
+        // A queue without room for one read's events dispatches nothing until
+        // a tick drains it; what arrives meanwhile waits in the socket or in
+        // libwayland's queue.
+        if (self.core.queue.room() < input_room_count_min) {
+            assert(self.core.queue.count > 0);
+            self.scheduleTick();
+            return true;
+        }
         var rounds: u32 = 0;
         while (wayland.wl_display_prepare_read(self.display) != 0) : (rounds += 1) {
             assert(rounds < prepare_read_rounds_max);
@@ -480,17 +508,17 @@ pub const Host = struct {
         assert(self.core.phase == .idle);
         const pending = if (self.dialog) |*pending| pending else return;
         assert(pending.fd >= 0);
-        const status = pending.request.poll(self.dialog_paths) catch |err| status: {
-            std.log.err("core host: the file dialog portal failed: {t}", .{err});
-            break :status .cancelled;
-        };
-        const outcome: Outcome = switch (status) {
+        const polled = pending.request.poll(self.dialog_paths);
+        const outcome: Outcome = if (polled) |status| switch (status) {
             .open => return,
             // Messages wait past this turn's bound and the fd will not
             // announce them again, so turn again soon.
             .open_more => return self.scheduleTick(),
             .cancelled => .cancelled,
             .selected => |selection| self.selectedOutcome(pending.many, selection),
+        } else |err| failed: {
+            std.log.err("core host: the file dialog portal failed: {t}", .{err});
+            break :failed .{ .failed = err };
         };
         const request_id = pending.request_id;
         pending.request.end();
@@ -509,9 +537,10 @@ pub const Host = struct {
     /// fast past them, and wrap the paths decoded into `dialog_paths`.
     fn selectedOutcome(self: *const Host, many: bool, selection: file_dialog.Selection) Outcome {
         core_tick.checkSelection(self.core, many, selection.count, selection.bytes_len);
-        // The buffer holds `dialog_path_bytes_max` bytes, so a selection
-        // within the limits was written whole.
-        assert(selection.bytes_len <= self.dialog_paths.len);
+        // The buffer holds more than `dialog_path_bytes_max` bytes, so a
+        // selection within the limits was written whole.
+        assert(selection.bytes_len <= self.core.limits.events.dialog_path_bytes_max);
+        assert(selection.bytes_len < self.dialog_paths.len);
         const bytes = self.dialog_paths[0..@intCast(selection.bytes_len)];
         assert(std.mem.count(u8, bytes, &.{0}) == selection.count - 1);
         return .{ .file_selected = .{ .bytes = bytes, .count = selection.count } };
@@ -855,9 +884,9 @@ fn onClose(window: *PlatformWindow) bool {
 /// The core's file dialog service, on the main thread during the drain. It
 /// sends the portal call and returns null: the dialog stays open while the
 /// loop keeps turning, and `pollDialog` queues the outcome once the Response
-/// arrives. The portal reports cancel and failure alike as no selection, so
-/// a call that fails arrives as `cancelled`. One dialog is open at a time: a
-/// second request while one is open fails at once and leaves the first open.
+/// arrives. A call that fails arrives as `failed` with its error, never as
+/// `cancelled`. One dialog is open at a time: a second request while one is
+/// open fails at once and leaves the first open.
 fn openDialog(
     context: *anyopaque,
     scratch: std.mem.Allocator,
@@ -882,20 +911,23 @@ fn openDialog(
         .many = core_tick.selectsMany(request),
     };
     const pending = &host.dialog.?;
+    const strings = host.dialog_paths;
     const begun = switch (request.kind) {
-        .open => |*options| pending.request.begin(.{ .open = options }),
-        .save => |*options| pending.request.begin(.{ .save = options }),
+        .open => |*options| pending.request.begin(.{ .open = options }, strings),
+        .save => |*options| pending.request.begin(.{ .save = options }, strings),
     };
+    // The call holds its own copy; the buffer next holds the Response's paths.
+    @memset(strings, 0);
     begun catch |err| {
         host.dialog = null;
         std.log.err("core host: the file dialog portal call failed: {t}", .{err});
-        return .cancelled;
+        return .{ .failed = err };
     };
     pending.fd = pending.request.fd() orelse {
         pending.request.close();
         host.dialog = null;
         std.log.err("core host: the session bus has no socket to poll", .{});
-        return .cancelled;
+        return .{ .failed = error.SessionBusNoSocket };
     };
     assert(pending.fd >= 0);
     return null;

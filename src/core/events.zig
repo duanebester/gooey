@@ -133,6 +133,15 @@ pub const EventQueue = struct {
         self.* = undefined;
     }
 
+    /// Free event slots. A native host reads more input only while this
+    /// holds its largest burst (`EventLimits.checkInputRoom`).
+    pub fn room(self: *const EventQueue) u32 {
+        assert(self.count <= self.events.len);
+        const free: u32 = @intCast(self.events.len - self.count);
+        assert(free <= self.events.len);
+        return free;
+    }
+
     /// Queue `event`, copying its text. Runs on the main thread.
     pub fn push(self: *EventQueue, event: Event) void {
         assert(self.count <= self.events.len);
@@ -230,19 +239,19 @@ pub const EventQueue = struct {
     /// boundary that fits, and the cut logged, rather than split or refused.
     fn copyPlatformText(self: *EventQueue, bytes: []const u8, kind: []const u8) []const u8 {
         assert(self.text_len <= self.text_bytes.len);
-        const room = self.text_bytes.len - self.text_len;
-        const kept = clipboard.prefixFitting(bytes, room);
+        const text_room = self.text_bytes.len - self.text_len;
+        const kept = clipboard.prefixFitting(bytes, text_room);
         if (kept < bytes.len) {
             std.log.warn("event queue: {s} of {d} bytes cut to {d}; {d} of {d} text bytes " ++
                 "were free. Raise ResourceLimits.events.text_bytes_max.", .{
                 kind,
                 bytes.len,
                 kept,
-                room,
+                text_room,
                 self.text_bytes.len,
             });
         }
-        assert(kept <= room);
+        assert(kept <= text_room);
         return self.copyBytes(bytes[0..kept]);
     }
 

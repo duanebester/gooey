@@ -6,6 +6,7 @@
 //! No JS↔WASM calls needed during frame processing.
 
 const input = @import("../../input/events.zig");
+const event_ring = @import("event_ring.zig");
 const geometry = @import("../../geometry/geometry.zig");
 
 /// Packed scroll event - exactly 24 bytes
@@ -25,39 +26,9 @@ comptime {
     if (@sizeOf(RawScrollEvent) != 24) @compileError("RawScrollEvent must be exactly 24 bytes");
 }
 
-pub const RING_SIZE = 16; // Power of 2, enough for scroll events
-
-/// Lock-free Single-Producer Single-Consumer ring buffer
-pub const ScrollEventRing = extern struct {
-    write_head: u32 align(4) = 0, // JS increments
-    read_head: u32 align(4) = 0, // Zig increments
-    events: [RING_SIZE]RawScrollEvent = undefined,
-
-    const Self = @This();
-
-    pub fn hasEvents(self: *volatile Self) bool {
-        return self.write_head != self.read_head;
-    }
-
-    pub fn pop(self: *volatile Self) ?RawScrollEvent {
-        const write = self.write_head;
-        const read = self.read_head;
-
-        if (read == write) return null;
-
-        const event = self.events[read & (RING_SIZE - 1)];
-        self.read_head = read +% 1;
-        return event;
-    }
-};
-
-comptime {
-    // Header (8 bytes) + events (16 * 24 = 384 bytes) = 392 bytes
-    if (@sizeOf(ScrollEventRing) != 8 + RING_SIZE * 24) @compileError("ScrollEventRing size mismatch");
-}
-
 // Global instance
-pub var g_scroll_ring: ScrollEventRing = .{};
+/// Events reserved by the core host from `events.queue_count_max`.
+pub var g_scroll_ring: event_ring.EventRing(RawScrollEvent) = .{};
 
 // Export pointer for JS
 fn getScrollRingPtr() callconv(.c) [*]u8 {

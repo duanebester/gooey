@@ -480,6 +480,23 @@ test "triangle, strip, and point meshes cover their shapes with one-pixel fades"
     try expectPixel(bgra_black, pixelAt(&pixels, 15, 5));
 }
 
+test "bufferPastBound names the buffer the D3D11 resource bound cannot hold" {
+    // Goal: every named profile fits the 128 MiB every device accepts, and a
+    // budget past it is refused by name before any buffer is created.
+    // Methodology: the paint ceiling's mesh points (as in the Vulkan
+    // renderer's `bufferPastRange` test) pass 2^27 bytes.
+    const profiles = [_]limits_mod.ResourceLimits{ .nano, .small, .standard, .large };
+    for (&profiles) |*profile| {
+        const limits = backend.RenderLimits.fromResourceLimits(profile);
+        try testing.expectEqual(null, dx11_renderer.bufferPastBound(&limits));
+    }
+    var past = backend.RenderLimits.fromResourceLimits(&limits_mod.ResourceLimits.large);
+    past.paint = limits_mod.PaintLimits.ceiling;
+    const buffer = dx11_renderer.bufferPastBound(&past).?;
+    try testing.expectEqual(dx11_renderer.SizedBuffer.mesh_points, buffer);
+    try testing.expect(dx11_renderer.bufferBytes(&past, buffer) > dx11_resources.buffer_bytes_max);
+}
+
 test "meshVertexCount expands each topology" {
     try testing.expectEqual(@as(u32, 21), dx11_renderer.meshVertexCount(.triangles, 3));
     try testing.expectEqual(@as(u32, 42), dx11_renderer.meshVertexCount(.triangles, 6));

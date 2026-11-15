@@ -285,12 +285,6 @@ pub fn dataOfferAddListener(offer: *WlDataOffer, listener: *const WlDataOfferLis
 // Clipboard State
 // =============================================================================
 
-/// Maximum clipboard buffer size (64 KB should be plenty for text)
-const MAX_CLIPBOARD_SIZE = 64 * 1024;
-
-/// Maximum number of MIME types to track per offer
-const MAX_MIME_TYPES = 16;
-
 /// Clipboard state - managed by the platform
 pub const ClipboardState = struct {
     // Wayland objects
@@ -308,8 +302,10 @@ pub const ClipboardState = struct {
     // Currently active data source (for copy)
     active_source: ?*WlDataSource = null,
 
-    // Buffer for clipboard text we're offering (copy)
-    copy_buffer: [MAX_CLIPBOARD_SIZE]u8 = undefined,
+    // Text we're offering (copy): the core clipboard's size (the largest
+    // `bytes_max` of a text kind with engines), reserved by the core host at
+    // init (`reserveCopy`), so every copy the core makes fits whole.
+    copy_buffer: []u8 = &.{},
     copy_len: usize = 0,
 
     // Serial for set_selection
@@ -323,6 +319,28 @@ pub const ClipboardState = struct {
     /// Initialize clipboard state
     pub fn init() Self {
         return .{};
+    }
+
+    /// Reserve the copy buffer, during the core host's initialization.
+    pub fn reserveCopy(self: *Self, gpa: std.mem.Allocator, bytes: u32) !void {
+        assert(self.copy_buffer.len == 0);
+        assert(bytes > 0);
+        self.copy_buffer = try gpa.alloc(u8, bytes);
+        self.copy_len = 0;
+        assert(self.copy_buffer.len == bytes);
+    }
+
+    /// Free the copy buffer after the core host stopped. A copy still
+    /// offered can no longer be sent, so the selection is withdrawn first.
+    pub fn releaseCopy(self: *Self, gpa: std.mem.Allocator) void {
+        assert(self.copy_buffer.len > 0);
+        if (self.active_source) |source| {
+            dataSourceDestroy(source);
+            self.active_source = null;
+        }
+        gpa.free(self.copy_buffer);
+        self.copy_buffer = &.{};
+        self.copy_len = 0;
     }
 
     /// Clean up clipboard resources
@@ -451,8 +469,9 @@ pub const ClipboardState = struct {
         const manager = self.data_device_manager orelse return false;
         const device = self.data_device orelse return false;
 
-        // Limit to buffer size
-        const len = @min(text.len, MAX_CLIPBOARD_SIZE);
+        // The core never copies more than its clipboard, the size reserved.
+        assert(text.len <= self.copy_buffer.len);
+        const len = text.len;
         if (len == 0) return false;
 
         // Store text in our buffer

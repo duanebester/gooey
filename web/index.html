@@ -104,10 +104,36 @@
       }
 
       // =========================================================
+      // Input rings shared with WASM (src/platform/web/event_ring.zig)
+      // =========================================================
+
+      // A ring header is four u32 words: write head, read head, capacity
+      // (events, a power of two, from ResourceLimits.events.queue_count_max)
+      // and the address of the events. Returns the byte offset of the slot
+      // to write, or -1 when the ring is full; the caller then advances the
+      // write head with ringCommit.
+      function ringSlot(ringPtr, eventBytes, name) {
+        const header = new Uint32Array(wasmInstance.exports.memory.buffer, ringPtr, 4);
+        const capacity = header[2];
+        if (((header[0] - header[1]) >>> 0) >= capacity) {
+          console.warn(
+            `[Gooey] ${name} ring full (${capacity} events), event dropped. ` +
+              "Raise ResourceLimits.events.queue_count_max.",
+          );
+          return -1;
+        }
+        return header[3] + (header[0] & (capacity - 1)) * eventBytes;
+      }
+
+      function ringCommit(ringPtr) {
+        const header = new Uint32Array(wasmInstance.exports.memory.buffer, ringPtr, 4);
+        header[0] = (header[0] + 1) >>> 0;
+      }
+
+      // =========================================================
       // Mouse Input System (Shared Memory Ring Buffer)
       // =========================================================
 
-      const MOUSE_RING_SIZE = 32;
       let mouseRingPtr = 0;
 
       // Pressed buttons, for drag detection
@@ -309,23 +335,8 @@
         if (!mouseRingPtr) return;
 
         const mem = wasmInstance.exports.memory.buffer;
-        const header = new Uint32Array(mem, mouseRingPtr, 2);
-
-        const writeHead = header[0];
-        const readHead = header[1];
-
-        // Check if ring is full
-        if (
-          ((writeHead + 1) & (MOUSE_RING_SIZE - 1)) ===
-          (readHead & (MOUSE_RING_SIZE - 1))
-        ) {
-          console.warn("[Gooey] Mouse event buffer full, dropping event");
-          return;
-        }
-
-        // Calculate slot address: 8-byte header + slot * 24 bytes per event
-        const slot = writeHead & (MOUSE_RING_SIZE - 1);
-        const eventOffset = mouseRingPtr + 8 + slot * 24;
+        const eventOffset = ringSlot(mouseRingPtr, 24, "Mouse");
+        if (eventOffset < 0) return;
 
         const view = new DataView(mem, eventOffset, 24);
         view.setFloat64(0, posX, true); // position_x
@@ -336,15 +347,13 @@
         view.setUint8(19, modifiers); // modifiers
         view.setUint32(20, 0, true); // reserved
 
-        // Advance write head
-        header[0] = writeHead + 1;
+        ringCommit(mouseRingPtr);
       }
 
       // =========================================================
       // Scroll/Wheel Input System (Shared Memory Ring Buffer)
       // =========================================================
 
-      const SCROLL_RING_SIZE = 16;
       let scrollRingPtr = 0;
 
       function initScroll() {
@@ -384,23 +393,8 @@
 
       function pushScrollEvent(posX, posY, deltaX, deltaY) {
         const mem = wasmInstance.exports.memory.buffer;
-        const header = new Uint32Array(mem, scrollRingPtr, 2);
-
-        const writeHead = header[0];
-        const readHead = header[1];
-
-        // Check if ring is full
-        if (
-          ((writeHead + 1) & (SCROLL_RING_SIZE - 1)) ===
-          (readHead & (SCROLL_RING_SIZE - 1))
-        ) {
-          console.warn("[Gooey] Scroll event buffer full, dropping event");
-          return;
-        }
-
-        // Calculate slot address: 8-byte header + slot * 24 bytes per event
-        const slot = writeHead & (SCROLL_RING_SIZE - 1);
-        const eventOffset = scrollRingPtr + 8 + slot * 24;
+        const eventOffset = ringSlot(scrollRingPtr, 24, "Scroll");
+        if (eventOffset < 0) return;
 
         const view = new DataView(mem, eventOffset, 24);
         view.setFloat64(0, posX, true); // position_x
@@ -408,8 +402,7 @@
         view.setFloat32(16, deltaX, true); // delta_x
         view.setFloat32(20, deltaY, true); // delta_y
 
-        // Advance write head
-        header[0] = writeHead + 1;
+        ringCommit(scrollRingPtr);
       }
 
       // =========================================================
@@ -506,8 +499,6 @@
       };
 
       const UNKNOWN_KEY = 0xffff;
-      const RING_SIZE = 32;
-      const TEXT_BUFFER_SIZE = 256;
 
       let keyRingPtr = 0;
       let textBufferPtr = 0;
@@ -677,23 +668,8 @@
         if (!keyRingPtr) return;
 
         const mem = wasmInstance.exports.memory.buffer;
-        const header = new Uint32Array(mem, keyRingPtr, 2);
-
-        const writeHead = header[0];
-        const readHead = header[1];
-
-        // Check if ring is full
-        if (
-          ((writeHead + 1) & (RING_SIZE - 1)) ===
-          (readHead & (RING_SIZE - 1))
-        ) {
-          console.warn("[Gooey] Key event buffer full, dropping event");
-          return;
-        }
-
-        // Calculate slot address
-        const slot = writeHead & (RING_SIZE - 1);
-        const eventOffset = keyRingPtr + 8 + slot * 8; // 8-byte header
+        const eventOffset = ringSlot(keyRingPtr, 8, "Key");
+        if (eventOffset < 0) return;
 
         const bytes = new Uint8Array(mem, eventOffset, 8);
         const view = new DataView(mem, eventOffset, 8);
@@ -707,8 +683,7 @@
         bytes[6] = 0; // reserved
         bytes[7] = 0; // reserved
 
-        // Advance write head
-        header[0] = writeHead + 1;
+        ringCommit(keyRingPtr);
       }
 
       function packModifiers(e) {
@@ -732,26 +707,26 @@
       function appendText(text) {
         if (!textBufferPtr) return;
 
+        // Header: length, capacity (ResourceLimits.events.text_bytes_max)
+        // and the address of the bytes (src/platform/web/text_buffer.zig).
         const mem = wasmInstance.exports.memory.buffer;
-        const lenPtr = new Uint32Array(mem, textBufferPtr, 1);
-        const dataPtr = new Uint8Array(
-          mem,
-          textBufferPtr + 4,
-          TEXT_BUFFER_SIZE,
-        );
+        const header = new Uint32Array(mem, textBufferPtr, 3);
+        const capacity = header[1];
+        const dataPtr = new Uint8Array(mem, header[2], capacity);
 
         const encoded = new TextEncoder().encode(text);
-        const currentLen = lenPtr[0];
-        const available = TEXT_BUFFER_SIZE - currentLen;
+        const currentLen = header[0];
+        const available = capacity - currentLen;
 
         const writeLen = utf8PrefixLength(encoded, available);
         if (writeLen < encoded.length) {
           console.warn(
-            `[Gooey] Text buffer full, kept ${writeLen} of ${encoded.length} bytes`,
+            `[Gooey] Text buffer full, kept ${writeLen} of ${encoded.length} bytes. ` +
+              "Raise ResourceLimits.events.text_bytes_max.",
           );
         }
         dataPtr.set(encoded.subarray(0, writeLen), currentLen);
-        lenPtr[0] = currentLen + writeLen;
+        header[0] = currentLen + writeLen;
       }
 
       let compositionBufferPtr = null;
@@ -782,13 +757,17 @@
         if (!compositionBufferPtr) return;
         const mem = new Uint8Array(wasmInstance.exports.memory.buffer);
         const view = new DataView(wasmInstance.exports.memory.buffer);
-        const dataPtr = compositionBufferPtr + 8; // data starts at offset 8
+        // Capacity (ResourceLimits.text.preedit_bytes_max) at offset 8 and
+        // the address of the bytes at 12 (composition_buffer.zig).
+        const capacity = view.getUint32(compositionBufferPtr + 8, true);
+        const dataPtr = view.getUint32(compositionBufferPtr + 12, true);
 
         const encoded = new TextEncoder().encode(text);
-        const writeLen = utf8PrefixLength(encoded, 256);
+        const writeLen = utf8PrefixLength(encoded, capacity);
         if (writeLen < encoded.length) {
           console.warn(
-            `[Gooey] Composition cut to ${writeLen} of ${encoded.length} bytes`,
+            `[Gooey] Composition cut to ${writeLen} of ${encoded.length} bytes. ` +
+              "Raise ResourceLimits.text.preedit_bytes_max.",
           );
         }
 

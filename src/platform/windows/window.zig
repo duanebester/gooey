@@ -63,6 +63,17 @@ const modal_turn_timer_id: usize = 1;
 /// (15.6 ms by default), so this asks for one turn per tick.
 const modal_turn_period_ms: u32 = 10;
 
+/// The most events one dispatched message pushes into the core's queue: an
+/// IME composition update reports its committed text, then its new preedit
+/// (`handleImeComposition`); every other input message translates to at
+/// most `windows_input.message_event_count_max`. The core host dispatches a
+/// message only while the queue has this much room.
+pub const input_burst_count_max: u32 = 2;
+
+comptime {
+    assert(input_burst_count_max >= windows_input.message_event_count_max);
+}
+
 /// How the core host drives this window (contract §9), as on macOS and
 /// Linux: the window pushes input into the core's queue and asks the host for
 /// a tick. The window never draws, and its renderer belongs to the host's
@@ -512,9 +523,9 @@ pub const Window = struct {
     // Input
     // =========================================================================
 
-    /// Translate one input message and deliver the events it produces: at
-    /// most one, except a capture loss, which releases each held button, and
-    /// a focus loss, which releases each held button and key.
+    /// Translate one input message and deliver the event it produces, at
+    /// most one (`windows_input.message_event_count_max`), a focus loss
+    /// included.
     fn translateAndDeliver(self: *Self, message: *const windows_input.Message) void {
         assert(self.hwnd != null);
         assert(self.scale_factor > 0);
@@ -524,21 +535,13 @@ pub const Window = struct {
             .time_ms = @bitCast(win32.GetMessageTime()),
             .pointer = self.messagePointer(message),
         };
-        const event_count_max: u32 = switch (message.id) {
-            win32.WM_CAPTURECHANGED => windows_input.mouse_button_count,
-            win32.WM_KILLFOCUS => windows_input.focus_lost_event_count_max,
-            else => 1,
-        };
-        var event_count: u32 = 0;
-        while (event_count < event_count_max) : (event_count += 1) {
-            const event = self.translator.translate(message, &context) orelse return;
-            self.applyPointerActions(self.translator.pointerActions(message.id, event));
-            if (self.closed) return;
-            _ = self.handleInput(event);
-        }
-        assert(event_count == event_count_max);
-        // A loss fills its bound only by releasing every held button.
-        if (event_count_max > 1) assert(self.translator.buttons_held == 0);
+        comptime assert(windows_input.message_event_count_max == 1);
+        const event = self.translator.translate(message, &context) orelse return;
+        self.applyPointerActions(self.translator.pointerActions(message.id, event));
+        if (self.closed) return;
+        _ = self.handleInput(event);
+        // A loss leaves nothing held for a second event to report.
+        if (message.id == win32.WM_KILLFOCUS) assert(self.translator.buttons_held == 0);
     }
 
     /// The pointer position `Context` reports for `message`, in logical

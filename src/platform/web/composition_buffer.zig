@@ -2,9 +2,18 @@
 //! Handles preedit/marked text during IME composition
 //!
 //! This buffer stores the composing text that appears with underlines
-//! before the user commits their input (e.g., typing Chinese pinyin).
+//! before the user commits their input (e.g., typing Chinese pinyin). It
+//! holds `ResourceLimits.text.preedit_bytes_max` bytes, reserved by the core
+//! host at init; JavaScript cuts a longer preedit on a codepoint boundary and
+//! logs the field (decision R2).
+//!
+//! Exported layout, read by JavaScript after `init`: byte 0 `len`, byte 4
+//! `active`, byte 5 `pending`, byte 8 `capacity`, byte 12 the address of the
+//! bytes.
 
-pub const BUFFER_SIZE = 256;
+const std = @import("std");
+
+const assert = std.debug.assert;
 
 /// Composition state from IME
 pub const CompositionBuffer = extern struct {
@@ -15,35 +24,39 @@ pub const CompositionBuffer = extern struct {
     /// One-shot event flag, including the empty event emitted on end/cancel.
     pending: u8 = 0,
     _pad: [2]u8 = .{ 0, 0 },
+    capacity: u32 = 0,
     /// The composing/preedit text
-    data: [BUFFER_SIZE]u8 = undefined,
+    data: [*]u8 = undefined,
 
     const Self = @This();
 
-    pub fn hasText(self: *const volatile Self) bool {
-        return self.len > 0;
+    comptime {
+        if (@sizeOf(usize) == 4) assert(@sizeOf(Self) == 16);
+    }
+
+    /// Reserve `capacity` bytes, during initialization only.
+    pub fn reserve(self: *Self, gpa: std.mem.Allocator, capacity: u32) !void {
+        assert(self.capacity == 0);
+        assert(capacity > 0);
+        const data = try gpa.alloc(u8, capacity);
+        self.data = data.ptr;
+        self.len = 0;
+        self.capacity = capacity;
+        assert(self.capacity == data.len);
     }
 
     pub fn hasPending(self: *const volatile Self) bool {
+        assert(self.len <= self.capacity);
         return self.pending != 0;
     }
 
     pub fn getText(self: *volatile Self) []const u8 {
         const length = self.len;
+        assert(length <= self.capacity);
         const non_volatile = @as(*Self, @volatileCast(self));
         return non_volatile.data[0..length];
     }
-
-    pub fn clear(self: *volatile Self) void {
-        self.len = 0;
-        self.active = 0;
-        self.pending = 0;
-    }
 };
-
-comptime {
-    if (@sizeOf(CompositionBuffer) != 8 + BUFFER_SIZE) @compileError("CompositionBuffer size mismatch");
-}
 
 // Global instance
 pub var g_composition_buffer: CompositionBuffer = .{};

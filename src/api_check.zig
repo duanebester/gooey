@@ -165,6 +165,9 @@ fn pinNamespaces() void {
     comptime {
         _ = gooey.animation;
         _ = gooey.input.InputEvent;
+        _ = @FieldType(gooey.input.InputEvent, "focus_lost");
+        _ = @FieldType(gooey.input.FocusLostEvent, "keys_held");
+        _ = gooey.input.held_key_count_max;
         _ = gooey.input.KeyCode;
         _ = gooey.input.Modifiers;
         _ = gooey.input.Keystroke;

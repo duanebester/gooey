@@ -17,6 +17,7 @@ const win32 = @import("win32.zig");
 const clipboard = @import("clipboard.zig");
 const windows_input = @import("input.zig");
 const windows_window = @import("window.zig");
+const core_events = @import("../../core/events.zig");
 
 const assert = std.debug.assert;
 const WindowId = window_registry.WindowId;
@@ -183,12 +184,18 @@ pub const WindowsPlatform = struct {
     }
 };
 
-/// Dispatch up to `message_batch_max` queued messages of this thread.
-/// Returns false when `WM_QUIT` arrives. The core host's loop calls it.
-pub fn dispatchMessageBatch() bool {
+/// Dispatch up to `message_batch_max` queued messages of this thread, each
+/// only while `queue` has `room_count_min` free slots, so input never
+/// overflows it: the rest stay queued until a tick drains it, and the wait
+/// (`MWMO_INPUTAVAILABLE`) returns at once for them. Returns false when
+/// `WM_QUIT` arrives. The core host's loop calls it.
+pub fn dispatchMessageBatch(queue: *const core_events.EventQueue, room_count_min: u32) bool {
+    assert(room_count_min > 0);
+    assert(room_count_min <= queue.events.len);
     var message: win32.MSG = undefined;
     var dispatched: u32 = 0;
     while (dispatched < message_batch_max) : (dispatched += 1) {
+        if (queue.room() < room_count_min) break;
         if (win32.PeekMessageW(&message, null, 0, 0, win32.PM_REMOVE) == win32.FALSE) break;
         if (message.message == win32.WM_QUIT) return false;
         // Produces `WM_CHAR` from key messages; the result says only whether

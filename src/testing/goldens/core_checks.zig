@@ -4912,6 +4912,8 @@ const DropProbe = struct {
     near_drops: u32 = 0,
     /// Keys the source's `on_key` received.
     source_keys: u32 = 0,
+    /// Key releases the source's `on_key` received.
+    source_key_ups: u32 = 0,
     other_drops: u32 = 0,
     blocked_drops: u32 = 0,
     dropped: ?u32 = null,
@@ -4942,6 +4944,7 @@ const DropProbe = struct {
     /// Space on the focused source picks it up.
     fn sourceKey(self: *DropProbe, effects: *Effects) void {
         const event = effects.inputEvent().?;
+        if (event.* == .key_up) self.source_key_ups += 1;
         if (event.* != .key_down) return;
         self.source_keys += 1;
         if (event.key_down.key == .space) effects.startDrag(probeId("source"));
@@ -5130,6 +5133,41 @@ test "a drag drops its payload after its source stops rendering, and is cancelle
     scrollMouse(app, &now, .{ .mouse_up = mouse(130, 20) });
     try testing.expectEqual(@as(u32, 1), app.state.near_drops);
     try testing.expectEqual(@as(u32, 0), app.state.preview_clicks);
+}
+
+test "a focus loss cancels the drag and releases each held key in one event" {
+    // Goal: decision R3 of the 0.6 budget plan. A platform reports a focus
+    // loss as one `focus_lost` carrying the gesture and the held keys; the
+    // core cancels the gesture as `pointer_cancelled` does and releases each
+    // key to the focused element. Methodology: focus the source, drag it
+    // over `near`, then lose focus with A and Shift held. The drag ends with
+    // no drop, the source's `on_key` sees two releases, and the release that
+    // follows clicks nothing. A second loss with nothing held changes nothing.
+    const app = try testing.allocator.create(DropProbeApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    keyDown(app, &now, .tab, .{});
+    try testing.expectEqual(probeId("source"), app.window.focus);
+    scrollMouse(app, &now, .{ .mouse_down = mouse(20, 20) });
+    scrollMouse(app, &now, dragged(130, 20));
+    try testing.expect(app.window.drag.phase == .active);
+
+    var keys: gooey.input.HeldKeys = .empty;
+    keys.set(@backingInt(gooey.input.KeyCode.a));
+    keys.set(@backingInt(gooey.input.KeyCode.shift));
+    scrollMouse(app, &now, .{ .focus_lost = .{ .pointer_cancelled = true, .keys_held = keys } });
+    try testing.expect(app.window.drag.phase == .idle);
+    try testing.expectEqual(@as(u32, 2), app.state.source_key_ups);
+    scrollMouse(app, &now, .{ .mouse_up = mouse(130, 20) });
+    try testing.expectEqual(@as(u32, 0), app.state.near_drops);
+    try testing.expectEqual(@as(u32, 0), app.state.preview_clicks);
+
+    scrollMouse(app, &now, .{ .focus_lost = .{ .pointer_cancelled = false, .keys_held = .empty } });
+    try testing.expectEqual(@as(u32, 2), app.state.source_key_ups);
+    try testing.expectEqual(probeId("source"), app.window.focus);
 }
 
 fn keyDown(app: anytype, now: *u64, key: gooey.input.KeyCode, modifiers: gooey.input.Modifiers) void {

@@ -22,6 +22,9 @@ pub const KeyCode = events.KeyCode;
 pub const Modifiers = events.Modifiers;
 pub const TextInputEvent = events.TextInputEvent;
 pub const CompositionEvent = events.CompositionEvent;
+pub const FocusLostEvent = events.FocusLostEvent;
+pub const HeldKeys = events.HeldKeys;
+pub const held_key_count_max = events.held_key_count_max;
 
 // =============================================================================
 // Keystrokes (keymaps live in the core, `core/keymap.zig`)

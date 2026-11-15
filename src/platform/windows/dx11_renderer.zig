@@ -149,7 +149,7 @@ fn pipelineState(pipeline: Pipeline) PipelineState {
 pub const InitError = dx11_device.Device.CreateError ||
     dx11_swapchain.Swapchain.CreateError ||
     dx11_resources.ResourceError ||
-    error{WindowTooLarge};
+    error{ Dx11BufferPastResourceLimit, WindowTooLarge };
 
 pub const Dx11Renderer = struct {
     device: dx11_device.Device,
@@ -243,6 +243,16 @@ pub const Dx11Renderer = struct {
     /// sizes (CLAUDE.md §2).
     fn initResources(self: *Self) InitError!void {
         assert(self.frame_count > 0);
+        if (bufferPastBound(&self.limits)) |buffer| {
+            log.err("frame buffer '{t}' needs {d} B (ResourceLimits.{s}), past the {d} B " ++
+                "every D3D11 device accepts", .{
+                buffer,
+                bufferBytes(&self.limits, buffer),
+                buffer.budget(),
+                dx11_resources.buffer_bytes_max,
+            });
+            return error.Dx11BufferPastResourceLimit;
+        }
         self.states = try dx11_resources.States.create(&self.device);
         errdefer self.states.release();
 
@@ -655,6 +665,56 @@ pub fn bindTarget(
     };
     context.vtable.RSSetScissorRects(context, 1, (&scissor)[0..1]);
     context.vtable.RSSetState(context, states.rasterizer);
+}
+
+/// A buffer `initResources` sizes from the budget, for `bufferPastBound`.
+pub const SizedBuffer = enum {
+    quads,
+    sprites,
+    meshes,
+    mesh_points,
+    edge_modes,
+    instance_indices,
+    upload_words,
+
+    /// The budget that sizes the buffer, to name in the failure.
+    pub fn budget(self: SizedBuffer) []const u8 {
+        return switch (self) {
+            .quads, .sprites, .meshes, .mesh_points, .edge_modes => "paint",
+            .instance_indices => "paint and ResourceLimits.atlas",
+            .upload_words => "atlas.upload_bytes_frame_max",
+        };
+    }
+};
+
+/// Bytes of `buffer` at `limits`, as `createFrame`, `createIndexSequence` and
+/// `Uploads.init` create it.
+pub fn bufferBytes(limits: *const backend.RenderLimits, buffer: SizedBuffer) u64 {
+    const paint = &limits.paint;
+    const bytes: u64 = switch (buffer) {
+        .quads => @as(u64, packed_mod.quadCapacity(paint)) * @sizeOf(packed_mod.Quad),
+        .sprites => @as(u64, packed_mod.spriteCapacity(paint)) * @sizeOf(packed_mod.Sprite),
+        .meshes => @as(u64, packed_mod.meshCapacity(paint)) * @sizeOf(packed_mod.Mesh),
+        .mesh_points => @as(u64, @max(packed_mod.meshPointCapacity(paint), 1)) *
+            @sizeOf(packed_mod.MeshPoint),
+        .edge_modes => @as(u64, packed_mod.triangleCapacity(paint)) *
+            @sizeOf(packed_mod.EdgeModes),
+        .instance_indices => @as(u64, instanceIndexCount(limits)) * @sizeOf(u32),
+        .upload_words => dx11_uploads.Uploads.wordsBytes(&limits.atlas),
+    };
+    assert(bytes > 0);
+    return bytes;
+}
+
+/// The first buffer larger than `dx11_resources.buffer_bytes_max`, which a
+/// device need not accept, or null when every one fits: the named check
+/// before creation, as the Vulkan renderer's `bufferPastRange`.
+pub fn bufferPastBound(limits: *const backend.RenderLimits) ?SizedBuffer {
+    assert(limits.paint.check() == null);
+    for (std.enums.values(SizedBuffer)) |buffer| {
+        if (bufferBytes(limits, buffer) > dx11_resources.buffer_bytes_max) return buffer;
+    }
+    return null;
 }
 
 /// The largest instance index a draw names: a quad, a sprite, a mesh, or a
