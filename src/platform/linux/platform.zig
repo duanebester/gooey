@@ -113,6 +113,12 @@ const text_input_listener = wayland.ZwpTextInputV3Listener{
     .done = LinuxPlatform.textInputDone,
 };
 
+/// Monotonic milliseconds for key repeat, on the clock `Window` uses for
+/// render deadlines. Wayland's key timestamps are on the compositor's clock.
+fn nowMs() u64 {
+    return @intCast(linux_window.awakeTimeMs());
+}
+
 pub const LinuxPlatform = struct {
     /// Cleared only by `quit`, a 0.3.1 call kept while `context/window.zig`
     /// compiles. The core host's loop ends when the window closes.
@@ -169,6 +175,10 @@ pub const LinuxPlatform = struct {
     modifier_ctrl: bool = false,
     modifier_shift: bool = false,
     modifier_super: bool = false,
+    /// Client-side key repeat: the compositor sends each held key once, with
+    /// the rate and delay in `repeat_info`. The core host turns its loop at
+    /// the deadline and calls `fireKeyRepeat`.
+    key_repeat: linux_input.KeyRepeat = .{},
 
     // Active window for input dispatch, frame pacing and interactive
     // move/resize. Derived from `window_registry.active_window` — write it
@@ -1305,13 +1315,11 @@ pub const LinuxPlatform = struct {
     ) callconv(.c) void {
         _ = keyboard;
         _ = surface;
+        // Keys already held at enter do not repeat, as in GTK: their press
+        // time, which the delay counts from, is unknown.
         _ = keys;
         const self: *Self = @ptrCast(@alignCast(data));
-
-        // Reset key repeat tracker on focus gain
-        if (self.active_window) |window| {
-            window.key_repeat_tracker.reset();
-        }
+        self.key_repeat.clear();
     }
 
     fn keyboardLeave(
@@ -1324,9 +1332,9 @@ pub const LinuxPlatform = struct {
         _ = surface;
         const self: *Self = @ptrCast(@alignCast(data));
 
-        // Reset key repeat tracker and click tracker on focus loss
+        // The compositor sends no release for keys held as focus leaves.
+        self.key_repeat.clear();
         if (self.active_window) |window| {
-            window.key_repeat_tracker.reset();
             window.click_tracker.reset();
         }
         // Another window took the keyboard mid-drag, as Alt+Tab does; its
@@ -1363,15 +1371,18 @@ pub const LinuxPlatform = struct {
         // Keymap received - in a full implementation we'd parse this with xkbcommon
     }
 
+    /// Keys per second and milliseconds of delay, from the user's settings;
+    /// a rate of zero turns repeat off. Sent after the keymap and again when
+    /// the settings change.
     fn keyboardRepeatInfo(
         data: ?*anyopaque,
         keyboard: *wayland.Keyboard,
-        _: i32,
-        _: i32,
+        rate: i32,
+        delay: i32,
     ) callconv(.c) void {
-        _ = data;
         _ = keyboard;
-        // Repeat info received - could be used for key repeat handling
+        const self: *Self = @ptrCast(@alignCast(data));
+        self.key_repeat.configure(rate, delay);
     }
 
     fn keyboardKey(
@@ -1398,11 +1409,10 @@ pub const LinuxPlatform = struct {
         );
 
         if (state == .pressed) {
-            // Check if this is a repeat
-            var is_repeat = false;
-            if (self.active_window) |window| {
-                is_repeat = window.key_repeat_tracker.checkAndPress(key);
-            }
+            // A compositor that repeats for the client sends repeats as
+            // presses; they reach the app as repeats and close nothing.
+            const press = self.key_repeat.press(key, nowMs());
+            const is_repeat = press == .synthesized;
 
             // Dispatch key_down event to active window
             if (self.active_window) |window| {
@@ -1410,7 +1420,7 @@ pub const LinuxPlatform = struct {
                 const handled = window.handleInput(event);
 
                 // Handle built-in shortcuts only if not handled by app
-                if (!handled) {
+                if (!handled and !is_repeat) {
                     if (self.closeOnShortcut(window, key)) return;
                 }
 
@@ -1422,12 +1432,43 @@ pub const LinuxPlatform = struct {
             }
         } else {
             // Key released
+            self.key_repeat.release(key, nowMs());
             if (self.active_window) |window| {
-                window.key_repeat_tracker.release(key);
-
                 const event = linux_input.keyUpEvent(key, modifiers);
                 _ = window.handleInput(event);
             }
+        }
+    }
+
+    /// Milliseconds until the next key repeat is due, 0 when one is, or null
+    /// when no key repeats. The core host sleeps no longer than this.
+    pub fn keyRepeatTimeoutMs(self: *const Self) ?u32 {
+        return self.key_repeat.timeoutMs(nowMs());
+    }
+
+    /// Send the key repeat due now, if any: a key_down marked as a repeat,
+    /// then the key's character, as for a press. Called once per loop turn,
+    /// after that turn's events, so a release read in the same turn cancels
+    /// it, and repeat adds at most two events to the queue per turn.
+    pub fn fireKeyRepeat(self: *Self) void {
+        const now_ms = nowMs();
+        const key = self.key_repeat.fire(now_ms) orelse return;
+        // The next repeat is a full deadline away: at most one per turn.
+        std.debug.assert(self.key_repeat.timeoutMs(now_ms).? > 0);
+        const window = self.active_window orelse return self.key_repeat.clear();
+        // While the input method composes, it owns the keyboard and repeats
+        // its own keys; the core drops key downs then, so stop instead.
+        if (window.hasMarkedText()) return self.key_repeat.stop();
+        std.debug.assert(linux_input.repeats(key));
+        const modifiers = linux_input.modifiersFromFlags(
+            self.modifier_shift,
+            self.modifier_ctrl,
+            self.modifier_alt,
+            self.modifier_super,
+        );
+        _ = window.handleInput(linux_input.keyDownEvent(key, modifiers, true));
+        if (!self.modifier_ctrl and !self.modifier_alt and !self.modifier_super) {
+            self.sendKeyText(window, key);
         }
     }
 

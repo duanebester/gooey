@@ -66,7 +66,7 @@ else
 
 /// Monotonic milliseconds for `Window.requestRenderAfter`. The callers carry
 /// no `Io`, so this uses the process-lifetime global.
-fn awakeTimeMs() i64 {
+pub fn awakeTimeMs() i64 {
     const io = std.Io.Threaded.global_single_threaded.io();
     const now_ms = std.Io.Timestamp.now(io, .awake).toMilliseconds();
     std.debug.assert(now_ms >= 0);
@@ -161,9 +161,6 @@ pub const Window = struct {
 
     /// Click tracker for multi-click detection
     click_tracker: linux_input.ClickTracker = .{},
-
-    /// Key repeat tracker
-    key_repeat_tracker: linux_input.KeyRepeatTracker = .{},
 
     /// Currently pressed mouse button (for drag detection)
     pressed_button: ?input.MouseButton = null,

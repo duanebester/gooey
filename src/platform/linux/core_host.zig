@@ -399,6 +399,8 @@ pub const Host = struct {
     fn runLoop(self: *Host) void {
         assert(self.thread != null);
         while (!self.quit) {
+            // Before the tick, so the repeat's events reach this turn's drain.
+            self.platform.fireKeyRepeat();
             if (self.tick_scheduled.swap(false, .acq_rel)) self.mainTick();
             if (self.quit) break;
             self.syncIme();
@@ -440,7 +442,8 @@ pub const Host = struct {
             assert(rounds < prepare_read_rounds_max);
             if (wayland.wl_display_dispatch_pending(self.display) < 0) return false;
         }
-        // A passed render deadline schedules a tick here.
+        // A passed render deadline schedules a tick here; a due key repeat
+        // makes the poll return at once.
         const timeout_ms = self.deadlineTimeoutMs();
         // Dispatched events may have scheduled a tick or closed the window.
         if (self.tick_scheduled.load(.acquire) or self.quit) {
@@ -514,10 +517,21 @@ pub const Host = struct {
         return .{ .file_selected = .{ .bytes = bytes, .count = selection.count } };
     }
 
+    /// How long the main loop may sleep: until the next key repeat or the
+    /// last build's render deadline, whichever is sooner, or -1 without
+    /// either. The next turn fires a due repeat (`runLoop`).
+    fn deadlineTimeoutMs(self: *Host) i32 {
+        const render_ms = self.renderDeadlineTimeoutMs();
+        const repeat_ms = self.platform.keyRepeatTimeoutMs() orelse return render_ms;
+        assert(repeat_ms <= std.math.maxInt(i32));
+        if (render_ms < 0) return @intCast(repeat_ms);
+        return @min(render_ms, @as(i32, @intCast(repeat_ms)));
+    }
+
     /// How long the main loop may sleep before the last build's render
     /// deadline (`cx.requestRenderAfter`, caret blink), or -1 without one.
     /// A passed deadline schedules the tick that fires it.
-    fn deadlineTimeoutMs(self: *Host) i32 {
+    fn renderDeadlineTimeoutMs(self: *Host) i32 {
         const deadline = self.core.renderDeadlineNs() orelse return -1;
         const now_ns = self.nowNs();
         if (now_ns >= deadline) {
