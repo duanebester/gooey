@@ -8,7 +8,8 @@
 //! waits on the List `scroll_to` decision, so the port leaves them out.
 //! Selection went with them: 0.3.1 never wired a row click, so only those
 //! buttons selected a row. The header sits above the list, which scrolls
-//! vertically only; the 650 px of columns fit the window.
+//! vertically only. Name takes the width the other columns leave, so header
+//! and rows reach the scrollbar; below 650 px of columns they overflow.
 //!
 //! Run with: zig build run-data-table
 
@@ -34,7 +35,10 @@ comptime {
     assert(@backingInt(Column.modified) + 1 == column_count);
 }
 const column_names = [column_count][]const u8{ "ID", "Name", "Status", "Size", "Modified" };
+/// Every column's width; Name's is its minimum, since it grows into the
+/// width the fixed columns leave.
 const column_widths = [column_count]f32{ 80, 200, 100, 120, 150 };
+const column_grow: Column = .name;
 const table_width: f32 = blk: {
     var total: f32 = 0;
     for (column_widths) |width| total += width;
@@ -249,7 +253,8 @@ const Header = struct {
         const s = cx.state(State);
         cx.render(ui.box(.{ .style = .{
             .direction = .row,
-            .width = .{ .fixed = table_width },
+            .width = .{ .grow = 1 },
+            .width_min = table_width,
             .height = .{ .fixed = header_height },
             .background = .{ .rgba = Color.rgba(0, 0, 0, 0.05) },
         } }, .{HeaderCells{ .sort_column = s.sort_column, .direction = s.sort_direction }}));
@@ -261,7 +266,7 @@ const HeaderCells = struct {
     direction: SortDirection,
 
     pub fn render(self: HeaderCells, cx: *Cx) void {
-        inline for (column_names, column_widths, 0..) |name, width, index| {
+        inline for (column_names, 0..) |name, index| {
             const sorted = self.sort_column == @as(Column, @fromBackingInt(@intCast(index)));
             const label = if (!sorted)
                 name
@@ -270,15 +275,22 @@ const HeaderCells = struct {
                 .key = .{ .name = name },
                 .on_click = cx.on(State.sortBy, .{ .arg = @as(u32, index) }),
                 .a11y = .{ .role = .button, .label = label },
-                .style = cell_style(width, header_height),
+                .style = cell_style(index, header_height),
             }, .{ui.text(label, .{ .size = 13, .weight = .semibold, .color = .text })}));
         }
     }
 };
 
-fn cell_style(width: f32, height: f32) ui.Style {
+fn cell_style(column: u32, height: f32) ui.Style {
+    assert(column < column_count);
+    assert(height > 0);
+    const width = column_widths[column];
+    const grows = column == @backingInt(column_grow);
     return .{
-        .width = .{ .fixed = width },
+        // The only grow cell in its row takes all the free width, whatever
+        // its text, so header and row cells line up.
+        .width = if (grows) .{ .grow = 1 } else .{ .fixed = width },
+        .width_min = if (grows) width else null,
         .height = .{ .fixed = height },
         .padding = .symmetric(8, 0),
         .alignment = .{ .main = .center },
@@ -312,7 +324,8 @@ const TableRow = struct {
         };
         cx.render(ui.box(.{ .style = .{
             .direction = .row,
-            .width = .{ .fixed = table_width },
+            .width = .{ .grow = 1 },
+            .width_min = table_width,
             .height = .{ .grow = 1 },
             .background = background,
         } }, .{RowCells{ .cells = &cells }}));
@@ -323,8 +336,8 @@ const RowCells = struct {
     cells: *const [column_count][]const u8,
 
     pub fn render(self: RowCells, cx: *Cx) void {
-        inline for (self.cells.*, column_widths) |cell, width| {
-            cx.render(ui.box(.{ .style = cell_style(width, row_height) }, .{
+        inline for (self.cells.*, 0..) |cell, index| {
+            cx.render(ui.box(.{ .style = cell_style(index, row_height) }, .{
                 ui.text(cell, .{ .size = 13, .color = .text }),
             }));
         }
