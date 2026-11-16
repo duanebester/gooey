@@ -284,6 +284,8 @@ fn pinCx() void {
         _ = inset;
         _ = @as(gooey.TitleBar.Inset, .{ .top = 0, .left = 0, .right = 0 });
         _ = @as(@FieldType(gooey.Config(struct {}), "title_bar"), .transparent);
+        _ = @as(@FieldType(gooey.Config(struct {}), "min_width"), 0);
+        _ = @as(@FieldType(gooey.Config(struct {}), "min_height"), 0);
         const measure: fn (*Cx, []const u8, gooey.ui.Text, f32) Cx.TextSize = Cx.measureText;
         _ = measure;
         _ = @as(Cx.TextSize, .{ .width = 0, .height = 0 });

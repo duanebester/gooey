@@ -44,6 +44,7 @@ const std = @import("std");
 const win32 = @import("win32.zig");
 const platform_mod = @import("platform.zig");
 const window_mod = @import("window.zig");
+const interface = @import("../interface.zig");
 const clipboard = @import("clipboard.zig");
 const file_dialog = @import("file_dialog.zig");
 const core_window = @import("../../core/window.zig");
@@ -107,6 +108,7 @@ pub fn run(comptime App: type, app: *App, backing: std.mem.Allocator, io: std.Io
         .width = @floatFromInt(App.width),
         .height = @floatFromInt(App.height),
         .background_color = App.theme.bg,
+        .min_size = interface.minSize(App.min_width, App.min_height),
         .limits = App.limits_reserved,
     });
     defer window.deinit();

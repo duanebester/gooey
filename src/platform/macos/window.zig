@@ -64,8 +64,8 @@ pub const Window = struct {
     scale_factor: f64,
     /// The budget's framebuffer, which caps the content size (`applySizeLimits`).
     window_limits: limits_mod.WindowLimits,
-    /// `WindowOptions.min_size` and `max_size`: frame sizes in points, as
-    /// `setMinSize:` and `setMaxSize:` take them.
+    /// `WindowOptions.min_size` and `max_size`: content sizes in points, as
+    /// `setContentMinSize:` and `setContentMaxSize:` take them.
     min_size: ?geometry.Size(f64),
     max_size: ?geometry.Size(f64),
     /// The backing scale the content size limits were last applied for; 0
@@ -490,18 +490,16 @@ pub const Window = struct {
         assert(self.ns_window.value != null);
         var content_max = contentSizeMax(&self.window_limits, scale_factor);
         if (self.max_size) |max_size| {
-            const content = self.contentSizeForFrame(max_size);
-            content_max.width = @min(content_max.width, content.width);
-            content_max.height = @min(content_max.height, content.height);
+            content_max.width = @min(content_max.width, max_size.width);
+            content_max.height = @min(content_max.height, max_size.height);
         }
         self.ns_window.msgSend(void, "setContentMaxSize:", .{
             NSSize{ .width = content_max.width, .height = content_max.height },
         });
         if (self.min_size) |min_size| {
-            const content = self.contentSizeForFrame(min_size);
             self.ns_window.msgSend(void, "setContentMinSize:", .{NSSize{
-                .width = @min(content.width, content_max.width),
-                .height = @min(content.height, content_max.height),
+                .width = @min(min_size.width, content_max.width),
+                .height = @min(min_size.height, content_max.height),
             }});
         }
         self.size_limits_scale = scale_factor;
@@ -535,24 +533,6 @@ pub const Window = struct {
         assert(content.size.width >= 0);
         assert(content.size.height >= 0);
         return geometry.Size(f64).init(content.size.width, content.size.height);
-    }
-
-    /// The content size a frame of `frame_size` points holds, for converting
-    /// the frame-sized `min_size` and `max_size` into content limits.
-    fn contentSizeForFrame(self: *const Self, frame_size: geometry.Size(f64)) geometry.Size(f64) {
-        assert(self.ns_window.value != null);
-        assert(frame_size.width >= 0);
-        assert(frame_size.height >= 0);
-        const frame = NSRect{
-            .origin = .{ .x = 0, .y = 0 },
-            .size = .{ .width = frame_size.width, .height = frame_size.height },
-        };
-        const content: NSRect =
-            self.ns_window.msgSend(NSRect, "contentRectForFrameRect:", .{frame});
-        return geometry.Size(f64).init(
-            @max(content.size.width, 0),
-            @max(content.size.height, 0),
-        );
     }
 
     /// A core app resizes through its queue: the next built frame carries the

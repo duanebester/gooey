@@ -155,28 +155,35 @@ holds the `ui.A11y` enums.
 
 ### App, Config, and ResourceLimits
 
-`Config` has four required fields and eight reviewed defaults:
+`Config` has four required fields and ten reviewed defaults:
 
-| Field       | Default         | Meaning                                                    |
-| ----------- | --------------- | ---------------------------------------------------------- |
-| `title`     | required        | Window title.                                              |
-| `width`     | required        | Initial width in logical pixels.                           |
-| `height`    | required        | Initial height in logical pixels.                          |
-| `limits`    | required        | The `ResourceLimits` budget. There is no default.          |
-| `theme`     | `&Theme.light`  | The theme every color token resolves against.              |
-| `keymap`    | `&.{}`          | Keyboard bindings for actions.                             |
-| `entities`  | `&.{}`          | Entity types, one fixed pool each.                         |
-| `fonts`     | `.{}`           | App and mono families, and their size.                     |
-| `jobs`      | `&.{}`          | Background job types `effects.spawn` may start.            |
-| `title_bar` | `.standard`     | macOS: `.transparent` draws the title bar over content.    |
-| `on_init`   | `null`          | `fn (*State, gooey.Init, *Effects) void`, run at init.     |
-| `on_deinit` | `null`          | `fn (state: *State) void`, run after jobs stop at exit.    |
+| Field        | Default         | Meaning                                                    |
+| ------------ | --------------- | ---------------------------------------------------------- |
+| `title`      | required        | Window title.                                              |
+| `width`      | required        | Initial width in logical pixels.                           |
+| `height`     | required        | Initial height in logical pixels.                          |
+| `limits`     | required        | The `ResourceLimits` budget. There is no default.          |
+| `theme`      | `&Theme.light`  | The theme every color token resolves against.              |
+| `keymap`     | `&.{}`          | Keyboard bindings for actions.                             |
+| `entities`   | `&.{}`          | Entity types, one fixed pool each.                         |
+| `fonts`      | `.{}`           | App and mono families, and their size.                     |
+| `jobs`       | `&.{}`          | Background job types `effects.spawn` may start.            |
+| `title_bar`  | `.standard`     | macOS: `.transparent` draws the title bar over content.    |
+| `min_width`  | `0`             | Smallest content width a resize allows; 0 sets none.       |
+| `min_height` | `0`             | Smallest content height a resize allows; 0 sets none.      |
+| `on_init`    | `null`          | `fn (*State, gooey.Init, *Effects) void`, run at init.     |
+| `on_deinit`  | `null`          | `fn (state: *State) void`, run after jobs stop at exit.    |
 
 `on_init` is the last initialization work. `gooey.Init` carries the process's `io` (files,
 sockets, clocks) and `environ` (its environment variables, a `std.process.Environ.Map`);
 keep what the app needs in `State`. Headless apps and the web get their io and an empty
 environment. `on_deinit` runs once at shutdown, after every job has returned and before
 anything is freed.
+
+`min_width` and `min_height` are content sizes in logical pixels, like `width` and `height`,
+and must not exceed them or the budget's framebuffer (a compile error names the field).
+macOS, Linux (Wayland's `xdg_toplevel.set_min_size`), and Windows enforce them; the web and
+fbdev ignore them. Derive them from the layout's own minimum, such as a column's `width_min`.
 
 Unknown fields are compile errors. Pick the smallest profile that fits. Each profile's
 `text.fonts` is the `FontLimits` profile of the same name, the faces the app loads at init:
