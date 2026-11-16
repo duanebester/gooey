@@ -726,6 +726,9 @@ pub const Window = struct {
     width: f32,
     height: f32,
     scale_factor: f32,
+    /// The window controls a transparent title bar draws over the content
+    /// (`cx.titleBarInset`); all zero until the host reports them.
+    title_bar_inset: events.TitleBar.Inset,
     clear_color: records.Color,
     // Build state, owned by `Cx`.
     /// Open boxes, `build.box_depth_max` deep.
@@ -944,6 +947,7 @@ pub noinline fn initInPlace(self: *Window, gpa: std.mem.Allocator, options: *con
     self.width = options.width;
     self.height = options.height;
     self.scale_factor = options.scale_factor;
+    self.title_bar_inset = .{};
     self.clear_color = options.theme.bg;
     self.open_depth = 0;
     self.component_depth = 0;

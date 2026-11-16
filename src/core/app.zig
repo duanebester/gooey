@@ -34,6 +34,7 @@ pub const FontLimits = limits_mod.FontLimits;
 /// A family for `Fonts.mono`: an installed name or a platform family.
 pub const FontSource = text_mod.TextSystem.FaceSource;
 pub const Theme = element.Theme;
+pub const TitleBar = @import("events.zig").TitleBar;
 pub const Effects = handler_mod.Effects;
 pub const Window = window_mod.Window;
 pub const Cx = cx_mod.Cx;
@@ -69,6 +70,17 @@ pub fn Config(comptime State: type) type {
         keymap: []const Binding = &.{},
         entities: []const type = &.{},
         fonts: Fonts = .{},
+        /// macOS: `.transparent` draws the title bar over full-size content
+        /// (`TitleBar`, `cx.titleBarInset`). Other platforms ignore it.
+        title_bar: TitleBar = .standard,
+        /// The smallest content size the user can resize the window to, in
+        /// logical pixels like `width` and `height`; 0 sets no minimum on
+        /// that axis. macOS, Linux (Wayland), and Windows enforce it; the
+        /// web and fbdev, whose size the page or the screen decides, ignore
+        /// it. A minimum past the budget's framebuffer at the display's
+        /// scale yields to that cap, as the window size itself does.
+        min_width: u32 = 0,
+        min_height: u32 = 0,
         /// Background job types `Effects.spawn` may start (`gooey.Job`);
         /// non-empty starts `limits.events.job_count_max` workers at init.
         jobs: []const type = &.{},
@@ -125,6 +137,37 @@ fn checkFonts(comptime State: type, comptime config: Config(State)) void {
         if (config.fonts.mono == null and mono_faces > 0) {
             @compileError("gooey.App: limits.text.fonts.mono_variants reserves faces but " ++
                 "fonts.mono is null");
+        }
+    }
+}
+
+/// Reject a minimum window size that cannot work, naming the field: one
+/// larger than the size the window opens at, or than the budget's
+/// framebuffer holds even at scale 1, where a logical pixel is one pixel.
+fn checkMinSize(comptime State: type, comptime config: Config(State)) void {
+    comptime {
+        const window = config.limits.window;
+        if (config.min_width > config.width) {
+            @compileError(std.fmt.comptimePrint("gooey.App: min_width {d} is above " ++
+                "width {d}", .{ config.min_width, config.width }));
+        }
+        if (config.min_height > config.height) {
+            @compileError(std.fmt.comptimePrint("gooey.App: min_height {d} is above " ++
+                "height {d}", .{ config.min_height, config.height }));
+        }
+        if (config.min_width > window.framebuffer_width_max) {
+            @compileError(std.fmt.comptimePrint("gooey.App: min_width {d} is above " ++
+                "ResourceLimits.window.framebuffer_width_max {d}", .{
+                config.min_width,
+                window.framebuffer_width_max,
+            }));
+        }
+        if (config.min_height > window.framebuffer_height_max) {
+            @compileError(std.fmt.comptimePrint("gooey.App: min_height {d} is above " ++
+                "ResourceLimits.window.framebuffer_height_max {d}", .{
+                config.min_height,
+                window.framebuffer_height_max,
+            }));
         }
     }
 }
@@ -219,6 +262,7 @@ pub fn App(
         assert(config.width > 0);
         assert(config.height > 0);
         checkFonts(State, config);
+        checkMinSize(State, config);
     }
     return struct {
         guard: lifecycle.LifecycleGuard,
@@ -251,6 +295,9 @@ pub fn App(
         pub const limits_reserved = debugger.reservedLimits(&config.limits);
         pub const title = config.title;
         pub const theme = config.theme;
+        pub const title_bar = config.title_bar;
+        pub const min_width = config.min_width;
+        pub const min_height = config.min_height;
         pub const width = config.width;
         pub const height = config.height;
         pub const font_limits = config.limits.text.fonts;

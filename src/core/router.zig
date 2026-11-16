@@ -153,6 +153,13 @@ pub fn route(window: *Window, event: *const events.Event) void {
                 window.scale_factor = size.scale_factor;
                 window.render_requested = true;
             },
+            .title_bar => |inset| {
+                assert(inset.top >= 0);
+                assert(inset.left >= 0);
+                assert(inset.right >= 0);
+                window.title_bar_inset = inset;
+                window.render_requested = true;
+            },
             .close_requested => window.quit_requested = true,
         },
     }

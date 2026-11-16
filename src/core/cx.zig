@@ -18,6 +18,7 @@ const element = @import("element.zig");
 const retained = @import("retained.zig");
 const text_engine = @import("text_engine.zig");
 const window_mod = @import("window.zig");
+const events = @import("events.zig");
 const a11y_value = @import("a11y_value.zig");
 const debugger = @import("debugger.zig");
 const layout_mod = @import("../layout/layout.zig");
@@ -102,6 +103,18 @@ pub const Cx = opaque {
 
     pub fn theme(self: *const Cx) *const element.Theme {
         return windowOf(self).theme;
+    }
+
+    /// The window controls a transparent title bar draws over the content
+    /// (`Config.title_bar`), so the app can keep its own controls clear of
+    /// them and line them up with the traffic lights. All zero for a
+    /// standard title bar, off macOS, and in full screen.
+    pub fn titleBarInset(self: *const Cx) events.TitleBar.Inset {
+        const inset = windowOf(self).title_bar_inset;
+        assert(inset.top >= 0);
+        assert(inset.left >= 0);
+        assert(inset.right >= 0);
+        return inset;
     }
 
     /// The text system's base font metrics, for components that size boxes

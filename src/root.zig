@@ -70,6 +70,8 @@ pub const Painter = core.Painter;
 pub const PathPromptOptions = core.PathPromptOptions;
 pub const SavePromptOptions = core.SavePromptOptions;
 pub const Paths = core.Paths;
+/// macOS title bar style for `Config.title_bar`; other platforms ignore it.
+pub const TitleBar = core.TitleBar;
 pub const InputEngine = core.InputEngine;
 pub const AreaEngine = core.AreaEngine;
 pub const EditorEngine = core.EditorEngine;

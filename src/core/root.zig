@@ -38,6 +38,7 @@ pub const Effects = handler.Effects;
 pub const PathPromptOptions = handler.PathPromptOptions;
 pub const SavePromptOptions = handler.SavePromptOptions;
 pub const Paths = events.Paths;
+pub const TitleBar = events.TitleBar;
 pub const Entity = handler.Entity;
 pub const ElementId = id.ElementId;
 pub const Key = id.Key;

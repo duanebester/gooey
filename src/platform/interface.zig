@@ -9,6 +9,7 @@
 const std = @import("std");
 const geometry = @import("../geometry/geometry.zig");
 const ResourceLimits = @import("../core/limits.zig").ResourceLimits;
+const TitleBar = @import("../core/events.zig").TitleBar;
 const window_registry = @import("window_registry.zig");
 
 // =============================================================================
@@ -200,14 +201,19 @@ pub const WindowOptions = struct {
     /// Background color.
     background_color: geometry.Color = geometry.Color.rgba(0.2, 0.2, 0.25, 1.0),
 
-    /// Minimum window size.
+    /// Minimum content (client) size in logical pixels, as `width` and
+    /// `height` are; the platform's frame is added outside it. See `minSize`.
     min_size: ?geometry.Size(f64) = null,
 
-    /// Maximum window size.
+    /// Maximum content (client) size in logical pixels.
     max_size: ?geometry.Size(f64) = null,
 
     /// Start the window centered on screen.
     centered: bool = true,
+
+    /// `Config.title_bar`. Only the macOS backend reads it; the others keep
+    /// their usual frame.
+    title_bar: TitleBar = .standard,
 
     /// The application's validated per-window budget. Backends size renderer
     /// instance storage from it during `PlatformWindow.init` rather than from
@@ -215,3 +221,31 @@ pub const WindowOptions = struct {
     /// there is no default profile (CLAUDE.md §2).
     limits: ResourceLimits,
 };
+
+/// `WindowOptions.min_size` for `Config.min_width` and `min_height`: null
+/// when neither is set, so the platform sets no minimum. An axis left at 0
+/// becomes 1 logical pixel, which limits nothing, because Windows asserts
+/// both axes positive and `set_min_size` takes them together.
+pub fn minSize(width: u32, height: u32) ?geometry.Size(f64) {
+    if (width == 0 and height == 0) return null;
+    const size = geometry.Size(f64).init(
+        @floatFromInt(@max(width, 1)),
+        @floatFromInt(@max(height, 1)),
+    );
+    std.debug.assert(size.width >= 1);
+    std.debug.assert(size.height >= 1);
+    return size;
+}
+
+test "minSize sets no minimum for 0 by 0 and keeps a set axis exactly" {
+    // Goal: an app that sets only `min_width` gets that width and a height
+    // that limits nothing; an app that sets neither asks the platform for
+    // nothing, and a set axis is not rounded or swapped.
+    try std.testing.expectEqual(@as(?geometry.Size(f64), null), minSize(0, 0));
+    const width_only = minSize(400, 0).?;
+    try std.testing.expectEqual(@as(f64, 400), width_only.width);
+    try std.testing.expectEqual(@as(f64, 1), width_only.height);
+    const both = minSize(320, 240).?;
+    try std.testing.expectEqual(@as(f64, 320), both.width);
+    try std.testing.expectEqual(@as(f64, 240), both.height);
+}

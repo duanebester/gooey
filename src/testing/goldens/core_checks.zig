@@ -2389,6 +2389,66 @@ test "pressClaims takes presses on controls and leaves empty chrome to the windo
     try testing.expectEqual(@as(u32, 1), app.state.clicks);
 }
 
+const InsetState = struct {};
+
+/// A toolbar that lines its one button up with a transparent title bar's
+/// traffic lights, as chat-zig does: the row is the strip's height and
+/// starts past the lights. Headless, the host is the test.
+const InsetApp = gooey.App(InsetState, insetRender, .{
+    .title = "Inset",
+    .width = 300,
+    .height = 200,
+    .limits = .nano,
+    .title_bar = .transparent,
+});
+
+fn insetRender(cx: *Cx) void {
+    const inset = cx.titleBarInset();
+    cx.render(ui.box(.{ .style = .{
+        .direction = .row,
+        .width = .{ .grow = 1 },
+        .height = .{ .fixed = @max(inset.top, 16) },
+        .padding = .{ .left = inset.left, .right = inset.right },
+        .alignment = .{ .cross = .center },
+    } }, .{
+        ui.box(.{
+            .style = .{ .width = .{ .fixed = 16 }, .height = .{ .fixed = 16 } },
+            .a11y = .{ .role = .button, .label = "History" },
+        }, .{}),
+    }));
+}
+
+test "titleBarInset reaches the next build when the host reports a new one" {
+    // Goal: macOS reports the traffic lights' area as a `title_bar` window
+    // event, at bind and whenever a resize or full screen moves them. The
+    // tick that drains it must rebuild with it, with no other input to
+    // prompt a render, and a later report must replace it, not add to it.
+    const app = try testing.allocator.create(InsetApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    const before = nodeNamed(&app.window, .button, "History").?.bounds;
+    try testing.expectEqual(@as(f32, 0), before.x);
+    try testing.expectEqual(@as(f32, 0), before.y);
+
+    app.window.queue.push(.{ .window = .{ .title_bar = .{ .top = 28, .left = 74 } } });
+    now += 1;
+    app.tick(now);
+    const beside = nodeNamed(&app.window, .button, "History").?.bounds;
+    try testing.expectEqual(@as(f32, 74), beside.x);
+    try testing.expectEqual(@as(f32, 6), beside.y);
+
+    // Full screen: nothing is inset, so the toolbar returns to the corner.
+    app.window.queue.push(.{ .window = .{ .title_bar = .{} } });
+    now += 1;
+    app.tick(now);
+    const corner = nodeNamed(&app.window, .button, "History").?.bounds;
+    try testing.expectEqual(@as(f32, 0), corner.x);
+    try testing.expectEqual(@as(f32, 0), corner.y);
+}
+
 fn chord(key: gooey.input.KeyCode, modifiers: gooey.input.Modifiers) gooey.input.KeyEvent {
     return .{
         .key = key,

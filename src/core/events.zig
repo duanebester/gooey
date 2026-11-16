@@ -20,7 +20,38 @@ pub const InputEvent = input.InputEvent;
 
 pub const WindowEvent = union(enum) {
     resized: struct { width: f32, height: f32, scale_factor: f32 },
+    /// The window controls the content must stay clear of changed
+    /// (`Config.title_bar = .transparent`, macOS only).
+    title_bar: TitleBar.Inset,
     close_requested,
+};
+
+/// How the window's title bar meets the content (`Config.title_bar`).
+///
+/// macOS only; every other platform ignores it and draws its usual frame.
+/// - `standard`: the system title bar sits above the content.
+/// - `transparent`: the content fills the whole window and the title bar
+///   draws over it without a background or title, so only the traffic
+///   lights show. `cx.titleBarInset` says how much of the top edge they
+///   occupy. A press in that strip that no element claims
+///   (`on_click`, focus, a drag, a scrollbar) moves the window, and a
+///   double click zooms it (or does what the user set in System Settings).
+pub const TitleBar = enum {
+    standard,
+    transparent,
+
+    /// The window-control area a transparent title bar draws over the
+    /// content, in logical pixels. `top` is the height of the title strip;
+    /// `left` or `right` is how far the traffic lights reach in from that
+    /// edge, with the margin AppKit leaves on their outer side mirrored on
+    /// the inner one (they sit on the right in right-to-left languages).
+    /// All zero for `.standard`, off macOS, and in full screen, where the
+    /// title bar slides in over the content only on demand.
+    pub const Inset = struct {
+        top: f32 = 0,
+        left: f32 = 0,
+        right: f32 = 0,
+    };
 };
 
 /// The result of an operation that finished outside the handler that asked

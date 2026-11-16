@@ -40,6 +40,7 @@ fn pinSurface() void {
         _ = gooey.PathPromptOptions;
         _ = gooey.SavePromptOptions;
         _ = gooey.Paths;
+        _ = gooey.TitleBar;
         _ = gooey.InputEngine;
         _ = gooey.AreaEngine;
         _ = gooey.EditorEngine;
@@ -279,6 +280,12 @@ fn pinCx() void {
             _ = @FieldType(Cx.ScrollPosition, name);
         }
         _ = @as(Cx.ScrollPosition.Target, .end);
+        const inset: fn (*const Cx) gooey.TitleBar.Inset = Cx.titleBarInset;
+        _ = inset;
+        _ = @as(gooey.TitleBar.Inset, .{ .top = 0, .left = 0, .right = 0 });
+        _ = @as(@FieldType(gooey.Config(struct {}), "title_bar"), .transparent);
+        _ = @as(@FieldType(gooey.Config(struct {}), "min_width"), 0);
+        _ = @as(@FieldType(gooey.Config(struct {}), "min_height"), 0);
         const measure: fn (*Cx, []const u8, gooey.ui.Text, f32) Cx.TextSize = Cx.measureText;
         _ = measure;
         _ = @as(Cx.TextSize, .{ .width = 0, .height = 0 });
@@ -305,7 +312,7 @@ fn pinExact() void {
             "InputEngine", "AreaEngine",        "EditorEngine",      "ResourceLimits",
             "FontLimits",  "FontSource",        "Color",             "animation",
             "input",       "text",              "accessibility",     "log",
-            "std_options", "testing",           "internals",
+            "std_options", "testing",           "internals",         "TitleBar",
         });
         expectDecls(gooey.ui, "gooey.ui", &.{
             "box",          "text",          "paint",           "Paint",        "when",
@@ -323,6 +330,7 @@ fn pinExact() void {
             "hovered",        "focused", "requestRenderAfter", "now",         "limits",
             "bounds",         "scroll",  "drag",               "on",          "retain",
             "get",            "release", "render",             "measureText", "TextSize",
+            "titleBarInset",
         });
         expectDecls(gooey.text, "gooey.text", &.{
             "Metrics",     "FontWeight",     "FontFamily",
