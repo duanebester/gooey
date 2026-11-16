@@ -14,11 +14,12 @@ Join the [Gooey discord](https://discord.gg/bmzAZnZJyw)
 [ci]: https://github.com/duanebester/gooey/actions/workflows/ci.yml
 
 Example app built with Gooey: [**chat-zig**](https://github.com/duanebester/chat-zig),
-an Anthropic Claude client.
+a Claude and GPT chat client, shown in its Light, Latte, Macchiato,
+and Dark themes.
 
 <a href="https://github.com/duanebester/chat-zig">
   <img src="https://github.com/duanebester/gooey/blob/main/assets/screenshots/chat-zig.png"
-    height="360px" />
+    width="720px" />
 </a>
 
 ## Features
