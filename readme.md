@@ -9,15 +9,11 @@ Join the [Gooey discord](https://discord.gg/bmzAZnZJyw)
 <img src="https://github.com/duanebester/gooey/blob/main/assets/gooey-logo-final.png"
   height="100px" />
 
-> **0.4.0 replaces the 0.3.1 API:** `gooey.run`, `gooey.core.*`, `cx.animations`, `cx.changed`,
-> `cx.accessible`, `cx.io()`, `gooey.file_dialog`, and the validation helpers are gone.
-> This readme describes the 0.5 series (0.4.0's API, plus later additions).
-
 [![CI](https://github.com/duanebester/gooey/actions/workflows/ci.yml/badge.svg?branch=main)][ci]
 
 [ci]: https://github.com/duanebester/gooey/actions/workflows/ci.yml
 
-Example app built with Gooey 0.2.9: [**chat-zig**](https://github.com/duanebester/chat-zig),
+Example app built with Gooey: [**chat-zig**](https://github.com/duanebester/chat-zig),
 an Anthropic Claude client.
 
 <a href="https://github.com/duanebester/chat-zig">
@@ -1033,7 +1029,7 @@ pub const std_options = gooey.std_options;
 - **Known gaps:** the web host has no file dialogs and does not load images yet. The IME
   candidate window is placed at the caret, whatever character range the input method asks
   about. Linux has no screen reader bridge.
-- **Cut in 0.4.0:** multi-window (one window per app), liquid glass, custom shaders, and
+- **Cut:** multi-window (one window per app), liquid glass, custom shaders, and
   post-processing.
 - **Deferred:** drag and drop between apps or with the OS, edge auto-scroll during a drag,
   and tooltip layers.
