@@ -51,6 +51,10 @@ pub fn registerClass() !void {
     // Required for receiving events
     if (!cls.addMethod("acceptsFirstResponder", acceptsFirstResponder)) return error.MethodAddFailed;
     if (!cls.addMethod("isFlipped", isFlipped)) return error.MethodAddFailed;
+    if (!cls.addMethod("acceptsFirstMouse:", acceptsFirstMouse)) return error.MethodAddFailed;
+    if (!cls.addMethod("mouseDownCanMoveWindow", mouseDownCanMoveWindow)) {
+        return error.MethodAddFailed;
+    }
 
     // Keyboard events
     if (!cls.addMethod("keyDown:", keyDown)) return error.MethodAddFailed;
@@ -195,6 +199,22 @@ fn isFlipped(_: objc.c.id, _: objc.c.SEL) callconv(.c) bool {
     return true;
 }
 
+/// A press on an inactive window's transparent title strip moves it, as on
+/// a standard title bar; anywhere else the first click only activates.
+fn acceptsFirstMouse(self: objc.c.id, _: objc.c.SEL, event: objc.c.id) callconv(.c) bool {
+    const window = getWindow(self) orelse return false;
+    if (event == null) return false;
+    const mouse = parseMouseEvent(self, event, .mouse_down).mouse_down;
+    return window.titleStripTakesPress(mouse.position);
+}
+
+/// AppKit never moves the window on its own for a press in this view: the
+/// content may draw controls under a transparent title bar, so only
+/// `Window.pressTitleBar`, after the core declined the press, moves it.
+fn mouseDownCanMoveWindow(_: objc.c.id, _: objc.c.SEL) callconv(.c) bool {
+    return false;
+}
+
 // =============================================================================
 // Mouse Method Implementations
 // =============================================================================
@@ -204,7 +224,8 @@ fn isFlipped(_: objc.c.id, _: objc.c.SEL) callconv(.c) bool {
 /// composition through `insertText:`, which queues ahead of the click, so it
 /// reaches the field that owns it before the click moves focus. The click
 /// is queued whether or not the input method used it: the view cannot tell
-/// a click on the marked text from one elsewhere.
+/// a click on the marked text from one elsewhere. A press the core does not
+/// claim may then move the window from a transparent title strip.
 fn mouseDown(self: objc.c.id, _: objc.c.SEL, event: objc.c.id) callconv(.c) void {
     const window = getWindow(self) orelse return;
     if (window.hasMarkedText()) {
@@ -213,7 +234,8 @@ fn mouseDown(self: objc.c.id, _: objc.c.SEL, event: objc.c.id) callconv(.c) void
             _ = objc.Object.fromId(context).msgSend(bool, "handleEvent:", .{event});
         }
     }
-    _ = window.handleInput(parseMouseEvent(self, event, .mouse_down));
+    const press = parseMouseEvent(self, event, .mouse_down);
+    if (!window.handleInput(press)) window.pressTitleBar(event, press.mouse_down);
 }
 
 fn mouseUp(self: objc.c.id, _: objc.c.SEL, event: objc.c.id) callconv(.c) void {

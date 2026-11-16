@@ -9,6 +9,7 @@
 const std = @import("std");
 const geometry = @import("../geometry/geometry.zig");
 const ResourceLimits = @import("../core/limits.zig").ResourceLimits;
+const TitleBar = @import("../core/events.zig").TitleBar;
 const window_registry = @import("window_registry.zig");
 
 // =============================================================================
@@ -208,6 +209,10 @@ pub const WindowOptions = struct {
 
     /// Start the window centered on screen.
     centered: bool = true,
+
+    /// `Config.title_bar`. Only the macOS backend reads it; the others keep
+    /// their usual frame.
+    title_bar: TitleBar = .standard,
 
     /// The application's validated per-window budget. Backends size renderer
     /// instance storage from it during `PlatformWindow.init` rather than from

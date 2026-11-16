@@ -34,6 +34,7 @@ pub const FontLimits = limits_mod.FontLimits;
 /// A family for `Fonts.mono`: an installed name or a platform family.
 pub const FontSource = text_mod.TextSystem.FaceSource;
 pub const Theme = element.Theme;
+pub const TitleBar = @import("events.zig").TitleBar;
 pub const Effects = handler_mod.Effects;
 pub const Window = window_mod.Window;
 pub const Cx = cx_mod.Cx;
@@ -69,6 +70,9 @@ pub fn Config(comptime State: type) type {
         keymap: []const Binding = &.{},
         entities: []const type = &.{},
         fonts: Fonts = .{},
+        /// macOS: `.transparent` draws the title bar over full-size content
+        /// (`TitleBar`, `cx.titleBarInset`). Other platforms ignore it.
+        title_bar: TitleBar = .standard,
         /// Background job types `Effects.spawn` may start (`gooey.Job`);
         /// non-empty starts `limits.events.job_count_max` workers at init.
         jobs: []const type = &.{},
@@ -251,6 +255,7 @@ pub fn App(
         pub const limits_reserved = debugger.reservedLimits(&config.limits);
         pub const title = config.title;
         pub const theme = config.theme;
+        pub const title_bar = config.title_bar;
         pub const width = config.width;
         pub const height = config.height;
         pub const font_limits = config.limits.text.fonts;

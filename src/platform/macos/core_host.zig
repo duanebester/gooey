@@ -93,6 +93,7 @@ pub fn run(comptime App: type, app: *App, backing: std.mem.Allocator, io: std.Io
         .width = @floatFromInt(App.width),
         .height = @floatFromInt(App.height),
         .background_color = App.theme.bg,
+        .title_bar = App.title_bar,
         .limits = App.limits_reserved,
     });
     defer window.deinit();

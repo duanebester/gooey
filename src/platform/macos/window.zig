@@ -16,6 +16,7 @@ const input = @import("../../input/events.zig");
 const appkit = @import("appkit.zig");
 const interface_mod = @import("../interface.zig");
 const WindowOptions = interface_mod.WindowOptions;
+const TitleBar = core_events.TitleBar;
 const core_events = @import("../../core/events.zig");
 const core_router = @import("../../core/router.zig");
 const core_clipboard = @import("../../core/clipboard.zig");
@@ -79,6 +80,12 @@ pub const Window = struct {
     /// out both, and matches Linux.
     title_buf: [title_bytes_max + 1]u8,
     title_len: u16,
+    /// `WindowOptions.title_bar`, fixed at creation.
+    title_bar: TitleBar,
+    /// The traffic-light area of a `.transparent` title bar, as last
+    /// measured (`measureTitleBarInset`) and reported to the core. Its `top`
+    /// is the strip where an unclaimed press moves the window.
+    title_bar_inset: TitleBar.Inset,
 
     /// Owned +1 from `window_delegate.create`, released once in `deinit`.
     delegate: ?objc.Object = null,
@@ -207,6 +214,9 @@ pub const Window = struct {
             // owns the copy and the NUL termination.
             .title_buf = @splat(0),
             .title_len = 0,
+            .title_bar = options.title_bar,
+            // `createNSWindow` measures it once the traffic lights exist.
+            .title_bar_inset = .{},
         };
 
         assert(self.core == null);
@@ -224,8 +234,12 @@ pub const Window = struct {
 
         const NSWindow = objc.getClass("NSWindow") orelse return error.ClassNotFound;
 
-        // Titled | closable | miniaturizable | resizable.
-        const style_mask: u64 = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3);
+        // Titled | closable | miniaturizable | resizable, and for a transparent
+        // title bar `NSWindowStyleMaskFullSizeContentView`, which extends the
+        // content view under the title bar.
+        const style_full_size_content: u64 = 1 << 15;
+        const style_mask: u64 = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3) |
+            if (options.title_bar == .transparent) style_full_size_content else 0;
 
         const content_rect = NSRect{
             .origin = .{ .x = 100, .y = 100 },
@@ -253,6 +267,13 @@ pub const Window = struct {
         assert(!self.ns_window.msgSend(bool, "isReleasedWhenClosed", .{}));
 
         self.setTitle(options.title);
+        if (options.title_bar == .transparent) {
+            // The title stays set for the Window menu, Mission Control, and
+            // VoiceOver; it is only not drawn.
+            const ns_window_title_hidden: c_long = 1;
+            self.ns_window.msgSend(void, "setTitlebarAppearsTransparent:", .{true});
+            self.ns_window.msgSend(void, "setTitleVisibility:", .{ns_window_title_hidden});
+        }
 
         // The backing scale of the screen the window opened on decides the
         // cap, which must shrink an oversized request before `center` places it.
@@ -270,6 +291,7 @@ pub const Window = struct {
         self.ns_view = try input_view.create(view_frame, self);
         self.ns_window.msgSend(void, "setContentView:", .{self.ns_view.value});
         assert(self.ns_view.value != null);
+        self.title_bar_inset = self.measureTitleBarInset();
     }
 
     /// Set the close callback. Return false from callback to prevent window close.
@@ -327,7 +349,9 @@ pub const Window = struct {
     }
 
     /// Queue `event` for the core's next drain. Only a key the keymap claims
-    /// counts as handled, so every other key still reaches the IME. While the
+    /// counts as handled, so every other key still reaches the IME, and only
+    /// a press the router will act on (`Query.pressClaims`), so a press on
+    /// empty title strip still moves the window (`pressTitleBar`). While the
     /// IME holds marked text it owns every key (Escape cancels the
     /// composition, Return accepts a candidate), so a key down is neither
     /// queued nor claimed: no binding or `on_key` handler may act on a
@@ -341,6 +365,10 @@ pub const Window = struct {
         binding.schedule_tick(binding.context);
         return switch (event) {
             .key_down => |key| binding.query.keymapClaims(key),
+            .mouse_down => |mouse| binding.query.pressClaims(.{
+                .x = @floatCast(mouse.position.x),
+                .y = @floatCast(mouse.position.y),
+            }),
             else => false,
         };
     }
@@ -350,6 +378,11 @@ pub const Window = struct {
         assert(self.core == null);
         assert(self.ns_view.value != null);
         self.core = binding;
+        // The core starts with no inset; the first tick drains this before
+        // it builds, so the first frame already stays clear of the lights.
+        if (self.title_bar == .transparent) {
+            binding.queue.push(.{ .window = .{ .title_bar = self.title_bar_inset } });
+        }
     }
 
     // =========================================================================
@@ -414,6 +447,8 @@ pub const Window = struct {
         // budget allows; a shrink re-enters here first (`applySizeLimits`).
         if (new_scale != self.size_limits_scale) self.applySizeLimits(new_scale);
         assert(self.size_limits_scale == new_scale);
+        // Full screen hides the strip, and a zoom or resize can follow it.
+        if (self.title_bar == .transparent) self.updateTitleBarInset();
 
         const bounds: NSRect = self.ns_view.msgSend(NSRect, "bounds", .{});
 
@@ -543,6 +578,121 @@ pub const Window = struct {
         assert(self.ns_window.value != null);
         if (self.on_close) |callback| return callback(self);
         return true;
+    }
+
+    // =========================================================================
+    // Transparent title bar
+    // =========================================================================
+
+    /// Measure the traffic lights again and, when they moved, tell the core.
+    fn updateTitleBarInset(self: *Self) void {
+        assert(self.title_bar == .transparent);
+        const inset = self.measureTitleBarInset();
+        if (std.meta.eql(inset, self.title_bar_inset)) return;
+        self.title_bar_inset = inset;
+        const binding = self.core orelse return; // `bindCore` reports it.
+        binding.queue.push(.{ .window = .{ .title_bar = inset } });
+        binding.schedule_tick(binding.context);
+    }
+
+    /// The traffic-light area, read from AppKit rather than assumed: the
+    /// strip's height and the buttons' size have changed between macOS
+    /// releases. The strip is the part of the content view above
+    /// `contentLayoutRect`, which AppKit keeps clear of the title bar.
+    fn measureTitleBarInset(self: *const Self) TitleBar.Inset {
+        assert(self.title_bar == .transparent);
+        assert(self.ns_view.value != null);
+        // The content view fills the window, so its bounds are the window's
+        // content area; `contentLayoutRect` is in window coordinates, y up.
+        const bounds: NSRect = self.ns_view.msgSend(NSRect, "bounds", .{});
+        const layout: NSRect = self.ns_window.msgSend(NSRect, "contentLayoutRect", .{});
+        const strip_height = bounds.size.height - (layout.origin.y + layout.size.height);
+        const close_button: c_ulong = 0; // NSWindowCloseButton
+        const zoom_button: c_ulong = 2; // NSWindowZoomButton
+        const close = self.buttonRect(close_button) orelse return .{};
+        const zoom = self.buttonRect(zoom_button) orelse return .{};
+        const close_max_x = close.origin.x + close.size.width;
+        const zoom_max_x = zoom.origin.x + zoom.size.width;
+        return titleBarInset(.{
+            .width = bounds.size.width,
+            .strip_height = strip_height,
+            .buttons_min_x = @min(close.origin.x, zoom.origin.x),
+            .buttons_max_x = @max(close_max_x, zoom_max_x),
+        });
+    }
+
+    /// A standard window button's frame in window coordinates, or null when
+    /// the window has none of that kind.
+    fn buttonRect(self: *const Self, kind: c_ulong) ?NSRect {
+        assert(kind <= 2);
+        const button = self.ns_window.msgSend(objc.c.id, "standardWindowButton:", .{kind});
+        if (button == null) return null;
+        const view = objc.Object.fromId(button);
+        const bounds: NSRect = view.msgSend(NSRect, "bounds", .{});
+        const nil: objc.c.id = null;
+        const rect: NSRect = view.msgSend(NSRect, "convertRect:toView:", .{ bounds, nil });
+        assert(rect.size.width >= 0);
+        return rect;
+    }
+
+    /// Whether a press at `position` (view coordinates, y down) falls on the
+    /// transparent title strip where no element claims it. `acceptsFirstMouse:`
+    /// asks before the press is queued, so a drag can start from an inactive
+    /// window as it can from a standard title bar.
+    pub fn titleStripTakesPress(self: *const Self, position: geometry.Point(f64)) bool {
+        assert(std.math.isFinite(position.x));
+        assert(std.math.isFinite(position.y));
+        if (self.title_bar != .transparent) return false;
+        if (!(position.y < self.title_bar_inset.top)) return false;
+        const binding = self.core orelse return true;
+        return !binding.query.pressClaims(.{
+            .x = @floatCast(position.x),
+            .y = @floatCast(position.y),
+        });
+    }
+
+    /// Act on a left press the app did not claim (`pushCoreInput`), as a
+    /// standard title bar would when it lands on the transparent strip: a
+    /// double click runs the user's title bar action, any other press moves
+    /// the window. `performWindowDragWithEvent:` tracks the drag itself and
+    /// returns at once when the pointer does not move, so the second press
+    /// of a double click arrives here as usual.
+    pub fn pressTitleBar(self: *Self, event: objc.c.id, mouse: input.MouseEvent) void {
+        assert(event != null);
+        assert(mouse.button == .left);
+        if (self.title_bar != .transparent) return;
+        if (!(mouse.position.y < self.title_bar_inset.top)) return;
+        if (mouse.click_count == 2) {
+            self.titleBarDoubleClick();
+        } else {
+            self.ns_window.msgSend(void, "performWindowDragWithEvent:", .{event});
+        }
+    }
+
+    /// Run the action System Settings chose for a title bar double click
+    /// (Desktop & Dock), `AppleActionOnDoubleClick`: "Minimize" minimizes,
+    /// "None" does nothing, and anything else, including no setting, zooms.
+    fn titleBarDoubleClick(self: *Self) void {
+        assert(self.title_bar == .transparent);
+        const NSUserDefaults = objc.getClass("NSUserDefaults") orelse return;
+        const NSString = objc.getClass("NSString") orelse return;
+        const defaults = NSUserDefaults.msgSend(objc.Object, "standardUserDefaults", .{});
+        const key = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{
+            @as([*:0]const u8, "AppleActionOnDoubleClick"),
+        });
+        const value = defaults.msgSend(objc.c.id, "stringForKey:", .{key.value});
+        var action: []const u8 = "";
+        if (value != null) {
+            const bytes = objc.Object.fromId(value).msgSend(?[*:0]const u8, "UTF8String", .{});
+            if (bytes) |pointer| action = std.mem.span(pointer);
+        }
+        const nil: objc.c.id = null;
+        if (std.mem.eql(u8, action, "None")) return;
+        if (std.mem.eql(u8, action, "Minimize")) {
+            self.ns_window.msgSend(void, "miniaturize:", .{nil});
+        } else {
+            self.ns_window.msgSend(void, "zoom:", .{nil});
+        }
     }
 
     pub fn setTitle(self: *Self, new_title: []const u8) void {
@@ -697,6 +847,59 @@ pub const Window = struct {
         self.metal_layer.msgSend(void, "setDrawableSize:", .{drawable_size});
     }
 };
+
+/// The inset of a transparent title strip `strip_height` points tall whose
+/// traffic lights span `buttons_min_x` to `buttons_max_x` in a content view
+/// `width` points wide. The lights sit on the side their centre is on, with
+/// AppKit's outer margin repeated past them. A strip with no height is full
+/// screen, which shows the title bar only on demand, so nothing is inset.
+fn titleBarInset(measured: struct {
+    width: f64,
+    strip_height: f64,
+    buttons_min_x: f64,
+    buttons_max_x: f64,
+}) TitleBar.Inset {
+    assert(measured.width >= 0);
+    assert(measured.buttons_min_x <= measured.buttons_max_x);
+    if (!(measured.strip_height > 0)) return .{};
+    const top: f32 = @floatCast(@ceil(measured.strip_height));
+    if (measured.buttons_min_x + measured.buttons_max_x <= measured.width) {
+        const left = @max(measured.buttons_max_x + measured.buttons_min_x, 0);
+        return .{ .top = top, .left = @floatCast(@ceil(left)) };
+    } else {
+        const right_edge = measured.width - measured.buttons_min_x;
+        const right = @max(right_edge + (measured.width - measured.buttons_max_x), 0);
+        return .{ .top = top, .right = @floatCast(@ceil(right)) };
+    }
+}
+
+test "titleBarInset puts the lights' inset on their side and none in full screen" {
+    // Goal: the inset follows the lights to whichever edge they sit on, keeps
+    // their outer margin on the inner side, and rounds partial points up so
+    // content never overlaps them. Inputs are asymmetric so a swapped edge
+    // or a dropped margin gives a different number.
+    const ltr = titleBarInset(.{
+        .width = 500,
+        .strip_height = 27.5,
+        .buttons_min_x = 7,
+        .buttons_max_x = 66.5,
+    });
+    try std.testing.expectEqual(TitleBar.Inset{ .top = 28, .left = 74 }, ltr);
+    const rtl = titleBarInset(.{
+        .width = 500,
+        .strip_height = 32,
+        .buttons_min_x = 433.5,
+        .buttons_max_x = 493,
+    });
+    try std.testing.expectEqual(TitleBar.Inset{ .top = 32, .right = 74 }, rtl);
+    const full_screen = titleBarInset(.{
+        .width = 1440,
+        .strip_height = 0,
+        .buttons_min_x = 7,
+        .buttons_max_x = 66,
+    });
+    try std.testing.expectEqual(TitleBar.Inset{}, full_screen);
+}
 
 /// The largest content size, in whole points, whose framebuffer at
 /// `scale_factor` fits `ResourceLimits.window`. Flooring keeps the pixel size
