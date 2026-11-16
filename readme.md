@@ -860,7 +860,7 @@ import-ban` fails if `components/` or `charts/` reference `gooey.internals`. Imp
 | `Modal(Child)`  | Dialog over a backdrop on a modal layer                                     |
 | `List(Row)`     | Virtual list that builds only visible rows                                  |
 | `TextInput`     | Single-line input bound to a `[]const u8`                                   |
-| `TextArea`      | Multi-line input; needs `limits.text.area`                                  |
+| `TextArea`      | Multi-line input; `width = null` fills the parent; needs `limits.text.area` |
 | `CodeEditor`    | Line numbers, status bar, Tab indent; needs `limits.text.editor`            |
 | `Lucide`        | SVG data for every Lucide icon, for `Painter.svg`                           |
 
