@@ -145,6 +145,9 @@ pub const Host = struct {
     viewport_clamp_logged: bool,
     /// The cursor last set on the window, main thread only.
     cursor: core_element.CursorShape,
+    /// The theme the window's appearance was last set from, main thread
+    /// only; null until `initInPlace` applies the configured one.
+    theme: ?*const core_element.Theme,
     /// The IME caret rect of the last rendered frame `syncIme` saw, and the
     /// marked text length the last built frame drained. Main thread only.
     ime_rect: ?records.Rect,
@@ -185,6 +188,8 @@ pub const Host = struct {
         self.stopping = .init(false);
         self.viewport_clamp_logged = false;
         self.cursor = .default;
+        self.theme = null;
+        applyAppearance(self);
         self.ime_rect = null;
         self.ime_owner = null;
         self.built_frame_number = 0;
@@ -298,6 +303,7 @@ fn mainTick(context: ?*anyopaque) callconv(.c) void {
     if (host.core.phase != .idle) return;
     host.tick_main(host.app, host.nowNs());
     applyCursor(host);
+    applyAppearance(host);
     syncIme(host);
     host.render_deadline_ns.store(host.core.render_deadline_ns, .release);
     if (host.core.quit_requested) {
@@ -365,6 +371,17 @@ fn applyCursor(host: *Host) void {
     host.window.setCursorShape(host.core.cursor);
     host.cursor = host.core.cursor;
     assert(host.cursor == host.core.cursor);
+}
+
+/// Match the title bar to the core's theme (`Config.theme`, then
+/// `effects.setTheme`), only when the theme changed, so an idle tick makes
+/// no `NSAppearance` calls.
+fn applyAppearance(host: *Host) void {
+    assert(host.core.phase == .idle);
+    if (host.theme == host.core.theme) return;
+    host.window.setAppearance(host.core.theme.isDark());
+    host.theme = host.core.theme;
+    assert(host.theme.? == host.core.theme);
 }
 
 fn onClose(window: *PlatformWindow) bool {
