@@ -228,7 +228,10 @@ pub const WindowOptions = struct {
 /// both axes positive and `set_min_size` takes them together.
 pub fn minSize(width: u32, height: u32) ?geometry.Size(f64) {
     if (width == 0 and height == 0) return null;
-    const size = geometry.Size(f64).init(@floatFromInt(@max(width, 1)), @floatFromInt(@max(height, 1)));
+    const size = geometry.Size(f64).init(
+        @floatFromInt(@max(width, 1)),
+        @floatFromInt(@max(height, 1)),
+    );
     std.debug.assert(size.width >= 1);
     std.debug.assert(size.height >= 1);
     return size;
