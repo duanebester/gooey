@@ -1162,7 +1162,11 @@ pub const TextArea = struct {
     key: []const u8,
     bind: *[]const u8,
     placeholder: []const u8 = "",
-    width: f32 = 300,
+    /// Null fills the parent's free width, as `TextInput.width` does. The
+    /// text paints into the width laid out this frame, and nothing the
+    /// build computes (scroll, caret row, accessibility value) depends on
+    /// it, so a resize draws at the new width with no frame of lag.
+    width: ?f32 = 300,
     rows: u16 = 4,
     padding: f32 = 8,
     border_width: f32 = 1,
@@ -1173,6 +1177,7 @@ pub const TextArea = struct {
     pub fn render(self: TextArea, cx: *Cx) void {
         assert(self.key.len > 0);
         assert(self.rows > 0);
+        if (self.width) |width| assert(width > 0);
         const theme = cx.theme();
         const key = Key{ .name = self.key };
         const id = cx.id(key);
@@ -1193,7 +1198,7 @@ pub const TextArea = struct {
             .on_key = cx.on(AreaEngine.onKey, .{ .entity = handle }),
             .on_click = cx.on(AreaEngine.onClick, .{ .entity = handle }),
             .style = .{
-                .width = .{ .fixed = self.width },
+                .width = if (self.width) |width| .{ .fixed = width } else .{ .grow = 1 },
                 .height = .{ .fixed = viewport_height + inset * 2 },
                 .padding = .all(inset),
                 .background = .surface,

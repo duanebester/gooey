@@ -109,6 +109,43 @@ fn areaRender(cx: *Cx) void {
     }));
 }
 
+/// A filling TextArea 20 px inside the window, holding a line longer than
+/// any width the check resizes to.
+const FillAreaState = struct {
+    notes: []const u8 = &(@as([200]u8, @splat('a')) ++ "\nb".*),
+};
+
+const FillAreaApp = gooey.App(FillAreaState, fillAreaRender, .{
+    .title = "Fill area",
+    .width = 400,
+    .height = 200,
+    .limits = .small,
+});
+
+fn fillAreaRender(cx: *Cx) void {
+    const state = cx.state(FillAreaState);
+    cx.render(ui.box(.{ .style = .{
+        .width = .{ .grow = 1 },
+        .height = .{ .grow = 1 },
+        .padding = .all(20),
+    } }, .{
+        components.TextArea{ .key = "notes", .bind = &state.notes, .rows = 2, .width = null },
+    }));
+}
+
+/// The clip the frame's first glyph draws in: the latest one pushed before it.
+fn glyphClip(frame: *const internals.records.Frame) ?internals.records.Rect {
+    var clip: ?internals.records.Rect = null;
+    for (frame.paint[0..frame.paint_count]) |record| {
+        switch (record) {
+            .clip_push => |rect| clip = rect,
+            .sprite => return clip,
+            else => {},
+        }
+    }
+    return null;
+}
+
 /// `count` copies of the two-byte "é", built at comptime.
 fn repeatedE(comptime count: u32) [2 * count]u8 {
     @setEvalBranchQuota(4 * count + 1000);
@@ -516,6 +553,54 @@ test "a TextArea takes lines, follows the caret, and places it where clicked" {
     app.tick(now);
     try testing.expectEqual(@as(u32, 2), query.imeSelectedRange().?.offset);
     try testing.expectApproxEqAbs(inset, query.imeCursorRect().?.y, 0.001);
+}
+
+test "a filling TextArea draws at the window's new width in the resize's own frame" {
+    // Goal: `TextArea.width = null` fills its parent, and a live resize
+    // shows the new width in the frame that handles it, not one frame later.
+    // Method: grow and shrink the window, one tick each, and read that
+    // tick's frame: the area must span the window less the 20 px padding,
+    // its text must clip at its inset edges (the line is longer than any
+    // width here), the caret must stay at its column, and no render but the
+    // caret's blink may be pending, since nothing waits on a later frame.
+    const app = try testing.allocator.create(FillAreaApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    const query = internals.Query{ .window = &app.window };
+    var now: u64 = 0;
+    app.tick(now);
+    const inset: f32 = 9; // The default padding and border.
+    const click = mouse(20 + inset + 3 * 8, 20 + inset + 1);
+    app.window.queue.push(.{ .input = .{ .mouse_down = click } });
+    app.window.queue.push(.{ .input = .{ .mouse_up = click } });
+    now += 1;
+    app.tick(now);
+    now += 1;
+    app.tick(now);
+    for ([_]f32{ 400, 900, 250, 640 }) |width| {
+        app.window.queue.push(.{ .window = .{ .resized = .{
+            .width = width,
+            .height = 200,
+            .scale_factor = 1,
+        } } });
+        now += 1;
+        app.tick(now);
+        const area = nodeNamed(&app.window, .textarea, "").?.bounds;
+        try testing.expectApproxEqAbs(@as(f32, 20), area.x, 0.001);
+        try testing.expectApproxEqAbs(width - 40, area.width, 0.001);
+        const clip = glyphClip(app.window.rendered()).?;
+        try testing.expectApproxEqAbs(area.x + inset, clip.x, 0.001);
+        try testing.expectApproxEqAbs(area.width - 2 * inset, clip.width, 0.001);
+        const caret = query.imeCursorRect().?;
+        try testing.expectApproxEqAbs(20 + inset + 3 * 8, caret.x, 0.001);
+        try testing.expectEqual(@as(u32, 3), query.imeSelectedRange().?.offset);
+        // Only the caret's blink, a third of a second or more away, is due.
+        const deadline = app.window.renderDeadlineNs().?;
+        try testing.expect(deadline >= now + 300 * std.time.ns_per_ms);
+        try testing.expect(!app.window.render_requested);
+    }
+    try testing.expectEqual(internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
 }
 
 /// A one-row CodeEditor, for the editor check. No profile reserves editors.
