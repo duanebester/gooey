@@ -48,7 +48,7 @@ an Anthropic Claude client.
 Fetch the release into your `build.zig.zon`:
 
 ```bash
-zig fetch --save git+https://github.com/duanebester/gooey#v0.6.1
+zig fetch --save git+https://github.com/duanebester/gooey#v0.6.2
 ```
 
 Then import the modules in your `build.zig`. `gooey` is required; `gooey-components` and
