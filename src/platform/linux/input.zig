@@ -6,7 +6,6 @@
 const std = @import("std");
 const input = @import("../../input/events.zig");
 const geometry = @import("../../geometry/geometry.zig");
-const wayland = @import("wayland.zig");
 
 const assert = std.debug.assert;
 
@@ -146,6 +145,13 @@ pub const evdev = struct {
     pub const KEY_KPENTER: u32 = 96;
     pub const KEY_KPSLASH: u32 = 98;
     pub const KEY_KPEQUAL: u32 = 117;
+
+    // Mouse buttons. Wayland's wl_pointer reports these same codes. They
+    // live here rather than in wayland.zig so the fbdev backend's evdev input
+    // can use this file without importing Wayland.
+    pub const BTN_LEFT: u32 = 0x110;
+    pub const BTN_RIGHT: u32 = 0x111;
+    pub const BTN_MIDDLE: u32 = 0x112;
 };
 
 // =============================================================================
@@ -406,9 +412,9 @@ pub fn modifiersFromFlags(shift: bool, ctrl: bool, alt: bool, super: bool) input
 /// Convert Wayland button code to MouseButton
 pub fn parseMouseButton(button: u32) input.MouseButton {
     return switch (button) {
-        wayland.BTN_LEFT => .left,
-        wayland.BTN_RIGHT => .right,
-        wayland.BTN_MIDDLE => .middle,
+        evdev.BTN_LEFT => .left,
+        evdev.BTN_RIGHT => .right,
+        evdev.BTN_MIDDLE => .middle,
         else => .left,
     };
 }
@@ -867,16 +873,16 @@ test "click tracker" {
     var tracker = ClickTracker{};
 
     // First click
-    try testing.expectEqual(@as(u32, 1), tracker.recordClick(1000, 100, 100, wayland.BTN_LEFT));
+    try testing.expectEqual(@as(u32, 1), tracker.recordClick(1000, 100, 100, evdev.BTN_LEFT));
 
     // Second click (double-click)
-    try testing.expectEqual(@as(u32, 2), tracker.recordClick(1200, 101, 100, wayland.BTN_LEFT));
+    try testing.expectEqual(@as(u32, 2), tracker.recordClick(1200, 101, 100, evdev.BTN_LEFT));
 
     // Third click (triple-click)
-    try testing.expectEqual(@as(u32, 3), tracker.recordClick(1400, 100, 101, wayland.BTN_LEFT));
+    try testing.expectEqual(@as(u32, 3), tracker.recordClick(1400, 100, 101, evdev.BTN_LEFT));
 
     // Click after timeout - resets
-    try testing.expectEqual(@as(u32, 1), tracker.recordClick(2500, 100, 100, wayland.BTN_LEFT));
+    try testing.expectEqual(@as(u32, 1), tracker.recordClick(2500, 100, 100, evdev.BTN_LEFT));
 }
 
 test "key repeat: a held key repeats at repeat_info's rate after its delay" {

@@ -337,6 +337,10 @@ test {
         std.testing.refAllDecls(@import("platform/fbdev/framebuffer.zig"));
         std.testing.refAllDecls(@import("platform/fbdev/evdev.zig"));
         std.testing.refAllDecls(@import("platform/fbdev/clipboard.zig"));
+    }
+    // The Vulkan files reach libwayland and support only 64-bit targets, so an
+    // fbdev build, which links neither and also runs on 32-bit boards, skips them.
+    if (builtin.os.tag == .linux and @import("platform/linux_backend.zig").selected != .fbdev) {
         // Only the reservation-limit test: the rest of the file calls Vulkan.
         _ = @import("platform/linux/vk_buffers.zig");
         // Only the present-semaphore model, which makes no Vulkan call.
