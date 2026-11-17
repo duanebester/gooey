@@ -953,3 +953,61 @@ test "an image draws from the image mirror, scaled by the transform" {
     const vertex = (2 << 30) | (100 << 21) | (50 << 12) | (14 << 7); // VERTEX2II(100, 50, 14, 0)
     try testing.expect(std.mem.indexOfScalar(u32, words, vertex) != null);
 }
+
+test "a 1:1 image samples the nearest texel; a rounded, faded one draws inside a stencil mark" {
+    // Goal: the two other image paths. A sprite drawn at its region's size
+    // must not filter (a bilinear 1:1 draw blurs by half a texel) or emit a
+    // transform; one with corners and opacity 0.5 must draw at COLOR_A 128
+    // between STENCIL_FUNC(EQUAL, 1) and the unmark. Methodology: two image
+    // draws of a 4x2 region, the first 4x2 at (10, 10), the second 4x2 at
+    // (40, 10) with radius 1 and opacity 0.5; words built from the guide.
+    var frame: PackedFrame = undefined;
+    try testFrame(&frame, &.{});
+    defer frame.deinit();
+    const size: f32 = @floatFromInt(test_limits.atlas.image_size);
+    const sprite = packed_mod.Sprite{
+        .bounds = .{ 10, 10, 4, 2 },
+        .uv = .{ 8 / size, 4 / size, 12 / size, 6 / size },
+        .tint = .{ 1, 1, 1, 1 },
+        .secondary = .{ 0, 0, 0, 0 },
+        .corners = @splat(0),
+        .grayscale = 0,
+        .opacity = 1,
+    };
+    frame.sprites[0] = sprite;
+    frame.sprites[1] = sprite;
+    frame.sprites[1].bounds = .{ 40, 10, 4, 2 };
+    frame.sprites[1].corners = @splat(1);
+    frame.sprites[1].opacity = 0.5;
+    frame.sprite_count = 2;
+    frame.counts[@backingInt(packed_mod.Pool.images)] += 2;
+    appendDraw(&frame, .image, 0, packed_mod.clip_none);
+    appendDraw(&frame, .image, 1, packed_mod.clip_none);
+
+    var chip: Chip = undefined;
+    var renderer: EveRenderer = undefined;
+    try testRenderer(&renderer, &chip);
+    defer chip.close();
+    defer renderer.deinit();
+    var white: [8][4]u8 = @splat(.{ 255, 255, 255, 255 });
+    const pixels = std.mem.sliceAsBytes(&white);
+    renderer.uploadAtlas(.image, .{ .x = 8, .y = 4, .width = 4, .height = 2 }, pixels);
+    renderer.draw(&frame, test_viewport, .{ .r = 0, .g = 0, .b = 0, .a = 1 });
+    const words = testWords(&renderer);
+
+    const nearest = (8 << 24) | (4 << 9) | 2; // BITMAP_SIZE(NEAREST, BORDER, 4, 2)
+    try testing.expectEqual(@as(usize, 2), std.mem.count(u32, words, &.{nearest}));
+    for (words) |word| try testing.expect(word >> 24 != 21 and word >> 24 != 25);
+    const inside = [_]u32{
+        (32 << 24) | 0xF, // COLOR_MASK(1, 1, 1, 1)
+        (10 << 24) | (5 << 16) | (1 << 8) | 0xFF, // STENCIL_FUNC(EQUAL, 1, 255)
+    };
+    // The faded alpha is set with the mask rect and stays for the image.
+    const faded = std.mem.indexOfScalar(u32, words, (16 << 24) | 128).?;
+    const masked = std.mem.indexOfPos(u32, words, faded, &inside).?;
+    const second = (2 << 30) | (40 << 21) | (10 << 12) | (14 << 7); // VERTEX2II(40, 10, 14, 0)
+    const drawn = std.mem.indexOfScalarPos(u32, words, masked, second).?;
+    const unmark = std.mem.indexOfScalarPos(u32, words, drawn, (32 << 24)).?;
+    try testing.expect(unmark > drawn);
+    try testing.expect(std.mem.indexOfScalar(u32, words[faded..drawn], (16 << 24) | 255) == null);
+}

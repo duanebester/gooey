@@ -244,8 +244,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "splitter", .source = "src/examples/splitter.zig" },
             .{ .name = "drag-drop", .source = "src/examples/drag_drop.zig" },
             .{ .name = "background", .source = "src/examples/background.zig" },
-            .{ .name = "ecg", .source = "src/examples/ecg.zig" },
-            .{ .name = "radioclash-logo", .source = "src/examples/radioclash_logo.zig" },
+            .{ .name = "logo", .source = "src/examples/logo.zig" },
         };
         // `zig build run` runs todo, the default example (contract decision 15).
         var todo_exe: ?*std.Build.Step.Compile = null;
@@ -647,8 +646,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "splitter", .source = "src/examples/splitter.zig" },
             .{ .name = "drag-drop", .source = "src/examples/drag_drop.zig" },
             .{ .name = "background", .source = "src/examples/background.zig" },
-            .{ .name = "ecg", .source = "src/examples/ecg.zig" },
-            .{ .name = "radioclash-logo", .source = "src/examples/radioclash_logo.zig" },
+            .{ .name = "logo", .source = "src/examples/logo.zig" },
         };
         // `zig build run` runs todo, the default example (contract decision 15).
         var todo_install: ?*std.Build.Step.InstallArtifact = null;

@@ -181,7 +181,7 @@ comptime {
 /// `nano` (counter, actions, animation), `small` (todo, layout, accessible-form),
 /// `standard` (showcase, data-table, spaceship, dashboard), `large` (lucide-demo,
 /// images, mesh stress) and `ceiling` (every framework maximum). Beside the
-/// rungs, `embedded` sizes board-class apps (ecg, eve-logo) for a 1024x600-class
+/// rungs, `embedded` sizes board-class apps (logo) for a 1024x600-class
 /// panel at scale 1: a smaller window than `nano` and a larger image atlas.
 pub const ResourceLimits = struct {
     paint: PaintLimits,
@@ -551,7 +551,7 @@ pub const PaintLimits = struct {
     };
 
     /// Board-class apps (`ResourceLimits.embedded`): `nano` with room for a
-    /// screen of 16 images (the radioclash-logo example draws 5).
+    /// screen of 16 images (the logo example draws 1).
     pub const embedded: PaintLimits = blk: {
         var value = nano;
         value.image_count_frame_max = 16;
@@ -950,7 +950,8 @@ pub const AtlasLimits = struct {
     };
 
     /// Board-class apps (`ResourceLimits.embedded`): `nano`'s glyph and icon
-    /// atlases, and a 384² image atlas, enough for a 384x128 logo at scale 1.
+    /// atlases, and a 384² image atlas: a logo up to 382 px a side (each
+    /// atlas item carries a 1 px border), such as the logo example's 320x200.
     /// The EVE backend mirrors the image atlas into the chip's 1 MiB `RAM_G`
     /// at 2 B per pixel (288 KiB), which leaves ten 64 KiB glyph-cell pages;
     /// a 512² atlas would leave seven. One frame stages one atlas-wide image.
