@@ -89,6 +89,7 @@ else switch (builtin.os.tag) {
     .linux => switch (@import("linux_backend.zig").selected) {
         .wayland_vulkan, .wayland_cpu => @import("linux/mod.zig"),
         .fbdev => @import("fbdev/mod.zig"),
+        .eve => @import("eve/mod.zig"),
     },
     .windows => @import("windows/mod.zig"),
     else => @compileError("Unsupported platform: " ++ @tagName(builtin.os.tag)),

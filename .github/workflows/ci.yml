@@ -126,6 +126,10 @@ jobs:
       - name: Run tests (fbdev backend)
         run: zig build test -Dlinux-backend=fbdev
 
+      # Likewise for the EVE build, whose host also links neither.
+      - name: Run tests (eve backend)
+        run: zig build test -Dlinux-backend=eve
+
   # ==========================================================================
   # macOS Tests
   # ==========================================================================

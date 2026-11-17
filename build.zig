@@ -10,6 +10,9 @@ pub const LinuxBackend = enum {
     wayland_cpu,
     /// No display server: CPU renderer on `/dev/fb0`, evdev input.
     fbdev,
+    /// No framebuffer: a Bridgetek EVE (BT81x) display controller on spidev
+    /// draws display lists, and its touch engine is the input.
+    eve,
 };
 
 /// Text service behind `TextSystem`, mirrored into `gooey_build_options`.
@@ -241,6 +244,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "splitter", .source = "src/examples/splitter.zig" },
             .{ .name = "drag-drop", .source = "src/examples/drag_drop.zig" },
             .{ .name = "background", .source = "src/examples/background.zig" },
+            .{ .name = "ecg", .source = "src/examples/ecg.zig" },
         };
         // `zig build run` runs todo, the default example (contract decision 15).
         var todo_exe: ?*std.Build.Step.Compile = null;
@@ -477,16 +481,36 @@ pub fn build(b: *std.Build) void {
         const linux_backend = b.option(
             LinuxBackend,
             "linux-backend",
-            "Linux display/renderer: wayland_vulkan (default), wayland_cpu, or fbdev",
+            "Linux display/renderer: wayland_vulkan (default), wayland_cpu, fbdev, or eve",
         ) orelse .wayland_vulkan;
+        const eve_options = EveOptions{
+            .device = b.option(
+                []const u8,
+                "eve-device",
+                "EVE backend: spidev node of the display controller (default /dev/spidev1.0)",
+            ) orelse EveOptions.default.device,
+            .spi_hz = b.option(
+                u32,
+                "eve-spi-hz",
+                "EVE backend: SPI clock in Hz, 1000000 to 30000000 (default 10000000)",
+            ) orelse EveOptions.default.spi_hz,
+        };
+        if (eve_options.spi_hz < 1_000_000 or eve_options.spi_hz > 30_000_000) {
+            std.debug.panic(
+                "-Deve-spi-hz must be 1000000 to 30000000, not {d}",
+                .{eve_options.spi_hz},
+            );
+        }
         const gooey_options_mod = gooeyBuildOptionsModule(b, .{
             .linux_backend = linux_backend,
             .frame_trace = frame_trace.scenario,
             .frame_trace_seconds = frame_trace.seconds,
+            .eve = eve_options,
         });
         // Benchmarks and valgrind measure the shipped configuration.
         const untraced_options_mod = gooeyBuildOptionsModule(b, .{
             .linux_backend = linux_backend,
+            .eve = eve_options,
         });
 
         // =========================================================================
@@ -622,6 +646,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "splitter", .source = "src/examples/splitter.zig" },
             .{ .name = "drag-drop", .source = "src/examples/drag_drop.zig" },
             .{ .name = "background", .source = "src/examples/background.zig" },
+            .{ .name = "ecg", .source = "src/examples/ecg.zig" },
         };
         // `zig build run` runs todo, the default example (contract decision 15).
         var todo_install: ?*std.Build.Step.InstallArtifact = null;
@@ -1605,8 +1630,8 @@ fn addLinuxTypecheck(b: *std.Build) void {
 
     // `src/examples/todo.zig` reaches each backend's 0.4.0 core host: the
     // Wayland host with Vulkan and with the CPU renderer (window binding,
-    // render thread, IME, dialogs), and the fbdev host (contract decision
-    // 17). The `src/root.zig` test roots cover far more code: every `test {}`
+    // render thread, IME, dialogs), the fbdev host (contract decision
+    // 17), and the EVE host. The `src/root.zig` test roots cover far more code: every `test {}`
     // block in the library, plus the `refAllDecls` discovery chain.
     const roots = [_]TypecheckRoot{
         .{ .source = "src/root.zig", .as_test = true },
@@ -1624,6 +1649,14 @@ fn addLinuxTypecheck(b: *std.Build) void {
             .cpu_arch = .aarch64,
         },
         .{ .source = "src/root.zig", .as_test = true, .linux_backend = .fbdev, .cpu_arch = .arm },
+        // The EVE host and renderer on the 32-bit Arm boards that carry EVE panels.
+        .{ .source = "src/root.zig", .as_test = true, .linux_backend = .eve, .cpu_arch = .arm },
+        .{
+            .source = "src/examples/todo.zig",
+            .as_test = false,
+            .linux_backend = .eve,
+            .cpu_arch = .arm,
+        },
     };
     comptime std.debug.assert(roots.len <= typecheck_linux_root_count_max);
 
@@ -1943,7 +1976,7 @@ fn linkLinuxBackendLibraries(mod: *std.Build.Module, linux_backend: LinuxBackend
             linkWaylandLibraries(mod);
         },
         .wayland_cpu => linkWaylandLibraries(mod),
-        .fbdev => {},
+        .fbdev, .eve => {},
     }
 }
 
@@ -2166,6 +2199,17 @@ const GooeyBuildOptions = struct {
     windows_renderer: WindowsRenderer = .vulkan,
     frame_trace: FrameTrace = .off,
     frame_trace_seconds: u32 = 30,
+    eve: EveOptions = .default,
+};
+
+/// The EVE backend's board wiring (`-Deve-device`, `-Deve-spi-hz`), read by
+/// `src/platform/eve/platform.zig`. Other backends ignore it.
+const EveOptions = struct {
+    device: []const u8,
+    spi_hz: u32,
+
+    /// The MicroZed EVE board's wiring, and an SPI clock every BT81x boots at.
+    const default = EveOptions{ .device = "/dev/spidev1.0", .spi_hz = 10_000_000 };
 };
 
 /// The `gooey_build_options` module: build-time choices the source tree reads
@@ -2177,5 +2221,7 @@ fn gooeyBuildOptionsModule(b: *std.Build, choices: GooeyBuildOptions) *std.Build
     options.addOption(WindowsRenderer, "windows_renderer", choices.windows_renderer);
     options.addOption(FrameTrace, "frame_trace", choices.frame_trace);
     options.addOption(u32, "frame_trace_seconds", choices.frame_trace_seconds);
+    options.addOption([]const u8, "eve_device", choices.eve.device);
+    options.addOption(u32, "eve_spi_hz", choices.eve.spi_hz);
     return options.createModule();
 }

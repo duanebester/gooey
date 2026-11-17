@@ -49,7 +49,7 @@ pub const CoreBinding = struct {
 const use_cpu_renderer = switch (linux_backend.selected) {
     .wayland_vulkan => false,
     .wayland_cpu => true,
-    .fbdev => @compileError("the fbdev backend does not use the Wayland window"),
+    .fbdev, .eve => @compileError("this backend does not use the Wayland window"),
 };
 const Renderer = if (use_cpu_renderer) ShmRenderer else VulkanRenderer;
 const NativeSurface = if (use_cpu_renderer)
