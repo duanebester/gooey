@@ -958,7 +958,7 @@ palette with opaque tokens:
 | `surface`      | mantle            | `subtext`   | subtext1          |
 | `overlay`      | surface1          | `muted`     | overlay0          |
 | `primary`      | mauve             | `border`    | surface2          |
-| `secondary`    | overlay1          | `success`   | green             |
+| `secondary`    | surface1 (Latte: surface0) | `success`   | green             |
 | `accent`       | blue              | `warning`   | yellow            |
 | `border_focus` | lavender          | `danger`    | red               |
 | `on_primary`   | base              | `on_danger` | base              |
@@ -977,8 +977,9 @@ A custom theme is a `gooey.Theme` value with every color field set: `bg`, `surfa
 `overlay`, `primary`, `secondary`, `accent`, `success`, `warning`, `danger`, `on_primary`,
 `on_danger`, `text`, `subtext`, `muted`, `border`, and `border_focus`. `on_primary` and
 `on_danger` colour text and marks drawn on those fills (primary and danger buttons, the
-checkbox's check); every built-in theme keeps them at WCAG's 4.5:1 or better, checked at
-comptime with `Theme.contrastRatio`. `radius_sm`, `radius_md`, `radius_lg`, and
+checkbox's check), and `text` is drawn on `secondary` (secondary buttons); every built-in
+theme keeps all three pairs at WCAG's 4.5:1 or better, checked at comptime with
+`Theme.contrastRatio`. `radius_sm`, `radius_md`, `radius_lg`, and
 `font_size_base` have defaults. Color tokens of the same names resolve against the active
 theme, and components scale their text from `font_size_base`.
 
