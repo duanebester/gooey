@@ -2,12 +2,18 @@
 //!
 //! One generator, driven by `std.testing.Smith`, turns bytes into a stream of
 //! actions against a headless app on the goldens' `CoreDriver`: pointer
-//! clicks and moves aimed at the rendered frame's hit records, keys, committed
-//! and composed text, clock gaps, and the two sides of a tick (`tickMain` and
-//! `presentBuilt`) driven separately, so a frame stays in flight while input
-//! keeps arriving. The same generator serves `zig build vopr -- [seed]`, whose
-//! bytes come from a seeded PRNG, and a `std.testing.fuzz` target, whose bytes
-//! come from the fuzzer.
+//! clicks and moves aimed at the rendered frame's hit records, wheel scrolls,
+//! keys, committed and composed text, clock gaps, and the two sides of a tick
+//! (`tickMain` and `presentBuilt`) driven separately, so a frame stays in
+//! flight while input keeps arriving. The same generator serves `zig build
+//! vopr -- [seed]`, whose bytes come from a seeded PRNG, and a
+//! `std.testing.fuzz` target, whose bytes come from the fuzzer.
+//!
+//! Swarm testing: every `swarm_epoch_step_count` steps the generator draws a
+//! fresh `Swarm` (action-kind weights, some of them zero, and how pointer
+//! targets are picked), so a seed goes deep in a few directions instead of
+//! staying near the initial state: filling todo's list, typing past its
+//! 128-byte cut, holding frames in flight, or working a full list.
 //!
 //! Every action keeps the core inside its declared budget (`limits.events`)
 //! and away from wall-clock paths, so any panic or failed assertion is a
@@ -23,7 +29,8 @@
 //! (`text_bytes_action_max`); per `tickMain`, at most the queue's capacity,
 //! which the generator never exceeds. Per run: one app and one 64 KiB
 //! `NullRenderer` per instance, reserved before the first action, and
-//! `bytes_per_action_max` Smith bytes per step for the CLI.
+//! `bytes_cli` Smith bytes for the CLI. A 12,000-step CLI run takes under a
+//! second in Debug; frames over a full list dominate.
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -40,8 +47,12 @@ const tick = internals.tick;
 const records = internals.records;
 const Window = internals.window.Window;
 
-/// Steps one `zig build vopr` run takes before its quiescence loop.
-pub const step_count_cli: u32 = 2_000;
+/// Steps one `zig build vopr` run takes before its quiescence loop: enough
+/// for a seed that fills todo's list to then work it while full.
+pub const step_count_cli: u32 = 12_000;
+/// Steps between fresh `Swarm` draws, so one seed can fill the list in one
+/// epoch and filter, check, and delete over it in the next.
+const swarm_epoch_step_count: u32 = 3_000;
 /// Most steps one fuzz input may ask for, so one input is bounded work.
 const step_count_fuzz_max: u32 = 256;
 /// Most Smith choices one action makes, a text action's: its kind, its
@@ -49,6 +60,11 @@ const step_count_fuzz_max: u32 = 256;
 const choice_count_action_max: u32 = 2 + text_unit_count_max;
 /// Smith bytes the CLI reserves per step, so its PRNG input never runs dry.
 const bytes_per_action_max: u32 = choice_count_action_max * @sizeOf(u64);
+/// Smith bytes one `Swarm` draw reads.
+const bytes_swarm: u32 = Swarm.choice_count * @sizeOf(u64);
+/// Smith bytes the CLI reserves for a run: every epoch's swarm and step.
+const bytes_cli: u32 = bytes_swarm * (1 + @divFloor(step_count_cli, swarm_epoch_step_count)) +
+    step_count_cli * bytes_per_action_max;
 /// Rounds of `tickMain` plus `presentBuilt` a run gets to settle at its end.
 const quiescence_round_max: u32 = 8;
 /// Units (from `text_alphabet`) in one text or composition action.
@@ -105,7 +121,7 @@ pub fn main(init: std.process.Init) !void {
     };
     std.debug.print("vopr: todo seed {d}, {d} steps\n", .{ seed, step_count_cli });
 
-    const bytes = try gpa.alloc(u8, step_count_cli * bytes_per_action_max);
+    const bytes = try gpa.alloc(u8, bytes_cli);
     defer gpa.free(bytes);
 
     var prng = std.Random.DefaultPrng.init(seed);
@@ -170,23 +186,28 @@ pub fn runPaired(
 ) !Summary {
     assert(options.step_count > 0);
     const V = Vopr(App);
+    var smith_first: Smith = .{ .in = bytes };
+    var smith_second: Smith = .{ .in = bytes };
     const first = try gpa.create(V);
     defer gpa.destroy(first);
-    try first.initInPlace(gpa, io);
+    try first.initInPlace(gpa, io, &smith_first);
     defer first.deinit();
 
     const second = try gpa.create(V);
     defer gpa.destroy(second);
-    try second.initInPlace(gpa, io);
+    try second.initInPlace(gpa, io, &smith_second);
     defer second.deinit();
 
     checkSame(V, first, second, 0);
-    var smith_first: Smith = .{ .in = bytes };
-    var smith_second: Smith = .{ .in = bytes };
     var step_index: u32 = 0;
     while (step_index < options.step_count) : (step_index += 1) {
         const action = first.generate(&smith_first);
-        if (options.verbose) std.debug.print("step {d}: {f}\n", .{ step_index, action });
+        if (options.verbose) {
+            if (step_index % swarm_epoch_step_count == 0) {
+                std.debug.print("swarm: {f}\n", .{first.swarm});
+            }
+            std.debug.print("step {d}: {f}\n", .{ step_index, action });
+        }
         first.perform(action);
         second.perform(second.generate(&smith_second));
         checkSame(V, first, second, step_index);
@@ -220,6 +241,8 @@ pub const Action = union(enum) {
     text: []const u8,
     /// IME preedit; empty ends the composition.
     compose: []const u8,
+    /// A wheel scroll at a point, in logical pixels.
+    scroll: Scroll,
     wait_ns: u64,
     tick_main,
     /// Generated only while a frame is in flight (`presentBuilt` asserts it).
@@ -235,6 +258,12 @@ pub const Action = union(enum) {
     pub const Chord = struct {
         key: input.KeyCode,
         modifiers: input.Modifiers,
+    };
+
+    pub const Scroll = struct {
+        x: f32,
+        y: f32,
+        delta_y: f32,
     };
 
     pub fn format(self: Action, writer: *std.Io.Writer) std.Io.Writer.Error!void {
@@ -253,6 +282,11 @@ pub const Action = union(enum) {
             }),
             .text => |text| try writer.print("text \"{s}\"", .{text}),
             .compose => |text| try writer.print("compose \"{s}\"", .{text}),
+            .scroll => |scroll| try writer.print("scroll ({d:.2}, {d:.2}) by {d}", .{
+                scroll.x,
+                scroll.y,
+                scroll.delta_y,
+            }),
             .wait_ns => |gap_ns| try writer.print("wait {d} ns", .{gap_ns}),
             .tick_main => try writer.writeAll("tickMain"),
             .present => try writer.writeAll("presentBuilt"),
@@ -262,21 +296,83 @@ pub const Action = union(enum) {
 
 const ActionKind = std.meta.Tag(Action);
 
-/// Relative weights of each action kind; ticks are common so frames move.
-const kind_weights = [_]struct { kind: ActionKind, weight: u32 }{
-    .{ .kind = .pointer, .weight = 24 },
-    .{ .kind = .key, .weight = 16 },
-    .{ .kind = .text, .weight = 10 },
-    .{ .kind = .compose, .weight = 6 },
-    .{ .kind = .wait_ns, .weight = 8 },
-    .{ .kind = .tick_main, .weight = 24 },
-    .{ .kind = .present, .weight = 12 },
-};
+const kind_count = std.enums.values(ActionKind).len;
 
-const kind_weight_total: u32 = total: {
-    var total: u32 = 0;
-    for (kind_weights) |entry| total += entry.weight;
-    break :total total;
+/// One seed's action mix, drawn from its first bytes (swarm testing, as in
+/// TigerBeetle's VOPR). A uniform mix keeps every seed near the initial state;
+/// a skewed one goes deep in one direction: a seed that mostly types and
+/// clicks the first records fills the list, one that rarely presents holds
+/// frames in flight, and one that mostly scrolls walks a long list.
+pub const Swarm = struct {
+    /// Relative weight of each action kind, by tag value; 0 disables it.
+    kind_weights: [kind_count]u32,
+    kind_weight_total: u32,
+    /// Percent of pointer and scroll actions aimed only at records that can
+    /// change state: a click or key handler, focus, or a scroll box.
+    interactive_percent: u32,
+    /// Pointer and scroll targets are drawn uniformly from the first this
+    /// many candidates in tree order, or all of them when 0. A short prefix
+    /// keeps clicking the first controls: todo's draft and Add, so the list
+    /// fills.
+    target_prefix_count: u32,
+    /// Percent of pointer actions that click rather than move.
+    click_percent: u32,
+
+    /// Most weight one action kind can draw.
+    const kind_weight_max: u32 = 16;
+    const interactive_percent_choices = [_]u32{ 0, 50, 90 };
+    const target_prefix_count_choices = [_]u32{ 2, 3, 5, 8, 0 };
+    const click_percent_choices = [_]u32{ 25, 50, 90 };
+    /// Smith choices `generate` makes.
+    const choice_count = 2 * kind_count + 3;
+
+    pub fn generate(smith: *Smith) Swarm {
+        var swarm: Swarm = undefined;
+        swarm.kind_weight_total = 0;
+        for (std.enums.values(ActionKind)) |kind| {
+            // A quarter of kinds are off for the seed. `tickMain` and
+            // `presentBuilt` stay on, so frames always move eventually.
+            const off = choose(smith, 4, "kind off") == 0;
+            const weight = 1 + choose(smith, kind_weight_max, "kind weight");
+            const required = kind == .tick_main or kind == .present;
+            swarm.kind_weights[@backingInt(kind)] = if (off and !required) 0 else weight;
+            swarm.kind_weight_total += swarm.kind_weights[@backingInt(kind)];
+        }
+        swarm.interactive_percent = interactive_percent_choices[
+            choose(smith, interactive_percent_choices.len, "interactive")
+        ];
+        swarm.target_prefix_count = target_prefix_count_choices[
+            choose(smith, target_prefix_count_choices.len, "target prefix")
+        ];
+        swarm.click_percent = click_percent_choices[
+            choose(smith, click_percent_choices.len, "click percent")
+        ];
+        assert(swarm.kind_weights[@backingInt(ActionKind.tick_main)] > 0);
+        assert(swarm.kind_weight_total <= kind_count * kind_weight_max);
+        return swarm;
+    }
+
+    fn chooseKind(self: *const Swarm, smith: *Smith) ActionKind {
+        assert(self.kind_weight_total > 0);
+        var remaining = choose(smith, self.kind_weight_total, "kind");
+        for (std.enums.values(ActionKind)) |kind| {
+            const weight = self.kind_weights[@backingInt(kind)];
+            if (remaining < weight) return kind;
+            remaining -= weight;
+        }
+        unreachable;
+    }
+
+    pub fn format(self: Swarm, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+        for (std.enums.values(ActionKind)) |kind| {
+            try writer.print("{t}={d} ", .{ kind, self.kind_weights[@backingInt(kind)] });
+        }
+        try writer.print("interactive={d}% prefix={d} click={d}%", .{
+            self.interactive_percent,
+            self.target_prefix_count,
+            self.click_percent,
+        });
+    }
 };
 
 pub fn Vopr(comptime App: type) type {
@@ -288,13 +384,23 @@ pub fn Vopr(comptime App: type) type {
         dump_hasher: std.hash.Wyhash,
         /// Backing for the action being generated; the queue copies it.
         text_bytes: [text_bytes_action_max]u8,
+        /// The current epoch's action mix.
+        swarm: Swarm,
+        /// Actions generated so far, which sets the epochs.
+        action_count: u32,
 
         const Self = @This();
         const Driver = core.CoreDriver(App);
 
-        /// Initialize in place (the app must not move), then settle the first
-        /// frame so pointer actions have hit records to aim at.
-        pub noinline fn initInPlace(self: *Self, gpa: std.mem.Allocator, io: std.Io) !void {
+        /// Initialize in place (the app must not move), draw the seed's
+        /// action mix from `smith`, then settle the first frame so pointer
+        /// actions have hit records to aim at.
+        pub noinline fn initInPlace(
+            self: *Self,
+            gpa: std.mem.Allocator,
+            io: std.Io,
+            smith: *Smith,
+        ) !void {
             // Edit shortcuts use Ctrl on every host, so a seed replays anywhere.
             internals.text_engine.uses_cmd = false;
             const trace = trace_mod.Trace{
@@ -308,6 +414,8 @@ pub fn Vopr(comptime App: type) type {
             self.frame_number_rendered = 0;
             self.dump_hasher = .init(0);
             self.text_bytes = @splat(0);
+            self.swarm = .generate(smith);
+            self.action_count = 0;
             assert(self.driver.now_ns == 0);
             assert(self.driver.renderer.draw_count == 0);
             self.quiesce();
@@ -336,6 +444,11 @@ pub fn Vopr(comptime App: type) type {
                     self.deliver(.{ .text_input = .{ .text = text } });
                 },
                 .compose => |text| self.deliver(.{ .composition = .{ .text = text } }),
+                .scroll => |scroll| self.deliver(.{ .scroll = .{
+                    .position = .{ .x = scroll.x, .y = scroll.y },
+                    .delta = .{ .x = 0, .y = scroll.delta_y },
+                    .modifiers = .{},
+                } }),
                 .wait_ns => |gap_ns| self.driver.now_ns += gap_ns,
                 .tick_main => self.tickMain(),
                 .present => self.present(),
@@ -347,7 +460,11 @@ pub fn Vopr(comptime App: type) type {
         /// text bytes before the next drain becomes a `tickMain`, and so does
         /// a present with no frame in flight: both keep the run in budget.
         pub fn generate(self: *Self, smith: *Smith) Action {
-            const kind = chooseKind(smith);
+            if (self.action_count > 0 and self.action_count % swarm_epoch_step_count == 0) {
+                self.swarm = .generate(smith);
+            }
+            self.action_count += 1;
+            const kind = self.swarm.chooseKind(smith);
             const in_flight = self.window().frame_in_flight.load(.acquire);
             return switch (kind) {
                 .pointer => if (self.queueHasRoom(pointer_event_count_max, 0))
@@ -366,6 +483,10 @@ pub fn Vopr(comptime App: type) type {
                     .tick_main,
                 .compose => if (self.queueHasRoom(1, text_bytes_action_max))
                     .{ .compose = self.generateText(smith, 0) }
+                else
+                    .tick_main,
+                .scroll => if (self.queueHasRoom(1, 0))
+                    .{ .scroll = self.generateScroll(smith) }
                 else
                     .tick_main,
                 .wait_ns => .{ .wait_ns = gap_ns_choices[
@@ -496,27 +617,62 @@ pub fn Vopr(comptime App: type) type {
             self.deliver(.{ .mouse_up = press });
         }
 
-        /// Aim at a hit record of the rendered frame (its centre, an edge,
-        /// or any point inside), or anywhere when the frame has none.
         fn generatePointer(self: *Self, smith: *Smith) Action.Pointer {
+            const point = self.generatePoint(smith);
+            const click = choose(smith, 100, "pointer kind") < self.swarm.click_percent;
+            return .{
+                .kind = if (click) .click else .move,
+                .x = point.x,
+                .y = point.y,
+                .click_count = 1 + choose(smith, 2, "click count"),
+            };
+        }
+
+        /// A rank in [0, candidate_count), uniform over the seed's prefix.
+        fn targetRank(self: *const Self, smith: *Smith, candidate_count: u32) u32 {
+            assert(candidate_count > 0);
+            const prefix_count = self.swarm.target_prefix_count;
+            const count = if (prefix_count == 0)
+                candidate_count
+            else
+                @min(prefix_count, candidate_count);
+            const rank = choose(smith, count, "target");
+            assert(rank < candidate_count);
+            return rank;
+        }
+
+        /// A wheel step: a pixel, a line, or a page, either way.
+        fn generateScroll(self: *Self, smith: *Smith) Action.Scroll {
+            const delta_choices = [_]f32{ -400, -40, -1, 1, 40, 400 };
+            const point = self.generatePoint(smith);
+            return .{
+                .x = point.x,
+                .y = point.y,
+                .delta_y = delta_choices[choose(smith, delta_choices.len, "scroll delta")],
+            };
+        }
+
+        /// A point of a rendered hit record (its centre, an edge, or any
+        /// point inside), within the window; anywhere when there is none.
+        fn generatePoint(self: *Self, smith: *Smith) Point {
             const win = self.window();
             const frame = win.rendered();
-            const viewport: records.Rect = .{
+            const hits = frame.hits[0..frame.hit_count];
+            const interactive_only =
+                choose(smith, 100, "interactive only") < self.swarm.interactive_percent;
+            const candidate_count = countTargets(hits, interactive_only);
+            const target: records.Rect = if (candidate_count == 0) .{
                 .x = 0,
                 .y = 0,
                 .width = win.width,
                 .height = win.height,
-            };
-            const target = if (frame.hit_count == 0)
-                viewport
-            else
-                frame.hits[choose(smith, frame.hit_count, "hit")].bounds;
+            } else hits[
+                nthTarget(hits, interactive_only, self.targetRank(smith, candidate_count))
+            ].bounds;
             const point = pointIn(smith, target);
             return .{
-                .kind = if (choose(smith, 2, "pointer kind") == 0) .click else .move,
                 .x = std.math.clamp(point.x, 0, win.width),
                 .y = std.math.clamp(point.y, 0, win.height),
-                .click_count = 1 + choose(smith, 2, "click count"),
             };
         }
 
@@ -558,6 +714,36 @@ fn keyEvent(chord: Action.Chord) input.KeyEvent {
 
 const Point = struct { x: f32, y: f32 };
 
+/// Whether a click, key, or wheel on `record` can change state.
+fn isInteractive(record: *const records.HitRecord) bool {
+    if (record.on_click != records.index_none) return true;
+    if (record.on_key != records.index_none) return true;
+    return record.focusable or record.scroll;
+}
+
+fn countTargets(hits: []const records.HitRecord, interactive_only: bool) u32 {
+    if (!interactive_only) return @intCast(hits.len);
+    var count: u32 = 0;
+    for (hits) |*record| {
+        if (isInteractive(record)) count += 1;
+    }
+    assert(count <= hits.len);
+    return count;
+}
+
+/// The index in `hits` of the `rank`th target, counting from 0.
+fn nthTarget(hits: []const records.HitRecord, interactive_only: bool, rank: u32) u32 {
+    assert(rank < hits.len);
+    if (!interactive_only) return rank;
+    var seen: u32 = 0;
+    for (hits, 0..) |*record, index| {
+        if (!isInteractive(record)) continue;
+        if (seen == rank) return @intCast(index);
+        seen += 1;
+    }
+    unreachable;
+}
+
 /// A point of `bounds`: its centre, a point on one of its four edges (the
 /// right and bottom edges are one past the box), or a point inside.
 fn pointIn(smith: *Smith, bounds: records.Rect) Point {
@@ -587,15 +773,6 @@ fn fraction(smith: *Smith) f32 {
     return @as(f32, @floatFromInt(thousandths)) / 1000;
 }
 
-fn chooseKind(smith: *Smith) ActionKind {
-    var remaining = choose(smith, kind_weight_total, "kind");
-    for (kind_weights) |entry| {
-        if (remaining < entry.weight) return entry.kind;
-        remaining -= entry.weight;
-    }
-    unreachable;
-}
-
 /// A choice in [0, count). Each choice reads one full `u64` and reduces it:
 /// `Smith` maps a value outside a ranged read's weights to the range's
 /// minimum, so with PRNG bytes as input a ranged read would almost always
@@ -613,7 +790,7 @@ fn fuzzTodo(_: void, smith: *Smith) anyerror!void {
     const V = Vopr(todo.App);
     const vopr = try std.testing.allocator.create(V);
     defer std.testing.allocator.destroy(vopr);
-    try vopr.initInPlace(std.testing.allocator, std.testing.io);
+    try vopr.initInPlace(std.testing.allocator, std.testing.io, smith);
     defer vopr.deinit();
 
     const step_count = 1 + choose(smith, step_count_fuzz_max, "step count");
