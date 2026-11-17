@@ -49,7 +49,7 @@ and Dark themes.
 Fetch the release into your `build.zig.zon`:
 
 ```bash
-zig fetch --save git+https://github.com/duanebester/gooey#v0.6.3
+zig fetch --save git+https://github.com/duanebester/gooey#v0.6.4
 ```
 
 Then import the modules in your `build.zig`. `gooey` is required; `gooey-components` and
