@@ -4,9 +4,6 @@
 //! public API alone: `zig build import-ban` fails on any `gooey.internals`
 //! reference here, so a control can do only what an app can.
 //!
-//! Their geometry and colours match the 0.3.1 components, so the core's
-//! counter and todo goldens can be compared with the 0.3.1 goldens.
-//!
 //! Keyboard: `Button`, `Checkbox`, and `Select` are focusable, so Tab reaches
 //! them, and the core turns Enter and Space into a click on the focused
 //! element. `Select` adds its own keys (see `SelectKeys`).

@@ -2,13 +2,12 @@
 //!
 //! Undo, Redo, and Cancel are bound globally and handled by the root box.
 //! Save is bound only inside the "Editor" key context, so the save chord does
-//! nothing until focus is inside the editor panel. The layout matches the
-//! 0.3.1 actions example, so its golden is compared with the 0.3.1 golden.
+//! nothing until focus is inside the editor panel. Its scripted run is the
+//! `core_actions` golden.
 //!
 //! The shortcuts use Cmd on macOS and Ctrl elsewhere, chosen at comptime:
 //! a keymap names exact modifiers, and the Windows shell owns Win+Z and
-//! Win+S. The goldens build `AppWith(.cmd)`, so they match 0.3.1 on every
-//! host.
+//! Win+S. The goldens build `AppWith(.cmd)`, so they match on every host.
 
 const builtin = @import("builtin");
 const gooey = @import("gooey");

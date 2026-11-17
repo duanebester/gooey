@@ -3,9 +3,7 @@
 //! A trace is a window size and a list of labelled steps. The runner renders
 //! an initial frame, then for each step delivers its input events, renders
 //! one frame, and records it: the packed frame the renderer received, the hit
-//! records, and the accessibility tree. The same trace ran against the 0.3.1
-//! runtime (`legacy_*.txt`) and runs against the 0.4.0 core, so the two
-//! goldens are directly comparable.
+//! records, and the accessibility tree.
 //!
 //! Drivers are duck-typed with three methods, checked at comptime:
 //! - `deliver(event: gooey.input.InputEvent) void`

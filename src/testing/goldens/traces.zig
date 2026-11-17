@@ -1,8 +1,7 @@
 //! The scripted traces behind the counter and todo goldens.
 //!
-//! Coordinates are logical pixels read off the 0.3.1 frames' hit records (the
-//! centre of each control), so a click lands on the same control in the
-//! 0.3.1 runtime and in the core port as long as their layouts agree.
+//! Coordinates are logical pixels at the centre of each control, read off the
+//! golden's hit records; a layout change must move them with it.
 
 const trace = @import("trace.zig");
 
@@ -52,8 +51,7 @@ pub const todo = trace.Trace{
         .{ .label = "filter Active", .step = .{ .click = .{ .x = 104, .y = 143 } } },
         .{ .label = "filter Done", .step = .{ .click = .{ .x = 172, .y = 143 } } },
         .{ .label = "filter All", .step = .{ .click = .{ .x = 44, .y = 143 } } },
-        // The core's rows fill the list, so Delete sits at its right end;
-        // 0.3.1's rows fit their content, and its golden pressed x = 155.
+        // The rows fill the list, so Delete sits at its right end.
         .{ .label = "hover the second Delete", .step = .{ .move = .{ .x = 413, .y = 255 } } },
         .{ .label = "delete the second row", .step = .{ .click = .{ .x = 413, .y = 255 } } },
         .{ .label = "clear completed", .step = .{ .click = .{ .x = 146, .y = 521 } } },

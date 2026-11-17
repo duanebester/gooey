@@ -1,7 +1,7 @@
 //! Todo: a text input, a list, and filters on the core.
 //!
-//! The layout matches the 0.3.1 todo, including the filter bar and footer,
-//! so its golden is compared with the 0.3.1 golden. The draft is a
+//! A filter bar and footer frame the list; its scripted run is the
+//! `core_todo` golden. The draft is a
 //! `TextInput` bound to `State.draft`; IME composition reaches its retained
 //! engine through the router like any key.
 //! The rows scroll in a core scroll box between the fixed header and footer,
