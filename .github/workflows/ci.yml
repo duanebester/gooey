@@ -121,6 +121,11 @@ jobs:
       - name: Run tests
         run: zig build test -Dskip-shader-compile=true
 
+      # The fbdev build links no Wayland or Vulkan library, so only a linked
+      # test binary shows that its tests reach neither.
+      - name: Run tests (fbdev backend)
+        run: zig build test -Dlinux-backend=fbdev
+
   # ==========================================================================
   # macOS Tests
   # ==========================================================================

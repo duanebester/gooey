@@ -787,7 +787,8 @@ test "GlyphKey wyhash distribution — printable ASCII × subpixel variants" {
     const TABLE_SLOTS: u32 = comptime GlyphCache.hashSlotCount(glyph_count);
     var buckets: [TABLE_SLOTS]u16 = @splat(0);
 
-    const font_ptr: usize = 0x7FFF_0000_1000;
+    // A typical heap address for the target's pointer width.
+    const font_ptr: usize = if (@sizeOf(usize) == 8) 0x7FFF_0000_1000 else 0x7FFF_1000;
     var total_keys: u32 = 0;
 
     var glyph_id: u16 = 32;

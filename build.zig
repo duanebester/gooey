@@ -1568,8 +1568,9 @@ const TypecheckRoot = struct {
     /// Backend the root is analyzed for. Each non-default backend replaces a
     /// slice of `src/platform`, so each needs its own root to stay compiling.
     linux_backend: LinuxBackend = .wayland_vulkan,
-    /// Embedded boards are mostly 64-bit Arm, so the framebuffer backend is
-    /// also analyzed there to catch ABI-dependent `ioctl` and struct layouts.
+    /// Embedded boards are mostly Arm, 64-bit or 32-bit, so the framebuffer
+    /// backend is also analyzed there to catch ABI-dependent `ioctl` and
+    /// struct layouts, and code that assumes a 64-bit `usize`.
     cpu_arch: std.Target.Cpu.Arch = .x86_64,
 };
 
@@ -1622,6 +1623,7 @@ fn addLinuxTypecheck(b: *std.Build) void {
             .linux_backend = .fbdev,
             .cpu_arch = .aarch64,
         },
+        .{ .source = "src/root.zig", .as_test = true, .linux_backend = .fbdev, .cpu_arch = .arm },
     };
     comptime std.debug.assert(roots.len <= typecheck_linux_root_count_max);
 
@@ -1629,7 +1631,8 @@ fn addLinuxTypecheck(b: *std.Build) void {
         const linux_target = b.resolveTargetQuery(.{
             .cpu_arch = root.cpu_arch,
             .os_tag = .linux,
-            .abi = .gnu,
+            // 32-bit Arm Linux boards use the hard-float glibc ABI.
+            .abi = if (root.cpu_arch == .arm) .gnueabihf else .gnu,
         });
         std.debug.assert(linux_target.result.os.tag == .linux);
         std.debug.assert(linux_target.result.cpu.arch == root.cpu_arch);
