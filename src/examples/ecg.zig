@@ -12,8 +12,8 @@
 //! Gaussian P, Q, R, S, and T waves with fixed widths (QRS about 80 ms).
 //!
 //! Resource sketch: one polyline of at most `trace_point_count_max` points
-//! per frame (two pieces either side of the erase gap), within the nano
-//! profile's 1,024 polyline points; grid lines are 24 quads.
+//! per frame (two pieces either side of the erase gap), within the embedded
+//! profile's 1,024 polyline points; grid lines are about 46 quads.
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -47,7 +47,7 @@ pub const App = gooey.App(State, render, .{
     .title = "ECG",
     .width = 1024,
     .height = 600,
-    .limits = .nano,
+    .limits = .embedded,
 });
 
 /// The generated entry point (contract §7).

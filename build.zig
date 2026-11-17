@@ -245,6 +245,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "drag-drop", .source = "src/examples/drag_drop.zig" },
             .{ .name = "background", .source = "src/examples/background.zig" },
             .{ .name = "ecg", .source = "src/examples/ecg.zig" },
+            .{ .name = "radioclash-logo", .source = "src/examples/radioclash_logo.zig" },
         };
         // `zig build run` runs todo, the default example (contract decision 15).
         var todo_exe: ?*std.Build.Step.Compile = null;
@@ -647,10 +648,12 @@ pub fn build(b: *std.Build) void {
             .{ .name = "drag-drop", .source = "src/examples/drag_drop.zig" },
             .{ .name = "background", .source = "src/examples/background.zig" },
             .{ .name = "ecg", .source = "src/examples/ecg.zig" },
+            .{ .name = "radioclash-logo", .source = "src/examples/radioclash_logo.zig" },
         };
         // `zig build run` runs todo, the default example (contract decision 15).
         var todo_install: ?*std.Build.Step.InstallArtifact = null;
         for (linux_examples) |example| {
+            if (linux_backend == .eve and exceedsEveChip(example.name)) continue;
             const install = addLinuxExample(
                 b,
                 mod,
@@ -2201,6 +2204,20 @@ const GooeyBuildOptions = struct {
     frame_trace_seconds: u32 = 30,
     eve: EveOptions = .default,
 };
+
+/// Examples whose `ResourceLimits` profile (`.standard`, `.large`) needs a
+/// bigger image atlas or larger SVG icons than an EVE chip's `RAM_G` holds;
+/// the EVE host refuses them at compile time, so an eve build skips them.
+fn exceedsEveChip(name: []const u8) bool {
+    std.debug.assert(name.len > 0);
+    const too_large = [_][]const u8{
+        "dashboard", "data-table", "images", "lucide-demo", "virtual-list",
+    };
+    for (too_large) |too_large_name| {
+        if (std.mem.eql(u8, name, too_large_name)) return true;
+    }
+    return false;
+}
 
 /// The EVE backend's board wiring (`-Deve-device`, `-Deve-spi-hz`), read by
 /// `src/platform/eve/platform.zig`. Other backends ignore it.

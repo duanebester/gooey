@@ -23,15 +23,15 @@
 //! Reserved by `initInPlace` from the window's `AtlasLimits`: the glyph
 //! mirror (`text_size²` bytes) and two SVG coverage planes (`svg_size²`
 //! bytes each), from fresh pages. Everything else is inline and fixed: the
-//! entry table (4096 slots, 64 KiB), 15 pages, the retirement lists, and a
-//! 64 KiB upload staging buffer. Nothing allocates after initialization.
+//! entry table (4096 slots, 64 KiB), up to 14 pages, the retirement lists,
+//! and a 64 KiB upload staging buffer. Nothing allocates after
+//! initialization.
 //!
 //! ## Resource sketch (CLAUDE.md §7)
 //!
-//! - `RAM_G`: 15 pages × 64 KiB = 960 KiB of cells; the top 64 KiB
-//!   (`snapshot_scratch`) is never written, so `CMD_SNAPSHOT2` can capture
-//!   the panel in 1024x32 RGB565 strips while an app runs.
-//! - Cells: at most 128 per page and 1920 in all; a page holds one size
+//! - `RAM_G`: the pages the image mirror leaves (`limits.zig`), 64 KiB
+//!   each: 10 at `.embedded`, 13 at `.nano`.
+//! - Cells: at most 128 per page and 1792 in all; a page holds one size
 //!   class, from 8 px (8 KiB used of 64) to 128 px (4 cells).
 //! - Per frame: one hash probe per sprite; misses copy one cell (at most
 //!   16 KiB) through staging into `RAM_G`. Each upload record scans the entry
@@ -42,6 +42,7 @@ const std = @import("std");
 const chip_mod = @import("chip.zig");
 const display_list = @import("display_list.zig");
 const limits_mod = @import("../../core/limits.zig");
+const eve_limits = @import("limits.zig");
 const reservation = @import("../../core/reservation.zig");
 
 const assert = std.debug.assert;
@@ -51,13 +52,11 @@ const Chip = chip_mod.Chip;
 pub const cell_sizes = [_]u32{ 8, 16, 24, 32, 40, 48, 64, 80, 96, 128 };
 pub const cell_size_max: u32 = cell_sizes[cell_sizes.len - 1];
 /// One page's slot of `RAM_G`.
-pub const page_bytes: u32 = 64 * 1024;
+pub const page_bytes: u32 = eve_limits.EveLimits.bt81x.cell_page_bytes;
 pub const page_count_max: u32 = display_list.handle_count_max;
 /// `VERTEX2II` names cells 0..127.
 pub const page_cell_count_max: u32 = 128;
 pub const cell_count_max: u32 = page_count_max * page_cell_count_max;
-/// `RAM_G` above the pages, left for `CMD_SNAPSHOT2` strips.
-pub const snapshot_scratch: u32 = page_count_max * page_bytes;
 /// Entry table slots; kept at most half full, so probes stay short.
 const slot_count: u32 = 4096;
 /// Largest burst of cells written to the chip at once.
@@ -70,7 +69,8 @@ pub const atlas_size_max: u32 = 4096;
 
 comptime {
     assert(cell_size_max * cell_size_max <= page_bytes);
-    assert(snapshot_scratch + page_bytes <= chip_mod.ram_g_size);
+    assert(page_count_max == eve_limits.EveLimits.bt81x.cell_page_count_max);
+    assert(page_count_max * page_bytes <= chip_mod.ram_g_size);
     assert(cell_count_max <= slot_count / 2);
     assert(std.math.isPowerOfTwo(slot_count));
     assert(cell_size_max * cell_size_max <= staging_bytes_max);
@@ -127,6 +127,8 @@ pub const CellCache = struct {
     entries: [slot_count]Entry = @splat(.{}),
     entry_count: u32 = 0,
     pages: [page_count_max]Page = @splat(.{}),
+    /// Pages this app's `RAM_G` layout holds; the rest of `pages` stays unused.
+    page_count: u32 = 0,
     /// `retired[retired_new]` collects cells retired since the last
     /// `beginFrame`; the other list holds those retired before it.
     retired: [2]RetiredList = .{ .{}, .{} },
@@ -140,11 +142,19 @@ pub const CellCache = struct {
 
     const Self = @This();
 
-    /// Reserve the host mirrors for the window's atlases. Fails when an atlas
-    /// is past what the entry key addresses or an icon past the largest cell.
-    pub fn initInPlace(self: *Self, atlas: *const limits_mod.AtlasLimits) !void {
+    /// Reserve the host mirrors for the window's atlases, with `page_count`
+    /// pages of `RAM_G` (`limits.zig`). Fails when an atlas is past what the
+    /// entry key addresses or an icon past the largest cell.
+    pub fn initInPlace(
+        self: *Self,
+        atlas: *const limits_mod.AtlasLimits,
+        page_count: u32,
+    ) !void {
         assert(atlas.check() == null);
         assert(atlas.text_size > 0);
+        assert(page_count > 0);
+        assert(page_count <= page_count_max);
+        self.page_count = page_count;
         if (atlas.text_size > atlas_size_max) return error.EveGlyphAtlasTooLarge;
         if (atlas.svg_size > atlas_size_max) return error.EveSvgAtlasTooLarge;
         if (atlas.svg_icon_size_max > cell_size_max) return error.EveSvgIconsExceedCells;
@@ -328,8 +338,8 @@ pub const CellCache = struct {
     /// Pages holding at least one live or retiring cell.
     pub fn pagesInUse(self: *const Self) u32 {
         var count: u32 = 0;
-        for (self.pages) |page| count += @intFromBool(page.used_count > 0);
-        assert(count <= page_count_max);
+        for (self.pages[0..self.page_count]) |page| count += @intFromBool(page.used_count > 0);
+        assert(count <= self.page_count);
         return count;
     }
 
@@ -343,7 +353,8 @@ pub const CellCache = struct {
         assert(class < cell_sizes.len);
         const capacity = pageCapacity(class);
         var empty_page: ?u8 = null;
-        for (&self.pages, 0..) |*page, index| {
+        assert(self.page_count <= page_count_max);
+        for (self.pages[0..self.page_count], 0..) |*page, index| {
             if (page.used_count == 0) {
                 if (empty_page == null) empty_page = @intCast(index);
                 continue;
@@ -387,8 +398,8 @@ pub const CellCache = struct {
                 frame_number,
                 cell_sizes[class],
                 self.pagesInUse(),
-                page_count_max,
-                page_count_max * page_bytes / 1024,
+                self.page_count,
+                self.page_count * page_bytes / 1024,
                 self.entry_count,
                 self.retired[0].count + self.retired[1].count,
             },
@@ -558,7 +569,7 @@ fn copyCell(plane: []const u8, stride: u32, region: Region, target: []u8, size: 
 const testing = std.testing;
 
 fn testCache(cache: *CellCache) !void {
-    try cache.initInPlace(&limits_mod.AtlasLimits.nano);
+    try cache.initInPlace(&limits_mod.AtlasLimits.nano, page_count_max);
 }
 
 test "a glyph uploads once into a zero-padded cell and later draws reuse it" {
@@ -645,8 +656,8 @@ test "removal keeps every other key of a probe chain reachable" {
 }
 
 test "the page pool fills exactly, then the next size class has no page" {
-    // Capacity: 128 px cells fit 4 per page, so 15 pages hold exactly 60.
-    // The 60th allocates; the 61st, and any other class, finds no page.
+    // Capacity: 128 px cells fit 4 per page, so 14 pages hold exactly 56.
+    // The 56th allocates; the 57th, and any other class, finds no page.
     const cache = try testing.allocator.create(CellCache);
     defer testing.allocator.destroy(cache);
     try testCache(cache);

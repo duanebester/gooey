@@ -27,6 +27,7 @@ const posix = std.posix;
 const platform_mod = @import("platform.zig");
 const window_mod = @import("window.zig");
 const chip_mod = @import("chip.zig");
+const eve_limits = @import("limits.zig");
 const clipboard = @import("../fbdev/clipboard.zig");
 const input = @import("../../input/events.zig");
 const core_window = @import("../../core/window.zig");
@@ -51,6 +52,11 @@ comptime {
 /// Run `App` until its window closes. Everything is reserved before
 /// `finishInit`; the core's guard owns every allocation, the platform's too.
 pub fn run(comptime App: type, app: *App, backing: std.mem.Allocator, io: std.Io) !void {
+    comptime {
+        if (eve_limits.EveLimits.bt81x.check(&App.limits_reserved.atlas)) |reason| {
+            @compileError("the EVE backend cannot hold this app's ResourceLimits: " ++ reason);
+        }
+    }
     app.beginInit(backing);
     const gpa = app.guard.allocator();
 

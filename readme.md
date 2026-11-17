@@ -187,7 +187,9 @@ macOS, Linux (Wayland's `xdg_toplevel.set_min_size`), and Windows enforce them; 
 fbdev ignore them. Derive them from the layout's own minimum, such as a column's `width_min`.
 
 Unknown fields are compile errors. Pick the smallest profile that fits. Each profile's
-`text.fonts` is the `FontLimits` profile of the same name, the faces the app loads at init:
+`text.fonts` is the `FontLimits` profile of the same name, the faces the app loads at init.
+`.embedded` sits beside the ladder rather than on it: `.nano`'s element budgets with a smaller
+window, two faces, and a 384² image atlas, sized for board panels.
 
 | Profile     | For                                                 | Font faces |
 | ----------- | --------------------------------------------------- | ---------: |
@@ -196,6 +198,7 @@ Unknown fields are compile errors. Pick the smallest profile that fits. Each pro
 | `.standard` | Multi-panel apps, tables, dashboards                |          6 |
 | `.large`    | Dense content, hundreds of icons, large images      |          6 |
 | `.ceiling`  | Framework maxima for tests; `gooey.App` rejects it  |         14 |
+| `.embedded` | Board panels (fbdev, eve) up to 1280x800 at scale 1 |          2 |
 
 To raise one budget without moving the whole app up a rung, start from a profile and change
 fields. `code_editor.zig` reserves one code editor slot on top of `.small`, and keeps more

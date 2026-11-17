@@ -8,7 +8,8 @@ render its last frame:
     python3 src/platform/eve/eve_preview.py /tmp/eve.bin out.png [--stats]
 
 This models the BT81x commands Gooey's EVE renderer emits (RECTS, LINE_STRIP,
-POINTS, L8/RGB565 BITMAPS, scissor, stencil, color mask) from the BT81x
+POINTS, L8/RGB565/ARGB4 BITMAPS with BITMAP_TRANSFORM_A/E scaling and
+NEAREST/BILINEAR filtering, scissor, stencil, color mask) from the BT81x
 Programming Guide. It is an approximation: antialiasing and rounding differ
 from the chip, and it shares the renderer's reading of the guide, so it cannot
 catch a misreading of the guide. The panel is the final check.
@@ -32,7 +33,8 @@ NAMES = {0: "DISPLAY", 1: "BITMAP_SOURCE", 2: "CLEAR_COLOR_RGB", 4: "COLOR_RGB",
          12: "STENCIL_OP", 13: "POINT_SIZE", 14: "LINE_WIDTH", 16: "COLOR_A", 27: "SCISSOR_XY",
          28: "SCISSOR_SIZE", 31: "BEGIN",
          32: "COLOR_MASK", 33: "END", 38: "CLEAR", 39: "VERTEX_FORMAT", 40: "BITMAP_LAYOUT_H",
-         41: "BITMAP_SIZE_H", 43: "VERTEX_TRANSLATE_X", 44: "VERTEX_TRANSLATE_Y"}
+         41: "BITMAP_SIZE_H", 43: "VERTEX_TRANSLATE_X", 44: "VERTEX_TRANSLATE_Y",
+         21: "BITMAP_TRANSFORM_A", 25: "BITMAP_TRANSFORM_E"}
 
 
 def signed(value, bits):
@@ -47,6 +49,7 @@ class Handle:
         self.layout_height = 0
         self.width = 0
         self.height = 0
+        self.bilinear = False
 
 
 class Renderer:
@@ -62,6 +65,8 @@ class Renderer:
         self.point_size = 16
         self.frac = 4
         self.translate = [0.0, 0.0]
+        # BITMAP_TRANSFORM_A and _E: texels per pixel.
+        self.transform = [1.0, 1.0]
         self.scissor = (0, 0, 2048, 2048)
         self.handle = 0
         self.cell = 0
@@ -157,28 +162,50 @@ class Renderer:
         if region is None or h.stride == 0:
             return
         top, bottom, left, right = region[:4]
-        tx = np.arange(left, right) - x
-        ty = np.arange(top, bottom) - y
+        # Texel coordinates of each pixel centre under the transform.
+        u = (np.arange(left, right) - x + 0.5) * self.transform[0]
+        v = (np.arange(top, bottom) - y + 0.5) * self.transform[1]
+        if h.bilinear:
+            u0, v0 = np.floor(u - 0.5), np.floor(v - 0.5)
+            fu, fv = (u - 0.5 - u0)[None, :, None], (v - 0.5 - v0)[:, None, None]
+            corners = [self.texels(h, cell, v0 + dy, u0 + dx) for dy in (0, 1) for dx in (0, 1)]
+            top_row = corners[0] * (1 - fu) + corners[1] * fu
+            low_row = corners[2] * (1 - fu) + corners[3] * fu
+            rgba = top_row * (1 - fv) + low_row * fv
+        else:
+            rgba = self.texels(h, cell, np.floor(v), np.floor(u))
+        rgb = rgba[..., :3] if h.format != L8 else self.color_array()
+        if h.format != L8:
+            rgb = rgb * self.color_array() / 255
+        self.blend(region, rgba[..., 3], rgb)
+
+    def texels(self, h, cell, ty, tx):
+        """RGBA of texel rows `ty` by columns `tx`: rgb 0..255, alpha 0..1;
+        texels outside the bitmap are transparent (BORDER)."""
+        ty = ty.astype(np.int64)[:, None]
+        tx = tx.astype(np.int64)[None, :]
         bpp = {L8: 1, RGB565: 2, ARGB4: 2}[h.format]
-        valid = (ty[:, None] < h.layout_height) & (tx[None, :] * bpp < h.stride)
+        valid = (ty >= 0) & (tx >= 0) & (ty < h.layout_height) & (tx * bpp < h.stride)
         base = h.source + cell * h.stride * h.layout_height
-        offsets = base + ty[:, None] * h.stride + tx[None, :] * bpp
+        offsets = base + ty * h.stride + tx * bpp
         offsets = np.clip(np.where(valid, offsets, 0), 0, RAM_G_SIZE - bpp)
+        out = np.zeros(valid.shape + (4,), np.float32)
         if h.format == L8:
-            coverage = np.where(valid, self.ram_g[offsets] / 255.0, 0).astype(np.float32)
-            self.blend(region, coverage, self.color_array())
-            return
+            out[..., 3] = np.where(valid, self.ram_g[offsets] / 255.0, 0)
+            return out
         low = self.ram_g[offsets].astype(np.uint32)
         value = low | (self.ram_g[offsets + 1].astype(np.uint32) << 8)
         if h.format == RGB565:
             rgb = np.stack([(value >> 11) * 255 / 31, ((value >> 5) & 63) * 255 / 63,
                             (value & 31) * 255 / 31], -1)
-            coverage = valid.astype(np.float32)
+            alpha = valid.astype(np.float32)
         else:
             rgb = np.stack([((value >> 8) & 15) * 17, ((value >> 4) & 15) * 17,
                             (value & 15) * 17], -1)
-            coverage = np.where(valid, (value >> 12) * 17 / 255.0, 0).astype(np.float32)
-        self.blend(region, coverage, rgb.astype(np.float32) * self.color_array() / 255)
+            alpha = np.where(valid, (value >> 12) * 17 / 255.0, 0)
+        out[..., :3] = rgb
+        out[..., 3] = alpha
+        return out
 
     # -- command decoding --------------------------------------------------
     def vertex(self, point, handle=None, cell=None):
@@ -235,6 +262,7 @@ class Renderer:
                 h.stride = (h.stride & ~1023) | ((word >> 9) & 1023)
                 h.layout_height = (h.layout_height & ~511) | (word & 511)
             elif op == 8:
+                h.bilinear = bool(word & (1 << 20))
                 h.width = (h.width & ~511) | ((word >> 9) & 511)
                 h.height = (h.height & ~511) | (word & 511)
             elif op == 10:
@@ -267,6 +295,10 @@ class Renderer:
                     self.stencil[region[0]:region[1], region[2]:region[3]] = 0
             elif op == 39:
                 self.frac = word & 7
+            elif op in (21, 25):
+                # 8.8 fixed point unless bit 17 selects 1.15.
+                scale = 1 << 15 if word & (1 << 17) else 256
+                self.transform[0 if op == 21 else 1] = signed(word & 0x1FFFF, 17) / scale
             elif op in (43, 44):
                 self.translate[op - 43] = signed(word & 0x1FFFF, 17) / 16.0
             elif op == 40:

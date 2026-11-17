@@ -343,6 +343,8 @@ test {
         std.testing.refAllDecls(@import("platform/eve/display_list.zig"));
         std.testing.refAllDecls(@import("platform/eve/cells.zig"));
         std.testing.refAllDecls(@import("platform/eve/renderer.zig"));
+        std.testing.refAllDecls(@import("platform/eve/images.zig"));
+        std.testing.refAllDecls(@import("platform/eve/limits.zig"));
     }
     // The Vulkan files reach libwayland and support only 64-bit targets, so the
     // fbdev and eve builds, which link neither and also run on 32-bit boards,

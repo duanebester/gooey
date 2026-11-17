@@ -34,15 +34,24 @@ pub const preamble_words: u32 = 7;
 /// Worst case of `roundRect` and `squareRect`: scissor (2), color (2),
 /// line width, begin, translate (2), and two vertices.
 pub const rect_words_max: u32 = 10;
-/// Worst case of `cell`: scissor (2), the page's handle setup (6), color
-/// (2), begin, translate (2), and the vertex.
-pub const cell_words_max: u32 = 14;
+/// Worst case of `cell`: scissor (2), the page's handle setup (6), the
+/// identity transform after an image (2), color (2), begin, translate (2),
+/// and the vertex.
+pub const cell_words_max: u32 = 16;
+/// Worst case of `image`: scissor (2), the image handle's setup (7), the
+/// scale (2), color (2), begin, translate (2), and the vertex.
+pub const image_words_max: u32 = 17;
+/// Worst case of `imageRounded` beyond `image`: the stencil mask drawn and
+/// cleared (two rects) and the stencil and colour-mask switches around them.
+pub const image_rounded_words_extra: u32 = 2 * rect_words_max + 10;
 /// Worst case of `beginStrip` or `beginPoints` before the vertices: scissor
 /// (2), color (2), width or size, begin, translate (2).
 pub const strip_words_max: u32 = 8;
-/// Pages of cells, one bitmap handle each (handles 0..14). Handles 15 to 31
-/// stay free for the coprocessor's scratch handle and ROM fonts.
-pub const handle_count_max: u32 = 15;
+/// Pages of cells, one bitmap handle each (handles 0..13). Handle 14 draws
+/// images; handles 15 to 31 stay free for the coprocessor's scratch handle
+/// and ROM fonts.
+pub const handle_count_max: u32 = 14;
+pub const image_handle: u32 = 14;
 
 /// `VERTEX2II` reaches 0..511 in each axis.
 const vertex2ii_extent: i32 = 512;
@@ -52,6 +61,8 @@ const vertex_fraction_bits: u32 = 3;
 comptime {
     assert(words_max == 2048);
     assert(handle_count_max <= 16); // `pages_configured` is a `u16`.
+    assert(image_handle >= handle_count_max);
+    assert(image_handle < 15);
     assert(preamble_words + 1 < words_max);
 }
 
@@ -61,7 +72,9 @@ const prim_points: u32 = 2;
 const prim_line_strip: u32 = 4;
 const prim_rects: u32 = 9;
 const format_l8: u32 = 3;
+const format_argb4: u32 = 6;
 const stencil_always: u32 = 7;
+const stencil_equal: u32 = 5;
 const stencil_not_equal: u32 = 6;
 const stencil_keep: u32 = 1;
 const stencil_replace: u32 = 2;
@@ -83,6 +96,17 @@ pub const Color = struct {
     alpha: u8,
 };
 
+/// One image draw: an ARGB4 rectangle of `texels` at `source`, `stride`
+/// bytes a row, drawn `size` whole pixels large with its top-left at `at`.
+pub const ImageDraw = struct {
+    source: u32,
+    stride: u32,
+    texels: [2]u32,
+    size: [2]u32,
+    at: [2]i32,
+    color: Color,
+};
+
 /// Where a cell page lives and how big its cells are.
 pub const PageLayout = struct {
     address: u32,
@@ -99,6 +123,8 @@ const DrawState = struct {
     scissor: Scissor = .{ 0, 0, 0, 0 },
     /// `VERTEX_TRANSLATE_X`/`_Y` in whole pixels.
     translate: [2]i32 = .{ 0, 0 },
+    /// `BITMAP_TRANSFORM_A` and `_E` in 8.8 fixed point; 256 is 1:1.
+    transform: [2]u32 = .{ 256, 256 },
 };
 
 pub const DisplayList = struct {
@@ -261,8 +287,67 @@ pub const DisplayList = struct {
         assert(index < 128);
         self.applyScissor(self.clip);
         self.configurePage(page, layout);
+        self.setTransform(.{ 256, 256 });
         self.setColor(color);
         self.beginPrimitive(prim_bitmaps, false);
+        self.vertex2ii(at, page, index);
+    }
+
+    /// Draw an image from the image mirror (`images.zig`). A draw larger or
+    /// smaller than its texels scales through `BITMAP_TRANSFORM_A`/`_E`
+    /// (texels per pixel in 8.8) and filters bilinearly; a 1:1 draw samples
+    /// the nearest texel, so it stays as sharp as the source.
+    pub fn image(self: *Self, draw: *const ImageDraw) void {
+        assert(draw.texels[0] > 0);
+        assert(draw.texels[1] > 0);
+        assert(draw.stride < 4096);
+        assert(draw.size[0] > 0);
+        assert(draw.size[0] < 2048);
+        assert(draw.size[1] > 0);
+        assert(draw.size[1] < 2048);
+        self.applyScissor(self.clip);
+        const handle = image_handle;
+        const stride = draw.stride;
+        const rows = draw.texels[1];
+        const width = draw.size[0];
+        const height = draw.size[1];
+        const scaled = draw.texels[0] != width or rows != height;
+        const filter: u32 = @intFromBool(scaled); // BILINEAR when scaled.
+        self.emit((5 << 24) | handle); // BITMAP_HANDLE
+        self.emit((1 << 24) | draw.source); // BITMAP_SOURCE
+        self.emit((7 << 24) | (format_argb4 << 19) | ((stride & 1023) << 9) | (rows & 511));
+        self.emit((40 << 24) | ((stride >> 10) << 2) | (rows >> 9)); // BITMAP_LAYOUT_H
+        self.emit((8 << 24) | (filter << 20) | ((width & 511) << 9) | (height & 511));
+        self.emit((41 << 24) | ((width >> 9) << 2) | (height >> 9)); // BITMAP_SIZE_H
+        self.setTransform(.{ transformOf(draw.texels[0], width), transformOf(rows, height) });
+        self.setColor(draw.color);
+        self.beginPrimitive(prim_bitmaps, false);
+        self.vertex2ii(draw.at, image_handle, 0);
+    }
+
+    /// `image` with rounded corners: the rounded box is marked in the
+    /// stencil buffer, the image draws only inside the mark, and the mark is
+    /// cleared again for the next primitive.
+    pub fn imageRounded(self: *Self, box: Box, radius: f32, draw: *const ImageDraw) void {
+        assert(radius > 0);
+        assert(box.w > 0);
+        self.stencilMarkBegin();
+        self.roundRect(box, radius, draw.color);
+        self.emit(colorMask(true));
+        self.emit(stencilFunc(stencil_equal, 1));
+        self.emit(stencilOp(stencil_keep, stencil_keep));
+        self.image(draw);
+        self.stencilTestEnd();
+        self.stencilUnmarkBegin();
+        self.roundRect(box, radius, draw.color);
+        self.stencilUnmarkEnd();
+    }
+
+    /// One `VERTEX2II` of `handle` and `cell_index` with its top-left at
+    /// whole pixel `at`, moving the origin in 512 px steps to reach it.
+    fn vertex2ii(self: *Self, at: [2]i32, handle: u32, cell_index: u32) void {
+        assert(handle < 32);
+        assert(cell_index < 128);
         const x = std.math.clamp(at[0], -2048, 2047);
         const y = std.math.clamp(at[1], -2048, 2047);
         const origin = [2]i32{
@@ -274,7 +359,7 @@ pub const DisplayList = struct {
         const local_y: u32 = @intCast(y - origin[1]);
         assert(local_x < 512);
         assert(local_y < 512);
-        self.emit((2 << 30) | (local_x << 21) | (local_y << 12) | (@as(u32, page) << 7) | index);
+        self.emit((2 << 30) | (local_x << 21) | (local_y << 12) | (handle << 7) | cell_index);
     }
 
     /// Start a line strip of half-width `half_width_units` (1/16 px). Strips
@@ -328,6 +413,23 @@ pub const DisplayList = struct {
         self.emit((8 << 24) | (size << 9) | size); // BITMAP_SIZE, NEAREST, BORDER
         self.emit(41 << 24); // BITMAP_SIZE_H
         self.pages_configured |= bit;
+    }
+
+    /// `BITMAP_TRANSFORM_A` and `_E`, 8.8 texels per pixel. The other four
+    /// coefficients keep their reset values (no shear or offset).
+    fn setTransform(self: *Self, transform: [2]u32) void {
+        assert(transform[0] > 0);
+        assert(transform[1] > 0);
+        assert(transform[0] < 0x10000);
+        assert(transform[1] < 0x10000);
+        if (self.state.transform[0] != transform[0]) {
+            self.emit((21 << 24) | transform[0]); // BITMAP_TRANSFORM_A, 8.8
+            self.state.transform[0] = transform[0];
+        }
+        if (self.state.transform[1] != transform[1]) {
+            self.emit((25 << 24) | transform[1]); // BITMAP_TRANSFORM_E, 8.8
+            self.state.transform[1] = transform[1];
+        }
     }
 
     fn setTranslate(self: *Self, origin: [2]i32) void {
@@ -398,6 +500,14 @@ pub const DisplayList = struct {
 fn colorRgb(rgb: u32) u32 {
     assert(rgb <= 0xFFFFFF);
     return (4 << 24) | rgb;
+}
+
+/// Texels per pixel in 8.8 fixed point, for `count` texels drawn `pixels` wide.
+fn transformOf(count: u32, pixels: u32) u32 {
+    assert(count > 0);
+    assert(pixels > 0);
+    const value = (@as(u64, count) * 256 + pixels / 2) / pixels;
+    return @intCast(std.math.clamp(value, 1, 0xFFFF));
 }
 
 fn colorA(alpha: u8) u32 {

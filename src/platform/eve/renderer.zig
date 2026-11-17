@@ -15,7 +15,8 @@
 //! | SVG sprite | Stroke and fill coverage as two cells, stroke under fill |
 //! | Polyline (`strip_expanded`) | `LINE_STRIP`; EVE rounds joins and caps the GPUs leave butt |
 //! | Point cloud | `POINTS` |
-//! | Image sprite, triangle mesh (paths) | Not drawn: fails fast (CLAUDE.md §2) |
+//! | Image sprite | `VERTEX2II` of the ARGB4 mirror (`images.zig`), scaled by `BITMAP_TRANSFORM` |
+//! | Triangle mesh (paths), colour glyph | Not drawn: fails fast (CLAUDE.md §2) |
 //!
 //! A quad's border draws as an outer rect in the border colour and an inner
 //! rect in the fill. Under a translucent fill the inner rect is first marked
@@ -26,22 +27,30 @@
 //! Each draw's clip becomes the scissor, taken over the pixels whose centres
 //! lie inside it (contract §9). Cells draw 1:1 at whole pixels (`NEAREST`),
 //! so the window's scale is 1 and sprite bounds match their atlas regions.
+//! Images draw at whole pixels at any size: 1:1 with `NEAREST`, scaled with
+//! `BILINEAR`. Rounded image corners clip through the stencil buffer with
+//! the largest radius; a grayscale image fails fast.
 //!
 //! ## Budgets (CLAUDE.md §2 and §4)
 //!
 //! - Display list: 2048 commands, the chip's `RAM_DL`. A frame that needs
 //!   more fails fast, naming the frame, the draw, and its counts.
-//! - `RAM_G`: 960 KiB of glyph cells (`cells.zig`); exhaustion fails fast.
-//!   The host mirrors of the glyph and SVG atlases come from the window's
-//!   `AtlasLimits`.
-//! - SPI per frame: the list, the swap request, and new cells, at most
-//!   `RAM_DL` plus `AtlasLimits.upload_bytes_frame_max`; more fails fast.
+//! - `RAM_G` (`limits.zig`): the image mirror (`image_size² × 2`), and glyph
+//!   cell pages in the rest below the 64 KiB snapshot scratch; cell
+//!   exhaustion fails fast. The EVE host refuses, at compile time, a profile
+//!   that leaves too few pages. The host mirrors of the atlases come from the
+//!   window's `AtlasLimits`.
+//! - SPI per frame: the list, the swap request, new cells, and new image
+//!   rows, at most `RAM_DL` plus `AtlasLimits.upload_bytes_frame_max`; more
+//!   fails fast. Resending the image mirror after a failed transfer is
+//!   exempt, once.
 //!
 //! ## Resource sketch (CLAUDE.md §7)
 //!
 //! - Memory: the renderer (about 150 KiB: list 8 KiB, cell table 64 KiB,
 //!   staging 64 KiB) lives in the window; the atlas mirrors are reserved at
-//!   init (`text_size² + 2 × svg_size²`, 384 KiB at `.nano`).
+//!   init (`text_size² + 2 × svg_size² + 2 × image_size²`: 512 KiB at
+//!   `.nano`, 672 KiB at `.embedded`).
 //! - CPU per frame: one pass over the draws, one hash probe per sprite, a
 //!   few words per primitive; no pixel work besides copying new cells.
 //! - SPI per frame: at most 8 KiB of list, plus cells on first use. At 30 MHz
@@ -54,6 +63,8 @@ const packed_mod = @import("../../core/packed_frame.zig");
 const chip_mod = @import("chip.zig");
 const cells_mod = @import("cells.zig");
 const display_list = @import("display_list.zig");
+const images_mod = @import("images.zig");
+const eve_limits = @import("limits.zig");
 
 const assert = std.debug.assert;
 const Chip = chip_mod.Chip;
@@ -76,6 +87,7 @@ const shadow_layer_alpha: f32 = 0.3;
 pub const FrameStats = struct {
     words: u32 = 0,
     cell_bytes: u32 = 0,
+    image_bytes: u64 = 0,
     spi_bytes: u64 = 0,
 };
 
@@ -85,6 +97,7 @@ pub const EveRenderer = struct {
     size_px: backend.SizePx = .{ .width = 0, .height = 0 },
     list: DisplayList = .{},
     cells: cells_mod.CellCache = .{},
+    images: images_mod.ImageMirror = .{},
     spi_bytes_frame_max: u64 = 0,
     last_stats: FrameStats = .{},
     /// A failed transfer was logged; later failures are not.
@@ -111,11 +124,19 @@ pub const EveRenderer = struct {
         if (chip.panel_width > panel_side_max or chip.panel_height > panel_side_max) {
             return error.EvePanelTooLarge;
         }
-        try self.cells.initInPlace(&limits.atlas);
+        const eve = &eve_limits.EveLimits.bt81x;
+        if (eve.check(&limits.atlas)) |reason| {
+            std.log.err("eve: ResourceLimits do not fit the chip: {s}", .{reason});
+            return error.EveLimitsExceeded;
+        }
+        const ram = eve.layout(&limits.atlas);
+        try self.cells.initInPlace(&limits.atlas, ram.cell_page_count);
+        errdefer self.cells.deinit();
+        try self.images.initInPlace(limits.atlas.image_size, ram.image_address);
         self.chip = chip;
         self.size_px = surface.size_px;
         self.list.count = 0;
-        self.spi_bytes_frame_max = chip_mod.ram_dl_size + 4 + limits.atlas.upload_bytes_frame_max;
+        self.spi_bytes_frame_max = eve.spiBytesFrameMax(&limits.atlas);
         self.last_stats = .{};
         self.transfer_failure_logged = false;
         self.perf = .{};
@@ -125,14 +146,16 @@ pub const EveRenderer = struct {
 
     pub fn deinit(self: *Self) void {
         if (self.chip == null) return;
+        self.images.deinit();
         self.cells.deinit();
         self.chip = null;
         assert(self.chip == null);
     }
 
     /// Glyph and SVG records land in the host mirrors; cells copy from them
-    /// when drawn. There is no image or colour-glyph drawing yet, so those
-    /// records fail fast where an app first loads one.
+    /// when drawn. Image records convert into the image mirror and reach the
+    /// chip with the next frame. There is no colour-glyph drawing yet, so
+    /// those records fail fast where an app first loads one.
     pub fn uploadAtlas(
         self: *Self,
         kind: backend.AtlasKind,
@@ -150,8 +173,9 @@ pub const EveRenderer = struct {
         switch (kind) {
             .glyph => self.cells.uploadGlyphs(region, pixels),
             .svg => self.cells.uploadSvgs(region, pixels),
-            .image, .glyph_color => std.debug.panic("EVE renderer: no {t} atlas; the EVE " ++
-                "backend draws glyphs, SVG icons, quads, polylines, and points only", .{kind}),
+            .image => self.images.upload(region, pixels),
+            .glyph_color => std.debug.panic("EVE renderer: no {t} atlas; the EVE backend " ++
+                "draws glyphs, SVG icons, images, quads, polylines, and points", .{kind}),
         }
     }
 
@@ -186,6 +210,9 @@ pub const EveRenderer = struct {
         const started = chip_mod.nowNanoseconds();
         const waited = chip.waitForSwap() catch |err| return self.skipFrame(err);
         _ = chip.takeBytesWritten();
+        // A resend after a failed transfer is the one send past the budget.
+        const resend = self.images.resend_all;
+        const image_bytes = self.images.flush(chip) catch |err| return self.skipFrame(err);
         self.cells.beginFrame();
         self.list.begin(self.size_px.width, self.size_px.height, opaqueRgb(clear));
         for (frame.drawList(), 0..) |*packed_draw, index| {
@@ -197,10 +224,11 @@ pub const EveRenderer = struct {
         self.cells.flush(chip) catch |err| return self.skipFrame(err);
         chip.swapDisplayList(self.list.finish()) catch |err| return self.skipFrame(err);
         const spi_bytes = chip.takeBytesWritten();
-        self.checkSpiBudget(frame, spi_bytes);
+        self.checkSpiBudget(frame, spi_bytes - if (resend) image_bytes else 0);
         self.last_stats = .{
             .words = self.list.count,
             .cell_bytes = self.cells.cell_bytes_frame,
+            .image_bytes = image_bytes,
             .spi_bytes = spi_bytes,
         };
         const done = chip_mod.nowNanoseconds();
@@ -212,8 +240,10 @@ pub const EveRenderer = struct {
     }
 
     fn skipFrame(self: *Self, err: chip_mod.Error) void {
-        // Cells staged or sent may be missing on the chip; upload them again.
+        // Cells and image rows staged or sent may be missing on the chip;
+        // upload them again.
         self.cells.forgetAll();
+        self.images.forgetAll();
         if (self.transfer_failure_logged) return;
         self.transfer_failure_logged = true;
         std.log.err("eve: SPI transfer failed ({t}); skipping frames until it recovers", .{err});
@@ -267,8 +297,11 @@ pub const EveRenderer = struct {
             .point_instanced => for (frame.drawRange(packed_draw, .mesh)) |*mesh| {
                 self.encodePoints(mesh, &context);
             },
-            .image, .triangles => std.debug.panic("EVE renderer: frame {d} draws {d} {t} " ++
-                "instances, which the EVE backend cannot draw yet (images and paths)", .{
+            .image => for (frame.drawRange(packed_draw, .sprite)) |*sprite| {
+                self.encodeImage(sprite, &context);
+            },
+            .triangles => std.debug.panic("EVE renderer: frame {d} draws {d} {t} " ++
+                "instances, which the EVE backend cannot draw yet (paths)", .{
                 frame.frame_number,
                 packed_draw.count,
                 packed_draw.pipeline,
@@ -466,6 +499,42 @@ pub const EveRenderer = struct {
         for (points) |point| self.list.vertex(point.x, point.y);
     }
 
+    /// An image sprite from the image mirror, tinted, faded by its opacity,
+    /// and clipped to its rounded corners. Grayscale fails fast: EVE has no
+    /// per-bitmap colour matrix.
+    fn encodeImage(self: *Self, sprite: *const packed_mod.Sprite, context: *const Context) void {
+        assert(sprite.bounds[2] >= 0);
+        assert(self.images.size > 0);
+        if (sprite.grayscale > 0.001) panicGrayscale(sprite, context);
+        const tint = sprite.tint;
+        const opacity = std.math.clamp(sprite.opacity, 0, 1);
+        const color = listColor(.{ tint[0], tint[1], tint[2], tint[3] * opacity });
+        if (color.alpha == 0) return;
+        const region = atlasRegion(sprite.uv, self.images.size) orelse return;
+        const box = deviceBox(sprite.bounds);
+        const side_max: f32 = @floatFromInt(panel_side_max - 1);
+        const width = std.math.clamp(@round(box.w), 0, side_max);
+        const height = std.math.clamp(@round(box.h), 0, side_max);
+        if (width < 1 or height < 1) return;
+        const draw_image = display_list.ImageDraw{
+            .source = self.images.sourceOf(region),
+            .stride = self.images.stride(),
+            .texels = .{ region.w, region.h },
+            .size = .{ @intFromFloat(width), @intFromFloat(height) },
+            .at = pixelOf(sprite.bounds),
+            .color = color,
+        };
+        const corners = sprite.corners;
+        const radius = @max(@max(corners[0], corners[1]), @max(corners[2], corners[3]));
+        if (radius > 0) {
+            const words = display_list.image_words_max + display_list.image_rounded_words_extra;
+            self.ensureRoom(words, context);
+            return self.list.imageRounded(box, radius, &draw_image);
+        }
+        self.ensureRoom(display_list.image_words_max, context);
+        self.list.image(&draw_image);
+    }
+
     /// `POINT_SIZE` is the radius in 1/16 px.
     fn encodePoints(self: *Self, mesh: *const packed_mod.Mesh, context: *const Context) void {
         assert(mesh.width > 0);
@@ -480,6 +549,17 @@ pub const EveRenderer = struct {
 };
 
 const BorderColors = struct { fill: ListColor, border: ListColor };
+
+fn panicGrayscale(sprite: *const packed_mod.Sprite, context: *const Context) noreturn {
+    assert(sprite.grayscale > 0);
+    assert(context.frame.draw_count > 0);
+    std.debug.panic("EVE renderer: frame {d} draws an image at grayscale {d:.2} (draw {d}); " ++
+        "EVE bitmaps have no colour matrix, so the EVE backend draws images in colour only", .{
+        context.frame.frame_number,
+        sprite.grayscale,
+        context.draw_index,
+    });
+}
 
 /// What a fail-fast names about the primitive being encoded.
 const Context = struct {
@@ -637,7 +717,7 @@ const Perf = struct {
             display_list.words_max,
             self.cell_bytes / 1024,
             cells.pagesInUse(),
-            cells_mod.page_count_max,
+            cells.page_count,
             cells.entry_count,
         });
         self.* = .{ .start_ns = now };
@@ -695,7 +775,12 @@ fn appendClip(frame: *PackedFrame, rect: packed_mod.Rect) u32 {
 fn appendDraw(frame: *PackedFrame, pipeline: packed_mod.Pipeline, first: u32, clip: u32) void {
     assert(frame.draw_count < frame.draws.len);
     assert(clip == packed_mod.clip_none or clip < frame.clip_count);
-    frame.draws[frame.draw_count] = .{ .pipeline = pipeline, .clip = clip, .first = first, .count = 1 };
+    frame.draws[frame.draw_count] = .{
+        .pipeline = pipeline,
+        .clip = clip,
+        .first = first,
+        .count = 1,
+    };
     frame.draw_count += 1;
 }
 
@@ -734,7 +819,13 @@ test "a clipped polyline is one LINE_STRIP inside the clip's pixel-centre scisso
     defer frame.deinit();
     const clip = appendClip(&frame, .{ 10.6, 20.6, 29.8, 8.8 });
     frame.counts[@backingInt(packed_mod.Pool.polylines)] += 1;
-    frame.meshes[0] = .{ .fill = .{ 0, 1, 0, 1 }, .first = 0, .count = 3, .width = 3, .edge_first = 0 };
+    frame.meshes[0] = .{
+        .fill = .{ 0, 1, 0, 1 },
+        .first = 0,
+        .count = 3,
+        .width = 3,
+        .edge_first = 0,
+    };
     frame.mesh_count = 1;
     appendDraw(&frame, .strip_expanded, 0, clip);
 
@@ -790,7 +881,11 @@ test "a translucent fill under a border marks, draws outside, and unmarks the st
     renderer.draw(&frame, test_viewport, .{ .r = 1, .g = 1, .b = 1, .a = 1 });
     const words = testWords(&renderer);
     const mask_off: u32 = 32 << 24;
-    const mark = [_]u32{ mask_off, (10 << 24) | (7 << 16) | (1 << 8) | 0xFF, (12 << 24) | (2 << 3) | 2 };
+    const mark = [_]u32{
+        mask_off,
+        (10 << 24) | (7 << 16) | (1 << 8) | 0xFF, // STENCIL_FUNC(ALWAYS, 1, 255)
+        (12 << 24) | (2 << 3) | 2, // STENCIL_OP(REPLACE, REPLACE)
+    };
     const outside = [_]u32{ (32 << 24) | 0xF, (10 << 24) | (6 << 16) | (1 << 8) | 0xFF };
     const marked = std.mem.indexOf(u32, words, &mark).?;
     const drawn = std.mem.indexOf(u32, words, &outside).?;
@@ -801,4 +896,60 @@ test "a translucent fill under a border marks, draws outside, and unmarks the st
     frame.quads[0] = frame.quads[1];
     renderer.draw(&frame, test_viewport, .{ .r = 1, .g = 1, .b = 1, .a = 1 });
     try testing.expectEqual(@as(usize, 0), std.mem.count(u32, testWords(&renderer), &.{mask_off}));
+}
+
+test "an image draws from the image mirror, scaled by the transform" {
+    // Goal: the image path end to end on the simulated chip. A 4x2 upload at
+    // (8, 4) of the 256² nano image atlas reaches RAM_G as ARGB4 at the
+    // mirror's address; a sprite drawing it 8x2 (twice as wide) names handle
+    // 14, the ARGB4 format and the region's source, filters bilinearly, and
+    // sets BITMAP_TRANSFORM_A to 128 (half a texel per pixel) and leaves _E
+    // at 1:1. Methodology: compare against words built from the BT81x guide,
+    // independently of the encoder's helpers.
+    var frame: PackedFrame = undefined;
+    try testFrame(&frame, &.{});
+    defer frame.deinit();
+    const size: f32 = @floatFromInt(test_limits.atlas.image_size);
+    frame.sprites[0] = .{
+        .bounds = .{ 100, 50, 8, 2 },
+        .uv = .{ 8 / size, 4 / size, 12 / size, 6 / size },
+        .tint = .{ 1, 1, 1, 1 },
+        .secondary = .{ 0, 0, 0, 0 },
+        .corners = @splat(0),
+        .grayscale = 0,
+        .opacity = 1,
+    };
+    frame.sprite_count = 1;
+    frame.counts[@backingInt(packed_mod.Pool.images)] += 1;
+    appendDraw(&frame, .image, 0, packed_mod.clip_none);
+
+    var chip: Chip = undefined;
+    var renderer: EveRenderer = undefined;
+    try testRenderer(&renderer, &chip);
+    defer chip.close();
+    defer renderer.deinit();
+    var red_opaque: [8][4]u8 = @splat(.{ 255, 0, 0, 255 });
+    const pixels = std.mem.sliceAsBytes(&red_opaque);
+    renderer.uploadAtlas(.image, .{ .x = 8, .y = 4, .width = 4, .height = 2 }, pixels);
+    renderer.draw(&frame, test_viewport, .{ .r = 0, .g = 0, .b = 0, .a = 1 });
+
+    const ram = eve_limits.EveLimits.bt81x.layout(&test_limits.atlas);
+    const stride: u32 = test_limits.atlas.image_size * 2;
+    const source = ram.image_address + 4 * stride + 8 * 2;
+    const texel = std.mem.readInt(u16, chip.sim_memory[source..][0..2], .little);
+    try testing.expectEqual(@as(u16, 0xFF00), texel);
+    const words = testWords(&renderer);
+    const setup = [_]u32{
+        (5 << 24) | 14, // BITMAP_HANDLE(14)
+        (1 << 24) | source, // BITMAP_SOURCE
+        (7 << 24) | (6 << 19) | ((stride & 1023) << 9) | 2, // BITMAP_LAYOUT(ARGB4, stride, 2)
+        (40 << 24) | ((stride >> 10) << 2), // BITMAP_LAYOUT_H
+        (8 << 24) | (1 << 20) | (8 << 9) | 2, // BITMAP_SIZE(BILINEAR, BORDER, 8, 2)
+        (41 << 24), // BITMAP_SIZE_H
+        (21 << 24) | 128, // BITMAP_TRANSFORM_A: 0.5 texel per pixel
+    };
+    try testing.expect(containsSequence(words, &setup));
+    try testing.expect(std.mem.indexOfScalar(u32, words, (25 << 24) | 256) == null);
+    const vertex = (2 << 30) | (100 << 21) | (50 << 12) | (14 << 7); // VERTEX2II(100, 50, 14, 0)
+    try testing.expect(std.mem.indexOfScalar(u32, words, vertex) != null);
 }
