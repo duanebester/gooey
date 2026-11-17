@@ -104,9 +104,9 @@ pub const Button = struct {
 
     fn variantColors(variant: Variant, theme: *const gooey.Theme) Colors {
         return switch (variant) {
-            .primary => .{ .background = theme.primary, .foreground = Color.white },
+            .primary => .{ .background = theme.primary, .foreground = theme.on_primary },
             .secondary => .{ .background = theme.secondary, .foreground = theme.text },
-            .danger => .{ .background = theme.danger, .foreground = Color.white },
+            .danger => .{ .background = theme.danger, .foreground = theme.on_danger },
         };
     }
 };
@@ -166,7 +166,8 @@ pub const Checkbox = struct {
         path: []const u8,
 
         fn paint(self: *const Checkmark, painter: *ui.Painter) void {
-            painter.svg(self.path, painter.bounds, .{ .fill = Color.white });
+            // The box behind the mark is `primary` while checked.
+            painter.svg(self.path, painter.bounds, .{ .fill = painter.theme().on_primary });
         }
     };
 

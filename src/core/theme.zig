@@ -16,7 +16,8 @@
 //! TextInput{ .id = "special", .background = Color.red }
 //! ```
 
-const assert = @import("std").debug.assert;
+const std = @import("std");
+const assert = std.debug.assert;
 
 const Color = @import("../geometry/geometry.zig").Color;
 
@@ -50,6 +51,13 @@ pub const Theme = struct {
     warning: Color,
     /// Destructive actions, errors
     danger: Color,
+    /// Text and marks drawn on a `primary` fill: primary button labels and
+    /// the checkbox's check. At least 4.5:1 against `primary` in every
+    /// built-in theme.
+    on_primary: Color,
+    /// Text drawn on a `danger` fill: danger button labels. At least 4.5:1
+    /// against `danger` in every built-in theme.
+    on_danger: Color,
 
     // =========================================================================
     // Text Colors
@@ -104,6 +112,8 @@ pub const Theme = struct {
         .success = Color.rgb(0.251, 0.627, 0.169), // #40a02b
         .warning = Color.rgb(0.871, 0.573, 0.122), // #df8e1d
         .danger = Color.rgb(0.820, 0.239, 0.239), // #d13c3c
+        .on_primary = Color.white, // 4.9:1 on primary
+        .on_danger = Color.white, // 4.7:1 on danger
 
         // Text
         .text = Color.rgb(0.298, 0.310, 0.412), // #4c4f69
@@ -135,6 +145,9 @@ pub const Theme = struct {
         .success = Color.rgb(0.651, 0.855, 0.584), // #a6da95
         .warning = Color.rgb(0.933, 0.831, 0.525), // #eed486
         .danger = Color.rgb(0.929, 0.486, 0.486), // #ed7c7c
+        // Base, not white: white on these pastels is 2.2:1 and 2.7:1.
+        .on_primary = Color.rgb(0.141, 0.153, 0.227), // #24273a, 6.6:1
+        .on_danger = Color.rgb(0.141, 0.153, 0.227), // #24273a, 5.5:1
 
         // Text
         .text = Color.rgb(0.792, 0.827, 0.961), // #cad3f5
@@ -170,6 +183,56 @@ pub const Theme = struct {
             assert(theme.surface.a == 1);
             assert(theme.overlay.a == 1);
         }
+        // Button labels are body-size text (14 to 18 px), so every built-in
+        // theme meets WCAG's 4.5:1 for normal text, not the 3:1 large-text
+        // floor.
+        @setEvalBranchQuota(10_000);
+        for (built_in) |theme| {
+            assert(contrastRatio(theme.on_primary, theme.primary) >= contrast_text_min);
+            assert(contrastRatio(theme.on_danger, theme.danger) >= contrast_text_min);
+        }
+    }
+
+    /// Every preset Gooey ships, for the comptime checks.
+    const built_in = [_]*const Theme{
+        &light,
+        &dark,
+        &catppuccin_latte,
+        &catppuccin_macchiato,
+    };
+
+    /// WCAG 2's minimum contrast ratio for normal-size text (success
+    /// criterion 1.4.3).
+    pub const contrast_text_min: f32 = 4.5;
+
+    /// WCAG 2 contrast ratio of two opaque colours, from 1 (identical
+    /// luminance) to 21 (black on white). Order does not matter.
+    pub fn contrastRatio(foreground: Color, background: Color) f32 {
+        assert(foreground.a == 1);
+        assert(background.a == 1);
+        const a = relativeLuminance(foreground);
+        const b = relativeLuminance(background);
+        const ratio = (@max(a, b) + 0.05) / (@min(a, b) + 0.05);
+        assert(ratio >= 1);
+        assert(ratio <= 21.0001);
+        return ratio;
+    }
+
+    /// WCAG 2 relative luminance: each sRGB component linearized, then the
+    /// Rec. 709 weights.
+    fn relativeLuminance(color: Color) f32 {
+        const value = 0.2126 * linearize(color.r) + 0.7152 * linearize(color.g) +
+            0.0722 * linearize(color.b);
+        assert(value >= 0);
+        assert(value <= 1.0001);
+        return value;
+    }
+
+    fn linearize(component: f32) f32 {
+        assert(component >= 0);
+        assert(component <= 1);
+        if (component <= 0.04045) return component / 12.92;
+        return std.math.pow(f32, (component + 0.055) / 1.055, 2.4);
     }
 
     /// The Catppuccin colours the built-in themes take, as 0xRRGGBB, named
@@ -257,6 +320,9 @@ pub const Theme = struct {
             .success = Color.hex(palette.green),
             .warning = Color.hex(palette.yellow),
             .danger = Color.hex(palette.red),
+            // Catppuccin puts base-coloured text on its accents.
+            .on_primary = Color.hex(palette.base),
+            .on_danger = Color.hex(palette.base),
             .text = Color.hex(palette.text),
             .subtext = Color.hex(palette.subtext1),
             .muted = Color.hex(palette.overlay0),
@@ -299,6 +365,18 @@ pub const Theme = struct {
 // =============================================================================
 
 const testing = @import("std").testing;
+
+test "contrastRatio matches WCAG's published endpoints and a known pair" {
+    // Goal: the comptime contrast checks rest on this formula. Methodology:
+    // black on white is 21:1 by definition and a colour on itself 1:1;
+    // white on #1e66f5 is 4.91:1 by WCAG's formula, which an unlinearized
+    // (gamma-encoded) luminance would put at 3.4:1.
+    const ratio = Theme.contrastRatio;
+    try testing.expectApproxEqAbs(@as(f32, 21), ratio(Color.black, Color.white), 0.01);
+    const primary = Theme.light.primary;
+    try testing.expectApproxEqAbs(@as(f32, 1), ratio(primary, primary), 0.0001);
+    try testing.expectApproxEqAbs(@as(f32, 4.91), ratio(Color.white, Color.hex(0x1e66f5)), 0.01);
+}
 
 test "Theme.light preset has valid colors" {
     const t = Theme.light;
