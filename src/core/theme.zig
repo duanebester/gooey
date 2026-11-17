@@ -41,7 +41,8 @@ pub const Theme = struct {
 
     /// Primary actions, links, focus indicators
     primary: Color,
-    /// Secondary actions, less emphasis
+    /// Fill of secondary actions (secondary buttons), drawn under `text`. At
+    /// least 4.5:1 against `text` in every built-in theme.
     secondary: Color,
     /// Highlights, badges, decorative accents
     accent: Color,
@@ -107,7 +108,7 @@ pub const Theme = struct {
 
         // Accents
         .primary = Color.rgb(0.118, 0.400, 0.961), // #1e66f5
-        .secondary = Color.rgb(0.514, 0.580, 0.588), // #8389a8
+        .secondary = Color.rgb(0.800, 0.816, 0.855), // #ccd0da, 5.2:1 under text
         .accent = Color.rgb(0.533, 0.239, 0.753), // #8839c0
         .success = Color.rgb(0.251, 0.627, 0.169), // #40a02b
         .warning = Color.rgb(0.871, 0.573, 0.122), // #df8e1d
@@ -140,7 +141,7 @@ pub const Theme = struct {
 
         // Accents
         .primary = Color.rgb(0.541, 0.678, 0.957), // #8aadf4
-        .secondary = Color.rgb(0.427, 0.475, 0.576), // #6e7993
+        .secondary = Color.rgb(0.286, 0.302, 0.392), // #494d64, 5.6:1 under text
         .accent = Color.rgb(0.769, 0.565, 0.922), // #c490eb
         .success = Color.rgb(0.651, 0.855, 0.584), // #a6da95
         .warning = Color.rgb(0.933, 0.831, 0.525), // #eed486
@@ -190,6 +191,7 @@ pub const Theme = struct {
         for (built_in) |theme| {
             assert(contrastRatio(theme.on_primary, theme.primary) >= contrast_text_min);
             assert(contrastRatio(theme.on_danger, theme.danger) >= contrast_text_min);
+            assert(contrastRatio(theme.text, theme.secondary) >= contrast_text_min);
         }
     }
 
@@ -303,19 +305,23 @@ pub const Theme = struct {
 
     /// One role mapping for every flavour, following chat-zig's
     /// `gooeyTheme`: base is the window; mantle fills raised panes; surface1
-    /// marks hovered rows; surface2 outlines inputs and cards; overlay1 is
-    /// the secondary (icon) colour; overlay0 is the faintest readable text.
+    /// marks hovered rows; surface2 outlines inputs and cards; overlay0 is
+    /// the faintest readable text. Secondary buttons fill with surface1 on
+    /// dark flavours and surface0 on light ones: Latte's text on surface1 is
+    /// 4.4:1, under the 4.5:1 the comptime check requires.
     /// Accents: mauve primary, blue as the second accent, lavender for
     /// focus, and green, yellow, and red for success, warning, and danger.
     fn catppuccin(palette: *const CatppuccinPalette) Theme {
         assert(palette.base != palette.text);
         assert(palette.mantle != palette.base);
+        const is_dark = luma(Color.hex(palette.base)) < luma(Color.hex(palette.text));
+        const secondary = if (is_dark) palette.surface1 else palette.surface0;
         return .{
             .bg = Color.hex(palette.base),
             .surface = Color.hex(palette.mantle),
             .overlay = Color.hex(palette.surface1),
             .primary = Color.hex(palette.mauve),
-            .secondary = Color.hex(palette.overlay1),
+            .secondary = Color.hex(secondary),
             .accent = Color.hex(palette.blue),
             .success = Color.hex(palette.green),
             .warning = Color.hex(palette.yellow),
