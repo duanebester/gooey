@@ -11,18 +11,16 @@ pub const counter = trace.Trace{
     .height = 350,
     .scale_factor = 2,
     .steps = &.{
-        .{ .label = "click +", .step = .{ .click = .{ .x = 155, .y = 245 } } },
-        .{ .label = "click + again", .step = .{ .click = .{ .x = 155, .y = 245 } } },
-        .{ .label = "click -", .step = .{ .click = .{ .x = 70, .y = 245 } } },
-        .{ .label = "click step 5", .step = .{ .click = .{ .x = 130, .y = 304 } } },
-        .{ .label = "click + with step 5", .step = .{ .click = .{ .x = 155, .y = 245 } } },
-        .{ .label = "hover Reset", .step = .{ .move = .{ .x = 260, .y = 245 } } },
-        // The reset message adds a line, so the controls move up 26 px until
-        // `setStep` clears the message again.
-        .{ .label = "click Reset", .step = .{ .click = .{ .x = 260, .y = 245 } } },
-        .{ .label = "click step 10", .step = .{ .click = .{ .x = 174, .y = 272 } } },
-        .{ .label = "click - into negative", .step = .{ .click = .{ .x = 70, .y = 245 } } },
-        .{ .label = "click Reset & Blur", .step = .{ .click = .{ .x = 384, .y = 245 } } },
+        .{ .label = "click +", .step = .{ .click = .{ .x = 485, .y = 175 } } },
+        .{ .label = "click + again", .step = .{ .click = .{ .x = 485, .y = 175 } } },
+        .{ .label = "click -", .step = .{ .click = .{ .x = 402, .y = 175 } } },
+        .{ .label = "click step 5", .step = .{ .click = .{ .x = 485, .y = 82 } } },
+        .{ .label = "click + with step 5", .step = .{ .click = .{ .x = 485, .y = 175 } } },
+        .{ .label = "hover Reset", .step = .{ .move = .{ .x = 62, .y = 268 } } },
+        .{ .label = "click Reset", .step = .{ .click = .{ .x = 62, .y = 268 } } },
+        .{ .label = "click step 10", .step = .{ .click = .{ .x = 528, .y = 82 } } },
+        .{ .label = "click - into negative", .step = .{ .click = .{ .x = 402, .y = 175 } } },
+        .{ .label = "click Reset & Blur", .step = .{ .click = .{ .x = 151, .y = 268 } } },
     },
 };
 

@@ -138,7 +138,7 @@ Every example in `src/examples/` is a complete app; read them next. Run one with
 | `run-splitter`         | `splitter.zig`             | `on_pointer_drag`, resize cursors, ranges  |
 | `run-drag-drop`        | `drag_drop.zig`            | `draggable`, `.drag` layer, `startDrag`    |
 | `run-background`       | `background.zig`           | `effects.spawn`, streamed results, cancel  |
-| `run-logo`             | `logo.zig`                 | One image, `.embedded` budget, boards      |
+| `run-logo`             | `logo.zig`                 | Bouncing image, `.embedded` budget, boards |
 
 `lucide-demo` does not build on Windows; every other example builds on every desktop
 platform. On an EVE panel (`-Dlinux-backend=eve`), `counter` and `logo` are the board demos;

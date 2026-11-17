@@ -1,8 +1,9 @@
 //! Counter: state, handlers, and components on the core.
 //!
 //! `ui.box`, `ui.text`, `cx.on`, and components that render through
-//! `cx.render`. The layout and colours match the 0.3.1 counter, so its golden
-//! is compared with the 0.3.1 golden (`src/testing/goldens/`).
+//! `cx.render`. Every colour is a theme token, so Catppuccin Macchiato's
+//! palette carries the whole look. Its scripted run is the `core_counter` golden
+//! (`src/testing/goldens/`).
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -12,6 +13,8 @@ const ui = gooey.ui;
 const Cx = gooey.Cx;
 const Effects = gooey.Effects;
 const Button = components.Button;
+
+const assert = std.debug.assert;
 
 pub const State = struct {
     count: i32 = 0,
@@ -45,92 +48,114 @@ pub const State = struct {
 
 pub const App = gooey.App(State, render, .{
     .title = "Counter",
-    // The controls row is 536 px wide in DejaVu Sans, which is wider than Segoe UI or
-    // San Francisco; 500 px clipped "Reset & Blur" on Linux (#55).
     .width = 580,
     .height = 350,
     .limits = .nano,
+    .theme = &gooey.Theme.catppuccin_macchiato,
 });
 
 /// The generated entry point (contract §7).
 pub const main = App.main;
 
-const background = ui.Color.rgb(0.95, 0.95, 0.95);
-
 pub fn render(cx: *Cx) void {
-    const s = cx.state(State);
     cx.render(ui.box(.{ .style = .{
         .width = .{ .grow = 1 },
         .height = .{ .grow = 1 },
         .padding = .all(32),
-        .gap = 20,
-        .background = .{ .rgba = background },
+        .alignment = .center,
+        .background = .bg,
     } }, .{
-        ui.text("Counter (Cx API)", .{ .size = 24, .color = .{ .rgba = .rgb(0.2, 0.2, 0.2) } }),
-        CounterDisplay{},
-        ControlButtons{},
-        StepSelector{},
-        ui.when(s.message.len > 0, message),
+        ui.box(.{ .style = .{ .width = .{ .grow = 1 }, .width_max = column_max, .gap = 20 } }, .{
+            Header{},
+            CounterCard{},
+            Footer{},
+        }),
     }));
 }
 
-fn message(cx: *Cx) void {
-    const s = cx.state(State);
-    cx.render(ui.text(s.message, .{ .size = 14, .color = .{ .rgba = .rgb(0.3, 0.6, 0.3) } }));
-}
+/// The content column's widest; larger windows centre it.
+const column_max: f32 = 560;
 
-const row: ui.Style = .{ .direction = .row, .gap = 12, .alignment = .center_cross };
-
-const CounterDisplay = struct {
-    pub fn render(_: CounterDisplay, cx: *Cx) void {
-        const s = cx.state(State);
-        var digits: [16]u8 = undefined;
-        const count = std.fmt.bufPrint(&digits, "{d}", .{s.count}) catch unreachable;
-        const color = if (s.count >= 0) ui.Color.rgb(
-            0.2,
-            0.5,
-            0.8,
-        ) else ui.Color.rgb(0.8, 0.3, 0.3);
-        cx.render(ui.box(.{ .style = .{
-            .padding = .all(24),
-            .background = .{ .rgba = ui.Color.white },
-            .corner_radius = .all(12),
-            .alignment = .center,
-        } }, .{
-            ui.text(count, .{ .size = 64, .color = .{ .rgba = color } }),
-        }));
-    }
+const row: ui.Style = .{
+    .direction = .row,
+    .width = .{ .grow = 1 },
+    .gap = 8,
+    .alignment = .center_cross,
 };
+const spacer: ui.Style = .{ .width = .{ .grow = 1 } };
 
-const ControlButtons = struct {
-    pub fn render(_: ControlButtons, cx: *Cx) void {
+/// The title on the left, the step choice on the right.
+const Header = struct {
+    pub fn render(_: Header, cx: *Cx) void {
+        const s = cx.state(State);
         cx.render(ui.box(.{ .style = row }, .{
-            Button{ .label = "\u{2212}", .size = .large, .on_click = cx.on(State.decrement, .{}) },
-            Button{ .label = "+", .size = .large, .on_click = cx.on(State.increment, .{}) },
-            ui.box(.{ .style = .{ .width = .{ .grow = 1 }, .height = .{ .grow = 1 } } }, .{}),
-            Button{ .label = "Reset", .variant = .secondary, .on_click = cx.on(State.reset, .{}) },
-            Button{
-                .label = "Reset & Blur",
-                .variant = .danger,
-                .on_click = cx.on(State.resetAndBlur, .{}),
-            },
-        }));
-    }
-};
-
-const StepSelector = struct {
-    pub fn render(_: StepSelector, cx: *Cx) void {
-        const s = cx.state(State);
-        cx.render(ui.box(.{
-            .style = .{ .direction = .row, .gap = 8, .alignment = .center_cross },
-        }, .{
-            ui.text("Step:", .{ .size = 14, .color = .{ .rgba = .rgb(0.5, 0.5, 0.5) } }),
+            ui.text("Counter", .{ .size = 22, .color = .text }),
+            ui.box(.{ .style = spacer }, .{}),
+            ui.text("Step", .{ .size = 13, .color = .subtext }),
             StepButton{ .value = 1, .current = s.step },
             StepButton{ .value = 5, .current = s.step },
             StepButton{ .value = 10, .current = s.step },
         }));
     }
 };
+
+/// The count, large, beside the - and + buttons on one raised card.
+const CounterCard = struct {
+    pub fn render(_: CounterCard, cx: *Cx) void {
+        const s = cx.state(State);
+        var digits: [16]u8 = undefined;
+        const count = std.fmt.bufPrint(&digits, "{d}", .{s.count}) catch unreachable;
+        cx.render(ui.box(.{ .style = .{
+            .direction = .row,
+            .width = .{ .grow = 1 },
+            .padding = .symmetric(28, 20),
+            .gap = 12,
+            .alignment = .center_cross,
+            .background = .surface,
+            .border = .{},
+            .corner_radius = .all(cx.theme().radius_lg),
+        } }, .{
+            ui.text(count, .{ .size = 64, .color = if (s.count >= 0) .text else .danger }),
+            ui.box(.{ .style = spacer }, .{}),
+            Button{
+                .label = "-",
+                .variant = .secondary,
+                .size = .large,
+                .on_click = cx.on(State.decrement, .{}),
+            },
+            Button{ .label = "+", .size = .large, .on_click = cx.on(State.increment, .{}) },
+        }));
+    }
+};
+
+/// The resets, and the last reset's message in the success colour.
+const Footer = struct {
+    pub fn render(_: Footer, cx: *Cx) void {
+        const s = cx.state(State);
+        assert(s.message.len < 64);
+        cx.render(ui.box(.{ .style = row }, .{
+            Button{
+                .label = "Reset",
+                .variant = .secondary,
+                .size = .small,
+                .on_click = cx.on(State.reset, .{}),
+            },
+            Button{
+                .label = "Reset & Blur",
+                .variant = .danger,
+                .size = .small,
+                .on_click = cx.on(State.resetAndBlur, .{}),
+            },
+            ui.box(.{ .style = spacer }, .{}),
+            ui.when(s.message.len > 0, message),
+        }));
+    }
+};
+
+fn message(cx: *Cx) void {
+    const s = cx.state(State);
+    cx.render(ui.text(s.message, .{ .size = 13, .color = .success }));
+}
 
 const StepButton = struct {
     value: i32,
