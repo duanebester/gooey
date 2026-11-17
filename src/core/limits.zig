@@ -1408,8 +1408,9 @@ pub const EventLimits = struct {
     /// outstanding decode and the jobs' deliveries, so the ring holds
     /// `dialog_count_max + 1 + job_result_count_max + job_count_max`.
     dialog_count_max: u32,
-    /// Background jobs running at once (`Effects.spawn`), one worker thread
-    /// each when the app registers `Config.jobs`. One more spawn fails fast.
+    /// Background jobs running at once (`Effects.spawn`), each with a runner
+    /// and an interrupter task when the app registers `Config.jobs`. One
+    /// more spawn fails fast.
     job_count_max: u32,
     /// Bytes of one job's `Input`, copied into its slot at spawn.
     job_input_bytes_max: u32,

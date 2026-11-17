@@ -4,7 +4,7 @@
 //! chunks, each posted with `job.post` and delivered to `State.onChunk` by the
 //! next drain, then `State.onFetched` once. Nothing polls: each post wakes
 //! the event loop, so the window rebuilds once per delivered chunk and is
-//! idle otherwise. "Cancel" stops the job at its next sleep or post.
+//! idle otherwise. "Cancel" interrupts the job's sleep at once.
 //! "Count lines…" opens a file dialog whose completion spawns a second job
 //! that reads the file off the main thread.
 //!

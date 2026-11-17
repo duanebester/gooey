@@ -1500,6 +1500,9 @@ fn addFailFastChecks(
         .{ .mode = "core-job-count", .stderr = "events pool 'jobs' exhausted: capacity 2, " ++
             "2 in use, 1 requested (fail_fast_check.Nap). Raise " ++
             "ResourceLimits.events.job_count_max." },
+        .{ .mode = "core-job-count-cancelled", .stderr = "events pool 'jobs' exhausted: " ++
+            "capacity 2, 2 in use, 1 requested (fail_fast_check.Nap). Raise " ++
+            "ResourceLimits.events.job_count_max." },
         .{ .mode = "core-dialog-count", .stderr = "events pool 'dialogs' exhausted: " ++
             "capacity 2, 2 in use, 1 requested, frame 3. Raise " ++
             "ResourceLimits.events.dialog_count_max." },
@@ -2185,6 +2188,38 @@ fn addGoldens(
     // The images check decodes `assets/` files relative to the project root.
     run_tests.setCwd(b.path("."));
     test_step.dependOn(&run_tests.step);
+
+    // The jobs' no-worker path, the web's and `-fsingle-threaded`'s, checked
+    // natively: the same `gooey` module built single-threaded.
+    const single_threaded_mod = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .single_threaded = true,
+    });
+    single_threaded_mod.addImport("gooey_build_options", gooeyBuildOptionsModule(b, .{
+        .linux_backend = wiring.linux_backend orelse .wayland_vulkan,
+        .text_backend = .synthetic,
+    }));
+    if (wiring.objc) |objc_mod| {
+        single_threaded_mod.addImport("objc", objc_mod);
+        linkMacosFrameworks(single_threaded_mod);
+    }
+    if (wiring.linux_backend) |linux_backend| {
+        linkLinuxGooeyLibraries(single_threaded_mod, linux_backend);
+    }
+    const main_thread_tests = b.addTest(.{
+        .name = "jobs-main-thread-test",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/testing/goldens/jobs_main_thread_checks.zig"),
+            .target = target,
+            .optimize = optimize,
+            .single_threaded = true,
+            .imports = &.{.{ .name = "gooey", .module = single_threaded_mod }},
+        }),
+    });
+    if (wiring.compile_dependency) |dependency| main_thread_tests.step.dependOn(dependency);
+    test_step.dependOn(&b.addRunArtifact(main_thread_tests).step);
 
     const run_capture = b.addRunArtifact(capture);
     run_capture.setCwd(b.path("."));

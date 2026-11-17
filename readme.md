@@ -540,13 +540,18 @@ pub const Fetch = struct {
 `on_result` reads the result with `effects.jobResult(Fetch)`, valid until it returns, and
 `on_done` reads `effects.jobDone()`. The rules:
 
-- Natively each of the `events.job_count_max` slots has its own worker, started at init with
-  `io.concurrent`, and only when `Config.jobs` is non-empty. A spawn with every slot busy
-  panics and names the field; keep an in-flight flag that `on_done` clears.
+- Natively each of the `events.job_count_max` slots has its own worker (a runner and an
+  interrupter task), started at init with `io.concurrent`, and only when `Config.jobs` is
+  non-empty. A spawn with every slot busy panics and names the field; keep an in-flight flag
+  that `on_done` clears. A cancelled job's slot is free once its `on_done` has run.
 - A post that finds all `job_result_count_max` result slots waiting for a drain blocks its
   worker until one is free. The main thread never waits, and no result is dropped.
-- `cancelJob` is cooperative: the job's posts return false and `job.cancelled()` turns true,
-  results not yet delivered are dropped, and `on_done` reports `.cancelled`.
+- `cancelJob` never waits. A job that has not started never runs. Natively, a running job's
+  Io calls (a sleep, a socket or file read, a post waiting for a result slot) return
+  `error.Canceled` at once; its posts return false and `job.cancelled()` turns true, results
+  not yet delivered are dropped, and `on_done` reports `.cancelled`. A job that computes
+  without Io calls checks `job.cancelled()`. On the web a job runs whole after its drain, so
+  a cancel reaches it only before it runs.
 - At shutdown Gooey cancels every job (each Io call in it, such as a sleep or socket read,
   returns `error.Canceled`), waits for every worker, then runs `on_deinit`. A job that loops
   without Io calls checks `job.cancelled()`. A job that had not started never runs, and no
