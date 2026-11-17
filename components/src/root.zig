@@ -4,9 +4,6 @@
 //! public API alone: `zig build import-ban` fails on any `gooey.internals`
 //! reference here, so a control can do only what an app can.
 //!
-//! Their geometry and colours match the 0.3.1 components, so the core's
-//! counter and todo goldens can be compared with the 0.3.1 goldens.
-//!
 //! Keyboard: `Button`, `Checkbox`, and `Select` are focusable, so Tab reaches
 //! them, and the core turns Enter and Space into a click on the focused
 //! element. `Select` adds its own keys (see `SelectKeys`).
@@ -107,9 +104,9 @@ pub const Button = struct {
 
     fn variantColors(variant: Variant, theme: *const gooey.Theme) Colors {
         return switch (variant) {
-            .primary => .{ .background = theme.primary, .foreground = Color.white },
+            .primary => .{ .background = theme.primary, .foreground = theme.on_primary },
             .secondary => .{ .background = theme.secondary, .foreground = theme.text },
-            .danger => .{ .background = theme.danger, .foreground = Color.white },
+            .danger => .{ .background = theme.danger, .foreground = theme.on_danger },
         };
     }
 };
@@ -169,7 +166,8 @@ pub const Checkbox = struct {
         path: []const u8,
 
         fn paint(self: *const Checkmark, painter: *ui.Painter) void {
-            painter.svg(self.path, painter.bounds, .{ .fill = Color.white });
+            // The box behind the mark is `primary` while checked.
+            painter.svg(self.path, painter.bounds, .{ .fill = painter.theme().on_primary });
         }
     };
 

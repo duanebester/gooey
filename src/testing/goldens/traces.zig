@@ -1,8 +1,7 @@
 //! The scripted traces behind the counter and todo goldens.
 //!
-//! Coordinates are logical pixels read off the 0.3.1 frames' hit records (the
-//! centre of each control), so a click lands on the same control in the
-//! 0.3.1 runtime and in the core port as long as their layouts agree.
+//! Coordinates are logical pixels at the centre of each control, read off the
+//! golden's hit records; a layout change must move them with it.
 
 const trace = @import("trace.zig");
 
@@ -12,18 +11,16 @@ pub const counter = trace.Trace{
     .height = 350,
     .scale_factor = 2,
     .steps = &.{
-        .{ .label = "click +", .step = .{ .click = .{ .x = 155, .y = 245 } } },
-        .{ .label = "click + again", .step = .{ .click = .{ .x = 155, .y = 245 } } },
-        .{ .label = "click -", .step = .{ .click = .{ .x = 70, .y = 245 } } },
-        .{ .label = "click step 5", .step = .{ .click = .{ .x = 130, .y = 304 } } },
-        .{ .label = "click + with step 5", .step = .{ .click = .{ .x = 155, .y = 245 } } },
-        .{ .label = "hover Reset", .step = .{ .move = .{ .x = 260, .y = 245 } } },
-        // The reset message adds a line, so the controls move up 26 px until
-        // `setStep` clears the message again.
-        .{ .label = "click Reset", .step = .{ .click = .{ .x = 260, .y = 245 } } },
-        .{ .label = "click step 10", .step = .{ .click = .{ .x = 174, .y = 272 } } },
-        .{ .label = "click - into negative", .step = .{ .click = .{ .x = 70, .y = 245 } } },
-        .{ .label = "click Reset & Blur", .step = .{ .click = .{ .x = 384, .y = 245 } } },
+        .{ .label = "click +", .step = .{ .click = .{ .x = 485, .y = 175 } } },
+        .{ .label = "click + again", .step = .{ .click = .{ .x = 485, .y = 175 } } },
+        .{ .label = "click -", .step = .{ .click = .{ .x = 402, .y = 175 } } },
+        .{ .label = "click step 5", .step = .{ .click = .{ .x = 485, .y = 82 } } },
+        .{ .label = "click + with step 5", .step = .{ .click = .{ .x = 485, .y = 175 } } },
+        .{ .label = "hover Reset", .step = .{ .move = .{ .x = 62, .y = 268 } } },
+        .{ .label = "click Reset", .step = .{ .click = .{ .x = 62, .y = 268 } } },
+        .{ .label = "click step 10", .step = .{ .click = .{ .x = 528, .y = 82 } } },
+        .{ .label = "click - into negative", .step = .{ .click = .{ .x = 402, .y = 175 } } },
+        .{ .label = "click Reset & Blur", .step = .{ .click = .{ .x = 151, .y = 268 } } },
     },
 };
 
@@ -52,8 +49,7 @@ pub const todo = trace.Trace{
         .{ .label = "filter Active", .step = .{ .click = .{ .x = 104, .y = 143 } } },
         .{ .label = "filter Done", .step = .{ .click = .{ .x = 172, .y = 143 } } },
         .{ .label = "filter All", .step = .{ .click = .{ .x = 44, .y = 143 } } },
-        // The core's rows fill the list, so Delete sits at its right end;
-        // 0.3.1's rows fit their content, and its golden pressed x = 155.
+        // The rows fill the list, so Delete sits at its right end.
         .{ .label = "hover the second Delete", .step = .{ .move = .{ .x = 413, .y = 255 } } },
         .{ .label = "delete the second row", .step = .{ .click = .{ .x = 413, .y = 255 } } },
         .{ .label = "clear completed", .step = .{ .click = .{ .x = 146, .y = 521 } } },

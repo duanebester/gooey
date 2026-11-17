@@ -338,6 +338,7 @@ pub fn App(
                 .linux => switch (@import("../platform/linux_backend.zig").selected) {
                     .wayland_vulkan, .wayland_cpu => @import("../platform/linux/core_host.zig"),
                     .fbdev => @import("../platform/fbdev/core_host.zig"),
+                    .eve => @import("../platform/eve/core_host.zig"),
                 },
                 .windows => @import("../platform/windows/core_host.zig"),
                 else => @compileError("gooey.App.main runs on macOS, Linux, Windows, " ++

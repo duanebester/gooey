@@ -16,7 +16,8 @@
 //! TextInput{ .id = "special", .background = Color.red }
 //! ```
 
-const assert = @import("std").debug.assert;
+const std = @import("std");
+const assert = std.debug.assert;
 
 const Color = @import("../geometry/geometry.zig").Color;
 
@@ -50,6 +51,13 @@ pub const Theme = struct {
     warning: Color,
     /// Destructive actions, errors
     danger: Color,
+    /// Text and marks drawn on a `primary` fill: primary button labels and
+    /// the checkbox's check. At least 4.5:1 against `primary` in every
+    /// built-in theme.
+    on_primary: Color,
+    /// Text drawn on a `danger` fill: danger button labels. At least 4.5:1
+    /// against `danger` in every built-in theme.
+    on_danger: Color,
 
     // =========================================================================
     // Text Colors
@@ -104,6 +112,8 @@ pub const Theme = struct {
         .success = Color.rgb(0.251, 0.627, 0.169), // #40a02b
         .warning = Color.rgb(0.871, 0.573, 0.122), // #df8e1d
         .danger = Color.rgb(0.820, 0.239, 0.239), // #d13c3c
+        .on_primary = Color.white, // 4.9:1 on primary
+        .on_danger = Color.white, // 4.7:1 on danger
 
         // Text
         .text = Color.rgb(0.298, 0.310, 0.412), // #4c4f69
@@ -135,6 +145,9 @@ pub const Theme = struct {
         .success = Color.rgb(0.651, 0.855, 0.584), // #a6da95
         .warning = Color.rgb(0.933, 0.831, 0.525), // #eed486
         .danger = Color.rgb(0.929, 0.486, 0.486), // #ed7c7c
+        // Base, not white: white on these pastels is 2.2:1 and 2.7:1.
+        .on_primary = Color.rgb(0.141, 0.153, 0.227), // #24273a, 6.6:1
+        .on_danger = Color.rgb(0.141, 0.153, 0.227), // #24273a, 5.5:1
 
         // Text
         .text = Color.rgb(0.792, 0.827, 0.961), // #cad3f5
@@ -151,6 +164,172 @@ pub const Theme = struct {
         .radius_lg = 16,
         .font_size_base = 16,
     };
+
+    /// Catppuccin Macchiato, from the published palette (catppuccin/palette,
+    /// `palette.json`) with mauve as the primary accent. `dark` is a
+    /// Macchiato-derived theme with a blue primary and translucent borders;
+    /// this one uses palette colours only, and every token is opaque.
+    pub const catppuccin_macchiato = catppuccin(&macchiato_palette);
+
+    /// Catppuccin Latte, mapped as `catppuccin_macchiato` is.
+    pub const catppuccin_latte = catppuccin(&latte_palette);
+
+    comptime {
+        assert(catppuccin_macchiato.isDark());
+        assert(!catppuccin_latte.isDark());
+        for ([_]*const Theme{ &catppuccin_macchiato, &catppuccin_latte }) |theme| {
+            // `Select` paints its menu (`surface`) and hovered rows
+            // (`overlay`) over other controls, so neither may show through.
+            assert(theme.surface.a == 1);
+            assert(theme.overlay.a == 1);
+        }
+        // Button labels are body-size text (14 to 18 px), so every built-in
+        // theme meets WCAG's 4.5:1 for normal text, not the 3:1 large-text
+        // floor.
+        @setEvalBranchQuota(10_000);
+        for (built_in) |theme| {
+            assert(contrastRatio(theme.on_primary, theme.primary) >= contrast_text_min);
+            assert(contrastRatio(theme.on_danger, theme.danger) >= contrast_text_min);
+        }
+    }
+
+    /// Every preset Gooey ships, for the comptime checks.
+    const built_in = [_]*const Theme{
+        &light,
+        &dark,
+        &catppuccin_latte,
+        &catppuccin_macchiato,
+    };
+
+    /// WCAG 2's minimum contrast ratio for normal-size text (success
+    /// criterion 1.4.3).
+    pub const contrast_text_min: f32 = 4.5;
+
+    /// WCAG 2 contrast ratio of two opaque colours, from 1 (identical
+    /// luminance) to 21 (black on white). Order does not matter.
+    pub fn contrastRatio(foreground: Color, background: Color) f32 {
+        assert(foreground.a == 1);
+        assert(background.a == 1);
+        const a = relativeLuminance(foreground);
+        const b = relativeLuminance(background);
+        const ratio = (@max(a, b) + 0.05) / (@min(a, b) + 0.05);
+        assert(ratio >= 1);
+        assert(ratio <= 21.0001);
+        return ratio;
+    }
+
+    /// WCAG 2 relative luminance: each sRGB component linearized, then the
+    /// Rec. 709 weights.
+    fn relativeLuminance(color: Color) f32 {
+        const value = 0.2126 * linearize(color.r) + 0.7152 * linearize(color.g) +
+            0.0722 * linearize(color.b);
+        assert(value >= 0);
+        assert(value <= 1.0001);
+        return value;
+    }
+
+    fn linearize(component: f32) f32 {
+        assert(component >= 0);
+        assert(component <= 1);
+        if (component <= 0.04045) return component / 12.92;
+        return std.math.pow(f32, (component + 0.055) / 1.055, 2.4);
+    }
+
+    /// The Catppuccin colours the built-in themes take, as 0xRRGGBB, named
+    /// as in `palette.json`. The same palettes as chat-zig's `theme.zig`,
+    /// plus yellow for `warning`.
+    const CatppuccinPalette = struct {
+        base: u32,
+        mantle: u32,
+        crust: u32,
+        surface0: u32,
+        surface1: u32,
+        surface2: u32,
+        overlay0: u32,
+        overlay1: u32,
+        overlay2: u32,
+        subtext0: u32,
+        subtext1: u32,
+        text: u32,
+        mauve: u32,
+        lavender: u32,
+        blue: u32,
+        red: u32,
+        green: u32,
+        yellow: u32,
+    };
+
+    const latte_palette = CatppuccinPalette{
+        .base = 0xeff1f5,
+        .mantle = 0xe6e9ef,
+        .crust = 0xdce0e8,
+        .surface0 = 0xccd0da,
+        .surface1 = 0xbcc0cc,
+        .surface2 = 0xacb0be,
+        .overlay0 = 0x9ca0b0,
+        .overlay1 = 0x8c8fa1,
+        .overlay2 = 0x7c7f93,
+        .subtext0 = 0x6c6f85,
+        .subtext1 = 0x5c5f77,
+        .text = 0x4c4f69,
+        .mauve = 0x8839ef,
+        .lavender = 0x7287fd,
+        .blue = 0x1e66f5,
+        .red = 0xd20f39,
+        .green = 0x40a02b,
+        .yellow = 0xdf8e1d,
+    };
+
+    const macchiato_palette = CatppuccinPalette{
+        .base = 0x24273a,
+        .mantle = 0x1e2030,
+        .crust = 0x181926,
+        .surface0 = 0x363a4f,
+        .surface1 = 0x494d64,
+        .surface2 = 0x5b6078,
+        .overlay0 = 0x6e738d,
+        .overlay1 = 0x8087a2,
+        .overlay2 = 0x939ab7,
+        .subtext0 = 0xa5adcb,
+        .subtext1 = 0xb8c0e0,
+        .text = 0xcad3f5,
+        .mauve = 0xc6a0f6,
+        .lavender = 0xb7bdf8,
+        .blue = 0x8aadf4,
+        .red = 0xed8796,
+        .green = 0xa6da95,
+        .yellow = 0xeed49f,
+    };
+
+    /// One role mapping for every flavour, following chat-zig's
+    /// `gooeyTheme`: base is the window; mantle fills raised panes; surface1
+    /// marks hovered rows; surface2 outlines inputs and cards; overlay1 is
+    /// the secondary (icon) colour; overlay0 is the faintest readable text.
+    /// Accents: mauve primary, blue as the second accent, lavender for
+    /// focus, and green, yellow, and red for success, warning, and danger.
+    fn catppuccin(palette: *const CatppuccinPalette) Theme {
+        assert(palette.base != palette.text);
+        assert(palette.mantle != palette.base);
+        return .{
+            .bg = Color.hex(palette.base),
+            .surface = Color.hex(palette.mantle),
+            .overlay = Color.hex(palette.surface1),
+            .primary = Color.hex(palette.mauve),
+            .secondary = Color.hex(palette.overlay1),
+            .accent = Color.hex(palette.blue),
+            .success = Color.hex(palette.green),
+            .warning = Color.hex(palette.yellow),
+            .danger = Color.hex(palette.red),
+            // Catppuccin puts base-coloured text on its accents.
+            .on_primary = Color.hex(palette.base),
+            .on_danger = Color.hex(palette.base),
+            .text = Color.hex(palette.text),
+            .subtext = Color.hex(palette.subtext1),
+            .muted = Color.hex(palette.overlay0),
+            .border = Color.hex(palette.surface2),
+            .border_focus = Color.hex(palette.lavender),
+        };
+    }
 
     // =========================================================================
     // Helper Methods
@@ -186,6 +365,18 @@ pub const Theme = struct {
 // =============================================================================
 
 const testing = @import("std").testing;
+
+test "contrastRatio matches WCAG's published endpoints and a known pair" {
+    // Goal: the comptime contrast checks rest on this formula. Methodology:
+    // black on white is 21:1 by definition and a colour on itself 1:1;
+    // white on #1e66f5 is 4.91:1 by WCAG's formula, which an unlinearized
+    // (gamma-encoded) luminance would put at 3.4:1.
+    const ratio = Theme.contrastRatio;
+    try testing.expectApproxEqAbs(@as(f32, 21), ratio(Color.black, Color.white), 0.01);
+    const primary = Theme.light.primary;
+    try testing.expectApproxEqAbs(@as(f32, 1), ratio(primary, primary), 0.0001);
+    try testing.expectApproxEqAbs(@as(f32, 4.91), ratio(Color.white, Color.hex(0x1e66f5)), 0.01);
+}
 
 test "Theme.light preset has valid colors" {
     const t = Theme.light;

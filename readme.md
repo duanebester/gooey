@@ -138,9 +138,11 @@ Every example in `src/examples/` is a complete app; read them next. Run one with
 | `run-splitter`         | `splitter.zig`             | `on_pointer_drag`, resize cursors, ranges  |
 | `run-drag-drop`        | `drag_drop.zig`            | `draggable`, `.drag` layer, `startDrag`    |
 | `run-background`       | `background.zig`           | `effects.spawn`, streamed results, cancel  |
+| `run-logo`             | `logo.zig`                 | Bouncing image, `.embedded` budget, boards |
 
 `lucide-demo` does not build on Windows; every other example builds on every desktop
-platform.
+platform. On an EVE panel (`-Dlinux-backend=eve`), `counter` and `logo` are the board demos;
+examples on `.standard` and `.large` do not fit the chip's memory and are skipped.
 
 ## Building blocks
 
@@ -187,7 +189,9 @@ macOS, Linux (Wayland's `xdg_toplevel.set_min_size`), and Windows enforce them; 
 fbdev ignore them. Derive them from the layout's own minimum, such as a column's `width_min`.
 
 Unknown fields are compile errors. Pick the smallest profile that fits. Each profile's
-`text.fonts` is the `FontLimits` profile of the same name, the faces the app loads at init:
+`text.fonts` is the `FontLimits` profile of the same name, the faces the app loads at init.
+`.embedded` sits beside the ladder rather than on it: `.nano`'s element budgets with a smaller
+window, two faces, and a 384² image atlas, sized for board panels.
 
 | Profile     | For                                                 | Font faces |
 | ----------- | --------------------------------------------------- | ---------: |
@@ -196,6 +200,7 @@ Unknown fields are compile errors. Pick the smallest profile that fits. Each pro
 | `.standard` | Multi-panel apps, tables, dashboards                |          6 |
 | `.large`    | Dense content, hundreds of icons, large images      |          6 |
 | `.ceiling`  | Framework maxima for tests; `gooey.App` rejects it  |         14 |
+| `.embedded` | Board panels (fbdev, eve) up to 1280x800 at scale 1 |          2 |
 
 To raise one budget without moving the whole app up a rung, start from a profile and change
 fields. `code_editor.zig` reserves one code editor slot on top of `.small`, and keeps more
@@ -943,8 +948,23 @@ state and fill them in `on_init`. See [charts/README.md](charts/README.md) and
 ## Theming and fonts
 
 `gooey.Theme.light` (Catppuccin Latte) is the default and `gooey.Theme.dark` (Catppuccin
-Macchiato) is built in. Set one in `Config` with `.theme = &gooey.Theme.dark`, or switch at
-run time from a handler, as the theme check in `src/testing/goldens/core_checks.zig` does:
+Macchiato) is built in. Both take a blue primary and translucent borders.
+`gooey.Theme.catppuccin_latte` and `gooey.Theme.catppuccin_macchiato` use Catppuccin's published
+palette with opaque tokens:
+
+| Token          | Catppuccin colour | Token       | Catppuccin colour |
+| -------------- | ----------------- | ----------- | ----------------- |
+| `bg`           | base              | `text`      | text              |
+| `surface`      | mantle            | `subtext`   | subtext1          |
+| `overlay`      | surface1          | `muted`     | overlay0          |
+| `primary`      | mauve             | `border`    | surface2          |
+| `secondary`    | overlay1          | `success`   | green             |
+| `accent`       | blue              | `warning`   | yellow            |
+| `border_focus` | lavender          | `danger`    | red               |
+| `on_primary`   | base              | `on_danger` | base              |
+
+Set one in `Config` with `.theme = &gooey.Theme.dark`, or switch at run time from a handler,
+as the theme check in `src/testing/goldens/core_checks.zig` does:
 
 ```zig
     pub fn goDark(_: *ThemeState, effects: *Effects) void {
@@ -954,8 +974,11 @@ run time from a handler, as the theme check in `src/testing/goldens/core_checks.
 ```
 
 A custom theme is a `gooey.Theme` value with every color field set: `bg`, `surface`,
-`overlay`, `primary`, `secondary`, `accent`, `success`, `warning`, `danger`, `text`,
-`subtext`, `muted`, `border`, and `border_focus`. `radius_sm`, `radius_md`, `radius_lg`, and
+`overlay`, `primary`, `secondary`, `accent`, `success`, `warning`, `danger`, `on_primary`,
+`on_danger`, `text`, `subtext`, `muted`, `border`, and `border_focus`. `on_primary` and
+`on_danger` colour text and marks drawn on those fills (primary and danger buttons, the
+checkbox's check); every built-in theme keeps them at WCAG's 4.5:1 or better, checked at
+comptime with `Theme.contrastRatio`. `radius_sm`, `radius_md`, `radius_lg`, and
 `font_size_base` have defaults. Color tokens of the same names resolve against the active
 theme, and components scale their text from `font_size_base`.
 

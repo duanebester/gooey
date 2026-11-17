@@ -127,8 +127,7 @@ pub fn writeA11y(frame: *const records.Frame, out: *TextBuffer) void {
     }
 }
 
-/// One accessibility node, indented by its depth, in the line format the
-/// 0.3.1 goldens (`legacy_*.txt`) were captured in.
+/// One accessibility node, indented by its depth.
 fn writeA11yNode(frame: *const records.Frame, node: *const records.A11yNode, out: *TextBuffer) void {
     assert(node.depth < 64);
     var indent: u32 = 0;

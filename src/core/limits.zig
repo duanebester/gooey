@@ -173,14 +173,16 @@ comptime {
 /// Each subsystem owns one nested struct so later budgets (layout, a11y, text,
 /// widgets) are added as new fields beside `paint`, `window` and `frame` without
 /// reshaping the type. Fields have no defaults and there is no default profile:
-/// callers pick one of the five named rungs or spell out every capacity, so no
+/// callers pick one of the named profiles or spell out every capacity, so no
 /// capacity hides in a leaf default.
 ///
 /// The rungs, smallest first, and the example class each was sized from
 /// (docs/v0.4.0-memory-budget.md §4, measured peaks with their headroom):
 /// `nano` (counter, actions, animation), `small` (todo, layout, accessible-form),
 /// `standard` (showcase, data-table, spaceship, dashboard), `large` (lucide-demo,
-/// images, mesh stress) and `ceiling` (every framework maximum).
+/// images, mesh stress) and `ceiling` (every framework maximum). Beside the
+/// rungs, `embedded` sizes board-class apps (logo) for a 1024x600-class
+/// panel at scale 1: a smaller window than `nano` and a larger image atlas.
 pub const ResourceLimits = struct {
     paint: PaintLimits,
     window: WindowLimits,
@@ -194,9 +196,33 @@ pub const ResourceLimits = struct {
     entities: EntityLimits,
     a11y: A11yLimits,
 
-    /// Every profile name `gooey.App(.., .{ .limits = ... })` accepts, smallest first.
-    /// Each profile's `text.fonts` is the `FontLimits` profile of the same name.
-    pub const profile_names = [_][]const u8{ "nano", "small", "standard", "large", "ceiling" };
+    /// Every profile name `gooey.App(.., .{ .limits = ... })` accepts: the rungs,
+    /// then `embedded`. Each profile's `text.fonts` is the `FontLimits` profile
+    /// of the same name.
+    pub const profile_names = rung_names ++ [_][]const u8{"embedded"};
+
+    /// The desktop ladder, smallest first: no rung offers less than the one
+    /// below it for any paint, window, frame, or atlas capacity. `embedded`
+    /// is not a rung, because it trades window size for image atlas.
+    pub const rung_names = [_][]const u8{ "nano", "small", "standard", "large", "ceiling" };
+
+    /// Board-class apps on a 1024x600-class panel at scale 1 (fbdev, eve):
+    /// `nano`'s element, paint, and event budgets with 16 images a frame, a
+    /// 1280x800 framebuffer, two faces, and a 384² image atlas for a logo.
+    /// See `AtlasLimits.embedded` for why the image atlas is that size.
+    pub const embedded: ResourceLimits = .{
+        .paint = PaintLimits.embedded,
+        .window = WindowLimits.embedded,
+        .frame = FrameLimits.nano,
+        .atlas = AtlasLimits.embedded,
+        .build = BuildLimits.nano,
+        .records = RecordLimits.nano,
+        .retained = RetainedLimits.nano,
+        .events = EventLimits.nano,
+        .text = TextLimits.embedded,
+        .entities = EntityLimits.nano,
+        .a11y = A11yLimits.nano,
+    };
 
     /// Counter-class apps: a few dozen elements and one face, two frames in flight.
     pub const nano: ResourceLimits = .{
@@ -524,6 +550,14 @@ pub const PaintLimits = struct {
         .clip_depth_max = 8,
     };
 
+    /// Board-class apps (`ResourceLimits.embedded`): `nano` with room for a
+    /// screen of 16 images (the logo example draws 1).
+    pub const embedded: PaintLimits = blk: {
+        var value = nano;
+        value.image_count_frame_max = 16;
+        break :blk value;
+    };
+
     /// Single-screen apps. Largest measured peaks in the class (todo, layout,
     /// nested-overlay, drag-drop, accessible-form, code-editor): quads 40,
     /// shadows 2, glyphs 358, SVGs 2, no images, paths or geometry. Headroom
@@ -663,6 +697,7 @@ pub const PaintLimits = struct {
         assert(standard.check() == null);
         assert(large.check() == null);
         assert(ceiling.check() == null);
+        assert(embedded.check() == null);
     }
 };
 
@@ -685,6 +720,13 @@ pub const WindowLimits = struct {
     pub const nano: WindowLimits = .{
         .framebuffer_width_max = 2560,
         .framebuffer_height_max = 1600,
+    };
+
+    /// Board panels up to 1,280 x 800 at scale 1, the 1024x600 and 800x480
+    /// classes included. The fbdev back buffer is 3.9 MiB.
+    pub const embedded: WindowLimits = .{
+        .framebuffer_width_max = 1280,
+        .framebuffer_height_max = 800,
     };
 
     /// Single-screen windows up to 1,920 x 1,080 points at 2x. Two `wl_shm` frames
@@ -755,6 +797,7 @@ pub const WindowLimits = struct {
         assert(standard.check() == null);
         assert(large.check() == null);
         assert(ceiling.check() == null);
+        assert(embedded.check() == null);
     }
 };
 
@@ -903,6 +946,29 @@ pub const AtlasLimits = struct {
         .svg_entry_count_max = 64,
         .svg_rasterization_count_frame_max = 4,
         .image_entry_count_max = 8,
+        .image_path_bytes_max = 1_024,
+    };
+
+    /// Board-class apps (`ResourceLimits.embedded`): `nano`'s glyph and icon
+    /// atlases, and a 384² image atlas: a logo up to 382 px a side (each
+    /// atlas item carries a 1 px border), such as the logo example's 320x200.
+    /// The EVE backend mirrors the image atlas into the chip's 1 MiB `RAM_G`
+    /// at 2 B per pixel (288 KiB), which leaves ten 64 KiB glyph-cell pages;
+    /// a 512² atlas would leave seven. One frame stages one atlas-wide image.
+    /// Textures: 0.25 + 0.25 + 0.56 MiB.
+    pub const embedded: AtlasLimits = .{
+        .upload_bytes_frame_max = 384 * 384 * 4,
+        .text_size = 512,
+        .svg_size = 256,
+        .image_size = 384,
+        .svg_icon_size_max = 64,
+        .svg_path_bytes_max = 2 * 1024,
+        .svg_path_vertex_count_max = 4 * 1024,
+        .image_request_count_max = 4,
+        .image_decode_bytes_max = 384 * 384 * 4 * 3 / 2,
+        .svg_entry_count_max = 64,
+        .svg_rasterization_count_frame_max = 4,
+        .image_entry_count_max = 16,
         .image_path_bytes_max = 1_024,
     };
 
@@ -1102,6 +1168,7 @@ pub const AtlasLimits = struct {
         assert(standard.check() == null);
         assert(large.check() == null);
         assert(ceiling.check() == null);
+        assert(embedded.check() == null);
     }
 };
 
@@ -1484,6 +1551,12 @@ pub const TextLimits = struct {
         .input = .{ .count_max = 4, .bytes_max = 1024, .undo_depth_max = 32 },
         .area = .{ .count_max = 0, .bytes_max = 16 * 1024, .undo_depth_max = 32 },
         .editor = .{ .count_max = 0, .bytes_max = 64 * 1024, .undo_depth_max = 64 },
+    };
+    /// `nano` with a bold face, for board apps with a heading weight.
+    pub const embedded: TextLimits = blk: {
+        var value = nano;
+        value.fonts = FontLimits.embedded;
+        break :blk value;
     };
     pub const small: TextLimits = .{
         .fonts = FontLimits.small,
@@ -1871,6 +1944,10 @@ pub const FontLimits = struct {
     /// Regular only, for apps whose text never sets a weight or italic.
     pub const nano: FontLimits = .{ .variants = &.{.regular} };
 
+    /// Regular and bold: board apps with one heading weight. Components that
+    /// ask for medium or semibold fall back to the nearest of the two.
+    pub const embedded: FontLimits = .{ .variants = &.{ .regular, .bold } };
+
     /// The four upright weights Gooey's components use. accessible-form, the
     /// widest `small` example, requests exactly these.
     pub const small: FontLimits = .{ .variants = &.{ .regular, .medium, .semibold, .bold } };
@@ -2032,11 +2109,11 @@ test "named profiles are valid and ordered" {
     // budget has a profile of each name, and no rung offers less than the rung
     // below it for any capacity. Walking the rungs in pairs checks every field
     // of every budget against its neighbour, ending at the ceiling.
-    const rungs = ResourceLimits.profile_names;
-    inline for (rungs) |name| {
+    inline for (ResourceLimits.profile_names) |name| {
         try std.testing.expect(@field(ResourceLimits, name).check() == null);
         try std.testing.expect(@field(FontLimits, name).check() == null);
     }
+    const rungs = ResourceLimits.rung_names;
     inline for (rungs[0 .. rungs.len - 1], rungs[1..]) |lower_name, upper_name| {
         const lower = @field(ResourceLimits, lower_name);
         const upper = @field(ResourceLimits, upper_name);
@@ -2056,6 +2133,28 @@ test "named profiles are valid and ordered" {
     try std.testing.expectEqual(@as(u32, 3), ResourceLimits.standard.frame.in_flight_count);
     try std.testing.expectEqual(@as(usize, 1), FontLimits.nano.variants.len);
     try std.testing.expectEqual(@as(usize, 4), FontLimits.small.variants.len);
+}
+
+test "the embedded profile fits board panels and stages its largest image in one frame" {
+    // Goal: pin what `embedded` promises boards. A 1024x600 panel fits the
+    // window at scale 1 and a 1920x1080 one does not; one image as wide as
+    // the image atlas stages within one frame's upload budget, and one pixel
+    // more of side would not; and it keeps two faces, regular first.
+    const embedded = ResourceLimits.embedded;
+    try std.testing.expect(embedded.check() == null);
+    try std.testing.expect(embedded.window.framebuffer_width_max >= 1024);
+    try std.testing.expect(embedded.window.framebuffer_height_max >= 600);
+    try std.testing.expect(embedded.window.framebuffer_width_max < 1920);
+    const side = embedded.atlas.image_size;
+    try std.testing.expect(side * side * 4 <= embedded.atlas.upload_bytes_frame_max);
+    try std.testing.expect((side + 1) * (side + 1) * 4 > embedded.atlas.upload_bytes_frame_max);
+    try std.testing.expect(side * side * 4 <= embedded.atlas.image_decode_bytes_max);
+    try std.testing.expectEqual(@as(usize, 2), embedded.text.fonts.variants.len);
+    try std.testing.expectEqual(FontVariant.regular, embedded.text.fonts.variants[0]);
+    // Not a rung: a smaller window than `nano`, a larger image atlas.
+    try std.testing.expect(embedded.window.framebuffer_width_max <
+        ResourceLimits.nano.window.framebuffer_width_max);
+    try std.testing.expect(embedded.atlas.image_size > ResourceLimits.nano.atlas.image_size);
 }
 
 test "check holds every queue to the largest input burst" {
@@ -2479,7 +2578,7 @@ test "derived budget quantities" {
     const paint = PaintLimits.standard;
     try std.testing.expectEqual(@as(u32, 4_608), packed_frame.quadCapacity(&paint));
     try std.testing.expectEqual(@as(u32, 272), packed_frame.quadCapacity(&PaintLimits.nano));
-    const rungs = ResourceLimits.profile_names;
+    const rungs = ResourceLimits.rung_names;
     inline for (rungs[0 .. rungs.len - 1], rungs[1..]) |lower_name, upper_name| {
         const lower_bytes = @field(PaintLimits, lower_name).paintBytes();
         try std.testing.expect(lower_bytes < @field(PaintLimits, upper_name).paintBytes());

@@ -84,6 +84,8 @@ pub const ColorToken = union(enum) {
     success,
     warning,
     danger,
+    on_primary,
+    on_danger,
     text,
     subtext,
     muted,

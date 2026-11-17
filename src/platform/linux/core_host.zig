@@ -133,8 +133,11 @@ const frame_callback_listener = wayland.CallbackListener{ .done = frameCallbackD
 const cpu_renderer = linux_backend.uses_cpu_renderer;
 
 comptime {
-    // The fbdev backend has no Wayland; its host is `platform/fbdev/core_host.zig`.
-    if (linux_backend.selected == .fbdev) @compileError("fbdev runs core apps on its own host");
+    // The fbdev and eve backends have no Wayland; each has its own core host.
+    switch (linux_backend.selected) {
+        .wayland_cpu, .wayland_vulkan => {},
+        .fbdev, .eve => @compileError("this backend runs core apps on its own host"),
+    }
 }
 
 /// Run `App` until its window closes. Everything is reserved before

@@ -73,8 +73,7 @@ allocator panics. To also check what was drawn, set `app.window.presenter` to a
 `src/testing/goldens/` replays scripted input traces (`traces.zig`) against counter, todo,
 and actions on the core and compares each frame's packed records, hit records, and
 accessibility tree with `core_*.txt`. They run in `zig build test`; `zig build goldens`
-rewrites the files after an intended change. `legacy_*.txt` are the 0.3.1 captures, which
-`compare.zig` checks the core's output against through its normalisation rules.
+rewrites the files after an intended change.
 
 ---
 

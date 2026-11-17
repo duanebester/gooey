@@ -1825,14 +1825,14 @@ test "a frame in flight defers the next build while input keeps draining" {
     const first = window.rendered().frame_number;
     const now = driver.now_ns;
 
-    window.queue.push(.{ .input = .{ .mouse_down = mouse(155, 245) } });
-    window.queue.push(.{ .input = .{ .mouse_up = mouse(155, 245) } });
+    window.queue.push(.{ .input = .{ .mouse_down = mouse(485, 175) } });
+    window.queue.push(.{ .input = .{ .mouse_up = mouse(485, 175) } });
     try testing.expect(tick.tickMain(&driver.app, window, now + 1));
     try testing.expect(window.frame_in_flight.load(.acquire));
     try testing.expectEqual(@as(i32, 1), driver.app.state.count);
 
-    window.queue.push(.{ .input = .{ .mouse_down = mouse(155, 245) } });
-    window.queue.push(.{ .input = .{ .mouse_up = mouse(155, 245) } });
+    window.queue.push(.{ .input = .{ .mouse_down = mouse(485, 175) } });
+    window.queue.push(.{ .input = .{ .mouse_up = mouse(485, 175) } });
     try testing.expect(!tick.tickMain(&driver.app, window, now + 2));
     try testing.expectEqual(@as(i32, 2), driver.app.state.count);
     try testing.expect(window.render_requested);
@@ -1866,8 +1866,8 @@ test "every build opens an atlas frame so the glyph LRU can evict" {
     try testing.expect(first > 0);
     var click: u32 = 0;
     while (click < 3) : (click += 1) {
-        driver.deliver(.{ .mouse_down = mouse(155, 245) });
-        driver.deliver(.{ .mouse_up = mouse(155, 245) });
+        driver.deliver(.{ .mouse_down = mouse(485, 175) });
+        driver.deliver(.{ .mouse_up = mouse(485, 175) });
         driver.frame();
     }
     try testing.expectEqual(first + 3, uploads.frameCurrent());
@@ -2038,19 +2038,19 @@ test "clicks fire on release over the pressed control" {
     const state = &driver.app.state;
     driver.frame();
 
-    driver.deliver(.{ .mouse_down = mouse(155, 245) });
+    driver.deliver(.{ .mouse_down = mouse(485, 175) });
     driver.frame();
     try testing.expectEqual(@as(i32, 0), state.count);
-    driver.deliver(.{ .mouse_up = mouse(160, 250) });
+    driver.deliver(.{ .mouse_up = mouse(490, 180) });
     driver.frame();
     try testing.expectEqual(@as(i32, 1), state.count);
 
-    driver.deliver(.{ .mouse_down = mouse(155, 245) });
-    driver.deliver(.{ .mouse_up = mouse(70, 245) });
+    driver.deliver(.{ .mouse_down = mouse(485, 175) });
+    driver.deliver(.{ .mouse_up = mouse(402, 175) });
     driver.frame();
     try testing.expectEqual(@as(i32, 1), state.count);
 
-    driver.deliver(.{ .mouse_up = mouse(155, 245) });
+    driver.deliver(.{ .mouse_up = mouse(485, 175) });
     driver.frame();
     try testing.expectEqual(@as(i32, 1), state.count);
 }

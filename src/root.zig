@@ -337,13 +337,27 @@ test {
         std.testing.refAllDecls(@import("platform/fbdev/framebuffer.zig"));
         std.testing.refAllDecls(@import("platform/fbdev/evdev.zig"));
         std.testing.refAllDecls(@import("platform/fbdev/clipboard.zig"));
+        // The EVE transport, encoder, and cell cache are pure; the simulated
+        // chip stands in for spidev, so they test on any Linux build.
+        std.testing.refAllDecls(@import("platform/eve/chip.zig"));
+        std.testing.refAllDecls(@import("platform/eve/display_list.zig"));
+        std.testing.refAllDecls(@import("platform/eve/cells.zig"));
+        std.testing.refAllDecls(@import("platform/eve/renderer.zig"));
+        std.testing.refAllDecls(@import("platform/eve/images.zig"));
+        std.testing.refAllDecls(@import("platform/eve/limits.zig"));
     }
-    // The Vulkan files reach libwayland and support only 64-bit targets, so an
-    // fbdev build, which links neither and also runs on 32-bit boards, skips them.
-    if (builtin.os.tag == .linux and @import("platform/linux_backend.zig").selected != .fbdev) {
+    // The Vulkan files reach libwayland and support only 64-bit targets, so the
+    // fbdev and eve builds, which link neither and also run on 32-bit boards,
+    // skip them.
+    if (comptime builtin.os.tag == .linux and !isEmbeddedLinuxBackend()) {
         // Only the reservation-limit test: the rest of the file calls Vulkan.
         _ = @import("platform/linux/vk_buffers.zig");
         // Only the present-semaphore model, which makes no Vulkan call.
         _ = @import("platform/linux/vk_renderer.zig");
     }
+}
+
+fn isEmbeddedLinuxBackend() bool {
+    const selected = @import("platform/linux_backend.zig").selected;
+    return selected == .fbdev or selected == .eve;
 }
