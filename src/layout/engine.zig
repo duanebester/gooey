@@ -209,6 +209,10 @@ pub const TextData = struct {
     wrapped_lines: ?[]const types.WrappedLine = null,
     /// Container width for text alignment (set during wrapping)
     container_width: f32 = 0,
+    /// The container's content left edge, scrolled, that `.center` and
+    /// `.right` lines align from (set during positioning). Not the text's
+    /// own x: the parent's alignment has already moved that.
+    container_x: f32 = 0,
 };
 
 pub const ComputedLayout = struct {

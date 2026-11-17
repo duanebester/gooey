@@ -60,6 +60,9 @@ const PositionFrame = struct {
     has_grandchildren: bool,
     alignment: types.ChildAlignment,
     content_box: BoundingBox,
+    /// The content box's left edge, shifted by the scroll offset: where a
+    /// child text's `.center` and `.right` lines are aligned from.
+    content_x: f32,
     /// The next child's top-left corner before its cross-axis alignment.
     next_x: f32,
     next_y: f32,
@@ -118,6 +121,7 @@ fn planChildPositions(engine: *LayoutEngine, parent_index: u32) PositionFrame {
         .has_grandchildren = false,
         .alignment = layout.child_alignment,
         .content_box = content_box,
+        .content_x = content_box.x,
         .next_x = 0,
         .next_y = 0,
         .gap = 0,
@@ -145,9 +149,11 @@ fn planChildPositions(engine: *LayoutEngine, parent_index: u32) PositionFrame {
             });
         }
     }
+    // Read after `resolveScrollTarget`, which may have just moved it.
     const offset_x: f32 = if (parent.config.scroll) |s| -s.scroll_offset.x else 0;
     const offset_y: f32 = if (parent.config.scroll) |s| -s.scroll_offset.y else 0;
-    frame.next_x = content_box.x + offset_x + if (is_horizontal) dist.start_offset else 0;
+    frame.content_x = content_box.x + offset_x;
+    frame.next_x = frame.content_x + if (is_horizontal) dist.start_offset else 0;
     frame.next_y = content_box.y + offset_y + if (!is_horizontal) dist.start_offset else 0;
     frame.gap = dist.effective_gap;
     frame.has_grandchildren = totals.has_grandchildren;
@@ -326,6 +332,7 @@ inline fn placeNext(frame: *PositionFrame, child: *LayoutElement) void {
     const child_x = frame.next_x + (if (frame.is_horizontal) 0 else cross_offset);
     const child_y = frame.next_y + (if (frame.is_horizontal) cross_offset else 0);
     placeElement(child, child_x, child_y);
+    if (child.text_data) |*text| text.container_x = frame.content_x;
     if (frame.is_horizontal) {
         frame.next_x += child.computed.sized_width + frame.gap;
     } else {

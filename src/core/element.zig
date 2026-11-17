@@ -361,7 +361,10 @@ pub const Text = struct {
     wrap: enum { none, words, newlines } = .none,
     /// Line pitch in percent of the font's line height; null keeps the font's.
     line_height: ?u16 = null,
-    /// Line placement within the parent's content width, as in 0.3.1.
+    /// Line placement, as in 0.3.1. `.left` starts each line at the text's
+    /// own box, which the parent's alignment places; `.center` and `.right`
+    /// place each line within the parent's content width, whatever the
+    /// parent's alignment.
     alignment: enum { left, center, right } = .left,
 
     pub const Element = struct {
