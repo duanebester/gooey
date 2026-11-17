@@ -948,8 +948,22 @@ state and fill them in `on_init`. See [charts/README.md](charts/README.md) and
 ## Theming and fonts
 
 `gooey.Theme.light` (Catppuccin Latte) is the default and `gooey.Theme.dark` (Catppuccin
-Macchiato) is built in. Set one in `Config` with `.theme = &gooey.Theme.dark`, or switch at
-run time from a handler, as the theme check in `src/testing/goldens/core_checks.zig` does:
+Macchiato) is built in. Both take a blue primary and translucent borders.
+`gooey.Theme.catppuccin_latte` and `gooey.Theme.catppuccin_macchiato` use Catppuccin's published
+palette with opaque tokens:
+
+| Token          | Catppuccin colour | Token     | Catppuccin colour |
+| -------------- | ----------------- | --------- | ----------------- |
+| `bg`           | base              | `text`    | text              |
+| `surface`      | mantle            | `subtext` | subtext1          |
+| `overlay`      | surface1          | `muted`   | overlay0          |
+| `primary`      | mauve             | `border`  | surface2          |
+| `secondary`    | overlay1          | `success` | green             |
+| `accent`       | blue              | `warning` | yellow            |
+| `border_focus` | lavender          | `danger`  | red               |
+
+Set one in `Config` with `.theme = &gooey.Theme.dark`, or switch at run time from a handler,
+as the theme check in `src/testing/goldens/core_checks.zig` does:
 
 ```zig
     pub fn goDark(_: *ThemeState, effects: *Effects) void {

@@ -152,6 +152,119 @@ pub const Theme = struct {
         .font_size_base = 16,
     };
 
+    /// Catppuccin Macchiato, from the published palette (catppuccin/palette,
+    /// `palette.json`) with mauve as the primary accent. `dark` is a
+    /// Macchiato-derived theme with a blue primary and translucent borders;
+    /// this one uses palette colours only, and every token is opaque.
+    pub const catppuccin_macchiato = catppuccin(&macchiato_palette);
+
+    /// Catppuccin Latte, mapped as `catppuccin_macchiato` is.
+    pub const catppuccin_latte = catppuccin(&latte_palette);
+
+    comptime {
+        assert(catppuccin_macchiato.isDark());
+        assert(!catppuccin_latte.isDark());
+        for ([_]*const Theme{ &catppuccin_macchiato, &catppuccin_latte }) |theme| {
+            // `Select` paints its menu (`surface`) and hovered rows
+            // (`overlay`) over other controls, so neither may show through.
+            assert(theme.surface.a == 1);
+            assert(theme.overlay.a == 1);
+        }
+    }
+
+    /// The Catppuccin colours the built-in themes take, as 0xRRGGBB, named
+    /// as in `palette.json`. The same palettes as chat-zig's `theme.zig`,
+    /// plus yellow for `warning`.
+    const CatppuccinPalette = struct {
+        base: u32,
+        mantle: u32,
+        crust: u32,
+        surface0: u32,
+        surface1: u32,
+        surface2: u32,
+        overlay0: u32,
+        overlay1: u32,
+        overlay2: u32,
+        subtext0: u32,
+        subtext1: u32,
+        text: u32,
+        mauve: u32,
+        lavender: u32,
+        blue: u32,
+        red: u32,
+        green: u32,
+        yellow: u32,
+    };
+
+    const latte_palette = CatppuccinPalette{
+        .base = 0xeff1f5,
+        .mantle = 0xe6e9ef,
+        .crust = 0xdce0e8,
+        .surface0 = 0xccd0da,
+        .surface1 = 0xbcc0cc,
+        .surface2 = 0xacb0be,
+        .overlay0 = 0x9ca0b0,
+        .overlay1 = 0x8c8fa1,
+        .overlay2 = 0x7c7f93,
+        .subtext0 = 0x6c6f85,
+        .subtext1 = 0x5c5f77,
+        .text = 0x4c4f69,
+        .mauve = 0x8839ef,
+        .lavender = 0x7287fd,
+        .blue = 0x1e66f5,
+        .red = 0xd20f39,
+        .green = 0x40a02b,
+        .yellow = 0xdf8e1d,
+    };
+
+    const macchiato_palette = CatppuccinPalette{
+        .base = 0x24273a,
+        .mantle = 0x1e2030,
+        .crust = 0x181926,
+        .surface0 = 0x363a4f,
+        .surface1 = 0x494d64,
+        .surface2 = 0x5b6078,
+        .overlay0 = 0x6e738d,
+        .overlay1 = 0x8087a2,
+        .overlay2 = 0x939ab7,
+        .subtext0 = 0xa5adcb,
+        .subtext1 = 0xb8c0e0,
+        .text = 0xcad3f5,
+        .mauve = 0xc6a0f6,
+        .lavender = 0xb7bdf8,
+        .blue = 0x8aadf4,
+        .red = 0xed8796,
+        .green = 0xa6da95,
+        .yellow = 0xeed49f,
+    };
+
+    /// One role mapping for every flavour, following chat-zig's
+    /// `gooeyTheme`: base is the window; mantle fills raised panes; surface1
+    /// marks hovered rows; surface2 outlines inputs and cards; overlay1 is
+    /// the secondary (icon) colour; overlay0 is the faintest readable text.
+    /// Accents: mauve primary, blue as the second accent, lavender for
+    /// focus, and green, yellow, and red for success, warning, and danger.
+    fn catppuccin(palette: *const CatppuccinPalette) Theme {
+        assert(palette.base != palette.text);
+        assert(palette.mantle != palette.base);
+        return .{
+            .bg = Color.hex(palette.base),
+            .surface = Color.hex(palette.mantle),
+            .overlay = Color.hex(palette.surface1),
+            .primary = Color.hex(palette.mauve),
+            .secondary = Color.hex(palette.overlay1),
+            .accent = Color.hex(palette.blue),
+            .success = Color.hex(palette.green),
+            .warning = Color.hex(palette.yellow),
+            .danger = Color.hex(palette.red),
+            .text = Color.hex(palette.text),
+            .subtext = Color.hex(palette.subtext1),
+            .muted = Color.hex(palette.overlay0),
+            .border = Color.hex(palette.surface2),
+            .border_focus = Color.hex(palette.lavender),
+        };
+    }
+
     // =========================================================================
     // Helper Methods
     // =========================================================================
