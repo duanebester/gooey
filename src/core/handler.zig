@@ -404,8 +404,13 @@ pub const Effects = struct {
 
     /// Cancel job `id`: its posts return false, results it posted that were
     /// not delivered yet are dropped, and its `on_done` reports `.cancelled`.
-    /// A job's `run` that is blocked outside Io stops when it next checks
-    /// `job.cancelled()` or posts. A finished job's id does nothing.
+    /// A job that has not started never runs. Natively, a running job's Io
+    /// cancellation points (sleeps, socket and file reads, a blocked post)
+    /// return `error.Canceled` at once; a `run` computing without Io stops
+    /// when it next checks `job.cancelled()` or posts. On the web and in
+    /// single-threaded builds a job runs whole after the drain that spawned
+    /// it, so a cancel only reaches one that has not run. Never waits. A
+    /// finished job's id does nothing.
     pub fn cancelJob(self: *Effects, id: JobId) void {
         const pool = self.jobs orelse std.debug.panic("effects.cancelJob outside a handler", .{});
         pool.cancel(id);

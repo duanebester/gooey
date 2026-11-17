@@ -46,6 +46,9 @@
 //! - `core-dialog-count`: one file dialog more than `events.dialog_count_max` stays open.
 //! - `core-job-count`: spawns one background job more than `nano`'s 2
 //!   `events.job_count_max` while both slots run.
+//! - `core-job-count-cancelled`: the same after cancelling the first job and
+//!   letting its interrupt end it: its slot stays held until a drain
+//!   delivers its `on_done`, so the third spawn still finds both in use.
 //! - `core-mono-unset`: draws `.family = .mono` text in an app with no `fonts.mono`.
 //! - `core-wrap-text`: one text of 1,024 newlines and a letter, 1,025 lines,
 //!   one past `nano`'s frame line budget, which one text may fill alone. A
@@ -103,6 +106,7 @@ const Mode = enum {
     @"core-dialog-paths",
     @"core-dialog-count",
     @"core-job-count",
+    @"core-job-count-cancelled",
     @"core-mono-unset",
     @"core-wrap-text",
     @"core-wrap-frame",
@@ -152,6 +156,7 @@ pub fn main(init: std.process.Init) !void {
         .@"core-dialog-paths" => coreDialogPaths(init.gpa, init.io),
         .@"core-dialog-count" => coreDialogCount(init.gpa, init.io),
         .@"core-job-count" => coreJobCount(init.gpa, init.io),
+        .@"core-job-count-cancelled" => coreJobCountCancelled(init.gpa, init.io),
         .@"core-mono-unset" => coreTick(init.gpa, init.io, CoreApp.monoText),
         .@"core-wrap-text" => coreTick(init.gpa, init.io, CoreApp.wrapText),
         .@"core-wrap-frame" => coreTick(init.gpa, init.io, CoreApp.wrapFrame),
@@ -747,6 +752,35 @@ fn coreJobCount(gpa: std.mem.Allocator, io: std.Io) void {
         _ = effects.spawn(Nap, &.{ .seconds = 60 }, .{
             .on_done = effects.handler(CoreState.picked),
         });
+    }
+    unreachable;
+}
+
+fn coreJobCountCancelled(gpa: std.mem.Allocator, io: std.Io) void {
+    const config = comptime blk: {
+        var with_jobs = core_config;
+        with_jobs.jobs = &.{Nap};
+        break :blk with_jobs;
+    };
+    const app = initCoreApp(gooey.App(CoreState, CoreApp.empty, config), gpa, io);
+    var effects = gooey.Effects.init(null, .root);
+    effects.jobs = &app.window.jobs;
+    const job_count_max = gooey.ResourceLimits.nano.events.job_count_max;
+    var first: ?gooey.JobId = null;
+    var spawned: u32 = 0;
+    // Exactly the capacity, then cancel the first and let its interrupt
+    // finish, then one more spawn with no drain in between.
+    while (spawned <= job_count_max) : (spawned += 1) {
+        if (spawned == job_count_max) {
+            effects.cancelJob(first.?);
+            io.sleep(.fromMilliseconds(100), .awake) catch |err| {
+                std.debug.panic("fail_fast_check: sleep failed: {t}", .{err});
+            };
+        }
+        const id = effects.spawn(Nap, &.{ .seconds = 60 }, .{
+            .on_done = effects.handler(CoreState.picked),
+        });
+        if (first == null) first = id;
     }
     unreachable;
 }

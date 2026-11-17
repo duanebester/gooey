@@ -11,28 +11,53 @@
 //! `on_result` handler with each result in post order and then `on_done`
 //! once, with how `run` ended.
 //!
-//! Threading: natively, the app gets `events.job_count_max` workers, one per
-//! job slot, started at init with `io.concurrent` in one `std.Io.Group`, and
-//! only when `Config.jobs` is non-empty. A spawn claims a free slot and
-//! posts its worker's semaphore; a full table fails fast. On the web and in
+//! Threading: natively, each of the `events.job_count_max` job slots has two
+//! tasks, started at init with `io.concurrent` and only when `Config.jobs` is
+//! non-empty: a runner, alone in the slot's own `std.Io.Group`, that runs the
+//! slot's jobs, and an interrupter, in the pool's group, that waits for a
+//! cancel to reach a running job. A spawn claims a free slot and posts its
+//! runner's semaphore; a full table fails fast. On the web and in
 //! single-threaded builds there are no workers: a spawned job runs to
 //! completion on the main thread after the drain that spawned it
 //! (`runQueued`), and its posts are delivered in the next drain.
 //!
-//! Overload: a post that finds every result slot held waits on its worker
+//! Cancellation (`cancel`, from `Effects.cancelJob`): the main thread marks
+//! the job and moves its `Phase` with one compare-and-swap, never waiting.
+//! A job its runner has not started is `skipped`: the runner reports
+//! `.cancelled` without calling `run`. A running job is `interrupting`: its
+//! slot's interrupter cancels the runner's group, so the job's next or
+//! current Io cancellation point (a sleep, a socket or file read, a blocked
+//! post) returns `error.Canceled` at once; `run` unwinds, the runner task
+//! ends, and the interrupter starts the slot's next runner and pushes the
+//! job's end. Exactly one of runner and interrupter pushes it, whichever
+//! moves `Phase` out of `running`. A job computing without Io stops when it
+//! next checks `job.cancelled()` or posts. Without workers nothing runs
+//! while a handler can cancel, so a cancel only ever skips a queued job.
+//!
+//! A cancelled task must end (`std.Io` cancels a whole future or group, and
+//! offers no way to interrupt a task that then continues), so the next
+//! runner is a new task. That is the one task the pool asks the io for after
+//! init: `Io.Threaded` takes its record from the io's own allocator, not
+//! Gooey's, once per cancel that interrupts a running job. Failing to start
+//! it fails fast, as a full table does.
+//!
+//! Overload: a post that finds every result slot held waits on its runner
 //! (a cancelable semaphore) until a drain frees one; the main thread never
 //! waits. Without workers a post cannot wait, so it fails fast instead.
 //!
-//! Shutdown (`stop`, from `App.stop`): `stopping` is set, the group is
-//! cancelled, which makes every Io cancellation point in a job, a blocked
-//! post, and an idle worker's wait return `error.Canceled`, and every worker
-//! is awaited. Deliveries still in the ring are never routed.
+//! Shutdown (`stop`, from `App.stop`): `stopping` is set and the pool's
+//! group is cancelled; each interrupter then cancels its runner's group,
+//! which makes every Io cancellation point in a job, a blocked post, and an
+//! idle runner's wait return `error.Canceled`, and every task is awaited.
+//! Deliveries still in the ring are never routed.
 //!
 //! Resource sketch at `.standard`: 8 slots of 4 KiB input and 32 result
 //! slots of 4 KiB, 160 KiB reserved from fresh pages and zeroed up to their
-//! high-water marks on release (CLAUDE.md §21); 8 workers whose stacks are the
-//! io's default. Per tick the main thread routes at most
-//! `job_result_count_max + job_count_max` deliveries, copying nothing.
+//! high-water marks on release (CLAUDE.md §21); 16 tasks (8 runners and 8
+//! interrupters, idle in a semaphore wait) whose stacks are the io's default.
+//! Per tick the main thread routes at most `job_result_count_max +
+//! job_count_max` deliveries, copying nothing; a cancel is two atomic
+//! operations and at most one semaphore post.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -99,8 +124,9 @@ pub fn Job(comptime Result: type) type {
 
         const Self = @This();
 
-        /// The app's io (`Init.io`): sleeps, files, sockets. Cancellation
-        /// points in it return `error.Canceled` when the app shuts down.
+        /// The app's io (`Init.io`): sleeps, files, sockets. Natively, its
+        /// cancellation points return `error.Canceled` once
+        /// `Effects.cancelJob` cancels this job or the app shuts down.
         pub fn io(self: *const Self) std.Io {
             assert(self.slot < self.pool.slots.len);
             return self.pool.io;
@@ -247,13 +273,37 @@ const Slot = struct {
     type_id: usize,
     handlers: Handlers,
     // Written by the main thread before `start` is posted and not again
-    // until `on_done` is delivered, so the worker reads them unlocked.
+    // until `on_done` is delivered, so the runner and interrupter read them
+    // unlocked.
     generation: u32,
     run: ?RunFn,
     // Shared.
     cancel: std.atomic.Value(bool),
+    phase: std.atomic.Value(Phase),
     /// One permit per spawn of this slot.
     start: std.Io.Semaphore,
+    /// One permit per cancel that found the job `running`.
+    interrupt: std.Io.Semaphore,
+    /// The slot's runner and nothing else, so cancelling the group
+    /// interrupts this job's Io and no other.
+    group: std.Io.Group,
+};
+
+/// Where a busy slot's job is. The main thread, the runner, and the
+/// interrupter each move it only by compare-and-swap from the phase they
+/// expect, so a cancel and the job's end cannot both claim it.
+const Phase = enum(u8) {
+    /// No job, or the job's end is pushed and `on_done` not yet delivered.
+    idle,
+    /// Spawned; the runner has not taken it.
+    pending,
+    /// Cancelled while pending: the runner reports `.cancelled` and never
+    /// calls `run`.
+    skipped,
+    /// In `run`. The runner moves it to `idle` when `run` returns.
+    running,
+    /// Cancelled while running: the interrupter owns the job's end.
+    interrupting,
 };
 
 /// What the router delivers for one `JobEntry`, or null when the entry is a
@@ -351,7 +401,10 @@ pub const Pool = struct {
                 .generation = 0,
                 .run = null,
                 .cancel = .init(false),
+                .phase = .init(.idle),
                 .start = .{ .permits = 0 },
+                .interrupt = .{ .permits = 0 },
+                .group = .init,
             };
         }
         self.result_free_list = try gpa.alloc(u32, limits.job_result_count_max);
@@ -386,24 +439,44 @@ pub const Pool = struct {
         gpa.free(self.slots);
     }
 
-    /// One worker per slot, in one group so `stop` cancels them together.
-    /// An io that cannot run them concurrently is a capacity error at init.
+    /// Per slot, a runner in the slot's group and an interrupter in the
+    /// pool's, so `stop` cancels every interrupter together and each of
+    /// them its runner. An io that cannot run them all concurrently is a
+    /// capacity error at init.
     fn startWorkers(self: *Pool) !void {
         assert(threaded);
-        for (0..self.slots.len) |index| {
-            const slot: u32 = @intCast(index);
-            self.group.concurrent(self.io, workerMain, .{ self, slot }) catch |err| {
-                std.log.err("gooey jobs: cannot start worker {d} of {d}: {t}. Lower " ++
-                    "ResourceLimits.events.job_count_max or give the io more threads.", .{
-                    index + 1,
-                    self.slots.len,
-                    err,
-                });
-                self.stopping.store(true, .release);
-                self.group.cancel(self.io);
-                return err;
+        assert(!self.stopping.load(.acquire));
+        for (self.slots, 0..) |*slot, index| {
+            const slot_index: u32 = @intCast(index);
+            slot.group.concurrent(self.io, runnerMain, .{ self, slot_index }) catch |err| {
+                return self.startWorkersFailed(slot_index, err);
+            };
+            self.group.concurrent(self.io, interrupterMain, .{ self, slot_index }) catch |err| {
+                return self.startWorkersFailed(slot_index, err);
             };
         }
+    }
+
+    /// Stop the tasks `startWorkers` started before slot `index` failed.
+    fn startWorkersFailed(
+        self: *Pool,
+        index: u32,
+        err: std.Io.ConcurrentError,
+    ) std.Io.ConcurrentError {
+        assert(index < self.slots.len);
+        std.log.err("gooey jobs: cannot start the tasks of slot {d} of {d}: {t}. Lower " ++
+            "ResourceLimits.events.job_count_max or give the io more threads.", .{
+            index + 1,
+            self.slots.len,
+            err,
+        });
+        self.stopping.store(true, .release);
+        self.group.cancel(self.io);
+        // The failing slot's runner may have started without its
+        // interrupter; every other slot's interrupter already cancelled its
+        // runner, which leaves its group empty.
+        for (self.slots) |*slot| slot.group.cancel(self.io);
+        return err;
     }
 
     /// Cancel every job, wait for every worker, and stop delivering. Main
@@ -415,6 +488,8 @@ pub const Pool = struct {
         if (threaded) self.group.cancel(self.io);
         self.stopped = true;
         assert(self.group.token.load(.acquire) == null);
+        // Each interrupter cancelled its runner's group before it returned.
+        for (self.slots) |*slot| assert(slot.group.token.load(.acquire) == null);
     }
 
     pub fn deinit(self: *Pool, gpa: std.mem.Allocator) void {
@@ -479,21 +554,36 @@ pub const Pool = struct {
         slot.handlers = handlers;
         slot.run = run;
         slot.cancel.store(false, .release);
+        assert(slot.phase.load(.acquire) == .idle);
+        slot.phase.store(.pending, .release);
         self.spawned_count += 1;
         if (threaded) slot.start.post(self.io) else slot.queued = true;
         assert(slot.busy);
         return .{ .slot = index, .generation = slot.generation };
     }
 
-    /// Ask job `id` to stop: its posts return false, results not yet
-    /// delivered are dropped, and its `on_done` reports `.cancelled`. A
-    /// stale id (the job already delivered `on_done`) does nothing.
+    /// Stop job `id`: its posts return false, results not yet delivered
+    /// are dropped, and its `on_done` reports `.cancelled`. A job not yet
+    /// started never runs; a running one has its Io interrupted by its
+    /// slot's interrupter. Never waits. A stale id (the job already
+    /// delivered `on_done`) or a second cancel does nothing.
     pub fn cancel(self: *Pool, id: JobId) void {
         assert(id.slot < self.slots.len);
         const slot = &self.slots[id.slot];
         if (!slot.busy) return;
         if (slot.generation != id.generation) return;
         slot.cancel.store(true, .release);
+        if (slot.phase.cmpxchgStrong(.pending, .skipped, .acq_rel, .acquire)) |phase| {
+            // Without workers a job runs only inside `runQueued`.
+            if (!threaded) assert(phase != .running);
+            if (phase != .running) return;
+            if (slot.phase.cmpxchgStrong(.running, .interrupting, .acq_rel, .acquire)) |now| {
+                // The job returned in between; its end is the runner's.
+                assert(now == .idle);
+                return;
+            }
+            slot.interrupt.post(self.io);
+        }
     }
 
     /// Whether any job is running or waiting to deliver.
@@ -513,7 +603,9 @@ pub const Pool = struct {
             if (!slot.queued) continue;
             assert(slot.busy);
             slot.queued = false;
-            self.runSlot(@intCast(index));
+            // Nothing interrupts a job on the main thread.
+            const whole = self.runSlot(@intCast(index));
+            assert(whole);
             ran = true;
         }
         return ran;
@@ -575,6 +667,7 @@ pub const Pool = struct {
             .result => self.releaseResult(entry.result_index),
             .done => {
                 assert(!slot.queued);
+                assert(slot.phase.load(.acquire) == .idle);
                 slot.busy = false;
                 slot.run = null;
                 slot.generation +%= 1;
@@ -612,29 +705,54 @@ pub const Pool = struct {
     }
 
     // =========================================================================
-    // Workers (or the main thread, without them)
+    // Runners and interrupters (or the main thread, without workers)
     // =========================================================================
 
-    /// One worker: wait for a spawn of its slot, run it, deliver its end.
-    /// Each turn runs one job, and the loop ends at `stop`: `stopping` is
-    /// set before the group is cancelled, and the wait is cancelable.
-    fn workerMain(self: *Pool, index: u32) std.Io.Cancelable!void {
+    /// One runner: wait for a spawn of its slot, run it, deliver its end.
+    /// Each turn runs one job. The task ends at `stop` (`stopping` is set
+    /// before any group is cancelled, and the wait is cancelable) or when an
+    /// interrupter claims the job, which then starts the next runner.
+    fn runnerMain(self: *Pool, index: u32) std.Io.Cancelable!void {
         assert(threaded);
         assert(index < self.slots.len);
         const slot = &self.slots[index];
         while (!self.stopping.load(.acquire)) {
             try slot.start.wait(self.io);
             if (self.stopping.load(.acquire)) return;
-            self.runSlot(index);
+            if (!self.runSlot(index)) return;
         }
     }
 
-    fn runSlot(self: *Pool, index: u32) void {
+    /// Run the slot's job, or skip it when it was cancelled first, and push
+    /// its end. Returns false when an interrupter claimed the job while
+    /// `run` ran: the interrupter pushes the end, and this runner must end.
+    fn runSlot(self: *Pool, index: u32) bool {
         const slot = &self.slots[index];
-        const run = slot.run.?;
         const generation = slot.generation;
+        if (slot.phase.cmpxchgStrong(.pending, .running, .acq_rel, .acquire)) |phase| {
+            assert(phase == .skipped);
+            slot.phase.store(.idle, .release);
+            self.pushEnd(index, generation, error.Canceled);
+            return true;
+        }
         var job = Job(void){ .pool = self, .slot = index };
-        const returned = run(self.inputSlot(index).ptr, @ptrCast(&job));
+        const returned = slot.run.?(self.inputSlot(index).ptr, @ptrCast(&job));
+        if (slot.phase.cmpxchgStrong(.running, .idle, .acq_rel, .acquire)) |phase| {
+            assert(phase == .interrupting);
+            assert(threaded);
+            return false;
+        }
+        // `idle` before the push: once `on_done` is delivered the main
+        // thread may spawn into the slot, which sets `pending`.
+        self.pushEnd(index, generation, returned);
+        return true;
+    }
+
+    /// Push the end of the slot's job, which returned `returned`, unless the
+    /// app is stopping: nothing is delivered then.
+    fn pushEnd(self: *Pool, index: u32, generation: u32, returned: anyerror!void) void {
+        assert(index < self.slots.len);
+        assert(self.slots[index].phase.load(.acquire) == .idle);
         var entry = JobEntry{
             .slot = index,
             .generation = generation,
@@ -650,10 +768,50 @@ pub const Pool = struct {
                 entry.failure = err;
             },
         }
-        // Nothing is delivered once the app is stopping.
         if (self.stopping.load(.acquire)) return;
         self.completions.pushJob(entry);
         self.wakeHost();
+    }
+
+    /// One interrupter: wait for a cancel to reach the slot's running job,
+    /// then interrupt it. At `stop` the wait returns `error.Canceled`, and
+    /// the interrupter cancels its runner's group before it returns, so
+    /// awaiting the pool's group awaits every runner too.
+    fn interrupterMain(self: *Pool, index: u32) std.Io.Cancelable!void {
+        assert(threaded);
+        assert(index < self.slots.len);
+        const slot = &self.slots[index];
+        defer slot.group.cancel(self.io);
+        while (!self.stopping.load(.acquire)) {
+            try slot.interrupt.wait(self.io);
+            self.interruptRunner(index);
+        }
+    }
+
+    /// Cancel the slot's runner group, which makes the job's Io calls return
+    /// `error.Canceled` and waits until the runner task has ended; start the
+    /// next runner, then deliver the job's end as `.cancelled`. A job that
+    /// ignores the cancel holds this interrupter, and no other slot, until
+    /// `run` returns.
+    fn interruptRunner(self: *Pool, index: u32) void {
+        const slot = &self.slots[index];
+        assert(slot.phase.load(.acquire) == .interrupting);
+        assert(slot.cancel.load(.acquire));
+        const generation = slot.generation;
+        slot.group.cancel(self.io);
+        assert(slot.group.token.load(.acquire) == null);
+        if (self.stopping.load(.acquire)) return;
+        slot.group.concurrent(self.io, runnerMain, .{ self, index }) catch |err| {
+            std.debug.panic("gooey jobs: cannot restart the runner of slot {d} of {d} " ++
+                "after cancelling job {s}: {t}. Give the io more threads.", .{
+                index + 1,
+                self.slots.len,
+                handler_mod.typeName(slot.type_id),
+                err,
+            });
+        };
+        slot.phase.store(.idle, .release);
+        self.pushEnd(index, generation, error.Canceled);
     }
 
     fn cancelRequested(self: *const Pool, index: u32) bool {
@@ -666,8 +824,8 @@ pub const Pool = struct {
         if (self.cancelRequested(index)) return false;
         if (threaded) {
             self.result_free.wait(self.io) catch {
-                // Shutdown: re-arm the request so the job's next Io call
-                // sees it too, and unwind.
+                // A cancel or shutdown: re-arm the request so the job's next
+                // Io call sees it too, and unwind.
                 self.io.recancel();
                 return false;
             };

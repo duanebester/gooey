@@ -1,9 +1,11 @@
 //! Background jobs (`Effects.spawn`) through a headless app: posts arrive as
 //! handler calls in post order and wake the host, a full result pool holds
-//! the worker back without losing a result, cancellation drops what was not
-//! delivered, and shutdown cancels and joins every worker before
+//! the worker back without losing a result, cancellation interrupts a job
+//! blocked in Io at once and drops what was not delivered, a cancelled slot
+//! runs its next job, and shutdown cancels and joins every worker before
 //! `on_deinit`, whatever the workers are doing. The example's fetch runs
-//! end to end the same way.
+//! end to end the same way. `jobs_main_thread_checks.zig` covers the path
+//! without workers (the web and single-threaded builds).
 //!
 //! Workers are real threads on `std.testing.io`, so each check waits for
 //! them with a bounded number of short sleeps rather than a fixed delay.
@@ -25,6 +27,10 @@ var job_returned_count: std.atomic.Value(u32) = .init(0);
 var job_gate_open: std.atomic.Value(bool) = .init(false);
 var deinit_saw_returned: std.atomic.Value(u32) = .init(std.math.maxInt(u32));
 var deinit_saw_started: std.atomic.Value(u32) = .init(std.math.maxInt(u32));
+/// Io calls in jobs that returned `error.Canceled`.
+var job_io_cancelled_count: std.atomic.Value(u32) = .init(0);
+/// Posts `Spin` made after its cancel that were refused.
+var late_post_refused_count: std.atomic.Value(u32) = .init(0);
 
 /// Posts `count` results numbered from `first`, then returns or fails.
 const Count = struct {
@@ -78,7 +84,63 @@ const Sleep = struct {
     pub fn run(input: *const Input, job: *gooey.Job(Result)) !void {
         _ = job_started_count.fetchAdd(1, .acq_rel);
         defer _ = job_returned_count.fetchAdd(1, .acq_rel);
-        try job.io().sleep(.fromSeconds(input.seconds), .awake);
+        job.io().sleep(.fromSeconds(input.seconds), .awake) catch |err| {
+            _ = job_io_cancelled_count.fetchAdd(1, .acq_rel);
+            return err;
+        };
+    }
+};
+
+/// Connects to `port` on loopback and reads, from a peer that never writes:
+/// only cancellation ends the read.
+const Read = struct {
+    pub const Input = struct { port: u16 };
+    pub const Result = struct { never: u8 };
+
+    pub fn run(input: *const Input, job: *gooey.Job(Result)) !void {
+        _ = job_started_count.fetchAdd(1, .acq_rel);
+        defer _ = job_returned_count.fetchAdd(1, .acq_rel);
+        const io = job.io();
+        const address: std.Io.net.IpAddress = .{ .ip4 = .loopback(input.port) };
+        const stream = try address.connect(io, .{ .mode = .stream });
+        defer stream.close(io);
+        var buffer: [16]u8 = undefined;
+        var reader = stream.reader(io, &buffer);
+        _ = reader.interface.takeByte() catch |err| switch (err) {
+            error.ReadFailed => {
+                const read_error = reader.err.?;
+                if (read_error == error.Canceled) {
+                    _ = job_io_cancelled_count.fetchAdd(1, .acq_rel);
+                }
+                return read_error;
+            },
+            error.EndOfStream => return error.EndOfStream,
+        };
+    }
+};
+
+/// Computes without Io until it sees its cancel, then posts, which must be
+/// refused, then sleeps for a minute, which the cancel must interrupt.
+const Spin = struct {
+    pub const Input = struct { unused: u8 };
+    pub const Result = struct { value: u32 };
+
+    /// Checks of `job.cancelled()`: well past the 10 s a check waits.
+    const spin_count_max: u64 = 1 << 40;
+
+    pub fn run(_: *const Input, job: *gooey.Job(Result)) !void {
+        _ = job_started_count.fetchAdd(1, .acq_rel);
+        defer _ = job_returned_count.fetchAdd(1, .acq_rel);
+        var spins: u64 = 0;
+        while (!job.cancelled()) : (spins += 1) {
+            if (spins == spin_count_max) return error.NeverCancelled;
+            std.atomic.spinLoopHint();
+        }
+        if (!job.post(&.{ .value = 1 })) _ = late_post_refused_count.fetchAdd(1, .acq_rel);
+        job.io().sleep(.fromSeconds(60), .awake) catch |err| {
+            _ = job_io_cancelled_count.fetchAdd(1, .acq_rel);
+            return err;
+        };
     }
 };
 
@@ -102,6 +164,11 @@ const Flood = struct {
 const State = struct {
     received: [64]u32 = @splat(0),
     received_count: u32 = 0,
+    /// Every delivery in order: a result's value, or `done_marker` plus the
+    /// job's slot for its end.
+    log: [64]u32 = @splat(0),
+    log_count: u32 = 0,
+    other_count: u32 = 0,
     done_count: u32 = 0,
     outcome: ?Effects.JobOutcome = null,
     last: ?gooey.JobId = null,
@@ -115,6 +182,7 @@ const State = struct {
         assert(self.received_count < self.received.len);
         self.received[self.received_count] = result.value;
         self.received_count += 1;
+        self.record(result.value);
     }
 
     fn onDone(self: *State, effects: *Effects) void {
@@ -122,10 +190,23 @@ const State = struct {
         assert(std.meta.eql(done.id, effects.jobId().?));
         self.done_count += 1;
         self.outcome = done.outcome;
+        self.record(done_marker + done.id.slot);
     }
 
     fn onFlood(_: *State, effects: *Effects) void {
         assert(effects.jobResult(Flood) != null);
+    }
+
+    fn onOther(self: *State, effects: *Effects) void {
+        assert(effects.jobResult(Spin) != null);
+        self.other_count += 1;
+    }
+
+    fn record(self: *State, entry: u32) void {
+        if (self.log_count < self.log.len) {
+            self.log[self.log_count] = entry;
+            self.log_count += 1;
+        }
     }
 
     fn init(self: *State, init_value: gooey.Init, effects: *Effects) void {
@@ -150,6 +231,9 @@ const State = struct {
     }
 };
 
+/// What `State.log` records for a job's end, plus its slot.
+const done_marker: u32 = 1_000;
+
 fn render(cx: *gooey.Cx) void {
     cx.render(gooey.ui.box(.{}, .{}));
 }
@@ -168,7 +252,7 @@ const App = gooey.App(State, render, .{
     .width = 200,
     .height = 100,
     .limits = limits,
-    .jobs = &.{ Count, Sleep, Flood },
+    .jobs = &.{ Count, Sleep, Flood, Read, Spin },
     .on_init = State.init,
     .on_deinit = State.deinit,
 });
@@ -195,6 +279,8 @@ const Harness = struct {
         job_started_count.store(0, .release);
         job_returned_count.store(0, .release);
         job_gate_open.store(false, .release);
+        job_io_cancelled_count.store(0, .release);
+        late_post_refused_count.store(0, .release);
         deinit_saw_returned.store(std.math.maxInt(u32), .release);
         self.app = try testing.allocator.create(App);
         errdefer testing.allocator.destroy(self.app);
@@ -231,14 +317,35 @@ const Harness = struct {
     fn spawn(self: *Harness, comptime Job: type, input: Job.Input) gooey.JobId {
         var effects = Effects.init(null, .root);
         effects.jobs = &self.app.window.jobs;
-        const on_result = if (Job == Flood)
-            effects.handler(State.onFlood)
-        else
-            effects.handler(State.onCount);
+        const on_result: ?gooey.Handler = switch (Job) {
+            Flood => effects.handler(State.onFlood),
+            Count => effects.handler(State.onCount),
+            Spin => effects.handler(State.onOther),
+            else => null,
+        };
         return effects.spawn(Job, &input, .{
-            .on_result = if (Job == Sleep) null else on_result,
+            .on_result = on_result,
             .on_done = effects.handler(State.onDone),
         });
+    }
+
+    fn cancel(self: *Harness, id: gooey.JobId) void {
+        var effects = Effects.init(null, .root);
+        effects.jobs = &self.app.window.jobs;
+        effects.cancelJob(id);
+    }
+
+    /// Tick until `done_count` reaches `count`, for at most `ms_max`
+    /// milliseconds, and return the time it took; a check expects the
+    /// count afterwards rather than panicking here.
+    fn waitForDone(self: *Harness, count: u32, ms_max: u32) std.Io.Duration {
+        const start = std.Io.Timestamp.now(testing.io, .awake);
+        for (0..ms_max) |_| {
+            self.tick();
+            if (self.app.state.done_count >= count) break;
+            testing.io.sleep(.fromMilliseconds(1), .awake) catch unreachable;
+        }
+        return start.durationTo(std.Io.Timestamp.now(testing.io, .awake));
     }
 
     /// Tick until `condition` holds, sleeping 1 ms between ticks.
@@ -355,6 +462,236 @@ test "cancelling drops undelivered results and ends with cancelled" {
     try testing.expect(!std.meta.eql(next, id));
 }
 
+/// The most a cancel may take to reach `on_done` from a job blocked in Io:
+/// the job sleeps or reads for a minute, so only an interrupt meets it.
+const cancel_ms_max: u32 = 1_000;
+
+test "cancelling a job blocked in a sleep interrupts the sleep at once" {
+    // Goal: `cancelJob` reaches a job blocked in Io (the 3 s request
+    // cancelled at 0.4 s that ended at 3.0 s). Method: a job sleeps for a
+    // minute; once it is running, cancel it. `on_done` must report
+    // `.cancelled` within a second, because the sleep itself returned
+    // `error.Canceled`, not because the minute passed; a cancel that only
+    // sets a flag the job never reads misses the deadline.
+    var harness: Harness = undefined;
+    try harness.init();
+    defer harness.deinit();
+    const id = harness.spawn(Sleep, .{ .seconds = 60 });
+    // The job on_init spawned started first.
+    harness.waitForStarted(2);
+    try testing.io.sleep(.fromMilliseconds(20), .awake);
+    harness.cancel(id);
+    const took = harness.waitForDone(1, cancel_ms_max);
+    try testing.expectEqual(@as(u32, 1), harness.app.state.done_count);
+    try testing.expect(took.toMilliseconds() < cancel_ms_max);
+    try testing.expect(harness.app.state.outcome.? == .cancelled);
+    try testing.expectEqual(@as(u32, 1), job_io_cancelled_count.load(.acquire));
+    // The job and the one on_init spawned.
+    try testing.expectEqual(@as(u32, 2), job_returned_count.load(.acquire));
+    try testing.expectEqual(@as(u32, 0), harness.app.window.jobs.busyCount());
+}
+
+test "cancelling a job blocked in a socket read interrupts the read at once" {
+    // Goal: the same for a read, the SWAPI request's shape. Method: listen on
+    // loopback and never accept or write; a job connects (the kernel
+    // completes the handshake) and blocks reading. Cancel it while it reads:
+    // the read must fail with `error.Canceled` within a second.
+    var harness: Harness = undefined;
+    try harness.init();
+    defer harness.deinit();
+    const address: std.Io.net.IpAddress = .{ .ip4 = .loopback(0) };
+    var server = try address.listen(testing.io, .{});
+    defer server.deinit(testing.io);
+    const id = harness.spawn(Read, .{ .port = server.socket.address.getPort() });
+    harness.waitForStarted(2);
+    try testing.io.sleep(.fromMilliseconds(50), .awake);
+    try testing.expectEqual(@as(u32, 1), job_returned_count.load(.acquire));
+    harness.cancel(id);
+    const took = harness.waitForDone(1, cancel_ms_max);
+    try testing.expectEqual(@as(u32, 1), harness.app.state.done_count);
+    try testing.expect(took.toMilliseconds() < cancel_ms_max);
+    try testing.expect(harness.app.state.outcome.? == .cancelled);
+    try testing.expectEqual(@as(u32, 1), job_io_cancelled_count.load(.acquire));
+}
+
+test "a job cancelled before its runner takes it never runs, 200 times" {
+    // Goal: a cancel that lands before the job starts skips `run`. Method:
+    // spawn a job that posts once and cancel it in the same turn, before
+    // any tick, 200 times. Every round must end with only `on_done`
+    // reporting `.cancelled`. A runner wakes microseconds after the spawn,
+    // so the cancel nearly always lands first; at least one round must have
+    // skipped `run` (an implementation that runs every job and lets it see
+    // the flag fails), and a round where the runner won must still be
+    // interrupted rather than delivered.
+    var harness: Harness = undefined;
+    try harness.init();
+    defer harness.deinit();
+    var skipped_rounds: u32 = 0;
+    for (0..200) |round| {
+        const started_before = job_started_count.load(.acquire);
+        const id = harness.spawn(Count, counting(@intCast(round), 1, .{
+            .fail = false,
+            .gated = false,
+        }));
+        harness.cancel(id);
+        _ = harness.waitForDone(1, wait_count_max);
+        try testing.expectEqual(@as(u32, 1), harness.app.state.done_count);
+        try testing.expect(harness.app.state.outcome.? == .cancelled);
+        try testing.expectEqual(@as(u32, 0), harness.app.state.received_count);
+        if (job_started_count.load(.acquire) == started_before) skipped_rounds += 1;
+        harness.app.state = .{};
+    }
+    try testing.expectEqual(job_started_count.load(.acquire), job_returned_count.load(.acquire));
+    try testing.expect(skipped_rounds >= 1);
+}
+
+test "a cancel after a job's results and end were posted drops them, and the slot runs on" {
+    // Goal: a cancel between the job's end and the drain. Method: a job
+    // posts three results and returns; wait for its four wakes, then
+    // cancel before any tick. The drain must deliver no result and report
+    // `.cancelled`. The cancel found nothing running, so it must not leave
+    // an interrupt behind: the same slot then runs a job that posts with
+    // gaps, which must finish with all its results.
+    var harness: Harness = undefined;
+    try harness.init();
+    defer harness.deinit();
+    const wakes_before = harness.wake.count.load(.acquire);
+    const id = harness.spawn(Count, counting(10, 3, .{ .fail = false, .gated = false }));
+    harness.waitForWakes(wakes_before + 4);
+    try testing.expectEqual(@as(u32, 2), job_returned_count.load(.acquire));
+    harness.cancel(id);
+    harness.tick();
+    const state = &harness.app.state;
+    try testing.expectEqual(@as(u32, 0), state.received_count);
+    try testing.expectEqual(@as(u32, 1), state.done_count);
+    try testing.expect(state.outcome.? == .cancelled);
+    harness.app.state = .{};
+    var input = counting(20, 3, .{ .fail = false, .gated = false });
+    input.gap_ms = 5;
+    const next = harness.spawn(Count, input);
+    try testing.expectEqual(id.slot, next.slot);
+    try testing.expectEqual(id.generation +% 1, next.generation);
+    harness.waitUntil(finished);
+    try testing.expect(state.outcome.? == .finished);
+    try testing.expectEqualSlices(u32, &.{ 20, 21, 22 }, state.received[0..state.received_count]);
+}
+
+test "a post after the cancel is refused and the job's next Io call is interrupted" {
+    // Goal: a job computing without Io when it is cancelled. Method: the
+    // job spins on `job.cancelled()`; cancel it. Its next post must return
+    // false and deliver nothing, and the minute-long sleep it starts next
+    // must return `error.Canceled` at once: the cancel reached the job's
+    // task while it computed, so its next cancellation point fires.
+    var harness: Harness = undefined;
+    try harness.init();
+    defer harness.deinit();
+    const id = harness.spawn(Spin, .{ .unused = 0 });
+    harness.waitForStarted(2);
+    harness.cancel(id);
+    const took = harness.waitForDone(1, cancel_ms_max);
+    try testing.expectEqual(@as(u32, 1), harness.app.state.done_count);
+    try testing.expect(took.toMilliseconds() < cancel_ms_max);
+    try testing.expect(harness.app.state.outcome.? == .cancelled);
+    try testing.expectEqual(@as(u32, 1), late_post_refused_count.load(.acquire));
+    try testing.expectEqual(@as(u32, 1), job_io_cancelled_count.load(.acquire));
+    try testing.expectEqual(@as(u32, 0), harness.app.state.other_count);
+}
+
+test "a slot interrupted 50 times keeps running jobs to the end" {
+    // Goal: an interrupt ends the slot's runner task, so its interrupter
+    // must start the next one, every time. Method: 50 rounds of a sleeping
+    // job in slot 0, cancelled while it sleeps; each must end `.cancelled`
+    // promptly in slot 0 under the next generation. A job that then runs to
+    // the end with its results proves the slot still has a runner (without
+    // one the spawn would wait forever).
+    var harness: Harness = undefined;
+    try harness.init();
+    defer harness.deinit();
+    var last: ?gooey.JobId = null;
+    for (0..50) |round| {
+        const id = harness.spawn(Sleep, .{ .seconds = 60 });
+        try testing.expectEqual(@as(u32, 0), id.slot);
+        if (last) |previous| try testing.expectEqual(previous.generation +% 1, id.generation);
+        harness.waitForStarted(@intCast(round + 2));
+        harness.cancel(id);
+        const took = harness.waitForDone(1, cancel_ms_max);
+        try testing.expectEqual(@as(u32, 1), harness.app.state.done_count);
+        try testing.expect(took.toMilliseconds() < cancel_ms_max);
+        try testing.expect(harness.app.state.outcome.? == .cancelled);
+        harness.app.state = .{};
+        last = id;
+    }
+    try testing.expectEqual(@as(u32, 50), job_io_cancelled_count.load(.acquire));
+    _ = harness.spawn(Count, counting(7, 2, .{ .fail = false, .gated = false }));
+    harness.waitUntil(finished);
+    try testing.expect(harness.app.state.outcome.? == .finished);
+    try testing.expectEqualSlices(u32, &.{ 7, 8 }, harness.app.state.received[0..2]);
+}
+
+test "a full job table frees a cancelled job's slot only when its on_done is delivered" {
+    // Goal: the table's boundary. Method: fill all four slots with sleeping
+    // jobs (the fifth spawn panics: `core-job-count` and
+    // `core-job-count-cancelled` in fail_fast_check.zig). Cancel the third
+    // and wait until it has ended: the slot is still held until a tick
+    // delivers `on_done`, then exactly one slot is free and the next spawn
+    // takes it under the next generation.
+    var harness: Harness = undefined;
+    try harness.init();
+    defer harness.deinit();
+    const slot_count = limits.events.job_count_max;
+    var ids: [slot_count]gooey.JobId = undefined;
+    for (&ids) |*id| id.* = harness.spawn(Sleep, .{ .seconds = 60 });
+    try testing.expectEqual(slot_count, harness.app.window.jobs.busyCount());
+    harness.waitForStarted(1 + slot_count);
+    const wakes_before = harness.wake.count.load(.acquire);
+    harness.cancel(ids[2]);
+    harness.waitForWakes(wakes_before + 1);
+    try testing.expectEqual(@as(u32, 2), job_returned_count.load(.acquire));
+    try testing.expectEqual(slot_count, harness.app.window.jobs.busyCount());
+    harness.tick();
+    try testing.expectEqual(@as(u32, 1), harness.app.state.done_count);
+    try testing.expectEqual(slot_count - 1, harness.app.window.jobs.busyCount());
+    const next = harness.spawn(Sleep, .{ .seconds = 60 });
+    try testing.expectEqual(ids[2].slot, next.slot);
+    try testing.expectEqual(ids[2].generation +% 1, next.generation);
+    try testing.expectEqual(slot_count, harness.app.window.jobs.busyCount());
+}
+
+test "two jobs' deliveries keep each job's post order and end it after its results" {
+    // Goal: post ordering with jobs interleaving. Method: two jobs post five
+    // numbered results each, 2 ms apart, at once. In the delivery log each
+    // job's values must appear in post order, and its end (marked with its
+    // slot) only after its last result.
+    var harness: Harness = undefined;
+    try harness.init();
+    defer harness.deinit();
+    var first = counting(100, 5, .{ .fail = false, .gated = false });
+    first.gap_ms = 2;
+    var second = counting(200, 5, .{ .fail = false, .gated = false });
+    second.gap_ms = 2;
+    const first_id = harness.spawn(Count, first);
+    const second_id = harness.spawn(Count, second);
+    _ = harness.waitForDone(2, wait_count_max);
+    const state = &harness.app.state;
+    try testing.expectEqual(@as(u32, 2), state.done_count);
+    try testing.expectEqual(@as(u32, 12), state.log_count);
+    for ([_]struct { base: u32, slot: u32 }{
+        .{ .base = 100, .slot = first_id.slot },
+        .{ .base = 200, .slot = second_id.slot },
+    }) |job| {
+        var next: u32 = job.base;
+        for (state.log[0..state.log_count]) |entry| {
+            if (entry == done_marker + job.slot) {
+                try testing.expectEqual(job.base + 5, next);
+            } else if (entry >= job.base and entry < job.base + 5) {
+                try testing.expectEqual(next, entry);
+                next += 1;
+            }
+        }
+        try testing.expectEqual(job.base + 5, next);
+    }
+}
+
 test "stop cancels a sleeping job and joins it before on_deinit" {
     // Goal: shutdown is prompt and ordered. Method: two jobs sleep for a
     // minute; stopping must cancel the sleeps, return within a second, and
@@ -405,6 +742,51 @@ test "stop races a job blocked in post and one posting in a loop, 200 times" {
     }
     // The waiting rounds start every job before the stop.
     try testing.expect(full_rounds >= 50);
+}
+
+test "stop interrupts a job blocked in a socket read and one blocked in a post" {
+    // Goal: shutdown is prompt whatever a job waits on. Method: one job
+    // reads from a peer that never writes, one fills the result pool and
+    // blocks in its next post, one sleeps. Stopping must return within a
+    // second, and on_deinit must see every started job returned.
+    var harness: Harness = undefined;
+    try harness.init();
+    const address: std.Io.net.IpAddress = .{ .ip4 = .loopback(0) };
+    var server = try address.listen(testing.io, .{});
+    defer server.deinit(testing.io);
+    const wakes_before = harness.wake.count.load(.acquire);
+    _ = harness.spawn(Read, .{ .port = server.socket.address.getPort() });
+    _ = harness.spawn(Flood, .{ .unused = 0 });
+    _ = harness.spawn(Sleep, .{ .seconds = 60 });
+    harness.waitForStarted(1 + 3);
+    harness.waitForWakes(wakes_before + limits.events.job_result_count_max);
+    try testing.io.sleep(.fromMilliseconds(20), .awake);
+    const start = std.Io.Timestamp.now(testing.io, .awake);
+    harness.deinit();
+    const elapsed = start.durationTo(std.Io.Timestamp.now(testing.io, .awake));
+    try testing.expect(elapsed.toMilliseconds() < cancel_ms_max);
+    try testing.expectEqual(@as(u32, 1 + 3), deinit_saw_returned.load(.acquire));
+}
+
+test "stop races a cancel's interrupt, 200 times" {
+    // Goal: shutdown and an interrupt in flight do not deadlock, leak a
+    // runner, or deliver after stop. Method: per round, a sleeping job (and,
+    // every other round, a second one) is cancelled and the app stopped at
+    // once, or after the interrupt was given a moment; on_deinit must see
+    // every started job returned.
+    for (0..200) |round| {
+        var harness: Harness = undefined;
+        try harness.init();
+        const id = harness.spawn(Sleep, .{ .seconds = 60 });
+        if (round % 2 == 0) _ = harness.spawn(Sleep, .{ .seconds = 60 });
+        if (round % 4 < 2) harness.waitForStarted(2);
+        harness.cancel(id);
+        if (round % 3 == 0) try testing.io.sleep(.fromMilliseconds(1), .awake);
+        harness.deinit();
+        const started = deinit_saw_started.load(.acquire);
+        try testing.expectEqual(started, deinit_saw_returned.load(.acquire));
+        try testing.expectEqual(started, job_returned_count.load(.acquire));
+    }
 }
 
 test "the background example streams its fetch without polling" {
