@@ -75,6 +75,15 @@ and actions on the core and compares each frame's packed records, hit records, a
 accessibility tree with `core_*.txt`. They run in `zig build test`; `zig build goldens`
 rewrites the files after an intended change.
 
+## VOPR
+
+`src/testing/vopr.zig` is deterministic simulation testing for the core, driving the todo
+example through the goldens' driver with generated pointer, key, text, IME, clock, and
+split tick/present actions. `zig build vopr -- [seed] [--verbose]` runs one seed (a random
+one, printed, when none is given) as two instances fed the same bytes, which must draw the
+same frames; `--verbose` prints each action to replay a failure. Its fuzz target runs a
+corpus smoke in `zig build test` and fuzzes under `zig build test --fuzz`.
+
 ---
 
 ## MockSvgRasterizer

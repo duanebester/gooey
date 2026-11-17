@@ -2187,14 +2187,38 @@ fn addGoldens(
             .imports = goldens_imports,
         }),
     });
+    // The VOPR (`src/testing/vopr.zig`) drives the goldens' examples through
+    // the same driver: its fuzz smoke runs with the tests, and `zig build
+    // vopr -- [seed]` runs one seed.
+    const vopr_tests = b.addTest(.{
+        .name = "vopr-test",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/testing/vopr.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = goldens_imports,
+        }),
+    });
+    const vopr = b.addExecutable(.{
+        .name = "vopr",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/testing/vopr.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = goldens_imports,
+        }),
+    });
     if (wiring.compile_dependency) |dependency| {
         tests.step.dependOn(dependency);
         capture.step.dependOn(dependency);
+        vopr_tests.step.dependOn(dependency);
+        vopr.step.dependOn(dependency);
     }
     const run_tests = b.addRunArtifact(tests);
     // The images check decodes `assets/` files relative to the project root.
     run_tests.setCwd(b.path("."));
     test_step.dependOn(&run_tests.step);
+    test_step.dependOn(&b.addRunArtifact(vopr_tests).step);
 
     // The jobs' no-worker path, the web's and `-fsingle-threaded`'s, checked
     // natively: the same `gooey` module built single-threaded.
@@ -2231,6 +2255,11 @@ fn addGoldens(
     const run_capture = b.addRunArtifact(capture);
     run_capture.setCwd(b.path("."));
     b.step("goldens", "Rewrite the golden files in src/testing/goldens").dependOn(&run_capture.step);
+
+    const run_vopr = b.addRunArtifact(vopr);
+    run_vopr.addPassthruArgs();
+    b.step("vopr", "Simulate the todo example for one seed: vopr -- [seed] [--verbose]")
+        .dependOn(&run_vopr.step);
 }
 
 /// Build-time choices mirrored into `gooey_build_options`. Defaults are the

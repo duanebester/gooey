@@ -1192,6 +1192,7 @@ zig build typecheck-linux       # analyze the Linux backend from any host
 zig build typecheck-windows     # analyze the Windows backend from any host
 zig build typecheck-macos       # analyze the macOS backend from any host
 zig build goldens               # rewrite src/testing/goldens after an intended change
+zig build vopr -- [seed]        # simulate the todo example for one (random) seed
 zig fmt --check src/ charts/
 ```
 
