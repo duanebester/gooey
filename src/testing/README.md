@@ -83,8 +83,10 @@ and split tick/present actions. Every 3,000 steps a random `Swarm` redraws the m
 weights, some zero, and how targets are picked), so seeds go deep in different directions.
 `zig build vopr -- [seed] [--verbose]` runs one seed (a random one, printed, when none is
 given) as two instances fed the same bytes, which must draw the same frames; `--verbose`
-prints each action to replay a failure. Its fuzz target runs a corpus smoke in
-`zig build test` and fuzzes under `zig build test --fuzz`.
+prints each action to replay a failure. After every step a reference model of todo
+(`vopr_todo_model.zig`) must match the app's state; `--allow-known-bugs` makes it expect the
+known todo bugs it found, so a run is not stopped by them. Its fuzz target runs a corpus
+smoke in `zig build test` (known bugs allowed) and fuzzes under `zig build test --fuzz`.
 
 ---
 
