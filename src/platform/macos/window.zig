@@ -291,7 +291,10 @@ pub const Window = struct {
         self.ns_view = try input_view.create(view_frame, self);
         self.ns_window.msgSend(void, "setContentView:", .{self.ns_view.value});
         assert(self.ns_view.value != null);
-        self.title_bar_inset = self.measureTitleBarInset();
+        // A standard title bar keeps its content below the bar: no inset.
+        if (self.title_bar == .transparent) self.title_bar_inset = self.measureTitleBarInset();
+        assert(std.meta.eql(self.title_bar_inset, TitleBar.Inset{}) or
+            self.title_bar == .transparent);
     }
 
     /// Set the close callback. Return false from callback to prevent window close.
@@ -928,6 +931,35 @@ pub fn framebufferViewport(
     viewport.size_px.height = @min(viewport.size_px.height, window_limits.framebuffer_height_max);
     assert(viewport.scale_factor <= logical.scale_factor);
     return viewport;
+}
+
+test "a window opens with either title bar and only a transparent one has an inset" {
+    // Goal: `init` with the default `.standard` title bar (every app that
+    // does not set `Config.title_bar`), which 0.6.4 aborted on by measuring
+    // a transparent bar's inset unconditionally. Methodology: open a real
+    // window with each title bar on this host. The standard one must open
+    // with no inset; the transparent one must measure a strip under the
+    // lights (AppKit's title bar is never 0 pt tall in a window).
+    const gpa = std.testing.allocator;
+    const plat = try gpa.create(platform.MacPlatform);
+    defer gpa.destroy(plat);
+    try plat.initInPlace();
+    defer plat.deinit();
+    for ([_]TitleBar{ .standard, .transparent }) |title_bar| {
+        const window = try Window.init(gpa, plat, &.{
+            .title = "title bar check",
+            .width = 320,
+            .height = 200,
+            .title_bar = title_bar,
+            .limits = limits_mod.ResourceLimits.nano,
+        });
+        defer window.deinit();
+        try std.testing.expectEqual(title_bar, window.title_bar);
+        switch (title_bar) {
+            .standard => try std.testing.expectEqual(TitleBar.Inset{}, window.title_bar_inset),
+            .transparent => try std.testing.expect(window.title_bar_inset.top > 0),
+        }
+    }
 }
 
 test "contentSizeMax floors the budget's framebuffer to whole points at each scale" {
