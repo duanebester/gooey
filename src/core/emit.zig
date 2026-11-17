@@ -961,8 +961,8 @@ fn emitPaint(window: *Window, node: *const Node, bounds: Rect, place: PaintPlace
 }
 
 /// One glyph run per wrapped line (contract decision 9), pitched by the layout's
-/// line height and aligned within the parent's content width, as 0.3.1's
-/// `emitTextCommands` places them. Only lines whose box meets `clip` draw:
+/// line height and aligned by `lineSpan`, as 0.3.1's `emitTextCommands`
+/// places them. Only lines whose box meets `clip` draw:
 /// lines are pitched evenly, so the rows in view follow from the clip by
 /// division, and a text of thousands of lines in a scroll box costs the lines
 /// on screen, not its length.
@@ -978,12 +978,12 @@ fn emitText(window: *Window, node: *const Node, bounds: Rect, place: TextPlace) 
         .family = node.family,
         .variant = node.variant,
     };
-    const align_width = if (data.container_width > 0) data.container_width else bounds.width;
+    const span = lineSpan(data, bounds);
     const alignment = data.config.alignment;
     const pitch = data.config.lineHeightPx();
     assert(pitch > 0);
     const lines = data.wrapped_lines orelse {
-        const x = bounds.x + alignOffset(alignment, align_width, data.measured_width);
+        const x = span.x + alignOffset(alignment, span.width, data.measured_width);
         const box = lineBox(x, bounds.y, data.measured_width, @max(pitch, bounds.height));
         if (place.clip) |rect| {
             if (!box.overlaps(rect)) return;
@@ -998,7 +998,7 @@ fn emitText(window: *Window, node: *const Node, bounds: Rect, place: TextPlace) 
     for (lines[shown.start..shown.end], shown.start..) |line, line_index| {
         assert(line.start_offset <= content.len);
         assert(line.length <= content.len - line.start_offset);
-        const x = bounds.x + alignOffset(alignment, align_width, line.width);
+        const x = span.x + alignOffset(alignment, span.width, line.width);
         const y = bounds.y + @as(f32, @floatFromInt(line_index)) * pitch;
         // A line scrolled out sideways, in a box that scrolls along x.
         if (place.clip) |rect| {
@@ -1034,6 +1034,24 @@ fn linesInView(top: f32, pitch: f32, count: u32, clip: ?Rect) LineRange {
     assert(range.start <= range.end);
     assert(range.end <= count);
     return range;
+}
+
+const LineSpan = struct { x: f32, width: f32 };
+
+/// Where a text's lines are aligned from, and across what width. `.left`, the
+/// default, starts every line at the text's own box, which the parent's
+/// alignment has already placed. `.center` and `.right` place each line within
+/// the parent's content width, from that width's left edge: aligning them from
+/// the text's own x instead adds the parent's alignment offset a second time,
+/// which pushed centred text in a centred box right of centre.
+fn lineSpan(data: *const TextData, bounds: Rect) LineSpan {
+    assert(bounds.width >= 0);
+    assert(data.container_width >= 0);
+    if (data.config.alignment == .left) return .{ .x = bounds.x, .width = bounds.width };
+    if (data.container_width > 0) {
+        return .{ .x = data.container_x, .width = data.container_width };
+    }
+    return .{ .x = bounds.x, .width = bounds.width };
 }
 
 fn alignOffset(alignment: TextAlignment, align_width: f32, line_width: f32) f32 {

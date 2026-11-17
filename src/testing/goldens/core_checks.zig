@@ -2224,6 +2224,111 @@ test "wrapped text draws one run per line, pitched and aligned like its layout b
     }
 }
 
+/// One case of `AlignApp`: a 100 px box laid out by `box_alignment` along
+/// `direction`, holding "mm" over "mmmmm" wrapped at newlines. A `scrolled`
+/// box also holds a 120 px spacer and scrolls along x, pinned to its end,
+/// so its content sits 20 px left.
+const AlignCase = struct {
+    direction: ui.Direction = .column,
+    box_alignment: ui.Alignment,
+    text_alignment: @FieldType(ui.Text, "alignment"),
+    scrolled: bool = false,
+
+    pub fn render(self: AlignCase, cx: *Cx) void {
+        // A scroll box retains its offset under its key.
+        const key: ?gooey.Key = if (self.scrolled) .{ .name = "scrolled" } else null;
+        cx.render(ui.box(.{ .key = key, .style = .{
+            .direction = self.direction,
+            .width = .{ .fixed = 100 },
+            .alignment = self.box_alignment,
+            .scroll = if (self.scrolled) .{ .x = true, .y = false, .anchor = .end } else null,
+        } }, .{
+            if (self.scrolled) ui.box(.{ .style = .{
+                .width = .{ .fixed = 120 },
+                .height = .{ .fixed = 1 },
+            } }, .{}) else null,
+            ui.text("mm\nmmmmm", .{
+                .size = 10,
+                .wrap = .newlines,
+                .alignment = self.text_alignment,
+            }),
+        }));
+    }
+};
+
+const align_cases = [_]AlignCase{
+    .{ .box_alignment = .center, .text_alignment = .center },
+    .{ .box_alignment = .start, .text_alignment = .center },
+    .{ .box_alignment = .{ .cross = .end }, .text_alignment = .center },
+    .{ .box_alignment = .center, .text_alignment = .right },
+    .{ .box_alignment = .start, .text_alignment = .right },
+    .{ .box_alignment = .center, .text_alignment = .left },
+    .{ .box_alignment = .{ .cross = .end }, .text_alignment = .left },
+    .{ .direction = .row, .box_alignment = .{ .main = .center }, .text_alignment = .center },
+    .{ .box_alignment = .start, .text_alignment = .center, .scrolled = true },
+};
+
+const AlignState = struct {};
+
+const AlignApp = gooey.App(AlignState, alignRender, .{
+    .title = "Align",
+    .width = 300,
+    .height = 400,
+    .limits = .nano,
+});
+
+/// A left-aligned "m" as the reference, then every case, stacked at x = 0.
+fn alignRender(cx: *Cx) void {
+    cx.render(ui.box(.{}, .{
+        ui.text("m", .{ .size = 10 }),
+        align_cases[0],
+        align_cases[1],
+        align_cases[2],
+        align_cases[3],
+        align_cases[4],
+        align_cases[5],
+        align_cases[6],
+        align_cases[7],
+        align_cases[8],
+    }));
+}
+
+test "aligned text lines sit in the parent's content width whatever the parent's alignment" {
+    // Goal: a `.center` or `.right` text is placed once, not once by its
+    // parent's alignment and again by its own. Methodology: the synthetic
+    // face draws "mm" 16 px and "mmmmm" 40 px wide at 10 px, so in a 100 px
+    // box a centred text's lines start 42 and 30 px in and a right-aligned
+    // one's 84 and 60 px in, whether the box aligns its children to the
+    // start, centre, or end, along either axis. A `.left` text starts both
+    // lines where the box put the 40 px text: 30 px in centred, 60 px at
+    // the end. Adding the box's offset twice puts the centred-in-centred
+    // case at 72 and 60, the cross-end one at 102 and 90, and the row one at
+    // 72 and 60. The box scrolled 20 px moves its centred lines with its
+    // content, to 22 and 10; aligning from the unscrolled edge leaves them
+    // at 42 and 30. Each value is relative to a left-aligned "m" at x = 0,
+    // since every line starts with 'm'; glyphs snap to whole pixels.
+    const app = try testing.allocator.create(AlignApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    app.tick(1);
+    app.tick(2);
+    var starts: [1 + align_cases.len * 2]internals.records.Rect = undefined;
+    try testing.expectEqual(@as(u32, starts.len), lineStarts(&app.window, &starts));
+    const reference = starts[0];
+    const expected_x = [align_cases.len][2]f32{
+        .{ 42, 30 }, .{ 42, 30 }, .{ 42, 30 }, .{ 84, 60 },
+        .{ 84, 60 }, .{ 30, 30 }, .{ 60, 60 }, .{ 42, 30 },
+        .{ 22, 10 },
+    };
+    for (expected_x, 0..) |lines, case| {
+        for (lines, 0..) |x, line| {
+            const start = starts[1 + case * 2 + line];
+            try testing.expectApproxEqAbs(x, start.x - reference.x, 1);
+        }
+    }
+}
+
 test "a host's teardown frees through the guard after stop and leaves no atlas consumer" {
     // Goal: the shutdown order every platform host follows (Bug A on Linux:
     // frees under a running guard, then an atlas consumer left registered).
