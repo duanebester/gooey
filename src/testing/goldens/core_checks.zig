@@ -1274,6 +1274,52 @@ test "a second button pressed during a thumb drag leaves the drag alone" {
     try testing.expectEqual(gooey.ElementId.root, app.window.scroll_drag);
 }
 
+test "a right press on a scrollbar thumb drags nothing" {
+    // Goal: only the left button drags a thumb, as native scrollbars do.
+    // Methodology: right-press the outer box's thumb and move 30 px down
+    // with the right button held: no drag starts and the offset stays 0.
+    const app = try testing.allocator.create(ScrollApp);
+    defer testing.allocator.destroy(app);
+    var now: u64 = 0;
+    try scrollAppReady(app, &now);
+    defer app.deinitHeadless();
+    const box = ScrollView.read(&app.window).outer.bounds;
+    const bar_x = box.x + box.width - 10 + 4;
+
+    scrollMouse(app, &now, .{ .mouse_down = mouseWith(bar_x, box.y + 10, .right) });
+    try testing.expectEqual(gooey.ElementId.root, app.window.scroll_drag);
+    try testing.expect(!thumbDragged(app));
+    scrollMouse(app, &now, .{ .mouse_dragged = mouseWith(bar_x, box.y + 40, .right) });
+    try testing.expectEqual(@as(f32, 0), ScrollView.read(&app.window).outer_offset);
+    scrollMouse(app, &now, .{ .mouse_up = mouseWith(bar_x, box.y + 40, .right) });
+    try testing.expectEqual(@as(f32, 0), ScrollView.read(&app.window).outer_offset);
+}
+
+test "another button's release leaves a thumb drag alive" {
+    // Goal: only the left release ends a thumb drag. Methodology: hold the
+    // right button in the content, left-press the thumb, release the right
+    // button, then drag on: the left drag reaches half the travel, 55 px.
+    const app = try testing.allocator.create(ScrollApp);
+    defer testing.allocator.destroy(app);
+    var now: u64 = 0;
+    try scrollAppReady(app, &now);
+    defer app.deinitHeadless();
+    const box = ScrollView.read(&app.window).outer.bounds;
+    const bar_x = box.x + box.width - 10 + 4;
+    const travel: f32 = 146.0 - 146.0 * 150.0 / 260.0;
+    const half_y = box.y + 10 + travel / 2;
+
+    scrollMouse(app, &now, .{ .mouse_down = mouseWith(30, 200, .right) });
+    scrollMouse(app, &now, .{ .mouse_down = mouseWith(bar_x, box.y + 10, .left) });
+    try testing.expect(app.window.scroll_drag.isKeyed());
+    scrollMouse(app, &now, .{ .mouse_up = mouseWith(bar_x, box.y + 10, .right) });
+    try testing.expect(app.window.scroll_drag.isKeyed());
+    scrollMouse(app, &now, .{ .mouse_dragged = mouseWith(bar_x, half_y, .left) });
+    try testing.expectApproxEqAbs(@as(f32, 55), ScrollView.read(&app.window).outer_offset, 0.01);
+    scrollMouse(app, &now, .{ .mouse_up = mouseWith(bar_x, half_y, .left) });
+    try testing.expectEqual(gooey.ElementId.root, app.window.scroll_drag);
+}
+
 /// What `readsRender` saw through the public reads in its last build.
 const ReadsState = struct {
     position: ?Cx.ScrollPosition = null,

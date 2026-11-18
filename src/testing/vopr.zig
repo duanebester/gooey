@@ -165,7 +165,7 @@ pub const Workload = enum {
 pub fn main(init: std.process.Init) !void {
     const options = parseArgs(init.minimal.args.vector) orelse {
         std.debug.print("usage: vopr [--app todo|drag_drop|virtual_list] [seed] " ++
-            "[--verbose] [--skip-scrollbar-second-press]\n", .{});
+            "[--verbose]\n", .{});
         return error.InvalidArguments;
     };
     const seed = options.seed orelse seed: {
@@ -197,7 +197,6 @@ fn runCli(
     const result = try runPaired(workload.App(), Model, gpa, io, bytes, .{
         .step_count = step_count_cli,
         .verbose = options.verbose,
-        .skip_scrollbar_second_press = options.skip_scrollbar_second_press,
     });
     const summary = result.summary;
     std.debug.print("vopr: {s} seed {d} passed: {d} steps, quiesced in {d} rounds, " ++
@@ -221,7 +220,6 @@ const CliOptions = struct {
     workload: Workload,
     seed: ?u64,
     verbose: bool,
-    skip_scrollbar_second_press: bool,
 };
 
 /// Null on an argument it does not understand.
@@ -231,17 +229,12 @@ fn parseArgs(args: []const [*:0]const u8) ?CliOptions {
         .workload = .todo,
         .seed = null,
         .verbose = false,
-        .skip_scrollbar_second_press = false,
     };
     var index: usize = 1;
     while (index < args.len) : (index += 1) {
         const arg = std.mem.span(args[index]);
         if (std.mem.eql(u8, arg, "--verbose")) {
             options.verbose = true;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--skip-scrollbar-second-press")) {
-            options.skip_scrollbar_second_press = true;
             continue;
         }
         if (std.mem.eql(u8, arg, "--app")) {
@@ -278,8 +271,6 @@ pub const RunOptions = struct {
     step_count: u32,
     /// Print each action before it runs, so a failing seed shows its steps.
     verbose: bool,
-    /// Temporary: `Vopr.skip_scrollbar_second_press`, a known finding.
-    skip_scrollbar_second_press: bool = false,
 };
 
 /// Drive two instances from the same bytes, both allocated at once, and
@@ -300,13 +291,11 @@ pub fn runPaired(
     const first = try gpa.create(V);
     defer gpa.destroy(first);
     try first.initInPlace(gpa, io, &smith_first);
-    first.skip_scrollbar_second_press = options.skip_scrollbar_second_press;
     defer first.deinit();
 
     const second = try gpa.create(V);
     defer gpa.destroy(second);
     try second.initInPlace(gpa, io, &smith_second);
-    second.skip_scrollbar_second_press = options.skip_scrollbar_second_press;
     defer second.deinit();
 
     checkSame(V, first, second, 0);
@@ -603,11 +592,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
         gesture: GestureState,
         /// The mouse buttons the harness holds down.
         held: Held,
-        /// Temporary, off unless asked for: never press a second button
-        /// while a scrollbar thumb drag may be active (router.zig's
-        /// `pressScrollbar` asserts there is none, a known finding), so a
-        /// run can go on to find others. Remove it with that fix.
-        skip_scrollbar_second_press: bool,
         /// The rendered frame `invariants.checkFrame` last checked.
         frame_number_checked: u64,
         /// The dump of the rendered frame, copied before a stable rebuild.
@@ -639,13 +623,11 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
         const Driver = core.CoreDriver(App);
 
         /// Which buttons are down, so the harness never presses a button
-        /// that is down or releases one that is up; and which presses the
-        /// router has not drained yet.
+        /// that is down or releases one that is up.
         const Held = struct {
             down: [button_count]bool,
-            undrained: [button_count]bool,
 
-            const none: Held = .{ .down = @splat(false), .undrained = @splat(false) };
+            const none: Held = .{ .down = @splat(false) };
 
             fn isDown(self: *const Held, button: input.MouseButton) bool {
                 return self.down[@backingInt(button)];
@@ -658,30 +640,11 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             fn press(self: *Held, button: input.MouseButton) void {
                 assert(!self.isDown(button));
                 self.down[@backingInt(button)] = true;
-                self.undrained[@backingInt(button)] = true;
             }
 
             fn release(self: *Held, button: input.MouseButton) void {
                 assert(self.isDown(button));
                 self.down[@backingInt(button)] = false;
-                self.undrained[@backingInt(button)] = false;
-            }
-
-            /// Whether another button is down with a press the router has
-            /// not seen yet, which may start a thumb drag.
-            fn otherUndrained(self: *const Held, button: input.MouseButton) bool {
-                for (self.down, self.undrained, 0..) |down, undrained, index| {
-                    if (index == @backingInt(button)) continue;
-                    if (down and undrained) return true;
-                }
-                return false;
-            }
-
-            fn otherDown(self: *const Held, button: input.MouseButton) bool {
-                for (self.down, 0..) |down, index| {
-                    if (index != @backingInt(button) and down) return true;
-                }
-                return false;
             }
         };
 
@@ -716,7 +679,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             self.action_count = 0;
             self.gesture = .idle;
             self.held = .none;
-            self.skip_scrollbar_second_press = false;
             self.frame_number_checked = 0;
             self.stable_rebuild_count = 0;
             self.model.init();
@@ -958,7 +920,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             const win = self.window();
             self.model.beginDrain(win);
             const published = tick.tickMain(&self.driver.app, win, self.driver.now_ns);
-            self.held.undrained = @splat(false);
             if (published) assert(win.frame_in_flight.load(.acquire));
             self.model.endDrain(win, published);
             // The apps open no file dialog, so every drain empties the queue.
@@ -1066,8 +1027,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
                 .click_count = 1 + choose(smith, 2, "click count"),
                 .releases_held = false,
             };
-            const presses = pointer.kind == .press or pointer.kind == .click;
-            if (presses and self.secondPressSkipped(button)) pointer.kind = .move;
             switch (pointer.kind) {
                 .move => {},
                 .press => self.held.press(button),
@@ -1084,16 +1043,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
         fn releaseHeld(self: *Self, button: input.MouseButton) void {
             self.held.release(button);
             if (self.gesture.held and self.gesture.button == button) self.gesture = .idle;
-        }
-
-        /// With `skip_scrollbar_second_press`, a press of `button` is
-        /// skipped while another button is down and may be dragging a
-        /// scrollbar thumb: its press is still queued, or a drag is on.
-        fn secondPressSkipped(self: *const Self, button: input.MouseButton) bool {
-            if (!self.skip_scrollbar_second_press) return false;
-            if (!self.held.otherDown(button)) return false;
-            if (self.held.otherUndrained(button)) return true;
-            return self.driver.app.window.scroll_drag != .root;
         }
 
         /// The most events the next pointer or gesture action can queue: a
@@ -1137,7 +1086,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
         /// draggable), then a run of up to `drag_move_count_max` moves,
         /// then a release, or with a quarter's chance another run of moves
         /// with the button still held, so a drag can stay open for long.
-        /// A press that `secondPressSkipped` skips is a `tickMain`.
         fn generateGesture(self: *Self, smith: *Smith) Action {
             const gesture = &self.gesture;
             if (!gesture.held) return self.generateGesturePress(smith);
@@ -1177,7 +1125,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             const button = self.swarm.chooseButton(smith);
             const move_count = 1 + choose(smith, drag_move_count_max, "drag moves");
             const release = choose(smith, 4, "drag release") != 0;
-            if (self.secondPressSkipped(button)) return .tick_main;
             const releases_held = self.held.isDown(button);
             if (releases_held) self.releaseHeld(button);
             self.held.press(button);

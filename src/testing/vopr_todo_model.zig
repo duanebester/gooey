@@ -16,10 +16,10 @@
 //! - Clicks: the press focuses the innermost focusable record under the
 //!   point (or nothing) and the release fires the innermost `on_click`. One
 //!   press and release is one click whatever its click count. A press on a
-//!   scrollbar is the scroll box's. Every mouse button acts alike, as the
-//!   router reads no button for a press or a click: a right or middle press
-//!   focuses and its release clicks (todo's handlers do not check the
-//!   button). A press and its release may be apart, with other actions and
+//!   scrollbar with the left button is the scroll box's. Otherwise every
+//!   mouse button acts alike, as the router reads no button for a press or
+//!   a click: a right or middle press focuses and its release clicks
+//!   (todo's handlers do not check the button), on a scrollbar too. A press and its release may be apart, with other actions and
 //!   other buttons between: the release clicks the innermost `on_click`
 //!   under it whose record the last press (of any button) also landed in,
 //!   and any release forgets that press, so of overlapping buttons only the
@@ -306,13 +306,16 @@ pub const TodoModel = struct {
         switch (action.*) {
             .pointer => |pointer| {
                 const point: Point = .{ .x = pointer.x, .y = pointer.y };
+                // Only a left press takes a scrollbar. No thumb drag is on
+                // then: only the left button starts one, and it is up.
+                const takes_scrollbar = on_scrollbar and pointer.button == .left;
                 if (pointer.releases_held) self.release(frame, point);
                 switch (pointer.kind) {
                     .move => {},
-                    .press => self.press(frame, point, on_scrollbar),
+                    .press => self.press(frame, point, takes_scrollbar),
                     .release => self.release(frame, point),
                     .click => {
-                        self.press(frame, point, on_scrollbar);
+                        self.press(frame, point, takes_scrollbar);
                         self.release(frame, point);
                     },
                 }
@@ -338,10 +341,10 @@ pub const TodoModel = struct {
 
     /// A press of any button: focus moves to the innermost focusable record
     /// under it, and the release that follows may click what it landed in.
-    /// A press on a scrollbar is the scroll box's: it lands in nothing.
-    fn press(self: *TodoModel, frame: *const records.Frame, point: Point, on_scrollbar: bool) void {
+    /// A left press on a scrollbar is the scroll box's: it lands in nothing.
+    fn press(self: *TodoModel, frame: *const records.Frame, point: Point, scrollbar: bool) void {
         self.press_len = 0;
-        if (on_scrollbar) return;
+        if (scrollbar) return;
         const deepest = hitIndex(frame, point.x, point.y) orelse {
             self.moveFocus(.root);
             return;

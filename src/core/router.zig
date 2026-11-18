@@ -178,7 +178,9 @@ fn routeInput(window: *Window, event: *const input.InputEvent) void {
         .mouse_up => |mouse| {
             const point = pointOf(mouse.position);
             window.pointer = .{ .x = point.x, .y = point.y };
-            if (window.scroll_drag != .root) endScrollDrag(window);
+            // Only the left button drags a thumb, so only its release ends
+            // the drag; another button's release lands as usual.
+            if (window.scroll_drag != .root and mouse.button == .left) endScrollDrag(window);
             if (window.capture.id != .root and window.capture.button == mouse.button) {
                 finishCapture(window, event, .end, point);
             }
@@ -299,7 +301,13 @@ fn pointOf(position: anytype) Point {
 fn press(window: *Window, event: *const input.InputEvent, point: Point) void {
     const frame = window.rendered();
     const target = hitIndex(frame, point);
-    if (pressScrollbar(window, target, point)) return;
+    // Only the left button drags a thumb or jumps a track, as native
+    // scrollbars do, and a thumb drag in progress is not taken over: any
+    // other press lands as usual below.
+    const scrollbar_free = event.mouse_down.button == .left and window.scroll_drag == .root;
+    if (scrollbar_free and pressScrollbar(window, target, point)) return;
+    // A press the scrollbar did not take leaves any thumb drag as it was.
+    assert(window.scroll_drag == .root or !scrollbar_free);
     window.press_len = pathOf(frame, target, window.press_path);
     // A second button pressed during a gesture clicks as usual but does
     // not take the gesture over.
@@ -709,9 +717,10 @@ fn modifiersOf(event: *const input.InputEvent) input.Modifiers {
     };
 }
 
-/// A press on a scroll box's scrollbar drags its thumb or jumps along its
-/// track, and is consumed: no click, focus, or click-outside, as in 0.3.1.
-/// The innermost scroll box whose bar is under the pointer takes it.
+/// A left press on a scroll box's scrollbar drags its thumb or jumps along
+/// its track, and is consumed: no click, focus, or click-outside, as in
+/// 0.3.1. The innermost scroll box whose bar is under the pointer takes it.
+/// `press` calls it only with no thumb drag in progress.
 fn pressScrollbar(window: *Window, target: u32, point: Point) bool {
     assert(window.scroll_drag == .root);
     const frame = window.rendered();
@@ -724,6 +733,8 @@ fn pressScrollbar(window: *Window, target: u32, point: Point) bool {
             if (window.retained.find(window_mod.ScrollState, record.id)) |state| {
                 if (state.press(point.x, point.y)) {
                     if (state.dragging != null) window.scroll_drag = record.id;
+                    // A thumb press starts a drag; a track press jumps.
+                    assert((state.dragging != null) == window.scroll_drag.isKeyed());
                     window.render_requested = true;
                     window.press_len = 0;
                     return true;
@@ -751,10 +762,12 @@ fn dragScrollbar(window: *Window, point: Point) void {
 fn endScrollDrag(window: *Window) void {
     assert(window.scroll_drag.isKeyed());
     if (window.retained.find(window_mod.ScrollState, window.scroll_drag)) |state| {
+        assert(state.dragging != null);
         state.dragging = null;
     }
     window.scroll_drag = .root;
     window.render_requested = true;
+    assert(window.scroll_drag == .root);
 }
 
 /// The ids from `index` up to the root; returns the count written.
