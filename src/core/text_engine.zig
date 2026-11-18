@@ -665,6 +665,12 @@ pub fn Engine(comptime kind: Kind) type {
         /// Handler for the input's key, text, and composition events.
         pub fn onKey(self: *Self, effects: *handler_mod.Effects) void {
             const event = effects.inputEvent() orelse return;
+            // Adopt what the app assigned to the binding since the last
+            // build or edit, such as a handler clearing a submitted draft
+            // earlier in this drain or while a frame was in flight: the edit
+            // applies to that text, not to the engine's stale copy, which
+            // the write below would otherwise put back.
+            if (self.bind) |binding| self.syncBound(binding);
             if (!self.apply(event, effects.clipboard.?)) return;
             // A key after a click in the same tick supersedes it.
             self.pending_click = null;

@@ -90,12 +90,9 @@ pub const Allowances = struct {
     /// A row's checkbox and Delete act on the list index the row had when
     /// its frame was built, even after earlier events moved the items.
     stale_row: bool,
-    /// After Add empties the draft, the input keeps its old text until the
-    /// next build, and the next edit writes that old text, edited, back.
-    stale_draft: bool,
 
-    pub const none: Allowances = .{ .utf8_cut = false, .stale_row = false, .stale_draft = false };
-    pub const known: Allowances = .{ .utf8_cut = true, .stale_row = true, .stale_draft = true };
+    pub const none: Allowances = .{ .utf8_cut = false, .stale_row = false };
+    pub const known: Allowances = .{ .utf8_cut = true, .stale_row = true };
 };
 
 pub const TodoModel = struct {
@@ -105,12 +102,8 @@ pub const TodoModel = struct {
     /// Identities for items, so a stale row is never confused with another.
     item_id_next: u32,
     filter: todo.Filter,
-    /// The text being edited: the draft, or under `allow.stale_draft` the
-    /// input's own text, which the draft follows unless `bound_cleared`.
+    /// The draft being edited.
     draft: Draft,
-    /// Under `allow.stale_draft`: Add emptied the draft while the input still
-    /// holds its old text.
-    bound_cleared: bool,
     /// Focus within the drain being applied; read from the window first.
     focus: ElementId,
     composing: bool,
@@ -180,7 +173,6 @@ pub const TodoModel = struct {
 
     pub fn init(self: *TodoModel, allow: Options) void {
         self.allow = allow;
-        self.bound_cleared = false;
         self.item_count = 0;
         self.item_id_next = 1;
         self.filter = .all;
@@ -257,19 +249,8 @@ pub const TodoModel = struct {
             self.forgetDraft();
             return;
         }
-        if (self.bound_cleared and engine.len == 0) {
-            // A build synced the input to the emptied draft.
-            self.bound_cleared = false;
-            self.draft.len = 0;
-        }
-        if (self.allow.stale_draft and engine.len > 0 and self.boundText().len == 0) {
-            // The input still holds the text Add took: edits continue on it.
-            self.bound_cleared = true;
-            @memcpy(self.draft.bytes[0..engine.len], engine.text());
-            self.draft.len = engine.len;
-        }
         if (std.mem.eql(u8, engine.text(), self.draft.text())) {
-            if (!self.bound_cleared) self.stale_engine_step = null;
+            self.stale_engine_step = null;
             const text = engine.text();
             if (!isBoundary(text, engine.cursor) or !isBoundary(text, engine.anchor)) {
                 std.debug.panic("vopr model: the input's caret {d}..{d} splits a codepoint " ++
@@ -325,8 +306,6 @@ pub const TodoModel = struct {
                 // A composition that starts over a selection may replace it.
                 if (!self.composing and self.hasSelection()) self.forgetDraft();
                 self.composing = text.len > 0;
-                // A composition change writes the input's text to the draft.
-                self.bound_cleared = false;
             },
             .scroll => {},
             .wait_ns, .tick_main, .present => unreachable,
@@ -387,11 +366,7 @@ pub const TodoModel = struct {
         }
         const focused = findHit(frame, self.focus) orelse return;
         if (self.inputFocused(frame)) {
-            // Under `allow.stale_draft`, any key the input handles writes its
-            // stale text to the emptied draft; which keys it handles is the
-            // engine's business, so the draft is adopted.
-            const stale = self.allow.stale_draft and self.bound_cleared;
-            if (self.composing or stale) {
+            if (self.composing) {
                 self.forgetDraft();
             } else {
                 self.edit(chord);
@@ -528,8 +503,6 @@ pub const TodoModel = struct {
         draft.len = kept_len + @as(u32, @intCast(fits.len));
         draft.cursor = start + @as(u32, @intCast(fits.len));
         draft.anchor = draft.cursor;
-        // An edit writes the input's text to the draft.
-        self.bound_cleared = false;
         assert(draft.len <= draft_bytes_max);
     }
 
@@ -538,7 +511,6 @@ pub const TodoModel = struct {
     }
 
     fn forgetDraft(self: *TodoModel) void {
-        self.bound_cleared = false;
         self.draft.known = false;
         self.draft.caret_known = false;
     }
@@ -591,7 +563,7 @@ pub const TodoModel = struct {
     fn add(self: *TodoModel) void {
         // Add empties the draft. An unknown draft stays unknown: an IME
         // composition the press ended may settle into it after Add runs.
-        // The input's engine keeps the old text until a build syncs it.
+        // The input's engine adopts the emptied draft at its next edit.
         if (!self.draft.known or self.draft.len > 0) {
             if (self.stale_engine_step == null) self.stale_engine_step = self.step_last;
         }
@@ -604,7 +576,7 @@ pub const TodoModel = struct {
             item.maybe = true;
             item.len = 0;
         } else {
-            const value = std.mem.trim(u8, self.boundText(), " ");
+            const value = std.mem.trim(u8, self.draft.text(), " ");
             if (value.len == 0) return;
             const kept = if (self.allow.utf8_cut)
                 value[0..@min(value.len, item_bytes_max)]
@@ -621,23 +593,13 @@ pub const TodoModel = struct {
         self.item_count += 1;
     }
 
-    /// Add empties the draft; under `allow.stale_draft` the input keeps the
-    /// old text and caret.
+    /// Add empties the draft, and the caret goes to its start.
     fn clearDraft(self: *TodoModel) void {
         assert(self.draft.known);
-        if (self.allow.stale_draft) {
-            self.bound_cleared = true;
-            return;
-        }
         self.draft.len = 0;
         self.draft.caret_known = true;
         self.draft.cursor = 0;
         self.draft.anchor = 0;
-    }
-
-    /// The draft as the app should hold it.
-    fn boundText(self: *const TodoModel) []const u8 {
-        return if (self.bound_cleared) "" else self.draft.text();
     }
 
     fn removeItem(self: *TodoModel, index: u32) void {
@@ -734,7 +696,7 @@ pub const TodoModel = struct {
             }
         }
         if (state.filter != self.filter) return "the filter differs";
-        if (!std.mem.eql(u8, state.draft, self.boundText())) return "the draft differs";
+        if (!std.mem.eql(u8, state.draft, self.draft.text())) return "the draft differs";
         return null;
     }
 
@@ -782,7 +744,7 @@ pub const TodoModel = struct {
     fn dump(self: *const TodoModel) void {
         std.debug.print("  filter {t}, draft ", .{self.filter});
         if (self.draft.known) {
-            std.debug.print("\"{s}\"\n", .{self.boundText()});
+            std.debug.print("\"{s}\"\n", .{self.draft.text()});
         } else {
             std.debug.print("unknown\n", .{});
         }

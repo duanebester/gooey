@@ -4698,6 +4698,42 @@ test "the first frame fits a window whose size changed before the host bound it"
     try testing.expectApproxEqAbs(@as(f32, 700 - 24), add.x + add.width, 0.01);
 }
 
+test "a handler that clears a bound draft gets the next edit on the empty text" {
+    // Goal: a TextInput's next edit applies to what the app assigned to its
+    // binding, even before a build syncs the engine (VOPR seeds 101-103).
+    // Methodology: on todo, focus the draft and type "abc", then in one
+    // drain click Add, whose handler pushes the draft and assigns "", click
+    // the draft again, and type "x". The list must hold "abc" and the draft
+    // only "x"; the engine once kept "abc" until the next build and wrote
+    // back "abcx".
+    const app = try testing.allocator.create(todo.App);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    const input = nodeNamed(&app.window, .textbox, "What needs doing?").?.bounds;
+    clickOnce(app, &now, input.x + 4, input.y + input.height / 2);
+    app.window.queue.push(.{ .input = .{ .text_input = .{ .text = "abc" } } });
+    now += 1;
+    app.tick(now);
+    try testing.expectEqualStrings("abc", app.state.draft);
+
+    const add = todoButton(app, "Add").?;
+    const center = mouse(add.x + add.width / 2, add.y + add.height / 2);
+    app.window.queue.push(.{ .input = .{ .mouse_down = center } });
+    app.window.queue.push(.{ .input = .{ .mouse_up = center } });
+    const field = mouse(input.x + 4, input.y + input.height / 2);
+    app.window.queue.push(.{ .input = .{ .mouse_down = field } });
+    app.window.queue.push(.{ .input = .{ .mouse_up = field } });
+    app.window.queue.push(.{ .input = .{ .text_input = .{ .text = "x" } } });
+    now += 1;
+    app.tick(now);
+    try testing.expectEqual(@as(u32, 1), app.state.count);
+    try testing.expect(nodeNamed(&app.window, .checkbox, "abc") != null);
+    try testing.expectEqualStrings("x", app.state.draft);
+}
+
 test "todo keeps its header, footer, and Add in view at 20 items and narrow widths" {
     // Goal: the default example holds its layout past a screenful (SER9 saw
     // rows overlap the header from 8 items) and down to narrow windows (Add
