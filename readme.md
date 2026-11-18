@@ -141,8 +141,9 @@ Every example in `src/examples/` is a complete app; read them next. Run one with
 | `run-logo`             | `logo.zig`                 | Bouncing image, `.embedded` budget, boards |
 
 `lucide-demo` does not build on Windows; every other example builds on every desktop
-platform. On an EVE panel (`-Dlinux-backend=eve`), `counter` and `logo` are the board demos;
-examples on `.standard` and `.large` do not fit the chip's memory and are skipped.
+platform. On an EVE panel (`-Dlinux-backend=eve`), `counter` and `logo` are the board demos and
+the only examples it builds: an EVE app needs `.embedded` (or limits as small), whose fullest
+frame fits the chip's 1536-command display list. Other profiles are refused at compile time.
 
 ## Building blocks
 
@@ -191,7 +192,8 @@ fbdev ignore them. Derive them from the layout's own minimum, such as a column's
 Unknown fields are compile errors. Pick the smallest profile that fits. Each profile's
 `text.fonts` is the `FontLimits` profile of the same name, the faces the app loads at init.
 `.embedded` sits beside the ladder rather than on it: `.nano`'s element budgets with a smaller
-window, two faces, and a 384² image atlas, sized for board panels.
+window, two faces, a 384² image atlas, and paint counts whose fullest frame fits an EVE display
+list (128 quads, 8 images, 64 polyline and 64 cloud points), sized for board panels.
 
 | Profile     | For                                                 | Font faces |
 | ----------- | --------------------------------------------------- | ---------: |

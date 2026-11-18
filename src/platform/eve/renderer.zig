@@ -33,8 +33,11 @@
 //!
 //! ## Budgets (CLAUDE.md §2 and §4)
 //!
-//! - Display list: 2048 commands, the chip's `RAM_DL`. A frame that needs
-//!   more fails fast, naming the frame, the draw, and its counts.
+//! - Display list: 1536 of the 2048 commands of the chip's `RAM_DL`, so the
+//!   chip renders every line in time (`EveLimits.display_list_words_frame_max`).
+//!   A frame that needs more fails fast, naming the frame, the draw, and its
+//!   counts; the EVE host refuses, at compile time, paint limits whose
+//!   fullest frame cannot fit.
 //! - `RAM_G` (`limits.zig`): the image mirror (`image_size² × 2`), and glyph
 //!   cell pages in the rest below the 64 KiB snapshot scratch; cell
 //!   exhaustion fails fast. The EVE host refuses, at compile time, a profile
@@ -125,7 +128,7 @@ pub const EveRenderer = struct {
             return error.EvePanelTooLarge;
         }
         const eve = &eve_limits.EveLimits.bt81x;
-        if (eve.check(&limits.atlas)) |reason| {
+        if (eve.checkAtlas(&limits.atlas)) |reason| {
             std.log.err("eve: ResourceLimits do not fit the chip: {s}", .{reason});
             return error.EveLimitsExceeded;
         }
@@ -232,7 +235,7 @@ pub const EveRenderer = struct {
             .spi_bytes = spi_bytes,
         };
         const done = chip_mod.nowNanoseconds();
-        self.perf.record(&self.last_stats, .{
+        self.perf.record(chip, &self.last_stats, .{
             .wait_ns = waited,
             .encode_ns = encoded - started - waited,
             .send_ns = done - encoded,
@@ -688,9 +691,12 @@ const Perf = struct {
     send_ns: u64 = 0,
     words_max: u32 = 0,
     cell_bytes: u64 = 0,
+    /// `REG_UNDERRUN` at the start of the period, once read.
+    underruns_start: ?u32 = null,
 
     fn record(
         self: *Perf,
+        chip: *Chip,
         stats: *const FrameStats,
         timings: Timings,
         cells: *const cells_mod.CellCache,
@@ -720,7 +726,21 @@ const Perf = struct {
             cells.page_count,
             cells.entry_count,
         });
+        const underruns_start = self.underruns_start;
+        const words_max = self.words_max;
         self.* = .{ .start_ns = now };
+        // Read once a period, not per frame: each read is an SPI transfer.
+        const underruns = chip.readUnderruns() catch return;
+        self.underruns_start = underruns;
+        const start = underruns_start orelse return;
+        const lines = underruns -% start;
+        if (lines == 0) return;
+        std.log.warn("eve: {d} lines underran in {d:.1} s (REG_UNDERRUN): a list drew " ++
+            "too much on one line; the longest list had {d} commands", .{
+            lines,
+            @as(f64, @floatFromInt(elapsed)) / std.time.ns_per_s,
+            words_max,
+        });
     }
 };
 

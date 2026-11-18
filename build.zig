@@ -648,10 +648,12 @@ pub fn build(b: *std.Build) void {
             .{ .name = "background", .source = "src/examples/background.zig" },
             .{ .name = "logo", .source = "src/examples/logo.zig" },
         };
-        // `zig build run` runs todo, the default example (contract decision 15).
-        var todo_install: ?*std.Build.Step.InstallArtifact = null;
+        // `zig build run` runs todo, the default example (contract decision 15);
+        // on EVE, which builds only the board demos, counter.
+        const default_name = if (linux_backend == .eve) "counter" else "todo";
+        var default_install: ?*std.Build.Step.InstallArtifact = null;
         for (linux_examples) |example| {
-            if (linux_backend == .eve and exceedsEveChip(example.name)) continue;
+            if (linux_backend == .eve and !fitsEveChip(example.name)) continue;
             const install = addLinuxExample(
                 b,
                 mod,
@@ -665,9 +667,9 @@ pub fn build(b: *std.Build) void {
                 example.name,
                 example.source,
             );
-            if (std.mem.eql(u8, example.name, "todo")) todo_install = install;
+            if (std.mem.eql(u8, example.name, default_name)) default_install = install;
         }
-        addLinuxDefaultSteps(b, todo_install.?);
+        addLinuxDefaultSteps(b, default_install.?, default_name);
 
         // =====================================================================
         // Layout Benchmarks
@@ -1656,7 +1658,7 @@ fn addLinuxTypecheck(b: *std.Build) void {
         // The EVE host and renderer on the 32-bit Arm boards that carry EVE panels.
         .{ .source = "src/root.zig", .as_test = true, .linux_backend = .eve, .cpu_arch = .arm },
         .{
-            .source = "src/examples/todo.zig",
+            .source = "src/examples/counter.zig",
             .as_test = false,
             .linux_backend = .eve,
             .cpu_arch = .arm,
@@ -1921,10 +1923,15 @@ fn addLinuxExample(
 
 /// `zig build run` runs the todo example, and `zig build todo` installs only
 /// its binary so previews stay focused. Every Linux backend builds it.
-fn addLinuxDefaultSteps(b: *std.Build, install: *std.Build.Step.InstallArtifact) void {
-    const run_step = b.step("run", "Run the todo example");
-    const todo_step = b.step("todo", "Build only the todo example");
-    todo_step.dependOn(&install.step);
+fn addLinuxDefaultSteps(
+    b: *std.Build,
+    install: *std.Build.Step.InstallArtifact,
+    name: []const u8,
+) void {
+    std.debug.assert(name.len > 0);
+    const run_step = b.step("run", b.fmt("Run the {s} example", .{name}));
+    const only_step = b.step(name, b.fmt("Build only the {s} example", .{name}));
+    only_step.dependOn(&install.step);
     const run_cmd = b.addRunArtifact(install.artifact);
     run_cmd.setCwd(b.path(".")); // Run from the project root so assets/ can be found.
     run_cmd.addPassthruArgs();
@@ -2238,16 +2245,15 @@ const GooeyBuildOptions = struct {
     eve: EveOptions = .default,
 };
 
-/// Examples whose `ResourceLimits` profile (`.standard`, `.large`) needs a
-/// bigger image atlas or larger SVG icons than an EVE chip's `RAM_G` holds;
-/// the EVE host refuses them at compile time, so an eve build skips them.
-fn exceedsEveChip(name: []const u8) bool {
+/// Examples whose `ResourceLimits` fit an EVE chip: the `.embedded` board
+/// demos. Every other profile allows frames longer than the chip's display
+/// list (`EveLimits.check`), and the EVE host refuses it at compile time, so
+/// an eve build skips those examples.
+fn fitsEveChip(name: []const u8) bool {
     std.debug.assert(name.len > 0);
-    const too_large = [_][]const u8{
-        "dashboard", "data-table", "images", "lucide-demo", "virtual-list",
-    };
-    for (too_large) |too_large_name| {
-        if (std.mem.eql(u8, name, too_large_name)) return true;
+    const board_demos = [_][]const u8{ "counter", "logo" };
+    for (board_demos) |board_demo| {
+        if (std.mem.eql(u8, name, board_demo)) return true;
     }
     return false;
 }

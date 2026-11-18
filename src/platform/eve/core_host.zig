@@ -53,7 +53,9 @@ comptime {
 /// `finishInit`; the core's guard owns every allocation, the platform's too.
 pub fn run(comptime App: type, app: *App, backing: std.mem.Allocator, io: std.Io) !void {
     comptime {
-        if (eve_limits.EveLimits.bt81x.check(&App.limits_reserved.atlas)) |reason| {
+        // The app's own budget: the debugger overlay's headroom in
+        // `limits_reserved` needs a keyboard shortcut the panel cannot send.
+        if (eve_limits.EveLimits.bt81x.check(&App.limits)) |reason| {
             @compileError("the EVE backend cannot hold this app's ResourceLimits: " ++ reason);
         }
     }
@@ -128,6 +130,9 @@ pub const Host = struct {
         // feeds it this consumer's records before each frame.
         const key = @intFromPtr(self.window);
         self.core.resources.registerAtlasConsumer(key);
+        // The chip draws list N from its image mirror while frame N+1 writes
+        // new texels into it, so frame N's shelves stay until N+1 uploads.
+        self.core.resources.atlas_uploads.protectShownFrame(key);
         self.core.atlas_consumer_key = key;
         self.window.setUserData(self);
         self.window.setInputCallback(onInput);

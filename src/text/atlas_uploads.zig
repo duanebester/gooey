@@ -14,6 +14,13 @@
 //! after the oldest open frame, nor one whose records a consumer still has to
 //! upload, so no region is overwritten while a pending scene or upload needs it.
 //!
+//! A consumer whose output lags (`protectShownFrame`) also keeps its last
+//! uploaded frame protected until it uploads the next one. The EVE chip draws
+//! frame N's images from its own copy of the image atlas while the host builds
+//! frame N+1 and writes that frame's new texels into the copy, so a shelf
+//! frame N used must not be reused until frame N+1 has replaced it on screen.
+//! Atlases then hold two frames of items for that consumer.
+//!
 //! Resource sketch (CLAUDE.md §7), `.standard`: `bytes` is
 //! `upload_bytes_frame_max` (1 MiB) and `records` 16,384 × 16 B (256 KiB). Both
 //! are reserved at init and touched only up to the peak per-frame upload. A
@@ -117,6 +124,18 @@ pub const AtlasUploads = struct {
         sequence_next: u64,
         /// Frame opened by `beginFrame`, or 0 when its scene has been uploaded.
         frame_open: u64,
+        /// Last frame uploaded, still drawn from the consumer's copy, or 0.
+        /// Set only for consumers registered with `protectShownFrame`.
+        frame_shown: u64,
+        shown_protected: bool,
+    };
+
+    const consumer_free: Consumer = .{
+        .key = 0,
+        .sequence_next = 0,
+        .frame_open = 0,
+        .frame_shown = 0,
+        .shown_protected = false,
     };
 
     pub const Options = struct {
@@ -150,7 +169,7 @@ pub const AtlasUploads = struct {
         self.byte_count = 0;
         self.record_count = 0;
         self.sequence_base = 0;
-        @memset(self.consumers, .{ .key = 0, .sequence_next = 0, .frame_open = 0 });
+        @memset(self.consumers, consumer_free);
         self.consumer_count = 0;
         self.frame = 1;
         self.frame_deferred = 0;
@@ -206,6 +225,8 @@ pub const AtlasUploads = struct {
                 .key = key,
                 .sequence_next = self.sequenceEnd(),
                 .frame_open = 0,
+                .frame_shown = 0,
+                .shown_protected = false,
             };
             self.consumer_count += 1;
             return;
@@ -218,10 +239,22 @@ pub const AtlasUploads = struct {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         const consumer = self.findConsumer(key) orelse unreachable;
-        consumer.* = .{ .key = 0, .sequence_next = 0, .frame_open = 0 };
+        consumer.* = consumer_free;
         assert(self.consumer_count > 0);
         self.consumer_count -= 1;
         self.retire();
+    }
+
+    /// Keep `key`'s last uploaded frame protected until its next upload, for a
+    /// renderer that still draws that frame from its copy of the atlases while
+    /// the next frame builds and uploads (EVE; see the file comment).
+    pub fn protectShownFrame(self: *Self, key: usize) void {
+        assert(key != 0);
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        const consumer = self.findConsumer(key) orelse unreachable;
+        assert(!consumer.shown_protected);
+        consumer.shown_protected = true;
     }
 
     /// Advance the frame clock and open `key`'s frame. Returns the new frame,
@@ -279,6 +312,10 @@ pub const AtlasUploads = struct {
         defer self.mutex.unlock(self.io);
         const consumer = self.findConsumer(key) orelse return;
         consumer.sequence_next = self.sequenceEnd();
+        if (consumer.shown_protected and consumer.frame_open != 0) {
+            assert(consumer.frame_open > consumer.frame_shown);
+            consumer.frame_shown = consumer.frame_open;
+        }
         consumer.frame_open = 0;
         self.retire();
         assert(consumer.sequence_next >= self.sequence_base);
@@ -310,13 +347,14 @@ pub const AtlasUploads = struct {
     }
 
     /// Oldest frame whose items are still protected: the oldest open consumer
-    /// frame, or the current frame when none is open.
+    /// frame or shown frame (`protectShownFrame`), or the current frame when
+    /// there is neither.
     pub fn frameProtectedLocked(self: *const Self) u64 {
         var frame_min = self.frame;
         for (self.consumers) |*consumer| {
             if (consumer.key == 0) continue;
-            if (consumer.frame_open == 0) continue;
-            frame_min = @min(frame_min, consumer.frame_open);
+            if (consumer.frame_open != 0) frame_min = @min(frame_min, consumer.frame_open);
+            if (consumer.frame_shown != 0) frame_min = @min(frame_min, consumer.frame_shown);
         }
         assert(frame_min > 0);
         return frame_min;

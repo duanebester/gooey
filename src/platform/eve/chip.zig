@@ -45,6 +45,8 @@ const reg_vsize: u32 = 0x302048;
 const reg_dlswap: u32 = 0x302054;
 const reg_pclk: u32 = 0x302070;
 pub const reg_ctouch_touch0_xy: u32 = 0x302124;
+/// Lines the chip could not render in time since reset (BT817/8); wraps.
+pub const reg_underrun: u32 = 0x30260C;
 const reg_id_value: u8 = 0x7C;
 const dlswap_frame: u32 = 2;
 /// `REG_CTOUCH_TOUCH0_XY` with no contact.
@@ -257,6 +259,14 @@ pub const Chip = struct {
         assert(words[words.len - 1] == 0); // DISPLAY
         try self.writeMemory(ram_dl, std.mem.sliceAsBytes(words));
         try self.write32(reg_dlswap, dlswap_frame);
+    }
+
+    /// `REG_UNDERRUN`: lines scan-out showed unfinished since reset, because
+    /// a list was too long or drew too much on one line. It wraps.
+    pub fn readUnderruns(self: *Chip) Error!u32 {
+        assert(self.fd >= 0 or self.isSimulated());
+        assert(reg_underrun % 4 == 0);
+        return self.read32(reg_underrun);
     }
 
     /// The current touch contact, or null when there is none.

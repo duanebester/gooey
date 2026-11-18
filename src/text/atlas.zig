@@ -741,6 +741,37 @@ test "atlas evicts the least recently used shelf, lowest y on ties" {
     try testing.expectEqual(@as(u8, 0), t.pixel(h.region.x, h.region.y + h.region.height));
 }
 
+test "atlas keeps a lagging consumer's shown frame until its next frame uploads" {
+    // Goal: an EVE-style consumer draws frame N from its own atlas copy while
+    // frame N+1 builds and writes new items into that copy, so shelves used in
+    // frame N must survive frame N+1's eviction. Methodology: fill the four
+    // shelves while frame N is open and upload it; while frame N+1 is open
+    // nothing may be evicted (an immediate consumer could evict all four);
+    // once frame N+1 has uploaded, frame N's shelves are evictable again.
+    var t: TestAtlas = undefined;
+    try t.init(.text, .cpu_texture);
+    defer t.deinit();
+    const uploads = &t.uploads;
+    uploads.protectShownFrame(TestAtlas.consumer);
+    _ = uploads.beginFrame(TestAtlas.consumer);
+    var placements: [4]Placement = undefined;
+    for (&placements, 0..) |*placement, index| placement.* = t.item(@intCast(index + 1));
+    _ = uploads.consumeBegin(TestAtlas.consumer);
+    uploads.consumeEnd(TestAtlas.consumer);
+
+    _ = uploads.beginFrame(TestAtlas.consumer);
+    try testing.expect(!t.atlas.evictOne());
+    for (placements) |placement| try testing.expect(t.live(placement));
+    _ = uploads.consumeBegin(TestAtlas.consumer);
+    uploads.consumeEnd(TestAtlas.consumer);
+
+    _ = uploads.beginFrame(TestAtlas.consumer);
+    try testing.expect(t.atlas.evictOne());
+    try testing.expect(!t.live(placements[0]));
+    _ = uploads.consumeBegin(TestAtlas.consumer);
+    uploads.consumeEnd(TestAtlas.consumer);
+}
+
 test "atlas never evicts an item used this frame or awaiting upload" {
     // Items placed in frame 2 and touched in frame 3 are all protected in
     // frame 3; in frame 4 they are not. In a GPU atlas, items whose records no
