@@ -28,17 +28,26 @@ pub fn hitIndex(frame: *const records.Frame, x: f32, y: f32) ?u32 {
     return null;
 }
 
-/// Whether a press at the point lands on a scroll box's scrollbar. The bar's
-/// geometry is layout, read from the core's scroll state of each scroll box
-/// in the frame on screen.
+/// Whether a press at the point lands on a scroll box's scrollbar: a box on
+/// the path from the record the point hits up to the root, innermost first.
+/// A bar outside every record's clipped bounds (a box wider than a narrow
+/// window) takes no press, since the press hits nothing there. The bar's
+/// geometry is layout, read from the core's scroll state of each box.
 pub fn onScrollbar(window: *Window, x: f32, y: f32) bool {
     const frame = window.rendered();
     assert(frame.hit_count <= frame.hits.len);
-    for (frame.hits[0..frame.hit_count]) |*record| {
-        if (!record.scroll) continue;
-        const scroll = internals.window.ScrollState;
-        const state = window.retained.findConst(scroll, record.id) orelse continue;
-        if (state.scrollbarAt(x, y) != null) return true;
+    var index = hitIndex(frame, x, y) orelse return false;
+    var depth: u32 = 0;
+    while (index != records.index_none) : (depth += 1) {
+        assert(depth <= frame.hit_count);
+        const record = &frame.hits[index];
+        if (record.scroll) {
+            const scroll = internals.window.ScrollState;
+            if (window.retained.findConst(scroll, record.id)) |state| {
+                if (state.scrollbarAt(x, y) != null) return true;
+            }
+        }
+        index = record.parent;
     }
     return false;
 }

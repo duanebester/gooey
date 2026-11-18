@@ -235,6 +235,10 @@ pub const DragDropModel = struct {
         switch (action) {
             .pointer => |pointer| {
                 const point: Point = .{ .x = pointer.x, .y = pointer.y };
+                if (pointer.releases_held) {
+                    self.push(.{ .dragged = point });
+                    self.push(.{ .up = point });
+                }
                 self.push(.{ .moved = point });
                 if (pointer.kind == .click) {
                     self.push(.{ .down = point });

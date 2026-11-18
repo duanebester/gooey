@@ -29,7 +29,8 @@
 //! instances side by side on the same bytes and requires identical frame
 //! dumps after every action (determinism).
 //!
-//! Resource sketch, per action: at most 3 queued events and 16 bytes of text
+//! Resource sketch, per action: at most 5 queued events (a click that first
+//! releases a held gesture's button) and 16 bytes of text
 //! (`text_bytes_action_max`); per `tickMain`, at most the queue's capacity,
 //! which the generator never exceeds. Per run: one app and one 64 KiB
 //! `NullRenderer` per instance, reserved before the first action, and
@@ -83,6 +84,9 @@ const text_bytes_action_max: u32 = text_unit_count_max * 2;
 /// Events one pointer action queues: a move, a press, and a release. A
 /// gesture step queues at most two: a move and a press or release.
 const pointer_event_count_max: u32 = 3;
+/// Events a click queues first when it releases a held gesture's button: a
+/// held move and the release.
+const release_event_count: u32 = 2;
 /// Held moves in one run of a gesture before it releases or plans more.
 const drag_move_count_max: u32 = 8;
 /// Scale factor of every simulated window, as the goldens use.
@@ -336,6 +340,9 @@ pub const Action = union(enum) {
         x: f32,
         y: f32,
         click_count: u32,
+        /// A click while a gesture holds the button releases it first, as
+        /// no platform presses a button that is already down.
+        releases_held: bool,
     };
 
     pub const Chord = struct {
@@ -351,11 +358,12 @@ pub const Action = union(enum) {
 
     pub fn format(self: Action, writer: *std.Io.Writer) std.Io.Writer.Error!void {
         switch (self) {
-            .pointer => |pointer| try writer.print("{t} ({d:.2}, {d:.2}) clicks={d}", .{
+            .pointer => |pointer| try writer.print("{t} ({d:.2}, {d:.2}) clicks={d}{s}", .{
                 pointer.kind,
                 pointer.x,
                 pointer.y,
                 pointer.click_count,
+                if (pointer.releases_held) " (releases held)" else "",
             }),
             .key => |chord| try writer.print("key {t}{s}{s}{s}", .{
                 chord.key,
@@ -606,7 +614,7 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             const kind = self.swarm.chooseKind(smith);
             const in_flight = self.window().frame_in_flight.load(.acquire);
             return switch (kind) {
-                .pointer => if (self.queueHasRoom(pointer_event_count_max, 0))
+                .pointer => if (self.queueHasRoom(self.pointerEventCount(), 0))
                     .{ .pointer = self.generatePointer(smith) }
                 else
                     .tick_main,
@@ -763,6 +771,13 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
                 .click_count = 0,
                 .modifiers = .{},
             };
+            if (pointer.releases_held) {
+                assert(pointer.kind == .click);
+                var release = position;
+                release.click_count = 1;
+                self.deliver(.{ .mouse_dragged = position });
+                self.deliver(.{ .mouse_up = release });
+            }
             self.deliver(.{ .mouse_moved = position });
             if (pointer.kind == .move) return;
             var press = position;
@@ -774,14 +789,22 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
         fn generatePointer(self: *Self, smith: *Smith) Action.Pointer {
             const point = self.generatePoint(smith);
             const click = choose(smith, 100, "pointer kind") < self.swarm.click_percent;
-            // A click's release lets go of a held gesture's button too.
+            const releases_held = click and self.gesture.held;
             if (click) self.gesture = .idle;
             return .{
                 .kind = if (click) .click else .move,
                 .x = point.x,
                 .y = point.y,
                 .click_count = 1 + choose(smith, 2, "click count"),
+                .releases_held = releases_held,
             };
+        }
+
+        /// The most events the next pointer action can queue: a click may
+        /// release a held gesture's button first.
+        fn pointerEventCount(self: *const Self) u32 {
+            if (self.gesture.held) return pointer_event_count_max + release_event_count;
+            return pointer_event_count_max;
         }
 
         /// A press moves there first, as a platform reports the pointer
