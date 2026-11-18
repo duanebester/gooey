@@ -128,6 +128,9 @@ pub const Host = struct {
         // feeds it this consumer's records before each frame.
         const key = @intFromPtr(self.window);
         self.core.resources.registerAtlasConsumer(key);
+        // The chip draws list N from its image mirror while frame N+1 writes
+        // new texels into it, so frame N's shelves stay until N+1 uploads.
+        self.core.resources.atlas_uploads.protectShownFrame(key);
         self.core.atlas_consumer_key = key;
         self.window.setUserData(self);
         self.window.setInputCallback(onInput);
