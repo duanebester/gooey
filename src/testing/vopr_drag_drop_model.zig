@@ -18,9 +18,10 @@
 //! - Any mouse button presses as the left does (the router reads no button
 //!   for a press): it focuses, and with no drag held it arms a drag that
 //!   remembers its button. Only a release of that button ends the drag; a
-//!   release of another button clicks, which nothing handles. A move of any
-//!   button moves the drag. Held moves fold only into held moves of the same
-//!   button, as the queue folds them.
+//!   release of another button ends nothing. Only left releases click, and
+//!   nothing here handles a click. A move of any button moves the drag.
+//!   Held moves fold only into held moves of the same button, as the queue
+//!   folds them.
 //! - From the keyboard, Space (Shift allowed; not Ctrl, Alt, or Cmd) on a
 //!   focused card picks it up and announces it. During the drag every key
 //!   is the drag's: Tab and the arrows choose the next or previous list in
@@ -478,7 +479,8 @@ pub const DragDropModel = struct {
         const ended = self.drag;
         self.drag = .idle;
         if (ended.phase == .armed) {
-            self.counts.clicks += 1;
+            // Only a left release clicks, and nothing here handles it.
+            if (event.button == .left) self.counts.clicks += 1;
             return;
         }
         const deepest = hitIndex(frame, point.x, point.y) orelse index_none;

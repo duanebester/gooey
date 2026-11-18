@@ -11,7 +11,8 @@
 //! Work per event is bounded: a hit test or click-outside scan visits at most
 //! `records.hit_record_count_frame_max` records, and a bubble at most the box
 //! depth. A press focuses and runs click-outside handlers; the click fires
-//! on release, over a record the press also landed in (decision 7).
+//! on the left release, over a record the left press also landed in
+//! (decision 7). Right and middle buttons click nothing.
 //!
 //! A key no handler stopped has a default, as in a browser: Tab moves focus,
 //! and Enter or Space runs the focused record's `on_click` (0.4.2), one more
@@ -194,7 +195,7 @@ fn routeInput(window: *Window, event: *const input.InputEvent) void {
                 }
                 window.drag = Drag.idle;
             }
-            release(window, event, point);
+            if (mouse.button == .left) release(window, event, point);
         },
         // An entry carries a real position: AppKit holds back the entry of
         // a drag that left the window and delivers it as the first move
@@ -297,7 +298,8 @@ fn pointOf(position: anytype) Point {
 }
 
 /// A press: click-outside handlers and focus now; the click itself fires on
-/// release (decision 7), so the press records the path it landed on.
+/// the left release (decision 7), so a left press records the path it
+/// landed on.
 fn press(window: *Window, event: *const input.InputEvent, point: Point) void {
     const frame = window.rendered();
     const target = hitIndex(frame, point);
@@ -308,8 +310,12 @@ fn press(window: *Window, event: *const input.InputEvent, point: Point) void {
     if (scrollbar_free and pressScrollbar(window, target, point)) return;
     // A press the scrollbar did not take leaves any thumb drag as it was.
     assert(window.scroll_drag == .root or !scrollbar_free);
-    window.press_len = pathOf(frame, target, window.press_path);
-    // A second button pressed during a gesture clicks as usual but does
+    // Only the left button clicks, as a browser's `click` and native
+    // buttons do: another button's press leaves a left press's path alone.
+    if (event.mouse_down.button == .left) {
+        window.press_len = pathOf(frame, target, window.press_path);
+    }
+    // A second button pressed during a gesture lands as usual but does
     // not take the gesture over.
     const idle = window.capture.id == .root and window.drag.phase == .idle;
     const gesture = if (idle) gestureIndex(frame, target) else index_none;
@@ -346,11 +352,13 @@ fn press(window: *Window, event: *const input.InputEvent, point: Point) void {
     if (capturing) deliverCapture(window, event, .begin, point);
 }
 
-/// A release: click handlers bubbling from the record under the pointer,
-/// limited to records the press also landed in. Pressing one button and
-/// releasing over another clicks neither; releasing over the pressed
-/// button's child clicks the button.
+/// A left release: click handlers bubbling from the record under the
+/// pointer, limited to records the left press also landed in. Pressing one
+/// button and releasing over another clicks neither; releasing over the
+/// pressed button's child clicks the button. Right and middle releases
+/// click nothing; handlers read them through `effects.inputEvent()`.
 fn release(window: *Window, event: *const input.InputEvent, point: Point) void {
+    assert(event.mouse_up.button == .left);
     const pressed = window.press_path[0..window.press_len];
     defer window.press_len = 0;
     if (pressed.len == 0) return;
@@ -423,7 +431,9 @@ fn moveDrag(window: *Window, point: Point) void {
         const slop = Capture.click_slop_px;
         if (dx * dx + dy * dy <= slop * slop) return;
         drag.phase = .active;
-        window.press_len = 0;
+        // A left drag's release clicks nothing; another button's leaves a
+        // left press to click.
+        if (drag.button == .left) window.press_len = 0;
     }
     drag.x = point.x;
     drag.y = point.y;
@@ -453,7 +463,7 @@ fn drop(window: *Window, event: *const input.InputEvent, point: Point) void {
     assert(drag.phase == .active);
     assert(drag.type_id != 0);
     window.drag = Drag.idle;
-    window.press_len = 0;
+    if (drag.button == .left) window.press_len = 0;
     window.render_requested = true;
     const frame = window.rendered();
     const target = dropTargetFrom(frame, hitIndex(frame, point), drag.type_id);
@@ -642,7 +652,7 @@ fn moveCapture(window: *Window, event: *const input.InputEvent, point: Point) vo
         const slop = Capture.click_slop_px;
         if (dx * dx + dy * dy > slop * slop) {
             capture.moved = true;
-            window.press_len = 0;
+            if (capture.button == .left) window.press_len = 0;
         }
     }
     deliverCapture(window, event, .move, point);

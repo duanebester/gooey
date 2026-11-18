@@ -16,16 +16,14 @@
 //! - Clicks: the press focuses the innermost focusable record under the
 //!   point (or nothing) and the release fires the innermost `on_click`. One
 //!   press and release is one click whatever its click count. A press on a
-//!   scrollbar with the left button is the scroll box's. Otherwise every
-//!   mouse button acts alike, as the router reads no button for a press or
-//!   a click: a right or middle press focuses and its release clicks
-//!   (todo's handlers do not check the button), on a scrollbar too. A press and its release may be apart, with other actions and
-//!   other buttons between: the release clicks the innermost `on_click`
-//!   under it whose record the last press (of any button) also landed in,
-//!   and any release forgets that press, so of overlapping buttons only the
-//!   first release can click. Enter or Space without Ctrl or Alt
-//!   clicks the focused control; Tab and Shift+Tab move focus through tab
-//!   stops in tree order, wrapping.
+//!   scrollbar with the left button is the scroll box's. Only the left
+//!   button clicks: a right or middle press focuses (on a scrollbar too)
+//!   and its release clicks nothing. A left press and its release may be
+//!   apart, with other actions and other buttons between: the release
+//!   clicks the innermost `on_click` under it whose record the left press
+//!   also landed in, then forgets that press. Enter or Space without Ctrl
+//!   or Alt clicks the focused control; Tab and Shift+Tab move focus
+//!   through tab stops in tree order, wrapping.
 //! - The draft is edited at the caret by committed text, Backspace, Delete,
 //!   arrows, Home, End (Shift extends), Ctrl+A, Ctrl+X, and Ctrl+C. Typing
 //!   past the input's capacity keeps the whole codepoints that fit.
@@ -309,14 +307,18 @@ pub const TodoModel = struct {
                 // Only a left press takes a scrollbar. No thumb drag is on
                 // then: only the left button starts one, and it is up.
                 const takes_scrollbar = on_scrollbar and pointer.button == .left;
-                if (pointer.releases_held) self.release(frame, point);
+                const left = pointer.button == .left;
+                if (pointer.releases_held and left) self.release(frame, point);
                 switch (pointer.kind) {
                     .move => {},
-                    .press => self.press(frame, point, takes_scrollbar),
-                    .release => self.release(frame, point),
+                    .press => self.press(frame, point, .{
+                        .left = left,
+                        .scrollbar = takes_scrollbar,
+                    }),
+                    .release => if (left) self.release(frame, point),
                     .click => {
-                        self.press(frame, point, takes_scrollbar);
-                        self.release(frame, point);
+                        self.press(frame, point, .{ .left = left, .scrollbar = takes_scrollbar });
+                        if (left) self.release(frame, point);
                     },
                 }
             },
@@ -342,22 +344,32 @@ pub const TodoModel = struct {
     /// A press of any button: focus moves to the innermost focusable record
     /// under it, and the release that follows may click what it landed in.
     /// A left press on a scrollbar is the scroll box's: it lands in nothing.
-    fn press(self: *TodoModel, frame: *const records.Frame, point: Point, scrollbar: bool) void {
-        self.press_len = 0;
-        if (scrollbar) return;
+    /// Only a left press records its path: other buttons click nothing and
+    /// leave a left press's path alone, but focus all the same.
+    fn press(
+        self: *TodoModel,
+        frame: *const records.Frame,
+        point: Point,
+        options: struct { left: bool, scrollbar: bool },
+    ) void {
+        assert(options.left or !options.scrollbar);
+        if (options.left) self.press_len = 0;
+        if (options.scrollbar) return;
         const deepest = hitIndex(frame, point.x, point.y) orelse {
             self.moveFocus(.root);
             return;
         };
         var focus_id: ElementId = .root;
         var index = deepest;
-        while (index != records.index_none) : (self.press_len += 1) {
-            assert(self.press_len < press_path_len_max);
+        var depth: u32 = 0;
+        while (index != records.index_none) : (depth += 1) {
+            assert(depth < press_path_len_max);
             const record = &frame.hits[index];
             if (focus_id == .root and record.focusable) focus_id = record.id;
-            self.press_path[self.press_len] = record.id;
+            if (options.left) self.press_path[depth] = record.id;
             index = record.parent;
         }
+        if (options.left) self.press_len = depth;
         self.moveFocus(focus_id);
         if (self.inputFocused(frame)) {
             // Where the press puts the caret depends on glyph layout.

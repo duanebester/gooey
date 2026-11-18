@@ -1320,6 +1320,64 @@ test "another button's release leaves a thumb drag alive" {
     try testing.expectEqual(gooey.ElementId.root, app.window.scroll_drag);
 }
 
+/// A button that counts its clicks, for the left-only click check.
+const ClickCountState = struct {
+    clicks: u32 = 0,
+
+    fn count(self: *ClickCountState) void {
+        self.clicks += 1;
+    }
+};
+
+const ClickCountApp = gooey.App(ClickCountState, clickCountRender, .{
+    .title = "Clicks",
+    .width = 200,
+    .height = 100,
+    .limits = .nano,
+});
+
+fn clickCountRender(cx: *Cx) void {
+    cx.render(ui.box(.{ .style = .{ .width = .{ .grow = 1 }, .height = .{ .grow = 1 } } }, .{
+        ui.box(.{
+            .key = .{ .name = "count" },
+            .on_click = cx.on(ClickCountState.count, .{}),
+            .style = .{ .width = .{ .fixed = 50 }, .height = .{ .fixed = 50 } },
+        }, .{}),
+    }));
+}
+
+fn clickWith(app: *ClickCountApp, now: *u64, button: gooey.input.MouseButton) void {
+    scrollMouse(app, now, .{ .mouse_down = mouseWith(25, 25, button) });
+    scrollMouse(app, now, .{ .mouse_up = mouseWith(25, 25, button) });
+}
+
+test "only the left button clicks" {
+    // Goal: `on_click` fires on a left press and release only, as a
+    // browser's `click` (not `auxclick`) and native buttons do. Right and
+    // middle clicks on the button fire nothing; a left click fires once;
+    // and a right click in the middle of a left one leaves it to click.
+    const app = try testing.allocator.create(ClickCountApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 1;
+    app.tick(now);
+    const state = &app.state;
+
+    clickWith(app, &now, .right);
+    clickWith(app, &now, .middle);
+    try testing.expectEqual(@as(u32, 0), state.clicks);
+    clickWith(app, &now, .left);
+    try testing.expectEqual(@as(u32, 1), state.clicks);
+
+    scrollMouse(app, &now, .{ .mouse_down = mouseWith(25, 25, .left) });
+    scrollMouse(app, &now, .{ .mouse_down = mouseWith(150, 80, .right) });
+    scrollMouse(app, &now, .{ .mouse_up = mouseWith(150, 80, .right) });
+    try testing.expectEqual(@as(u32, 1), state.clicks);
+    scrollMouse(app, &now, .{ .mouse_up = mouseWith(25, 25, .left) });
+    try testing.expectEqual(@as(u32, 2), state.clicks);
+}
+
 /// What `readsRender` saw through the public reads in its last build.
 const ReadsState = struct {
     position: ?Cx.ScrollPosition = null,
