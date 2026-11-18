@@ -518,9 +518,9 @@ test "a TextArea takes lines, follows the caret, and places it where clicked" {
 
     // The wheel over the area scrolls it, clamped at both ends; over the
     // window outside it, nothing scrolls. `down` is pixels toward the end,
-    // and 20 px is past one line; the delta is inverted on macOS, as
-    // `ScrollState.wheel` reads it.
-    const direction: f32 = if (@import("builtin").os.tag == .macos) -1 else 1;
+    // and 20 px is past one line; the delta is inverted by
+    // `window.wheel_delta_inverted`, as `ScrollState.wheel` reads it.
+    const direction: f32 = if (internals.window.wheel_delta_inverted) -1 else 1;
     const wheel_events = [_]struct { x: f32, y: f32, down: f32, caret_y: f32 }{
         .{ .x = inset + 1, .y = inset + 1, .down = -20, .caret_y = inset + 2 * line_height },
         .{ .x = inset + 1, .y = 150, .down = 200, .caret_y = inset + 2 * line_height },
@@ -671,8 +671,8 @@ test "a CodeEditor indents with Tab, selects a line from its gutter, and scrolls
     try testing.expectEqual(@as(u32, 5), selected.len);
 
     // The wheel reaches the editor: 20 px toward the start, past one line
-    // and inverted on macOS, so line 2 moves down a row.
-    const direction: f32 = if (@import("builtin").os.tag == .macos) -1 else 1;
+    // and inverted by `window.wheel_delta_inverted`, so line 2 moves down a row.
+    const direction: f32 = if (internals.window.wheel_delta_inverted) -1 else 1;
     app.window.queue.push(.{ .input = .{ .scroll = .{
         .position = .{ .x = text_x + 1, .y = text_y + 1 },
         .delta = .{ .x = 0, .y = -20 * direction },
@@ -758,8 +758,8 @@ const ScrollView = struct {
 };
 
 fn scrollWheel(app: *ScrollApp, now: *u64, x: f32, y: f32, down: f32) void {
-    // Offsets follow the delta, inverted on macOS (`ScrollState.wheel`).
-    const direction: f32 = if (@import("builtin").os.tag == .macos) -1 else 1;
+    // Offsets follow the delta, inverted by `window.wheel_delta_inverted`.
+    const direction: f32 = if (internals.window.wheel_delta_inverted) -1 else 1;
     app.window.queue.push(.{ .input = .{ .scroll = .{
         .position = .{ .x = x, .y = y },
         .delta = .{ .x = 0, .y = down * direction },
@@ -980,7 +980,7 @@ test "a scroll box draws only what is in view, and keeps every row's hit and nod
     }
     try testing.expectEqual(cull_row_count, items);
 
-    const direction: f32 = if (@import("builtin").os.tag == .macos) -1 else 1;
+    const direction: f32 = if (internals.window.wheel_delta_inverted) -1 else 1;
     app.window.queue.push(.{ .input = .{ .scroll = .{
         .position = .{ .x = 100, .y = 100 },
         .delta = .{ .x = 0, .y = 1_200 * direction },
@@ -1162,7 +1162,7 @@ test "an end-anchored scroll box follows its content until scrolled away" {
 }
 
 fn scrollWheelAt(app: anytype, now: *u64, x: f32, y: f32, down: f32) void {
-    const direction: f32 = if (@import("builtin").os.tag == .macos) -1 else 1;
+    const direction: f32 = if (internals.window.wheel_delta_inverted) -1 else 1;
     app.window.queue.push(.{ .input = .{ .scroll = .{
         .position = .{ .x = x, .y = y },
         .delta = .{ .x = 0, .y = down * direction },
@@ -1290,7 +1290,7 @@ test "cx.scroll, cx.bounds, and cx.now read the last frame and the tick from ren
     try testing.expectEqual(bounds.y, settled.viewport.y);
     try testing.expectEqual(bounds.height, settled.viewport.height);
 
-    const direction: f32 = if (@import("builtin").os.tag == .macos) -1 else 1;
+    const direction: f32 = if (internals.window.wheel_delta_inverted) -1 else 1;
     app.window.queue.push(.{ .input = .{ .scroll = .{
         .position = .{ .x = bounds.x + 10, .y = bounds.y + 10 },
         .delta = .{ .x = 0, .y = 20 * direction },
@@ -3021,7 +3021,7 @@ fn formReveal(
     while (node.bounds.y < 10 or node.bounds.y + node.bounds.height > 790) : (steps += 1) {
         assert(steps < 20);
         const down: f32 = if (node.bounds.y < 10) -200 else 200;
-        const direction: f32 = if (@import("builtin").os.tag == .macos) -1 else 1;
+        const direction: f32 = if (internals.window.wheel_delta_inverted) -1 else 1;
         app.window.queue.push(.{ .input = .{ .scroll = .{
             .position = .{ .x = 300, .y = 400 },
             .delta = .{ .x = 0, .y = down * direction },
@@ -3241,7 +3241,7 @@ fn editorResize(app: *code_editor.App, now: *u64, height: f32) void {
 /// Wheel the file list down until the row named `name` is built.
 fn editorWheelTo(app: *code_editor.App, now: *u64, name: []const u8) void {
     const list = nodeNamed(&app.window, .button, "a.zig").?.bounds;
-    const direction: f32 = if (@import("builtin").os.tag == .macos) -1 else 1;
+    const direction: f32 = if (internals.window.wheel_delta_inverted) -1 else 1;
     var steps: u32 = 0;
     while (nodeNamed(&app.window, .button, name) == null) : (steps += 1) {
         assert(steps < 10);
@@ -3559,7 +3559,7 @@ fn listRows(window: *internals.window.Window, index: u32) struct {
 /// Wheel the list down by `down` px at its centre and settle the render the
 /// emit requests once it measures the new rows.
 fn listWheel(app: anytype, now: *u64, down: f32) void {
-    const direction: f32 = if (@import("builtin").os.tag == .macos) -1 else 1;
+    const direction: f32 = if (internals.window.wheel_delta_inverted) -1 else 1;
     app.window.queue.push(.{ .input = .{ .scroll = .{
         .position = .{ .x = 150, .y = 150 },
         .delta = .{ .x = 0, .y = down * direction },
@@ -4839,8 +4839,8 @@ test "todo keeps its header, footer, and Add in view at 20 items and narrow widt
     _ = todoRowCount(app, &first_top);
     const all = todoButton(app, "All").?;
     try testing.expect(first_top > all.y + all.height);
-    // Offsets follow the delta, inverted on macOS (`ScrollState.wheel`).
-    const direction: f32 = if (@import("builtin").os.tag == .macos) -1 else 1;
+    // Offsets follow the delta, inverted by `window.wheel_delta_inverted`.
+    const direction: f32 = if (internals.window.wheel_delta_inverted) -1 else 1;
     app.window.queue.push(.{ .input = .{ .scroll = .{
         .position = .{ .x = 100, .y = 300 },
         .delta = .{ .x = 0, .y = 200 * direction },
@@ -5068,7 +5068,7 @@ test "keyboard focus stays in view when a layout change moves it, but not after 
     try testing.expect(after.y + after.height + 4 <= 800.01);
     try expectRingAround(&app.window, after);
 
-    const direction: f32 = if (@import("builtin").os.tag == .macos) -1 else 1;
+    const direction: f32 = if (internals.window.wheel_delta_inverted) -1 else 1;
     app.window.queue.push(.{ .input = .{ .scroll = .{
         .position = .{ .x = 300, .y = 400 },
         .delta = .{ .x = 0, .y = -300 * direction },
@@ -5154,7 +5154,7 @@ test "a scroll box scrolled to its end clamps to shrunk content in one frame" {
     app.window.render_requested = true;
     now += 1;
     app.tick(now);
-    const direction: f32 = if (@import("builtin").os.tag == .macos) -1 else 1;
+    const direction: f32 = if (internals.window.wheel_delta_inverted) -1 else 1;
     app.window.queue.push(.{ .input = .{ .scroll = .{
         .position = .{ .x = 100, .y = 300 },
         .delta = .{ .x = 0, .y = 5000 * direction },

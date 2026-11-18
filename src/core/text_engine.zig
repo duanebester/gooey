@@ -1333,9 +1333,10 @@ test "an area scrolls to keep the caret's line in view" {
 
 test "the wheel scrolls an area the way it scrolls a scroll box" {
     // Goal: one notch toward the end of the text moves the area 15 px toward
-    // its end on Linux and Windows, and the other way on macOS, as
-    // `ScrollState.wheel` does. Method: a +15 px delta (one notch down on
-    // Linux and Windows) from an offset of 100 px. 0.3.1's formula,
+    // its end on Linux and Windows, and the other way where
+    // `window.wheel_delta_inverted` is set (macOS), as `ScrollState.wheel`
+    // does. Method: a +15 px delta (one notch down on Linux and Windows) from
+    // an offset of 100 px. 0.3.1's formula,
     // `-= delta * 20`, moves 300 px the other way and lands at -200.
     var t: TestOf(.area) = undefined;
     t.init();
@@ -1347,7 +1348,7 @@ test "the wheel scrolls an area the way it scrolls a scroll box" {
         .modifiers = .{},
     } };
     try std.testing.expect(engine.apply(&event, &t.clipboard));
-    const expected: f32 = if (builtin.os.tag == .macos) 85 else 115;
+    const expected: f32 = if (@import("window.zig").wheel_delta_inverted) 85 else 115;
     try std.testing.expectEqual(expected, engine.scroll_y);
     // A single-line input leaves the wheel to its ancestors.
     var line: TestOf(.input) = undefined;
