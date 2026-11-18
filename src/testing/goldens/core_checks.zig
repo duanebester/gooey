@@ -828,6 +828,44 @@ test "a scroll box clips its content, clamps its offset, and passes the wheel on
     try testing.expectEqual(@as(f32, 30), view.inner_offset);
 }
 
+test "wheel_delta_inverted turns the same wheel event the opposite way" {
+    // Goal: the global, not the build's OS, decides the wheel's direction,
+    // so a harness that pins it replays a seed on every host.
+    // Methodology: deliver one raw +20 px event (not `scrollWheel`, which
+    // compensates) over the inner box with the global false, then the same
+    // event with it true: the offset goes 0 to 20, then back to 0. Starting
+    // from 0, an inverted event first would clamp and prove nothing.
+    const inverted_before = internals.window.wheel_delta_inverted;
+    defer internals.window.wheel_delta_inverted = inverted_before;
+    const app = try testing.allocator.create(ScrollApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    now += 1;
+    app.tick(now);
+
+    var view = ScrollView.read(&app.window);
+    try testing.expectEqual(@as(f32, 0), view.inner_offset);
+    const event: gooey.input.InputEvent = .{ .scroll = .{
+        .position = .{ .x = view.inner.bounds.x + 10, .y = view.inner.bounds.y + 10 },
+        .delta = .{ .x = 0, .y = 20 },
+        .modifiers = .{},
+    } };
+    const inverted_choices = [_]bool{ false, true };
+    const offsets_expected = [_]f32{ 20, 0 };
+    for (inverted_choices, offsets_expected) |inverted, offset_expected| {
+        internals.window.wheel_delta_inverted = inverted;
+        app.window.queue.push(.{ .input = event });
+        now += 1;
+        app.tick(now);
+        view = ScrollView.read(&app.window);
+        try testing.expectEqual(offset_expected, view.inner_offset);
+        try testing.expectEqual(@as(f32, 0), view.outer_offset);
+    }
+}
+
 /// A 200 px scroll box of 100 focusable 24 px rows, each with a one-line
 /// label, then a wrapped text of 200 lines: 2,400 px of rows and 200 lines
 /// of text, of which the box shows 200 px.

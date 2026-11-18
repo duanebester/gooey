@@ -414,8 +414,12 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             io: std.Io,
             smith: *Smith,
         ) !void {
-            // Edit shortcuts use Ctrl on every host, so a seed replays anywhere.
+            // Edit shortcuts use Ctrl and a wheel delta grows toward the end
+            // on every host, so a seed replays anywhere. Both are
+            // process-global: every instance in this process pins them the
+            // same way, before its first frame.
             internals.text_engine.uses_cmd = false;
+            internals.window.wheel_delta_inverted = false;
             const trace = trace_mod.Trace{
                 .name = "vopr",
                 .width = @floatFromInt(App.width),
