@@ -1530,3 +1530,64 @@ test "two instances fed the same bytes draw the same frames" {
     const list = try runPairedSeed(.virtual_list);
     try std.testing.expect(list.stats.rows_seen > 0);
 }
+
+/// The centre of the `rank`-th hit record with a click handler, in tree order.
+fn clickTarget(frame: *const records.Frame, rank: u32) Point {
+    var seen: u32 = 0;
+    for (frame.hits[0..frame.hit_count]) |*record| {
+        if (record.on_click == records.index_none) continue;
+        if (seen == rank) {
+            const bounds = record.bounds;
+            return .{ .x = bounds.x + bounds.width / 2, .y = bounds.y + bounds.height / 2 };
+        }
+        seen += 1;
+    }
+    unreachable; // The example draws its three buttons in every frame.
+}
+
+test "a List scrolled by a target rebuilds the same rows" {
+    // Goal: List predicts the offset layout resolves for a `.child` and an
+    // `.end` target to the bit, so the rows it builds for the target are the
+    // rows the resolved offset shows. Methodology: Jump to 500 (centred)
+    // built one row off at 1006x216 and 1.25x (virtual_list seed 284) and at
+    // 475x1732 and 1.25x (soak seed 6858813265271003337); click Jump, Top,
+    // and Bottom (`.end`) at those sizes and others, and require a rebuild
+    // with no input to draw the same frame. Before the fix the first Jump
+    // failed "dumps differ".
+    const V = Vopr(virtual_list.App, VirtualListModel);
+    const vopr_instance = try std.testing.allocator.create(V);
+    defer std.testing.allocator.destroy(vopr_instance);
+    const swarm_bytes: [64]u8 = @splat(0);
+    var smith: Smith = .{ .in = &swarm_bytes };
+    try vopr_instance.initInPlace(std.testing.allocator, std.testing.io, &smith);
+    defer vopr_instance.deinit();
+    const sizes = [_]Action.Resize{
+        .{ .width = 1006, .height = 216, .scale_factor = 1.25 },
+        .{ .width = 800, .height = 600, .scale_factor = 1 },
+        .{ .width = 777, .height = 333, .scale_factor = 1.5 },
+        .{ .width = 641, .height = 251, .scale_factor = 1.75 },
+        .{ .width = 475, .height = 1732, .scale_factor = 1.25 },
+    };
+    const top_button = 0;
+    const bottom_button = 1;
+    const jump_button = 2;
+    for (sizes) |size| {
+        vopr_instance.perform(.{ .resize = size });
+        vopr_instance.quiesce();
+        for ([_]u32{ jump_button, top_button, bottom_button, jump_button }) |rank| {
+            const rebuilds = vopr_instance.stable_rebuild_count;
+            const target = clickTarget(vopr_instance.window().rendered(), rank);
+            vopr_instance.perform(.{ .pointer = .{
+                .kind = .click,
+                .button = .left,
+                .x = target.x,
+                .y = target.y,
+                .click_count = 1,
+                .releases_held = false,
+            } });
+            // Quiescence ends in the stable-rebuild check; it must not skip.
+            vopr_instance.quiesce();
+            try std.testing.expect(vopr_instance.stable_rebuild_count > rebuilds);
+        }
+    }
+}

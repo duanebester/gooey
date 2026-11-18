@@ -700,12 +700,14 @@ pub fn List(comptime Row: type) type {
             } });
         }
         const uniform = @hasDecl(Row, "row_height");
+        /// The most rows a list that sums row by row may hold.
+        const sum_count_max: u32 = if (uniform) list_count_max else Row.count_max;
 
         pub fn render(self: Self, cx: *Cx) void {
             assert(self.key.len > 0);
             assert(self.gap >= 0);
             self.checkStyle();
-            if (!uniform) self.checkCount();
+            if (!(uniform and self.multiplies())) self.checkCount();
             const key = Key{ .name = self.key };
             // The offset and viewport the wheel, scrollbar, and last emit
             // left; none before the box first renders.
@@ -759,10 +761,20 @@ pub fn List(comptime Row: type) type {
             });
         }
 
+        /// A list that sums row by row (`multiplies` is false) does so on
+        /// every render, so its rows are bounded: `Row.count_max`, or
+        /// `list_count_max` for uniform rows whose sums are inexact.
         fn checkCount(self: Self) void {
-            if (self.count <= Row.count_max) return;
+            if (self.count <= sum_count_max) return;
+            if (uniform) {
+                std.debug.panic("List \"{s}\" of {d} rows: rows {d} px with gap {d} do " ++
+                    "not sum exactly in f32, which caps the list at {d} rows. Use a row " ++
+                    "height and gap on a coarser grid, such as whole pixels.", .{
+                    self.key, self.count, Row.row_height, self.gap, sum_count_max,
+                });
+            }
             std.debug.panic("List \"{s}\" of {d} rows: capacity {d}. Raise {s}.count_max.", .{
-                self.key, self.count, Row.count_max, @typeName(Row),
+                self.key, self.count, sum_count_max, @typeName(Row),
             });
         }
 
@@ -778,11 +790,13 @@ pub fn List(comptime Row: type) type {
         ) ListRange {
             const padding = self.style.padding;
             const rows_height = self.contentHeight(cx, width);
-            const content_height = rows_height + padding.top + padding.bottom;
-            const offset_max = @max(0, content_height - state.viewport.height);
+            // `position_pass.resolveScrollTarget`'s `max_y`, operation for
+            // operation, from the rows' exact height; layout's own end may
+            // sit an ulp further (`belowSpacer`).
+            const offset_max = @max(0, rows_height - viewHeight(self.style, state));
             const offset = self.offsetFor(cx, state, .{ .offset_max = offset_max, .width = width });
             const view_top = std.math.clamp(offset, 0, offset_max) - padding.top;
-            const range = if (uniform)
+            const range = if (uniform and self.multiplies())
                 uniformRows(view_top, state.viewport.height, self.count, self.gap)
             else
                 self.variableRows(cx, .{
@@ -790,11 +804,11 @@ pub fn List(comptime Row: type) type {
                     .height = state.viewport.height,
                     .width = width,
                 });
-            const end_top = if (uniform)
+            const end_top = if (uniform and self.multiplies())
                 pitch(self.gap) * @as(f32, @floatFromInt(range.end))
             else
                 range.below;
-            const below = if (range.end == self.count) 0 else rows_height - end_top;
+            const below = if (range.end == self.count) 0 else belowSpacer(end_top, rows_height);
             assert(range.above >= 0);
             assert(below >= 0);
             var result = range;
@@ -821,42 +835,77 @@ pub fn List(comptime Row: type) type {
                 .child => |child| {
                     const index = child.index orelse return state.offset_y;
                     if (index >= self.count) return state.offset_y;
-                    const padding = self.style.padding;
-                    const view = state.viewport.height - padding.top - padding.bottom;
+                    const view = viewHeight(self.style, state);
                     const top = self.rowTop(cx, @intCast(index), options.width);
-                    // A row's box holds the gap below it, but for the last.
-                    const gap: f32 = if (index + 1 < self.count) self.gap else 0;
-                    const row_height = listRowHeight(Row, cx, @intCast(index), options.width);
-                    const height = row_height + gap;
-                    return alignRow(child.alignment, top, height, @max(0, view), state.offset_y);
+                    const height = self.rowBox(cx, @intCast(index), options.width);
+                    return alignRow(child.alignment, top, height, view, state.offset_y);
                 },
             };
             if (self.anchor == .end and state.at_end) return offset_max;
             return state.offset_y;
         }
 
-        /// Row `index`'s top within the rows, gaps included.
+        // Row tops and the rows' height are the sums layout makes: the
+        // spacer above the window, then each row box in turn
+        // (`position_pass.childSpan`, `sumChildrenAlongMainAxis`). f32
+        // addition rounds, so a sum taken any other way, such as heights
+        // and gaps added separately, can differ by an ulp; an `.end` or
+        // `.child` target predicted from it then builds a window one row off
+        // the one the resolved offset shows, and the next render moves the
+        // rows. So the list adds row boxes one by one from the first row,
+        // as layout does, unless `multiplies` proves the product exact.
+
+        /// Row `index`'s top within the rows: the boxes above it, summed.
         fn rowTop(self: Self, cx: *Cx, index: u32, width: f32) f32 {
             assert(index < self.count);
-            const gaps = self.gap * @as(f32, @floatFromInt(index));
-            if (uniform) return Row.row_height * @as(f32, @floatFromInt(index)) + gaps;
-            var top: f32 = gaps;
+            if (uniform and self.multiplies()) {
+                return pitch(self.gap) * @as(f32, @floatFromInt(index));
+            }
+            var top: f32 = 0;
             var row: u32 = 0;
-            while (row < index) : (row += 1) top += listRowHeight(Row, cx, row, width);
+            while (row < index) : (row += 1) top += self.rowBox(cx, row, width);
             return top;
         }
 
-        /// Every row's height and the gaps between them.
+        /// Every row box, summed.
         fn contentHeight(self: Self, cx: *Cx, width: f32) f32 {
             if (self.count == 0) return 0;
-            const gaps = self.gap * @as(f32, @floatFromInt(self.count - 1));
-            if (uniform) return Row.row_height * @as(f32, @floatFromInt(self.count)) + gaps;
-            var total: f32 = gaps;
-            var index: u32 = 0;
-            while (index < self.count) : (index += 1) {
-                total += listRowHeight(Row, cx, index, width);
+            const last = self.count - 1;
+            if (uniform and self.multiplies()) {
+                return pitch(self.gap) * @as(f32, @floatFromInt(last)) + Row.row_height;
             }
-            return total;
+            return self.rowTop(cx, last, width) + self.rowBox(cx, last, width);
+        }
+
+        /// Row `index`'s box: the row and the gap below it, but for the
+        /// last row, as `ListRows` sizes it.
+        fn rowBox(self: Self, cx: *Cx, index: u32, width: f32) f32 {
+            assert(index < self.count);
+            const gap: f32 = if (index + 1 < self.count) self.gap else 0;
+            return listRowHeight(Row, cx, index, width) + gap;
+        }
+
+        /// Whether a uniform list may multiply instead of summing: every
+        /// sum of its boxes, `pitch` each and `row_height` for the last, is
+        /// a whole number of steps of the finer of the two values' binary
+        /// grids, under 2^24 steps, so f32 holds each exactly and the
+        /// product has the bits layout's box-by-box sum has. Whole-pixel or
+        /// half-pixel rows qualify up to millions of pixels.
+        /// Callers test `uniform and` first, so a list of measured rows
+        /// never compiles the product.
+        fn multiplies(self: Self) bool {
+            if (comptime !uniform) return false;
+            if (self.count == 0) return true;
+            const row_pitch = pitch(self.gap);
+            const row_height: f32 = Row.row_height;
+            if (row_pitch >= 1 << 24) return false;
+            const grid = @min(gridExponent(row_pitch), gridExponent(row_height));
+            const pitch_steps = std.math.ldexp(@as(f64, row_pitch), -grid);
+            const height_steps = std.math.ldexp(@as(f64, row_height), -grid);
+            const last: f64 = @floatFromInt(self.count - 1);
+            // f64 holds the sum exactly near 2^24; a larger one may round
+            // but stays far above the bound.
+            return pitch_steps * last + height_steps < 1 << 24;
         }
 
         /// A row's width: the viewport's less the list's side padding.
@@ -891,21 +940,21 @@ pub fn List(comptime Row: type) type {
         /// top for `visibleRows` to subtract.
         fn variableRows(self: Self, cx: *Cx, view: ListView) ListRange {
             const count = self.count;
-            assert(count <= Row.count_max);
+            assert(count <= sum_count_max);
             assert(view.height >= 0);
             var top: f32 = 0;
             var index: u32 = 0;
             while (index < count) : (index += 1) {
                 const height = listRowHeight(Row, cx, index, view.width);
                 if (top + height > view.top) break;
-                top += height + self.gap;
+                top += self.rowBox(cx, index, view.width);
             }
             const start = index;
             const above = top;
             const view_bottom = view.top + view.height;
             while (index < count) : (index += 1) {
                 if (index > start and top >= view_bottom) break;
-                top += listRowHeight(Row, cx, index, view.width) + self.gap;
+                top += self.rowBox(cx, index, view.width);
             }
             return .{ .start = start, .end = index, .above = above, .below = top };
         }
@@ -918,6 +967,47 @@ pub fn List(comptime Row: type) type {
 }
 
 const ListRange = struct { start: u32, end: u32, above: f32, below: f32 };
+
+/// The view a scroll target aligns in: the box's height less its vertical
+/// padding, as layout's `content_box.height`, operation for operation.
+fn viewHeight(style: ui.Style, state: *const Cx.ScrollPosition) f32 {
+    assert(state.viewport.height >= 0);
+    const padding = style.padding;
+    return @max(0, state.viewport.height - (padding.top + padding.bottom));
+}
+
+/// The spacer below the window. Layout adds it to the boxes above it,
+/// `end_top`, to find the rows' end and its `max_y`. f32 cannot always
+/// land that sum on `rows_height`: when `end_top` carries half an ulp of
+/// the sum, every spacer rounds to a neighbour. So the spacer is the
+/// difference rounded up, which puts the end at `rows_height` or one ulp
+/// past it, never short. The list's `offset_max`, from `rows_height`, is
+/// then at most layout's `max_y`, and an offset layout clamps to its
+/// `max_y` clamps to the same `offset_max` here: the target frame and
+/// every rebuild after it choose the same rows.
+fn belowSpacer(end_top: f32, rows_height: f32) f32 {
+    assert(end_top >= 0);
+    assert(end_top <= rows_height);
+    // f64 holds the difference of two f32 values exactly unless their
+    // exponents differ by more than 29, far past any list's rows.
+    const exact = @as(f64, rows_height) - @as(f64, end_top);
+    var below: f32 = @floatCast(exact);
+    if (below < exact) below = std.math.nextAfter(f32, below, std.math.inf(f32));
+    assert(below >= exact);
+    assert(end_top + below >= rows_height);
+    return below;
+}
+
+/// The exponent of `value`'s lowest set mantissa bit: `value` is a whole
+/// number of steps of 2^exponent.
+fn gridExponent(value: f32) i32 {
+    assert(std.math.isNormal(value));
+    assert(value > 0);
+    const bits: u32 = @bitCast(value);
+    const mantissa: u32 = (bits & 0x7f_ffff) | 0x80_0000;
+    const exponent: i32 = @as(i32, @intCast(bits >> 23)) - 127 - 23;
+    return exponent + @as(i32, @ctz(mantissa));
+}
 
 /// The list's view in row coordinates: its top past the first row, its
 /// height, and the rows' width.
