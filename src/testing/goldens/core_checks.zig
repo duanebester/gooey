@@ -6254,7 +6254,8 @@ const DropProbe = struct {
         if (event.* == .key_up) self.source_key_ups += 1;
         if (event.* != .key_down) return;
         self.source_keys += 1;
-        if (event.key_down.key == .space) effects.startDrag(probeId("source"));
+        // The checks read the drag from the window, so the result is not needed.
+        if (event.key_down.key == .space) _ = effects.startDrag(probeId("source"));
     }
 };
 

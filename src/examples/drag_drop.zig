@@ -94,7 +94,9 @@ pub const State = struct {
         const key = &event.key_down;
         if (key.key != .space or key.is_repeat) return;
         if (key.modifiers.cmd or key.modifiers.ctrl or key.modifiers.alt) return;
-        effects.startDrag(card);
+        // A drag or pointer capture already holding the gesture starts no
+        // pick-up, so there is nothing to announce.
+        if (!effects.startDrag(card)) return;
         effects.announce(pick_up_message, .assertive);
     }
 

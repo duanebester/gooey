@@ -260,7 +260,10 @@ pub const Effects = struct {
     /// The payload being dropped, while delivering to `DropTarget.on_drop`.
     drop: ?Drop,
     /// A keyboard drag to start (`startDrag`), applied after the handler.
-    drag_start: ?ElementId,
+    drag_start: ?DragStart,
+    /// No pointer drag, keyboard drag, or pointer capture holds the gesture,
+    /// set by the router before the handler runs; `startDrag` reads it.
+    gesture_idle: bool,
     /// The job pool `spawn` and `cancelJob` reach, set by the router and by
     /// `App` for `on_init`.
     jobs: ?*jobs.Pool,
@@ -276,6 +279,10 @@ pub const Effects = struct {
     pub const ScrollRequest = struct { id: ElementId, target: ScrollTarget };
 
     pub const Drop = struct { type_id: usize, payload: u64 };
+
+    /// A `startDrag` request and what it promised the handler, which the
+    /// router checks against what it then does.
+    pub const DragStart = struct { id: ElementId, started: bool };
 
     /// One step of a pointer capture (`Box.on_pointer_drag`). Positions are
     /// window coordinates in logical pixels; while the button is held the
@@ -325,6 +332,7 @@ pub const Effects = struct {
             .rendered = null,
             .drop = null,
             .drag_start = null,
+            .gesture_idle = false,
             .jobs = null,
             .job = null,
             .scroll_request = null,
@@ -375,12 +383,36 @@ pub const Effects = struct {
     /// focus through the drop targets of the payload's type in tree order,
     /// Enter or Space drops there, and Escape cancels. A drop leaves focus
     /// on a focusable target; otherwise, and on a cancel, focus returns to
-    /// the source. A drag already on, or an `id` not on screen,
-    /// starts nothing; an `id` on screen that is not draggable panics.
-    pub fn startDrag(self: *Effects, id: ElementId) void {
+    /// the source. Returns whether the drag starts: false, and nothing
+    /// starts, when a drag or pointer capture already holds the gesture or
+    /// `id` is not on screen (outside a router call, such as `on_init`,
+    /// nothing is on screen). A handler that announces the pick-up should
+    /// announce only on true. An `id` on screen that is not draggable panics.
+    pub fn startDrag(self: *Effects, id: ElementId) bool {
         assert(id.isKeyed());
         assert(self.drag_start == null);
-        self.drag_start = id;
+        const started = self.dragStarts(id);
+        self.drag_start = .{ .id = id, .started = started };
+        if (started) assert(self.gesture_idle);
+        return started;
+    }
+
+    /// The router's conditions for a keyboard drag (`startKeyboardDrag`),
+    /// read from the facts it set: the gesture is idle and `id` is in the
+    /// frame on screen.
+    fn dragStarts(self: *const Effects, id: ElementId) bool {
+        const frame = self.rendered orelse return false;
+        assert(frame.hit_count <= frame.hits.len);
+        for (frame.hits[0..frame.hit_count]) |*record| {
+            if (record.id != id) continue;
+            if (record.drag_type == 0) {
+                std.debug.panic("effects.startDrag: element {x} has no Box.draggable", .{
+                    @backingInt(id),
+                });
+            }
+            return self.gesture_idle;
+        }
+        return false;
     }
 
     /// Start background job `Job`, a type in `Config.jobs`, with a copy of

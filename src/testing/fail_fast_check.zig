@@ -389,7 +389,8 @@ const CoreState = struct {
     fn dragged(_: *CoreState) void {}
 
     fn startDrag(_: *CoreState, id: gooey.ElementId, effects: *gooey.Effects) void {
-        effects.startDrag(id);
+        // The call panics on a box that is not draggable; it never returns.
+        _ = effects.startDrag(id);
     }
 };
 

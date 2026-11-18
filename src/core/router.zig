@@ -484,10 +484,27 @@ fn cancelDrag(window: *Window) void {
     assert(window.drag.over == .root);
 }
 
-/// `effects.startDrag`: a keyboard drag of draggable `id` starts active,
-/// over nothing, at its source's centre. A gesture already on, or an `id`
-/// the frame on screen lacks, starts none; it may have stopped rendering
-/// since the handler's event.
+/// `effects.startDrag`: start the keyboard drag, and hold it to what
+/// `startDrag` told the handler, so an app that announced a pick-up on
+/// true never announces one that did not happen.
+fn applyDragStart(window: *Window, request: handler_mod.Effects.DragStart) void {
+    const before = window.drag;
+    startKeyboardDrag(window, request.id);
+    if (request.started) {
+        assert(window.drag.phase == .active);
+        assert(window.drag.keyboard);
+        assert(window.drag.source == request.id);
+    } else {
+        assert(window.drag.phase == before.phase);
+        assert(window.drag.source == before.source);
+        assert(window.drag.keyboard == before.keyboard);
+    }
+}
+
+/// A keyboard drag of draggable `id` starts active, over nothing, at its
+/// source's centre. A gesture already on, or an `id` the frame on screen
+/// lacks, starts none: the facts `Effects.startDrag` read before the
+/// handler returned, which nothing between the two changes.
 fn startKeyboardDrag(window: *Window, id: ElementId) void {
     assert(id.isKeyed());
     if (window.drag.phase != .idle) return;
@@ -496,11 +513,8 @@ fn startKeyboardDrag(window: *Window, id: ElementId) void {
     const index = findRecord(frame, id);
     if (index == index_none) return;
     const record = &frame.hits[index];
-    if (record.drag_type == 0) {
-        std.debug.panic("effects.startDrag: element {x} has no Box.draggable", .{
-            @backingInt(id),
-        });
-    }
+    // `Effects.startDrag` panicked on a record that is not draggable.
+    assert(record.drag_type != 0);
     const centre = centreOf(record.bounds);
     window.drag = .{
         .phase = .active,
@@ -1048,6 +1062,7 @@ fn call(window: *Window, handler: handler_mod.Handler, effects: *handler_mod.Eff
     effects.store = window.store;
     effects.jobs = &window.jobs;
     effects.rendered = window.rendered();
+    effects.gesture_idle = window.drag.phase == .idle and window.capture.id == .root;
     handler.call(window.store, effects);
     if (effects.render_requested) window.render_requested = true;
     if (effects.quit_requested) window.quit_requested = true;
@@ -1074,7 +1089,7 @@ fn call(window: *Window, handler: handler_mod.Handler, effects: *handler_mod.Eff
         );
         window.render_requested = true;
     }
-    if (effects.drag_start) |id| startKeyboardDrag(window, id);
+    if (effects.drag_start) |request| applyDragStart(window, request);
     if (effects.scroll_request) |request| requestScroll(window, request);
 }
 

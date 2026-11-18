@@ -22,9 +22,9 @@
 //!   or Enter drops on the chosen list, focuses it, and announces "<item>
 //!   moved to <list>"; over no list they do nothing; Escape cancels and
 //!   focuses the card; a press cancels it and lands as usual.
-//! - Space on a card announces the pick-up even when a pointer drag holds
-//!   the gesture and no keyboard drag starts (`State.pickUp` announces
-//!   unconditionally).
+//! - Space on a card announces a pick-up only when the keyboard drag starts:
+//!   while a pointer drag holds the gesture it starts none and announces
+//!   nothing.
 //!
 //! It does not model the core: the focus a drain starts from, hit records,
 //! payloads (`drag_payload`), and drop targets are read from the window. It
@@ -481,8 +481,8 @@ pub const DragDropModel = struct {
         if (chord.key == .tab) self.focus = nextTabStop(frame, self.focus, chord.modifiers.shift);
     }
 
-    /// Space on a card announces a pick-up and starts a keyboard drag of it,
-    /// unless a drag already holds the gesture.
+    /// Space on a card starts a keyboard drag of it and announces the pick-up,
+    /// unless a drag already holds the gesture: then neither happens.
     fn pickUp(
         self: *DragDropModel,
         frame: *const records.Frame,
@@ -493,19 +493,18 @@ pub const DragDropModel = struct {
         const modifiers = chord.modifiers;
         if (chord.key != .space) return;
         if (modifiers.cmd or modifiers.ctrl or modifiers.alt) return;
-        if (self.drag.phase == .idle) {
-            self.drag = .{
-                .phase = .active,
-                .keyboard = true,
-                .source = record.id,
-                .payload = checkCard(frame, record),
-                .type_id = record.drag_type,
-                .start = centreOf(record.bounds),
-                .over = .root,
-            };
-            self.counts.drags_started += 1;
-            self.counts.keyboard_drags += 1;
-        }
+        if (self.drag.phase != .idle) return;
+        self.drag = .{
+            .phase = .active,
+            .keyboard = true,
+            .source = record.id,
+            .payload = checkCard(frame, record),
+            .type_id = record.drag_type,
+            .start = centreOf(record.bounds),
+            .over = .root,
+        };
+        self.counts.drags_started += 1;
+        self.counts.keyboard_drags += 1;
         self.announce(.pick_up);
     }
 
