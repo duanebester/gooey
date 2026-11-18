@@ -4976,6 +4976,45 @@ test "keyboard focus stays in view when a layout change moves it, but not after 
     try expectFocused(&app.window, .button, "Submit registration form");
 }
 
+test "focus revealed at a scroll box's end settles instead of trading an ulp" {
+    // Goal: a focus reveal that lands on the clamp boundary stops rendering
+    // (VOPR seed 5284955851540158440). Methodology: give todo six rows, whose
+    // 332.8 px of content overflow its 317.6 px list by 15.2 px, and Tab to
+    // the last Delete, which wants 2 px more room below than the content
+    // has, so the reveal scrolls to the measured end. Laying the rows out at
+    // that offset moves them and the content's end by an ulp, which once read
+    // as a layout shift and re-revealed past a clamp that pulled back, every
+    // frame. Within a few frames nothing may be requested, with Delete in
+    // view and its ring drawn.
+    const app = try testing.allocator.create(todo.App);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    const row_count: u32 = 6;
+    for (0..row_count) |_| {
+        app.state.draft = "a todo";
+        app.state.addTodo();
+    }
+    app.window.render_requested = true;
+    now += 1;
+    app.tick(now);
+    // The draft, Add, three filters, then a checkbox and a Delete per row.
+    for (0..5 + row_count * 2) |_| pressKey(app, &now, .tab, .{});
+    const focused = focusedNode(&app.window).?;
+    try testing.expectEqual(.button, focused.role);
+    const settle_frame_max: u32 = 4;
+    var frame: u32 = 0;
+    while (frame < settle_frame_max and app.window.render_requested) : (frame += 1) {
+        now += 1;
+        app.tick(now);
+    }
+    try testing.expect(!app.window.render_requested);
+    const delete = focusedNode(&app.window).?.bounds;
+    try expectRingAround(&app.window, delete);
+}
+
 test "a radio group is one tab stop whose arrow keys select and wrap" {
     // Goal: accessible_form's radios behave as a native group. Methodology:
     // Tab enters at the selected option; Down and Right select the next,
