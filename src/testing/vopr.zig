@@ -580,11 +580,14 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
         }
 
         /// Whether `event_count` more events and `text_bytes` more bytes of
-        /// text fit before the next drain.
+        /// text fit before the next drain, and the model can record one more
+        /// action: the queue folds moves and scrolls, the model does not.
         fn queueHasRoom(self: *Self, event_count: u32, text_bytes: u32) bool {
+            assert(event_count > 0);
             const queue = &self.window().queue;
             assert(queue.text_len <= queue.text_bytes.len);
             const text_room: u64 = queue.text_bytes.len - queue.text_len;
+            if (self.model.pendingRoom() == 0) return false;
             return queue.room() >= event_count and text_room >= text_bytes;
         }
 

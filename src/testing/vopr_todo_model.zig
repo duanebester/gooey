@@ -67,7 +67,10 @@ const item_bytes_max: u32 = 128;
 /// The draft's capacity: the input pool's bytes and a line's codepoints.
 const draft_bytes_max: u32 = todo.App.limits.text.input.bytes_max;
 const draft_codepoint_count_max: u32 = internals.limits.run_codepoint_count_max;
-/// Actions one drain can hold: each queues at least one event.
+/// Actions one drain can hold. Each queues at least one event, but the core
+/// queue folds a move or scroll into the one before it, so a drain can see
+/// more actions than events: the harness asks `pendingRoom` before it
+/// generates an input, as it asks the queue's room.
 const pending_count_max: u32 = todo.App.limits.events.queue_count_max;
 const pending_text_bytes_max: u32 = todo.App.limits.events.text_bytes_max;
 /// Frames whose rows a click can refer to: the rendered and the built one.
@@ -198,6 +201,12 @@ pub const TodoModel = struct {
         self.stale_row_step = null;
         self.step_last = 0;
         assert(self.draft.text().len == 0);
+    }
+
+    /// Input actions the model can still record before the next drain.
+    pub fn pendingRoom(self: *const TodoModel) u32 {
+        assert(self.pending_count <= pending_count_max);
+        return pending_count_max - self.pending_count;
     }
 
     /// Record an input action delivered to the queue, for the next drain.
