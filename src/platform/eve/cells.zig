@@ -18,6 +18,15 @@
 //! `beginFrame` after they retire: by then the renderer has waited for a swap
 //! of a list built after the retirement, and no list on screen names them.
 //!
+//! The core's atlases also drop items without uploading over them (the text
+//! atlas evicts whole shelves), and a glyph drawn again lands at a new
+//! region, so entries alone would pile up over an app's lifetime. Each entry
+//! records the frame that last drew it. When no cell fits, every entry no list
+//! drew in the last two frames is dropped and its cell freed at once: the
+//! renderer has waited for the previous list's swap, so only that list and
+//! the one being built can name a cell. Exhaustion then means the cells of two
+//! consecutive frames do not fit.
+//!
 //! ## Memory (CLAUDE.md §2)
 //!
 //! Reserved by `initInPlace` from the window's `AtlasLimits`: the glyph
@@ -36,7 +45,8 @@
 //! - Per frame: one hash probe per sprite; misses copy one cell (at most
 //!   16 KiB) through staging into `RAM_G`. Each upload record scans the entry
 //!   table once (4096 slots) to retire what it overwrote.
-//! - Exhaustion of pages or of a region's cell size fails fast (§2).
+//! - A miss that finds no free cell scans the entry table once (4096 slots)
+//!   to drop idle entries, then fails fast if still no cell fits (§2).
 
 const std = @import("std");
 const chip_mod = @import("chip.zig");
@@ -106,7 +116,14 @@ const Entry = struct {
     /// Zero marks an empty slot.
     key: u64 = 0,
     cell: Cell = .{ .page = 0, .index = 0 },
+    /// `CellCache.frame` when a list last drew the cell. It wraps: an entry
+    /// idle for exactly 2^32 frames looks fresh for two frames, then drops.
+    frame_used: u32 = 0,
 };
+
+/// Frames a list may still be on screen or being built after it last named
+/// a cell: the one built now and the one swapped in before it.
+const frame_in_use_count: u32 = 2;
 
 /// Cells retired in one interval between frames.
 const RetiredList = struct {
@@ -133,6 +150,8 @@ pub const CellCache = struct {
     /// `beginFrame`; the other list holds those retired before it.
     retired: [2]RetiredList = .{ .{}, .{} },
     retired_new: u1 = 0,
+    /// Frames begun, for `Entry.frame_used`; wraps.
+    frame: u32 = 0,
 
     staging: [staging_bytes_max]u8 = undefined,
     staging_address: u32 = 0,
@@ -271,6 +290,7 @@ pub const CellCache = struct {
         old.count = 0;
         // The list that collected since the last frame becomes the old one.
         self.retired_new = 1 - self.retired_new;
+        self.frame +%= 1;
         self.cell_bytes_frame = 0;
         assert(self.retired[self.retired_new].count == 0);
     }
@@ -292,15 +312,46 @@ pub const CellCache = struct {
             .{ region.w, region.h, kind, frame_number, cell_size_max },
         );
         const key = cacheKey(kind, region);
+        const found = self.findSlot(key);
+        if (self.entries[found].key == key) {
+            self.entries[found].frame_used = self.frame;
+            return self.entries[found].cell;
+        }
+        const cell = self.allocateCell(class) orelse cell: {
+            // Dropping entries shifts probe chains, so the slot is found again.
+            self.dropIdle();
+            break :cell self.allocateCell(class) orelse self.panicExhausted(class, frame_number);
+        };
         const slot = self.findSlot(key);
-        if (self.entries[slot].key == key) return self.entries[slot].cell;
-
-        const cell = self.allocateCell(class) orelse self.panicExhausted(class, frame_number);
+        assert(self.entries[slot].key == 0);
         assert(self.entry_count < cell_count_max);
-        self.entries[slot] = .{ .key = key, .cell = cell };
+        self.entries[slot] = .{ .key = key, .cell = cell, .frame_used = self.frame };
         self.entry_count += 1;
         try self.stageCell(chip, kind, region, cell);
         return cell;
+    }
+
+    /// Remove every entry no list drew in the last `frame_in_use_count`
+    /// frames and free its cell now: neither the list on screen nor the one
+    /// being built names it (see the file comment).
+    fn dropIdle(self: *Self) void {
+        assert(self.entry_count <= cell_count_max);
+        const live_before = self.liveCellCount();
+        var slot: u32 = 0;
+        var visits: u32 = 0;
+        while (slot < slot_count) {
+            // Each removal empties one entry, so revisits are bounded too.
+            visits += 1;
+            assert(visits <= 2 * slot_count);
+            const entry = self.entries[slot];
+            if (entry.key != 0 and self.frame -% entry.frame_used >= frame_in_use_count) {
+                self.freeCell(entry.cell);
+                self.removeSlot(slot);
+                continue;
+            }
+            slot += 1;
+        }
+        assert(self.liveCellCount() <= live_before);
     }
 
     /// Write the staged cells to the chip.
@@ -392,8 +443,8 @@ pub const CellCache = struct {
     fn panicExhausted(self: *const Self, class: u32, frame_number: u64) noreturn {
         std.debug.panic(
             "EVE renderer: glyph cell pool exhausted in frame {d}: no free {d} px cell, " ++
-                "{d} of {d} pages ({d} KiB of RAM_G) in use, {d} live cells, {d} retiring. " ++
-                "Draw fewer distinct glyphs and icons per frame.",
+                "{d} of {d} pages ({d} KiB of RAM_G) in use, {d} cells drawn in this frame " ++
+                "or the last, {d} retiring. Draw fewer distinct glyphs and icons per frame.",
             .{
                 frame_number,
                 cell_sizes[class],
@@ -670,6 +721,94 @@ test "the page pool fills exactly, then the next size class has no page" {
     try testing.expectEqual(page_count_max, cache.pagesInUse());
     try testing.expectEqual(@as(?Cell, null), cache.allocateCell(class));
     try testing.expectEqual(@as(?Cell, null), cache.allocateCell(0));
+}
+
+test "glyphs churned over many frames reuse idle cells and keep the shown list's cells" {
+    // Goal: the core text atlas drops glyphs without uploading over them, so
+    // a long-running app draws far more distinct regions over time than the
+    // pool holds. Methodology: 14 pages of 16 px cells hold 1792; draw 120
+    // frames of 8 steady glyphs plus 40 glyphs never seen before (4808
+    // distinct regions). No lookup may fail, the steady glyphs must keep their
+    // cells, no new cell may be one the previous frame drew, and every cell
+    // must hold its region's texels.
+    var chip: Chip = .{};
+    try chip.openSimulated(null);
+    defer chip.close();
+    const cache = try testing.allocator.create(CellCache);
+    defer testing.allocator.destroy(cache);
+    try testCache(cache);
+    defer cache.deinit();
+    try testing.expectEqual(@as(u32, 128), pageCapacity(1));
+    try testing.expect(120 * 40 > page_count_max * pageCapacity(1));
+    churnFillAtlas(cache);
+    var steady: [8]Cell = undefined;
+    var previous: [48]Cell = undefined;
+    var current: [48]Cell = undefined;
+    var fresh: u32 = 0;
+    var frame: u32 = 0;
+    while (frame < 120) : (frame += 1) {
+        cache.beginFrame();
+        for (&current, 0..) |*cell, index| {
+            const steady_glyph = index < steady.len;
+            const region = if (steady_glyph) churnRegion(@intCast(index)) else region: {
+                fresh += 1;
+                break :region churnRegion(@as(u32, steady.len) + fresh);
+            };
+            cell.* = try cache.lookup(&chip, .glyph, region, frame);
+            if (steady_glyph and frame == 0) steady[index] = cell.*;
+            if (steady_glyph) try testing.expectEqual(steady[index], cell.*);
+            if (frame > 0 and !steady_glyph) {
+                for (previous) |shown| try testing.expect(!std.meta.eql(shown, cell.*));
+            }
+        }
+        try cache.flush(&chip);
+        for (current, 0..) |cell, index| {
+            const region = if (index < steady.len)
+                churnRegion(@intCast(index))
+            else
+                churnRegion(@intCast(steady.len + fresh - (current.len - 1 - index)));
+            try expectCellHolds(cache, &chip, cell, region);
+        }
+        previous = current;
+    }
+}
+
+/// Distinct 16 px-class regions of a 512² atlas: 1024 positions, each at
+/// eight widths.
+fn churnRegion(number: u32) Region {
+    assert(number < 1024 * 8);
+    return .{
+        .x = (number % 32) * 16,
+        .y = (number / 32 % 32) * 16,
+        .w = 16 - number / 1024,
+        .h = 16,
+    };
+}
+
+/// Fill the whole glyph mirror with a position pattern.
+fn churnFillAtlas(cache: *CellCache) void {
+    assert(cache.glyph_size == 512);
+    assert(cache.entry_count == 0);
+    for (cache.glyph_atlas[0 .. 512 * 512], 0..) |*texel, index| {
+        texel.* = @truncate(index % 512 * 7 + index / 512 * 13);
+    }
+    cache.glyph_bytes_used = 512 * 512;
+}
+
+fn expectCellHolds(cache: *const CellCache, chip: *const Chip, cell: Cell, region: Region) !void {
+    const layout = cache.pageLayout(cell.page);
+    const size = layout.cell_size;
+    assert(region.w <= size);
+    const base = layout.address + @as(u32, cell.index) * size * size;
+    var row: u32 = 0;
+    while (row < region.h) : (row += 1) {
+        const source = (region.y + row) * cache.glyph_size + region.x;
+        try testing.expectEqualSlices(
+            u8,
+            cache.glyph_atlas[source..][0..region.w],
+            chip.sim_memory[base + row * size ..][0..region.w],
+        );
+    }
 }
 
 test "SVG uploads split fill and stroke coverage and drop channel bleed" {
