@@ -62,7 +62,7 @@ const choice_count_action_max: u32 = 2 + text_unit_count_max;
 /// Smith bytes the CLI reserves per step, so its PRNG input never runs dry.
 const bytes_per_action_max: u32 = choice_count_action_max * @sizeOf(u64);
 /// Smith bytes one `Swarm` draw reads.
-const bytes_swarm: u32 = Swarm.choice_count * @sizeOf(u64);
+const bytes_swarm: u32 = Swarm.choice_count_max * @sizeOf(u64);
 /// Smith bytes the CLI reserves for a run: every epoch's swarm and step.
 const bytes_cli: u32 = bytes_swarm * (1 + @divFloor(step_count_cli, swarm_epoch_step_count)) +
     step_count_cli * bytes_per_action_max;
@@ -301,7 +301,7 @@ pub const Action = union(enum) {
     }
 };
 
-const ActionKind = std.meta.Tag(Action);
+pub const ActionKind = std.meta.Tag(Action);
 
 const kind_count = std.enums.values(ActionKind).len;
 
@@ -313,6 +313,8 @@ const kind_count = std.enums.values(ActionKind).len;
 pub const Swarm = struct {
     /// Relative weight of each action kind, by tag value; 0 disables it.
     kind_weights: [kind_count]u32,
+    /// The kinds the model lists (`Model.action_kinds`), for `format`.
+    kinds: []const ActionKind,
     kind_weight_total: u32,
     /// Percent of pointer and scroll actions aimed only at records that can
     /// change state: a click or key handler, focus, or a scroll box.
@@ -330,13 +332,23 @@ pub const Swarm = struct {
     const interactive_percent_choices = [_]u32{ 0, 50, 90 };
     const target_prefix_count_choices = [_]u32{ 2, 3, 5, 8, 0 };
     const click_percent_choices = [_]u32{ 25, 50, 90 };
-    /// Smith choices `generate` makes.
-    const choice_count = 2 * kind_count + 3;
+    /// Most Smith choices `generate` makes: two per kind a model lists.
+    const choice_count_max = 2 * kind_count + 3;
 
-    pub fn generate(smith: *Smith) Swarm {
+    /// Weights for the kinds the model lists, in its order; the rest stay
+    /// off, so a model's seeds replay unchanged when another app's kind is
+    /// added.
+    pub fn generate(smith: *Smith, comptime kinds: []const ActionKind) Swarm {
+        comptime {
+            assert(kinds.len <= kind_count);
+            assert(std.mem.indexOfScalar(ActionKind, kinds, .tick_main) != null);
+            assert(std.mem.indexOfScalar(ActionKind, kinds, .present) != null);
+        }
         var swarm: Swarm = undefined;
+        swarm.kind_weights = @splat(0);
+        swarm.kinds = kinds;
         swarm.kind_weight_total = 0;
-        for (std.enums.values(ActionKind)) |kind| {
+        inline for (kinds) |kind| {
             // A quarter of kinds are off for the seed. `tickMain` and
             // `presentBuilt` stay on, so frames always move eventually.
             const off = choose(smith, 4, "kind off") == 0;
@@ -371,7 +383,7 @@ pub const Swarm = struct {
     }
 
     pub fn format(self: Swarm, writer: *std.Io.Writer) std.Io.Writer.Error!void {
-        for (std.enums.values(ActionKind)) |kind| {
+        for (self.kinds) |kind| {
             try writer.print("{t}={d} ", .{ kind, self.kind_weights[@backingInt(kind)] });
         }
         try writer.print("interactive={d}% prefix={d} click={d}%", .{
@@ -432,7 +444,7 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             self.quiescence_round_count = 0;
             self.dump_hasher = .init(0);
             self.text_bytes = @splat(0);
-            self.swarm = .generate(smith);
+            self.swarm = .generate(smith, Model.action_kinds);
             self.action_count = 0;
             self.model.init();
             assert(self.driver.now_ns == 0);
@@ -484,7 +496,7 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
         /// a present with no frame in flight: both keep the run in budget.
         pub fn generate(self: *Self, smith: *Smith) Action {
             if (self.action_count > 0 and self.action_count % swarm_epoch_step_count == 0) {
-                self.swarm = .generate(smith);
+                self.swarm = .generate(smith, Model.action_kinds);
             }
             self.action_count += 1;
             const kind = self.swarm.chooseKind(smith);

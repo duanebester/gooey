@@ -45,6 +45,7 @@ const std = @import("std");
 const gooey = @import("gooey");
 const todo = @import("todo_example");
 const vopr = @import("vopr.zig");
+const vopr_frame = @import("vopr_frame.zig");
 
 const assert = std.debug.assert;
 
@@ -55,6 +56,11 @@ const Window = internals.window.Window;
 const ElementId = records.ElementId;
 const InputEngine = internals.text_engine.InputEngine;
 const Action = vopr.Action;
+const hitIndex = vopr_frame.hitIndex;
+const onScrollbar = vopr_frame.onScrollbar;
+const nextTabStop = vopr_frame.nextTabStop;
+const findHit = vopr_frame.findHit;
+const findA11y = vopr_frame.findA11y;
 
 /// Items todo should keep at most.
 const item_count_max: u32 = 64;
@@ -107,6 +113,12 @@ pub const TodoModel = struct {
     /// longer shows the same item at that position, for a mismatch report.
     stale_row_step: ?u64,
     step_last: u64,
+
+    /// The action kinds todo's swarm draws weights for, in this order; the
+    /// order is part of every seed, so it must not change.
+    pub const action_kinds: []const vopr.ActionKind = &.{
+        .pointer, .key, .text, .compose, .scroll, .wait_ns, .tick_main, .present,
+    };
 
     const Item = struct {
         id: u32,
@@ -816,64 +828,6 @@ fn nextBoundary(text: []const u8, offset: u32) u32 {
     if (offset == text.len) return offset;
     const size = std.unicode.utf8ByteSequenceLength(text[offset]) catch unreachable;
     return offset + size;
-}
-
-/// The deepest record containing the point: the last in tree order, as the
-/// contract defines a hit (§5), among the records a modal leaves reachable.
-fn hitIndex(frame: *const records.Frame, x: f32, y: f32) ?u32 {
-    var index = frame.hit_count;
-    while (index > frame.modal_hit_start) {
-        index -= 1;
-        const record = &frame.hits[index];
-        if (record.pointer and record.bounds.contains(x, y)) return index;
-    }
-    return null;
-}
-
-/// Whether a press at the point lands on a scroll box's scrollbar. The bar's
-/// geometry is layout, read from the core's scroll state of each scroll box
-/// in the frame on screen.
-fn onScrollbar(window: *Window, x: f32, y: f32) bool {
-    const frame = window.rendered();
-    for (frame.hits[0..frame.hit_count]) |*record| {
-        if (!record.scroll) continue;
-        const scroll = internals.window.ScrollState;
-        const state = window.retained.findConst(scroll, record.id) orelse continue;
-        if (state.scrollbarAt(x, y) != null) return true;
-    }
-    return false;
-}
-
-/// Tab focuses the next tab stop in tree order, wrapping; Shift+Tab the
-/// previous. From no focus, Tab takes the first and Shift+Tab the last.
-fn nextTabStop(frame: *const records.Frame, focus: ElementId, backward: bool) ElementId {
-    const start = frame.modal_hit_start;
-    const count = frame.hit_count - start;
-    if (count == 0) return focus;
-    const current = findHit(frame, focus);
-    var index: u32 = if (current) |found| found - start else if (backward) count else count - 1;
-    var step: u32 = 0;
-    while (step < count) : (step += 1) {
-        index = if (backward) (index + count - 1) % count else (index + 1) % count;
-        if (frame.hits[start + index].tab_stop) return frame.hits[start + index].id;
-    }
-    return focus;
-}
-
-fn findHit(frame: *const records.Frame, id: ElementId) ?u32 {
-    if (id == .root) return null;
-    for (frame.hits[0..frame.hit_count], 0..) |*record, index| {
-        if (record.id == id) return @intCast(index);
-    }
-    return null;
-}
-
-fn findA11y(frame: *const records.Frame, id: ElementId) ?*const records.A11yNode {
-    if (id == .root) return null;
-    for (frame.a11y[0..frame.a11y_count]) |*node| {
-        if (node.id == id) return node;
-    }
-    return null;
 }
 
 /// What the control `id` is, from its accessibility node: todo's buttons by

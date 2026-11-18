@@ -1,0 +1,82 @@
+//! Reads of a rendered frame that every VOPR reference model shares: what a
+//! point hits, where Tab goes, and an element's record and accessibility
+//! node. They state the contract's routing rules (§5, §6) over the frame's
+//! hit records, so a model can say where an input lands without asking the
+//! router it checks.
+
+const std = @import("std");
+const gooey = @import("gooey");
+
+const assert = std.debug.assert;
+
+const internals = gooey.internals;
+const records = internals.records;
+const Window = internals.window.Window;
+const ElementId = records.ElementId;
+
+/// The deepest record containing the point: the last in tree order, as the
+/// contract defines a hit (§5), among the records a modal leaves reachable.
+pub fn hitIndex(frame: *const records.Frame, x: f32, y: f32) ?u32 {
+    assert(frame.hit_count <= frame.hits.len);
+    assert(frame.modal_hit_start <= frame.hit_count);
+    var index = frame.hit_count;
+    while (index > frame.modal_hit_start) {
+        index -= 1;
+        const record = &frame.hits[index];
+        if (record.pointer and record.bounds.contains(x, y)) return index;
+    }
+    return null;
+}
+
+/// Whether a press at the point lands on a scroll box's scrollbar. The bar's
+/// geometry is layout, read from the core's scroll state of each scroll box
+/// in the frame on screen.
+pub fn onScrollbar(window: *Window, x: f32, y: f32) bool {
+    const frame = window.rendered();
+    assert(frame.hit_count <= frame.hits.len);
+    for (frame.hits[0..frame.hit_count]) |*record| {
+        if (!record.scroll) continue;
+        const scroll = internals.window.ScrollState;
+        const state = window.retained.findConst(scroll, record.id) orelse continue;
+        if (state.scrollbarAt(x, y) != null) return true;
+    }
+    return false;
+}
+
+/// Tab focuses the next tab stop in tree order, wrapping; Shift+Tab the
+/// previous. From no focus, Tab takes the first and Shift+Tab the last.
+pub fn nextTabStop(frame: *const records.Frame, focus: ElementId, backward: bool) ElementId {
+    assert(frame.modal_hit_start <= frame.hit_count);
+    const start = frame.modal_hit_start;
+    const count = frame.hit_count - start;
+    if (count == 0) return focus;
+    const current = findHit(frame, focus);
+    var index: u32 = if (current) |found| found - start else if (backward) count else count - 1;
+    var step: u32 = 0;
+    while (step < count) : (step += 1) {
+        index = if (backward) (index + count - 1) % count else (index + 1) % count;
+        if (frame.hits[start + index].tab_stop) return frame.hits[start + index].id;
+    }
+    return focus;
+}
+
+/// The index of `id`'s record in the frame, or null for the root or an
+/// element the frame did not render.
+pub fn findHit(frame: *const records.Frame, id: ElementId) ?u32 {
+    assert(frame.hit_count <= frame.hits.len);
+    if (id == .root) return null;
+    for (frame.hits[0..frame.hit_count], 0..) |*record, index| {
+        if (record.id == id) return @intCast(index);
+    }
+    return null;
+}
+
+/// `id`'s accessibility node in the frame, or null.
+pub fn findA11y(frame: *const records.Frame, id: ElementId) ?*const records.A11yNode {
+    assert(frame.a11y_count <= frame.a11y.len);
+    if (id == .root) return null;
+    for (frame.a11y[0..frame.a11y_count]) |*node| {
+        if (node.id == id) return node;
+    }
+    return null;
+}
