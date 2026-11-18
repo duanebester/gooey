@@ -246,24 +246,48 @@ pub const A11yNode = struct {
     };
 };
 
-/// Screen-reader announcements (`Effects.announce`) in their own bytes, so a
-/// handler's slice need not outlive it. The window collects them between
-/// builds; each frame carries the ones made since the previous build. Both
-/// pools are sized by `ResourceLimits.a11y`: screen readers queue or drop a
-/// burst anyway, so more per frame is a capacity-planning error.
+/// Screen-reader announcements (`Effects.announce`) pending for the next
+/// build, in their own bytes, so a handler's slice need not outlive it. The
+/// window collects them between builds and each frame carries the ones that
+/// survived since the previous build, which the screen reader gets at that
+/// frame's flip.
+///
+/// The pending set behaves as a pair of live regions, as the platforms'
+/// queues do (UIA's `ImportantMostRecent`, ARIA's assertive and polite
+/// regions, VoiceOver's priorities): at most one assertive announcement,
+/// which a newer one replaces, and a FIFO of at most `polite_pending_max`
+/// polite ones, in which a newer one past the count replaces the oldest.
+/// Survivors keep the order they were announced in, and a replacement is a
+/// new announcement, so it follows every survivor. Input arriving while a
+/// frame is in flight therefore never exhausts the set (contract §4,
+/// "Announcements").
+///
+/// Storage is `polite_pending_max + 1` fixed slots of `message_bytes_max`
+/// bytes, item `i`'s text in slot `i`, so a replacement never fragments the
+/// bytes: removing an item shifts the later items and their slots down one,
+/// and the slot it frees is zeroed (CLAUDE.md §21). A write fills its whole
+/// slot, the text and then zeros, so no slot holds an earlier owner's bytes.
+/// Resource sketch: at most 64 slots of 256 B at `ceiling` (16 KiB); one
+/// announce moves at most every later slot, 16 KiB, and happens per handler.
 pub const Announcements = struct {
     bytes: []u8,
-    bytes_len: u32,
     items: []Item,
     count: u32,
+    polite_pending_max: u32,
+    message_bytes_max: u32,
 
     pub const Item = struct { text: TextRange, live: a11y_types.Live };
 
     pub const Capacity = struct {
-        /// `a11y.announcement_count_frame_max`.
-        count_max: u32,
-        /// `a11y.announcement_bytes_frame_max`.
-        bytes_max: u32,
+        /// `a11y.announcement_polite_pending_max`.
+        polite_pending_max: u32,
+        /// `a11y.announcement_message_bytes_max`.
+        message_bytes_max: u32,
+
+        fn slotCount(self: Capacity) u32 {
+            assert(self.polite_pending_max > 0);
+            return self.polite_pending_max + 1;
+        }
     };
 
     pub fn initInPlace(
@@ -271,30 +295,40 @@ pub const Announcements = struct {
         gpa: std.mem.Allocator,
         capacity: Capacity,
     ) !void {
-        assert(capacity.count_max > 0);
-        assert(capacity.bytes_max >= capacity.count_max);
+        assert(capacity.polite_pending_max > 0);
+        assert(capacity.message_bytes_max > 0);
+        const slot_count = capacity.slotCount();
 
-        self.items = try gpa.alloc(Item, capacity.count_max);
+        self.items = try gpa.alloc(Item, slot_count);
         errdefer gpa.free(self.items);
 
-        self.bytes = try gpa.alloc(u8, capacity.bytes_max);
-        self.clear();
-        assert(self.items.len == capacity.count_max);
+        self.bytes = try gpa.alloc(u8, slot_count * capacity.message_bytes_max);
+        self.polite_pending_max = capacity.polite_pending_max;
+        self.message_bytes_max = capacity.message_bytes_max;
+        self.count = 0;
+        assert(self.items.len == slot_count);
+        assert(self.bytes.len == self.items.len * self.message_bytes_max);
     }
 
     pub fn deinit(self: *Announcements, gpa: std.mem.Allocator) void {
         assert(self.count <= self.items.len);
+        self.clear();
         gpa.free(self.bytes);
         gpa.free(self.items);
         self.* = undefined;
     }
 
+    /// Release every pending announcement, zeroing the slots they used.
     pub fn clear(self: *Announcements) void {
+        assert(self.count <= self.items.len);
+        @memset(self.bytes[0 .. self.count * self.message_bytes_max], 0);
         self.count = 0;
-        self.bytes_len = 0;
     }
 
-    /// Copy `message`; exceeding either pool fails fast with its budget field.
+    /// Add `message` under the live-region rules: an assertive one replaces
+    /// the pending assertive one, and a polite one past `polite_pending_max`
+    /// replaces the oldest polite one. Only a message longer than its slot
+    /// fails fast, naming its budget field.
     pub fn push(
         self: *Announcements,
         message: []const u8,
@@ -303,39 +337,48 @@ pub const Announcements = struct {
     ) void {
         assert(live != .off);
         assert(message.len > 0);
-        assert(self.count <= self.items.len);
-        assert(self.bytes_len <= self.bytes.len);
-        if (self.count == self.items.len) {
-            std.debug.panic("a11y pool 'announcements' exhausted: capacity {d}, {d} in use, " ++
-                "1 requested, frame {d}. Raise ResourceLimits.a11y." ++
-                "announcement_count_frame_max.", .{ self.items.len, self.count, frame_number });
-        }
-        if (message.len > self.bytes.len - self.bytes_len) {
-            std.debug.panic("a11y pool 'announcement bytes' exhausted: capacity {d} bytes, " ++
-                "{d} in use, {d} requested, frame {d}. Raise ResourceLimits.a11y." ++
-                "announcement_bytes_frame_max.", .{
-                self.bytes.len,
-                self.bytes_len,
+        self.assertInvariants();
+        if (message.len > self.message_bytes_max) {
+            std.debug.panic("a11y announcement of {d} bytes is longer than its slot: " ++
+                "capacity {d} bytes, frame {d}. Raise ResourceLimits.a11y." ++
+                "announcement_message_bytes_max.", .{
                 message.len,
+                self.message_bytes_max,
                 frame_number,
             });
         }
-        const range = TextRange{ .offset = self.bytes_len, .len = @intCast(message.len) };
-        @memcpy(self.bytes[range.offset..][0..range.len], message);
-        self.bytes_len += range.len;
-        self.items[self.count] = .{ .text = range, .live = live };
+        if (live == .assertive) {
+            if (self.find(.assertive, 0)) |index| self.remove(index);
+        } else {
+            if (self.countOf(.polite) == self.polite_pending_max) {
+                self.remove(self.find(.polite, 0).?);
+            }
+        }
+        assert(self.count < self.items.len);
+        const slot = self.slotOf(self.count);
+        @memcpy(slot[0..message.len], message);
+        @memset(slot[message.len..], 0);
+        const offset = self.count * self.message_bytes_max;
+        self.items[self.count] = .{
+            .text = .{ .offset = offset, .len = @intCast(message.len) },
+            .live = live,
+        };
         self.count += 1;
+        self.assertInvariants();
     }
 
-    /// Move the window's collected announcements into a frame: both pools
-    /// come from the same budget, so the copy always fits.
+    /// Move the window's pending announcements into a frame: both come from
+    /// the same budget. The frame was cleared, so its unused slots are zero.
     pub fn copyFrom(self: *Announcements, source: *const Announcements) void {
-        assert(source.count <= self.items.len);
-        assert(source.bytes_len <= self.bytes.len);
+        assert(self.count == 0);
+        assert(self.items.len == source.items.len);
+        assert(self.message_bytes_max == source.message_bytes_max);
+        source.assertInvariants();
+        const used_bytes = source.count * source.message_bytes_max;
         @memcpy(self.items[0..source.count], source.items[0..source.count]);
-        @memcpy(self.bytes[0..source.bytes_len], source.bytes[0..source.bytes_len]);
+        @memcpy(self.bytes[0..used_bytes], source.bytes[0..used_bytes]);
         self.count = source.count;
-        self.bytes_len = source.bytes_len;
+        self.assertInvariants();
     }
 
     pub fn slice(self: *const Announcements) []const Item {
@@ -345,8 +388,66 @@ pub const Announcements = struct {
 
     pub fn text(self: *const Announcements, item: Item) []const u8 {
         assert(item.text.len > 0);
-        assert(item.text.offset + item.text.len <= self.bytes_len);
+        assert(item.text.len <= self.message_bytes_max);
+        assert(item.text.offset % self.message_bytes_max == 0);
+        assert(item.text.offset < self.count * self.message_bytes_max);
         return self.bytes[item.text.offset..][0..item.text.len];
+    }
+
+    /// Remove item `index`, keeping the others' order: the later items and
+    /// their slots move down one, and the slot freed at the end is zeroed.
+    fn remove(self: *Announcements, index: u32) void {
+        assert(index < self.count);
+        assert(self.count <= self.items.len);
+        const slot_bytes = self.message_bytes_max;
+        const tail_start = (index + 1) * slot_bytes;
+        const tail_end = self.count * slot_bytes;
+        std.mem.copyForwards(
+            u8,
+            self.bytes[index * slot_bytes .. tail_end - slot_bytes],
+            self.bytes[tail_start..tail_end],
+        );
+        @memset(self.bytes[tail_end - slot_bytes .. tail_end], 0);
+        var moved = index;
+        while (moved + 1 < self.count) : (moved += 1) {
+            self.items[moved] = self.items[moved + 1];
+            self.items[moved].text.offset = moved * slot_bytes;
+        }
+        self.count -= 1;
+        assert(moved == self.count);
+    }
+
+    /// The first pending item of `live` at or after `start`, or null.
+    fn find(self: *const Announcements, live: a11y_types.Live, start: u32) ?u32 {
+        assert(start <= self.count);
+        var index = start;
+        while (index < self.count) : (index += 1) {
+            if (self.items[index].live == live) return index;
+        }
+        return null;
+    }
+
+    fn countOf(self: *const Announcements, live: a11y_types.Live) u32 {
+        assert(self.count <= self.items.len);
+        var count: u32 = 0;
+        for (self.items[0..self.count]) |item| {
+            if (item.live == live) count += 1;
+        }
+        return count;
+    }
+
+    fn slotOf(self: *Announcements, index: u32) []u8 {
+        assert(index < self.items.len);
+        return self.bytes[index * self.message_bytes_max ..][0..self.message_bytes_max];
+    }
+
+    fn assertInvariants(self: *const Announcements) void {
+        assert(self.count <= self.items.len);
+        assert(self.items.len == self.polite_pending_max + 1);
+        assert(self.bytes.len == self.items.len * self.message_bytes_max);
+        assert(self.countOf(.assertive) <= 1);
+        assert(self.countOf(.polite) <= self.polite_pending_max);
+        assert(self.countOf(.off) == 0);
     }
 };
 
@@ -619,7 +720,7 @@ test "Frame copies text and bounds every pool" {
         .hit_record_count_max = 2,
         .handler_count_max = 2,
         .a11y_node_count_max = 2,
-        .announcements = .{ .count_max = 1, .bytes_max = 8 },
+        .announcements = .{ .polite_pending_max = 1, .message_bytes_max = 8 },
         .text_bytes_max = 8,
         .mesh_point_count_max = 0,
     });
@@ -662,4 +763,123 @@ test "fade halves an image sprite's opacity and a glyph or SVG sprite's colours"
     try std.testing.expectEqual(@as(f32, 1), faded.opacity);
     try std.testing.expectEqual(@as(f32, 0.5), faded.tint.a);
     try std.testing.expectEqual(@as(f32, 0.4), faded.secondary.a);
+}
+
+/// The pending texts in delivery order, joined by "|", for the tests below.
+fn pendingTexts(pending: *const Announcements, buffer: []u8) []const u8 {
+    var len: usize = 0;
+    for (pending.slice(), 0..) |item, index| {
+        const separator: []const u8 = if (index == 0) "" else "|";
+        const piece = pending.text(item);
+        assert(len + separator.len + piece.len <= buffer.len);
+        @memcpy(buffer[len..][0..separator.len], separator);
+        len += separator.len;
+        @memcpy(buffer[len..][0..piece.len], piece);
+        len += piece.len;
+    }
+    return buffer[0..len];
+}
+
+test "polite announcements fill to their count, then the newest replaces the oldest" {
+    // Goal: the polite FIFO (contract §4). Method: fill 3 slots exactly, check
+    // all three in order, add a fourth and a fifth, and check that each time
+    // the oldest went and the rest kept their order.
+    var pending: Announcements = undefined;
+    try pending.initInPlace(std.testing.allocator, .{
+        .polite_pending_max = 3,
+        .message_bytes_max = 8,
+    });
+    defer pending.deinit(std.testing.allocator);
+    var buffer: [64]u8 = undefined;
+
+    for ([_][]const u8{ "a", "b", "c" }) |message| pending.push(message, .polite, 1);
+    try std.testing.expectEqual(@as(u32, 3), pending.count);
+    try std.testing.expectEqualStrings("a|b|c", pendingTexts(&pending, &buffer));
+    pending.push("d", .polite, 1);
+    try std.testing.expectEqualStrings("b|c|d", pendingTexts(&pending, &buffer));
+    pending.push("e", .polite, 1);
+    try std.testing.expectEqualStrings("c|d|e", pendingTexts(&pending, &buffer));
+    try std.testing.expectEqual(@as(u32, 3), pending.count);
+}
+
+test "a newer assertive announcement replaces the pending one and goes after the survivors" {
+    // Goal: the assertive slot and the order rule: survivors keep the order
+    // they were announced in, and a replacement is new, so it goes last.
+    // Method: interleave polite and assertive announcements past both
+    // limits and check the delivered order after each step that changes it.
+    var pending: Announcements = undefined;
+    try pending.initInPlace(std.testing.allocator, .{
+        .polite_pending_max = 2,
+        .message_bytes_max = 8,
+    });
+    defer pending.deinit(std.testing.allocator);
+    var buffer: [64]u8 = undefined;
+
+    pending.push("p1", .polite, 1);
+    pending.push("A1", .assertive, 1);
+    pending.push("p2", .polite, 1);
+    try std.testing.expectEqualStrings("p1|A1|p2", pendingTexts(&pending, &buffer));
+    pending.push("A2", .assertive, 1);
+    try std.testing.expectEqualStrings("p1|p2|A2", pendingTexts(&pending, &buffer));
+    pending.push("p3", .polite, 1);
+    try std.testing.expectEqualStrings("p2|A2|p3", pendingTexts(&pending, &buffer));
+    try std.testing.expectEqual(Announcements.Item{
+        .text = .{ .offset = 8, .len = 2 },
+        .live = .assertive,
+    }, pending.slice()[1]);
+
+    // A frame takes the survivors in the same order, and the window's set
+    // starts empty again.
+    var frame_pending: Announcements = undefined;
+    try frame_pending.initInPlace(std.testing.allocator, .{
+        .polite_pending_max = 2,
+        .message_bytes_max = 8,
+    });
+    defer frame_pending.deinit(std.testing.allocator);
+    frame_pending.copyFrom(&pending);
+    pending.clear();
+    try std.testing.expectEqualStrings("p2|A2|p3", pendingTexts(&frame_pending, &buffer));
+    try std.testing.expectEqual(@as(u32, 0), pending.count);
+}
+
+test "replaced announcements reuse their slots and leave no stale bytes" {
+    // Goal: bounded bytes under any number of replacements, with released
+    // bytes zeroed (CLAUDE.md §21). Method: 1,000 announcements of varying
+    // length into 2 polite slots and the assertive one, longest first, so a
+    // shorter text lands in a slot a longer one used; after each, every slot
+    // past its text must be zero, and the last texts must be intact.
+    var pending: Announcements = undefined;
+    try pending.initInPlace(std.testing.allocator, .{
+        .polite_pending_max = 2,
+        .message_bytes_max = 16,
+    });
+    defer pending.deinit(std.testing.allocator);
+    const source = "abcdefghijklmnop";
+    var round: u32 = 0;
+    while (round < 1_000) : (round += 1) {
+        const len = 16 - round % 16;
+        const live: a11y_types.Live = if (round % 3 == 0) .assertive else .polite;
+        pending.push(source[0..len], live, round);
+        assert(pending.count <= 3);
+        for (pending.slice(), 0..) |item, index| {
+            const slot = pending.bytes[index * 16 ..][0..16];
+            try std.testing.expectEqual(@as(u32, @intCast(index * 16)), item.text.offset);
+            try std.testing.expectEqualStrings(source[0..item.text.len], slot[0..item.text.len]);
+            try std.testing.expect(std.mem.allEqual(u8, slot[item.text.len..], 0));
+        }
+        // Slots are not zeroed at init (§21: zero on release), so an unused
+        // slot is zero once every slot has been written and released.
+        if (round >= 3) {
+            const unused = pending.bytes[pending.count * 16 ..];
+            try std.testing.expect(std.mem.allEqual(u8, unused, 0));
+        }
+        // A build takes the set midway: every byte it used is released.
+        if (round == 500) {
+            pending.clear();
+            try std.testing.expect(std.mem.allEqual(u8, pending.bytes, 0));
+        }
+    }
+    try std.testing.expectEqual(@as(u32, 3), pending.count);
+    pending.clear();
+    try std.testing.expect(std.mem.allEqual(u8, pending.bytes, 0));
 }

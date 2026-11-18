@@ -1521,12 +1521,9 @@ fn addFailFastChecks(
         .{ .mode = "core-a11y-elements", .stderr = "a11y pool 'elements' exhausted: " ++
             "capacity 128, 128 in use, 1 requested, frame 1. Raise " ++
             "ResourceLimits.a11y.element_count_max." },
-        .{ .mode = "core-a11y-announcements", .stderr = "a11y pool 'announcements' " ++
-            "exhausted: capacity 4, 4 in use, 1 requested, frame 1. Raise " ++
-            "ResourceLimits.a11y.announcement_count_frame_max." },
-        .{ .mode = "core-a11y-announcement-bytes", .stderr = "a11y pool 'announcement bytes' " ++
-            "exhausted: capacity 512 bytes, 512 in use, 256 requested, frame 1. Raise " ++
-            "ResourceLimits.a11y.announcement_bytes_frame_max." },
+        .{ .mode = "core-a11y-announcement-bytes", .stderr = "a11y announcement of 129 " ++
+            "bytes is longer than its slot: capacity 128 bytes, frame 1. Raise " ++
+            "ResourceLimits.a11y.announcement_message_bytes_max." },
         .{ .mode = "core-mono-unset", .stderr = "text uses family .mono, but no second " ++
             "family is loaded; set Config.fonts.mono and " ++
             "ResourceLimits.text.fonts.mono_variants" },
@@ -2018,6 +2015,155 @@ fn addGoldens(
     wiring: GoldensWiring,
     test_step: *std.Build.Step,
 ) void {
+    const goldens_imports = goldensImports(b, target, optimize, wiring);
+
+    const tests = b.addTest(.{
+        .name = "goldens-test",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/testing/goldens/goldens_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = goldens_imports,
+        }),
+    });
+    const capture = b.addExecutable(.{
+        .name = "goldens-capture",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/testing/goldens/capture.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = goldens_imports,
+        }),
+    });
+    // The VOPR (`src/testing/vopr.zig`) drives the goldens' examples through
+    // the same driver: its fuzz smoke runs with the tests, and `zig build
+    // vopr -- [seed]` runs one seed.
+    const vopr_tests = b.addTest(.{
+        .name = "vopr-test",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/testing/vopr.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = goldens_imports,
+        }),
+    });
+    const vopr = b.addExecutable(.{
+        .name = "vopr",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/testing/vopr.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = goldens_imports,
+        }),
+    });
+    if (wiring.compile_dependency) |dependency| {
+        tests.step.dependOn(dependency);
+        capture.step.dependOn(dependency);
+        vopr_tests.step.dependOn(dependency);
+        vopr.step.dependOn(dependency);
+    }
+    const run_tests = b.addRunArtifact(tests);
+    // The images check decodes `assets/` files relative to the project root.
+    run_tests.setCwd(b.path("."));
+    test_step.dependOn(&run_tests.step);
+    test_step.dependOn(&b.addRunArtifact(vopr_tests).step);
+
+    addJobsMainThreadTests(b, target, optimize, wiring, test_step);
+
+    const run_capture = b.addRunArtifact(capture);
+    run_capture.setCwd(b.path("."));
+    b.step("goldens", "Rewrite the golden files in src/testing/goldens").dependOn(&run_capture.step);
+
+    const run_vopr = b.addRunArtifact(vopr);
+    run_vopr.addPassthruArgs();
+    const vopr_description = "Simulate an example app for one seed: vopr -- " ++
+        "[--app NAME] [seed] [--verbose]";
+    b.step("vopr", vopr_description).dependOn(&run_vopr.step);
+
+    addVoprSoak(b, target, wiring);
+}
+
+/// The jobs' no-worker path, the web's and `-fsingle-threaded`'s, checked
+/// natively: the same `gooey` module built single-threaded.
+fn addJobsMainThreadTests(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.lang.Optimize,
+    wiring: GoldensWiring,
+    test_step: *std.Build.Step,
+) void {
+    const single_threaded_mod = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .single_threaded = true,
+    });
+    single_threaded_mod.addImport("gooey_build_options", gooeyBuildOptionsModule(b, .{
+        .linux_backend = wiring.linux_backend orelse .wayland_vulkan,
+        .text_backend = .synthetic,
+    }));
+    if (wiring.objc) |objc_mod| {
+        single_threaded_mod.addImport("objc", objc_mod);
+        linkMacosFrameworks(single_threaded_mod);
+    }
+    if (wiring.linux_backend) |linux_backend| {
+        linkLinuxGooeyLibraries(single_threaded_mod, linux_backend);
+    }
+    const main_thread_tests = b.addTest(.{
+        .name = "jobs-main-thread-test",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/testing/goldens/jobs_main_thread_checks.zig"),
+            .target = target,
+            .optimize = optimize,
+            .single_threaded = true,
+            .imports = &.{.{ .name = "gooey", .module = single_threaded_mod }},
+        }),
+    });
+    if (wiring.compile_dependency) |dependency| main_thread_tests.step.dependOn(dependency);
+    test_step.dependOn(&b.addRunArtifact(main_thread_tests).step);
+}
+
+/// `vopr-soak`: run the VOPR on random seeds for hours, one child process
+/// per seed (`src/testing/vopr_soak.zig`). The VOPR is built ReleaseSafe for
+/// throughput with its assertions still on.
+fn addVoprSoak(b: *std.Build, target: std.Build.ResolvedTarget, wiring: GoldensWiring) void {
+    const vopr = b.addExecutable(.{
+        .name = "vopr-safe",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/testing/vopr.zig"),
+            .target = target,
+            .optimize = .safe,
+            .imports = goldensImports(b, target, .safe, wiring),
+        }),
+    });
+    if (wiring.compile_dependency) |dependency| vopr.step.dependOn(dependency);
+    const soak = b.addExecutable(.{
+        .name = "vopr-soak",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/testing/vopr_soak.zig"),
+            .target = target,
+            .optimize = .safe,
+        }),
+    });
+    const run_soak = b.addRunArtifact(soak);
+    run_soak.addArtifactArg(vopr);
+    run_soak.addPassthruArgs();
+    run_soak.setCwd(b.path("."));
+    // A soak is never cached: each run draws new seeds.
+    run_soak.has_side_effects = true;
+    const description = "Run the VOPR on random seeds: vopr-soak -- " ++
+        "[--app NAME] [--hours H | --minutes M] [--jobs N] [--out DIR]";
+    b.step("vopr-soak", description).dependOn(&run_soak.step);
+}
+
+/// The goldens' module graph at `optimize`: a `gooey` module built with the
+/// synthetic text backend, and every example the goldens and the VOPR drive.
+fn goldensImports(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.lang.Optimize,
+    wiring: GoldensWiring,
+) []const std.Build.Module.Import {
     const gooey_mod = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -2148,7 +2294,7 @@ fn addGoldens(
         .optimize = optimize,
         .imports = example_imports,
     });
-    const goldens_imports: []const std.Build.Module.Import = &.{
+    return b.allocator.dupe(std.Build.Module.Import, &.{
         .{ .name = "accessible_form_example", .module = accessible_form_mod },
         .{ .name = "background_example", .module = background_mod },
         .{ .name = "actions_example", .module = actions_mod },
@@ -2167,70 +2313,7 @@ fn addGoldens(
         .{ .name = "splitter_example", .module = splitter_mod },
         .{ .name = "todo_example", .module = todo_mod },
         .{ .name = "virtual_list_example", .module = virtual_list_mod },
-    };
-
-    const tests = b.addTest(.{
-        .name = "goldens-test",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/testing/goldens/goldens_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = goldens_imports,
-        }),
-    });
-    const capture = b.addExecutable(.{
-        .name = "goldens-capture",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/testing/goldens/capture.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = goldens_imports,
-        }),
-    });
-    if (wiring.compile_dependency) |dependency| {
-        tests.step.dependOn(dependency);
-        capture.step.dependOn(dependency);
-    }
-    const run_tests = b.addRunArtifact(tests);
-    // The images check decodes `assets/` files relative to the project root.
-    run_tests.setCwd(b.path("."));
-    test_step.dependOn(&run_tests.step);
-
-    // The jobs' no-worker path, the web's and `-fsingle-threaded`'s, checked
-    // natively: the same `gooey` module built single-threaded.
-    const single_threaded_mod = b.createModule(.{
-        .root_source_file = b.path("src/root.zig"),
-        .target = target,
-        .optimize = optimize,
-        .single_threaded = true,
-    });
-    single_threaded_mod.addImport("gooey_build_options", gooeyBuildOptionsModule(b, .{
-        .linux_backend = wiring.linux_backend orelse .wayland_vulkan,
-        .text_backend = .synthetic,
-    }));
-    if (wiring.objc) |objc_mod| {
-        single_threaded_mod.addImport("objc", objc_mod);
-        linkMacosFrameworks(single_threaded_mod);
-    }
-    if (wiring.linux_backend) |linux_backend| {
-        linkLinuxGooeyLibraries(single_threaded_mod, linux_backend);
-    }
-    const main_thread_tests = b.addTest(.{
-        .name = "jobs-main-thread-test",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/testing/goldens/jobs_main_thread_checks.zig"),
-            .target = target,
-            .optimize = optimize,
-            .single_threaded = true,
-            .imports = &.{.{ .name = "gooey", .module = single_threaded_mod }},
-        }),
-    });
-    if (wiring.compile_dependency) |dependency| main_thread_tests.step.dependOn(dependency);
-    test_step.dependOn(&b.addRunArtifact(main_thread_tests).step);
-
-    const run_capture = b.addRunArtifact(capture);
-    run_capture.setCwd(b.path("."));
-    b.step("goldens", "Rewrite the golden files in src/testing/goldens").dependOn(&run_capture.step);
+    }) catch @panic("OOM");
 }
 
 /// Build-time choices mirrored into `gooey_build_options`. Defaults are the

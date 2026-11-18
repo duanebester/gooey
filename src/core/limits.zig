@@ -453,8 +453,8 @@ pub const ResourceLimits = struct {
         return null;
     }
 
-    /// Every accessibility node is an element, and every announcement has at
-    /// least one byte.
+    /// Every accessibility node is an element, and a node's value fits the
+    /// frame's text bytes.
     fn checkA11yRelationships(self: *const ResourceLimits) ?Violation {
         const element_count = self.build.element_count_frame_max;
         if (self.a11y.element_count_max > element_count) {
@@ -472,16 +472,6 @@ pub const ResourceLimits = struct {
                 self.a11y.value_bytes_max,
                 self.build.text_bytes_frame_max,
             );
-        }
-        const announcement_count = self.a11y.announcement_count_frame_max;
-        if (self.a11y.announcement_bytes_frame_max < announcement_count) {
-            return .{
-                .budget = .a11y,
-                .field = "announcement_bytes_frame_max",
-                .rule = .below_relationship,
-                .value = self.a11y.announcement_bytes_frame_max,
-                .bound = announcement_count,
-            };
         }
         return null;
     }
@@ -1731,16 +1721,26 @@ pub const EntityLimits = struct {
 /// tree the platform bridges diff, and the announcements a frame carries.
 /// Peaks measured over every example (0.6 plan, "Method"): 24 nodes
 /// (accessible-form, `small`), 7 at `nano`, and one announcement per frame.
+/// The announcement slots (`polite_pending_max + 1` of `message_bytes_max`)
+/// keep 0.6's per-frame byte budgets: 512 B to 16 KiB.
 pub const A11yLimits = struct {
     /// Accessibility nodes per frame (boxes with `a11y`), which sizes both
     /// frames' node pools, the accessibility tree, and each platform bridge's
     /// element slots. Every node is an element, so at most
     /// `build.element_count_frame_max`; tree indexes are `u16`.
     element_count_max: u32,
-    /// `Effects.announce` calls between two builds.
-    announcement_count_frame_max: u32,
-    /// Bytes of those announcements' text, copied out of the handlers.
-    announcement_bytes_frame_max: u32,
+    /// Polite announcements (`Effects.announce`) pending for the next build.
+    /// Pending announcements behave as two live regions (contract §4,
+    /// "Announcements"): one assertive slot, which a newer assertive
+    /// announcement replaces, and a FIFO of this many polite ones, in which
+    /// a newer one past this count replaces the oldest. Replacement is the
+    /// defined policy, as a screen reader's own queue behaves, so input that
+    /// arrives while a frame is in flight never exhausts the pool.
+    announcement_polite_pending_max: u32,
+    /// Bytes of one announcement's text, copied out of its handler into a
+    /// slot of its own; a longer text is a capacity-planning error and fails
+    /// fast. The pool reserves `announcement_polite_pending_max + 1` slots.
+    announcement_message_bytes_max: u32,
     /// Bytes of one node's `value` the frame keeps. A longer value, such as
     /// an editor's whole document, is cut to the lines around its
     /// `A11y.selection` (the caret), as native text views expose the text
@@ -1750,32 +1750,32 @@ pub const A11yLimits = struct {
 
     pub const nano: A11yLimits = .{
         .element_count_max = 128,
-        .announcement_count_frame_max = 4,
-        .announcement_bytes_frame_max = 512,
+        .announcement_polite_pending_max = 3,
+        .announcement_message_bytes_max = 128,
         .value_bytes_max = 1024,
     };
     pub const small: A11yLimits = .{
         .element_count_max = 512,
-        .announcement_count_frame_max = 8,
-        .announcement_bytes_frame_max = 1024,
+        .announcement_polite_pending_max = 7,
+        .announcement_message_bytes_max = 128,
         .value_bytes_max = 4 * 1024,
     };
     pub const standard: A11yLimits = .{
         .element_count_max = 2_048,
-        .announcement_count_frame_max = 16,
-        .announcement_bytes_frame_max = 2048,
+        .announcement_polite_pending_max = 15,
+        .announcement_message_bytes_max = 128,
         .value_bytes_max = 8 * 1024,
     };
     pub const large: A11yLimits = .{
         .element_count_max = 8_192,
-        .announcement_count_frame_max = 16,
-        .announcement_bytes_frame_max = 4096,
+        .announcement_polite_pending_max = 15,
+        .announcement_message_bytes_max = 256,
         .value_bytes_max = 16 * 1024,
     };
     pub const ceiling: A11yLimits = .{
         .element_count_max = a11y_element_count_ceiling,
-        .announcement_count_frame_max = 64,
-        .announcement_bytes_frame_max = 16 * 1024,
+        .announcement_polite_pending_max = 63,
+        .announcement_message_bytes_max = 256,
         .value_bytes_max = a11y_value_bytes_ceiling,
     };
 };
@@ -1793,6 +1793,13 @@ comptime {
     assert(a11y_element_count_ceiling < std.math.maxInt(u16));
     assert(2 * a11y_element_count_ceiling <= std.math.maxInt(u16));
     assert(a11y_value_bytes_ceiling <= std.math.maxInt(u16));
+    // The tree holds the pending announcements (one assertive, the polite
+    // FIFO) plus one live-region change per element, indexed by `u16`; the
+    // announcement slots' bytes are a `u32` byte count.
+    const pending_ceiling = A11yLimits.ceiling.announcement_polite_pending_max + 1;
+    assert(pending_ceiling + a11y_element_count_ceiling < std.math.maxInt(u16));
+    assert(@as(u64, pending_ceiling) * A11yLimits.ceiling.announcement_message_bytes_max <=
+        std.math.maxInt(u32));
 }
 
 /// Every `u32` field of a flat budget must be in `1..=ceiling`.
@@ -2299,14 +2306,13 @@ test "check reports each negative case precisely" {
 
 test "check bounds each a11y field by its ceiling and its relationships" {
     // Goal: every `ResourceLimits.a11y` field fails at 0 and one past its
-    // ceiling and passes at the ceiling; nodes never outnumber elements,
-    // announcement bytes never fall below one per announcement, and a value
-    // fits the frame's text bytes. Method: start from `ceiling` (every field
+    // ceiling and passes at the ceiling; nodes never outnumber elements, and
+    // a value fits the frame's text bytes. Method: start from `ceiling` (every field
     // at its ceiling) and move one field at a time.
     inline for (.{
         "element_count_max",
-        "announcement_count_frame_max",
-        "announcement_bytes_frame_max",
+        "announcement_polite_pending_max",
+        "announcement_message_bytes_max",
         "value_bytes_max",
     }) |field| {
         var limits = ResourceLimits.ceiling;
@@ -2331,15 +2337,6 @@ test "check bounds each a11y field by its ceiling and its relationships" {
     try std.testing.expectEqualStrings("element_count_max", nodes.field);
     try std.testing.expectEqual(Violation.Rule.above_relationship, nodes.rule);
     try std.testing.expectEqual(limits.build.element_count_frame_max, nodes.bound);
-
-    limits = ResourceLimits.nano;
-    limits.a11y.announcement_bytes_frame_max = limits.a11y.announcement_count_frame_max;
-    try std.testing.expect(limits.check() == null);
-    limits.a11y.announcement_bytes_frame_max -= 1;
-    const bytes = limits.check().?;
-    try std.testing.expectEqualStrings("announcement_bytes_frame_max", bytes.field);
-    try std.testing.expectEqual(Violation.Rule.below_relationship, bytes.rule);
-    try std.testing.expectEqual(limits.a11y.announcement_count_frame_max, bytes.bound);
 
     limits = ResourceLimits.nano;
     limits.a11y.value_bytes_max = limits.build.text_bytes_frame_max;

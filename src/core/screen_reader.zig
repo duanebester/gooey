@@ -105,7 +105,7 @@ test "the bridge is polled on the first frame and then once per interval" {
         .hit_record_count_max = 1,
         .handler_count_max = 1,
         .a11y_node_count_max = 1,
-        .announcements = .{ .count_max = 1, .bytes_max = 1 },
+        .announcements = .{ .polite_pending_max = 1, .message_bytes_max = 1 },
         .text_bytes_max = 1,
         .mesh_point_count_max = 0,
     });
@@ -144,8 +144,8 @@ test "a full nano frame publishes every node and announcement into a nano tree" 
         .handler_count_max = 1,
         .a11y_node_count_max = nano.a11y.element_count_max,
         .announcements = .{
-            .count_max = nano.a11y.announcement_count_frame_max,
-            .bytes_max = nano.a11y.announcement_bytes_frame_max,
+            .polite_pending_max = nano.a11y.announcement_polite_pending_max,
+            .message_bytes_max = nano.a11y.announcement_message_bytes_max,
         },
         .text_bytes_max = 2,
         .mesh_point_count_max = 0,
@@ -172,9 +172,11 @@ test "a full nano frame publishes every node and announcement into a nano tree" 
             .selection = null,
         });
     }
-    for (0..nano.a11y.announcement_count_frame_max) |_| {
+    // A full pending set: every polite slot and the assertive one.
+    for (0..nano.a11y.announcement_polite_pending_max) |_| {
         frame.announcements.push("Saved", .polite, 1);
     }
+    frame.announcements.push("Failed", .assertive, 1);
     try std.testing.expectEqual(frame.a11y.len, frame.a11y_count);
 
     system.forceEnable();
@@ -182,7 +184,7 @@ test "a full nano frame publishes every node and announcement into a nano tree" 
     publish(system, &poll, frame, 0);
     try std.testing.expectEqual(@as(usize, nano.a11y.element_count_max), system.tree.count());
     try std.testing.expectEqual(
-        @as(u16, @intCast(nano.a11y.announcement_count_frame_max)),
+        @as(u16, @intCast(nano.a11y.announcement_polite_pending_max + 1)),
         system.tree.announcement_count,
     );
 }

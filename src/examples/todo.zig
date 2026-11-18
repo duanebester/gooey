@@ -12,6 +12,8 @@ const std = @import("std");
 const gooey = @import("gooey");
 const components = @import("gooey-components");
 
+const assert = std.debug.assert;
+
 const ui = gooey.ui;
 const Cx = gooey.Cx;
 const Button = components.Button;
@@ -22,6 +24,11 @@ const todo_count_max = 64;
 const todo_bytes_max = 128;
 
 const Todo = struct {
+    /// Assigned at push and never reused. Rows key by it and their handlers
+    /// carry it, so a click on a frame built before the list changed acts on
+    /// the todo that row showed, or on nothing once it is gone. An array
+    /// index would name whatever todo has moved into that slot since.
+    id: u64 = 0,
     bytes: [todo_bytes_max]u8 = @splat(0),
     len: u32 = 0,
     done: bool = false,
@@ -33,9 +40,24 @@ const Todo = struct {
 
 pub const Filter = enum { all, active, done };
 
+/// The longest prefix of UTF-8 `value` that fits `bytes_max` and ends on a
+/// codepoint boundary, so a cut never leaves half an "é". A codepoint is at
+/// most four bytes, so at most three continuation bytes are stepped back.
+fn utf8Prefix(value: []const u8, bytes_max: u32) u32 {
+    assert(bytes_max >= 4);
+    if (value.len <= bytes_max) return @intCast(value.len);
+    var kept = bytes_max;
+    const kept_min = bytes_max - 3;
+    while (kept > kept_min and value[kept] & 0xC0 == 0x80) kept -= 1;
+    assert(value[kept] & 0xC0 != 0x80);
+    return kept;
+}
+
 pub const State = struct {
     todos: [todo_count_max]Todo = @splat(.{}),
     count: u32 = 0,
+    /// The id the next pushed todo gets; ids start at 1.
+    id_next: u64 = 1,
     draft: []const u8 = "",
     filter: Filter = .all,
 
@@ -45,10 +67,12 @@ pub const State = struct {
         if (trimmed.len == 0) return;
         if (self.count == todo_count_max) return;
         const slot = &self.todos[self.count];
-        const kept = @min(trimmed.len, todo_bytes_max);
+        const kept = utf8Prefix(trimmed, todo_bytes_max);
         @memcpy(slot.bytes[0..kept], trimmed[0..kept]);
         slot.len = @intCast(kept);
         slot.done = false;
+        slot.id = self.id_next;
+        self.id_next += 1;
         self.count += 1;
     }
 
@@ -57,13 +81,13 @@ pub const State = struct {
         self.draft = "";
     }
 
-    pub fn toggle(self: *State, index: u32) void {
-        if (index >= self.count) return;
+    pub fn toggle(self: *State, id: u64) void {
+        const index = self.find(id) orelse return;
         self.todos[index].done = !self.todos[index].done;
     }
 
-    pub fn remove(self: *State, index: u32) void {
-        if (index >= self.count) return;
+    pub fn remove(self: *State, id: u64) void {
+        const index = self.find(id) orelse return;
         var position = index;
         while (position + 1 < self.count) : (position += 1) {
             self.todos[position] = self.todos[position + 1];
@@ -83,6 +107,15 @@ pub const State = struct {
             kept += 1;
         }
         self.count = kept;
+    }
+
+    /// The index of the todo with `id`, or null once it is removed.
+    fn find(self: *const State, id: u64) ?u32 {
+        assert(id < self.id_next);
+        for (self.todos[0..self.count], 0..) |*todo, index| {
+            if (todo.id == id) return @intCast(index);
+        }
+        return null;
     }
 
     fn remaining(self: *const State) u32 {
@@ -194,9 +227,9 @@ const FilterButton = struct {
 const TodoItems = struct {
     pub fn render(_: TodoItems, cx: *Cx) void {
         const s = cx.state(State);
-        for (s.todos[0..s.count], 0..) |*todo, index| {
+        for (s.todos[0..s.count]) |*todo| {
             if (!s.visible(todo)) continue;
-            cx.render(TodoRow{ .index = @intCast(index) });
+            cx.render(TodoRow{ .todo = todo });
         }
     }
 };
@@ -212,15 +245,15 @@ const row_style: ui.Style = .{
 };
 
 const TodoRow = struct {
-    index: u32,
+    todo: *const Todo,
 
     pub fn render(self: TodoRow, cx: *Cx) void {
-        const todo = &cx.state(State).todos[self.index];
+        const todo = self.todo;
         const color = if (todo.done) ui.Color.rgb(0.6, 0.6, 0.6) else ui.Color.rgb(0.1, 0.1, 0.1);
-        cx.render(ui.box(.{ .key = .{ .index = self.index }, .style = row_style }, .{
+        cx.render(ui.box(.{ .key = .{ .index = todo.id }, .style = row_style }, .{
             Checkbox{
                 .checked = todo.done,
-                .on_click = cx.on(State.toggle, .{ .arg = self.index }),
+                .on_click = cx.on(State.toggle, .{ .arg = todo.id }),
                 // The todo's text names it; the row's text box is not read.
                 .accessible_name = todo.text(),
             },
@@ -230,7 +263,7 @@ const TodoRow = struct {
                 .label = "Delete",
                 .variant = .danger,
                 .size = .small,
-                .on_click = cx.on(State.remove, .{ .arg = self.index }),
+                .on_click = cx.on(State.remove, .{ .arg = todo.id }),
             },
         }));
     }
@@ -265,10 +298,10 @@ test "the model adds trimmed drafts, toggles, removes, and clears" {
     try std.testing.expectEqualStrings("", s.draft);
     s.push("b");
     s.push("c");
-    s.toggle(0);
-    s.toggle(2);
+    s.toggle(s.todos[0].id);
+    s.toggle(s.todos[2].id);
     try std.testing.expectEqual(@as(u32, 1), s.remaining());
-    s.remove(1);
+    s.remove(s.todos[1].id);
     try std.testing.expectEqual(@as(u32, 2), s.count);
     s.clearCompleted();
     try std.testing.expectEqual(@as(u32, 0), s.count);

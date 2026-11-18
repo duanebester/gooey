@@ -283,8 +283,14 @@ The rules, all asserted or enforced in `src/core/handler.zig` and `src/core/reco
 - One announcement per handler call.
 - The text is copied after the handler returns, so point it at a constant or app state,
   not at a buffer on the handler's stack.
-- The next built frame carries the announcement, and only that frame.
-- Past 16 announcements or 1,024 bytes between two builds the app panics, naming the pool.
+- The next built frame carries the announcement, and only that frame; the screen reader
+  receives it when that frame is flipped on.
+- Announcements waiting for a build behave as two live regions (contract §4,
+  "Announcements"): one assertive, which a newer assertive one replaces, and up to
+  `a11y.announcement_polite_pending_max` polite ones, of which a newer one replaces the
+  oldest. The survivors are spoken in the order they were announced.
+- A text longer than `a11y.announcement_message_bytes_max` (128 bytes at `standard`)
+  panics, naming the field.
 
 `.polite` waits for the screen reader to finish speaking. `.assertive` interrupts it.
 
@@ -404,19 +410,20 @@ move focus through the accessibility API; users fall back to the keyboard and po
 Every capacity comes from the app's `ResourceLimits` (`src/core/limits.zig`), so a
 profile change resizes the frame's node pool, the tree and the platform bridge together.
 
-| Limit                               | Value                | Past the limit             |
-| ----------------------------------- | -------------------- | -------------------------- |
-| `a11y.element_count_max`            | 128 to 16,384        | Panics: "elements"         |
-| `a11y.announcement_count_frame_max` | 4 to 64 per build    | Panics: "announcements"    |
-| `a11y.announcement_bytes_frame_max` | 512 B to 16 KiB      | Panics: "announcement bytes" |
-| `a11y.value_bytes_max`              | 1 KiB to 32 KiB      | Cut to the caret's lines   |
-| `build.box_depth_max`               | the tree's depth     | Panics: "box depth"        |
-| `build.text_bytes_frame_max`        | 16 KiB to 4 MiB      | Panics: "text bytes"       |
-| `poll_interval_ns`                  | 1 s                  | None: it is the poll period |
+| Limit                                  | Value             | Past the limit              |
+| -------------------------------------- | ----------------- | --------------------------- |
+| `a11y.element_count_max`               | 128 to 16,384     | Panics: "elements"          |
+| `a11y.announcement_polite_pending_max` | 3 to 63 per build | The oldest is replaced      |
+| `a11y.announcement_message_bytes_max`  | 128 B to 256 B    | Panics: longer than slot    |
+| `a11y.value_bytes_max`                 | 1 KiB to 32 KiB   | Cut to the caret's lines    |
+| `build.box_depth_max`                  | the tree's depth  | Panics: "box depth"         |
+| `build.text_bytes_frame_max`           | 16 KiB to 4 MiB   | Panics: "text bytes"        |
+| `poll_interval_ns`                     | 1 s               | None: it is the poll period |
 
 By profile, `nano`, `small`, `standard`, `large`, and `ceiling`: elements 128, 512, 2,048,
-8,192, and 16,384; announcements 4, 8, 16, 16, and 64; announcement bytes 512, 1 KiB,
-2 KiB, 4 KiB, and 16 KiB; value bytes 1 KiB, 4 KiB, 8 KiB, 16 KiB, and 32 KiB.
+8,192, and 16,384; pending polite announcements 3, 7, 15, 15, and 63, plus one assertive;
+announcement text 128, 128, 128, 256, and 256 bytes; value bytes 1 KiB, 4 KiB, 8 KiB,
+16 KiB, and 32 KiB.
 
 A text field's value longer than `a11y.value_bytes_max`, such as a `CodeEditor`'s
 document, is cut to the whole lines around its `A11y.selection`, as native text views
@@ -426,7 +433,7 @@ of half the budget, so most caret steps read as selection changes, not value cha
 `check()` holds `a11y.value_bytes_max` to at most `build.text_bytes_frame_max`.
 
 `check()` holds `a11y.element_count_max` to at most `build.element_count_frame_max`
-(every node is an element) and the announcement bytes to at least one per announcement.
+(every node is an element).
 The frame's node pool, the tree's element tables and each bridge's element slots are all
 `a11y.element_count_max`, so the frame's pool is the only check that can fire; it fires
 whether or not a screen reader runs. The tree also holds one live-region announcement per

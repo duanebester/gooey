@@ -418,12 +418,21 @@ fn planChildSizes(engine: *LayoutEngine, parent_index: u32) SizingFrame {
         std.debug.assert(frame.factor <= 1.0);
     } else {
         std.debug.assert(totals.grow_weight_total >= 0);
-        std.debug.assert(size_to_distribute >= 0 or totals.grow_weight_total == 0);
+        std.debug.assert(totals.total_desired >= 0);
+        // Gap overflow is intended: gaps count as used space and never
+        // shrink, grow children get nothing from negative space, and the
+        // rest overflows, as in CSS flexbox and clay. With nothing desired to
+        // shrink, only the gaps can make the space negative here.
+        if (size_to_distribute < 0) {
+            std.debug.assert(totals.total_desired == 0);
+            std.debug.assert(total_gap > available);
+        }
         frame.rule = .grow;
         frame.factor = if (totals.grow_weight_total > 0)
             @max(0, size_to_distribute) / totals.grow_weight_total
         else
             0;
+        if (size_to_distribute < 0) std.debug.assert(frame.factor == 0);
     }
     std.debug.assert(frame.factor >= 0);
     return frame;

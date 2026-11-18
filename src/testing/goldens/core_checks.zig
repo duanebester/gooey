@@ -518,9 +518,9 @@ test "a TextArea takes lines, follows the caret, and places it where clicked" {
 
     // The wheel over the area scrolls it, clamped at both ends; over the
     // window outside it, nothing scrolls. `down` is pixels toward the end,
-    // and 20 px is past one line; the delta is inverted on macOS, as
-    // `ScrollState.wheel` reads it.
-    const direction: f32 = if (@import("builtin").os.tag == .macos) -1 else 1;
+    // and 20 px is past one line; the delta is inverted by
+    // `window.wheel_delta_inverted`, as `ScrollState.wheel` reads it.
+    const direction: f32 = if (internals.window.wheel_delta_inverted) -1 else 1;
     const wheel_events = [_]struct { x: f32, y: f32, down: f32, caret_y: f32 }{
         .{ .x = inset + 1, .y = inset + 1, .down = -20, .caret_y = inset + 2 * line_height },
         .{ .x = inset + 1, .y = 150, .down = 200, .caret_y = inset + 2 * line_height },
@@ -671,8 +671,8 @@ test "a CodeEditor indents with Tab, selects a line from its gutter, and scrolls
     try testing.expectEqual(@as(u32, 5), selected.len);
 
     // The wheel reaches the editor: 20 px toward the start, past one line
-    // and inverted on macOS, so line 2 moves down a row.
-    const direction: f32 = if (@import("builtin").os.tag == .macos) -1 else 1;
+    // and inverted by `window.wheel_delta_inverted`, so line 2 moves down a row.
+    const direction: f32 = if (internals.window.wheel_delta_inverted) -1 else 1;
     app.window.queue.push(.{ .input = .{ .scroll = .{
         .position = .{ .x = text_x + 1, .y = text_y + 1 },
         .delta = .{ .x = 0, .y = -20 * direction },
@@ -758,8 +758,8 @@ const ScrollView = struct {
 };
 
 fn scrollWheel(app: *ScrollApp, now: *u64, x: f32, y: f32, down: f32) void {
-    // Offsets follow the delta, inverted on macOS (`ScrollState.wheel`).
-    const direction: f32 = if (@import("builtin").os.tag == .macos) -1 else 1;
+    // Offsets follow the delta, inverted by `window.wheel_delta_inverted`.
+    const direction: f32 = if (internals.window.wheel_delta_inverted) -1 else 1;
     app.window.queue.push(.{ .input = .{ .scroll = .{
         .position = .{ .x = x, .y = y },
         .delta = .{ .x = 0, .y = down * direction },
@@ -826,6 +826,44 @@ test "a scroll box clips its content, clamps its offset, and passes the wheel on
     view = ScrollView.read(&app.window);
     try testing.expectEqual(@as(f32, 0), view.outer_offset);
     try testing.expectEqual(@as(f32, 30), view.inner_offset);
+}
+
+test "wheel_delta_inverted turns the same wheel event the opposite way" {
+    // Goal: the global, not the build's OS, decides the wheel's direction,
+    // so a harness that pins it replays a seed on every host.
+    // Methodology: deliver one raw +20 px event (not `scrollWheel`, which
+    // compensates) over the inner box with the global false, then the same
+    // event with it true: the offset goes 0 to 20, then back to 0. Starting
+    // from 0, an inverted event first would clamp and prove nothing.
+    const inverted_before = internals.window.wheel_delta_inverted;
+    defer internals.window.wheel_delta_inverted = inverted_before;
+    const app = try testing.allocator.create(ScrollApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    now += 1;
+    app.tick(now);
+
+    var view = ScrollView.read(&app.window);
+    try testing.expectEqual(@as(f32, 0), view.inner_offset);
+    const event: gooey.input.InputEvent = .{ .scroll = .{
+        .position = .{ .x = view.inner.bounds.x + 10, .y = view.inner.bounds.y + 10 },
+        .delta = .{ .x = 0, .y = 20 },
+        .modifiers = .{},
+    } };
+    const inverted_choices = [_]bool{ false, true };
+    const offsets_expected = [_]f32{ 20, 0 };
+    for (inverted_choices, offsets_expected) |inverted, offset_expected| {
+        internals.window.wheel_delta_inverted = inverted;
+        app.window.queue.push(.{ .input = event });
+        now += 1;
+        app.tick(now);
+        view = ScrollView.read(&app.window);
+        try testing.expectEqual(offset_expected, view.inner_offset);
+        try testing.expectEqual(@as(f32, 0), view.outer_offset);
+    }
 }
 
 /// A 200 px scroll box of 100 focusable 24 px rows, each with a one-line
@@ -942,7 +980,7 @@ test "a scroll box draws only what is in view, and keeps every row's hit and nod
     }
     try testing.expectEqual(cull_row_count, items);
 
-    const direction: f32 = if (@import("builtin").os.tag == .macos) -1 else 1;
+    const direction: f32 = if (internals.window.wheel_delta_inverted) -1 else 1;
     app.window.queue.push(.{ .input = .{ .scroll = .{
         .position = .{ .x = 100, .y = 100 },
         .delta = .{ .x = 0, .y = 1_200 * direction },
@@ -1124,7 +1162,7 @@ test "an end-anchored scroll box follows its content until scrolled away" {
 }
 
 fn scrollWheelAt(app: anytype, now: *u64, x: f32, y: f32, down: f32) void {
-    const direction: f32 = if (@import("builtin").os.tag == .macos) -1 else 1;
+    const direction: f32 = if (internals.window.wheel_delta_inverted) -1 else 1;
     app.window.queue.push(.{ .input = .{ .scroll = .{
         .position = .{ .x = x, .y = y },
         .delta = .{ .x = 0, .y = down * direction },
@@ -1252,7 +1290,7 @@ test "cx.scroll, cx.bounds, and cx.now read the last frame and the tick from ren
     try testing.expectEqual(bounds.y, settled.viewport.y);
     try testing.expectEqual(bounds.height, settled.viewport.height);
 
-    const direction: f32 = if (@import("builtin").os.tag == .macos) -1 else 1;
+    const direction: f32 = if (internals.window.wheel_delta_inverted) -1 else 1;
     app.window.queue.push(.{ .input = .{ .scroll = .{
         .position = .{ .x = bounds.x + 10, .y = bounds.y + 10 },
         .delta = .{ .x = 0, .y = 20 * direction },
@@ -2983,7 +3021,7 @@ fn formReveal(
     while (node.bounds.y < 10 or node.bounds.y + node.bounds.height > 790) : (steps += 1) {
         assert(steps < 20);
         const down: f32 = if (node.bounds.y < 10) -200 else 200;
-        const direction: f32 = if (@import("builtin").os.tag == .macos) -1 else 1;
+        const direction: f32 = if (internals.window.wheel_delta_inverted) -1 else 1;
         app.window.queue.push(.{ .input = .{ .scroll = .{
             .position = .{ .x = 300, .y = 400 },
             .delta = .{ .x = 0, .y = down * direction },
@@ -3203,7 +3241,7 @@ fn editorResize(app: *code_editor.App, now: *u64, height: f32) void {
 /// Wheel the file list down until the row named `name` is built.
 fn editorWheelTo(app: *code_editor.App, now: *u64, name: []const u8) void {
     const list = nodeNamed(&app.window, .button, "a.zig").?.bounds;
-    const direction: f32 = if (@import("builtin").os.tag == .macos) -1 else 1;
+    const direction: f32 = if (internals.window.wheel_delta_inverted) -1 else 1;
     var steps: u32 = 0;
     while (nodeNamed(&app.window, .button, name) == null) : (steps += 1) {
         assert(steps < 10);
@@ -3521,7 +3559,7 @@ fn listRows(window: *internals.window.Window, index: u32) struct {
 /// Wheel the list down by `down` px at its centre and settle the render the
 /// emit requests once it measures the new rows.
 fn listWheel(app: anytype, now: *u64, down: f32) void {
-    const direction: f32 = if (@import("builtin").os.tag == .macos) -1 else 1;
+    const direction: f32 = if (internals.window.wheel_delta_inverted) -1 else 1;
     app.window.queue.push(.{ .input = .{ .scroll = .{
         .position = .{ .x = 150, .y = 150 },
         .delta = .{ .x = 0, .y = down * direction },
@@ -4698,6 +4736,75 @@ test "the first frame fits a window whose size changed before the host bound it"
     try testing.expectApproxEqAbs(@as(f32, 700 - 24), add.x + add.width, 0.01);
 }
 
+test "todo acts on a todo's id and cuts a draft on a codepoint boundary" {
+    // Goal: the state methods todo's rows and Add call. Methodology: remove
+    // the middle of three todos by id twice and toggle it after: the list
+    // keeps the other two, "c" moved into its slot, untouched (VOPR seeds
+    // 17, 106, 107 had an index act on whatever moved there). Then add
+    // drafts of 127 and 126 bytes of "a" before an "é" (2 bytes): the
+    // 128-byte cut must keep 127 and 128 bytes, never half the "é" (seeds
+    // 42, 250, 302).
+    var state = todo.State{};
+    for ([_][]const u8{ "a", "b", "c" }) |text| {
+        state.draft = text;
+        state.addTodo();
+    }
+    const b = state.todos[1].id;
+    state.remove(b);
+    state.remove(b);
+    state.toggle(b);
+    try testing.expectEqual(@as(u32, 2), state.count);
+    try testing.expectEqualStrings("c", state.todos[1].bytes[0..state.todos[1].len]);
+    try testing.expect(!state.todos[1].done);
+
+    const a127: [127]u8 = @splat('a');
+    const a126: [126]u8 = @splat('a');
+    state.draft = a127 ++ "\u{e9}";
+    state.addTodo();
+    try testing.expectEqual(@as(u32, 127), state.todos[2].len);
+    state.draft = a126 ++ "\u{e9}";
+    state.addTodo();
+    const cut = state.todos[3].bytes[0..state.todos[3].len];
+    try testing.expectEqual(@as(usize, 128), cut.len);
+    try testing.expect(std.unicode.utf8ValidateSlice(cut));
+}
+
+test "a handler that clears a bound draft gets the next edit on the empty text" {
+    // Goal: a TextInput's next edit applies to what the app assigned to its
+    // binding, even before a build syncs the engine (VOPR seeds 101-103).
+    // Methodology: on todo, focus the draft and type "abc", then in one
+    // drain click Add, whose handler pushes the draft and assigns "", click
+    // the draft again, and type "x". The list must hold "abc" and the draft
+    // only "x"; the engine once kept "abc" until the next build and wrote
+    // back "abcx".
+    const app = try testing.allocator.create(todo.App);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    const input = nodeNamed(&app.window, .textbox, "What needs doing?").?.bounds;
+    clickOnce(app, &now, input.x + 4, input.y + input.height / 2);
+    app.window.queue.push(.{ .input = .{ .text_input = .{ .text = "abc" } } });
+    now += 1;
+    app.tick(now);
+    try testing.expectEqualStrings("abc", app.state.draft);
+
+    const add = todoButton(app, "Add").?;
+    const center = mouse(add.x + add.width / 2, add.y + add.height / 2);
+    app.window.queue.push(.{ .input = .{ .mouse_down = center } });
+    app.window.queue.push(.{ .input = .{ .mouse_up = center } });
+    const field = mouse(input.x + 4, input.y + input.height / 2);
+    app.window.queue.push(.{ .input = .{ .mouse_down = field } });
+    app.window.queue.push(.{ .input = .{ .mouse_up = field } });
+    app.window.queue.push(.{ .input = .{ .text_input = .{ .text = "x" } } });
+    now += 1;
+    app.tick(now);
+    try testing.expectEqual(@as(u32, 1), app.state.count);
+    try testing.expect(nodeNamed(&app.window, .checkbox, "abc") != null);
+    try testing.expectEqualStrings("x", app.state.draft);
+}
+
 test "todo keeps its header, footer, and Add in view at 20 items and narrow widths" {
     // Goal: the default example holds its layout past a screenful (SER9 saw
     // rows overlap the header from 8 items) and down to narrow windows (Add
@@ -4732,8 +4839,8 @@ test "todo keeps its header, footer, and Add in view at 20 items and narrow widt
     _ = todoRowCount(app, &first_top);
     const all = todoButton(app, "All").?;
     try testing.expect(first_top > all.y + all.height);
-    // Offsets follow the delta, inverted on macOS (`ScrollState.wheel`).
-    const direction: f32 = if (@import("builtin").os.tag == .macos) -1 else 1;
+    // Offsets follow the delta, inverted by `window.wheel_delta_inverted`.
+    const direction: f32 = if (internals.window.wheel_delta_inverted) -1 else 1;
     app.window.queue.push(.{ .input = .{ .scroll = .{
         .position = .{ .x = 100, .y = 300 },
         .delta = .{ .x = 0, .y = 200 * direction },
@@ -4961,7 +5068,7 @@ test "keyboard focus stays in view when a layout change moves it, but not after 
     try testing.expect(after.y + after.height + 4 <= 800.01);
     try expectRingAround(&app.window, after);
 
-    const direction: f32 = if (@import("builtin").os.tag == .macos) -1 else 1;
+    const direction: f32 = if (internals.window.wheel_delta_inverted) -1 else 1;
     app.window.queue.push(.{ .input = .{ .scroll = .{
         .position = .{ .x = 300, .y = 400 },
         .delta = .{ .x = 0, .y = -300 * direction },
@@ -4974,6 +5081,110 @@ test "keyboard focus stays in view when a layout change moves it, but not after 
     const wheeled = focusedNode(&app.window).?.bounds;
     try testing.expect(wheeled.y > 800);
     try expectFocused(&app.window, .button, "Submit registration form");
+}
+
+test "focus revealed at a scroll box's end settles instead of trading an ulp" {
+    // Goal: a focus reveal that lands on the clamp boundary stops rendering
+    // (VOPR seed 5284955851540158440). Methodology: give todo six rows, whose
+    // 332.8 px of content overflow its 317.6 px list by 15.2 px, and Tab to
+    // the last Delete, which wants 2 px more room below than the content
+    // has, so the reveal scrolls to the measured end. Laying the rows out at
+    // that offset moves them and the content's end by an ulp, which once read
+    // as a layout shift and re-revealed past a clamp that pulled back, every
+    // frame. Within a few frames nothing may be requested, with Delete in
+    // view and its ring drawn.
+    const app = try testing.allocator.create(todo.App);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    const row_count: u32 = 6;
+    for (0..row_count) |_| {
+        app.state.draft = "a todo";
+        app.state.addTodo();
+    }
+    app.window.render_requested = true;
+    now += 1;
+    app.tick(now);
+    // The draft, Add, three filters, then a checkbox and a Delete per row.
+    for (0..5 + row_count * 2) |_| pressKey(app, &now, .tab, .{});
+    const focused = focusedNode(&app.window).?;
+    try testing.expectEqual(.button, focused.role);
+    const settle_frame_max: u32 = 4;
+    var frame: u32 = 0;
+    while (frame < settle_frame_max and app.window.render_requested) : (frame += 1) {
+        now += 1;
+        app.tick(now);
+    }
+    try testing.expect(!app.window.render_requested);
+    const delete = focusedNode(&app.window).?.bounds;
+    try expectRingAround(&app.window, delete);
+}
+
+/// Todo's list scroll box in the frame on screen.
+fn todoListScroll(app: *todo.App) *internals.window.ScrollState {
+    const frame = app.window.rendered();
+    for (frame.hits[0..frame.hit_count]) |*record| {
+        if (!record.scroll) continue;
+        return app.window.retained.find(internals.window.ScrollState, record.id).?;
+    }
+    unreachable;
+}
+
+test "a scroll box scrolled to its end clamps to shrunk content in one frame" {
+    // Goal: when the content under a far-scrolled box shrinks, the offset
+    // lands on the new end at once. Methodology: give todo 30 rows (48.8 px
+    // each, 8 px apart), wheel its list to the end, then remove 22 rows
+    // behind the frame's back and build. Every remaining row now lies above
+    // the old offset; measuring the content from the box's top once read
+    // that as content ending at the offset, so each frame clamped back only
+    // one viewport. Eight rows are 446.4 px: the build that shrank must put
+    // the offset at 446.4 less the viewport, and the box rest within two.
+    const app = try testing.allocator.create(todo.App);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    for (0..30) |_| {
+        app.state.draft = "a todo";
+        app.state.addTodo();
+    }
+    app.window.render_requested = true;
+    now += 1;
+    app.tick(now);
+    const direction: f32 = if (internals.window.wheel_delta_inverted) -1 else 1;
+    app.window.queue.push(.{ .input = .{ .scroll = .{
+        .position = .{ .x = 100, .y = 300 },
+        .delta = .{ .x = 0, .y = 5000 * direction },
+        .modifiers = .{},
+    } } });
+    now += 1;
+    app.tick(now);
+    const scroll = todoListScroll(app);
+    try testing.expect(scroll.offset_y > 1000);
+    try testing.expect(scroll.at_end);
+
+    while (app.state.count > 8) app.state.remove(app.state.todos[0].id);
+    app.window.render_requested = true;
+    now += 1;
+    app.tick(now);
+    // The build that shrank measures the content and clamps to its end.
+    const content_height: f32 = 8 * 48.8 + 7 * 8;
+    try testing.expectApproxEqAbs(content_height, scroll.content_height, 0.01);
+    const offset_max = content_height - scroll.viewport.height;
+    try testing.expectApproxEqAbs(offset_max, scroll.offset_y, 0.01);
+    // Laid out at the new offset, the content may measure an ulp shorter,
+    // and the clamp moves down that ulp once; then nothing is requested.
+    const settle_frame_max: u32 = 2;
+    var frame: u32 = 0;
+    while (frame < settle_frame_max and app.window.render_requested) : (frame += 1) {
+        now += 1;
+        app.tick(now);
+    }
+    try testing.expect(!app.window.render_requested);
+    try testing.expectApproxEqAbs(offset_max, scroll.offset_y, 0.01);
 }
 
 test "a radio group is one tab stop whose arrow keys select and wrap" {
@@ -6043,7 +6254,8 @@ const DropProbe = struct {
         if (event.* == .key_up) self.source_key_ups += 1;
         if (event.* != .key_down) return;
         self.source_keys += 1;
-        if (event.key_down.key == .space) effects.startDrag(probeId("source"));
+        // The checks read the drag from the window, so the result is not needed.
+        if (event.key_down.key == .space) _ = effects.startDrag(probeId("source"));
     }
 };
 
@@ -6429,4 +6641,69 @@ test "a keyboard drag skips other types and modal-covered targets, and follows t
     try testing.expectEqual(@as(u32, 0), app.state.blocked_drops);
     try testing.expectEqual(probeId("source"), app.window.focus);
     try testing.expectEqual(@as(u32, 1), app.state.source_keys);
+}
+
+/// Press and release `key` with no modifiers, queued for the next drain.
+fn dragDropKey(app: *DragDropApp, key: gooey.input.KeyCode) void {
+    app.window.queue.push(.{ .input = .{ .key_down = chord(key, .{}) } });
+    app.window.queue.push(.{ .input = .{ .key_up = chord(key, .{}) } });
+}
+
+test "drag_drop: keyboard drags during one frame in flight keep only the newest announcement" {
+    // Goal: pending announcements follow the live-region rules (contract §4, "Announcements")
+    // instead of exhausting a pool, the VOPR's 18-keystroke finding. Method:
+    // Tab to a card and tick, which publishes a frame and leaves it in
+    // flight, so no build empties the pending set. Then four cycles of
+    // Space (pick up), Tab (choose a list), Space (drop), Tab (next card),
+    // one drain each, and one more Space: nine assertive announcements, one
+    // past `small`'s eight slots, which used to panic on the ninth. Only the
+    // newest, the last pick-up, stays pending, and the next build carries
+    // it to the screen reader at its flip, and the build after it nothing.
+    const app = try testing.allocator.create(DragDropApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    const tick = internals.tick;
+    const window = &app.window;
+    const slot_count = DragDropApp.limits.a11y.announcement_polite_pending_max + 1;
+    comptime assert(2 * 4 + 1 > slot_count);
+    app.tick(1);
+    dragDropKey(app, .tab);
+    try testing.expect(tick.tickMain(app, window, 2));
+    try testing.expect(window.frame_in_flight.load(.acquire));
+    var now: u64 = 3;
+    for (0..4) |_| {
+        for ([_]gooey.input.KeyCode{ .space, .tab, .space, .tab }) |key| dragDropKey(app, key);
+        try testing.expect(!tick.tickMain(app, window, now));
+        now += 1;
+        try testing.expect(window.frame_in_flight.load(.acquire));
+    }
+    const moved_count = app.state.list(.right).count;
+    try testing.expectEqual(@as(u32, 4), app.state.list(.left).count + moved_count);
+    try testing.expect(moved_count > 0);
+    dragDropKey(app, .space);
+    try testing.expect(!tick.tickMain(app, window, now));
+    now += 1;
+    try testing.expectEqual(@as(u32, 1), window.announcements.count);
+    const pending = window.announcements.slice()[0];
+    try testing.expectEqual(.assertive, pending.live);
+    try testing.expect(std.mem.startsWith(u8, window.announcements.text(pending), "Picked up."));
+
+    // Present the frame in flight; the next tick builds the pending
+    // announcement into a frame, and the tick after it flips that frame on.
+    tick.presentBuilt(window);
+    try testing.expect(tick.tickMain(app, window, now));
+    try testing.expectEqual(@as(u32, 0), window.announcements.count);
+    tick.presentBuilt(window);
+    // The flip at the start of this tick hands the frame to the screen
+    // reader (`screen_reader.publish` reads the rendered frame).
+    _ = tick.tickMain(app, window, now + 1);
+    const delivered = window.rendered();
+    try testing.expectEqual(@as(u32, 1), delivered.announcements.count);
+    const said = delivered.announcements.slice()[0];
+    try testing.expect(std.mem.startsWith(u8, delivered.announcements.text(said), "Picked up."));
+    if (window.frame_in_flight.load(.acquire)) tick.presentBuilt(window);
+    window.render_requested = true;
+    app.tick(now + 2);
+    try testing.expectEqual(@as(u32, 0), window.rendered().announcements.count);
 }

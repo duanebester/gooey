@@ -30,10 +30,9 @@
 //! - `core-a11y-elements`: renders one accessible box more than `nano`'s 128
 //!   `a11y.element_count_max`. The frame's node pool, the tree and every
 //!   bridge are sized from that field, so the frame's pool stops it first.
-//! - `core-a11y-announcements`: five clicks between two builds, each announcing,
-//!   one past `nano`'s 4 `a11y.announcement_count_frame_max`.
-//! - `core-a11y-announcement-bytes`: three clicks announcing 256 bytes each: two
-//!   fill `nano`'s 512 `a11y.announcement_bytes_frame_max` exactly.
+//! - `core-a11y-announcement-bytes`: one click announcing 129 bytes, one past
+//!   `nano`'s 128 `a11y.announcement_message_bytes_max`. Pending announcements
+//!   never run out of slots: a newer one replaces an older one (contract §4).
 //! - `core-opacity-range`: a box whose `Style.opacity` is just above 1.
 //! - `core-grow-weight`: a box that grows with a weight of 0.
 //! - `core-pointer-drag-unkeyed`: a box with `on_pointer_drag` and no key.
@@ -94,7 +93,6 @@ const Mode = enum {
     @"core-layout-elements",
     @"core-layer-count",
     @"core-a11y-elements",
-    @"core-a11y-announcements",
     @"core-a11y-announcement-bytes",
     @"core-opacity-range",
     @"core-grow-weight",
@@ -144,8 +142,7 @@ pub fn main(init: std.process.Init) !void {
         .@"core-layout-elements" => coreTick(init.gpa, init.io, CoreApp.manyBoxes),
         .@"core-layer-count" => coreTick(init.gpa, init.io, CoreApp.manyLayers),
         .@"core-a11y-elements" => coreTick(init.gpa, init.io, CoreApp.manyAccessible),
-        .@"core-a11y-announcements" => coreAnnounce(init.gpa, init.io, .count),
-        .@"core-a11y-announcement-bytes" => coreAnnounce(init.gpa, init.io, .bytes),
+        .@"core-a11y-announcement-bytes" => coreAnnounce(init.gpa, init.io),
         .@"core-opacity-range" => coreTick(init.gpa, init.io, CoreApp.opacityRange),
         .@"core-grow-weight" => coreTick(init.gpa, init.io, CoreApp.growWeight),
         .@"core-pointer-drag-unkeyed" => coreTick(init.gpa, init.io, CoreApp.unkeyedDrag),
@@ -392,7 +389,8 @@ const CoreState = struct {
     fn dragged(_: *CoreState) void {}
 
     fn startDrag(_: *CoreState, id: gooey.ElementId, effects: *gooey.Effects) void {
-        effects.startDrag(id);
+        // The call panics on a box that is not draggable; it never returns.
+        _ = effects.startDrag(id);
     }
 };
 
@@ -835,19 +833,11 @@ fn clickCenter(app: anytype) void {
     app.tick(2);
 }
 
-/// Click an announcing button one time more than `nano` holds between two
-/// builds: `count` announces one byte per click, so the count runs out;
-/// `bytes` announces a quarter of the bytes per click, so two clicks fill them.
-fn coreAnnounce(gpa: std.mem.Allocator, io: std.Io, comptime pool: enum { count, bytes }) void {
+/// Click a button announcing one byte more than `nano`'s announcement slot.
+fn coreAnnounce(gpa: std.mem.Allocator, io: std.Io) void {
     const a11y = gooey.ResourceLimits.nano.a11y;
     const Announcer = struct {
-        const message_bytes = if (pool == .count) 1 else a11y.announcement_bytes_frame_max / 2;
-        const click_count = if (pool == .count) a11y.announcement_count_frame_max + 1 else 3;
-        const message: [message_bytes]u8 = @splat('a');
-        comptime {
-            std.debug.assert(click_count * 2 <= gooey.ResourceLimits.nano.events.queue_count_max);
-            if (pool == .bytes) std.debug.assert(click_count <= a11y.announcement_count_frame_max);
-        }
+        const message: [a11y.announcement_message_bytes_max + 1]u8 = @splat('a');
 
         fn render(cx: *gooey.Cx) void {
             cx.render(gooey.ui.box(.{
@@ -869,10 +859,8 @@ fn coreAnnounce(gpa: std.mem.Allocator, io: std.Io, comptime pool: enum { count,
         .click_count = 1,
         .modifiers = .{},
     };
-    for (0..Announcer.click_count) |_| {
-        app.window.queue.push(.{ .input = .{ .mouse_down = point } });
-        app.window.queue.push(.{ .input = .{ .mouse_up = point } });
-    }
+    app.window.queue.push(.{ .input = .{ .mouse_down = point } });
+    app.window.queue.push(.{ .input = .{ .mouse_up = point } });
     app.tick(2);
 }
 
@@ -901,7 +889,7 @@ fn corePackRecords(gpa: std.mem.Allocator, pool: enum { draws, clips }) void {
         .hit_record_count_max = 1,
         .handler_count_max = 1,
         .a11y_node_count_max = 1,
-        .announcements = .{ .count_max = 1, .bytes_max = 1 },
+        .announcements = .{ .polite_pending_max = 1, .message_bytes_max = 1 },
         .text_bytes_max = 1,
         .mesh_point_count_max = 1,
     }) catch |err| {
@@ -960,7 +948,7 @@ fn coreCapabilitiesMeshes(gpa: std.mem.Allocator) void {
         .hit_record_count_max = 1,
         .handler_count_max = 1,
         .a11y_node_count_max = 1,
-        .announcements = .{ .count_max = 1, .bytes_max = 1 },
+        .announcements = .{ .polite_pending_max = 1, .message_bytes_max = 1 },
         .text_bytes_max = 1,
         .mesh_point_count_max = 2,
     }) catch |err| {

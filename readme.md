@@ -446,7 +446,7 @@ returns.
 | `pointerDrag()`                          | The pointer capture step, in `on_pointer_drag`.     |
 | `bounds(id)`                             | A keyed element's `ui.Rect` in the frame on screen. |
 | `dropPayload(T)`                         | The dropped payload, in a `drop_target` handler.    |
-| `startDrag(id)`                          | Pick up a keyed draggable from the keyboard.        |
+| `startDrag(id)`                          | Pick up a keyed draggable; true if it started.      |
 | `spawn(Job, &input, handlers)`           | Start a background job; see below.                  |
 | `cancelJob(id)`                          | Cancel a job; its `on_done` reports `.cancelled`.   |
 | `jobResult(Job)`, `jobDone()`, `jobId()` | The job result or end being delivered.              |
@@ -648,11 +648,13 @@ target under the preview stays the target:
 A `.drag` layer adds nothing to the accessibility tree: the preview repeats its source.
 
 **From the keyboard.** `effects.startDrag(id)` picks up a keyed draggable from a handler,
-on a key the app chooses. While the drag is on it takes every key: Tab and the arrows move
-`over`, and focus with its ring, through the drop targets of its type in tree order; Enter
-or Space drops there; Escape cancels and returns focus to the source. `x` and `y`
-are then the centre of `over`, or of the source, so the same preview follows the keys, and
-`Drag(T).keyboard` is true. `drag_drop.zig` picks a focused card up with Space:
+on a key the app chooses, and returns whether the drag started (false while another drag
+or a pointer capture holds the gesture, or when `id` is not on screen). While the drag is
+on it takes every key: Tab and the arrows move `over`, and focus with its ring, through the
+drop targets of its type in tree order; Enter or Space drops there; Escape cancels and
+returns focus to the source. `x` and `y` are then the centre of `over`, or of the source,
+so the same preview follows the keys, and `Drag(T).keyboard` is true. `drag_drop.zig` picks
+a focused card up with Space:
 
 ```zig
     pub fn pickUp(_: *State, card: gooey.ElementId, effects: *Effects) void {
@@ -661,7 +663,9 @@ are then the centre of `over`, or of the source, so the same preview follows the
         const key = &event.key_down;
         if (key.key != .space or key.is_repeat) return;
         if (key.modifiers.cmd or key.modifiers.ctrl or key.modifiers.alt) return;
-        effects.startDrag(card);
+        // A drag or pointer capture already holding the gesture starts no
+        // pick-up, so there is nothing to announce.
+        if (!effects.startDrag(card)) return;
         effects.announce(pick_up_message, .assertive);
     }
 ```
@@ -1192,6 +1196,9 @@ zig build typecheck-linux       # analyze the Linux backend from any host
 zig build typecheck-windows     # analyze the Windows backend from any host
 zig build typecheck-macos       # analyze the macOS backend from any host
 zig build goldens               # rewrite src/testing/goldens after an intended change
+zig build vopr -- [seed]        # simulate the todo example for one (random) seed
+zig build vopr -- --app drag_drop [seed]  # the same for the drag_drop example
+zig build vopr-soak -- --hours 8  # random seeds in child processes; zig-out/vopr-soak/
 zig fmt --check src/ charts/
 ```
 

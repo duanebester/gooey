@@ -26,10 +26,10 @@
 //!   scales with the field. Resident memory follows use, not capacity.
 //! - Per synced frame: one diff and one rebuild over at most the tree's
 //!   elements, and at most `change_count_max` (128) property events, plus one
-//!   structure, one focus, and the tree's announcements (the frame's
-//!   `a11y.announcement_count_frame_max` plus live-region changes). Each event
-//!   is one call into `uiautomationcore`, which forwards it to listening
-//!   clients.
+//!   structure, one focus, and the tree's announcements (the frame's, at
+//!   most `a11y.announcement_polite_pending_max + 1`, plus live-region
+//!   changes). Each event is one call into `uiautomationcore`, which
+//!   forwards it to listening clients.
 //!
 //! Requires Windows 10 1709 for `UiaRaiseNotificationEvent`.
 

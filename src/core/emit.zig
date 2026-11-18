@@ -413,11 +413,14 @@ fn emitFragment(window: *Window, layers_open: *LayerQueue, root: *const LayerRoo
     // inside a faded subtree.
     window.built().paint_opacity = 1;
     if (ring) |focused| {
-        if (window.focus_reveal or focusShifted(window, &focused)) revealFocus(window, &focused);
+        const shifted = focusShifted(window, &focused);
+        if (window.focus_reveal or shifted) revealFocus(window, &focused);
+        // Read before the literal: it writes `focus_place` field by field.
+        const content = focusPlaceContent(window, &focused, shifted);
         window.focus_place = .{
             .id = window.focus,
             .frame_number = window.frame_number,
-            .content = focused.content,
+            .content = content,
         };
         emitFocusRing(window, &focused, clips.paintDepth());
     }
@@ -432,6 +435,15 @@ const focus_ring_width: f32 = 2;
 const focus_ring_offset: f32 = 2;
 /// Room a revealed box keeps from its scroll box's edge, past its ring.
 const focus_reveal_margin: f32 = 8;
+/// How far an edge of the focused box must move in its scroll box's content
+/// to count as a layout shift. The content rect is `bounds - viewport +
+/// offset`, and layout placed `bounds` at `content - offset`: in f32 that
+/// round trip lands an ulp or a few away depending on the offset, so a pure
+/// scroll or clamp moves it by far less than this. The slop matches
+/// `ScrollState.end_slop_px`, the scroll state's other rounding allowance,
+/// and is well inside `focus_reveal_margin`, so a shift it hides cannot take
+/// the box out of view.
+const focus_shift_slop_px: f32 = 0.5;
 
 /// The focused box, recorded as the fragment passes it, and the innermost
 /// scroll box around it.
@@ -470,14 +482,45 @@ fn focusRing(window: *Window, clips: *const Clips, node: *const Node, bounds: Re
 
 /// Whether the last build drew this ring elsewhere in its scroll box's
 /// content: a layout change above or around the focused box, such as an
-/// error message appearing, moved or resized it. A scroll does not.
+/// error message appearing, moved or resized it. A scroll does not, though
+/// it moves the computed content rect by rounding: an exact comparison read
+/// that as a shift, and at the clamp boundary the reveal and the clamp then
+/// traded one ulp of offset every frame (VOPR seed 5284955851540158440).
 fn focusShifted(window: *const Window, ring: *const FocusRing) bool {
     const place = &window.focus_place;
     assert(place.frame_number < window.frame_number);
     if (ring.scroll == null) return false;
-    if (place.id != window.focus) return false;
-    if (place.frame_number + 1 != window.frame_number) return false;
-    return !std.meta.eql(place.content, ring.content);
+    if (!focusPlaceFollows(window)) return false;
+    const before = place.content;
+    const after = ring.content;
+    assert(before.width >= 0);
+    assert(after.width >= 0);
+    if (@abs(after.x - before.x) > focus_shift_slop_px) return true;
+    if (@abs(after.y - before.y) > focus_shift_slop_px) return true;
+    if (@abs(after.width - before.width) > focus_shift_slop_px) return true;
+    return @abs(after.height - before.height) > focus_shift_slop_px;
+}
+
+/// Whether `Window.focus_place` describes this focus in the previous build.
+fn focusPlaceFollows(window: *const Window) bool {
+    const place = &window.focus_place;
+    assert(place.frame_number < window.frame_number);
+    return place.id == window.focus and place.frame_number + 1 == window.frame_number;
+}
+
+/// The content rect the next build compares against. While the same focus
+/// stays put, this keeps the rect from the last shift (or focus move)
+/// rather than this build's: rounding noise then never accumulates, and a
+/// drift below `focus_shift_slop_px` per frame still adds up to a shift.
+/// Why it converges: a reveal moves only the offset, which leaves the kept
+/// rect alone, so after one reveal no later build of a steady layout calls
+/// another; the clamp alone only pulls an offset back into a measured
+/// range that rounding moves by an ulp, so it settles within a frame or two.
+fn focusPlaceContent(window: *const Window, ring: *const FocusRing, shifted: bool) Rect {
+    assert(ring.content.width >= 0);
+    if (shifted) return ring.content;
+    if (!focusPlaceFollows(window)) return ring.content;
+    return window.focus_place.content;
 }
 
 /// Scroll the innermost scroll box around keyboard focus so the box and its
@@ -644,6 +687,12 @@ const Clips = struct {
         /// inside it draws (`Clips.current` is empty).
         drawn: bool,
         /// The children's right and bottom edges, as laid out (offset applied).
+        /// Each starts at the content's origin, `bounds` less the offset, not
+        /// at `bounds`: children scrolled wholly above or left of the view
+        /// still count, so content that shrank under a far offset measures
+        /// its true size and `finishScroll` clamps to its end in one frame.
+        /// Starting at `bounds` floored the content at the offset, and the
+        /// clamp then stepped back one viewport per frame.
         extent_right: f32,
         extent_bottom: f32,
     };
@@ -687,6 +736,9 @@ const Clips = struct {
         assert(self.len <= clip_depth_max);
         checkClipDepth(window, self.paintDepth());
         var rect = bounds;
+        // The content's origin: `bounds` until a scroll offset moves it.
+        var origin_x = bounds.x;
+        var origin_y = bounds.y;
         if (node.scroll) |handle| {
             // Keep the scrollbar outside the clip, using the overflow the last
             // emit measured; `finishScroll` re-renders when it changes.
@@ -697,6 +749,10 @@ const Clips = struct {
             state.offset_x = applied.x;
             state.offset_y = applied.y;
             state.target = null;
+            assert(applied.x >= 0);
+            assert(applied.y >= 0);
+            origin_x = bounds.x - applied.x;
+            origin_y = bounds.y - applied.y;
             if (state.maxY() > 0) rect.width = @max(0, rect.width - scrollbar_room);
             if (state.maxX() > 0) rect.height = @max(0, rect.height - scrollbar_room);
         }
@@ -709,8 +765,8 @@ const Clips = struct {
             .bounds = bounds,
             .rect = rect,
             .drawn = drawn,
-            .extent_right = bounds.x,
-            .extent_bottom = bounds.y,
+            .extent_right = origin_x,
+            .extent_bottom = origin_y,
         };
         self.len += 1;
     }

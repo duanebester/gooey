@@ -52,13 +52,25 @@ pub const Phase = enum { idle, drain, build, layout, emit, pack, draw };
 
 /// How far a wheel delta moves a scroll offset, for every scrolling element
 /// (scroll boxes and text engines alike): the platform's delta in logical
-/// pixels, inverted on macOS (natural scrolling). Linux and Windows report a
-/// positive delta, 15 px per notch, toward the end of the content.
+/// pixels, inverted where `wheel_delta_inverted` is set (macOS). Linux and
+/// Windows report a positive delta, 15 px per notch, toward the end of the
+/// content.
 pub fn wheelOffset(delta: f32) f32 {
     assert(std.math.isFinite(delta));
-    const direction: f32 = if (builtin.os.tag == .macos) -1 else 1;
-    return delta * direction;
+    const offset = if (wheel_delta_inverted) -delta else delta;
+    assert(@abs(offset) == @abs(delta));
+    return offset;
 }
+
+/// Whether the platform's wheel delta is positive toward the start of the
+/// content, so `wheelOffset` inverts it. AppKit's `scrollingDelta` is, with
+/// the person's natural-scrolling choice already applied, so this is not that
+/// preference. Browsers, Linux and Windows report toward the end; one wasm
+/// build serves every OS, and its default (false) is right in all of them.
+/// Native targets know their OS at build time. A platform or a harness may
+/// write it during init, before the first frame, and nothing writes it
+/// afterwards: it is process-global, so every window in a process shares it.
+pub var wheel_delta_inverted: bool = builtin.os.tag == .macos;
 
 /// Stack scratch in the router, emit and debugger holds a path or a level per
 /// box depth at the framework ceiling (128 entries); each window's own depth
@@ -275,7 +287,7 @@ pub const ScrollState = struct {
     }
 
     /// Scroll by a wheel delta, as 0.3.1's scroll containers do: offsets
-    /// follow the delta, inverted on macOS (natural scrolling). Returns
+    /// follow the delta, inverted on macOS (`wheel_delta_inverted`). Returns
     /// whether the offset moved, so a box that cannot scroll lets the wheel
     /// reach its ancestors.
     pub fn wheel(self: *ScrollState, delta_x: f32, delta_y: f32) bool {
@@ -987,8 +999,8 @@ fn initBuildStorage(self: *Window, gpa: std.mem.Allocator, limits: *const Resour
     // The debugger overlay paints into its own headroom (`reservedLimits`).
     const reserved = debugger_mod.reservedLimits(limits);
     const announcements = records.Announcements.Capacity{
-        .count_max = limits.a11y.announcement_count_frame_max,
-        .bytes_max = limits.a11y.announcement_bytes_frame_max,
+        .polite_pending_max = limits.a11y.announcement_polite_pending_max,
+        .message_bytes_max = limits.a11y.announcement_message_bytes_max,
     };
     const frame_capacity = records.FrameCapacity{
         .paint_record_count_max = reserved.records.paint_record_count_frame_max,
