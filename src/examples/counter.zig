@@ -50,7 +50,9 @@ pub const App = gooey.App(State, render, .{
     .title = "Counter",
     .width = 580,
     .height = 350,
-    .limits = .nano,
+    // `.embedded`, not `.nano`: it is also the EVE panel demo, and only
+    // `.embedded`'s paint limits fit the chip's display list.
+    .limits = .embedded,
     .theme = &gooey.Theme.catppuccin_macchiato,
 });
 

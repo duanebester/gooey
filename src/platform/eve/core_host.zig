@@ -53,7 +53,9 @@ comptime {
 /// `finishInit`; the core's guard owns every allocation, the platform's too.
 pub fn run(comptime App: type, app: *App, backing: std.mem.Allocator, io: std.Io) !void {
     comptime {
-        if (eve_limits.EveLimits.bt81x.check(&App.limits_reserved.atlas)) |reason| {
+        // The app's own budget: the debugger overlay's headroom in
+        // `limits_reserved` needs a keyboard shortcut the panel cannot send.
+        if (eve_limits.EveLimits.bt81x.check(&App.limits)) |reason| {
             @compileError("the EVE backend cannot hold this app's ResourceLimits: " ++ reason);
         }
     }

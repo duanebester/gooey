@@ -137,7 +137,9 @@ pub const MAX_IMAGE_PATH_BYTES: u32 = 4_096;
 /// must hold this many frames of icons and images, and each atlas this many
 /// frames of shelves. Build and draw overlap would make it 2 (one frame
 /// building, one drawing); GPU frames in flight do not extend it, because
-/// uploads are ordered after earlier draws (contract §9).
+/// uploads are ordered after earlier draws (contract §9). The EVE host also
+/// protects the frame on screen (`AtlasUploads.protectShownFrame`), so its
+/// `EveLimits.check` asks the caches for two frames.
 pub const atlas_open_frame_count_max: u32 = 1;
 
 /// Windows one app opens: one (contract decision 14). The platform window
@@ -207,8 +209,9 @@ pub const ResourceLimits = struct {
     pub const rung_names = [_][]const u8{ "nano", "small", "standard", "large", "ceiling" };
 
     /// Board-class apps on a 1024x600-class panel at scale 1 (fbdev, eve):
-    /// `nano`'s element, paint, and event budgets with 16 images a frame, a
-    /// 1280x800 framebuffer, two faces, and a 384² image atlas for a logo.
+    /// `nano`'s element and event budgets, paint counts that fit one EVE
+    /// display list (`PaintLimits.embedded`), a 1280x800 framebuffer, two
+    /// faces, and a 384² image atlas for a logo.
     /// See `AtlasLimits.embedded` for why the image atlas is that size.
     pub const embedded: ResourceLimits = .{
         .paint = PaintLimits.embedded,
@@ -550,12 +553,26 @@ pub const PaintLimits = struct {
         .clip_depth_max = 8,
     };
 
-    /// Board-class apps (`ResourceLimits.embedded`): `nano` with room for a
-    /// screen of 16 images (the logo example draws 1).
-    pub const embedded: PaintLimits = blk: {
-        var value = nano;
-        value.image_count_frame_max = 16;
-        break :blk value;
+    /// Board-class apps (`ResourceLimits.embedded`): `nano`'s glyphs and
+    /// icons, with every other count cut so the fullest frame fits the EVE
+    /// display list's 1536 commands (`EveLimits.paintWordsMin`: 1496). The
+    /// 1,024 glyphs alone take 1,024. Measured peaks: counter 11 quads and
+    /// 118 glyphs (149 commands), the SWAPI board app 198 commands, the logo
+    /// example 1 image. Images: 8 a frame, so the cache holds the two frames
+    /// EVE protects.
+    pub const embedded: PaintLimits = .{
+        .quad_count_frame_max = 128,
+        .shadow_count_frame_max = 8,
+        .glyph_count_frame_max = 1_024,
+        .svg_count_frame_max = 16,
+        .image_count_frame_max = 8,
+        .path_count_frame_max = 16,
+        .polyline_count_frame_max = 4,
+        .point_cloud_count_frame_max = 4,
+        .path_vertex_count_frame_max = 1_024,
+        .polyline_point_count_frame_max = 64,
+        .point_count_frame_max = 64,
+        .clip_depth_max = 8,
     };
 
     /// Single-screen apps. Largest measured peaks in the class (todo, layout,

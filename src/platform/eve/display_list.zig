@@ -1,7 +1,8 @@
 //! One BT81x display list, built command by command for one frame.
 //!
 //! The list is the chip's whole picture: at most 2048 commands (`RAM_DL`,
-//! 8 KiB), swapped in at vertical blank. This file encodes commands and the
+//! 8 KiB), of which a frame uses at most `words_max` (1536) so the chip
+//! renders every line in time, swapped in at vertical blank. This file encodes commands and the
 //! drawing helpers the renderer composes primitives from; it keeps the
 //! graphics state already emitted so repeated colors, widths, and scissors
 //! cost nothing.
@@ -25,10 +26,13 @@
 
 const std = @import("std");
 const chip = @import("chip.zig");
+const eve_limits = @import("limits.zig");
 
 const assert = std.debug.assert;
 
-pub const words_max: u32 = chip.display_list_words_max;
+/// Commands a frame's list may use: the measured line-budget cap
+/// (`EveLimits.display_list_words_frame_max`), below `RAM_DL`'s 2048.
+pub const words_max: u32 = eve_limits.EveLimits.bt81x.display_list_words_frame_max;
 /// Commands `begin` emits, before any primitive.
 pub const preamble_words: u32 = 7;
 /// Worst case of `roundRect` and `squareRect`: scissor (2), color (2),
@@ -59,7 +63,8 @@ const vertex2ii_extent: i32 = 512;
 const vertex_fraction_bits: u32 = 3;
 
 comptime {
-    assert(words_max == 2048);
+    assert(words_max <= chip.display_list_words_max);
+    assert(preamble_words + 1 == eve_limits.EveLimits.bt81x.display_list_frame_words);
     assert(handle_count_max <= 16); // `pages_configured` is a `u16`.
     assert(image_handle >= handle_count_max);
     assert(image_handle < 15);
