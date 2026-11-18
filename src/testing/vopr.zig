@@ -144,8 +144,7 @@ pub const Workload = enum {
 /// replayed.
 pub fn main(init: std.process.Init) !void {
     const options = parseArgs(init.minimal.args.vector) orelse {
-        std.debug.print("usage: vopr [--app todo|drag_drop] [seed] [--verbose] " ++
-            "[--skip-announcement-overflow]\n", .{});
+        std.debug.print("usage: vopr [--app todo|drag_drop] [seed] [--verbose]\n", .{});
         return error.InvalidArguments;
     };
     const seed = options.seed orelse seed: {
@@ -177,7 +176,6 @@ fn runCli(
     const result = try runPaired(workload.App(), Model, gpa, io, bytes, .{
         .step_count = step_count_cli,
         .verbose = options.verbose,
-        .skip_announcement_overflow = options.skip_announcement_overflow,
     });
     const summary = result.summary;
     std.debug.print("vopr: {s} seed {d} passed: {d} steps, quiesced in {d} rounds, " ++
@@ -200,37 +198,27 @@ const CliOptions = struct {
     workload: Workload,
     seed: ?u64,
     verbose: bool,
-    skip_announcement_overflow: bool,
 };
 
 /// Null on an argument it does not understand.
 fn parseArgs(args: []const [*:0]const u8) ?CliOptions {
     assert(args.len >= 1);
-    var options: CliOptions = .{
-        .workload = .todo,
-        .seed = null,
-        .verbose = false,
-        .skip_announcement_overflow = false,
-    };
+    var options: CliOptions = .{ .workload = .todo, .seed = null, .verbose = false };
     var index: usize = 1;
     while (index < args.len) : (index += 1) {
         const arg = std.mem.span(args[index]);
         if (std.mem.eql(u8, arg, "--verbose")) {
             options.verbose = true;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--skip-announcement-overflow")) {
-            options.skip_announcement_overflow = true;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--app")) {
-            index += 1;
-            if (index == args.len) return null;
-            const value = std.mem.span(args[index]);
-            options.workload = std.meta.stringToEnum(Workload, value) orelse return null;
         } else {
-            if (options.seed != null) return null;
-            options.seed = std.fmt.parseInt(u64, arg, 0) catch return null;
+            if (std.mem.eql(u8, arg, "--app")) {
+                index += 1;
+                if (index == args.len) return null;
+                const value = std.mem.span(args[index]);
+                options.workload = std.meta.stringToEnum(Workload, value) orelse return null;
+            } else {
+                if (options.seed != null) return null;
+                options.seed = std.fmt.parseInt(u64, arg, 0) catch return null;
+            }
         }
     }
     assert(index == args.len);
@@ -255,10 +243,6 @@ pub const RunOptions = struct {
     step_count: u32,
     /// Print each action before it runs, so a failing seed shows its steps.
     verbose: bool,
-    /// Temporary: keep Space and Enter from overflowing the core's
-    /// announcements pool (`Vopr.skip_announcement_overflow`), a known
-    /// finding, so a run can go on to find others.
-    skip_announcement_overflow: bool,
 };
 
 /// Drive two instances from the same bytes, both allocated at once, and
@@ -279,13 +263,11 @@ pub fn runPaired(
     const first = try gpa.create(V);
     defer gpa.destroy(first);
     try first.initInPlace(gpa, io, &smith_first);
-    first.skip_announcement_overflow = options.skip_announcement_overflow;
     defer first.deinit();
 
     const second = try gpa.create(V);
     defer gpa.destroy(second);
     try second.initInPlace(gpa, io, &smith_second);
-    second.skip_announcement_overflow = options.skip_announcement_overflow;
     defer second.deinit();
 
     checkSame(V, first, second, 0);
@@ -514,16 +496,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
         action_count: u32,
         /// The held-button gesture `.drag` steps continue, if any.
         gesture: GestureState,
-        /// Temporary, off unless asked for: a Space or Enter that could take
-        /// the window's announcements pool past its capacity before the next
-        /// build becomes a present or a tick instead. Every handler of
-        /// drag_drop's announces at most once per such key, so the bound is
-        /// the pool's count plus the keys queued since the last drain. The
-        /// pool is per build but fills per drain (a known finding), and this
-        /// keeps a run going to find others; remove it with that fix.
-        skip_announcement_overflow: bool,
-        /// Space and Enter keys queued since the last drain.
-        announcing_key_count: u32,
 
         const Self = @This();
 
@@ -577,8 +549,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             self.swarm = .generate(smith, Model.action_kinds);
             self.action_count = 0;
             self.gesture = .idle;
-            self.skip_announcement_overflow = false;
-            self.announcing_key_count = 0;
             self.model.init();
             assert(self.driver.now_ns == 0);
             assert(self.driver.renderer.draw_count == 0);
@@ -644,10 +614,12 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
                     .{ .drag = self.generateGesture(smith) }
                 else
                     .tick_main,
-                .key => if (self.queueHasRoom(2, 0))
-                    self.generateKey(smith, in_flight)
-                else
-                    .tick_main,
+                .key => if (self.queueHasRoom(2, 0)) .{ .key = .{
+                    .key = key_choices[choose(smith, key_choices.len, "key")],
+                    .modifiers = modifier_choices[
+                        choose(smith, modifier_choices.len, "modifiers")
+                    ],
+                } } else .tick_main,
                 .text => if (self.queueHasRoom(1, text_bytes_action_max))
                     .{ .text = self.generateText(smith, 1) }
                 else
@@ -734,7 +706,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             const win = self.window();
             self.model.beginDrain(win);
             const published = tick.tickMain(&self.driver.app, win, self.driver.now_ns);
-            self.announcing_key_count = 0;
             if (published) assert(win.frame_in_flight.load(.acquire));
             self.model.endDrain(win, published);
             // The apps open no file dialog, so every drain empties the queue.
@@ -811,28 +782,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
                 .y = point.y,
                 .click_count = 1 + choose(smith, 2, "click count"),
             };
-        }
-
-        /// A key and modifiers from the key set; with
-        /// `skip_announcement_overflow`, a Space or Enter the announcements
-        /// pool may not hold becomes a present, or a tick with none in flight,
-        /// which builds and empties the pool.
-        fn generateKey(self: *Self, smith: *Smith, in_flight: bool) Action {
-            const chord: Action.Chord = .{
-                .key = key_choices[choose(smith, key_choices.len, "key")],
-                .modifiers = modifier_choices[choose(smith, modifier_choices.len, "modifiers")],
-            };
-            const announcing = chord.key == .space or chord.key == .@"return";
-            if (!announcing) return .{ .key = chord };
-            if (self.skip_announcement_overflow) {
-                const pool = &self.window().announcements;
-                assert(pool.count <= pool.items.len);
-                if (pool.count + self.announcing_key_count >= pool.items.len) {
-                    return if (in_flight) .present else .tick_main;
-                }
-            }
-            self.announcing_key_count += 1;
-            return .{ .key = chord };
         }
 
         /// A press moves there first, as a platform reports the pointer
@@ -1202,11 +1151,7 @@ fn runPairedSeed(comptime workload: Workload) !Result(workload.Model()) {
 
     var prng = std.Random.DefaultPrng.init(1);
     prng.random().bytes(bytes);
-    const options: RunOptions = .{
-        .step_count = step_count,
-        .verbose = false,
-        .skip_announcement_overflow = false,
-    };
+    const options: RunOptions = .{ .step_count = step_count, .verbose = false };
     const result = try runPaired(
         workload.App(),
         workload.Model(),

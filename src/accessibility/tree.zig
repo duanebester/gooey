@@ -11,8 +11,8 @@
 //!
 //! Every capacity follows from the budget, so nothing is dropped: the frame
 //! that feeds the tree holds at most `a11y.element_count_max` nodes nested at
-//! most `build.box_depth_max` deep, and its announcements fail fast in
-//! `records.Announcements` before they reach the tree.
+//! most `build.box_depth_max` deep, and its announcements are bounded by the
+//! live-region rules of `records.Announcements` before they reach the tree.
 //!
 //! Memory per window at `standard` (2,048 elements): elements 2,048 × 160 B,
 //! previous fingerprints, hashes, dirty indices and removals 2,048 × 22 B, two
@@ -45,8 +45,9 @@ pub const Capacity = struct {
     element_count_max: u16,
     /// `build.box_depth_max`: a node's depth is its box nesting at most.
     depth_max: u8,
-    /// `a11y.announcement_count_frame_max` plus one per element: a live
-    /// region whose content changed announces itself once per frame.
+    /// The frame's pending announcements (`a11y.announcement_polite_pending_max`
+    /// polite and one assertive) plus one per element: a live region whose
+    /// content changed announces itself once per frame.
     announcement_count_max: u16,
 
     pub fn fromLimits(limits: *const limits_mod.ResourceLimits) Capacity {
@@ -56,7 +57,7 @@ pub const Capacity = struct {
             .element_count_max = @intCast(element_count),
             .depth_max = @intCast(limits.build.box_depth_max),
             .announcement_count_max = @intCast(
-                limits.a11y.announcement_count_frame_max + element_count,
+                limits.a11y.announcement_polite_pending_max + 1 + element_count,
             ),
         };
         capacity.assertValid();
@@ -667,9 +668,10 @@ pub const Tree = struct {
     // Announcements
     // =========================================================================
 
-    /// Queue a message for screen reader announcement. The frame's own
-    /// announcements failed fast at `a11y.announcement_count_frame_max`, and
-    /// live regions add at most one per element, so there is always room.
+    /// Queue a message for screen reader announcement. A frame carries at
+    /// most `a11y.announcement_polite_pending_max + 1` announcements (one
+    /// assertive), and live regions add at most one per element, so there is
+    /// always room.
     pub fn announce(self: *Self, message: []const u8, live: types.Live) void {
         assert(@backingInt(live) <= @backingInt(types.Live.assertive));
         assert(self.announcement_count < self.announcements.len);

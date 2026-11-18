@@ -33,8 +33,10 @@
 //! Events are applied in drain order after each `tickMain`, against the
 //! frame the drain routed against (the rendered one, after the tick's flip).
 //! After every drain the drag (phase, source, payload, keyboard target), the
-//! focus when no build moved it, and the announcements since the last build
-//! must match the core's.
+//! focus when no build moved it, and the announcements pending for the next
+//! build must match the core's. Pending announcements follow the live-region
+//! rules (contract §4): drag_drop's are all assertive, so only the newest
+//! one made since the last build survives, however many were made.
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -62,7 +64,9 @@ const item_count: u32 = drag_drop.items.len;
 /// holds exactly the queue's events.
 const event_count_max: u32 = drag_drop.App.limits.events.queue_count_max;
 /// Announcements between builds; the core fails fast past it.
-const announcement_count_max: u32 = drag_drop.App.limits.a11y.announcement_count_frame_max;
+/// Pending announcements at most: the polite FIFO and the assertive slot.
+const announcement_count_max: u32 =
+    drag_drop.App.limits.a11y.announcement_polite_pending_max + 1;
 const click_slop_px: f32 = internals.window.Capture.click_slop_px;
 const pick_up_prefix = "Picked up.";
 
@@ -83,9 +87,11 @@ pub const DragDropModel = struct {
     event_count: u32,
     /// The rendered frame when the drain began, to see the tick's flip.
     frame_number_begin: u64,
-    /// Announcements expected in the window since the last build, in order.
+    /// Announcements expected pending for the next build, in order.
     announced: [announcement_count_max]Announcement,
     announced_count: u32,
+    /// Announcements made since the last build, replaced ones included.
+    announced_build_count: u32,
     /// Ticks the current drag has been active for, for `Stats`.
     drag_tick_count: u32,
     counts: Stats,
@@ -112,7 +118,10 @@ pub const DragDropModel = struct {
         drag_ticks_max: u32,
         /// The most announcements one drain made.
         announcements_drain_max: u32,
-        /// The most announcements waiting for a build at once.
+        /// The most announcements made between two builds, replaced ones
+        /// included: what the pool held before the live-region rules.
+        announcements_build_max: u32,
+        /// The most announcements pending for a build at once.
         announcements_pending_max: u32,
 
         const zero: Stats = .{
@@ -124,18 +133,19 @@ pub const DragDropModel = struct {
             .clicks = 0,
             .drag_ticks_max = 0,
             .announcements_drain_max = 0,
+            .announcements_build_max = 0,
             .announcements_pending_max = 0,
         };
 
         pub fn format(self: Stats, writer: *std.Io.Writer) std.Io.Writer.Error!void {
             try writer.print("drags {d} started, {d} completed, {d} cancelled; " ++
                 "keyboard {d} drags, {d} drops; {d} clicks; longest drag {d} ticks; " ++
-                "announcements {d} per drain max, {d} pending max", .{
-                self.drags_started,             self.drags_completed,
-                self.drags_cancelled,           self.keyboard_drags,
-                self.keyboard_drops,            self.clicks,
-                self.drag_ticks_max,            self.announcements_drain_max,
-                self.announcements_pending_max,
+                "announcements {d} per drain max, {d} per build max, {d} pending max", .{
+                self.drags_started,           self.drags_completed,
+                self.drags_cancelled,         self.keyboard_drags,
+                self.keyboard_drops,          self.clicks,
+                self.drag_ticks_max,          self.announcements_drain_max,
+                self.announcements_build_max, self.announcements_pending_max,
             });
         }
     };
@@ -201,6 +211,7 @@ pub const DragDropModel = struct {
         self.event_count = 0;
         self.frame_number_begin = 0;
         self.announced_count = 0;
+        self.announced_build_count = 0;
         self.drag_tick_count = 0;
         self.counts = .zero;
         self.step_last = 0;
@@ -299,17 +310,20 @@ pub const DragDropModel = struct {
         const frame = window.rendered();
         checkFrameShape(frame);
         if (frame.frame_number != self.frame_number_begin) self.followFlip(frame);
-        const announced_before = self.announced_count;
+        const announced_before = self.announced_build_count;
         for (self.events[0..self.event_count]) |*event| self.route(frame, event);
         self.event_count = 0;
         const counts = &self.counts;
-        const announced_drain = self.announced_count - announced_before;
+        const announced_drain = self.announced_build_count - announced_before;
         counts.announcements_drain_max = @max(counts.announcements_drain_max, announced_drain);
+        counts.announcements_build_max =
+            @max(counts.announcements_build_max, self.announced_build_count);
         counts.announcements_pending_max =
             @max(counts.announcements_pending_max, self.announced_count);
         if (published) {
             self.checkAnnouncements(&window.built().announcements);
             self.announced_count = 0;
+            self.announced_build_count = 0;
             assert(window.announcements.count == 0);
         } else {
             self.checkAnnouncements(&window.announcements);
@@ -594,12 +608,14 @@ pub const DragDropModel = struct {
         assert(self.lists[0].count + self.lists[1].count == item_count);
     }
 
+    /// drag_drop's announcements are all assertive: a newer one replaces the
+    /// pending one, and survivors keep their order, so it goes last.
     fn announce(self: *DragDropModel, announcement: Announcement) void {
-        // The core fails fast before a push past its pool, so the model,
-        // which applies the drain after it, never sees one.
-        assert(self.announced_count < announcement_count_max);
-        self.announced[self.announced_count] = announcement;
-        self.announced_count += 1;
+        assert(self.announced_count <= 1);
+        self.announced[0] = announcement;
+        self.announced_count = 1;
+        self.announced_build_count += 1;
+        assert(self.announced_count <= announcement_count_max);
     }
 
     /// After every step: the app's lists must hold every item once, and
@@ -646,7 +662,7 @@ pub const DragDropModel = struct {
         });
     }
 
-    /// The pool holds the drain's announcements in order, all assertive.
+    /// The pool holds the pending announcements in order, all assertive.
     fn checkAnnouncements(self: *const DragDropModel, pool: *const records.Announcements) void {
         assert(self.announced_count <= announcement_count_max);
         if (pool.count != self.announced_count) {

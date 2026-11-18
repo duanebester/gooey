@@ -6641,3 +6641,68 @@ test "a keyboard drag skips other types and modal-covered targets, and follows t
     try testing.expectEqual(probeId("source"), app.window.focus);
     try testing.expectEqual(@as(u32, 1), app.state.source_keys);
 }
+
+/// Press and release `key` with no modifiers, queued for the next drain.
+fn dragDropKey(app: *DragDropApp, key: gooey.input.KeyCode) void {
+    app.window.queue.push(.{ .input = .{ .key_down = chord(key, .{}) } });
+    app.window.queue.push(.{ .input = .{ .key_up = chord(key, .{}) } });
+}
+
+test "drag_drop: keyboard drags during one frame in flight keep only the newest announcement" {
+    // Goal: pending announcements follow the live-region rules (contract §4, "Announcements")
+    // instead of exhausting a pool, the VOPR's 18-keystroke finding. Method:
+    // Tab to a card and tick, which publishes a frame and leaves it in
+    // flight, so no build empties the pending set. Then four cycles of
+    // Space (pick up), Tab (choose a list), Space (drop), Tab (next card),
+    // one drain each, and one more Space: nine assertive announcements, one
+    // past `small`'s eight slots, which used to panic on the ninth. Only the
+    // newest, the last pick-up, stays pending, and the next build carries
+    // it to the screen reader at its flip, and the build after it nothing.
+    const app = try testing.allocator.create(DragDropApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    const tick = internals.tick;
+    const window = &app.window;
+    const slot_count = DragDropApp.limits.a11y.announcement_polite_pending_max + 1;
+    comptime assert(2 * 4 + 1 > slot_count);
+    app.tick(1);
+    dragDropKey(app, .tab);
+    try testing.expect(tick.tickMain(app, window, 2));
+    try testing.expect(window.frame_in_flight.load(.acquire));
+    var now: u64 = 3;
+    for (0..4) |_| {
+        for ([_]gooey.input.KeyCode{ .space, .tab, .space, .tab }) |key| dragDropKey(app, key);
+        try testing.expect(!tick.tickMain(app, window, now));
+        now += 1;
+        try testing.expect(window.frame_in_flight.load(.acquire));
+    }
+    const moved_count = app.state.list(.right).count;
+    try testing.expectEqual(@as(u32, 4), app.state.list(.left).count + moved_count);
+    try testing.expect(moved_count > 0);
+    dragDropKey(app, .space);
+    try testing.expect(!tick.tickMain(app, window, now));
+    now += 1;
+    try testing.expectEqual(@as(u32, 1), window.announcements.count);
+    const pending = window.announcements.slice()[0];
+    try testing.expectEqual(.assertive, pending.live);
+    try testing.expect(std.mem.startsWith(u8, window.announcements.text(pending), "Picked up."));
+
+    // Present the frame in flight; the next tick builds the pending
+    // announcement into a frame, and the tick after it flips that frame on.
+    tick.presentBuilt(window);
+    try testing.expect(tick.tickMain(app, window, now));
+    try testing.expectEqual(@as(u32, 0), window.announcements.count);
+    tick.presentBuilt(window);
+    // The flip at the start of this tick hands the frame to the screen
+    // reader (`screen_reader.publish` reads the rendered frame).
+    _ = tick.tickMain(app, window, now + 1);
+    const delivered = window.rendered();
+    try testing.expectEqual(@as(u32, 1), delivered.announcements.count);
+    const said = delivered.announcements.slice()[0];
+    try testing.expect(std.mem.startsWith(u8, delivered.announcements.text(said), "Picked up."));
+    if (window.frame_in_flight.load(.acquire)) tick.presentBuilt(window);
+    window.render_requested = true;
+    app.tick(now + 2);
+    try testing.expectEqual(@as(u32, 0), window.rendered().announcements.count);
+}

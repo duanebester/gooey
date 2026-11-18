@@ -999,8 +999,8 @@ fn initBuildStorage(self: *Window, gpa: std.mem.Allocator, limits: *const Resour
     // The debugger overlay paints into its own headroom (`reservedLimits`).
     const reserved = debugger_mod.reservedLimits(limits);
     const announcements = records.Announcements.Capacity{
-        .count_max = limits.a11y.announcement_count_frame_max,
-        .bytes_max = limits.a11y.announcement_bytes_frame_max,
+        .polite_pending_max = limits.a11y.announcement_polite_pending_max,
+        .message_bytes_max = limits.a11y.announcement_message_bytes_max,
     };
     const frame_capacity = records.FrameCapacity{
         .paint_record_count_max = reserved.records.paint_record_count_frame_max,
