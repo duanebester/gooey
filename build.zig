@@ -2081,6 +2081,26 @@ fn addGoldens(
     b.step("vopr", vopr_description).dependOn(&run_vopr.step);
 
     addVoprSoak(b, target, wiring);
+    addVoprCoverage(b, target, wiring);
+}
+
+/// `vopr-llvm`: install a Debug VOPR built with LLVM at zig-out/bin/vopr-llvm,
+/// for line coverage with kcov (`kcov OUT zig-out/bin/vopr-llvm -- ...`). The
+/// self-hosted backend's DWARF does not give kcov the line tables it needs.
+fn addVoprCoverage(b: *std.Build, target: std.Build.ResolvedTarget, wiring: GoldensWiring) void {
+    const vopr = b.addExecutable(.{
+        .name = "vopr-llvm",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/testing/vopr.zig"),
+            .target = target,
+            .optimize = .debug,
+            .imports = goldensImports(b, target, .debug, wiring),
+        }),
+        .use_llvm = true,
+    });
+    if (wiring.compile_dependency) |dependency| vopr.step.dependOn(dependency);
+    const install = b.addInstallArtifact(vopr, .{});
+    b.step("vopr-llvm", "Install a Debug, LLVM-built VOPR for kcov").dependOn(&install.step);
 }
 
 /// The jobs' no-worker path, the web's and `-fsingle-threaded`'s, checked
