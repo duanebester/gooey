@@ -514,21 +514,59 @@ test "cancelling a job blocked in a socket read interrupts the read at once" {
     try testing.expectEqual(@as(u32, 1), job_io_cancelled_count.load(.acquire));
 }
 
-test "a job cancelled before its runner takes it never runs, 200 times" {
-    // Goal: a cancel that lands before the job starts skips `run`. Method:
-    // spawn a job that posts once and cancel it in the same turn, before
-    // any tick, 200 times. Every round must end with only `on_done`
-    // reporting `.cancelled`. A runner wakes microseconds after the spawn,
-    // so the cancel nearly always lands first; at least one round must have
-    // skipped `run` (an implementation that runs every job and lets it see
-    // the flag fails), and a round where the runner won must still be
-    // interrupted rather than delivered.
+test "a job cancelled before its runner starts it never runs" {
+    // Goal: a cancel that lands before the job starts skips `run`, and the
+    // slot runs on. Method: hold every runner at `Pool.runner_gate`, spawn a
+    // job that posts once, give its runner time to reach the gate, and
+    // cancel; then open the gate. The job must never start (its start count
+    // stays put), deliver nothing, and end `.cancelled`; the slot's next
+    // job, ungated, runs to the end. An implementation that runs every job
+    // and lets it see only the flag starts the job here, so it fails
+    // deterministically, whatever the scheduler does. Three rounds reuse
+    // the slot under new generations.
     var harness: Harness = undefined;
     try harness.init();
     defer harness.deinit();
-    var skipped_rounds: u32 = 0;
-    for (0..200) |round| {
+    const pool = &harness.app.window.jobs;
+    for (0..3) |round| {
+        var gate: std.Io.Event = .unset;
+        pool.runner_gate = &gate;
         const started_before = job_started_count.load(.acquire);
+        const id = harness.spawn(Count, counting(@intCast(round), 1, .{
+            .fail = false,
+            .gated = false,
+        }));
+        try testing.io.sleep(.fromMilliseconds(5), .awake);
+        harness.cancel(id);
+        try testing.expectEqual(started_before, job_started_count.load(.acquire));
+        gate.set(testing.io);
+        _ = harness.waitForDone(1, wait_count_max);
+        pool.runner_gate = null;
+        const state = &harness.app.state;
+        try testing.expectEqual(@as(u32, 1), state.done_count);
+        try testing.expect(state.outcome.? == .cancelled);
+        try testing.expectEqual(@as(u32, 0), state.received_count);
+        try testing.expectEqual(started_before, job_started_count.load(.acquire));
+        harness.app.state = .{};
+        _ = harness.spawn(Count, counting(50, 1, .{ .fail = false, .gated = false }));
+        harness.waitUntil(finished);
+        try testing.expect(state.outcome.? == .finished);
+        try testing.expectEqualSlices(u32, &.{50}, state.received[0..state.received_count]);
+        harness.app.state = .{};
+    }
+}
+
+test "a cancel racing the runner's start ends the job cancelled, 200 times" {
+    // Goal: whichever of the cancel and the runner moves the job's phase
+    // first, the job ends `.cancelled` with nothing delivered: skipped when
+    // the cancel wins, interrupted when the runner does. Method: spawn a
+    // job that posts once and cancel it in the same turn, 200 times. Which
+    // side wins depends on the scheduler, so this check asserts only the
+    // outcome; the gated check above pins the skip.
+    var harness: Harness = undefined;
+    try harness.init();
+    defer harness.deinit();
+    for (0..200) |round| {
         const id = harness.spawn(Count, counting(@intCast(round), 1, .{
             .fail = false,
             .gated = false,
@@ -538,11 +576,9 @@ test "a job cancelled before its runner takes it never runs, 200 times" {
         try testing.expectEqual(@as(u32, 1), harness.app.state.done_count);
         try testing.expect(harness.app.state.outcome.? == .cancelled);
         try testing.expectEqual(@as(u32, 0), harness.app.state.received_count);
-        if (job_started_count.load(.acquire) == started_before) skipped_rounds += 1;
         harness.app.state = .{};
     }
     try testing.expectEqual(job_started_count.load(.acquire), job_returned_count.load(.acquire));
-    try testing.expect(skipped_rounds >= 1);
 }
 
 test "a cancel after a job's results and end were posted drops them, and the slot runs on" {
