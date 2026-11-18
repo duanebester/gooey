@@ -5,7 +5,8 @@
 //! clicks and moves aimed at the rendered frame's hit records, held-button
 //! drag gestures (a press mostly on a draggable, moves onto drop targets,
 //! outside them, and back, then a release or none), wheel scrolls, keys,
-//! committed and composed text, clock gaps, and the two sides of a tick
+//! committed and composed text, clock gaps, window resizes (size and scale),
+//! and the two sides of a tick
 //! (`tickMain` and `presentBuilt`) driven separately, so a frame stays in
 //! flight while input keeps arriving. The same generator serves `zig build
 //! vopr -- [--app NAME] [seed]`, whose bytes come from a seeded PRNG, and a
@@ -24,7 +25,11 @@
 //! finding: a core bug, or a harness bug to fix here. On top of the core's
 //! own assertions, the harness checks after every action that the event queue
 //! is empty after `tickMain`, the rendered frame number never decreases, and
-//! the render side is idle with no frame in flight. Each run ends with a
+//! the render side is idle with no frame in flight; on every new rendered
+//! frame, the model-free invariants of `vopr_invariants.zig`; and every
+//! `Swarm.rebuild_period` actions, that a current frame rebuilt with no input
+//! and no clock advance draws the same dump (`checkStableRebuild`). Each run
+//! ends with a
 //! bounded quiescence loop that must settle. The seed CLI also runs two
 //! instances side by side on the same bytes and requires identical frame
 //! dumps after every action (determinism).
@@ -44,6 +49,7 @@ const drag_drop = @import("drag_drop_example");
 const core = @import("goldens/core.zig");
 const TodoModel = @import("vopr_todo_model.zig").TodoModel;
 const DragDropModel = @import("vopr_drag_drop_model.zig").DragDropModel;
+const invariants = @import("vopr_invariants.zig");
 const trace_mod = @import("goldens/trace.zig");
 
 const assert = std.debug.assert;
@@ -91,6 +97,8 @@ const release_event_count: u32 = 2;
 const drag_move_count_max: u32 = 8;
 /// Scale factor of every simulated window, as the goldens use.
 const scale_factor: f32 = 2;
+/// The NullRenderer's dump capacity, which a stable rebuild copies.
+const dump_bytes_max: u32 = gooey.testing.test_backend.null_renderer_dump_bytes_max;
 
 /// Small, so typed text repeats and collides; "é" is two UTF-8 bytes, so
 /// text and draft limits can cut inside a codepoint.
@@ -183,7 +191,7 @@ fn runCli(
     });
     const summary = result.summary;
     std.debug.print("vopr: {s} seed {d} passed: {d} steps, quiesced in {d} rounds, " ++
-        "frame {d}, {d} draws, dump hash {x:0>16}\n", .{
+        "frame {d}, {d} draws, dump hash {x:0>16}, {d} stable rebuilds\n", .{
         name,
         seed,
         summary.step_count,
@@ -191,6 +199,7 @@ fn runCli(
         summary.frame_number,
         summary.draw_count,
         summary.dump_hash,
+        summary.stable_rebuild_count,
     });
     // Todo's model keeps no stats, so its output stays one line.
     if (@sizeOf(Model.Stats) > 0) {
@@ -236,6 +245,8 @@ pub const Summary = struct {
     frame_number: u64,
     draw_count: u64,
     dump_hash: u64,
+    /// Rebuilds with no input that `checkStableRebuild` compared.
+    stable_rebuild_count: u32,
 };
 
 /// What a run reports: the frames it drew, and the model's own counts.
@@ -325,9 +336,18 @@ pub const Action = union(enum) {
     present,
     /// One step of a held-button gesture: a press, a held move, or the
     /// release. Steps of one gesture interleave with every other action,
-    /// so a drag stays open across ticks, presents, and clock gaps. Last,
-    /// so the other kinds keep their tag values.
+    /// so a drag stays open across ticks, presents, and clock gaps. After
+    /// the kinds todo has always drawn, so they keep their tag values.
     drag: Gesture,
+    /// The platform resized the window: a new logical size and scale, as
+    /// `window.resized`. Last, so the other kinds keep their tag values.
+    resize: Resize,
+
+    pub const Resize = struct {
+        width: f32,
+        height: f32,
+        scale_factor: f32,
+    };
 
     pub const Gesture = struct {
         kind: enum { press, move, release },
@@ -386,6 +406,11 @@ pub const Action = union(enum) {
                 gesture.x,
                 gesture.y,
             }),
+            .resize => |size| try writer.print("resize {d}x{d}@{d}", .{
+                size.width,
+                size.height,
+                size.scale_factor,
+            }),
         }
     }
 };
@@ -415,14 +440,17 @@ pub const Swarm = struct {
     target_prefix_count: u32,
     /// Percent of pointer actions that click rather than move.
     click_percent: u32,
+    /// Actions between stable-rebuild checks (`checkStableRebuild`).
+    rebuild_period: u32,
 
     /// Most weight one action kind can draw.
     const kind_weight_max: u32 = 16;
     const interactive_percent_choices = [_]u32{ 0, 50, 90 };
     const target_prefix_count_choices = [_]u32{ 2, 3, 5, 8, 0 };
     const click_percent_choices = [_]u32{ 25, 50, 90 };
+    const rebuild_period_choices = [_]u32{ 7, 31, 127 };
     /// Most Smith choices `generate` makes: two per kind a model lists.
-    const choice_count_max = 2 * kind_count + 3;
+    const choice_count_max = 2 * kind_count + 4;
 
     /// Weights for the kinds the model lists, in its order; the rest stay
     /// off, so a model's seeds replay unchanged when another app's kind is
@@ -455,6 +483,9 @@ pub const Swarm = struct {
         swarm.click_percent = click_percent_choices[
             choose(smith, click_percent_choices.len, "click percent")
         ];
+        swarm.rebuild_period = rebuild_period_choices[
+            choose(smith, rebuild_period_choices.len, "rebuild period")
+        ];
         assert(swarm.kind_weights[@backingInt(ActionKind.tick_main)] > 0);
         assert(swarm.kind_weight_total <= kind_count * kind_weight_max);
         return swarm;
@@ -475,10 +506,11 @@ pub const Swarm = struct {
         for (self.kinds) |kind| {
             try writer.print("{t}={d} ", .{ kind, self.kind_weights[@backingInt(kind)] });
         }
-        try writer.print("interactive={d}% prefix={d} click={d}%", .{
+        try writer.print("interactive={d}% prefix={d} click={d}% rebuild every {d}", .{
             self.interactive_percent,
             self.target_prefix_count,
             self.click_percent,
+            self.rebuild_period,
         });
     }
 };
@@ -504,6 +536,11 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
         action_count: u32,
         /// The held-button gesture `.drag` steps continue, if any.
         gesture: GestureState,
+        /// The rendered frame `invariants.checkFrame` last checked.
+        frame_number_checked: u64,
+        /// The dump of the rendered frame, copied before a stable rebuild.
+        rebuild_dump: [dump_bytes_max]u8,
+        stable_rebuild_count: u32,
 
         const Self = @This();
 
@@ -557,6 +594,8 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             self.swarm = .generate(smith, Model.action_kinds);
             self.action_count = 0;
             self.gesture = .idle;
+            self.frame_number_checked = 0;
+            self.stable_rebuild_count = 0;
             self.model.init();
             assert(self.driver.now_ns == 0);
             assert(self.driver.renderer.draw_count == 0);
@@ -576,7 +615,9 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
         /// Run `action` and check the harness invariants after it.
         pub fn perform(self: *Self, action: Action) void {
             switch (action) {
-                .pointer, .key, .text, .compose, .scroll, .drag => self.model.queue(action),
+                .pointer, .key, .text, .compose, .scroll, .drag, .resize => {
+                    self.model.queue(action);
+                },
                 .wait_ns, .tick_main, .present => {},
             }
             switch (action) {
@@ -596,11 +637,21 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
                     .delta = .{ .x = 0, .y = scroll.delta_y },
                     .modifiers = .{},
                 } }),
+                .resize => |size| {
+                    assert(self.window().queue.room() > 0);
+                    self.driver.app.window.queue.push(.{ .window = .{ .resized = .{
+                        .width = size.width,
+                        .height = size.height,
+                        .scale_factor = size.scale_factor,
+                    } } });
+                },
                 .wait_ns => |gap_ns| self.driver.now_ns += gap_ns,
                 .tick_main => self.tickMain(),
                 .present => self.present(),
             }
             self.check();
+            assert(self.swarm.rebuild_period > 0);
+            if (self.action_count % self.swarm.rebuild_period == 0) self.checkStableRebuild();
         }
 
         /// The next action. Input that would overflow the queue's events or
@@ -645,6 +696,34 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
                 ] },
                 .tick_main => .tick_main,
                 .present => if (in_flight) .present else .tick_main,
+                .resize => if (self.queueHasRoom(1, 0))
+                    .{ .resize = generateResize(smith) }
+                else
+                    .tick_main,
+            };
+        }
+
+        /// A seeded window size and scale within the profile's framebuffer
+        /// (`limits.window`) and the app's minimums: the configured size, the
+        /// minimum, the largest the framebuffer takes, or any between.
+        fn generateResize(smith: *Smith) Action.Resize {
+            const scale_choices = [_]f32{ 1, 1.25, 1.5, 2 };
+            const scale = scale_choices[choose(smith, scale_choices.len, "resize scale")];
+            const window_limits = App.limits.window;
+            return .{
+                .width = resizeExtent(smith, .{
+                    .configured = App.width,
+                    .minimum = App.min_width,
+                    .framebuffer_max = window_limits.framebuffer_width_max,
+                    .scale_factor = scale,
+                }),
+                .height = resizeExtent(smith, .{
+                    .configured = App.height,
+                    .minimum = App.min_height,
+                    .framebuffer_max = window_limits.framebuffer_height_max,
+                    .scale_factor = scale,
+                }),
+                .scale_factor = scale,
             };
         }
 
@@ -675,6 +754,47 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             }
             assert(win.phase == .idle);
             assert(win.render_phase == .idle);
+            self.checkStableRebuild();
+        }
+
+        /// Stable rebuild. Exact rule: when the rendered frame is current
+        /// (nothing in flight or awaiting a flip, no render requested, and
+        /// the queue empty) and the build that made it asked for no timed
+        /// render (`Window.renderDeadlineNs` is null), a render requested
+        /// with no input and no clock advance must draw a dump identical,
+        /// byte for byte, to the rendered frame's. A view that changes with
+        /// the clock (an animation, a caret blink, a scroll settling, a
+        /// first build after a resize reading old bounds) must ask for a
+        /// timed render (`cx.requestRenderAfter`, contract §5) or request a
+        /// render itself, so those frames are exactly the exempt ones.
+        fn checkStableRebuild(self: *Self) void {
+            const win = self.window();
+            if (win.frame_in_flight.load(.acquire)) return;
+            if (win.awaiting_flip or win.render_requested) return;
+            if (win.queue.count > 0) return;
+            if (win.renderDeadlineNs() != null) return;
+            // The last draw is the rendered frame: it was presented, then
+            // flipped, and nothing was drawn since.
+            const before = self.driver.renderer.frameDump();
+            assert(before.len <= self.rebuild_dump.len);
+            @memcpy(self.rebuild_dump[0..before.len], before);
+            const frame_number = win.rendered().frame_number;
+            win.render_requested = true;
+            self.tickMain();
+            assert(win.frame_in_flight.load(.acquire));
+            self.present();
+            self.check();
+            const after = self.driver.renderer.frameDump();
+            const expected = self.rebuild_dump[0..before.len];
+            if (!std.mem.eql(u8, expected, after)) {
+                invariants.reportDumpDifference(expected, after);
+                std.debug.panic("vopr: a rebuild of frame {d} with no input and no clock " ++
+                    "advance drew a different dump (action {d})", .{
+                    frame_number,
+                    self.action_count,
+                });
+            }
+            self.stable_rebuild_count += 1;
         }
 
         pub fn summary(self: *Self, step_count: u32) Summary {
@@ -685,6 +805,7 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
                 .frame_number = self.frame_number_rendered,
                 .draw_count = self.driver.renderer.draw_count,
                 .dump_hash = self.dump_hasher.final(),
+                .stable_rebuild_count = self.stable_rebuild_count,
             };
         }
 
@@ -751,6 +872,11 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
                 });
             }
             self.frame_number_rendered = frame_number;
+            if (frame_number != self.frame_number_checked) {
+                invariants.checkFrame(win, win.rendered());
+                self.frame_number_checked = frame_number;
+            }
+            invariants.checkFocusLive(win);
             self.model.check(&self.driver.app.state, self.action_count);
             if (win.frame_in_flight.load(.acquire)) {
                 // Published frames are flipped only after they are presented.
@@ -985,6 +1111,32 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             return self.text_bytes[0..len];
         }
     };
+}
+
+/// One axis of a seeded resize, in whole logical pixels: the configured
+/// extent, the minimum (at least 1), the largest whose physical size fits
+/// the framebuffer at `scale_factor`, or any extent between.
+fn resizeExtent(smith: *Smith, options: struct {
+    configured: u32,
+    minimum: u32,
+    framebuffer_max: u32,
+    scale_factor: f32,
+}) f32 {
+    assert(options.scale_factor >= 1);
+    const framebuffer_max: f32 = @floatFromInt(options.framebuffer_max);
+    const extent_max: u32 = @intFromFloat(@floor(framebuffer_max / options.scale_factor));
+    const extent_min: u32 = @max(options.minimum, 1);
+    assert(extent_min <= extent_max);
+    const extent: u32 = switch (choose(smith, 4, "resize extent")) {
+        0 => std.math.clamp(options.configured, extent_min, extent_max),
+        1 => extent_min,
+        2 => extent_max,
+        3 => extent_min + choose(smith, extent_max - extent_min + 1, "resize span"),
+        else => unreachable,
+    };
+    assert(extent >= extent_min);
+    assert(extent <= extent_max);
+    return @floatFromInt(extent);
 }
 
 /// A key event with no characters, as the goldens' traces send. Never the

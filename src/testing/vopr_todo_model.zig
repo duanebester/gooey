@@ -117,7 +117,7 @@ pub const TodoModel = struct {
     /// The action kinds todo's swarm draws weights for, in this order; the
     /// order is part of every seed, so it must not change.
     pub const action_kinds: []const vopr.ActionKind = &.{
-        .pointer, .key, .text, .compose, .scroll, .wait_ns, .tick_main, .present,
+        .pointer, .key, .text, .compose, .scroll, .wait_ns, .tick_main, .present, .resize,
     };
 
     /// Todo's runs report no counts beyond the harness summary.
@@ -204,7 +204,7 @@ pub const TodoModel = struct {
         var copy = action;
         switch (copy) {
             .text, .compose => |*text| text.* = self.copyText(text.*),
-            .pointer, .key, .scroll => {},
+            .pointer, .key, .scroll, .resize => {},
             // Todo's swarm draws no `.drag` (`action_kinds`).
             .wait_ns, .tick_main, .present, .drag => unreachable,
         }
@@ -305,7 +305,8 @@ pub const TodoModel = struct {
                 if (!self.composing and self.hasSelection()) self.forgetDraft();
                 self.composing = text.len > 0;
             },
-            .scroll => {},
+            // A resize changes the layout, which the model reads from frames.
+            .scroll, .resize => {},
             // Todo's swarm draws no `.drag` (`action_kinds`).
             .wait_ns, .tick_main, .present, .drag => unreachable,
         }

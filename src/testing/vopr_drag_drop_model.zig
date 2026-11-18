@@ -100,6 +100,7 @@ pub const DragDropModel = struct {
     /// The kinds drag_drop's swarm draws weights for, in this order.
     pub const action_kinds: []const vopr.ActionKind = &.{
         .pointer, .key, .text, .compose, .scroll, .wait_ns, .tick_main, .present, .drag,
+        .resize,
     };
 
     /// How deep a run went, per seed.
@@ -195,6 +196,8 @@ pub const DragDropModel = struct {
         /// reads them.
         text,
         scroll,
+        /// A window event, which the queue never folds into an input.
+        resize,
     };
 
     const Announcement = union(enum) {
@@ -265,6 +268,7 @@ pub const DragDropModel = struct {
             },
             .text, .compose => self.push(.text),
             .scroll => self.push(.scroll),
+            .resize => self.push(.resize),
             .wait_ns, .tick_main, .present => unreachable,
         }
     }
@@ -380,7 +384,7 @@ pub const DragDropModel = struct {
             },
             // A key's release, text, and the wheel reach no handler of
             // drag_drop's, and a keyboard drag takes them all.
-            .key_up, .text, .scroll => {},
+            .key_up, .text, .scroll, .resize => {},
         }
     }
 
