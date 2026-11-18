@@ -40,12 +40,14 @@ const Options = struct {
     out_dir: []const u8,
     /// The VOPR's `--app`, passed to every child and its replay command.
     app: []const u8,
+    /// Passed on as the VOPR's temporary `--skip-announcement-overflow`.
+    skip_announcement_overflow: bool,
 };
 
 pub fn main(init: std.process.Init) !void {
     const options = parseArgs(init.minimal.args.vector) orelse {
         std.debug.print("usage: vopr-soak VOPR [--app NAME] [--hours H | --minutes M] " ++
-            "[--jobs N] [--out DIR]\n", .{});
+            "[--jobs N] [--out DIR] [--skip-announcement-overflow]\n", .{});
         return error.InvalidArguments;
     };
     const io = init.io;
@@ -54,10 +56,11 @@ pub fn main(init: std.process.Init) !void {
     try soak.open(io, &options);
     defer soak.close();
 
-    soak.log("soak: {d} min, {d} jobs, app {s}, vopr {s}\n", .{
+    soak.log("soak: {d} min, {d} jobs, app {s}{s}, vopr {s}\n", .{
         options.minutes,
         options.jobs,
         options.app,
+        if (options.skip_announcement_overflow) ", skipping announcement overflow" else "",
         options.vopr_path,
     });
     var threads: [jobs_max]std.Thread = undefined;
@@ -77,10 +80,15 @@ fn parseArgs(args: []const [*:0]const u8) ?Options {
         .jobs = defaultJobs(),
         .out_dir = "zig-out/vopr-soak",
         .app = "todo",
+        .skip_announcement_overflow = false,
     };
     var index: usize = 2;
     while (index < args.len) : (index += 1) {
         const arg = std.mem.span(args[index]);
+        if (std.mem.eql(u8, arg, "--skip-announcement-overflow")) {
+            options.skip_announcement_overflow = true;
+            continue;
+        }
         if (index + 1 == args.len) return null;
         const value = std.mem.span(args[index + 1]);
         index += 1;
@@ -181,13 +189,15 @@ const Soak = struct {
         var seed_buffer: [24]u8 = undefined;
         const seed_text = std.fmt.bufPrint(&seed_buffer, "{d}", .{seed}) catch unreachable;
         const vopr = self.options.vopr_path;
-        const argv = [_][]const u8{ vopr, "--app", self.options.app, seed_text };
+        const flag = "--skip-announcement-overflow";
+        const argv_all = [_][]const u8{ vopr, "--app", self.options.app, seed_text, flag };
+        const argv = if (self.options.skip_announcement_overflow) argv_all[0..] else argv_all[0..4];
         const timeout: Io.Clock.Duration = .{
             .raw = .fromSeconds(seed_timeout_seconds),
             .clock = .awake,
         };
         const result = std.process.run(gpa, self.io, .{
-            .argv = &argv,
+            .argv = argv,
             .stdout_limit = .limited(stderr_bytes_max),
             .stderr_limit = .limited(stderr_bytes_max),
             .timeout = .{ .duration = timeout },
@@ -218,11 +228,12 @@ const Soak = struct {
         const tail = stderr[stderr.len - @min(stderr.len, stderr_tail_bytes_max) ..];
         var header_buffer: [512]u8 = undefined;
         const header = std.fmt.bufPrint(&header_buffer, "\n== seed {d}: {s}\n" ++
-            "replay: zig build vopr -- --app {s} {d} --verbose\n", .{
+            "replay: zig build vopr -- --app {s} {d} --verbose{s}\n", .{
             seed,
             how,
             self.options.app,
             seed,
+            if (self.options.skip_announcement_overflow) " --skip-announcement-overflow" else "",
         }) catch unreachable;
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
