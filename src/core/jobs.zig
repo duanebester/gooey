@@ -347,6 +347,11 @@ pub const Pool = struct {
     group: std.Io.Group,
     /// Spawns since init, for tests and diagnostics.
     spawned_count: u64,
+    /// Tests only: when set, a runner that has taken a spawn waits on it
+    /// before it starts the job, so a check can cancel a job that is
+    /// certainly not running yet. Set before the spawn and cleared after
+    /// the job's `on_done`; the start semaphore orders both for the runner.
+    runner_gate: ?*std.Io.Event,
 
     /// Reserve the slots and result storage and start the workers. An app
     /// with no `type_ids` reserves nothing and starts no thread.
@@ -375,6 +380,7 @@ pub const Pool = struct {
         self.stopped = type_ids.len == 0;
         self.group = .init;
         self.spawned_count = 0;
+        self.runner_gate = null;
         self.slots = &.{};
         self.input_blocks = &.{};
         self.result_blocks = &.{};
@@ -718,6 +724,7 @@ pub const Pool = struct {
         const slot = &self.slots[index];
         while (!self.stopping.load(.acquire)) {
             try slot.start.wait(self.io);
+            if (self.runner_gate) |gate| try gate.wait(self.io);
             if (self.stopping.load(.acquire)) return;
             if (!self.runSlot(index)) return;
         }
