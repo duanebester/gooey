@@ -687,6 +687,12 @@ const Clips = struct {
         /// inside it draws (`Clips.current` is empty).
         drawn: bool,
         /// The children's right and bottom edges, as laid out (offset applied).
+        /// Each starts at the content's origin, `bounds` less the offset, not
+        /// at `bounds`: children scrolled wholly above or left of the view
+        /// still count, so content that shrank under a far offset measures
+        /// its true size and `finishScroll` clamps to its end in one frame.
+        /// Starting at `bounds` floored the content at the offset, and the
+        /// clamp then stepped back one viewport per frame.
         extent_right: f32,
         extent_bottom: f32,
     };
@@ -730,6 +736,9 @@ const Clips = struct {
         assert(self.len <= clip_depth_max);
         checkClipDepth(window, self.paintDepth());
         var rect = bounds;
+        // The content's origin: `bounds` until a scroll offset moves it.
+        var origin_x = bounds.x;
+        var origin_y = bounds.y;
         if (node.scroll) |handle| {
             // Keep the scrollbar outside the clip, using the overflow the last
             // emit measured; `finishScroll` re-renders when it changes.
@@ -740,6 +749,10 @@ const Clips = struct {
             state.offset_x = applied.x;
             state.offset_y = applied.y;
             state.target = null;
+            assert(applied.x >= 0);
+            assert(applied.y >= 0);
+            origin_x = bounds.x - applied.x;
+            origin_y = bounds.y - applied.y;
             if (state.maxY() > 0) rect.width = @max(0, rect.width - scrollbar_room);
             if (state.maxX() > 0) rect.height = @max(0, rect.height - scrollbar_room);
         }
@@ -752,8 +765,8 @@ const Clips = struct {
             .bounds = bounds,
             .rect = rect,
             .drawn = drawn,
-            .extent_right = bounds.x,
-            .extent_bottom = bounds.y,
+            .extent_right = origin_x,
+            .extent_bottom = origin_y,
         };
         self.len += 1;
     }

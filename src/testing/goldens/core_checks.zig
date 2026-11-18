@@ -5015,6 +5015,71 @@ test "focus revealed at a scroll box's end settles instead of trading an ulp" {
     try expectRingAround(&app.window, delete);
 }
 
+/// Todo's list scroll box in the frame on screen.
+fn todoListScroll(app: *todo.App) *internals.window.ScrollState {
+    const frame = app.window.rendered();
+    for (frame.hits[0..frame.hit_count]) |*record| {
+        if (!record.scroll) continue;
+        return app.window.retained.find(internals.window.ScrollState, record.id).?;
+    }
+    unreachable;
+}
+
+test "a scroll box scrolled to its end clamps to shrunk content in one frame" {
+    // Goal: when the content under a far-scrolled box shrinks, the offset
+    // lands on the new end at once. Methodology: give todo 30 rows (48.8 px
+    // each, 8 px apart), wheel its list to the end, then remove 22 rows
+    // behind the frame's back and build. Every remaining row now lies above
+    // the old offset; measuring the content from the box's top once read
+    // that as content ending at the offset, so each frame clamped back only
+    // one viewport. Eight rows are 446.4 px: the build that shrank must put
+    // the offset at 446.4 less the viewport, and the box rest within two.
+    const app = try testing.allocator.create(todo.App);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    for (0..30) |_| {
+        app.state.draft = "a todo";
+        app.state.addTodo();
+    }
+    app.window.render_requested = true;
+    now += 1;
+    app.tick(now);
+    const direction: f32 = if (@import("builtin").os.tag == .macos) -1 else 1;
+    app.window.queue.push(.{ .input = .{ .scroll = .{
+        .position = .{ .x = 100, .y = 300 },
+        .delta = .{ .x = 0, .y = 5000 * direction },
+        .modifiers = .{},
+    } } });
+    now += 1;
+    app.tick(now);
+    const scroll = todoListScroll(app);
+    try testing.expect(scroll.offset_y > 1000);
+    try testing.expect(scroll.at_end);
+
+    while (app.state.count > 8) app.state.remove(0);
+    app.window.render_requested = true;
+    now += 1;
+    app.tick(now);
+    // The build that shrank measures the content and clamps to its end.
+    const content_height: f32 = 8 * 48.8 + 7 * 8;
+    try testing.expectApproxEqAbs(content_height, scroll.content_height, 0.01);
+    const offset_max = content_height - scroll.viewport.height;
+    try testing.expectApproxEqAbs(offset_max, scroll.offset_y, 0.01);
+    // Laid out at the new offset, the content may measure an ulp shorter,
+    // and the clamp moves down that ulp once; then nothing is requested.
+    const settle_frame_max: u32 = 2;
+    var frame: u32 = 0;
+    while (frame < settle_frame_max and app.window.render_requested) : (frame += 1) {
+        now += 1;
+        app.tick(now);
+    }
+    try testing.expect(!app.window.render_requested);
+    try testing.expectApproxEqAbs(offset_max, scroll.offset_y, 0.01);
+}
+
 test "a radio group is one tab stop whose arrow keys select and wrap" {
     // Goal: accessible_form's radios behave as a native group. Methodology:
     // Tab enters at the selected option; Down and Right select the next,
