@@ -12,6 +12,8 @@ const std = @import("std");
 const gooey = @import("gooey");
 const components = @import("gooey-components");
 
+const assert = std.debug.assert;
+
 const ui = gooey.ui;
 const Cx = gooey.Cx;
 const Button = components.Button;
@@ -22,6 +24,11 @@ const todo_count_max = 64;
 const todo_bytes_max = 128;
 
 const Todo = struct {
+    /// Assigned at push and never reused. Rows key by it and their handlers
+    /// carry it, so a click on a frame built before the list changed acts on
+    /// the todo that row showed, or on nothing once it is gone. An array
+    /// index would name whatever todo has moved into that slot since.
+    id: u64 = 0,
     bytes: [todo_bytes_max]u8 = @splat(0),
     len: u32 = 0,
     done: bool = false,
@@ -36,6 +43,8 @@ pub const Filter = enum { all, active, done };
 pub const State = struct {
     todos: [todo_count_max]Todo = @splat(.{}),
     count: u32 = 0,
+    /// The id the next pushed todo gets; ids start at 1.
+    id_next: u64 = 1,
     draft: []const u8 = "",
     filter: Filter = .all,
 
@@ -49,6 +58,8 @@ pub const State = struct {
         @memcpy(slot.bytes[0..kept], trimmed[0..kept]);
         slot.len = @intCast(kept);
         slot.done = false;
+        slot.id = self.id_next;
+        self.id_next += 1;
         self.count += 1;
     }
 
@@ -57,13 +68,13 @@ pub const State = struct {
         self.draft = "";
     }
 
-    pub fn toggle(self: *State, index: u32) void {
-        if (index >= self.count) return;
+    pub fn toggle(self: *State, id: u64) void {
+        const index = self.find(id) orelse return;
         self.todos[index].done = !self.todos[index].done;
     }
 
-    pub fn remove(self: *State, index: u32) void {
-        if (index >= self.count) return;
+    pub fn remove(self: *State, id: u64) void {
+        const index = self.find(id) orelse return;
         var position = index;
         while (position + 1 < self.count) : (position += 1) {
             self.todos[position] = self.todos[position + 1];
@@ -83,6 +94,15 @@ pub const State = struct {
             kept += 1;
         }
         self.count = kept;
+    }
+
+    /// The index of the todo with `id`, or null once it is removed.
+    fn find(self: *const State, id: u64) ?u32 {
+        assert(id < self.id_next);
+        for (self.todos[0..self.count], 0..) |*todo, index| {
+            if (todo.id == id) return @intCast(index);
+        }
+        return null;
     }
 
     fn remaining(self: *const State) u32 {
@@ -194,9 +214,9 @@ const FilterButton = struct {
 const TodoItems = struct {
     pub fn render(_: TodoItems, cx: *Cx) void {
         const s = cx.state(State);
-        for (s.todos[0..s.count], 0..) |*todo, index| {
+        for (s.todos[0..s.count]) |*todo| {
             if (!s.visible(todo)) continue;
-            cx.render(TodoRow{ .index = @intCast(index) });
+            cx.render(TodoRow{ .todo = todo });
         }
     }
 };
@@ -212,15 +232,15 @@ const row_style: ui.Style = .{
 };
 
 const TodoRow = struct {
-    index: u32,
+    todo: *const Todo,
 
     pub fn render(self: TodoRow, cx: *Cx) void {
-        const todo = &cx.state(State).todos[self.index];
+        const todo = self.todo;
         const color = if (todo.done) ui.Color.rgb(0.6, 0.6, 0.6) else ui.Color.rgb(0.1, 0.1, 0.1);
-        cx.render(ui.box(.{ .key = .{ .index = self.index }, .style = row_style }, .{
+        cx.render(ui.box(.{ .key = .{ .index = todo.id }, .style = row_style }, .{
             Checkbox{
                 .checked = todo.done,
-                .on_click = cx.on(State.toggle, .{ .arg = self.index }),
+                .on_click = cx.on(State.toggle, .{ .arg = todo.id }),
                 // The todo's text names it; the row's text box is not read.
                 .accessible_name = todo.text(),
             },
@@ -230,7 +250,7 @@ const TodoRow = struct {
                 .label = "Delete",
                 .variant = .danger,
                 .size = .small,
-                .on_click = cx.on(State.remove, .{ .arg = self.index }),
+                .on_click = cx.on(State.remove, .{ .arg = todo.id }),
             },
         }));
     }
@@ -265,11 +285,18 @@ test "the model adds trimmed drafts, toggles, removes, and clears" {
     try std.testing.expectEqualStrings("", s.draft);
     s.push("b");
     s.push("c");
-    s.toggle(0);
-    s.toggle(2);
+    s.toggle(s.todos[0].id);
+    s.toggle(s.todos[2].id);
     try std.testing.expectEqual(@as(u32, 1), s.remaining());
-    s.remove(1);
+    // An id names its todo wherever the list moves it, and nothing once it
+    // is gone: removing "b" twice removes it once.
+    const b = s.todos[1].id;
+    s.remove(b);
+    s.remove(b);
     try std.testing.expectEqual(@as(u32, 2), s.count);
+    try std.testing.expectEqualStrings("c", s.todos[1].text());
+    s.toggle(b);
+    try std.testing.expect(s.todos[1].done);
     s.clearCompleted();
     try std.testing.expectEqual(@as(u32, 0), s.count);
 }

@@ -87,12 +87,9 @@ comptime {
 pub const Allowances = struct {
     /// Add cuts the draft at byte 128 even inside a codepoint.
     utf8_cut: bool,
-    /// A row's checkbox and Delete act on the list index the row had when
-    /// its frame was built, even after earlier events moved the items.
-    stale_row: bool,
 
-    pub const none: Allowances = .{ .utf8_cut = false, .stale_row = false };
-    pub const known: Allowances = .{ .utf8_cut = true, .stale_row = true };
+    pub const none: Allowances = .{ .utf8_cut = false };
+    pub const known: Allowances = .{ .utf8_cut = true };
 };
 
 pub const TodoModel = struct {
@@ -547,10 +544,7 @@ pub const TodoModel = struct {
                 }
                 const index_now = self.itemIndex(view.ids[row]);
                 if (index_now != view.indexes[row]) self.stale_row_step = self.step_last;
-                const index = if (self.allow.stale_row) index: {
-                    if (view.indexes[row] < self.item_count) {} else return;
-                    break :index view.indexes[row];
-                } else index_now orelse return;
+                const index = index_now orelse return;
                 if (control == .toggle) {
                     self.items[index].done = !self.items[index].done;
                 } else {
@@ -779,8 +773,7 @@ fn dumpState(state: *const todo.State) void {
 
 /// An item added from an unknown draft is adoptable when it is what Add can
 /// produce from typed text (trimmed, non-empty, at most 128 bytes) and has
-/// the done flag the model gave it (under `allow.stale_row` a stale row's
-/// checkbox can reach it).
+/// the done flag the model gave it (its row's checkbox may have toggled it).
 fn adoptable(item: anytype, done: bool, utf8_cut: bool) bool {
     const text = item.bytes[0..item.len];
     if (item.done != done) return false;

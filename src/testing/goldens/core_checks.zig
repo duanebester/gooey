@@ -5095,7 +5095,7 @@ test "a scroll box scrolled to its end clamps to shrunk content in one frame" {
     try testing.expect(scroll.offset_y > 1000);
     try testing.expect(scroll.at_end);
 
-    while (app.state.count > 8) app.state.remove(0);
+    while (app.state.count > 8) app.state.remove(app.state.todos[0].id);
     app.window.render_requested = true;
     now += 1;
     app.tick(now);
