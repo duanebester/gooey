@@ -1043,3 +1043,53 @@ test "unwrapped text depends on the whole-string measurement" {
     try std.testing.expectEqual(expected_width, text_data.measured_width);
     try std.testing.expect(text_data.wrapped_lines == null);
 }
+
+test "gaps wider than their box overflow it, and its grow children get none" {
+    // Goal: when only the gaps overflow a box (its children desire nothing),
+    // the grow children size to 0 and the row overflows, as in CSS flexbox
+    // and clay, without tripping an assertion (layout fuzz crash at
+    // sizing_pass.zig:421). Methodology: a 20 px wide row with 16 px gaps
+    // holds four empty grow children and an empty 0 px fixed one, which
+    // keeps the uniform-grow fast path out; the four gaps need 64 px. Every
+    // child must be 0 px wide, start 16 px after the one before, and stay
+    // finite, so the last starts at 64, past the row's 20 px.
+    var engine = try LayoutEngine.init(&test_capacity);
+    defer engine.deinit();
+
+    engine.beginFrame(400, 200);
+    try engine.openElement(.{ .layout = .{
+        .sizing = .{ .width = SizingAxis.fixed(20), .height = SizingAxis.fixed(10) },
+        .child_gap = 16,
+        .layout_direction = .left_to_right,
+    } });
+    const grow_child_count: u32 = 4;
+    for (0..grow_child_count) |_| {
+        try engine.openElement(.{ .layout = .{ .sizing = .{
+            .width = SizingAxis.grow(),
+            .height = SizingAxis.fixed(10),
+        } } });
+        engine.closeElement();
+    }
+    try engine.openElement(.{ .layout = .{ .sizing = .{
+        .width = SizingAxis.fixed(0),
+        .height = SizingAxis.fixed(10),
+    } } });
+    engine.closeElement();
+    engine.closeElement();
+    try engine.endFrame();
+
+    const elements = engine.elements.items();
+    try std.testing.expectEqual(@as(usize, grow_child_count + 2), elements.len);
+    try std.testing.expectEqual(@as(f32, 20), elements[0].computed.bounding_box.width);
+    const row_x = elements[0].computed.bounding_box.x;
+    for (elements[1..], 0..) |element, index| {
+        const box = element.computed.bounding_box;
+        try std.testing.expect(std.math.isFinite(box.x));
+        try std.testing.expect(std.math.isFinite(box.width));
+        try std.testing.expectEqual(@as(f32, 0), box.width);
+        const x_expected = row_x + 16 * @as(f32, @floatFromInt(index));
+        try std.testing.expectApproxEqAbs(x_expected, box.x, 0.001);
+    }
+    const last = elements[elements.len - 1].computed.bounding_box;
+    try std.testing.expect(last.x > row_x + 20);
+}
