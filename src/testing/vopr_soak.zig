@@ -1,4 +1,4 @@
-//! `zig build vopr-soak -- [--hours H | --minutes M] [--jobs N] [--out DIR] [--strict]`:
+//! `zig build vopr-soak -- [--hours H | --minutes M] [--jobs N] [--out DIR]`:
 //! run the VOPR on random seeds for hours, one child process per seed,
 //! because a failing seed panics and aborts its process.
 //!
@@ -9,10 +9,6 @@
 //! `seed_timeout_seconds`) is appended to `DIR/results.txt` with its replay
 //! command and the tail of its stderr; `DIR/progress.log` gets a line with
 //! the running counts every `progress_interval_seconds` and at the end.
-//!
-//! By default the children run with `--allow-known-bugs`, so the reference
-//! model expects the todo bugs already reported and the soak looks for new
-//! ones; `--strict` reports those too.
 //!
 //! Resource sketch: `jobs` children at once, each one VOPR process (about
 //! 100 MiB resident); per child, at most `stderr_bytes_max` of captured
@@ -41,13 +37,12 @@ const Options = struct {
     minutes: u32,
     jobs: u32,
     out_dir: []const u8,
-    strict: bool,
 };
 
 pub fn main(init: std.process.Init) !void {
     const options = parseArgs(init.minimal.args.vector) orelse {
         std.debug.print("usage: vopr-soak VOPR [--hours H | --minutes M] [--jobs N] " ++
-            "[--out DIR] [--strict]\n", .{});
+            "[--out DIR]\n", .{});
         return error.InvalidArguments;
     };
     const io = init.io;
@@ -56,10 +51,9 @@ pub fn main(init: std.process.Init) !void {
     try soak.open(io, &options);
     defer soak.close();
 
-    soak.log("soak: {d} min, {d} jobs, {s}, vopr {s}\n", .{
+    soak.log("soak: {d} min, {d} jobs, vopr {s}\n", .{
         options.minutes,
         options.jobs,
-        if (options.strict) "strict" else "known bugs allowed",
         options.vopr_path,
     });
     var threads: [jobs_max]std.Thread = undefined;
@@ -78,15 +72,10 @@ fn parseArgs(args: []const [*:0]const u8) ?Options {
         .minutes = 8 * 60,
         .jobs = defaultJobs(),
         .out_dir = "zig-out/vopr-soak",
-        .strict = false,
     };
     var index: usize = 2;
     while (index < args.len) : (index += 1) {
         const arg = std.mem.span(args[index]);
-        if (std.mem.eql(u8, arg, "--strict")) {
-            options.strict = true;
-            continue;
-        }
         if (index + 1 == args.len) return null;
         const value = std.mem.span(args[index + 1]);
         index += 1;
@@ -183,14 +172,13 @@ const Soak = struct {
         var seed_buffer: [24]u8 = undefined;
         const seed_text = std.fmt.bufPrint(&seed_buffer, "{d}", .{seed}) catch unreachable;
         const vopr = self.options.vopr_path;
-        const argv_allowed = [_][]const u8{ vopr, seed_text, "--allow-known-bugs" };
-        const argv = if (self.options.strict) argv_allowed[0..2] else argv_allowed[0..];
+        const argv = [_][]const u8{ vopr, seed_text };
         const timeout: Io.Clock.Duration = .{
             .raw = .fromSeconds(seed_timeout_seconds),
             .clock = .awake,
         };
         const result = std.process.run(gpa, self.io, .{
-            .argv = argv,
+            .argv = &argv,
             .stdout_limit = .limited(stderr_bytes_max),
             .stderr_limit = .limited(stderr_bytes_max),
             .timeout = .{ .duration = timeout },
@@ -221,12 +209,7 @@ const Soak = struct {
         const tail = stderr[stderr.len - @min(stderr.len, stderr_tail_bytes_max) ..];
         var header_buffer: [512]u8 = undefined;
         const header = std.fmt.bufPrint(&header_buffer, "\n== seed {d}: {s}\n" ++
-            "replay: zig build vopr -- {d}{s} --verbose\n", .{
-            seed,
-            how,
-            seed,
-            if (self.options.strict) "" else " --allow-known-bugs",
-        }) catch unreachable;
+            "replay: zig build vopr -- {d} --verbose\n", .{ seed, how, seed }) catch unreachable;
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         self.failed += 1;

@@ -40,10 +40,6 @@
 //! pass validation: valid UTF-8 from the generator's alphabet, and for an
 //! item, not done, non-empty, at most 128 bytes, and without a leading space.
 //! Everything else must match exactly.
-//!
-//! `Allowances` switch the model to the app's behaviour for each known bug,
-//! so a long run is not stopped by the same finding; `--allow-known-bugs`
-//! sets them all.
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -81,19 +77,7 @@ comptime {
     assert(pending_count_max > 0);
 }
 
-/// Known bugs the model can be told to expect, so a long run is not stopped
-/// by the same finding every time. Each one replaces the intended behaviour
-/// with the app's, for that behaviour only; all are off by default.
-pub const Allowances = struct {
-    /// Add cuts the draft at byte 128 even inside a codepoint.
-    utf8_cut: bool,
-
-    pub const none: Allowances = .{ .utf8_cut = false };
-    pub const known: Allowances = .{ .utf8_cut = true };
-};
-
 pub const TodoModel = struct {
-    allow: Options,
     items: [item_count_max]Item,
     item_count: u32,
     /// Identities for items, so a stale row is never confused with another.
@@ -123,9 +107,6 @@ pub const TodoModel = struct {
     /// longer shows the same item at that position, for a mismatch report.
     stale_row_step: ?u64,
     step_last: u64,
-
-    /// What `Vopr` passes to `init`.
-    pub const Options = Allowances;
 
     const Item = struct {
         id: u32,
@@ -168,8 +149,7 @@ pub const TodoModel = struct {
         delete: u32,
     };
 
-    pub fn init(self: *TodoModel, allow: Options) void {
-        self.allow = allow;
+    pub fn init(self: *TodoModel) void {
         self.item_count = 0;
         self.item_id_next = 1;
         self.filter = .all;
@@ -572,13 +552,10 @@ pub const TodoModel = struct {
         } else {
             const value = std.mem.trim(u8, self.draft.text(), " ");
             if (value.len == 0) return;
-            const kept = if (self.allow.utf8_cut)
-                value[0..@min(value.len, item_bytes_max)]
-            else
-                fittingPrefix(value, .{
-                    .bytes_room = item_bytes_max,
-                    .codepoint_room = item_bytes_max,
-                });
+            const kept = fittingPrefix(value, .{
+                .bytes_room = item_bytes_max,
+                .codepoint_room = item_bytes_max,
+            });
             item.maybe = false;
             @memcpy(item.text[0..kept.len], kept);
             item.len = @intCast(kept.len);
@@ -657,7 +634,7 @@ pub const TodoModel = struct {
                 continue;
             }
             const fits = app_index < state.count and
-                adoptable(&state.todos[app_index], item.done, self.allow.utf8_cut);
+                adoptable(&state.todos[app_index], item.done);
             if (fits) {
                 const text = state.todos[app_index].bytes[0..state.todos[app_index].len];
                 @memcpy(item.text[0..text.len], text);
@@ -681,7 +658,7 @@ pub const TodoModel = struct {
         }
         for (self.items[0..self.item_count], state.todos[0..state.count], 0..) |*a, *b, i| {
             assert(!a.maybe);
-            if (!self.allow.utf8_cut and !std.unicode.utf8ValidateSlice(b.bytes[0..b.len])) {
+            if (!std.unicode.utf8ValidateSlice(b.bytes[0..b.len])) {
                 return std.fmt.bufPrint(buffer, "item {d} is not valid UTF-8", .{i}) catch
                     unreachable;
             }
@@ -774,17 +751,15 @@ fn dumpState(state: *const todo.State) void {
 /// An item added from an unknown draft is adoptable when it is what Add can
 /// produce from typed text (trimmed, non-empty, at most 128 bytes) and has
 /// the done flag the model gave it (its row's checkbox may have toggled it).
-fn adoptable(item: anytype, done: bool, utf8_cut: bool) bool {
+fn adoptable(item: anytype, done: bool) bool {
     const text = item.bytes[0..item.len];
     if (item.done != done) return false;
     if (text.len == 0 or text.len > item_bytes_max) return false;
     if (text[0] == ' ') return false;
-    // Add trims, then cuts: only a cut item may end with a space.
-    if (text[text.len - 1] == ' ' and text.len < item_bytes_max) return false;
-    if (validText(text)) return true;
-    // Under `allow.utf8_cut`, a 128-byte item may end inside a codepoint.
-    if (!utf8_cut or text.len != item_bytes_max) return false;
-    return validText(text[0..previousBoundary(text, @intCast(text.len))]);
+    // Add trims, then cuts: only a cut item may end with a space, and a cut
+    // on a codepoint boundary drops at most three bytes of the last one.
+    if (text[text.len - 1] == ' ' and text.len + 3 < item_bytes_max) return false;
+    return validText(text);
 }
 
 /// Valid UTF-8 made only of the generator's alphabet.

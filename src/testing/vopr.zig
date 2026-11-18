@@ -114,7 +114,7 @@ comptime {
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const options = parseArgs(init.minimal.args.vector) orelse {
-        std.debug.print("usage: vopr [seed] [--verbose] [--allow-known-bugs]\n", .{});
+        std.debug.print("usage: vopr [seed] [--verbose]\n", .{});
         return error.InvalidArguments;
     };
     const seed = options.seed orelse seed: {
@@ -122,11 +122,7 @@ pub fn main(init: std.process.Init) !void {
         init.io.random(std.mem.asBytes(&random_seed));
         break :seed random_seed;
     };
-    std.debug.print("vopr: todo seed {d}, {d} steps{s}\n", .{
-        seed,
-        step_count_cli,
-        if (options.allow_known_bugs) ", known bugs allowed" else "",
-    });
+    std.debug.print("vopr: todo seed {d}, {d} steps\n", .{ seed, step_count_cli });
 
     const bytes = try gpa.alloc(u8, bytes_cli);
     defer gpa.free(bytes);
@@ -136,7 +132,6 @@ pub fn main(init: std.process.Init) !void {
     const summary = try runPaired(todo.App, TodoModel, gpa, init.io, bytes, .{
         .step_count = step_count_cli,
         .verbose = options.verbose,
-        .model = if (options.allow_known_bugs) .known else .none,
     });
     std.debug.print("vopr: todo seed {d} passed: {d} steps, quiesced in {d} rounds, " ++
         "frame {d}, {d} draws, dump hash {x:0>16}\n", .{
@@ -152,24 +147,19 @@ pub fn main(init: std.process.Init) !void {
 const CliOptions = struct {
     seed: ?u64,
     verbose: bool,
-    allow_known_bugs: bool,
 };
 
 /// Null on an argument it does not understand.
 fn parseArgs(args: []const [*:0]const u8) ?CliOptions {
     assert(args.len >= 1);
-    var options: CliOptions = .{ .seed = null, .verbose = false, .allow_known_bugs = false };
+    var options: CliOptions = .{ .seed = null, .verbose = false };
     for (args[1..]) |pointer| {
         const arg = std.mem.span(pointer);
         if (std.mem.eql(u8, arg, "--verbose")) {
             options.verbose = true;
         } else {
-            if (std.mem.eql(u8, arg, "--allow-known-bugs")) {
-                options.allow_known_bugs = true;
-            } else {
-                if (options.seed != null) return null;
-                options.seed = std.fmt.parseInt(u64, arg, 0) catch return null;
-            }
+            if (options.seed != null) return null;
+            options.seed = std.fmt.parseInt(u64, arg, 0) catch return null;
         }
     }
     return options;
@@ -186,8 +176,6 @@ pub const Summary = struct {
 
 pub const RunOptions = struct {
     step_count: u32,
-    /// Known bugs the reference model expects (`--allow-known-bugs`).
-    model: TodoModel.Options,
     /// Print each action before it runs, so a failing seed shows its steps.
     verbose: bool,
 };
@@ -209,12 +197,12 @@ pub fn runPaired(
     var smith_second: Smith = .{ .in = bytes };
     const first = try gpa.create(V);
     defer gpa.destroy(first);
-    try first.initInPlace(gpa, io, &smith_first, options.model);
+    try first.initInPlace(gpa, io, &smith_first);
     defer first.deinit();
 
     const second = try gpa.create(V);
     defer gpa.destroy(second);
-    try second.initInPlace(gpa, io, &smith_second, options.model);
+    try second.initInPlace(gpa, io, &smith_second);
     defer second.deinit();
 
     checkSame(V, first, second, 0);
@@ -425,7 +413,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             gpa: std.mem.Allocator,
             io: std.Io,
             smith: *Smith,
-            model_options: Model.Options,
         ) !void {
             // Edit shortcuts use Ctrl on every host, so a seed replays anywhere.
             internals.text_engine.uses_cmd = false;
@@ -443,7 +430,7 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             self.text_bytes = @splat(0);
             self.swarm = .generate(smith);
             self.action_count = 0;
-            self.model.init(model_options);
+            self.model.init();
             assert(self.driver.now_ns == 0);
             assert(self.driver.renderer.draw_count == 0);
             self.quiesce();
@@ -833,8 +820,7 @@ fn fuzzTodo(_: void, smith: *Smith) anyerror!void {
     const V = Vopr(todo.App, TodoModel);
     const vopr = try std.testing.allocator.create(V);
     defer std.testing.allocator.destroy(vopr);
-    // The known bugs are reported; the smoke checks everything else.
-    try vopr.initInPlace(std.testing.allocator, std.testing.io, smith, .known);
+    try vopr.initInPlace(std.testing.allocator, std.testing.io, smith);
     defer vopr.deinit();
 
     const step_count = 1 + choose(smith, step_count_fuzz_max, "step count");
@@ -873,7 +859,7 @@ test "two instances fed the same bytes draw the same frames" {
 
     var prng = std.Random.DefaultPrng.init(1);
     prng.random().bytes(bytes);
-    const options: RunOptions = .{ .step_count = step_count, .verbose = false, .model = .known };
+    const options: RunOptions = .{ .step_count = step_count, .verbose = false };
     const summary = try runPaired(
         todo.App,
         TodoModel,

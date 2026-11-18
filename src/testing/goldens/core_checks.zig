@@ -4698,6 +4698,39 @@ test "the first frame fits a window whose size changed before the host bound it"
     try testing.expectApproxEqAbs(@as(f32, 700 - 24), add.x + add.width, 0.01);
 }
 
+test "todo acts on a todo's id and cuts a draft on a codepoint boundary" {
+    // Goal: the state methods todo's rows and Add call. Methodology: remove
+    // the middle of three todos by id twice and toggle it after: the list
+    // keeps the other two, "c" moved into its slot, untouched (VOPR seeds
+    // 17, 106, 107 had an index act on whatever moved there). Then add
+    // drafts of 127 and 126 bytes of "a" before an "é" (2 bytes): the
+    // 128-byte cut must keep 127 and 128 bytes, never half the "é" (seeds
+    // 42, 250, 302).
+    var state = todo.State{};
+    for ([_][]const u8{ "a", "b", "c" }) |text| {
+        state.draft = text;
+        state.addTodo();
+    }
+    const b = state.todos[1].id;
+    state.remove(b);
+    state.remove(b);
+    state.toggle(b);
+    try testing.expectEqual(@as(u32, 2), state.count);
+    try testing.expectEqualStrings("c", state.todos[1].bytes[0..state.todos[1].len]);
+    try testing.expect(!state.todos[1].done);
+
+    const a127: [127]u8 = @splat('a');
+    const a126: [126]u8 = @splat('a');
+    state.draft = a127 ++ "\u{e9}";
+    state.addTodo();
+    try testing.expectEqual(@as(u32, 127), state.todos[2].len);
+    state.draft = a126 ++ "\u{e9}";
+    state.addTodo();
+    const cut = state.todos[3].bytes[0..state.todos[3].len];
+    try testing.expectEqual(@as(usize, 128), cut.len);
+    try testing.expect(std.unicode.utf8ValidateSlice(cut));
+}
+
 test "a handler that clears a bound draft gets the next edit on the empty text" {
     // Goal: a TextInput's next edit applies to what the app assigned to its
     // binding, even before a build syncs the engine (VOPR seeds 101-103).

@@ -2154,7 +2154,7 @@ fn addVoprSoak(b: *std.Build, target: std.Build.ResolvedTarget, wiring: GoldensW
     // A soak is never cached: each run draws new seeds.
     run_soak.has_side_effects = true;
     const description = "Run the VOPR on random seeds: vopr-soak -- " ++
-        "[--hours H | --minutes M] [--jobs N] [--out DIR] [--strict]";
+        "[--hours H | --minutes M] [--jobs N] [--out DIR]";
     b.step("vopr-soak", description).dependOn(&run_soak.step);
 }
 

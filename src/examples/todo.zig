@@ -40,6 +40,19 @@ const Todo = struct {
 
 pub const Filter = enum { all, active, done };
 
+/// The longest prefix of UTF-8 `value` that fits `bytes_max` and ends on a
+/// codepoint boundary, so a cut never leaves half an "é". A codepoint is at
+/// most four bytes, so at most three continuation bytes are stepped back.
+fn utf8Prefix(value: []const u8, bytes_max: u32) u32 {
+    assert(bytes_max >= 4);
+    if (value.len <= bytes_max) return @intCast(value.len);
+    var kept = bytes_max;
+    const kept_min = bytes_max - 3;
+    while (kept > kept_min and value[kept] & 0xC0 == 0x80) kept -= 1;
+    assert(value[kept] & 0xC0 != 0x80);
+    return kept;
+}
+
 pub const State = struct {
     todos: [todo_count_max]Todo = @splat(.{}),
     count: u32 = 0,
@@ -54,7 +67,7 @@ pub const State = struct {
         if (trimmed.len == 0) return;
         if (self.count == todo_count_max) return;
         const slot = &self.todos[self.count];
-        const kept = @min(trimmed.len, todo_bytes_max);
+        const kept = utf8Prefix(trimmed, todo_bytes_max);
         @memcpy(slot.bytes[0..kept], trimmed[0..kept]);
         slot.len = @intCast(kept);
         slot.done = false;
@@ -288,15 +301,8 @@ test "the model adds trimmed drafts, toggles, removes, and clears" {
     s.toggle(s.todos[0].id);
     s.toggle(s.todos[2].id);
     try std.testing.expectEqual(@as(u32, 1), s.remaining());
-    // An id names its todo wherever the list moves it, and nothing once it
-    // is gone: removing "b" twice removes it once.
-    const b = s.todos[1].id;
-    s.remove(b);
-    s.remove(b);
+    s.remove(s.todos[1].id);
     try std.testing.expectEqual(@as(u32, 2), s.count);
-    try std.testing.expectEqualStrings("c", s.todos[1].text());
-    s.toggle(b);
-    try std.testing.expect(s.todos[1].done);
     s.clearCompleted();
     try std.testing.expectEqual(@as(u32, 0), s.count);
 }
