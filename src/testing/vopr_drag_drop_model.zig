@@ -15,6 +15,12 @@
 //!   list drops the card's payload there, a release anywhere else drops
 //!   nothing, and a release before it started is a click (cards and lists
 //!   have no click handler, so nothing changes). Escape cancels it.
+//! - Any mouse button presses as the left does (the router reads no button
+//!   for a press): it focuses, and with no drag held it arms a drag that
+//!   remembers its button. Only a release of that button ends the drag; a
+//!   release of another button clicks, which nothing handles. A move of any
+//!   button moves the drag. Held moves fold only into held moves of the same
+//!   button, as the queue folds them.
 //! - From the keyboard, Space (Shift allowed; not Ctrl, Alt, or Cmd) on a
 //!   focused card picks it up and announces it. During the drag every key
 //!   is the drag's: Tab and the arrows choose the next or previous list in
@@ -56,6 +62,7 @@ const Side = drag_drop.Side;
 const hitIndex = vopr_frame.hitIndex;
 const findHit = vopr_frame.findHit;
 const findA11y = vopr_frame.findA11y;
+const MouseButton = gooey.input.MouseButton;
 const nextTabStop = vopr_frame.nextTabStop;
 const index_none = records.index_none;
 
@@ -170,6 +177,8 @@ pub const DragDropModel = struct {
         payload: ItemId,
         type_id: usize,
         start: Point,
+        /// The pointer button that armed it; a keyboard drag's is `.left`.
+        button: MouseButton,
         /// The list a keyboard drag would drop on, or `.root`.
         over: ElementId,
 
@@ -180,16 +189,20 @@ pub const DragDropModel = struct {
             .payload = 0,
             .type_id = 0,
             .start = .{ .x = 0, .y = 0 },
+            .button = .left,
             .over = .root,
         };
     };
 
+    /// A pointer event's point and button.
+    const Press = struct { point: Point, button: MouseButton };
+
     /// A queued input event, as far as drag_drop can tell them apart.
     const Event = union(enum) {
         moved: Point,
-        dragged: Point,
-        down: Point,
-        up: Point,
+        dragged: Press,
+        down: Press,
+        up: Press,
         key_down: Action.Chord,
         key_up,
         /// Committed text or a composition: no handler of drag_drop's
@@ -238,27 +251,44 @@ pub const DragDropModel = struct {
         switch (action) {
             .pointer => |pointer| {
                 const point: Point = .{ .x = pointer.x, .y = pointer.y };
+                const held: Press = .{ .point = point, .button = pointer.button };
                 if (pointer.releases_held) {
-                    self.push(.{ .dragged = point });
-                    self.push(.{ .up = point });
+                    self.push(.{ .dragged = held });
+                    self.push(.{ .up = held });
                 }
-                self.push(.{ .moved = point });
-                if (pointer.kind == .click) {
-                    self.push(.{ .down = point });
-                    self.push(.{ .up = point });
+                switch (pointer.kind) {
+                    .move => self.push(.{ .moved = point }),
+                    .press => {
+                        self.push(.{ .moved = point });
+                        self.push(.{ .down = held });
+                    },
+                    .release => {
+                        self.push(.{ .dragged = held });
+                        self.push(.{ .up = held });
+                    },
+                    .click => {
+                        self.push(.{ .moved = point });
+                        self.push(.{ .down = held });
+                        self.push(.{ .up = held });
+                    },
                 }
             },
             .drag => |gesture| {
                 const point: Point = .{ .x = gesture.x, .y = gesture.y };
+                const held: Press = .{ .point = point, .button = gesture.button };
                 switch (gesture.kind) {
                     .press => {
+                        if (gesture.releases_held) {
+                            self.push(.{ .dragged = held });
+                            self.push(.{ .up = held });
+                        }
                         self.push(.{ .moved = point });
-                        self.push(.{ .down = point });
+                        self.push(.{ .down = held });
                     },
-                    .move => self.push(.{ .dragged = point }),
+                    .move => self.push(.{ .dragged = held }),
                     .release => {
-                        self.push(.{ .dragged = point });
-                        self.push(.{ .up = point });
+                        self.push(.{ .dragged = held });
+                        self.push(.{ .up = held });
                     },
                 }
             },
@@ -281,7 +311,7 @@ pub const DragDropModel = struct {
             const last = &self.events[self.event_count - 1];
             const folds = switch (event) {
                 .moved => last.* == .moved,
-                .dragged => last.* == .dragged,
+                .dragged => |moved| last.* == .dragged and last.dragged.button == moved.button,
                 .scroll => last.* == .scroll,
                 else => false,
             };
@@ -368,9 +398,10 @@ pub const DragDropModel = struct {
 
     fn route(self: *DragDropModel, frame: *const records.Frame, event: *const Event) void {
         switch (event.*) {
-            .moved, .dragged => |point| self.pointerMoved(point),
-            .down => |point| self.press(frame, point),
-            .up => |point| self.release(frame, point),
+            .moved => |point| self.pointerMoved(point),
+            .dragged => |held| self.pointerMoved(held.point),
+            .down => |press_event| self.press(frame, press_event),
+            .up => |release_event| self.release(frame, release_event),
             .key_down => |chord| {
                 if (self.drag.keyboard) {
                     self.keyboardDragKey(frame, chord);
@@ -401,7 +432,8 @@ pub const DragDropModel = struct {
 
     /// A press ends a keyboard drag, arms a drag of the card under it when
     /// no drag holds the gesture, and focuses the innermost focusable.
-    fn press(self: *DragDropModel, frame: *const records.Frame, point: Point) void {
+    fn press(self: *DragDropModel, frame: *const records.Frame, event: Press) void {
+        const point = event.point;
         if (self.drag.keyboard) {
             self.drag = .idle;
             self.counts.drags_cancelled += 1;
@@ -428,6 +460,7 @@ pub const DragDropModel = struct {
                     .payload = checkCard(frame, record),
                     .type_id = record.drag_type,
                     .start = point,
+                    .button = event.button,
                     .over = .root,
                 };
             }
@@ -435,10 +468,13 @@ pub const DragDropModel = struct {
         self.focus = focus_id;
     }
 
-    /// A release ends a pointer drag: a started one drops on the list under
-    /// it, or on nothing; an armed one is a click, which nothing handles.
-    fn release(self: *DragDropModel, frame: *const records.Frame, point: Point) void {
+    /// A release of the drag's button ends a pointer drag: a started one
+    /// drops on the list under it, or on nothing; an armed one is a click,
+    /// which nothing handles. Another button's release clicks nothing here.
+    fn release(self: *DragDropModel, frame: *const records.Frame, event: Press) void {
+        const point = event.point;
         if (self.drag.phase == .idle or self.drag.keyboard) return;
+        if (self.drag.button != event.button) return;
         const ended = self.drag;
         self.drag = .idle;
         if (ended.phase == .armed) {
@@ -509,6 +545,7 @@ pub const DragDropModel = struct {
             .payload = checkCard(frame, record),
             .type_id = record.drag_type,
             .start = centreOf(record.bounds),
+            .button = .left,
             .over = .root,
         };
         self.counts.drags_started += 1;
@@ -656,6 +693,9 @@ pub const DragDropModel = struct {
             same = actual.payload == expected.payload and actual.source == expected.source;
         }
         if (same and expected.keyboard) same = actual.over == expected.over;
+        if (same and expected.phase != .idle and !expected.keyboard) {
+            same = actual.button == expected.button;
+        }
         if (same) return;
         std.debug.panic("vopr model: after step {d} the drag is {t} (keyboard {}, payload " ++
             "{d}, source {x}, over {x}); the model expected {t} (keyboard {}, payload {d}, " ++

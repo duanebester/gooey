@@ -2,7 +2,9 @@
 //!
 //! One generator, driven by `std.testing.Smith`, turns bytes into a stream of
 //! actions against a headless app on the goldens' `CoreDriver`: pointer
-//! clicks and moves aimed at the rendered frame's hit records, held-button
+//! clicks, moves, and held presses of the left, right, and middle buttons
+//! (overlapping in any order, never a press of a button that is down) aimed
+//! at the rendered frame's hit records, held-button
 //! drag gestures (a press mostly on a draggable, moves onto drop targets,
 //! outside them, and back, then a release or none), wheel scrolls, keys,
 //! committed and composed text, clock gaps, window resizes (size and scale),
@@ -95,6 +97,7 @@ const pointer_event_count_max: u32 = 3;
 /// Events a click queues first when it releases a held gesture's button: a
 /// held move and the release.
 const release_event_count: u32 = 2;
+const button_count = std.enums.values(input.MouseButton).len;
 /// Held moves in one run of a gesture before it releases or plans more.
 const drag_move_count_max: u32 = 8;
 /// Scale factor of every simulated window, as the goldens use.
@@ -162,7 +165,7 @@ pub const Workload = enum {
 pub fn main(init: std.process.Init) !void {
     const options = parseArgs(init.minimal.args.vector) orelse {
         std.debug.print("usage: vopr [--app todo|drag_drop|virtual_list] [seed] " ++
-            "[--verbose]\n", .{});
+            "[--verbose] [--skip-scrollbar-second-press]\n", .{});
         return error.InvalidArguments;
     };
     const seed = options.seed orelse seed: {
@@ -194,6 +197,7 @@ fn runCli(
     const result = try runPaired(workload.App(), Model, gpa, io, bytes, .{
         .step_count = step_count_cli,
         .verbose = options.verbose,
+        .skip_scrollbar_second_press = options.skip_scrollbar_second_press,
     });
     const summary = result.summary;
     std.debug.print("vopr: {s} seed {d} passed: {d} steps, quiesced in {d} rounds, " ++
@@ -217,27 +221,37 @@ const CliOptions = struct {
     workload: Workload,
     seed: ?u64,
     verbose: bool,
+    skip_scrollbar_second_press: bool,
 };
 
 /// Null on an argument it does not understand.
 fn parseArgs(args: []const [*:0]const u8) ?CliOptions {
     assert(args.len >= 1);
-    var options: CliOptions = .{ .workload = .todo, .seed = null, .verbose = false };
+    var options: CliOptions = .{
+        .workload = .todo,
+        .seed = null,
+        .verbose = false,
+        .skip_scrollbar_second_press = false,
+    };
     var index: usize = 1;
     while (index < args.len) : (index += 1) {
         const arg = std.mem.span(args[index]);
         if (std.mem.eql(u8, arg, "--verbose")) {
             options.verbose = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--skip-scrollbar-second-press")) {
+            options.skip_scrollbar_second_press = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--app")) {
+            index += 1;
+            if (index == args.len) return null;
+            const value = std.mem.span(args[index]);
+            options.workload = std.meta.stringToEnum(Workload, value) orelse return null;
         } else {
-            if (std.mem.eql(u8, arg, "--app")) {
-                index += 1;
-                if (index == args.len) return null;
-                const value = std.mem.span(args[index]);
-                options.workload = std.meta.stringToEnum(Workload, value) orelse return null;
-            } else {
-                if (options.seed != null) return null;
-                options.seed = std.fmt.parseInt(u64, arg, 0) catch return null;
-            }
+            if (options.seed != null) return null;
+            options.seed = std.fmt.parseInt(u64, arg, 0) catch return null;
         }
     }
     assert(index == args.len);
@@ -264,6 +278,8 @@ pub const RunOptions = struct {
     step_count: u32,
     /// Print each action before it runs, so a failing seed shows its steps.
     verbose: bool,
+    /// Temporary: `Vopr.skip_scrollbar_second_press`, a known finding.
+    skip_scrollbar_second_press: bool = false,
 };
 
 /// Drive two instances from the same bytes, both allocated at once, and
@@ -284,11 +300,13 @@ pub fn runPaired(
     const first = try gpa.create(V);
     defer gpa.destroy(first);
     try first.initInPlace(gpa, io, &smith_first);
+    first.skip_scrollbar_second_press = options.skip_scrollbar_second_press;
     defer first.deinit();
 
     const second = try gpa.create(V);
     defer gpa.destroy(second);
     try second.initInPlace(gpa, io, &smith_second);
+    second.skip_scrollbar_second_press = options.skip_scrollbar_second_press;
     defer second.deinit();
 
     checkSame(V, first, second, 0);
@@ -357,17 +375,26 @@ pub const Action = union(enum) {
 
     pub const Gesture = struct {
         kind: enum { press, move, release },
+        button: input.MouseButton,
         x: f32,
         y: f32,
+        /// A press of a button a `.pointer` press holds releases it first.
+        releases_held: bool,
     };
 
+    /// A click (press and release), a move, or one half of a click: a
+    /// press that holds the button across other actions, or the release of
+    /// a held button. Holding lets buttons overlap in any order, as every
+    /// platform delivers them: left down, right down, left up, right up.
     pub const Pointer = struct {
-        kind: enum { click, move },
+        kind: enum { click, move, press, release },
+        button: input.MouseButton,
         x: f32,
         y: f32,
         click_count: u32,
-        /// A click while a gesture holds the button releases it first, as
-        /// no platform presses a button that is already down.
+        /// A click of a button that is held (by a gesture or a press)
+        /// releases it first, as no platform presses a button that is
+        /// already down.
         releases_held: bool,
     };
 
@@ -384,8 +411,9 @@ pub const Action = union(enum) {
 
     pub fn format(self: Action, writer: *std.Io.Writer) std.Io.Writer.Error!void {
         switch (self) {
-            .pointer => |pointer| try writer.print("{t} ({d:.2}, {d:.2}) clicks={d}{s}", .{
+            .pointer => |pointer| try writer.print("{t} {t} ({d:.2}, {d:.2}) clicks={d}{s}", .{
                 pointer.kind,
+                pointer.button,
                 pointer.x,
                 pointer.y,
                 pointer.click_count,
@@ -407,10 +435,12 @@ pub const Action = union(enum) {
             .wait_ns => |gap_ns| try writer.print("wait {d} ns", .{gap_ns}),
             .tick_main => try writer.writeAll("tickMain"),
             .present => try writer.writeAll("presentBuilt"),
-            .drag => |gesture| try writer.print("drag {t} ({d:.2}, {d:.2})", .{
+            .drag => |gesture| try writer.print("drag {t} {t} ({d:.2}, {d:.2}){s}", .{
                 gesture.kind,
+                gesture.button,
                 gesture.x,
                 gesture.y,
+                if (gesture.releases_held) " (releases held)" else "",
             }),
             .resize => |size| try writer.print("resize {d}x{d}@{d}", .{
                 size.width,
@@ -448,6 +478,15 @@ pub const Swarm = struct {
     click_percent: u32,
     /// Actions between stable-rebuild checks (`checkStableRebuild`).
     rebuild_period: u32,
+    /// Which mouse buttons pointer and gesture presses use.
+    button_mix: ButtonMix,
+    /// Percent of pointer actions that press or release a held button
+    /// instead of clicking or moving.
+    hold_percent: u32,
+
+    /// Left only; mostly left (8 in 10), with right and middle; or each
+    /// button a third of the time.
+    pub const ButtonMix = enum { left_only, mostly_left, even };
 
     /// Most weight one action kind can draw.
     const kind_weight_max: u32 = 16;
@@ -455,8 +494,10 @@ pub const Swarm = struct {
     const target_prefix_count_choices = [_]u32{ 2, 3, 5, 8, 0 };
     const click_percent_choices = [_]u32{ 25, 50, 90 };
     const rebuild_period_choices = [_]u32{ 7, 31, 127 };
+    const hold_percent_choices = [_]u32{ 0, 10, 30 };
+    const button_mix_count = std.enums.values(ButtonMix).len;
     /// Most Smith choices `generate` makes: two per kind a model lists.
-    const choice_count_max = 2 * kind_count + 4;
+    const choice_count_max = 2 * kind_count + 6;
 
     /// Weights for the kinds the model lists, in its order; the rest stay
     /// off, so a model's seeds replay unchanged when another app's kind is
@@ -492,6 +533,10 @@ pub const Swarm = struct {
         swarm.rebuild_period = rebuild_period_choices[
             choose(smith, rebuild_period_choices.len, "rebuild period")
         ];
+        swarm.button_mix = @fromBackingInt(@intCast(choose(smith, button_mix_count, "button mix")));
+        swarm.hold_percent = hold_percent_choices[
+            choose(smith, hold_percent_choices.len, "hold percent")
+        ];
         assert(swarm.kind_weights[@backingInt(ActionKind.tick_main)] > 0);
         assert(swarm.kind_weight_total <= kind_count * kind_weight_max);
         return swarm;
@@ -508,15 +553,29 @@ pub const Swarm = struct {
         unreachable;
     }
 
+    /// A button from the mix; always one choice, so the mix does not shift
+    /// the bytes that follow.
+    fn chooseButton(self: *const Swarm, smith: *Smith) input.MouseButton {
+        const roll = choose(smith, 100, "button");
+        const left_percent: u32, const right_percent: u32 = switch (self.button_mix) {
+            .left_only => .{ 100, 0 },
+            .mostly_left => .{ 80, 10 },
+            .even => .{ 34, 33 },
+        };
+        assert(left_percent + right_percent <= 100);
+        if (roll < left_percent) return .left;
+        if (roll < left_percent + right_percent) return .right;
+        return .middle;
+    }
+
     pub fn format(self: Swarm, writer: *std.Io.Writer) std.Io.Writer.Error!void {
         for (self.kinds) |kind| {
             try writer.print("{t}={d} ", .{ kind, self.kind_weights[@backingInt(kind)] });
         }
-        try writer.print("interactive={d}% prefix={d} click={d}% rebuild every {d}", .{
-            self.interactive_percent,
-            self.target_prefix_count,
-            self.click_percent,
-            self.rebuild_period,
+        try writer.print("interactive={d}% prefix={d} click={d}% rebuild every {d} " ++
+            "buttons {t} hold={d}%", .{
+            self.interactive_percent, self.target_prefix_count, self.click_percent,
+            self.rebuild_period,      self.button_mix,          self.hold_percent,
         });
     }
 };
@@ -542,6 +601,13 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
         action_count: u32,
         /// The held-button gesture `.drag` steps continue, if any.
         gesture: GestureState,
+        /// The mouse buttons the harness holds down.
+        held: Held,
+        /// Temporary, off unless asked for: never press a second button
+        /// while a scrollbar thumb drag may be active (router.zig's
+        /// `pressScrollbar` asserts there is none, a known finding), so a
+        /// run can go on to find others. Remove it with that fix.
+        skip_scrollbar_second_press: bool,
         /// The rendered frame `invariants.checkFrame` last checked.
         frame_number_checked: u64,
         /// The dump of the rendered frame, copied before a stable rebuild.
@@ -555,6 +621,7 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
         /// more moves with the button still held.
         const GestureState = struct {
             held: bool,
+            button: input.MouseButton,
             start: Point,
             last: Point,
             move_count: u32,
@@ -562,6 +629,7 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
 
             const idle: GestureState = .{
                 .held = false,
+                .button = .left,
                 .start = .{ .x = 0, .y = 0 },
                 .last = .{ .x = 0, .y = 0 },
                 .move_count = 0,
@@ -569,6 +637,53 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             };
         };
         const Driver = core.CoreDriver(App);
+
+        /// Which buttons are down, so the harness never presses a button
+        /// that is down or releases one that is up; and which presses the
+        /// router has not drained yet.
+        const Held = struct {
+            down: [button_count]bool,
+            undrained: [button_count]bool,
+
+            const none: Held = .{ .down = @splat(false), .undrained = @splat(false) };
+
+            fn isDown(self: *const Held, button: input.MouseButton) bool {
+                return self.down[@backingInt(button)];
+            }
+
+            fn any(self: *const Held) bool {
+                return std.mem.indexOfScalar(bool, &self.down, true) != null;
+            }
+
+            fn press(self: *Held, button: input.MouseButton) void {
+                assert(!self.isDown(button));
+                self.down[@backingInt(button)] = true;
+                self.undrained[@backingInt(button)] = true;
+            }
+
+            fn release(self: *Held, button: input.MouseButton) void {
+                assert(self.isDown(button));
+                self.down[@backingInt(button)] = false;
+                self.undrained[@backingInt(button)] = false;
+            }
+
+            /// Whether another button is down with a press the router has
+            /// not seen yet, which may start a thumb drag.
+            fn otherUndrained(self: *const Held, button: input.MouseButton) bool {
+                for (self.down, self.undrained, 0..) |down, undrained, index| {
+                    if (index == @backingInt(button)) continue;
+                    if (down and undrained) return true;
+                }
+                return false;
+            }
+
+            fn otherDown(self: *const Held, button: input.MouseButton) bool {
+                for (self.down, 0..) |down, index| {
+                    if (index != @backingInt(button) and down) return true;
+                }
+                return false;
+            }
+        };
 
         /// Initialize in place (the app must not move), draw the seed's
         /// action mix from `smith`, then settle the first frame so pointer
@@ -600,6 +715,8 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             self.swarm = .generate(smith, Model.action_kinds);
             self.action_count = 0;
             self.gesture = .idle;
+            self.held = .none;
+            self.skip_scrollbar_second_press = false;
             self.frame_number_checked = 0;
             self.stable_rebuild_count = 0;
             self.model.init();
@@ -675,8 +792,8 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
                     .{ .pointer = self.generatePointer(smith) }
                 else
                     .tick_main,
-                .drag => if (self.queueHasRoom(pointer_event_count_max, 0))
-                    .{ .drag = self.generateGesture(smith) }
+                .drag => if (self.queueHasRoom(self.pointerEventCount(), 0))
+                    self.generateGesture(smith)
                 else
                     .tick_main,
                 .key => if (self.queueHasRoom(2, 0)) .{ .key = .{
@@ -841,6 +958,7 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             const win = self.window();
             self.model.beginDrain(win);
             const published = tick.tickMain(&self.driver.app, win, self.driver.now_ns);
+            self.held.undrained = @splat(false);
             if (published) assert(win.frame_in_flight.load(.acquire));
             self.model.endDrain(win, published);
             // The apps open no file dialog, so every drain empties the queue.
@@ -899,43 +1017,89 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
         fn deliverPointer(self: *Self, pointer: Action.Pointer) void {
             const position: input.MouseEvent = .{
                 .position = .{ .x = pointer.x, .y = pointer.y },
-                .button = .left,
+                .button = pointer.button,
                 .click_count = 0,
                 .modifiers = .{},
             };
+            var press = position;
+            press.click_count = 1;
             if (pointer.releases_held) {
                 assert(pointer.kind == .click);
-                var release = position;
-                release.click_count = 1;
                 self.deliver(.{ .mouse_dragged = position });
-                self.deliver(.{ .mouse_up = release });
+                self.deliver(.{ .mouse_up = press });
             }
-            self.deliver(.{ .mouse_moved = position });
-            if (pointer.kind == .move) return;
-            var press = position;
-            press.click_count = pointer.click_count;
-            self.deliver(.{ .mouse_down = press });
-            self.deliver(.{ .mouse_up = press });
+            switch (pointer.kind) {
+                .move => self.deliver(.{ .mouse_moved = position }),
+                .press => {
+                    self.deliver(.{ .mouse_moved = position });
+                    self.deliver(.{ .mouse_down = press });
+                },
+                .release => {
+                    self.deliver(.{ .mouse_dragged = position });
+                    self.deliver(.{ .mouse_up = press });
+                },
+                .click => {
+                    press.click_count = pointer.click_count;
+                    self.deliver(.{ .mouse_moved = position });
+                    self.deliver(.{ .mouse_down = press });
+                    self.deliver(.{ .mouse_up = press });
+                },
+            }
         }
 
+        /// A move, a click, or with `Swarm.hold_percent` the press of a
+        /// button that is up or the release of one that is down. Releasing
+        /// a gesture's button ends the gesture.
         fn generatePointer(self: *Self, smith: *Smith) Action.Pointer {
+            const Kind = @FieldType(Action.Pointer, "kind");
             const point = self.generatePoint(smith);
             const click = choose(smith, 100, "pointer kind") < self.swarm.click_percent;
-            const releases_held = click and self.gesture.held;
-            if (click) self.gesture = .idle;
-            return .{
-                .kind = if (click) .click else .move,
+            const button = self.swarm.chooseButton(smith);
+            const hold = choose(smith, 100, "hold") < self.swarm.hold_percent;
+            const down = self.held.isDown(button);
+            const held_kind: Kind = if (down) .release else .press;
+            var pointer: Action.Pointer = .{
+                .kind = if (hold) held_kind else (if (click) .click else .move),
+                .button = button,
                 .x = point.x,
                 .y = point.y,
                 .click_count = 1 + choose(smith, 2, "click count"),
-                .releases_held = releases_held,
+                .releases_held = false,
             };
+            const presses = pointer.kind == .press or pointer.kind == .click;
+            if (presses and self.secondPressSkipped(button)) pointer.kind = .move;
+            switch (pointer.kind) {
+                .move => {},
+                .press => self.held.press(button),
+                .release => self.releaseHeld(button),
+                .click => if (down) {
+                    pointer.releases_held = true;
+                    self.releaseHeld(button);
+                },
+            }
+            return pointer;
         }
 
-        /// The most events the next pointer action can queue: a click may
-        /// release a held gesture's button first.
+        /// A held button goes up; the gesture holding it, if any, ends.
+        fn releaseHeld(self: *Self, button: input.MouseButton) void {
+            self.held.release(button);
+            if (self.gesture.held and self.gesture.button == button) self.gesture = .idle;
+        }
+
+        /// With `skip_scrollbar_second_press`, a press of `button` is
+        /// skipped while another button is down and may be dragging a
+        /// scrollbar thumb: its press is still queued, or a drag is on.
+        fn secondPressSkipped(self: *const Self, button: input.MouseButton) bool {
+            if (!self.skip_scrollbar_second_press) return false;
+            if (!self.held.otherDown(button)) return false;
+            if (self.held.otherUndrained(button)) return true;
+            return self.driver.app.window.scroll_drag != .root;
+        }
+
+        /// The most events the next pointer or gesture action can queue: a
+        /// press may release a held button first.
         fn pointerEventCount(self: *const Self) u32 {
-            if (self.gesture.held) return pointer_event_count_max + release_event_count;
+            if (self.held.any()) return pointer_event_count_max + release_event_count;
             return pointer_event_count_max;
         }
 
@@ -945,7 +1109,7 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
         fn deliverGesture(self: *Self, gesture: Action.Gesture) void {
             const position: input.MouseEvent = .{
                 .position = .{ .x = gesture.x, .y = gesture.y },
-                .button = .left,
+                .button = gesture.button,
                 .click_count = 0,
                 .modifiers = .{},
             };
@@ -953,11 +1117,16 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             press.click_count = 1;
             switch (gesture.kind) {
                 .press => {
+                    if (gesture.releases_held) {
+                        self.deliver(.{ .mouse_dragged = position });
+                        self.deliver(.{ .mouse_up = press });
+                    }
                     self.deliver(.{ .mouse_moved = position });
                     self.deliver(.{ .mouse_down = press });
                 },
                 .move => self.deliver(.{ .mouse_dragged = position }),
                 .release => {
+                    assert(!gesture.releases_held);
                     self.deliver(.{ .mouse_dragged = position });
                     self.deliver(.{ .mouse_up = press });
                 },
@@ -968,31 +1137,65 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
         /// draggable), then a run of up to `drag_move_count_max` moves,
         /// then a release, or with a quarter's chance another run of moves
         /// with the button still held, so a drag can stay open for long.
-        fn generateGesture(self: *Self, smith: *Smith) Action.Gesture {
+        /// A press that `secondPressSkipped` skips is a `tickMain`.
+        fn generateGesture(self: *Self, smith: *Smith) Action {
             const gesture = &self.gesture;
-            if (!gesture.held) {
-                const point = self.generatePressPoint(smith);
-                gesture.* = .{
-                    .held = true,
-                    .start = point,
-                    .last = point,
-                    .move_count = 1 + choose(smith, drag_move_count_max, "drag moves"),
-                    .release = choose(smith, 4, "drag release") != 0,
-                };
-                return .{ .kind = .press, .x = point.x, .y = point.y };
-            }
+            if (!gesture.held) return self.generateGesturePress(smith);
+            assert(self.held.isDown(gesture.button));
             assert(gesture.move_count <= drag_move_count_max);
+            const button = gesture.button;
             if (gesture.move_count == 0) {
                 if (gesture.release) {
-                    gesture.held = false;
-                    return .{ .kind = .release, .x = gesture.last.x, .y = gesture.last.y };
+                    const last = gesture.last;
+                    self.releaseHeld(button);
+                    assert(!gesture.held);
+                    return .{ .drag = .{
+                        .kind = .release,
+                        .button = button,
+                        .x = last.x,
+                        .y = last.y,
+                        .releases_held = false,
+                    } };
                 }
                 gesture.move_count = 1 + choose(smith, drag_move_count_max, "drag moves");
                 gesture.release = choose(smith, 4, "drag release") != 0;
             }
             gesture.move_count -= 1;
             gesture.last = self.generateDragPoint(smith, gesture.start);
-            return .{ .kind = .move, .x = gesture.last.x, .y = gesture.last.y };
+            return .{ .drag = .{
+                .kind = .move,
+                .button = button,
+                .x = gesture.last.x,
+                .y = gesture.last.y,
+                .releases_held = false,
+            } };
+        }
+
+        fn generateGesturePress(self: *Self, smith: *Smith) Action {
+            assert(!self.gesture.held);
+            const point = self.generatePressPoint(smith);
+            const button = self.swarm.chooseButton(smith);
+            const move_count = 1 + choose(smith, drag_move_count_max, "drag moves");
+            const release = choose(smith, 4, "drag release") != 0;
+            if (self.secondPressSkipped(button)) return .tick_main;
+            const releases_held = self.held.isDown(button);
+            if (releases_held) self.releaseHeld(button);
+            self.held.press(button);
+            self.gesture = .{
+                .held = true,
+                .button = button,
+                .start = point,
+                .last = point,
+                .move_count = move_count,
+                .release = release,
+            };
+            return .{ .drag = .{
+                .kind = .press,
+                .button = button,
+                .x = point.x,
+                .y = point.y,
+                .releases_held = releases_held,
+            } };
         }
 
         /// A press point: on a draggable nine times in ten when the frame
