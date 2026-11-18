@@ -2079,8 +2079,9 @@ fn addGoldens(
 
     const run_vopr = b.addRunArtifact(vopr);
     run_vopr.addPassthruArgs();
-    b.step("vopr", "Simulate the todo example for one seed: vopr -- [seed] [--verbose]")
-        .dependOn(&run_vopr.step);
+    const vopr_description = "Simulate an example app for one seed: vopr -- " ++
+        "[--app NAME] [seed] [--verbose]";
+    b.step("vopr", vopr_description).dependOn(&run_vopr.step);
 
     addVoprSoak(b, target, wiring);
 }
@@ -2154,7 +2155,7 @@ fn addVoprSoak(b: *std.Build, target: std.Build.ResolvedTarget, wiring: GoldensW
     // A soak is never cached: each run draws new seeds.
     run_soak.has_side_effects = true;
     const description = "Run the VOPR on random seeds: vopr-soak -- " ++
-        "[--hours H | --minutes M] [--jobs N] [--out DIR]";
+        "[--app NAME] [--hours H | --minutes M] [--jobs N] [--out DIR]";
     b.step("vopr-soak", description).dependOn(&run_soak.step);
 }
 

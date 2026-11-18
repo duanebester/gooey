@@ -2,12 +2,16 @@
 //!
 //! One generator, driven by `std.testing.Smith`, turns bytes into a stream of
 //! actions against a headless app on the goldens' `CoreDriver`: pointer
-//! clicks and moves aimed at the rendered frame's hit records, wheel scrolls,
-//! keys, committed and composed text, clock gaps, and the two sides of a tick
+//! clicks and moves aimed at the rendered frame's hit records, held-button
+//! drag gestures (a press mostly on a draggable, moves onto drop targets,
+//! outside them, and back, then a release or none), wheel scrolls, keys,
+//! committed and composed text, clock gaps, and the two sides of a tick
 //! (`tickMain` and `presentBuilt`) driven separately, so a frame stays in
 //! flight while input keeps arriving. The same generator serves `zig build
-//! vopr -- [seed]`, whose bytes come from a seeded PRNG, and a
-//! `std.testing.fuzz` target, whose bytes come from the fuzzer.
+//! vopr -- [--app NAME] [seed]`, whose bytes come from a seeded PRNG, and a
+//! `std.testing.fuzz` target per app, whose bytes come from the fuzzer. Each
+//! app (`Workload`) has a reference model, which lists the action kinds its
+//! swarm draws: todo's never drags, so its seeds replay as before.
 //!
 //! Swarm testing: every `swarm_epoch_step_count` steps the generator draws a
 //! fresh `Swarm` (action-kind weights, some of them zero, and how pointer
@@ -35,8 +39,10 @@
 const std = @import("std");
 const gooey = @import("gooey");
 const todo = @import("todo_example");
+const drag_drop = @import("drag_drop_example");
 const core = @import("goldens/core.zig");
 const TodoModel = @import("vopr_todo_model.zig").TodoModel;
+const DragDropModel = @import("vopr_drag_drop_model.zig").DragDropModel;
 const trace_mod = @import("goldens/trace.zig");
 
 const assert = std.debug.assert;
@@ -74,8 +80,11 @@ const quiescence_round_max: u32 = 32;
 const text_unit_count_max: u32 = 8;
 /// Bytes in one text or composition action: the longest unit is 2 bytes.
 const text_bytes_action_max: u32 = text_unit_count_max * 2;
-/// Events one pointer action queues: a move, a press, and a release.
+/// Events one pointer action queues: a move, a press, and a release. A
+/// gesture step queues at most two: a move and a press or release.
 const pointer_event_count_max: u32 = 3;
+/// Held moves in one run of a gesture before it releases or plans more.
+const drag_move_count_max: u32 = 8;
 /// Scale factor of every simulated window, as the goldens use.
 const scale_factor: f32 = 2;
 
@@ -109,12 +118,33 @@ comptime {
     assert(text_bytes_action_max <= internals.limits.EventLimits.nano.text_bytes_max);
 }
 
-/// `zig build vopr -- [seed] [--verbose]`: run one seed against todo. With
-/// no seed, a random one is drawn and printed, so any run can be replayed.
+/// The apps the VOPR drives, each with its reference model; `--app` names
+/// one, and todo is the default.
+pub const Workload = enum {
+    todo,
+    drag_drop,
+
+    fn App(comptime workload: Workload) type {
+        return switch (workload) {
+            .todo => todo.App,
+            .drag_drop => drag_drop.App,
+        };
+    }
+
+    fn Model(comptime workload: Workload) type {
+        return switch (workload) {
+            .todo => TodoModel,
+            .drag_drop => DragDropModel,
+        };
+    }
+};
+
+/// `zig build vopr -- [--app NAME] [seed] [--verbose]`: run one seed against
+/// an app. With no seed, a random one is drawn and printed, so any run can be
+/// replayed.
 pub fn main(init: std.process.Init) !void {
-    const gpa = init.gpa;
     const options = parseArgs(init.minimal.args.vector) orelse {
-        std.debug.print("usage: vopr [seed] [--verbose]\n", .{});
+        std.debug.print("usage: vopr [--app todo|drag_drop] [seed] [--verbose]\n", .{});
         return error.InvalidArguments;
     };
     const seed = options.seed orelse seed: {
@@ -122,19 +152,35 @@ pub fn main(init: std.process.Init) !void {
         init.io.random(std.mem.asBytes(&random_seed));
         break :seed random_seed;
     };
-    std.debug.print("vopr: todo seed {d}, {d} steps\n", .{ seed, step_count_cli });
+    switch (options.workload) {
+        inline else => |workload| try runCli(workload, init.gpa, init.io, seed, &options),
+    }
+}
+
+fn runCli(
+    comptime workload: Workload,
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    seed: u64,
+    options: *const CliOptions,
+) !void {
+    const name = @tagName(workload);
+    std.debug.print("vopr: {s} seed {d}, {d} steps\n", .{ name, seed, step_count_cli });
 
     const bytes = try gpa.alloc(u8, bytes_cli);
     defer gpa.free(bytes);
 
     var prng = std.Random.DefaultPrng.init(seed);
     prng.random().bytes(bytes);
-    const summary = try runPaired(todo.App, TodoModel, gpa, init.io, bytes, .{
+    const Model = workload.Model();
+    const result = try runPaired(workload.App(), Model, gpa, io, bytes, .{
         .step_count = step_count_cli,
         .verbose = options.verbose,
     });
-    std.debug.print("vopr: todo seed {d} passed: {d} steps, quiesced in {d} rounds, " ++
+    const summary = result.summary;
+    std.debug.print("vopr: {s} seed {d} passed: {d} steps, quiesced in {d} rounds, " ++
         "frame {d}, {d} draws, dump hash {x:0>16}\n", .{
+        name,
         seed,
         summary.step_count,
         summary.quiescence_round_count,
@@ -142,9 +188,14 @@ pub fn main(init: std.process.Init) !void {
         summary.draw_count,
         summary.dump_hash,
     });
+    // Todo's model keeps no stats, so its output stays one line.
+    if (@sizeOf(Model.Stats) > 0) {
+        std.debug.print("vopr: {s} seed {d} stats: {f}\n", .{ name, seed, result.stats });
+    }
 }
 
 const CliOptions = struct {
+    workload: Workload,
     seed: ?u64,
     verbose: bool,
 };
@@ -152,16 +203,25 @@ const CliOptions = struct {
 /// Null on an argument it does not understand.
 fn parseArgs(args: []const [*:0]const u8) ?CliOptions {
     assert(args.len >= 1);
-    var options: CliOptions = .{ .seed = null, .verbose = false };
-    for (args[1..]) |pointer| {
-        const arg = std.mem.span(pointer);
+    var options: CliOptions = .{ .workload = .todo, .seed = null, .verbose = false };
+    var index: usize = 1;
+    while (index < args.len) : (index += 1) {
+        const arg = std.mem.span(args[index]);
         if (std.mem.eql(u8, arg, "--verbose")) {
             options.verbose = true;
         } else {
-            if (options.seed != null) return null;
-            options.seed = std.fmt.parseInt(u64, arg, 0) catch return null;
+            if (std.mem.eql(u8, arg, "--app")) {
+                index += 1;
+                if (index == args.len) return null;
+                const value = std.mem.span(args[index]);
+                options.workload = std.meta.stringToEnum(Workload, value) orelse return null;
+            } else {
+                if (options.seed != null) return null;
+                options.seed = std.fmt.parseInt(u64, arg, 0) catch return null;
+            }
         }
     }
+    assert(index == args.len);
     return options;
 }
 
@@ -173,6 +233,11 @@ pub const Summary = struct {
     draw_count: u64,
     dump_hash: u64,
 };
+
+/// What a run reports: the frames it drew, and the model's own counts.
+pub fn Result(comptime Model: type) type {
+    return struct { summary: Summary, stats: Model.Stats };
+}
 
 pub const RunOptions = struct {
     step_count: u32,
@@ -190,7 +255,7 @@ pub fn runPaired(
     io: std.Io,
     bytes: []const u8,
     options: RunOptions,
-) !Summary {
+) !Result(Model) {
     assert(options.step_count > 0);
     const V = Vopr(App, Model);
     var smith_first: Smith = .{ .in = bytes };
@@ -223,7 +288,7 @@ pub fn runPaired(
     second.quiesce();
     checkSame(V, first, second, step_index);
     assert(smith_first.in.?.len == smith_second.in.?.len);
-    return first.summary(step_index);
+    return .{ .summary = first.summary(step_index), .stats = first.model.stats() };
 }
 
 fn checkSame(comptime V: type, first: *V, second: *V, step_index: u32) void {
@@ -254,6 +319,17 @@ pub const Action = union(enum) {
     tick_main,
     /// Generated only while a frame is in flight (`presentBuilt` asserts it).
     present,
+    /// One step of a held-button gesture: a press, a held move, or the
+    /// release. Steps of one gesture interleave with every other action,
+    /// so a drag stays open across ticks, presents, and clock gaps. Last,
+    /// so the other kinds keep their tag values.
+    drag: Gesture,
+
+    pub const Gesture = struct {
+        kind: enum { press, move, release },
+        x: f32,
+        y: f32,
+    };
 
     pub const Pointer = struct {
         kind: enum { click, move },
@@ -297,6 +373,11 @@ pub const Action = union(enum) {
             .wait_ns => |gap_ns| try writer.print("wait {d} ns", .{gap_ns}),
             .tick_main => try writer.writeAll("tickMain"),
             .present => try writer.writeAll("presentBuilt"),
+            .drag => |gesture| try writer.print("drag {t} ({d:.2}, {d:.2})", .{
+                gesture.kind,
+                gesture.x,
+                gesture.y,
+            }),
         }
     }
 };
@@ -413,8 +494,29 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
         swarm: Swarm,
         /// Actions generated so far, which sets the epochs.
         action_count: u32,
+        /// The held-button gesture `.drag` steps continue, if any.
+        gesture: GestureState,
 
         const Self = @This();
+
+        /// A gesture in progress: its press point, its last point, how
+        /// many more moves it makes, and whether it then releases or plans
+        /// more moves with the button still held.
+        const GestureState = struct {
+            held: bool,
+            start: Point,
+            last: Point,
+            move_count: u32,
+            release: bool,
+
+            const idle: GestureState = .{
+                .held = false,
+                .start = .{ .x = 0, .y = 0 },
+                .last = .{ .x = 0, .y = 0 },
+                .move_count = 0,
+                .release = false,
+            };
+        };
         const Driver = core.CoreDriver(App);
 
         /// Initialize in place (the app must not move), draw the seed's
@@ -446,6 +548,7 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             self.text_bytes = @splat(0);
             self.swarm = .generate(smith, Model.action_kinds);
             self.action_count = 0;
+            self.gesture = .idle;
             self.model.init();
             assert(self.driver.now_ns == 0);
             assert(self.driver.renderer.draw_count == 0);
@@ -465,11 +568,12 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
         /// Run `action` and check the harness invariants after it.
         pub fn perform(self: *Self, action: Action) void {
             switch (action) {
-                .pointer, .key, .text, .compose, .scroll => self.model.queue(action),
+                .pointer, .key, .text, .compose, .scroll, .drag => self.model.queue(action),
                 .wait_ns, .tick_main, .present => {},
             }
             switch (action) {
                 .pointer => |pointer| self.deliverPointer(pointer),
+                .drag => |gesture| self.deliverGesture(gesture),
                 .key => |chord| {
                     self.deliver(.{ .key_down = keyEvent(chord) });
                     self.deliver(.{ .key_up = keyEvent(chord) });
@@ -504,6 +608,10 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             return switch (kind) {
                 .pointer => if (self.queueHasRoom(pointer_event_count_max, 0))
                     .{ .pointer = self.generatePointer(smith) }
+                else
+                    .tick_main,
+                .drag => if (self.queueHasRoom(pointer_event_count_max, 0))
+                    .{ .drag = self.generateGesture(smith) }
                 else
                     .tick_main,
                 .key => if (self.queueHasRoom(2, 0)) .{ .key = .{
@@ -600,7 +708,7 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             const published = tick.tickMain(&self.driver.app, win, self.driver.now_ns);
             if (published) assert(win.frame_in_flight.load(.acquire));
             self.model.endDrain(win, published);
-            // Todo opens no file dialog, so every drain empties the queue.
+            // The apps open no file dialog, so every drain empties the queue.
             if (win.queue.count != 0) {
                 std.debug.panic("vopr: {d} events left queued after tickMain", .{
                     win.queue.count,
@@ -666,11 +774,124 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
         fn generatePointer(self: *Self, smith: *Smith) Action.Pointer {
             const point = self.generatePoint(smith);
             const click = choose(smith, 100, "pointer kind") < self.swarm.click_percent;
+            // A click's release lets go of a held gesture's button too.
+            if (click) self.gesture = .idle;
             return .{
                 .kind = if (click) .click else .move,
                 .x = point.x,
                 .y = point.y,
                 .click_count = 1 + choose(smith, 2, "click count"),
+            };
+        }
+
+        /// A press moves there first, as a platform reports the pointer
+        /// before its button; a held move is `mouse_dragged`, which the
+        /// queue folds only into another held move of the same button.
+        fn deliverGesture(self: *Self, gesture: Action.Gesture) void {
+            const position: input.MouseEvent = .{
+                .position = .{ .x = gesture.x, .y = gesture.y },
+                .button = .left,
+                .click_count = 0,
+                .modifiers = .{},
+            };
+            var press = position;
+            press.click_count = 1;
+            switch (gesture.kind) {
+                .press => {
+                    self.deliver(.{ .mouse_moved = position });
+                    self.deliver(.{ .mouse_down = press });
+                },
+                .move => self.deliver(.{ .mouse_dragged = position }),
+                .release => {
+                    self.deliver(.{ .mouse_dragged = position });
+                    self.deliver(.{ .mouse_up = press });
+                },
+            }
+        }
+
+        /// The next step of the held-button gesture: a press (mostly on a
+        /// draggable), then a run of up to `drag_move_count_max` moves,
+        /// then a release, or with a quarter's chance another run of moves
+        /// with the button still held, so a drag can stay open for long.
+        fn generateGesture(self: *Self, smith: *Smith) Action.Gesture {
+            const gesture = &self.gesture;
+            if (!gesture.held) {
+                const point = self.generatePressPoint(smith);
+                gesture.* = .{
+                    .held = true,
+                    .start = point,
+                    .last = point,
+                    .move_count = 1 + choose(smith, drag_move_count_max, "drag moves"),
+                    .release = choose(smith, 4, "drag release") != 0,
+                };
+                return .{ .kind = .press, .x = point.x, .y = point.y };
+            }
+            assert(gesture.move_count <= drag_move_count_max);
+            if (gesture.move_count == 0) {
+                if (gesture.release) {
+                    gesture.held = false;
+                    return .{ .kind = .release, .x = gesture.last.x, .y = gesture.last.y };
+                }
+                gesture.move_count = 1 + choose(smith, drag_move_count_max, "drag moves");
+                gesture.release = choose(smith, 4, "drag release") != 0;
+            }
+            gesture.move_count -= 1;
+            gesture.last = self.generateDragPoint(smith, gesture.start);
+            return .{ .kind = .move, .x = gesture.last.x, .y = gesture.last.y };
+        }
+
+        /// A press point: on a draggable nine times in ten when the frame
+        /// has one, else anywhere `generatePoint` aims.
+        fn generatePressPoint(self: *Self, smith: *Smith) Point {
+            const frame = self.window().rendered();
+            const hits = frame.hits[0..frame.hit_count];
+            const on_draggable = choose(smith, 10, "press on draggable") != 0;
+            const count = countKind(hits, .draggable);
+            if (!on_draggable or count == 0) return self.generatePoint(smith);
+            const index = nthKind(hits, .draggable, choose(smith, count, "draggable"));
+            return self.clampToWindow(pointIn(smith, hits[index].bounds));
+        }
+
+        /// Where a held move goes: onto a drop target, outside every drop
+        /// target (above the first), back to the press point, within a few
+        /// pixels of it (either side of the click slop), or onto a draggable.
+        fn generateDragPoint(self: *Self, smith: *Smith, start: Point) Point {
+            const win = self.window();
+            const frame = win.rendered();
+            const hits = frame.hits[0..frame.hit_count];
+            const target_count = countKind(hits, .drop_target);
+            switch (choose(smith, 5, "drag target")) {
+                0 => if (target_count > 0) {
+                    const rank = choose(smith, target_count, "drop target");
+                    const index = nthKind(hits, .drop_target, rank);
+                    return self.clampToWindow(pointIn(smith, hits[index].bounds));
+                },
+                1 => if (target_count > 0) {
+                    const top = dropTargetTop(hits);
+                    if (top >= 1) return .{
+                        .x = fraction(smith) * win.width,
+                        .y = fraction(smith) * (top - 1),
+                    };
+                },
+                2 => return start,
+                3 => {
+                    const offsets = [_]f32{ -3, -2, -1, 1, 2, 3 };
+                    const offset = offsets[choose(smith, offsets.len, "slop offset")];
+                    return self.clampToWindow(.{ .x = start.x + offset, .y = start.y });
+                },
+                4 => return self.generatePressPoint(smith),
+                else => unreachable,
+            }
+            return self.generatePoint(smith);
+        }
+
+        fn clampToWindow(self: *Self, point: Point) Point {
+            const win = self.window();
+            assert(win.width >= 0);
+            assert(win.height >= 0);
+            return .{
+                .x = std.math.clamp(point.x, 0, win.width),
+                .y = std.math.clamp(point.y, 0, win.height),
             };
         }
 
@@ -777,6 +998,48 @@ fn countTargets(hits: []const records.HitRecord, interactive_only: bool) u32 {
     return count;
 }
 
+const RecordKind = enum { draggable, drop_target };
+
+fn isKind(record: *const records.HitRecord, kind: RecordKind) bool {
+    if (!record.pointer) return false;
+    return switch (kind) {
+        .draggable => record.drag_type != 0,
+        .drop_target => record.drop_type != 0,
+    };
+}
+
+fn countKind(hits: []const records.HitRecord, kind: RecordKind) u32 {
+    var count: u32 = 0;
+    for (hits) |*record| {
+        if (isKind(record, kind)) count += 1;
+    }
+    assert(count <= hits.len);
+    return count;
+}
+
+/// The index in `hits` of the `rank`th record of `kind`, counting from 0.
+fn nthKind(hits: []const records.HitRecord, kind: RecordKind, rank: u32) u32 {
+    assert(rank < hits.len);
+    var seen: u32 = 0;
+    for (hits, 0..) |*record, index| {
+        if (!isKind(record, kind)) continue;
+        if (seen == rank) return @intCast(index);
+        seen += 1;
+    }
+    unreachable;
+}
+
+/// The smallest top edge of any drop target: above it, a point is outside
+/// all of them.
+fn dropTargetTop(hits: []const records.HitRecord) f32 {
+    var top: f32 = std.math.floatMax(f32);
+    for (hits) |*record| {
+        if (isKind(record, .drop_target)) top = @min(top, record.bounds.y);
+    }
+    assert(top < std.math.floatMax(f32));
+    return top;
+}
+
 /// The index in `hits` of the `rank`th target, counting from 0.
 fn nthTarget(hits: []const records.HitRecord, interactive_only: bool, rank: u32) u32 {
     assert(rank < hits.len);
@@ -832,23 +1095,28 @@ fn choose(smith: *Smith, count: u64, comptime site: []const u8) u32 {
     return choice;
 }
 
-fn fuzzTodo(_: void, smith: *Smith) anyerror!void {
-    const V = Vopr(todo.App, TodoModel);
-    const vopr = try std.testing.allocator.create(V);
-    defer std.testing.allocator.destroy(vopr);
-    try vopr.initInPlace(std.testing.allocator, std.testing.io, smith);
-    defer vopr.deinit();
+/// The fuzz target for one app: a few hundred actions from the fuzzer's
+/// bytes, then quiescence.
+fn FuzzTarget(comptime workload: Workload) type {
+    return struct {
+        fn run(_: void, smith: *Smith) anyerror!void {
+            const V = Vopr(workload.App(), workload.Model());
+            const vopr = try std.testing.allocator.create(V);
+            defer std.testing.allocator.destroy(vopr);
+            try vopr.initInPlace(std.testing.allocator, std.testing.io, smith);
+            defer vopr.deinit();
 
-    const step_count = 1 + choose(smith, step_count_fuzz_max, "step count");
-    var step_index: u32 = 0;
-    while (step_index < step_count) : (step_index += 1) vopr.step(smith);
-    vopr.quiesce();
+            const step_count = 1 + choose(smith, step_count_fuzz_max, "step count");
+            var step_index: u32 = 0;
+            while (step_index < step_count) : (step_index += 1) vopr.step(smith);
+            vopr.quiesce();
+        }
+    };
 }
 
-test "fuzz: todo vopr" {
-    // Goal: the fuzz target runs under `zig build test`. Methodology: outside
-    // fuzz mode `std.testing.fuzz` replays only the corpus, so seed it with
-    // PRNG inputs long enough for a few hundred actions each.
+/// Outside fuzz mode `std.testing.fuzz` replays only the corpus, so seed it
+/// with PRNG inputs long enough for a few hundred actions each.
+fn fuzzCorpus(comptime workload: Workload) !void {
     const corpus_count = 4;
     const bytes = try std.testing.allocator.alloc(
         u8,
@@ -861,13 +1129,21 @@ test "fuzz: todo vopr" {
     var corpus: [corpus_count][]const u8 = undefined;
     const input_len = @divExact(bytes.len, corpus_count);
     for (&corpus, 0..) |*entry, index| entry.* = bytes[index * input_len ..][0..input_len];
-    try std.testing.fuzz({}, fuzzTodo, .{ .corpus = &corpus });
+    try std.testing.fuzz({}, FuzzTarget(workload).run, .{ .corpus = &corpus });
 }
 
-test "two instances fed the same bytes draw the same frames" {
-    // Goal: the seed CLI's determinism self-check passes, and a run makes
-    // progress. Methodology: run one seed through `runPaired`, which panics
-    // on the first differing frame, and require frames beyond the first.
+test "fuzz: todo vopr" {
+    // Goal: the todo fuzz target runs under `zig build test` (`fuzzCorpus`).
+    try fuzzCorpus(.todo);
+}
+
+test "fuzz: drag_drop vopr" {
+    // Goal: the drag_drop fuzz target runs under `zig build test`.
+    try fuzzCorpus(.drag_drop);
+}
+
+/// One seed through `runPaired`, which panics on the first differing frame.
+fn runPairedSeed(comptime workload: Workload) !Result(workload.Model()) {
     const step_count = 300;
     const byte_count = bytes_swarm + step_count * bytes_per_action_max;
     const bytes = try std.testing.allocator.alloc(u8, byte_count);
@@ -876,15 +1152,25 @@ test "two instances fed the same bytes draw the same frames" {
     var prng = std.Random.DefaultPrng.init(1);
     prng.random().bytes(bytes);
     const options: RunOptions = .{ .step_count = step_count, .verbose = false };
-    const summary = try runPaired(
-        todo.App,
-        TodoModel,
+    const result = try runPaired(
+        workload.App(),
+        workload.Model(),
         std.testing.allocator,
         std.testing.io,
         bytes,
         options,
     );
-    try std.testing.expectEqual(@as(u32, step_count), summary.step_count);
-    try std.testing.expect(summary.frame_number > 10);
-    try std.testing.expect(summary.draw_count >= summary.frame_number);
+    try std.testing.expectEqual(@as(u32, step_count), result.summary.step_count);
+    try std.testing.expect(result.summary.frame_number > 10);
+    try std.testing.expect(result.summary.draw_count >= result.summary.frame_number);
+    return result;
+}
+
+test "two instances fed the same bytes draw the same frames" {
+    // Goal: the seed CLI's determinism self-check passes, and a run makes
+    // progress. Methodology: run one seed of each app through `runPaired`
+    // and require frames beyond the first, and for drag_drop a drop.
+    _ = try runPairedSeed(.todo);
+    const result = try runPairedSeed(.drag_drop);
+    try std.testing.expect(result.stats.drags_completed > 0);
 }

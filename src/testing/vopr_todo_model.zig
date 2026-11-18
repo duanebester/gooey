@@ -120,6 +120,9 @@ pub const TodoModel = struct {
         .pointer, .key, .text, .compose, .scroll, .wait_ns, .tick_main, .present,
     };
 
+    /// Todo's runs report no counts beyond the harness summary.
+    pub const Stats = struct {};
+
     const Item = struct {
         id: u32,
         text: [item_bytes_max]u8,
@@ -184,6 +187,11 @@ pub const TodoModel = struct {
         assert(self.draft.text().len == 0);
     }
 
+    pub fn stats(self: *const TodoModel) Stats {
+        assert(self.item_count <= item_count_max);
+        return .{};
+    }
+
     /// Input actions the model can still record before the next drain.
     pub fn pendingRoom(self: *const TodoModel) u32 {
         assert(self.pending_count <= pending_count_max);
@@ -197,7 +205,8 @@ pub const TodoModel = struct {
         switch (copy) {
             .text, .compose => |*text| text.* = self.copyText(text.*),
             .pointer, .key, .scroll => {},
-            .wait_ns, .tick_main, .present => unreachable,
+            // Todo's swarm draws no `.drag` (`action_kinds`).
+            .wait_ns, .tick_main, .present, .drag => unreachable,
         }
         self.pending[self.pending_count] = copy;
         self.pending_count += 1;
@@ -297,7 +306,8 @@ pub const TodoModel = struct {
                 self.composing = text.len > 0;
             },
             .scroll => {},
-            .wait_ns, .tick_main, .present => unreachable,
+            // Todo's swarm draws no `.drag` (`action_kinds`).
+            .wait_ns, .tick_main, .present, .drag => unreachable,
         }
     }
 

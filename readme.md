@@ -1193,6 +1193,7 @@ zig build typecheck-windows     # analyze the Windows backend from any host
 zig build typecheck-macos       # analyze the macOS backend from any host
 zig build goldens               # rewrite src/testing/goldens after an intended change
 zig build vopr -- [seed]        # simulate the todo example for one (random) seed
+zig build vopr -- --app drag_drop [seed]  # the same for the drag_drop example
 zig build vopr-soak -- --hours 8  # random seeds in child processes; zig-out/vopr-soak/
 zig fmt --check src/ charts/
 ```
