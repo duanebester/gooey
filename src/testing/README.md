@@ -81,7 +81,7 @@ rewrites the files after an intended change.
 app through the goldens' driver with generated pointer, drag-gesture, scroll, key, text, IME,
 clock, window-resize, and split tick/present actions. Every 3,000 steps a random `Swarm` redraws the mix
 (kind weights, some zero, and how targets are picked), so seeds go deep in different
-directions. `zig build vopr -- [--app todo|drag_drop] [seed] [--verbose]` runs one seed (a
+directions. `zig build vopr -- [--app todo|drag_drop|virtual_list] [seed] [--verbose]` runs one seed (a
 random one, printed, when none is given) as two instances fed the same bytes, which must
 draw the same frames; `--verbose` prints each action to replay a failure. After every step
 the app's reference model (`vopr_todo_model.zig`, `vopr_drag_drop_model.zig`) must match

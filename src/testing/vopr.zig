@@ -46,9 +46,11 @@ const std = @import("std");
 const gooey = @import("gooey");
 const todo = @import("todo_example");
 const drag_drop = @import("drag_drop_example");
+const virtual_list = @import("virtual_list_example");
 const core = @import("goldens/core.zig");
 const TodoModel = @import("vopr_todo_model.zig").TodoModel;
 const DragDropModel = @import("vopr_drag_drop_model.zig").DragDropModel;
+const VirtualListModel = @import("vopr_virtual_list_model.zig").VirtualListModel;
 const invariants = @import("vopr_invariants.zig");
 const trace_mod = @import("goldens/trace.zig");
 
@@ -135,11 +137,13 @@ comptime {
 pub const Workload = enum {
     todo,
     drag_drop,
+    virtual_list,
 
     fn App(comptime workload: Workload) type {
         return switch (workload) {
             .todo => todo.App,
             .drag_drop => drag_drop.App,
+            .virtual_list => virtual_list.App,
         };
     }
 
@@ -147,6 +151,7 @@ pub const Workload = enum {
         return switch (workload) {
             .todo => TodoModel,
             .drag_drop => DragDropModel,
+            .virtual_list => VirtualListModel,
         };
     }
 };
@@ -156,7 +161,8 @@ pub const Workload = enum {
 /// replayed.
 pub fn main(init: std.process.Init) !void {
     const options = parseArgs(init.minimal.args.vector) orelse {
-        std.debug.print("usage: vopr [--app todo|drag_drop] [seed] [--verbose]\n", .{});
+        std.debug.print("usage: vopr [--app todo|drag_drop|virtual_list] [seed] " ++
+            "[--verbose]\n", .{});
         return error.InvalidArguments;
     };
     const seed = options.seed orelse seed: {
@@ -1071,6 +1077,17 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
         /// A point of a rendered hit record (its centre, an edge, or any
         /// point inside), within the window; anywhere when there is none.
         fn generatePoint(self: *Self, smith: *Smith) Point {
+            // Only a model that declares a target reads this choice, so the
+            // other apps' seeds replay unchanged.
+            if (comptime @hasDecl(Model, "biasTarget")) {
+                if (choose(smith, 2, "biased") == 0) {
+                    if (Model.biasTarget(self.window())) |bias| {
+                        const on_bar = choose(smith, 3, "on scrollbar") == 0;
+                        const area = if (on_bar) bias.scrollbar orelse bias.area else bias.area;
+                        return self.clampToWindow(pointIn(smith, area));
+                    }
+                }
+            }
             const win = self.window();
             const frame = win.rendered();
             const hits = frame.hits[0..frame.hit_count];
@@ -1155,6 +1172,13 @@ fn keyEvent(chord: Action.Chord) input.KeyEvent {
 }
 
 const Point = struct { x: f32, y: f32 };
+
+/// Where a model asks pointer, wheel, and drag actions to aim half the time
+/// (`Model.biasTarget`): a scroll box and its vertical scrollbar's track.
+pub const Bias = struct {
+    area: records.Rect,
+    scrollbar: ?records.Rect,
+};
 
 /// Whether a click, key, or wheel on `record` can change state.
 fn isInteractive(record: *const records.HitRecord) bool {
@@ -1317,6 +1341,11 @@ test "fuzz: drag_drop vopr" {
     try fuzzCorpus(.drag_drop);
 }
 
+test "fuzz: virtual_list vopr" {
+    // Goal: the virtual_list fuzz target runs under `zig build test`.
+    try fuzzCorpus(.virtual_list);
+}
+
 /// One seed through `runPaired`, which panics on the first differing frame.
 fn runPairedSeed(comptime workload: Workload) !Result(workload.Model()) {
     const step_count = 300;
@@ -1348,4 +1377,6 @@ test "two instances fed the same bytes draw the same frames" {
     _ = try runPairedSeed(.todo);
     const result = try runPairedSeed(.drag_drop);
     try std.testing.expect(result.stats.drags_completed > 0);
+    const list = try runPairedSeed(.virtual_list);
+    try std.testing.expect(list.stats.rows_seen > 0);
 }
