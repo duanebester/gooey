@@ -138,10 +138,11 @@ pub fn main(init: std.process.Init) !void {
         .verbose = options.verbose,
         .model = if (options.allow_known_bugs) .known else .none,
     });
-    std.debug.print("vopr: todo seed {d} passed: {d} steps, frame {d}, {d} draws, " ++
-        "dump hash {x:0>16}\n", .{
+    std.debug.print("vopr: todo seed {d} passed: {d} steps, quiesced in {d} rounds, " ++
+        "frame {d}, {d} draws, dump hash {x:0>16}\n", .{
         seed,
         summary.step_count,
+        summary.quiescence_round_count,
         summary.frame_number,
         summary.draw_count,
         summary.dump_hash,
@@ -176,6 +177,8 @@ fn parseArgs(args: []const [*:0]const u8) ?CliOptions {
 
 pub const Summary = struct {
     step_count: u32,
+    /// Rounds the last `quiesce` ran before nothing was left to do.
+    quiescence_round_count: u32,
     frame_number: u64,
     draw_count: u64,
     dump_hash: u64,
@@ -400,6 +403,8 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
         model: Model,
         /// The highest `rendered().frame_number` seen; it must never drop.
         frame_number_rendered: u64,
+        /// Rounds the last `quiesce` ran, for the CLI's summary.
+        quiescence_round_count: u32,
         /// Rolling hash of every frame dump the renderer was asked to draw.
         dump_hasher: std.hash.Wyhash,
         /// Backing for the action being generated; the queue copies it.
@@ -433,6 +438,7 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             };
             try self.driver.initInPlace(gpa, io, &trace);
             self.frame_number_rendered = 0;
+            self.quiescence_round_count = 0;
             self.dump_hasher = .init(0);
             self.text_bytes = @splat(0);
             self.swarm = .generate(smith);
@@ -534,14 +540,18 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
                 self.tickMain();
                 self.check();
             }
+            assert(round <= quiescence_round_max);
+            self.quiescence_round_count = round;
             const in_flight = win.frame_in_flight.load(.acquire);
             if (win.render_requested or in_flight or win.awaiting_flip) {
                 std.debug.panic("vopr: no quiescence after {d} rounds: render_requested " ++
-                    "{}, frame_in_flight {}, awaiting_flip {}", .{
+                    "{}, frame_in_flight {}, awaiting_flip {} (frame {d}, {d} draws)", .{
                     quiescence_round_max,
                     win.render_requested,
                     in_flight,
                     win.awaiting_flip,
+                    self.frame_number_rendered,
+                    self.driver.renderer.draw_count,
                 });
             }
             assert(win.phase == .idle);
@@ -552,6 +562,7 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             assert(self.window().phase == .idle);
             return .{
                 .step_count = step_count,
+                .quiescence_round_count = self.quiescence_round_count,
                 .frame_number = self.frame_number_rendered,
                 .draw_count = self.driver.renderer.draw_count,
                 .dump_hash = self.dump_hasher.final(),
