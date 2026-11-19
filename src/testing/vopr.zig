@@ -52,11 +52,13 @@ const todo = @import("todo_example");
 const drag_drop = @import("drag_drop_example");
 const virtual_list = @import("virtual_list_example");
 const splitter = @import("splitter_example");
+const actions_model = @import("vopr_actions_model.zig");
 const core = @import("goldens/core.zig");
 const TodoModel = @import("vopr_todo_model.zig").TodoModel;
 const DragDropModel = @import("vopr_drag_drop_model.zig").DragDropModel;
 const VirtualListModel = @import("vopr_virtual_list_model.zig").VirtualListModel;
 const SplitterModel = @import("vopr_splitter_model.zig").SplitterModel;
+const ActionsModel = actions_model.ActionsModel;
 const invariants = @import("vopr_invariants.zig");
 const trace_mod = @import("goldens/trace.zig");
 
@@ -146,6 +148,7 @@ pub const Workload = enum {
     drag_drop,
     virtual_list,
     splitter,
+    actions,
 
     fn App(comptime workload: Workload) type {
         return switch (workload) {
@@ -153,6 +156,8 @@ pub const Workload = enum {
             .drag_drop => drag_drop.App,
             .virtual_list => virtual_list.App,
             .splitter => splitter.App,
+            // Ctrl on every host, as `text_engine.uses_cmd` is pinned.
+            .actions => actions_model.App,
         };
     }
 
@@ -162,6 +167,7 @@ pub const Workload = enum {
             .drag_drop => DragDropModel,
             .virtual_list => VirtualListModel,
             .splitter => SplitterModel,
+            .actions => ActionsModel,
         };
     }
 };
@@ -171,8 +177,8 @@ pub const Workload = enum {
 /// replayed.
 pub fn main(init: std.process.Init) !void {
     const options = parseArgs(init.minimal.args.vector) orelse {
-        std.debug.print("usage: vopr [--app todo|drag_drop|virtual_list|splitter] " ++
-            "[seed] [--verbose]\n", .{});
+        std.debug.print("usage: vopr [--app todo|drag_drop|virtual_list|splitter|" ++
+            "actions] [seed] [--verbose]\n", .{});
         return error.InvalidArguments;
     };
     const seed = options.seed orelse seed: {
@@ -1574,6 +1580,11 @@ test "fuzz: splitter vopr" {
     try fuzzCorpus(.splitter);
 }
 
+test "fuzz: actions vopr" {
+    // Goal: the actions fuzz target runs under `zig build test`.
+    try fuzzCorpus(.actions);
+}
+
 /// One seed through `runPaired`, which panics on the first differing frame.
 fn runPairedSeed(comptime workload: Workload) !Result(workload.Model()) {
     const step_count = 300;
@@ -1611,6 +1622,10 @@ test "two instances fed the same bytes draw the same frames" {
     try std.testing.expect(list.stats.rows_seen > 0);
     const panes = try runPairedSeed(.splitter);
     try std.testing.expect(panes.stats.drags_moved > 0);
+    const fired = try runPairedSeed(.actions);
+    var fire_count: u32 = 0;
+    for (fired.stats.fired) |count| fire_count += count;
+    try std.testing.expect(fire_count > 0);
 }
 
 /// The centre of the `rank`-th hit record with a click handler, in tree order.
