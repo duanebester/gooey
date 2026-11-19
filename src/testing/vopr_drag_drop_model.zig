@@ -300,7 +300,8 @@ pub const DragDropModel = struct {
             .text, .compose => self.push(.text),
             .scroll => self.push(.scroll),
             .resize => self.push(.resize),
-            .wait_ns, .tick_main, .present => unreachable,
+            // Drag_drop's swarm draws no `.cancel` (`action_kinds`).
+            .wait_ns, .tick_main, .present, .cancel => unreachable,
         }
     }
 

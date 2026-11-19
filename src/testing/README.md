@@ -79,17 +79,20 @@ rewrites the files after an intended change.
 
 `src/testing/vopr.zig` is deterministic simulation testing for the core, driving an example app
 through the goldens' driver with generated pointer (left, right, and middle buttons, held and
-released in any order), drag-gesture, scroll, key, text, IME, clock, window-resize, and split
-tick/present actions. Every 3,000 steps a random `Swarm` redraws the mix (kind weights, some zero,
-and how targets are picked), so seeds go deep in different directions.
-`zig build vopr -- [--app todo|drag_drop|virtual_list] [seed] [--verbose]` runs one seed (a random
-one, printed, when none is given) as two instances fed the same bytes, which must draw the same
-frames; `--verbose` prints each action to replay a failure. After every step the app's reference
-model (`vopr_todo_model.zig`, `vopr_drag_drop_model.zig`) must match its state, and every app's
-frames must pass the model-free invariants in `vopr_invariants.zig` (interactive accessibility nodes
-and handled hit records agree, focus is live) and rebuild to the same dump with no input or clock
-advance. Each app's fuzz target runs a corpus smoke in `zig build test` and fuzzes under
-`zig build test --fuzz`; `zig build vopr-soak -- --app NAME` runs random seeds for hours.
+released in any order), drag-gesture, scroll, key, text, IME, clock, window-resize, gesture-cancel
+and focus-loss, and split tick/present actions. Every 3,000 steps a random `Swarm` redraws the mix
+(kind weights, some zero, and how targets are picked), so seeds go deep in different directions.
+`zig build vopr -- [--app NAME] [seed] [--verbose]` runs one seed (a random one, printed, when none
+is given) as two instances fed the same bytes, which must draw the same frames; `--verbose` prints
+each action to replay a failure. The apps are todo (the default), drag_drop, virtual_list, splitter,
+actions, and nested_overlay. After every step the app's model must hold: todo's, drag_drop's, and
+splitter's predict the app's state, actions' predicts the message of the last action fired,
+nested_overlay's checks that the menu is above the modal, and virtual_list's only counts depth
+(`vopr_*_model.zig`). Every app's frames must pass the model-free invariants in
+`vopr_invariants.zig` (interactive accessibility nodes and handled hit records agree, focus is live)
+and rebuild to the same dump with no input or clock advance. Each app's fuzz target runs a corpus
+smoke in `zig build test` and fuzzes under `zig build test --fuzz`;
+`zig build vopr-soak -- --app NAME` runs random seeds for hours.
 
 ---
 
