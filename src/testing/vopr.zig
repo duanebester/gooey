@@ -51,10 +51,12 @@ const gooey = @import("gooey");
 const todo = @import("todo_example");
 const drag_drop = @import("drag_drop_example");
 const virtual_list = @import("virtual_list_example");
+const splitter = @import("splitter_example");
 const core = @import("goldens/core.zig");
 const TodoModel = @import("vopr_todo_model.zig").TodoModel;
 const DragDropModel = @import("vopr_drag_drop_model.zig").DragDropModel;
 const VirtualListModel = @import("vopr_virtual_list_model.zig").VirtualListModel;
+const SplitterModel = @import("vopr_splitter_model.zig").SplitterModel;
 const invariants = @import("vopr_invariants.zig");
 const trace_mod = @import("goldens/trace.zig");
 
@@ -143,12 +145,14 @@ pub const Workload = enum {
     todo,
     drag_drop,
     virtual_list,
+    splitter,
 
     fn App(comptime workload: Workload) type {
         return switch (workload) {
             .todo => todo.App,
             .drag_drop => drag_drop.App,
             .virtual_list => virtual_list.App,
+            .splitter => splitter.App,
         };
     }
 
@@ -157,6 +161,7 @@ pub const Workload = enum {
             .todo => TodoModel,
             .drag_drop => DragDropModel,
             .virtual_list => VirtualListModel,
+            .splitter => SplitterModel,
         };
     }
 };
@@ -166,8 +171,8 @@ pub const Workload = enum {
 /// replayed.
 pub fn main(init: std.process.Init) !void {
     const options = parseArgs(init.minimal.args.vector) orelse {
-        std.debug.print("usage: vopr [--app todo|drag_drop|virtual_list] [seed] " ++
-            "[--verbose]\n", .{});
+        std.debug.print("usage: vopr [--app todo|drag_drop|virtual_list|splitter] " ++
+            "[seed] [--verbose]\n", .{});
         return error.InvalidArguments;
     };
     const seed = options.seed orelse seed: {
@@ -1564,6 +1569,11 @@ test "fuzz: virtual_list vopr" {
     try fuzzCorpus(.virtual_list);
 }
 
+test "fuzz: splitter vopr" {
+    // Goal: the splitter fuzz target runs under `zig build test`.
+    try fuzzCorpus(.splitter);
+}
+
 /// One seed through `runPaired`, which panics on the first differing frame.
 fn runPairedSeed(comptime workload: Workload) !Result(workload.Model()) {
     const step_count = 300;
@@ -1591,12 +1601,16 @@ fn runPairedSeed(comptime workload: Workload) !Result(workload.Model()) {
 test "two instances fed the same bytes draw the same frames" {
     // Goal: the seed CLI's determinism self-check passes, and a run makes
     // progress. Methodology: run one seed of each app through `runPaired`
-    // and require frames beyond the first, and for drag_drop a drop.
+    // and require frames beyond the first, and for each app with counts
+    // some depth: a drop, rows seen, a splitter moved, an action fired,
+    // the menu shown.
     _ = try runPairedSeed(.todo);
     const result = try runPairedSeed(.drag_drop);
     try std.testing.expect(result.stats.drags_completed > 0);
     const list = try runPairedSeed(.virtual_list);
     try std.testing.expect(list.stats.rows_seen > 0);
+    const panes = try runPairedSeed(.splitter);
+    try std.testing.expect(panes.stats.drags_moved > 0);
 }
 
 /// The centre of the `rank`-th hit record with a click handler, in tree order.

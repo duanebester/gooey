@@ -10,6 +10,8 @@
 //!      scroll box cut them);
 //!   2. every hit record with a click or key handler (`on_click`, `on_key`)
 //!      has an accessibility node with its id and an interactive role.
+//!   A separator with a range (a splitter) is interactive; one without is
+//!   not.
 //!   Exceptions: nodes in the drag layer have hits but no accessibility
 //!   nodes (`emitAccessibility` skips the `.drag` layer), so a record whose
 //!   chain of parents includes a drag-layer root is left out of rule 2;
@@ -50,8 +52,12 @@ const interactive_roles = [_]Role{
 /// Bounds may differ by this much from float rounding in a clip.
 const bounds_slop_px: f32 = 0.01;
 
-fn interactive(role: Role) bool {
-    return std.mem.indexOfScalar(Role, &interactive_roles, role) != null;
+/// A separator with a range is a window splitter, which WAI-ARIA counts as
+/// a widget: a person focuses it and moves it with keys (splitter example).
+/// A separator without one is a static divider.
+fn interactive(node: *const records.A11yNode) bool {
+    if (node.role == .separator) return node.range != null;
+    return std.mem.indexOfScalar(Role, &interactive_roles, node.role) != null;
 }
 
 /// Both directions of the a11y–hit agreement on `frame`.
@@ -59,7 +65,7 @@ pub fn checkFrame(window: *const Window, frame: *const records.Frame) void {
     assert(frame.hit_count <= frame.hits.len);
     assert(frame.a11y_count <= frame.a11y.len);
     for (frame.a11y[0..frame.a11y_count]) |*node| {
-        if (!interactive(node.role)) continue;
+        if (!interactive(node)) continue;
         const index = findHit(frame, node.id) orelse std.debug.panic(
             "vopr: frame {d}: the {t} node {x} has no hit record",
             .{ frame.frame_number, node.role, @backingInt(node.id) },
@@ -83,7 +89,7 @@ pub fn checkFrame(window: *const Window, frame: *const records.Frame) void {
             "vopr: frame {d}: hit record {x} has a {s} handler but no accessibility node",
             .{ frame.frame_number, @backingInt(record.id), handlerName(record) },
         );
-        if (!interactive(node.role)) {
+        if (!interactive(node)) {
             std.debug.panic("vopr: frame {d}: hit record {x} has a {s} handler, but its " ++
                 "accessibility node's role {t} is not interactive", .{
                 frame.frame_number, @backingInt(record.id), handlerName(record), node.role,
