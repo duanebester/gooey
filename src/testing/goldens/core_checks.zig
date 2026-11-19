@@ -1230,6 +1230,154 @@ test "a scroll box's thumb drags and its track jumps, as 0.3.1's did" {
     try testing.expectEqual(gooey.ElementId.root, app.window.scroll_drag);
 }
 
+fn mouseWith(x: f32, y: f32, button: gooey.input.MouseButton) gooey.input.MouseEvent {
+    var event = mouse(x, y);
+    event.button = button;
+    return event;
+}
+
+/// The scroll check's app, ticked twice so the outer box's bar is laid out.
+fn scrollAppReady(app: *ScrollApp, now: *u64) !void {
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    app.tick(now.*);
+    now.* += 1;
+    app.tick(now.*);
+}
+
+test "a second button pressed during a thumb drag leaves the drag alone" {
+    // Goal: a right press while the left button drags a scrollbar thumb,
+    // which every platform delivers (two buttons down at once), neither
+    // trips the router nor takes the drag over. Methodology: left-press the
+    // outer box's thumb and drag it a quarter of its travel, press and
+    // release the right button there, then drag on to half: the left drag
+    // still moves the offset, as in the thumb test above.
+    const app = try testing.allocator.create(ScrollApp);
+    defer testing.allocator.destroy(app);
+    var now: u64 = 0;
+    try scrollAppReady(app, &now);
+    defer app.deinitHeadless();
+    const box = ScrollView.read(&app.window).outer.bounds;
+    const bar_x = box.x + box.width - 10 + 4;
+    const travel: f32 = 146.0 - 146.0 * 150.0 / 260.0;
+    const quarter_y = box.y + 10 + travel / 4;
+
+    scrollMouse(app, &now, .{ .mouse_down = mouseWith(bar_x, box.y + 10, .left) });
+    scrollMouse(app, &now, .{ .mouse_dragged = mouseWith(bar_x, quarter_y, .left) });
+    try testing.expectApproxEqAbs(@as(f32, 27.5), ScrollView.read(&app.window).outer_offset, 0.01);
+    scrollMouse(app, &now, .{ .mouse_down = mouseWith(bar_x, quarter_y, .right) });
+    scrollMouse(app, &now, .{ .mouse_up = mouseWith(bar_x, quarter_y, .right) });
+    try testing.expect(thumbDragged(app));
+    scrollMouse(app, &now, .{ .mouse_dragged = mouseWith(bar_x, box.y + 10 + travel / 2, .left) });
+    try testing.expectApproxEqAbs(@as(f32, 55), ScrollView.read(&app.window).outer_offset, 0.01);
+    scrollMouse(app, &now, .{ .mouse_up = mouseWith(bar_x, box.y + 10 + travel / 2, .left) });
+    try testing.expect(!thumbDragged(app));
+    try testing.expectEqual(gooey.ElementId.root, app.window.scroll_drag);
+}
+
+test "a right press on a scrollbar thumb drags nothing" {
+    // Goal: only the left button drags a thumb, as native scrollbars do.
+    // Methodology: right-press the outer box's thumb and move 30 px down
+    // with the right button held: no drag starts and the offset stays 0.
+    const app = try testing.allocator.create(ScrollApp);
+    defer testing.allocator.destroy(app);
+    var now: u64 = 0;
+    try scrollAppReady(app, &now);
+    defer app.deinitHeadless();
+    const box = ScrollView.read(&app.window).outer.bounds;
+    const bar_x = box.x + box.width - 10 + 4;
+
+    scrollMouse(app, &now, .{ .mouse_down = mouseWith(bar_x, box.y + 10, .right) });
+    try testing.expectEqual(gooey.ElementId.root, app.window.scroll_drag);
+    try testing.expect(!thumbDragged(app));
+    scrollMouse(app, &now, .{ .mouse_dragged = mouseWith(bar_x, box.y + 40, .right) });
+    try testing.expectEqual(@as(f32, 0), ScrollView.read(&app.window).outer_offset);
+    scrollMouse(app, &now, .{ .mouse_up = mouseWith(bar_x, box.y + 40, .right) });
+    try testing.expectEqual(@as(f32, 0), ScrollView.read(&app.window).outer_offset);
+}
+
+test "another button's release leaves a thumb drag alive" {
+    // Goal: only the left release ends a thumb drag. Methodology: hold the
+    // right button in the content, left-press the thumb, release the right
+    // button, then drag on: the left drag reaches half the travel, 55 px.
+    const app = try testing.allocator.create(ScrollApp);
+    defer testing.allocator.destroy(app);
+    var now: u64 = 0;
+    try scrollAppReady(app, &now);
+    defer app.deinitHeadless();
+    const box = ScrollView.read(&app.window).outer.bounds;
+    const bar_x = box.x + box.width - 10 + 4;
+    const travel: f32 = 146.0 - 146.0 * 150.0 / 260.0;
+    const half_y = box.y + 10 + travel / 2;
+
+    scrollMouse(app, &now, .{ .mouse_down = mouseWith(30, 200, .right) });
+    scrollMouse(app, &now, .{ .mouse_down = mouseWith(bar_x, box.y + 10, .left) });
+    try testing.expect(app.window.scroll_drag.isKeyed());
+    scrollMouse(app, &now, .{ .mouse_up = mouseWith(bar_x, box.y + 10, .right) });
+    try testing.expect(app.window.scroll_drag.isKeyed());
+    scrollMouse(app, &now, .{ .mouse_dragged = mouseWith(bar_x, half_y, .left) });
+    try testing.expectApproxEqAbs(@as(f32, 55), ScrollView.read(&app.window).outer_offset, 0.01);
+    scrollMouse(app, &now, .{ .mouse_up = mouseWith(bar_x, half_y, .left) });
+    try testing.expectEqual(gooey.ElementId.root, app.window.scroll_drag);
+}
+
+/// A button that counts its clicks, for the left-only click check.
+const ClickCountState = struct {
+    clicks: u32 = 0,
+
+    fn count(self: *ClickCountState) void {
+        self.clicks += 1;
+    }
+};
+
+const ClickCountApp = gooey.App(ClickCountState, clickCountRender, .{
+    .title = "Clicks",
+    .width = 200,
+    .height = 100,
+    .limits = .nano,
+});
+
+fn clickCountRender(cx: *Cx) void {
+    cx.render(ui.box(.{ .style = .{ .width = .{ .grow = 1 }, .height = .{ .grow = 1 } } }, .{
+        ui.box(.{
+            .key = .{ .name = "count" },
+            .on_click = cx.on(ClickCountState.count, .{}),
+            .style = .{ .width = .{ .fixed = 50 }, .height = .{ .fixed = 50 } },
+        }, .{}),
+    }));
+}
+
+fn clickWith(app: *ClickCountApp, now: *u64, button: gooey.input.MouseButton) void {
+    scrollMouse(app, now, .{ .mouse_down = mouseWith(25, 25, button) });
+    scrollMouse(app, now, .{ .mouse_up = mouseWith(25, 25, button) });
+}
+
+test "only the left button clicks" {
+    // Goal: `on_click` fires on a left press and release only, as a
+    // browser's `click` (not `auxclick`) and native buttons do. Right and
+    // middle clicks on the button fire nothing; a left click fires once;
+    // and a right click in the middle of a left one leaves it to click.
+    const app = try testing.allocator.create(ClickCountApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 1;
+    app.tick(now);
+    const state = &app.state;
+
+    clickWith(app, &now, .right);
+    clickWith(app, &now, .middle);
+    try testing.expectEqual(@as(u32, 0), state.clicks);
+    clickWith(app, &now, .left);
+    try testing.expectEqual(@as(u32, 1), state.clicks);
+
+    scrollMouse(app, &now, .{ .mouse_down = mouseWith(25, 25, .left) });
+    scrollMouse(app, &now, .{ .mouse_down = mouseWith(150, 80, .right) });
+    scrollMouse(app, &now, .{ .mouse_up = mouseWith(150, 80, .right) });
+    try testing.expectEqual(@as(u32, 1), state.clicks);
+    scrollMouse(app, &now, .{ .mouse_up = mouseWith(25, 25, .left) });
+    try testing.expectEqual(@as(u32, 2), state.clicks);
+}
+
 /// What `readsRender` saw through the public reads in its last build.
 const ReadsState = struct {
     position: ?Cx.ScrollPosition = null,

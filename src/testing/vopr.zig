@@ -2,10 +2,13 @@
 //!
 //! One generator, driven by `std.testing.Smith`, turns bytes into a stream of
 //! actions against a headless app on the goldens' `CoreDriver`: pointer
-//! clicks and moves aimed at the rendered frame's hit records, held-button
+//! clicks, moves, and held presses of the left, right, and middle buttons
+//! (overlapping in any order, never a press of a button that is down) aimed
+//! at the rendered frame's hit records, held-button
 //! drag gestures (a press mostly on a draggable, moves onto drop targets,
 //! outside them, and back, then a release or none), wheel scrolls, keys,
-//! committed and composed text, clock gaps, and the two sides of a tick
+//! committed and composed text, clock gaps, window resizes (size and scale),
+//! and the two sides of a tick
 //! (`tickMain` and `presentBuilt`) driven separately, so a frame stays in
 //! flight while input keeps arriving. The same generator serves `zig build
 //! vopr -- [--app NAME] [seed]`, whose bytes come from a seeded PRNG, and a
@@ -24,12 +27,17 @@
 //! finding: a core bug, or a harness bug to fix here. On top of the core's
 //! own assertions, the harness checks after every action that the event queue
 //! is empty after `tickMain`, the rendered frame number never decreases, and
-//! the render side is idle with no frame in flight. Each run ends with a
+//! the render side is idle with no frame in flight; on every new rendered
+//! frame, the model-free invariants of `vopr_invariants.zig`; and every
+//! `Swarm.rebuild_period` actions, that a current frame rebuilt with no input
+//! and no clock advance draws the same dump (`checkStableRebuild`). Each run
+//! ends with a
 //! bounded quiescence loop that must settle. The seed CLI also runs two
 //! instances side by side on the same bytes and requires identical frame
 //! dumps after every action (determinism).
 //!
-//! Resource sketch, per action: at most 3 queued events and 16 bytes of text
+//! Resource sketch, per action: at most 5 queued events (a click that first
+//! releases a held gesture's button) and 16 bytes of text
 //! (`text_bytes_action_max`); per `tickMain`, at most the queue's capacity,
 //! which the generator never exceeds. Per run: one app and one 64 KiB
 //! `NullRenderer` per instance, reserved before the first action, and
@@ -40,9 +48,12 @@ const std = @import("std");
 const gooey = @import("gooey");
 const todo = @import("todo_example");
 const drag_drop = @import("drag_drop_example");
+const virtual_list = @import("virtual_list_example");
 const core = @import("goldens/core.zig");
 const TodoModel = @import("vopr_todo_model.zig").TodoModel;
 const DragDropModel = @import("vopr_drag_drop_model.zig").DragDropModel;
+const VirtualListModel = @import("vopr_virtual_list_model.zig").VirtualListModel;
+const invariants = @import("vopr_invariants.zig");
 const trace_mod = @import("goldens/trace.zig");
 
 const assert = std.debug.assert;
@@ -83,10 +94,16 @@ const text_bytes_action_max: u32 = text_unit_count_max * 2;
 /// Events one pointer action queues: a move, a press, and a release. A
 /// gesture step queues at most two: a move and a press or release.
 const pointer_event_count_max: u32 = 3;
+/// Events a click queues first when it releases a held gesture's button: a
+/// held move and the release.
+const release_event_count: u32 = 2;
+const button_count = std.enums.values(input.MouseButton).len;
 /// Held moves in one run of a gesture before it releases or plans more.
 const drag_move_count_max: u32 = 8;
 /// Scale factor of every simulated window, as the goldens use.
 const scale_factor: f32 = 2;
+/// The NullRenderer's dump capacity, which a stable rebuild copies.
+const dump_bytes_max: u32 = gooey.testing.test_backend.null_renderer_dump_bytes_max;
 
 /// Small, so typed text repeats and collides; "é" is two UTF-8 bytes, so
 /// text and draft limits can cut inside a codepoint.
@@ -123,11 +140,13 @@ comptime {
 pub const Workload = enum {
     todo,
     drag_drop,
+    virtual_list,
 
     fn App(comptime workload: Workload) type {
         return switch (workload) {
             .todo => todo.App,
             .drag_drop => drag_drop.App,
+            .virtual_list => virtual_list.App,
         };
     }
 
@@ -135,6 +154,7 @@ pub const Workload = enum {
         return switch (workload) {
             .todo => TodoModel,
             .drag_drop => DragDropModel,
+            .virtual_list => VirtualListModel,
         };
     }
 };
@@ -144,7 +164,8 @@ pub const Workload = enum {
 /// replayed.
 pub fn main(init: std.process.Init) !void {
     const options = parseArgs(init.minimal.args.vector) orelse {
-        std.debug.print("usage: vopr [--app todo|drag_drop] [seed] [--verbose]\n", .{});
+        std.debug.print("usage: vopr [--app todo|drag_drop|virtual_list] [seed] " ++
+            "[--verbose]\n", .{});
         return error.InvalidArguments;
     };
     const seed = options.seed orelse seed: {
@@ -179,7 +200,7 @@ fn runCli(
     });
     const summary = result.summary;
     std.debug.print("vopr: {s} seed {d} passed: {d} steps, quiesced in {d} rounds, " ++
-        "frame {d}, {d} draws, dump hash {x:0>16}\n", .{
+        "frame {d}, {d} draws, dump hash {x:0>16}, {d} stable rebuilds\n", .{
         name,
         seed,
         summary.step_count,
@@ -187,6 +208,7 @@ fn runCli(
         summary.frame_number,
         summary.draw_count,
         summary.dump_hash,
+        summary.stable_rebuild_count,
     });
     // Todo's model keeps no stats, so its output stays one line.
     if (@sizeOf(Model.Stats) > 0) {
@@ -203,22 +225,26 @@ const CliOptions = struct {
 /// Null on an argument it does not understand.
 fn parseArgs(args: []const [*:0]const u8) ?CliOptions {
     assert(args.len >= 1);
-    var options: CliOptions = .{ .workload = .todo, .seed = null, .verbose = false };
+    var options: CliOptions = .{
+        .workload = .todo,
+        .seed = null,
+        .verbose = false,
+    };
     var index: usize = 1;
     while (index < args.len) : (index += 1) {
         const arg = std.mem.span(args[index]);
         if (std.mem.eql(u8, arg, "--verbose")) {
             options.verbose = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--app")) {
+            index += 1;
+            if (index == args.len) return null;
+            const value = std.mem.span(args[index]);
+            options.workload = std.meta.stringToEnum(Workload, value) orelse return null;
         } else {
-            if (std.mem.eql(u8, arg, "--app")) {
-                index += 1;
-                if (index == args.len) return null;
-                const value = std.mem.span(args[index]);
-                options.workload = std.meta.stringToEnum(Workload, value) orelse return null;
-            } else {
-                if (options.seed != null) return null;
-                options.seed = std.fmt.parseInt(u64, arg, 0) catch return null;
-            }
+            if (options.seed != null) return null;
+            options.seed = std.fmt.parseInt(u64, arg, 0) catch return null;
         }
     }
     assert(index == args.len);
@@ -232,6 +258,8 @@ pub const Summary = struct {
     frame_number: u64,
     draw_count: u64,
     dump_hash: u64,
+    /// Rebuilds with no input that `checkStableRebuild` compared.
+    stable_rebuild_count: u32,
 };
 
 /// What a run reports: the frames it drew, and the model's own counts.
@@ -321,21 +349,42 @@ pub const Action = union(enum) {
     present,
     /// One step of a held-button gesture: a press, a held move, or the
     /// release. Steps of one gesture interleave with every other action,
-    /// so a drag stays open across ticks, presents, and clock gaps. Last,
-    /// so the other kinds keep their tag values.
+    /// so a drag stays open across ticks, presents, and clock gaps. After
+    /// the kinds todo has always drawn, so they keep their tag values.
     drag: Gesture,
+    /// The platform resized the window: a new logical size and scale, as
+    /// `window.resized`. Last, so the other kinds keep their tag values.
+    resize: Resize,
+
+    pub const Resize = struct {
+        width: f32,
+        height: f32,
+        scale_factor: f32,
+    };
 
     pub const Gesture = struct {
         kind: enum { press, move, release },
+        button: input.MouseButton,
         x: f32,
         y: f32,
+        /// A press of a button a `.pointer` press holds releases it first.
+        releases_held: bool,
     };
 
+    /// A click (press and release), a move, or one half of a click: a
+    /// press that holds the button across other actions, or the release of
+    /// a held button. Holding lets buttons overlap in any order, as every
+    /// platform delivers them: left down, right down, left up, right up.
     pub const Pointer = struct {
-        kind: enum { click, move },
+        kind: enum { click, move, press, release },
+        button: input.MouseButton,
         x: f32,
         y: f32,
         click_count: u32,
+        /// A click of a button that is held (by a gesture or a press)
+        /// releases it first, as no platform presses a button that is
+        /// already down.
+        releases_held: bool,
     };
 
     pub const Chord = struct {
@@ -351,11 +400,13 @@ pub const Action = union(enum) {
 
     pub fn format(self: Action, writer: *std.Io.Writer) std.Io.Writer.Error!void {
         switch (self) {
-            .pointer => |pointer| try writer.print("{t} ({d:.2}, {d:.2}) clicks={d}", .{
+            .pointer => |pointer| try writer.print("{t} {t} ({d:.2}, {d:.2}) clicks={d}{s}", .{
                 pointer.kind,
+                pointer.button,
                 pointer.x,
                 pointer.y,
                 pointer.click_count,
+                if (pointer.releases_held) " (releases held)" else "",
             }),
             .key => |chord| try writer.print("key {t}{s}{s}{s}", .{
                 chord.key,
@@ -373,10 +424,17 @@ pub const Action = union(enum) {
             .wait_ns => |gap_ns| try writer.print("wait {d} ns", .{gap_ns}),
             .tick_main => try writer.writeAll("tickMain"),
             .present => try writer.writeAll("presentBuilt"),
-            .drag => |gesture| try writer.print("drag {t} ({d:.2}, {d:.2})", .{
+            .drag => |gesture| try writer.print("drag {t} {t} ({d:.2}, {d:.2}){s}", .{
                 gesture.kind,
+                gesture.button,
                 gesture.x,
                 gesture.y,
+                if (gesture.releases_held) " (releases held)" else "",
+            }),
+            .resize => |size| try writer.print("resize {d}x{d}@{d}", .{
+                size.width,
+                size.height,
+                size.scale_factor,
             }),
         }
     }
@@ -407,14 +465,28 @@ pub const Swarm = struct {
     target_prefix_count: u32,
     /// Percent of pointer actions that click rather than move.
     click_percent: u32,
+    /// Actions between stable-rebuild checks (`checkStableRebuild`).
+    rebuild_period: u32,
+    /// Which mouse buttons pointer and gesture presses use.
+    button_mix: ButtonMix,
+    /// Percent of pointer actions that press or release a held button
+    /// instead of clicking or moving.
+    hold_percent: u32,
+
+    /// Left only; mostly left (8 in 10), with right and middle; or each
+    /// button a third of the time.
+    pub const ButtonMix = enum { left_only, mostly_left, even };
 
     /// Most weight one action kind can draw.
     const kind_weight_max: u32 = 16;
     const interactive_percent_choices = [_]u32{ 0, 50, 90 };
     const target_prefix_count_choices = [_]u32{ 2, 3, 5, 8, 0 };
     const click_percent_choices = [_]u32{ 25, 50, 90 };
+    const rebuild_period_choices = [_]u32{ 7, 31, 127 };
+    const hold_percent_choices = [_]u32{ 0, 10, 30 };
+    const button_mix_count = std.enums.values(ButtonMix).len;
     /// Most Smith choices `generate` makes: two per kind a model lists.
-    const choice_count_max = 2 * kind_count + 3;
+    const choice_count_max = 2 * kind_count + 6;
 
     /// Weights for the kinds the model lists, in its order; the rest stay
     /// off, so a model's seeds replay unchanged when another app's kind is
@@ -447,6 +519,13 @@ pub const Swarm = struct {
         swarm.click_percent = click_percent_choices[
             choose(smith, click_percent_choices.len, "click percent")
         ];
+        swarm.rebuild_period = rebuild_period_choices[
+            choose(smith, rebuild_period_choices.len, "rebuild period")
+        ];
+        swarm.button_mix = @fromBackingInt(@intCast(choose(smith, button_mix_count, "button mix")));
+        swarm.hold_percent = hold_percent_choices[
+            choose(smith, hold_percent_choices.len, "hold percent")
+        ];
         assert(swarm.kind_weights[@backingInt(ActionKind.tick_main)] > 0);
         assert(swarm.kind_weight_total <= kind_count * kind_weight_max);
         return swarm;
@@ -463,14 +542,29 @@ pub const Swarm = struct {
         unreachable;
     }
 
+    /// A button from the mix; always one choice, so the mix does not shift
+    /// the bytes that follow.
+    fn chooseButton(self: *const Swarm, smith: *Smith) input.MouseButton {
+        const roll = choose(smith, 100, "button");
+        const left_percent: u32, const right_percent: u32 = switch (self.button_mix) {
+            .left_only => .{ 100, 0 },
+            .mostly_left => .{ 80, 10 },
+            .even => .{ 34, 33 },
+        };
+        assert(left_percent + right_percent <= 100);
+        if (roll < left_percent) return .left;
+        if (roll < left_percent + right_percent) return .right;
+        return .middle;
+    }
+
     pub fn format(self: Swarm, writer: *std.Io.Writer) std.Io.Writer.Error!void {
         for (self.kinds) |kind| {
             try writer.print("{t}={d} ", .{ kind, self.kind_weights[@backingInt(kind)] });
         }
-        try writer.print("interactive={d}% prefix={d} click={d}%", .{
-            self.interactive_percent,
-            self.target_prefix_count,
-            self.click_percent,
+        try writer.print("interactive={d}% prefix={d} click={d}% rebuild every {d} " ++
+            "buttons {t} hold={d}%", .{
+            self.interactive_percent, self.target_prefix_count, self.click_percent,
+            self.rebuild_period,      self.button_mix,          self.hold_percent,
         });
     }
 };
@@ -496,6 +590,13 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
         action_count: u32,
         /// The held-button gesture `.drag` steps continue, if any.
         gesture: GestureState,
+        /// The mouse buttons the harness holds down.
+        held: Held,
+        /// The rendered frame `invariants.checkFrame` last checked.
+        frame_number_checked: u64,
+        /// The dump of the rendered frame, copied before a stable rebuild.
+        rebuild_dump: [dump_bytes_max]u8,
+        stable_rebuild_count: u32,
 
         const Self = @This();
 
@@ -504,6 +605,7 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
         /// more moves with the button still held.
         const GestureState = struct {
             held: bool,
+            button: input.MouseButton,
             start: Point,
             last: Point,
             move_count: u32,
@@ -511,6 +613,7 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
 
             const idle: GestureState = .{
                 .held = false,
+                .button = .left,
                 .start = .{ .x = 0, .y = 0 },
                 .last = .{ .x = 0, .y = 0 },
                 .move_count = 0,
@@ -518,6 +621,32 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             };
         };
         const Driver = core.CoreDriver(App);
+
+        /// Which buttons are down, so the harness never presses a button
+        /// that is down or releases one that is up.
+        const Held = struct {
+            down: [button_count]bool,
+
+            const none: Held = .{ .down = @splat(false) };
+
+            fn isDown(self: *const Held, button: input.MouseButton) bool {
+                return self.down[@backingInt(button)];
+            }
+
+            fn any(self: *const Held) bool {
+                return std.mem.indexOfScalar(bool, &self.down, true) != null;
+            }
+
+            fn press(self: *Held, button: input.MouseButton) void {
+                assert(!self.isDown(button));
+                self.down[@backingInt(button)] = true;
+            }
+
+            fn release(self: *Held, button: input.MouseButton) void {
+                assert(self.isDown(button));
+                self.down[@backingInt(button)] = false;
+            }
+        };
 
         /// Initialize in place (the app must not move), draw the seed's
         /// action mix from `smith`, then settle the first frame so pointer
@@ -549,6 +678,9 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             self.swarm = .generate(smith, Model.action_kinds);
             self.action_count = 0;
             self.gesture = .idle;
+            self.held = .none;
+            self.frame_number_checked = 0;
+            self.stable_rebuild_count = 0;
             self.model.init();
             assert(self.driver.now_ns == 0);
             assert(self.driver.renderer.draw_count == 0);
@@ -568,7 +700,9 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
         /// Run `action` and check the harness invariants after it.
         pub fn perform(self: *Self, action: Action) void {
             switch (action) {
-                .pointer, .key, .text, .compose, .scroll, .drag => self.model.queue(action),
+                .pointer, .key, .text, .compose, .scroll, .drag, .resize => {
+                    self.model.queue(action);
+                },
                 .wait_ns, .tick_main, .present => {},
             }
             switch (action) {
@@ -588,11 +722,21 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
                     .delta = .{ .x = 0, .y = scroll.delta_y },
                     .modifiers = .{},
                 } }),
+                .resize => |size| {
+                    assert(self.window().queue.room() > 0);
+                    self.driver.app.window.queue.push(.{ .window = .{ .resized = .{
+                        .width = size.width,
+                        .height = size.height,
+                        .scale_factor = size.scale_factor,
+                    } } });
+                },
                 .wait_ns => |gap_ns| self.driver.now_ns += gap_ns,
                 .tick_main => self.tickMain(),
                 .present => self.present(),
             }
             self.check();
+            assert(self.swarm.rebuild_period > 0);
+            if (self.action_count % self.swarm.rebuild_period == 0) self.checkStableRebuild();
         }
 
         /// The next action. Input that would overflow the queue's events or
@@ -606,12 +750,12 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             const kind = self.swarm.chooseKind(smith);
             const in_flight = self.window().frame_in_flight.load(.acquire);
             return switch (kind) {
-                .pointer => if (self.queueHasRoom(pointer_event_count_max, 0))
+                .pointer => if (self.queueHasRoom(self.pointerEventCount(), 0))
                     .{ .pointer = self.generatePointer(smith) }
                 else
                     .tick_main,
-                .drag => if (self.queueHasRoom(pointer_event_count_max, 0))
-                    .{ .drag = self.generateGesture(smith) }
+                .drag => if (self.queueHasRoom(self.pointerEventCount(), 0))
+                    self.generateGesture(smith)
                 else
                     .tick_main,
                 .key => if (self.queueHasRoom(2, 0)) .{ .key = .{
@@ -637,6 +781,34 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
                 ] },
                 .tick_main => .tick_main,
                 .present => if (in_flight) .present else .tick_main,
+                .resize => if (self.queueHasRoom(1, 0))
+                    .{ .resize = generateResize(smith) }
+                else
+                    .tick_main,
+            };
+        }
+
+        /// A seeded window size and scale within the profile's framebuffer
+        /// (`limits.window`) and the app's minimums: the configured size, the
+        /// minimum, the largest the framebuffer takes, or any between.
+        fn generateResize(smith: *Smith) Action.Resize {
+            const scale_choices = [_]f32{ 1, 1.25, 1.5, 2 };
+            const scale = scale_choices[choose(smith, scale_choices.len, "resize scale")];
+            const window_limits = App.limits.window;
+            return .{
+                .width = resizeExtent(smith, .{
+                    .configured = App.width,
+                    .minimum = App.min_width,
+                    .framebuffer_max = window_limits.framebuffer_width_max,
+                    .scale_factor = scale,
+                }),
+                .height = resizeExtent(smith, .{
+                    .configured = App.height,
+                    .minimum = App.min_height,
+                    .framebuffer_max = window_limits.framebuffer_height_max,
+                    .scale_factor = scale,
+                }),
+                .scale_factor = scale,
             };
         }
 
@@ -667,6 +839,47 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             }
             assert(win.phase == .idle);
             assert(win.render_phase == .idle);
+            self.checkStableRebuild();
+        }
+
+        /// Stable rebuild. Exact rule: when the rendered frame is current
+        /// (nothing in flight or awaiting a flip, no render requested, and
+        /// the queue empty) and the build that made it asked for no timed
+        /// render (`Window.renderDeadlineNs` is null), a render requested
+        /// with no input and no clock advance must draw a dump identical,
+        /// byte for byte, to the rendered frame's. A view that changes with
+        /// the clock (an animation, a caret blink, a scroll settling, a
+        /// first build after a resize reading old bounds) must ask for a
+        /// timed render (`cx.requestRenderAfter`, contract §5) or request a
+        /// render itself, so those frames are exactly the exempt ones.
+        fn checkStableRebuild(self: *Self) void {
+            const win = self.window();
+            if (win.frame_in_flight.load(.acquire)) return;
+            if (win.awaiting_flip or win.render_requested) return;
+            if (win.queue.count > 0) return;
+            if (win.renderDeadlineNs() != null) return;
+            // The last draw is the rendered frame: it was presented, then
+            // flipped, and nothing was drawn since.
+            const before = self.driver.renderer.frameDump();
+            assert(before.len <= self.rebuild_dump.len);
+            @memcpy(self.rebuild_dump[0..before.len], before);
+            const frame_number = win.rendered().frame_number;
+            win.render_requested = true;
+            self.tickMain();
+            assert(win.frame_in_flight.load(.acquire));
+            self.present();
+            self.check();
+            const after = self.driver.renderer.frameDump();
+            const expected = self.rebuild_dump[0..before.len];
+            if (!std.mem.eql(u8, expected, after)) {
+                invariants.reportDumpDifference(expected, after);
+                std.debug.panic("vopr: a rebuild of frame {d} with no input and no clock " ++
+                    "advance drew a different dump (action {d})", .{
+                    frame_number,
+                    self.action_count,
+                });
+            }
+            self.stable_rebuild_count += 1;
         }
 
         pub fn summary(self: *Self, step_count: u32) Summary {
@@ -677,6 +890,7 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
                 .frame_number = self.frame_number_rendered,
                 .draw_count = self.driver.renderer.draw_count,
                 .dump_hash = self.dump_hasher.final(),
+                .stable_rebuild_count = self.stable_rebuild_count,
             };
         }
 
@@ -743,6 +957,11 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
                 });
             }
             self.frame_number_rendered = frame_number;
+            if (frame_number != self.frame_number_checked) {
+                invariants.checkFrame(win, win.rendered());
+                self.frame_number_checked = frame_number;
+            }
+            invariants.checkFocusLive(win);
             self.model.check(&self.driver.app.state, self.action_count);
             if (win.frame_in_flight.load(.acquire)) {
                 // Published frames are flipped only after they are presented.
@@ -759,29 +978,78 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
         fn deliverPointer(self: *Self, pointer: Action.Pointer) void {
             const position: input.MouseEvent = .{
                 .position = .{ .x = pointer.x, .y = pointer.y },
-                .button = .left,
+                .button = pointer.button,
                 .click_count = 0,
                 .modifiers = .{},
             };
-            self.deliver(.{ .mouse_moved = position });
-            if (pointer.kind == .move) return;
             var press = position;
-            press.click_count = pointer.click_count;
-            self.deliver(.{ .mouse_down = press });
-            self.deliver(.{ .mouse_up = press });
+            press.click_count = 1;
+            if (pointer.releases_held) {
+                assert(pointer.kind == .click);
+                self.deliver(.{ .mouse_dragged = position });
+                self.deliver(.{ .mouse_up = press });
+            }
+            switch (pointer.kind) {
+                .move => self.deliver(.{ .mouse_moved = position }),
+                .press => {
+                    self.deliver(.{ .mouse_moved = position });
+                    self.deliver(.{ .mouse_down = press });
+                },
+                .release => {
+                    self.deliver(.{ .mouse_dragged = position });
+                    self.deliver(.{ .mouse_up = press });
+                },
+                .click => {
+                    press.click_count = pointer.click_count;
+                    self.deliver(.{ .mouse_moved = position });
+                    self.deliver(.{ .mouse_down = press });
+                    self.deliver(.{ .mouse_up = press });
+                },
+            }
         }
 
+        /// A move, a click, or with `Swarm.hold_percent` the press of a
+        /// button that is up or the release of one that is down. Releasing
+        /// a gesture's button ends the gesture.
         fn generatePointer(self: *Self, smith: *Smith) Action.Pointer {
+            const Kind = @FieldType(Action.Pointer, "kind");
             const point = self.generatePoint(smith);
             const click = choose(smith, 100, "pointer kind") < self.swarm.click_percent;
-            // A click's release lets go of a held gesture's button too.
-            if (click) self.gesture = .idle;
-            return .{
-                .kind = if (click) .click else .move,
+            const button = self.swarm.chooseButton(smith);
+            const hold = choose(smith, 100, "hold") < self.swarm.hold_percent;
+            const down = self.held.isDown(button);
+            const held_kind: Kind = if (down) .release else .press;
+            var pointer: Action.Pointer = .{
+                .kind = if (hold) held_kind else (if (click) .click else .move),
+                .button = button,
                 .x = point.x,
                 .y = point.y,
                 .click_count = 1 + choose(smith, 2, "click count"),
+                .releases_held = false,
             };
+            switch (pointer.kind) {
+                .move => {},
+                .press => self.held.press(button),
+                .release => self.releaseHeld(button),
+                .click => if (down) {
+                    pointer.releases_held = true;
+                    self.releaseHeld(button);
+                },
+            }
+            return pointer;
+        }
+
+        /// A held button goes up; the gesture holding it, if any, ends.
+        fn releaseHeld(self: *Self, button: input.MouseButton) void {
+            self.held.release(button);
+            if (self.gesture.held and self.gesture.button == button) self.gesture = .idle;
+        }
+
+        /// The most events the next pointer or gesture action can queue: a
+        /// press may release a held button first.
+        fn pointerEventCount(self: *const Self) u32 {
+            if (self.held.any()) return pointer_event_count_max + release_event_count;
+            return pointer_event_count_max;
         }
 
         /// A press moves there first, as a platform reports the pointer
@@ -790,7 +1058,7 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
         fn deliverGesture(self: *Self, gesture: Action.Gesture) void {
             const position: input.MouseEvent = .{
                 .position = .{ .x = gesture.x, .y = gesture.y },
-                .button = .left,
+                .button = gesture.button,
                 .click_count = 0,
                 .modifiers = .{},
             };
@@ -798,11 +1066,16 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             press.click_count = 1;
             switch (gesture.kind) {
                 .press => {
+                    if (gesture.releases_held) {
+                        self.deliver(.{ .mouse_dragged = position });
+                        self.deliver(.{ .mouse_up = press });
+                    }
                     self.deliver(.{ .mouse_moved = position });
                     self.deliver(.{ .mouse_down = press });
                 },
                 .move => self.deliver(.{ .mouse_dragged = position }),
                 .release => {
+                    assert(!gesture.releases_held);
                     self.deliver(.{ .mouse_dragged = position });
                     self.deliver(.{ .mouse_up = press });
                 },
@@ -813,31 +1086,63 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
         /// draggable), then a run of up to `drag_move_count_max` moves,
         /// then a release, or with a quarter's chance another run of moves
         /// with the button still held, so a drag can stay open for long.
-        fn generateGesture(self: *Self, smith: *Smith) Action.Gesture {
+        fn generateGesture(self: *Self, smith: *Smith) Action {
             const gesture = &self.gesture;
-            if (!gesture.held) {
-                const point = self.generatePressPoint(smith);
-                gesture.* = .{
-                    .held = true,
-                    .start = point,
-                    .last = point,
-                    .move_count = 1 + choose(smith, drag_move_count_max, "drag moves"),
-                    .release = choose(smith, 4, "drag release") != 0,
-                };
-                return .{ .kind = .press, .x = point.x, .y = point.y };
-            }
+            if (!gesture.held) return self.generateGesturePress(smith);
+            assert(self.held.isDown(gesture.button));
             assert(gesture.move_count <= drag_move_count_max);
+            const button = gesture.button;
             if (gesture.move_count == 0) {
                 if (gesture.release) {
-                    gesture.held = false;
-                    return .{ .kind = .release, .x = gesture.last.x, .y = gesture.last.y };
+                    const last = gesture.last;
+                    self.releaseHeld(button);
+                    assert(!gesture.held);
+                    return .{ .drag = .{
+                        .kind = .release,
+                        .button = button,
+                        .x = last.x,
+                        .y = last.y,
+                        .releases_held = false,
+                    } };
                 }
                 gesture.move_count = 1 + choose(smith, drag_move_count_max, "drag moves");
                 gesture.release = choose(smith, 4, "drag release") != 0;
             }
             gesture.move_count -= 1;
             gesture.last = self.generateDragPoint(smith, gesture.start);
-            return .{ .kind = .move, .x = gesture.last.x, .y = gesture.last.y };
+            return .{ .drag = .{
+                .kind = .move,
+                .button = button,
+                .x = gesture.last.x,
+                .y = gesture.last.y,
+                .releases_held = false,
+            } };
+        }
+
+        fn generateGesturePress(self: *Self, smith: *Smith) Action {
+            assert(!self.gesture.held);
+            const point = self.generatePressPoint(smith);
+            const button = self.swarm.chooseButton(smith);
+            const move_count = 1 + choose(smith, drag_move_count_max, "drag moves");
+            const release = choose(smith, 4, "drag release") != 0;
+            const releases_held = self.held.isDown(button);
+            if (releases_held) self.releaseHeld(button);
+            self.held.press(button);
+            self.gesture = .{
+                .held = true,
+                .button = button,
+                .start = point,
+                .last = point,
+                .move_count = move_count,
+                .release = release,
+            };
+            return .{ .drag = .{
+                .kind = .press,
+                .button = button,
+                .x = point.x,
+                .y = point.y,
+                .releases_held = releases_held,
+            } };
         }
 
         /// A press point: on a draggable nine times in ten when the frame
@@ -922,6 +1227,17 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
         /// A point of a rendered hit record (its centre, an edge, or any
         /// point inside), within the window; anywhere when there is none.
         fn generatePoint(self: *Self, smith: *Smith) Point {
+            // Only a model that declares a target reads this choice, so the
+            // other apps' seeds replay unchanged.
+            if (comptime @hasDecl(Model, "biasTarget")) {
+                if (choose(smith, 2, "biased") == 0) {
+                    if (Model.biasTarget(self.window())) |bias| {
+                        const on_bar = choose(smith, 3, "on scrollbar") == 0;
+                        const area = if (on_bar) bias.scrollbar orelse bias.area else bias.area;
+                        return self.clampToWindow(pointIn(smith, area));
+                    }
+                }
+            }
             const win = self.window();
             const frame = win.rendered();
             const hits = frame.hits[0..frame.hit_count];
@@ -964,6 +1280,32 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
     };
 }
 
+/// One axis of a seeded resize, in whole logical pixels: the configured
+/// extent, the minimum (at least 1), the largest whose physical size fits
+/// the framebuffer at `scale_factor`, or any extent between.
+fn resizeExtent(smith: *Smith, options: struct {
+    configured: u32,
+    minimum: u32,
+    framebuffer_max: u32,
+    scale_factor: f32,
+}) f32 {
+    assert(options.scale_factor >= 1);
+    const framebuffer_max: f32 = @floatFromInt(options.framebuffer_max);
+    const extent_max: u32 = @intFromFloat(@floor(framebuffer_max / options.scale_factor));
+    const extent_min: u32 = @max(options.minimum, 1);
+    assert(extent_min <= extent_max);
+    const extent: u32 = switch (choose(smith, 4, "resize extent")) {
+        0 => std.math.clamp(options.configured, extent_min, extent_max),
+        1 => extent_min,
+        2 => extent_max,
+        3 => extent_min + choose(smith, extent_max - extent_min + 1, "resize span"),
+        else => unreachable,
+    };
+    assert(extent >= extent_min);
+    assert(extent <= extent_max);
+    return @floatFromInt(extent);
+}
+
 /// A key event with no characters, as the goldens' traces send. Never the
 /// debugger toggle, whose overlay reads the real clock.
 fn keyEvent(chord: Action.Chord) input.KeyEvent {
@@ -980,6 +1322,13 @@ fn keyEvent(chord: Action.Chord) input.KeyEvent {
 }
 
 const Point = struct { x: f32, y: f32 };
+
+/// Where a model asks pointer, wheel, and drag actions to aim half the time
+/// (`Model.biasTarget`): a scroll box and its vertical scrollbar's track.
+pub const Bias = struct {
+    area: records.Rect,
+    scrollbar: ?records.Rect,
+};
 
 /// Whether a click, key, or wheel on `record` can change state.
 fn isInteractive(record: *const records.HitRecord) bool {
@@ -1142,6 +1491,11 @@ test "fuzz: drag_drop vopr" {
     try fuzzCorpus(.drag_drop);
 }
 
+test "fuzz: virtual_list vopr" {
+    // Goal: the virtual_list fuzz target runs under `zig build test`.
+    try fuzzCorpus(.virtual_list);
+}
+
 /// One seed through `runPaired`, which panics on the first differing frame.
 fn runPairedSeed(comptime workload: Workload) !Result(workload.Model()) {
     const step_count = 300;
@@ -1173,4 +1527,67 @@ test "two instances fed the same bytes draw the same frames" {
     _ = try runPairedSeed(.todo);
     const result = try runPairedSeed(.drag_drop);
     try std.testing.expect(result.stats.drags_completed > 0);
+    const list = try runPairedSeed(.virtual_list);
+    try std.testing.expect(list.stats.rows_seen > 0);
+}
+
+/// The centre of the `rank`-th hit record with a click handler, in tree order.
+fn clickTarget(frame: *const records.Frame, rank: u32) Point {
+    var seen: u32 = 0;
+    for (frame.hits[0..frame.hit_count]) |*record| {
+        if (record.on_click == records.index_none) continue;
+        if (seen == rank) {
+            const bounds = record.bounds;
+            return .{ .x = bounds.x + bounds.width / 2, .y = bounds.y + bounds.height / 2 };
+        }
+        seen += 1;
+    }
+    unreachable; // The example draws its three buttons in every frame.
+}
+
+test "a List scrolled by a target rebuilds the same rows" {
+    // Goal: List predicts the offset layout resolves for a `.child` and an
+    // `.end` target to the bit, so the rows it builds for the target are the
+    // rows the resolved offset shows. Methodology: Jump to 500 (centred)
+    // built one row off at 1006x216 and 1.25x (virtual_list seed 284) and at
+    // 475x1732 and 1.25x (soak seed 6858813265271003337); click Jump, Top,
+    // and Bottom (`.end`) at those sizes and others, and require a rebuild
+    // with no input to draw the same frame. Before the fix the first Jump
+    // failed "dumps differ".
+    const V = Vopr(virtual_list.App, VirtualListModel);
+    const vopr_instance = try std.testing.allocator.create(V);
+    defer std.testing.allocator.destroy(vopr_instance);
+    const swarm_bytes: [64]u8 = @splat(0);
+    var smith: Smith = .{ .in = &swarm_bytes };
+    try vopr_instance.initInPlace(std.testing.allocator, std.testing.io, &smith);
+    defer vopr_instance.deinit();
+    const sizes = [_]Action.Resize{
+        .{ .width = 1006, .height = 216, .scale_factor = 1.25 },
+        .{ .width = 800, .height = 600, .scale_factor = 1 },
+        .{ .width = 777, .height = 333, .scale_factor = 1.5 },
+        .{ .width = 641, .height = 251, .scale_factor = 1.75 },
+        .{ .width = 475, .height = 1732, .scale_factor = 1.25 },
+    };
+    const top_button = 0;
+    const bottom_button = 1;
+    const jump_button = 2;
+    for (sizes) |size| {
+        vopr_instance.perform(.{ .resize = size });
+        vopr_instance.quiesce();
+        for ([_]u32{ jump_button, top_button, bottom_button, jump_button }) |rank| {
+            const rebuilds = vopr_instance.stable_rebuild_count;
+            const target = clickTarget(vopr_instance.window().rendered(), rank);
+            vopr_instance.perform(.{ .pointer = .{
+                .kind = .click,
+                .button = .left,
+                .x = target.x,
+                .y = target.y,
+                .click_count = 1,
+                .releases_held = false,
+            } });
+            // Quiescence ends in the stable-rebuild check; it must not skip.
+            vopr_instance.quiesce();
+            try std.testing.expect(vopr_instance.stable_rebuild_count > rebuilds);
+        }
+    }
 }

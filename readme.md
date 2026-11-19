@@ -566,6 +566,13 @@ pub const Fetch = struct {
   fail. Its results arrive in the next frame. A post with every result slot held panics
   there, since nothing can drain while the job runs.
 
+### Clicks
+
+`on_click` fires on a left press and release over the same element, or on Enter or Space
+when it is focused, as a browser's `click` and native buttons do. Right and middle
+presses still move focus, run `on_click_outside`, and start captures and drags; a handler
+that wants them reads the button from `effects.inputEvent()`.
+
 ### Pointer capture
 
 A box with `on_pointer_drag` captures the pointer when pressed: its handler gets `begin`,

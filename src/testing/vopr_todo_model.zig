@@ -16,9 +16,14 @@
 //! - Clicks: the press focuses the innermost focusable record under the
 //!   point (or nothing) and the release fires the innermost `on_click`. One
 //!   press and release is one click whatever its click count. A press on a
-//!   scrollbar is the scroll box's. Enter or Space without Ctrl or Alt
-//!   clicks the focused control; Tab and Shift+Tab move focus through tab
-//!   stops in tree order, wrapping.
+//!   scrollbar with the left button is the scroll box's. Only the left
+//!   button clicks: a right or middle press focuses (on a scrollbar too)
+//!   and its release clicks nothing. A left press and its release may be
+//!   apart, with other actions and other buttons between: the release
+//!   clicks the innermost `on_click` under it whose record the left press
+//!   also landed in, then forgets that press. Enter or Space without Ctrl
+//!   or Alt clicks the focused control; Tab and Shift+Tab move focus
+//!   through tab stops in tree order, wrapping.
 //! - The draft is edited at the caret by committed text, Backspace, Delete,
 //!   arrows, Home, End (Shift extends), Ctrl+A, Ctrl+X, and Ctrl+C. Typing
 //!   past the input's capacity keeps the whole codepoints that fit.
@@ -77,6 +82,10 @@ const pending_count_max: u32 = todo.App.limits.events.queue_count_max;
 const pending_text_bytes_max: u32 = todo.App.limits.events.text_bytes_max;
 /// Frames whose rows a click can refer to: the rendered and the built one.
 const view_count_max: u32 = 2;
+/// Ids one press lands in: one per box on the path to the root.
+const press_path_len_max: u32 = internals.window.box_depth_ceiling;
+
+const Point = struct { x: f32, y: f32 };
 
 comptime {
     assert(item_bytes_max <= draft_bytes_max);
@@ -94,6 +103,9 @@ pub const TodoModel = struct {
     /// Focus within the drain being applied; read from the window first.
     focus: ElementId,
     composing: bool,
+    /// The ids the last press landed in, innermost first, until a release.
+    press_path: [press_path_len_max]ElementId,
+    press_len: u32,
     pending: [pending_count_max]Action,
     /// Whether each pending click lands on a scrollbar, decided before the
     /// drain: the build after it can move or remove the bar.
@@ -117,7 +129,7 @@ pub const TodoModel = struct {
     /// The action kinds todo's swarm draws weights for, in this order; the
     /// order is part of every seed, so it must not change.
     pub const action_kinds: []const vopr.ActionKind = &.{
-        .pointer, .key, .text, .compose, .scroll, .wait_ns, .tick_main, .present,
+        .pointer, .key, .text, .compose, .scroll, .wait_ns, .tick_main, .present, .resize,
     };
 
     /// Todo's runs report no counts beyond the harness summary.
@@ -175,6 +187,7 @@ pub const TodoModel = struct {
         self.draft.anchor = 0;
         self.focus = .root;
         self.composing = false;
+        self.press_len = 0;
         self.pending_count = 0;
         self.pending_text_len = 0;
         for (&self.views) |*view| {
@@ -204,7 +217,7 @@ pub const TodoModel = struct {
         var copy = action;
         switch (copy) {
             .text, .compose => |*text| text.* = self.copyText(text.*),
-            .pointer, .key, .scroll => {},
+            .pointer, .key, .scroll, .resize => {},
             // Todo's swarm draws no `.drag` (`action_kinds`).
             .wait_ns, .tick_main, .present, .drag => unreachable,
         }
@@ -290,8 +303,24 @@ pub const TodoModel = struct {
     ) void {
         switch (action.*) {
             .pointer => |pointer| {
-                // A press on a scrollbar is the scroll box's, not a click.
-                if (pointer.kind == .click and !on_scrollbar) self.click(frame, pointer);
+                const point: Point = .{ .x = pointer.x, .y = pointer.y };
+                // Only a left press takes a scrollbar. No thumb drag is on
+                // then: only the left button starts one, and it is up.
+                const takes_scrollbar = on_scrollbar and pointer.button == .left;
+                const left = pointer.button == .left;
+                if (pointer.releases_held and left) self.release(frame, point);
+                switch (pointer.kind) {
+                    .move => {},
+                    .press => self.press(frame, point, .{
+                        .left = left,
+                        .scrollbar = takes_scrollbar,
+                    }),
+                    .release => if (left) self.release(frame, point),
+                    .click => {
+                        self.press(frame, point, .{ .left = left, .scrollbar = takes_scrollbar });
+                        if (left) self.release(frame, point);
+                    },
+                }
             },
             .key => |chord| self.key(frame, chord),
             .text => |text| {
@@ -305,32 +334,42 @@ pub const TodoModel = struct {
                 if (!self.composing and self.hasSelection()) self.forgetDraft();
                 self.composing = text.len > 0;
             },
-            .scroll => {},
+            // A resize changes the layout, which the model reads from frames.
+            .scroll, .resize => {},
             // Todo's swarm draws no `.drag` (`action_kinds`).
             .wait_ns, .tick_main, .present, .drag => unreachable,
         }
     }
 
-    /// A press and release at one point: focus moves to the innermost
-    /// focusable record under it, then the innermost `on_click` fires.
-    fn click(self: *TodoModel, frame: *const records.Frame, pointer: Action.Pointer) void {
-        const deepest = hitIndex(frame, pointer.x, pointer.y) orelse {
+    /// A press of any button: focus moves to the innermost focusable record
+    /// under it, and the release that follows may click what it landed in.
+    /// A left press on a scrollbar is the scroll box's: it lands in nothing.
+    /// Only a left press records its path: other buttons click nothing and
+    /// leave a left press's path alone, but focus all the same.
+    fn press(
+        self: *TodoModel,
+        frame: *const records.Frame,
+        point: Point,
+        options: struct { left: bool, scrollbar: bool },
+    ) void {
+        assert(options.left or !options.scrollbar);
+        if (options.left) self.press_len = 0;
+        if (options.scrollbar) return;
+        const deepest = hitIndex(frame, point.x, point.y) orelse {
             self.moveFocus(.root);
             return;
         };
         var focus_id: ElementId = .root;
-        var click_index: ?u32 = null;
         var index = deepest;
         var depth: u32 = 0;
         while (index != records.index_none) : (depth += 1) {
-            assert(depth <= frame.hit_count);
+            assert(depth < press_path_len_max);
             const record = &frame.hits[index];
             if (focus_id == .root and record.focusable) focus_id = record.id;
-            if (click_index == null and record.on_click != records.index_none) {
-                click_index = index;
-            }
+            if (options.left) self.press_path[depth] = record.id;
             index = record.parent;
         }
+        if (options.left) self.press_len = depth;
         self.moveFocus(focus_id);
         if (self.inputFocused(frame)) {
             // Where the press puts the caret depends on glyph layout.
@@ -340,7 +379,26 @@ pub const TodoModel = struct {
                 self.draft.caret_known = false;
             }
         }
-        if (click_index) |found| self.activate(frame, frame.hits[found].id);
+    }
+
+    /// A release of any button fires the innermost `on_click` under it that
+    /// the last press also landed in, and forgets that press.
+    fn release(self: *TodoModel, frame: *const records.Frame, point: Point) void {
+        const pressed = self.press_path[0..self.press_len];
+        self.press_len = 0;
+        if (pressed.len == 0) return;
+        var index = hitIndex(frame, point.x, point.y) orelse return;
+        var depth: u32 = 0;
+        while (index != records.index_none) : (depth += 1) {
+            assert(depth <= frame.hit_count);
+            const record = &frame.hits[index];
+            const in_press = std.mem.indexOfScalar(ElementId, pressed, record.id) != null;
+            if (in_press and record.on_click != records.index_none) {
+                self.activate(frame, record.id);
+                return;
+            }
+            index = record.parent;
+        }
     }
 
     /// Focus moving off the input during a composition leaves the draft
