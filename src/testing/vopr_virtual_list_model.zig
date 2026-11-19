@@ -135,7 +135,7 @@ pub const VirtualListModel = struct {
         const index = vopr_frame.findHit(frame, list_id) orelse return null;
         const scroll = window.retained.findConst(ScrollState, list_id);
         const bar = if (scroll) |state| state.track(.y) else null;
-        return .{ .area = frame.hits[index].bounds, .scrollbar = bar };
+        return .{ .area = frame.hits[index].bounds, .alternate = bar };
     }
 
     /// Count the rows of a newly rendered frame.

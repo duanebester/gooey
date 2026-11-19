@@ -14,7 +14,9 @@
 //! vopr -- [--app NAME] [seed]`, whose bytes come from a seeded PRNG, and a
 //! `std.testing.fuzz` target per app, whose bytes come from the fuzzer. Each
 //! app (`Workload`) has a reference model, which lists the action kinds its
-//! swarm draws: todo's never drags, so its seeds replay as before.
+//! swarm draws (todo's never drags, so its seeds replay as before) and may
+//! list the keys it presses (`key_choices`) and the area its pointer
+//! actions favour (`biasTarget`).
 //!
 //! Swarm testing: every `swarm_epoch_step_count` steps the generator draws a
 //! fresh `Swarm` (action-kind weights, some of them zero, and how pointer
@@ -353,8 +355,20 @@ pub const Action = union(enum) {
     /// the kinds todo has always drawn, so they keep their tag values.
     drag: Gesture,
     /// The platform resized the window: a new logical size and scale, as
-    /// `window.resized`. Last, so the other kinds keep their tag values.
+    /// `window.resized`. After the kinds before it, so they keep their tag
+    /// values.
     resize: Resize,
+    /// The platform took the pointer gesture away (`pointer_cancelled`), or
+    /// the window lost focus (`focus_lost`). Last, so the other kinds keep
+    /// their tag values; only models that list it draw it.
+    cancel: Cancel,
+
+    pub const Cancel = struct {
+        kind: enum { pointer_cancelled, focus_lost, focus_lost_with_pointer },
+        /// A key `focus_lost` reports held, which the core releases as a
+        /// `key_up`; null for none. Ignored by `pointer_cancelled`.
+        key_held: ?input.KeyCode,
+    };
 
     pub const Resize = struct {
         width: f32,
@@ -435,6 +449,11 @@ pub const Action = union(enum) {
                 size.width,
                 size.height,
                 size.scale_factor,
+            }),
+            .cancel => |cancel| try writer.print("cancel {t}{s}{s}", .{
+                cancel.kind,
+                if (cancel.key_held != null) " holding " else "",
+                if (cancel.key_held) |key| @tagName(key) else "",
             }),
         }
     }
@@ -600,6 +619,20 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
 
         const Self = @This();
 
+        /// The keys the generator presses: the model's own list when it
+        /// declares one (`Model.key_choices`), so the other apps' seeds
+        /// replay unchanged.
+        const keys: []const input.KeyCode = if (@hasDecl(Model, "key_choices"))
+            Model.key_choices
+        else
+            &key_choices;
+
+        comptime {
+            // Never the debugger toggle, Cmd/Ctrl+Shift+I, which reads the
+            // real clock.
+            for (keys) |key| assert(key != .i);
+        }
+
         /// A gesture in progress: its press point, its last point, how
         /// many more moves it makes, and whether it then releases or plans
         /// more moves with the button still held.
@@ -700,7 +733,7 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
         /// Run `action` and check the harness invariants after it.
         pub fn perform(self: *Self, action: Action) void {
             switch (action) {
-                .pointer, .key, .text, .compose, .scroll, .drag, .resize => {
+                .pointer, .key, .text, .compose, .scroll, .drag, .resize, .cancel => {
                     self.model.queue(action);
                 },
                 .wait_ns, .tick_main, .present => {},
@@ -730,6 +763,7 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
                         .scale_factor = size.scale_factor,
                     } } });
                 },
+                .cancel => |cancel| self.deliver(cancelEvent(cancel)),
                 .wait_ns => |gap_ns| self.driver.now_ns += gap_ns,
                 .tick_main => self.tickMain(),
                 .present => self.present(),
@@ -759,7 +793,7 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
                 else
                     .tick_main,
                 .key => if (self.queueHasRoom(2, 0)) .{ .key = .{
-                    .key = key_choices[choose(smith, key_choices.len, "key")],
+                    .key = keys[choose(smith, keys.len, "key")],
                     .modifiers = modifier_choices[
                         choose(smith, modifier_choices.len, "modifiers")
                     ],
@@ -785,7 +819,22 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
                     .{ .resize = generateResize(smith) }
                 else
                     .tick_main,
+                .cancel => if (self.queueHasRoom(1, 0))
+                    .{ .cancel = generateCancel(smith) }
+                else
+                    .tick_main,
             };
+        }
+
+        /// A gesture cancel or a focus loss, which may report one key held.
+        fn generateCancel(smith: *Smith) Action.Cancel {
+            const Kind = @FieldType(Action.Cancel, "kind");
+            const kind_count_cancel = std.enums.values(Kind).len;
+            const kind_index = choose(smith, kind_count_cancel, "cancel kind");
+            const kind: Kind = @fromBackingInt(@intCast(kind_index));
+            const holds = choose(smith, 2, "cancel holds key") == 0;
+            const key = keys[choose(smith, keys.len, "cancel key")];
+            return .{ .kind = kind, .key_held = if (holds) key else null };
         }
 
         /// A seeded window size and scale within the profile's framebuffer
@@ -1233,7 +1282,7 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
                 if (choose(smith, 2, "biased") == 0) {
                     if (Model.biasTarget(self.window())) |bias| {
                         const on_bar = choose(smith, 3, "on scrollbar") == 0;
-                        const area = if (on_bar) bias.scrollbar orelse bias.area else bias.area;
+                        const area = if (on_bar) bias.alternate orelse bias.area else bias.area;
                         return self.clampToWindow(pointIn(smith, area));
                     }
                 }
@@ -1306,6 +1355,22 @@ fn resizeExtent(smith: *Smith, options: struct {
     return @floatFromInt(extent);
 }
 
+/// The platform event for `cancel`: a focus loss reports the gesture it
+/// cancelled, if any, and the one key held, if any.
+fn cancelEvent(cancel: Action.Cancel) input.InputEvent {
+    if (cancel.kind == .pointer_cancelled) return .pointer_cancelled;
+    var keys_held: input.HeldKeys = .empty;
+    if (cancel.key_held) |key| {
+        assert(key != .unknown);
+        keys_held.set(@backingInt(key));
+    }
+    assert(keys_held.count() <= 1);
+    return .{ .focus_lost = .{
+        .pointer_cancelled = cancel.kind == .focus_lost_with_pointer,
+        .keys_held = keys_held,
+    } };
+}
+
 /// A key event with no characters, as the goldens' traces send. Never the
 /// debugger toggle, whose overlay reads the real clock.
 fn keyEvent(chord: Action.Chord) input.KeyEvent {
@@ -1324,10 +1389,11 @@ fn keyEvent(chord: Action.Chord) input.KeyEvent {
 const Point = struct { x: f32, y: f32 };
 
 /// Where a model asks pointer, wheel, and drag actions to aim half the time
-/// (`Model.biasTarget`): a scroll box and its vertical scrollbar's track.
+/// (`Model.biasTarget`): an area, and a third of those times an alternate
+/// one when it has one, such as a scroll box and its scrollbar's track.
 pub const Bias = struct {
     area: records.Rect,
-    scrollbar: ?records.Rect,
+    alternate: ?records.Rect,
 };
 
 /// Whether a click, key, or wheel on `record` can change state.
@@ -1349,10 +1415,12 @@ fn countTargets(hits: []const records.HitRecord, interactive_only: bool) u32 {
 
 const RecordKind = enum { draggable, drop_target };
 
+/// A `.draggable` is a box a press starts a gesture on: a drag source, or
+/// a box that captures the pointer (`on_pointer_drag`), such as a splitter.
 fn isKind(record: *const records.HitRecord, kind: RecordKind) bool {
     if (!record.pointer) return false;
     return switch (kind) {
-        .draggable => record.drag_type != 0,
+        .draggable => record.drag_type != 0 or record.on_pointer_drag != records.index_none,
         .drop_target => record.drop_type != 0,
     };
 }
