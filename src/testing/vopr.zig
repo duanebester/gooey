@@ -53,12 +53,14 @@ const drag_drop = @import("drag_drop_example");
 const virtual_list = @import("virtual_list_example");
 const splitter = @import("splitter_example");
 const actions_model = @import("vopr_actions_model.zig");
+const nested_overlay = @import("nested_overlay_example");
 const core = @import("goldens/core.zig");
 const TodoModel = @import("vopr_todo_model.zig").TodoModel;
 const DragDropModel = @import("vopr_drag_drop_model.zig").DragDropModel;
 const VirtualListModel = @import("vopr_virtual_list_model.zig").VirtualListModel;
 const SplitterModel = @import("vopr_splitter_model.zig").SplitterModel;
 const ActionsModel = actions_model.ActionsModel;
+const NestedOverlayModel = @import("vopr_nested_overlay_model.zig").NestedOverlayModel;
 const invariants = @import("vopr_invariants.zig");
 const trace_mod = @import("goldens/trace.zig");
 
@@ -149,6 +151,7 @@ pub const Workload = enum {
     virtual_list,
     splitter,
     actions,
+    nested_overlay,
 
     fn App(comptime workload: Workload) type {
         return switch (workload) {
@@ -158,6 +161,7 @@ pub const Workload = enum {
             .splitter => splitter.App,
             // Ctrl on every host, as `text_engine.uses_cmd` is pinned.
             .actions => actions_model.App,
+            .nested_overlay => nested_overlay.App,
         };
     }
 
@@ -168,6 +172,7 @@ pub const Workload = enum {
             .virtual_list => VirtualListModel,
             .splitter => SplitterModel,
             .actions => ActionsModel,
+            .nested_overlay => NestedOverlayModel,
         };
     }
 };
@@ -178,7 +183,7 @@ pub const Workload = enum {
 pub fn main(init: std.process.Init) !void {
     const options = parseArgs(init.minimal.args.vector) orelse {
         std.debug.print("usage: vopr [--app todo|drag_drop|virtual_list|splitter|" ++
-            "actions] [seed] [--verbose]\n", .{});
+            "actions|nested_overlay] [seed] [--verbose]\n", .{});
         return error.InvalidArguments;
     };
     const seed = options.seed orelse seed: {
@@ -1585,6 +1590,11 @@ test "fuzz: actions vopr" {
     try fuzzCorpus(.actions);
 }
 
+test "fuzz: nested_overlay vopr" {
+    // Goal: the nested_overlay fuzz target runs under `zig build test`.
+    try fuzzCorpus(.nested_overlay);
+}
+
 /// One seed through `runPaired`, which panics on the first differing frame.
 fn runPairedSeed(comptime workload: Workload) !Result(workload.Model()) {
     const step_count = 300;
@@ -1626,6 +1636,8 @@ test "two instances fed the same bytes draw the same frames" {
     var fire_count: u32 = 0;
     for (fired.stats.fired) |count| fire_count += count;
     try std.testing.expect(fire_count > 0);
+    const overlay = try runPairedSeed(.nested_overlay);
+    try std.testing.expect(overlay.stats.menu_frames > 0);
 }
 
 /// The centre of the `rank`-th hit record with a click handler, in tree order.

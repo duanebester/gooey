@@ -11,7 +11,10 @@
 //!   2. every hit record with a click or key handler (`on_click`, `on_key`)
 //!      has an accessibility node with its id and an interactive role.
 //!   A separator with a range (a splitter) is interactive; one without is
-//!   not.
+//!   not. A handled record with no node of its own passes rule 2 when the
+//!   nearest ancestor record with a node is interactive: it is part of that
+//!   control, as a Select's trigger box is of its combobox, whose node
+//!   speaks for it.
 //!   Exceptions: nodes in the drag layer have hits but no accessibility
 //!   nodes (`emitAccessibility` skips the `.drag` layer), so a record whose
 //!   chain of parents includes a drag-layer root is left out of rule 2;
@@ -85,10 +88,11 @@ pub fn checkFrame(window: *const Window, frame: *const records.Frame) void {
         if (drag_fragment) |fragment| {
             if (record.fragment == fragment) continue;
         }
-        const node = findA11y(frame, record.id) orelse std.debug.panic(
-            "vopr: frame {d}: hit record {x} has a {s} handler but no accessibility node",
-            .{ frame.frame_number, @backingInt(record.id), handlerName(record) },
-        );
+        const node = findA11y(frame, record.id) orelse ownerNode(frame, record) orelse
+            std.debug.panic(
+                "vopr: frame {d}: hit record {x} has a {s} handler but no accessibility node",
+                .{ frame.frame_number, @backingInt(record.id), handlerName(record) },
+            );
         if (!interactive(node)) {
             std.debug.panic("vopr: frame {d}: hit record {x} has a {s} handler, but its " ++
                 "accessibility node's role {t} is not interactive", .{
@@ -96,6 +100,24 @@ pub fn checkFrame(window: *const Window, frame: *const records.Frame) void {
             });
         }
     }
+}
+
+/// For a handled record with no node of its own: the node of its nearest
+/// ancestor record that has one, when that node is interactive, as a
+/// Select's trigger box is part of its combobox. Null otherwise.
+fn ownerNode(
+    frame: *const records.Frame,
+    record: *const records.HitRecord,
+) ?*const records.A11yNode {
+    var index = record.parent;
+    var depth: u32 = 0;
+    while (index != index_none) : (depth += 1) {
+        assert(depth < frame.hit_count);
+        const ancestor = &frame.hits[index];
+        if (findA11y(frame, ancestor.id)) |node| return if (interactive(node)) node else null;
+        index = ancestor.parent;
+    }
+    return null;
 }
 
 /// The fragment the drag preview is in, when a drag shows one: the last.
