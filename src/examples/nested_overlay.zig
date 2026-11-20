@@ -4,6 +4,11 @@
 //! above the modal and take clicks over it: a layer opened inside a modal
 //! comes after the modal's fragment (contract §6). In 0.3.1, floating
 //! z-indexes that replaced inherited values painted the modal over the menu.
+//!
+//! "Open dialog" opens a second modal inside the first. Reached from the
+//! keyboard (Shift+Tab, then Enter) while the menu is open, both layers open
+//! from the first modal's fragment in one frame: the menu, a popover, comes
+//! first, and the second modal covers it and blocks everything beneath.
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -13,6 +18,7 @@ const ui = gooey.ui;
 const Cx = gooey.Cx;
 const Handler = gooey.Handler;
 const Modal = components.Modal;
+const Button = components.Button;
 const Select = components.Select;
 
 const assert = std.debug.assert;
@@ -22,6 +28,15 @@ pub const options = [_][]const u8{ "Alpha", "Bravo", "Charlie" };
 pub const State = struct {
     selected: ?usize = null,
     select_open: bool = true,
+    dialog_open: bool = false,
+
+    pub fn openDialog(self: *State) void {
+        self.dialog_open = true;
+    }
+
+    pub fn closeDialog(self: *State) void {
+        self.dialog_open = false;
+    }
 
     pub fn toggleSelect(self: *State) void {
         self.select_open = !self.select_open;
@@ -106,6 +121,24 @@ const ModalContent = struct {
                     .wrap = .words,
                 }),
             }),
+            Button{ .label = "Open dialog", .on_click = cx.on(State.openDialog, .{}) },
+            Modal(DialogContent){
+                .key = "nested-dialog",
+                .open = state.dialog_open,
+                .on_close = cx.on(State.closeDialog, .{}),
+                .content_max_width = 240,
+                .child = .{},
+            },
+        }));
+    }
+};
+
+const DialogContent = struct {
+    pub fn render(_: DialogContent, cx: *Cx) void {
+        assert(cx.state(State).dialog_open);
+        cx.render(ui.box(.{ .style = .{ .gap = 12 } }, .{
+            ui.text("A dialog over the menu", .{ .size = 16, .wrap = .words }),
+            Button{ .label = "Close", .on_click = cx.on(State.closeDialog, .{}) },
         }));
     }
 };
