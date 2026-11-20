@@ -58,15 +58,14 @@ and time is still to be designed.
 
 ## P4: standard components, open
 
-`gooey-components` has `Button`, `Checkbox`, `Select`, `Modal`, `List`, `TextInput`,
-`TextArea`, `CodeEditor`, and the Lucide icons; `gooey-charts` has the charts. Still
-missing, in rough order of need:
+`gooey-components` has `Button`, `Checkbox`, `Select`, `RadioGroup`, `Tooltip`, `Modal`,
+`List`, `TextInput`, `TextArea`, `CodeEditor`, and the Lucide icons; `gooey-charts` has the
+charts. Still missing, in rough order of need:
 
 - **Controls:** label with accessible association, separator, icon button, link, spinner,
   switch, slider, number input.
 - **Overlays and feedback:** popover, toast, alert, confirmation dialog, dropdown menu,
-  command palette, loading placeholders. Tooltips and drag need their layers first
-  (contract decision 13).
+  command palette, loading placeholders.
 - **Forms:** field label, description, and error composition; form-level validation;
   focus on the first invalid field.
 - **Application shell:** toolbar, status bar, split pane and resizable panels, sidebar,

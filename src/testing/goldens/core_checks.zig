@@ -5452,6 +5452,94 @@ test "a radio group is one tab stop whose arrow keys select and wrap" {
     try testing.expectEqual(@as(?usize, null), app.state.experience_level);
 }
 
+const reset_tooltip = "Clears every field and choice";
+
+/// Queue a pointer move and settle: the drain moves the hover against the
+/// frame on screen, the build shows it, and the next tick flips it on screen.
+fn formHover(app: *accessible_form.App, now: *u64, x: f32, y: f32) void {
+    app.window.queue.push(.{ .input = .{ .mouse_moved = mouse(x, y) } });
+    now.* += 1;
+    app.tick(now.*);
+    now.* += 1;
+    app.tick(now.*);
+}
+
+/// Advance the clock by `ms` and settle, so a render the last build asked
+/// for with `requestRenderAfter` runs and reaches the screen.
+fn formWait(app: *accessible_form.App, now: *u64, ms: u64) void {
+    now.* += ms * std.time.ns_per_ms;
+    app.tick(now.*);
+    now.* += 1;
+    app.tick(now.*);
+}
+
+test "a Tooltip shows after the hover delay and hides when the pointer leaves" {
+    // Goal: accessible_form's Reset tooltip waits for the pointer to rest,
+    // then shows beside its button, and is not hoverable. Methodology:
+    // hover Reset and step the clock to just short of the 500 ms delay,
+    // then past it; the tooltip node must appear only then, with no input
+    // in between, so the component's own `requestRenderAfter` drove that
+    // render. Then move the pointer onto the tooltip itself, which ends the
+    // button's hover: it hides.
+    const app = try testing.allocator.create(accessible_form.App);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    const button = formReveal(app, &now, .button, "Reset form to default values");
+    try testing.expect(formNode(app, .tooltip, reset_tooltip) == null);
+    formHover(app, &now, button.x + button.width / 2, button.y + button.height / 2);
+    try testing.expect(formNode(app, .tooltip, reset_tooltip) == null);
+    formWait(app, &now, 490);
+    try testing.expect(formNode(app, .tooltip, reset_tooltip) == null);
+    formWait(app, &now, 10);
+    const tooltip = formNode(app, .tooltip, reset_tooltip) orelse return error.NoTooltip;
+    // Below the button, or above it when the window's bottom is too near.
+    const below = tooltip.bounds.y >= button.y + button.height;
+    const above = tooltip.bounds.y + tooltip.bounds.height <= button.y;
+    try testing.expect(below or above);
+    formHover(
+        app,
+        &now,
+        tooltip.bounds.x + tooltip.bounds.width / 2,
+        tooltip.bounds.y + tooltip.bounds.height / 2,
+    );
+    try testing.expect(formNode(app, .tooltip, reset_tooltip) == null);
+}
+
+test "a Tooltip shows at once for keyboard focus, and Escape hides it" {
+    // Goal: keyboard users get the tooltip without a pointer, and can
+    // dismiss it, as WCAG 1.4.13 asks. Methodology: Tab to Reset; the
+    // tooltip must show with no wait. Escape hides it while focus stays;
+    // Shift+Tab and Tab back show it again, since leaving clears the
+    // dismissal. Then a pointer press on Reset, which focuses it without a
+    // ring, and a move away: the tooltip must hide, though Reset keeps
+    // focus, so a click never leaves one standing.
+    const app = try testing.allocator.create(accessible_form.App);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    for (0..9) |_| pressKey(app, &now, .tab, .{});
+    try expectFocused(&app.window, .button, "Reset form to default values");
+    try testing.expect(formNode(app, .tooltip, reset_tooltip) != null);
+    pressKey(app, &now, .escape, .{});
+    try expectFocused(&app.window, .button, "Reset form to default values");
+    try testing.expect(formNode(app, .tooltip, reset_tooltip) == null);
+    pressKey(app, &now, .tab, .{ .shift = true });
+    try expectFocused(&app.window, .button, "Submit registration form");
+    try testing.expect(formNode(app, .tooltip, reset_tooltip) == null);
+    pressKey(app, &now, .tab, .{});
+    try testing.expect(formNode(app, .tooltip, reset_tooltip) != null);
+
+    formClick(app, &now, .button, "Reset form to default values");
+    formHover(app, &now, 5, 5);
+    try expectFocused(&app.window, .button, "Reset form to default values");
+    try testing.expect(formNode(app, .tooltip, reset_tooltip) == null);
+}
+
 /// The options in the frame on screen whose `selected` state is set.
 fn selectedOptions(window: *internals.window.Window) u32 {
     const frame = window.rendered();
@@ -6579,6 +6667,87 @@ test "a drag preview never takes the pointer and adds no accessibility node" {
     try testing.expectEqual(@as(?u32, 7), app.state.dropped);
     try testing.expect(app.state.other_type_null);
     try testing.expectEqual(@as(u32, 0), app.state.preview_clicks);
+}
+
+/// A 60 by 40 `trigger` at the top left whose `.tooltip` layer, keyed
+/// `tip` with a click handler, opens 40 px down, over `below`, a clickable
+/// box that spans the window under the trigger.
+const TooltipProbe = struct {
+    below_clicks: u32 = 0,
+    tip_clicks: u32 = 0,
+
+    fn clickBelow(self: *TooltipProbe) void {
+        self.below_clicks += 1;
+    }
+
+    fn clickTip(self: *TooltipProbe) void {
+        self.tip_clicks += 1;
+    }
+};
+
+const TooltipProbeApp = gooey.App(TooltipProbe, tooltipProbeRender, .{
+    .title = "Tooltip probe",
+    .width = 200,
+    .height = 100,
+    .limits = .nano,
+});
+
+fn tooltipProbeRender(cx: *Cx) void {
+    cx.render(ui.box(.{ .key = .{ .name = "row" } }, .{
+        ui.box(.{
+            .key = .{ .name = "trigger" },
+            .style = .{ .width = .{ .fixed = 60 }, .height = .{ .fixed = 40 } },
+        }, .{ui.box(.{
+            .key = .{ .name = "tip" },
+            .layer = .{ .kind = .tooltip, .anchor = .{ .parent = .{ .y = 40 } }, .clip = .escape },
+            .style = .{ .width = .{ .fixed = 60 }, .height = .{ .fixed = 30 } },
+            .on_click = cx.on(TooltipProbe.clickTip, .{}),
+            .a11y = .{ .role = .tooltip, .label = "Tip" },
+        }, .{})}),
+        ui.box(.{
+            .key = .{ .name = "below" },
+            .style = .{ .width = .{ .fixed = 200 }, .height = .{ .fixed = 60 } },
+            .on_click = cx.on(TooltipProbe.clickBelow, .{}),
+        }, .{}),
+    }));
+}
+
+test "a tooltip layer never takes the pointer and keeps its accessibility node" {
+    // Goal: the `.tooltip` layer's rules (contract decision 21). Methodology:
+    // the probe's tooltip, with a click handler, lies over `below` at
+    // (30, 55). A hit test there finds `below`, the tooltip's record does
+    // not take the pointer, the pointer there does not hover the trigger
+    // (a record that took it would bubble to its opener), and a click there
+    // clicks `below`, not the tooltip. Unlike a drag preview, the tooltip
+    // keeps its accessibility node.
+    const app = try testing.allocator.create(TooltipProbeApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    scrollMouse(app, &now, .{ .mouse_moved = mouse(30, 55) });
+    const tip_id = probeId("trigger").child(.{ .name = "tip" });
+    const frame = app.window.rendered();
+    var tip_found = false;
+    for (frame.hits[0..frame.hit_count]) |*record| {
+        if (record.id != tip_id) continue;
+        tip_found = true;
+        try testing.expect(!record.pointer);
+        try testing.expect(record.bounds.contains(30, 55));
+    }
+    try testing.expect(tip_found);
+    const query: internals.Query = .{ .window = &app.window };
+    try testing.expectEqual(probeId("below"), query.hitTest(.{ .x = 30, .y = 55 }).?);
+    try testing.expect(!app.window.isHovered(probeId("trigger")));
+    var tip_node = false;
+    for (frame.a11y[0..frame.a11y_count]) |*node| {
+        if (node.id == tip_id) tip_node = node.role == .tooltip;
+    }
+    try testing.expect(tip_node);
+    clickAt(app, &now, 30, 55);
+    try testing.expectEqual(@as(u32, 1), app.state.below_clicks);
+    try testing.expectEqual(@as(u32, 0), app.state.tip_clicks);
 }
 
 test "over follows the payload type, a flip under a still pointer, and a modal" {

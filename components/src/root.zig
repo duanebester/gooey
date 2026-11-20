@@ -1,9 +1,9 @@
 //! Gooey Components: library controls (`Button`, `Checkbox`, `Select`,
-//! `RadioGroup`, `Modal`, `List`, `TextInput`, `TextArea`, `CodeEditor`) and
-//! the Lucide icon set. Each control composes `ui.box`, `ui.text`, and
-//! `ui.paint` through the public API alone: `zig build import-ban` fails on
-//! any `gooey.internals` reference here, so a control can do only what an
-//! app can.
+//! `RadioGroup`, `Tooltip`, `Modal`, `List`, `TextInput`, `TextArea`,
+//! `CodeEditor`) and the Lucide icon set. Each control composes `ui.box`,
+//! `ui.text`, and `ui.paint` through the public API alone: `zig build
+//! import-ban` fails on any `gooey.internals` reference here, so a control
+//! can do only what an app can.
 //!
 //! Keyboard: `Button`, `Checkbox`, `Select`, and `RadioGroup` are focusable,
 //! so Tab reaches them, and the core turns Enter and Space into a click on
@@ -770,6 +770,171 @@ const RadioOption = struct {
                 } }, .{}) else null,
             }),
             ui.text(self.label, .{ .size = theme.font_size_base, .color = .text }),
+        }));
+    }
+};
+
+// =============================================================================
+// Tooltip
+// =============================================================================
+
+/// A short text shown beside `child` on a `.tooltip` layer: after the
+/// pointer rests on it for `delay_ms`, or at once while keyboard focus with
+/// its ring is on it or inside it (`cx.focusVisibleWithin`). It hides when
+/// both leave, and Escape hides it until they do. It opens below the child,
+/// or above when it does not fit there, and never takes the pointer, so it
+/// cannot end the child's hover or block a click on what is under it.
+///
+/// The text is a `tooltip` node after the child's for the screen reader
+/// while it shows. A Tooltip retains one 64 B slot for its timing, so each
+/// one on screen counts against the app's retained budget.
+pub fn Tooltip(comptime Child: type) type {
+    return struct {
+        key: []const u8,
+        text: []const u8,
+        child: Child,
+        delay_ms: u32 = tooltip_delay_ms_default,
+        width_max: f32 = 320,
+
+        const Self = @This();
+
+        pub fn render(self: Self, cx: *Cx) void {
+            assert(self.key.len > 0);
+            assert(self.text.len > 0);
+            assert(self.width_max > 0);
+            const key = Key{ .name = self.key };
+            const id = cx.id(key);
+            const handle = cx.retain(TooltipState, id, .frame, TooltipState.init);
+            const state = cx.get(TooltipState, handle);
+            const shown = state.update(.{
+                .hovered = cx.hovered(id),
+                .focused = cx.focusVisibleWithin(id),
+                .now_ns = cx.now(),
+                .delay_ns = @as(u64, self.delay_ms) * std.time.ns_per_ms,
+            });
+            if (state.wait_ms) |wait_ms| cx.requestRenderAfter(wait_ms);
+            // The child's height from the last frame: a tooltip shows only
+            // after a frame has laid its child out.
+            const height = if (cx.bounds(id)) |rect| rect.height else 0;
+            cx.render(ui.box(.{
+                .key = key,
+                .on_key = cx.on(TooltipState.onKey, .{ .entity = handle }),
+            }, .{
+                self.child,
+                if (shown) TooltipBubble{
+                    .text = self.text,
+                    .offset_y = height + tooltip_gap,
+                    .width_max = self.width_max,
+                } else null,
+            }));
+        }
+    };
+}
+
+/// The rest before a hovered tooltip shows, as macOS and Windows wait.
+pub const tooltip_delay_ms_default: u32 = 500;
+/// The space between a tooltip and its child.
+const tooltip_gap: f32 = 4;
+
+/// A `Tooltip`'s timing, retained under its key: when the pointer came to
+/// rest on the child, and whether Escape dismissed it.
+const TooltipState = struct {
+    /// When the current hover began, or null while the pointer is away.
+    hover_since_ns: ?u64,
+    /// How long until the hover reaches the delay, for `requestRenderAfter`;
+    /// null when no render is waiting.
+    wait_ms: ?u32,
+    /// Shown in the last build, so Escape claims the key only then.
+    shown: bool,
+    /// Escape hid it; cleared once hover and focus both leave.
+    dismissed: bool,
+
+    const Inputs = struct { hovered: bool, focused: bool, now_ns: u64, delay_ns: u64 };
+
+    fn init(self: *TooltipState) void {
+        self.* = .{ .hover_since_ns = null, .wait_ms = null, .shown = false, .dismissed = false };
+    }
+
+    /// Whether the tooltip shows this build, from the child's hover and
+    /// focus and the tick's clock.
+    fn update(self: *TooltipState, inputs: Inputs) bool {
+        self.wait_ms = null;
+        if (!inputs.hovered and !inputs.focused) {
+            self.hover_since_ns = null;
+            self.dismissed = false;
+            self.shown = false;
+            return false;
+        }
+        if (!inputs.hovered) {
+            self.hover_since_ns = null;
+        } else {
+            if (self.hover_since_ns == null) self.hover_since_ns = inputs.now_ns;
+        }
+        var rested = false;
+        if (self.hover_since_ns) |since_ns| {
+            assert(since_ns <= inputs.now_ns);
+            const elapsed_ns = inputs.now_ns - since_ns;
+            rested = elapsed_ns >= inputs.delay_ns;
+            if (!rested) {
+                const wait_ns = inputs.delay_ns - elapsed_ns;
+                assert(wait_ns > 0);
+                // Rounded up, so the render it asks for lands at or past the delay.
+                const wait_ms = @divFloor(wait_ns - 1, std.time.ns_per_ms) + 1;
+                assert(wait_ms <= std.math.maxInt(u32));
+                self.wait_ms = @intCast(wait_ms);
+            }
+        }
+        self.shown = !self.dismissed and (inputs.focused or rested);
+        // Shown or dismissed, no render waits on the delay.
+        if (self.shown or self.dismissed) self.wait_ms = null;
+        if (self.shown) assert(!self.dismissed);
+        return self.shown;
+    }
+
+    /// Escape hides a shown tooltip; other keys, and Escape while it is
+    /// hidden, go on to the child's ancestors, such as a modal that closes.
+    fn onKey(self: *TooltipState, effects: *Effects) void {
+        const event = effects.inputEvent() orelse return;
+        if (event.* != .key_down) return;
+        if (event.key_down.key != .escape) return;
+        if (!self.shown) return;
+        self.dismissed = true;
+        self.shown = false;
+        effects.requestRender();
+        effects.stopPropagation();
+    }
+};
+
+const TooltipBubble = struct {
+    text: []const u8,
+    offset_y: f32,
+    width_max: f32,
+
+    pub fn render(self: TooltipBubble, cx: *Cx) void {
+        assert(self.offset_y >= tooltip_gap);
+        assert(self.width_max > 0);
+        const theme = cx.theme();
+        cx.render(ui.box(.{
+            .layer = .{
+                .kind = .tooltip,
+                .anchor = .{ .parent = .{ .y = self.offset_y } },
+                .clip = .escape,
+            },
+            .style = .{
+                .width_max = self.width_max,
+                .padding = .symmetric(8, 4),
+                .background = .overlay,
+                .border = .{ .width = 1, .color = .border },
+                .corner_radius = .all(theme.radius_sm),
+                .shadow = .{ .blur = 8, .offset_y = 2 },
+            },
+            .a11y = .{ .role = .tooltip, .label = self.text },
+        }, .{
+            ui.text(self.text, .{
+                .size = theme.font_size_base -| 2,
+                .color = .text,
+                .wrap = .words,
+            }),
         }));
     }
 };
@@ -1913,6 +2078,7 @@ test "components compile against the gooey surface" {
         _ = Button;
         _ = Checkbox;
         _ = RadioGroup;
+        _ = Tooltip(Button);
         _ = TextInput;
         _ = TextArea;
         _ = CodeEditor;

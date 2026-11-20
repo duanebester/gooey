@@ -267,6 +267,7 @@ fn pinCx() void {
         _ = @TypeOf(Cx.fontMetrics);
         _ = @TypeOf(Cx.hovered);
         _ = @TypeOf(Cx.focused);
+        _ = @TypeOf(Cx.focusVisibleWithin);
         _ = @TypeOf(Cx.requestRenderAfter);
         _ = @TypeOf(Cx.now);
         _ = @TypeOf(Cx.limits);
@@ -326,11 +327,11 @@ fn pinExact() void {
             "ScrollOffset", "ScrollChild",   "ScrollAlignment",
         });
         expectDecls(gooey.Cx, "gooey.Cx", &.{
-            "ScrollPosition", "state",   "theme",              "fontMetrics", "id",
-            "hovered",        "focused", "requestRenderAfter", "now",         "limits",
-            "bounds",         "scroll",  "drag",               "on",          "retain",
-            "get",            "release", "render",             "measureText", "TextSize",
-            "titleBarInset",
+            "ScrollPosition", "state",              "theme",              "fontMetrics", "id",
+            "hovered",        "focused",            "requestRenderAfter", "now",         "limits",
+            "bounds",         "scroll",             "drag",               "on",          "retain",
+            "get",            "release",            "render",             "measureText", "TextSize",
+            "titleBarInset",  "focusVisibleWithin",
         });
         expectDecls(gooey.text, "gooey.text", &.{
             "Metrics",     "FontWeight",     "FontFamily",

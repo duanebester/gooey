@@ -108,6 +108,7 @@ fn buildFrame(comptime App: type, window: *Window) void {
     window.clear_color = window.theme.bg;
     const build_ns = debugger.stamp(window);
     debugger.beginBuild();
+    router.updateFocusPath(window);
     cx_mod.beginBuild(window);
     App.render(cx_mod.of(window));
     cx_mod.endBuild(window);

@@ -52,7 +52,6 @@ separate fragments in one shared order. Measured on 0.3.1, layout cost 38–70 n
 
 - The public API is the `layer` field, not `Floating.dropdown()`-style presets; library
   components such as `Select` and `Modal` choose the layer.
-- `Layer.Kind` has `popover`, `tooltip`, `modal`, and `drag`. Only `popover` and `modal`
-  are implemented (contract decision 13); tooltips and drag wait for a component that needs
-  them (drag's plan is draft #148).
+- `Layer.Kind` has `popover`, `tooltip`, `modal`, and `drag`, all implemented. Drag
+  previews and tooltips never take the pointer (contract decisions 19 and 21).
 - Focus scopes, placement beyond the vertical flip, and anchor ids are not built.

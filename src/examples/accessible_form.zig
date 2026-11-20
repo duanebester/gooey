@@ -1,7 +1,7 @@
 //! Accessible form: accessibility patterns on the core.
 //!
 //! Headings, groups, labelled inputs, a `RadioGroup` with set positions, a
-//! checkbox, a combobox `Select`, live-region error alerts, and
+//! checkbox, a combobox `Select`, a `Tooltip`, live-region error alerts, and
 //! announcements from the submit handler. Every accessible element is a box
 //! whose `a11y` names its role, so a screen reader also gets its bounds.
 //!
@@ -24,6 +24,7 @@ const Checkbox = components.Checkbox;
 const TextInput = components.TextInput;
 const Select = components.Select;
 const RadioGroup = components.RadioGroup;
+const Tooltip = components.Tooltip;
 
 // =============================================================================
 // Form State
@@ -420,12 +421,16 @@ const FormActions = struct {
                 .size = .large,
                 .on_click = cx.on(State.submit, .{}),
             },
-            Button{
-                .label = "Reset",
-                .accessible_name = "Reset form to default values",
-                .variant = .secondary,
-                .size = .large,
-                .on_click = cx.on(State.reset, .{}),
+            Tooltip(Button){
+                .key = "reset-tooltip",
+                .text = "Clears every field and choice",
+                .child = .{
+                    .label = "Reset",
+                    .accessible_name = "Reset form to default values",
+                    .variant = .secondary,
+                    .size = .large,
+                    .on_click = cx.on(State.reset, .{}),
+                },
             },
         }));
     }

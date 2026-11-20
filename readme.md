@@ -362,6 +362,7 @@ The `Cx` methods:
 | `cx.on(method, options)`             | Build a `Handler`.                                       |
 | `cx.id(key)`                         | The `ElementId` a child box with `key` will get.         |
 | `cx.hovered(id)`, `cx.focused(id)`   | Pointer and focus state, for choosing a style.           |
+| `cx.focusVisibleWithin(id)`          | Keyboard focus, with its ring, is on `id` or inside it.  |
 | `cx.theme()`, `cx.fontMetrics()`     | The active theme and base font metrics.                  |
 | `cx.requestRenderAfter(delay_ms)`    | Render again by then; renew it every frame you need it.  |
 | `cx.now()`                           | The tick's clock in nanoseconds; use differences.        |
@@ -881,6 +882,7 @@ import-ban` fails if `components/` or `charts/` reference `gooey.internals`. Imp
 | `Checkbox`      | `checked`, `on_click`, optional `label`                                     |
 | `Select`        | Dropdown on a popover layer; the app owns `selected` and `open`             |
 | `RadioGroup`    | One tab stop, arrow keys select and wrap; the app owns `selected`           |
+| `Tooltip(Child)`| Text on a tooltip layer after a hover delay or on keyboard focus            |
 | `Modal(Child)`  | Dialog over a backdrop on a modal layer                                     |
 | `List(Row)`     | Virtual list that builds only visible rows                                  |
 | `TextInput`     | Single-line input bound to a `[]const u8`                                   |
@@ -1084,8 +1086,8 @@ pub const std_options = gooey.std_options;
   about. Linux has no screen reader bridge.
 - **Cut:** multi-window (one window per app), liquid glass, custom shaders, and
   post-processing.
-- **Deferred:** drag and drop between apps or with the OS, edge auto-scroll during a drag,
-  and tooltip layers.
+- **Deferred:** drag and drop between apps or with the OS, and edge auto-scroll during a
+  drag.
 
 ## Platforms
 

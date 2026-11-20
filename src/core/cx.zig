@@ -215,6 +215,15 @@ pub const Cx = opaque {
         return windowOf(self).isFocused(target);
     }
 
+    /// Whether keyboard focus, drawn with its ring, is on `target` or inside
+    /// it in the frame on screen (CSS `:focus-visible` within
+    /// `:focus-within`). False after a pointer press moves focus, so a
+    /// tooltip shown for keyboard focus does not stay up after a click.
+    pub fn focusVisibleWithin(self: *const Cx, target: ElementId) bool {
+        windowOf(self).assertPhase(.build);
+        return windowOf(self).isFocusVisibleWithin(target);
+    }
+
     /// The drag in progress, once past its threshold, if its payload is a
     /// `T`: for dimming its source, restyling the target it is `over`, and
     /// placing a preview at `x`, `y` on a `.drag` layer.
@@ -385,7 +394,6 @@ pub const Cx = opaque {
 
     fn buildBox(self: *Cx, box: *const element.Box, children: anytype) void {
         const window = windowOf(self);
-        checkLayer(box);
         checkKeyed(window, box);
         const parent_index = window.open_stack[window.open_depth - 1];
         const box_id = resolveId(window, parent_index, box.key);
@@ -589,16 +597,6 @@ fn noteDepth(window: *Window) void {
         window.component_depth_peak = window.component_depth;
         window.depth_peak_address = address;
         window.depth_peak_base_address = window.depth_base_address;
-    }
-}
-
-fn checkLayer(box: *const element.Box) void {
-    if (box.layer) |layer| {
-        switch (layer.kind) {
-            .popover, .modal, .drag => {},
-            .tooltip => std.debug.panic("Box.layer .tooltip: only .popover, .modal, and " ++
-                ".drag layers are implemented (contract decision 13)", .{}),
-        }
     }
 }
 

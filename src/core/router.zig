@@ -1221,6 +1221,27 @@ pub fn setFocus(window: *Window, id: ElementId, visible: bool) void {
     window.render_requested = true;
 }
 
+/// Recompute the focus path against the frame on screen before a build, so
+/// `cx.focusVisibleWithin` sees a focus move a handler made in this tick's
+/// drain. Focus the frame on screen does not hold yet, such as an element a
+/// handler focused before it first renders, leaves the path empty and asks
+/// for one more build, which finds it. One pass over the hit records, run
+/// only while focus is visible.
+pub fn updateFocusPath(window: *Window) void {
+    window.assertPhase(.build);
+    window.focus_len = 0;
+    if (!window.focus_visible) return;
+    const frame = window.rendered();
+    const target = findRecord(frame, window.focus);
+    if (target == index_none) {
+        if (window.focus != .root) window.render_requested = true;
+        return;
+    }
+    window.focus_len = pathOf(frame, target, window.focus_path);
+    assert(window.focus_len > 0);
+    assert(window.focus_path[0] == window.focus);
+}
+
 /// Recompute the hover path from the pointer against the rendered frame.
 pub fn updateHover(window: *Window) void {
     const frame = window.rendered();
