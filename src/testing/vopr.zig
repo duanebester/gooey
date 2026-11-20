@@ -97,7 +97,9 @@ const bytes_cli: u32 = bytes_swarm * (1 + @divFloor(step_count_cli, swarm_epoch_
 const quiescence_round_max: u32 = 32;
 /// Units (from `text_alphabet`) in one text or composition action.
 const text_unit_count_max: u32 = 8;
-/// Bytes in one text or composition action: the longest unit is 2 bytes.
+/// Bytes in one text or composition action from `text_alphabet`: its
+/// longest unit is 2 bytes. A model's own alphabet sets its own bound
+/// (`Vopr.text_bytes_action_max_model`).
 const text_bytes_action_max: u32 = text_unit_count_max * 2;
 /// Events one pointer action queues: a move, a press, and a release. A
 /// gesture step queues at most two: a move and a press or release.
@@ -618,7 +620,7 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
         /// Rolling hash of every frame dump the renderer was asked to draw.
         dump_hasher: std.hash.Wyhash,
         /// Backing for the action being generated; the queue copies it.
-        text_bytes: [text_bytes_action_max]u8,
+        text_bytes: [text_bytes_action_max_model]u8,
         /// The current epoch's action mix.
         swarm: Swarm,
         /// Actions generated so far, which sets the epochs.
@@ -643,10 +645,32 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
         else
             &key_choices;
 
+        /// The units text and compositions are made of: the model's own
+        /// when it declares them (`Model.text_alphabet`), so the other apps'
+        /// seeds replay unchanged. A unit may be any length; each is one
+        /// choice, so the bytes a seed reads per action do not change.
+        const alphabet: []const []const u8 = if (@hasDecl(Model, "text_alphabet"))
+            Model.text_alphabet
+        else
+            &text_alphabet;
+
+        /// Bytes one text or composition action can hold.
+        const text_bytes_action_max_model: u32 = blk: {
+            var unit_len_max: u32 = 0;
+            for (alphabet) |unit| unit_len_max = @max(unit_len_max, unit.len);
+            break :blk text_unit_count_max * unit_len_max;
+        };
+
         comptime {
             // Never the debugger toggle, Cmd/Ctrl+Shift+I, which reads the
             // real clock.
             for (keys) |key| assert(key != .i);
+            for (alphabet) |unit| assert(std.unicode.utf8ValidateSlice(unit));
+            assert(text_bytes_action_max_model <= App.limits.events.text_bytes_max);
+            assert(text_bytes_action_max_model <= App.limits.text.preedit_bytes_max);
+            if (!@hasDecl(Model, "text_alphabet")) {
+                assert(text_bytes_action_max_model == text_bytes_action_max);
+            }
         }
 
         /// A gesture in progress: its press point, its last point, how
@@ -731,6 +755,9 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             self.frame_number_checked = 0;
             self.stable_rebuild_count = 0;
             self.model.init();
+            // A model that stands in for a platform service (the text
+            // clipboard) binds it before the first frame.
+            if (@hasDecl(Model, "attach")) self.model.attach(self.window());
             assert(self.driver.now_ns == 0);
             assert(self.driver.renderer.draw_count == 0);
             self.quiesce();
@@ -814,11 +841,11 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
                         choose(smith, modifier_choices.len, "modifiers")
                     ],
                 } } else .tick_main,
-                .text => if (self.queueHasRoom(1, text_bytes_action_max))
+                .text => if (self.queueHasRoom(1, text_bytes_action_max_model))
                     .{ .text = self.generateText(smith, 1) }
                 else
                     .tick_main,
-                .compose => if (self.queueHasRoom(1, text_bytes_action_max))
+                .compose => if (self.queueHasRoom(1, text_bytes_action_max_model))
                     .{ .compose = self.generateText(smith, 0) }
                 else
                     .tick_main,
@@ -1324,7 +1351,7 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             };
         }
 
-        /// `unit_count_min` or more units of `text_alphabet`, written into
+        /// `unit_count_min` or more units of `alphabet`, written into
         /// `text_bytes`; the slice lives until the next generated action.
         fn generateText(self: *Self, smith: *Smith, unit_count_min: u32) []const u8 {
             assert(unit_count_min <= 1);
@@ -1334,7 +1361,7 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             var len: u32 = 0;
             var unit_index: u32 = 0;
             while (unit_index < unit_count) : (unit_index += 1) {
-                const unit = text_alphabet[choose(smith, text_alphabet.len, "text unit")];
+                const unit = alphabet[choose(smith, alphabet.len, "text unit")];
                 assert(len + unit.len <= self.text_bytes.len);
                 @memcpy(self.text_bytes[len..][0..unit.len], unit);
                 len += @intCast(unit.len);
