@@ -880,6 +880,7 @@ import-ban` fails if `components/` or `charts/` reference `gooey.internals`. Imp
 | `Button`        | `label`, `on_click`, `variant`, `size` (`.small`, `.medium`, `.large`)      |
 | `Checkbox`      | `checked`, `on_click`, optional `label`                                     |
 | `Select`        | Dropdown on a popover layer; the app owns `selected` and `open`             |
+| `RadioGroup`    | One tab stop, arrow keys select and wrap; the app owns `selected`           |
 | `Modal(Child)`  | Dialog over a backdrop on a modal layer                                     |
 | `List(Row)`     | Virtual list that builds only visible rows                                  |
 | `TextInput`     | Single-line input bound to a `[]const u8`                                   |

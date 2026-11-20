@@ -1,12 +1,14 @@
 //! Gooey Components: library controls (`Button`, `Checkbox`, `Select`,
-//! `Modal`, `List`, `TextInput`, `TextArea`, `CodeEditor`) and the Lucide icon
-//! set. Each control composes `ui.box`, `ui.text`, and `ui.paint` through the
-//! public API alone: `zig build import-ban` fails on any `gooey.internals`
-//! reference here, so a control can do only what an app can.
+//! `RadioGroup`, `Modal`, `List`, `TextInput`, `TextArea`, `CodeEditor`) and
+//! the Lucide icon set. Each control composes `ui.box`, `ui.text`, and
+//! `ui.paint` through the public API alone: `zig build import-ban` fails on
+//! any `gooey.internals` reference here, so a control can do only what an
+//! app can.
 //!
-//! Keyboard: `Button`, `Checkbox`, and `Select` are focusable, so Tab reaches
-//! them, and the core turns Enter and Space into a click on the focused
-//! element. `Select` adds its own keys (see `SelectKeys`).
+//! Keyboard: `Button`, `Checkbox`, `Select`, and `RadioGroup` are focusable,
+//! so Tab reaches them, and the core turns Enter and Space into a click on
+//! the focused element. `Select` and `RadioGroup` add their own keys (see
+//! `SelectKeys` and `RadioKeys`).
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -571,6 +573,206 @@ const chevrons = [2][2]SelectIcon{
 };
 
 const select_check = SelectIcon{ .path = Checkbox.checkmark.path, .color = .primary, .opacity = 1 };
+
+// =============================================================================
+// RadioGroup
+// =============================================================================
+
+/// A column of mutually exclusive options that behaves as a native radio
+/// group. The app owns `selected`: option `i` calls `on_select[i]`, typically
+/// `cx.on(State.choose, .{ .arg = i })`.
+///
+/// Tab enters the group at the selected option, or the first when none is,
+/// and leaves it in one press, because only that option is a tab stop. Down
+/// and Right select the next option, Up and Left the previous, wrapping at
+/// the ends, with focus following; Enter and Space select the focused one.
+/// Each selection goes through `on_select`, pressed with `effects.click`. A
+/// RadioGroup retains one 64 B slot for its keys, and adds a key handler per
+/// option.
+pub const RadioGroup = struct {
+    key: []const u8,
+    options: []const []const u8,
+    /// One handler per option.
+    on_select: []const Handler,
+    selected: ?usize = null,
+    /// Text above the options; also the group's screen-reader name.
+    label: ?[]const u8 = null,
+    /// The group's screen-reader name; defaults to the label.
+    accessible_name: ?[]const u8 = null,
+    accessible_description: ?[]const u8 = null,
+
+    pub fn render(self: RadioGroup, cx: *Cx) void {
+        assert(self.key.len > 0);
+        assert(self.options.len > 0);
+        assert(self.on_select.len == self.options.len);
+        assert(self.accessible_name != null or self.label != null);
+        if (self.selected) |index| assert(index < self.options.len);
+        if (self.options.len > radio_option_count_max) std.debug.panic(
+            "RadioGroup \"{s}\" of {d} options: capacity {d}",
+            .{ self.key, self.options.len, radio_option_count_max },
+        );
+        const theme = cx.theme();
+        const key = Key{ .name = self.key };
+        const id = cx.id(key);
+        const handle = cx.retain(RadioKeys, id, .frame, RadioKeys.init);
+        cx.get(RadioKeys, handle).root = id;
+        cx.render(ui.box(.{
+            .key = key,
+            .style = .{ .gap = 8 },
+            .a11y = .{
+                .role = .group,
+                .label = self.accessible_name orelse self.label,
+                .description = self.accessible_description,
+            },
+        }, .{
+            if (self.label) |label| ui.text(label, .{
+                .size = theme.font_size_base,
+                .weight = .medium,
+                .color = .text,
+            }) else null,
+            ui.box(.{
+                // `RadioKeys.option` derives the options' ids from this key.
+                .key = .{ .name = "options" },
+                .style = .{ .gap = 8 },
+            }, .{RadioOptions{ .group = &self, .keys = handle }}),
+        }));
+    }
+};
+
+/// The most options one `RadioGroup` lists: the key handlers pack indexes
+/// into 16 bits, and a group past a few dozen options wants a `Select`.
+pub const radio_option_count_max: u32 = 256;
+
+/// A `RadioGroup`'s arrow keys, retained under its key so the options' key
+/// handlers have state to run on; only the group's id, which never changes,
+/// is kept.
+const RadioKeys = struct {
+    root: ElementId,
+
+    const Arg = packed struct(u32) {
+        index: u16,
+        count: u16,
+    };
+
+    comptime {
+        assert(radio_option_count_max <= std.math.maxInt(u16));
+    }
+
+    fn init(self: *RadioKeys) void {
+        self.root = .root;
+    }
+
+    fn option(self: *const RadioKeys, index: u16) ElementId {
+        assert(self.root.isKeyed());
+        assert(index < radio_option_count_max);
+        return self.root.child(.{ .name = "options" }).child(.{ .index = index });
+    }
+
+    /// Keys without Cmd, Ctrl, or Alt select the next or previous option by
+    /// clicking it, and focus follows.
+    fn onKey(self: *RadioKeys, arg: Arg, effects: *Effects) void {
+        assert(arg.count > 0);
+        assert(arg.index < arg.count);
+        const event = effects.inputEvent() orelse return;
+        if (event.* != .key_down) return;
+        const modifiers = event.key_down.modifiers;
+        if (modifiers.cmd or modifiers.ctrl or modifiers.alt) return;
+        const target: u16 = switch (event.key_down.key) {
+            .down, .right => (arg.index + 1) % arg.count,
+            .up, .left => (arg.index + arg.count - 1) % arg.count,
+            else => return,
+        };
+        assert(target < arg.count);
+        effects.click(self.option(target));
+        effects.focus(self.option(target));
+        effects.stopPropagation();
+    }
+};
+
+const RadioOptions = struct {
+    group: *const RadioGroup,
+    keys: gooey.Handle(RadioKeys),
+
+    pub fn render(self: RadioOptions, cx: *Cx) void {
+        const group = self.group;
+        assert(group.options.len == group.on_select.len);
+        assert(group.options.len <= radio_option_count_max);
+        const count: u16 = @intCast(group.options.len);
+        // With nothing selected, the first option is the group's tab stop.
+        const tab_stop = group.selected orelse 0;
+        for (group.options, group.on_select, 0..) |label, handler, index| {
+            const position: u16 = @intCast(index);
+            cx.render(RadioOption{
+                .label = label,
+                .position = position,
+                .count = count,
+                .selected = group.selected == index,
+                .tab_stop = tab_stop == index,
+                .on_select = handler,
+                .on_key = cx.on(RadioKeys.onKey, .{
+                    .entity = self.keys,
+                    .arg = RadioKeys.Arg{ .index = position, .count = count },
+                }),
+            });
+        }
+    }
+};
+
+const RadioOption = struct {
+    label: []const u8,
+    position: u16,
+    count: u16,
+    selected: bool,
+    tab_stop: bool,
+    on_select: Handler,
+    on_key: Handler,
+
+    const ring_size: f32 = 18;
+    const dot_size: f32 = 10;
+
+    pub fn render(self: RadioOption, cx: *Cx) void {
+        assert(self.position < self.count);
+        if (self.selected) assert(self.tab_stop);
+        const theme = cx.theme();
+        cx.render(ui.box(.{
+            .key = .{ .index = self.position },
+            .style = .{
+                .direction = .row,
+                .gap = 8,
+                .alignment = .center_cross,
+                .cursor = .pointer,
+            },
+            .focusable = true,
+            .tab_stop = self.tab_stop,
+            .on_click = self.on_select,
+            .on_key = self.on_key,
+            .a11y = .{
+                .role = .radio,
+                .label = self.label,
+                .checked = self.selected,
+                .pos_in_set = self.position + 1,
+                .set_size = self.count,
+            },
+        }, .{
+            ui.box(.{ .style = .{
+                .width = .{ .fixed = ring_size },
+                .height = .{ .fixed = ring_size },
+                .corner_radius = .all(ring_size / 2),
+                .border = .{ .width = 2, .color = if (self.selected) .primary else .border },
+                .background = .surface,
+                .alignment = .center,
+            } }, .{
+                if (self.selected) ui.box(.{ .style = .{
+                    .width = .{ .fixed = dot_size },
+                    .height = .{ .fixed = dot_size },
+                    .corner_radius = .all(dot_size / 2),
+                    .background = .primary,
+                } }, .{}) else null,
+            }),
+            ui.text(self.label, .{ .size = theme.font_size_base, .color = .text }),
+        }));
+    }
+};
 
 // =============================================================================
 // Modal
@@ -1710,6 +1912,7 @@ test "components compile against the gooey surface" {
     comptime {
         _ = Button;
         _ = Checkbox;
+        _ = RadioGroup;
         _ = TextInput;
         _ = TextArea;
         _ = CodeEditor;
