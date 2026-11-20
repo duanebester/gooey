@@ -315,6 +315,71 @@ test "a text past one shaping run draws and wraps as one run would" {
     }
 }
 
+/// Texts whose whitespace the wrap does not measure as drawn, each wrapped
+/// in a 40 px box at 16 px (the synthetic face: a letter 8 px, a space
+/// 4 px, a tab 5.6 px).
+const WrapSpaceState = struct {
+    case: u32 = 0,
+
+    const cases = [_][]const u8{
+        // Five spaces: drawn 52 px, but measured as one space, 36 px.
+        "aa     aa",
+        // Two tabs: drawn 43.2 px, measured as one space, 36 px.
+        "aa\t\taa",
+        // Three spaces leading the second line: drawn 48 px, measured 36 px.
+        "aa\n   aa aa",
+    };
+};
+
+const WrapSpaceApp = gooey.App(WrapSpaceState, wrapSpaceRender, .{
+    .title = "Wrap spaces",
+    .width = 200,
+    .height = 200,
+    .limits = .small,
+});
+
+fn wrapSpaceRender(cx: *Cx) void {
+    const state = cx.state(WrapSpaceState);
+    cx.render(ui.box(.{ .style = .{ .width = .{ .fixed = 40 } } }, .{
+        ui.text(WrapSpaceState.cases[state.case], .{ .size = 16, .wrap = .words }),
+    }));
+}
+
+test "a wrapped line's glyphs stay inside the wrap width" {
+    // Goal: words wrapping keeps every line's glyphs within the text's
+    // container. Method: wrap each case in a 40 px box at x 0 and require
+    // every glyph sprite (spaces and tabs draw boxes too) to end by x 40.
+    // The text_area VOPR found the overflow: `scanWords` gives a run of
+    // spaces or tabs one space's width, and a line after a newline starts at
+    // its leading spaces without counting them, while `emitText` draws every
+    // byte of the line. It fails today, as the known finding.
+    var overflow_count: u32 = 0;
+    for (0..WrapSpaceState.cases.len) |case| {
+        const app = try testing.allocator.create(WrapSpaceApp);
+        defer testing.allocator.destroy(app);
+        try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+        defer app.deinitHeadless();
+        app.state.case = @intCast(case);
+        app.tick(0);
+        const frame = app.window.rendered();
+        try testing.expect(spriteCount(frame) > 0);
+        var right_max: f32 = 0;
+        for (frame.paint[0..frame.paint_count]) |record| {
+            if (record != .sprite) continue;
+            right_max = @max(right_max, record.sprite.bounds.x + record.sprite.bounds.width);
+        }
+        if (right_max > 40.001) {
+            std.debug.print("case {d} \"{s}\": glyphs end at {d} px\n", .{
+                case,
+                WrapSpaceState.cases[case],
+                right_max,
+            });
+            overflow_count += 1;
+        }
+    }
+    try testing.expectEqual(@as(u32, 0), overflow_count);
+}
+
 /// Texts `cx.measureText` measures during render, each also laid out in a
 /// box as wide as its `max_width`, for the measure check.
 const MeasureState = struct {
