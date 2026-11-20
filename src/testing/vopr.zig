@@ -63,7 +63,6 @@ const SplitterModel = @import("vopr_splitter_model.zig").SplitterModel;
 const ActionsModel = actions_model.ActionsModel;
 const NestedOverlayModel = @import("vopr_nested_overlay_model.zig").NestedOverlayModel;
 const TextAreaModel = @import("vopr_text_area_model.zig").TextAreaModel;
-const text_area_checks = @import("vopr_text_area_checks.zig");
 const invariants = @import("vopr_invariants.zig");
 const trace_mod = @import("goldens/trace.zig");
 
@@ -191,10 +190,9 @@ pub const Workload = enum {
 pub fn main(init: std.process.Init) !void {
     const options = parseArgs(init.minimal.args.vector) orelse {
         std.debug.print("usage: vopr [--app todo|drag_drop|virtual_list|splitter|" ++
-            "actions|nested_overlay|text_area] [seed] [--verbose] [--skip-wrap-whitespace]\n", .{});
+            "actions|nested_overlay|text_area] [seed] [--verbose]\n", .{});
         return error.InvalidArguments;
     };
-    text_area_checks.skip_wrap_whitespace = options.skip_wrap_whitespace;
     const seed = options.seed orelse seed: {
         var random_seed: u64 = 0;
         init.io.random(std.mem.asBytes(&random_seed));
@@ -247,8 +245,6 @@ const CliOptions = struct {
     workload: Workload,
     seed: ?u64,
     verbose: bool,
-    /// Temporary: `text_area_checks.skip_wrap_whitespace`, a known finding.
-    skip_wrap_whitespace: bool,
 };
 
 /// Null on an argument it does not understand.
@@ -258,17 +254,12 @@ fn parseArgs(args: []const [*:0]const u8) ?CliOptions {
         .workload = .todo,
         .seed = null,
         .verbose = false,
-        .skip_wrap_whitespace = false,
     };
     var index: usize = 1;
     while (index < args.len) : (index += 1) {
         const arg = std.mem.span(args[index]);
         if (std.mem.eql(u8, arg, "--verbose")) {
             options.verbose = true;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--skip-wrap-whitespace")) {
-            options.skip_wrap_whitespace = true;
             continue;
         }
         if (std.mem.eql(u8, arg, "--app")) {

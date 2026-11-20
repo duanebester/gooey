@@ -6,13 +6,18 @@
 //!   over its selection; after the caret or text moved since the last build,
 //!   the caret's line lies inside the field's rows (`follow`). Unfocused,
 //!   the frame has no IME caret.
-//! - Wrap: the preview's wrapped lines cover its text in order, dropping
-//!   only whitespace between lines and at the end; a line never holds a
-//!   newline, and the whitespace between two lines holds at most one, so
-//!   the lines are the text's newline-separated lines plus the wraps. A
-//!   wrap (a break with no newline) is needed: the next line's first word
-//!   does not fit after the line, past one space. A line's glyphs, trailing
-//!   spaces aside, fit the wrap width unless the line is one word.
+//! - Wrap, as GPUI's `LineWrapper` packs lines (`sizing_pass.LinePacker`):
+//!   the preview's lines cover its text in order, every byte but the
+//!   newlines between them, so the lines are the text's newline-separated
+//!   lines plus the wraps; no line holds a newline. A line is as wide as
+//!   every codepoint on it measured together, whitespace included, and its
+//!   width says so. It fits the wrap width unless it cannot break further:
+//!   one word with no whitespace, or one space or tab, alone on its line
+//!   and wider than the width. A wrap (a break with no newline) is needed:
+//!   the next line's first word and the whitespace after it in the text do
+//!   not fit after the line, or, when the next line starts inside
+//!   whitespace, its first space or tab does not, after a line holding at
+//!   most one word.
 //! - Height: the preview text is its lines times the line height tall, and
 //!   the card that fits it (`propagateHeightChange`) is its padding, the
 //!   label, the gap, and the text tall.
@@ -43,7 +48,7 @@ pub const Counts = struct {
     wrapped_lines_max: u32,
     /// Breaks with no newline, checked to be needed.
     wraps: u32,
-    /// Lines of one word wider than the wrap width.
+    /// Lines of one word, or one space or tab, wider than the wrap width.
     long_words: u32,
     card_heights: u32,
 
@@ -163,45 +168,53 @@ fn checkLines(
             failLine(frame_number, index, "starts inside the line before", text);
         }
         const gap = text[previous_end..line.start_offset];
-        if (!whitespace(gap)) failLine(frame_number, index, "drops text before it", text);
-        const breaks = std.mem.count(u8, gap, "\n");
-        if (index == 0 and breaks > 0) failLine(frame_number, index, "drops a line", text);
-        if (breaks > 1) failLine(frame_number, index, "drops an empty line", text);
+        const wraps = gap.len == 0 and index > 0;
+        if (index == 0 and gap.len > 0) failLine(frame_number, index, "drops text", text);
+        if (index > 0 and !wraps and !std.mem.eql(u8, gap, "\n")) {
+            failLine(frame_number, index, "drops text or a line before it", text);
+        }
         const run = text[line.start_offset..][0..line.length];
         if (std.mem.indexOfScalar(u8, run, '\n') != null) {
             failLine(frame_number, index, "holds a newline", text);
         }
-        if (index > 0 and breaks == 0) {
+        if (wraps) {
             counts.wraps += 1;
-            const before = lines[index - 1];
-            checkWrapNeeded(engine, data, text[before.start_offset..][0..before.length], run);
+            checkWrapNeeded(engine, data, lines[index - 1], line);
         }
-        checkWidth(engine, data, run, frame_number, index, counts);
+        checkWidth(engine, data, line, frame_number, index, counts);
         previous_end = line.start_offset + line.length;
     }
-    if (!whitespace(text[previous_end..])) {
+    const rest = text[previous_end..];
+    if (rest.len > 0 and !std.mem.eql(u8, rest, "\n")) {
         failLine(frame_number, lines.len, "is missing: text after the last line is dropped", text);
     }
 }
 
-/// A line's glyphs fit the wrap width, unless it is one word.
+/// A line is as wide as its codepoints measured together, and its width
+/// says so; it fits the wrap width unless it is one word, no whitespace,
+/// or one space or tab.
 fn checkWidth(
     engine: *LayoutEngine,
     data: *const layout.TextData,
-    run: []const u8,
+    line: WrappedLine,
     frame_number: u64,
     index: usize,
     counts: *Counts,
 ) void {
-    const drawn = std.mem.trimEnd(u8, run, " \t");
-    const width = if (skip_wrap_whitespace)
-        collapsedWidth(engine, data, drawn)
-    else
-        measure(engine, data, drawn);
+    const run = data.text[line.start_offset..][0..line.length];
+    const width = measure(engine, data, run);
+    if (@abs(width - line.width) > epsilon) {
+        std.debug.panic("vopr text_area: frame {d}: preview line {d} \"{s}\" says it is {d} " ++
+            "px wide, but its codepoints measure {d}", .{
+            frame_number, index, run, line.width, width,
+        });
+    }
     if (width <= data.container_width + epsilon) return;
-    // A word wider than the line is alone on it, whatever space leads it.
-    const one_word = std.mem.indexOfAny(u8, std.mem.trim(u8, drawn, " \t"), " \t") == null;
-    if (one_word) {
+    // What cannot break further may pass the width alone on its line: one
+    // word, or one space or tab in a width narrower than it.
+    const one_word = std.mem.indexOfAny(u8, run, " \t") == null;
+    const one_space = run.len == 1;
+    if (one_word or one_space) {
         counts.long_words += 1;
         return;
     }
@@ -211,21 +224,38 @@ fn checkWidth(
     });
 }
 
-/// A wrap is needed: the next line's first word does not fit after the
-/// line before, past one space.
+/// A wrap is needed: what starts the next line does not fit after the
+/// line before. A next line starting with a word moved there because the
+/// word, or the whitespace after it in the text, did not fit; one starting
+/// with whitespace broke where its first space or tab did not fit.
 fn checkWrapNeeded(
     engine: *LayoutEngine,
     data: *const layout.TextData,
-    before: []const u8,
-    after: []const u8,
+    before: WrappedLine,
+    after: WrappedLine,
 ) void {
-    const word_end = std.mem.indexOfAny(u8, after, " \t") orelse after.len;
-    const word = after[0..word_end];
-    const width = measure(engine, data, std.mem.trimEnd(u8, before, " \t")) +
-        measure(engine, data, " ") + measure(engine, data, word);
+    const text = data.text;
+    assert(before.start_offset + before.length == after.start_offset);
+    assert(after.start_offset < text.len);
+    const start = after.start_offset;
+    var end = start + 1;
+    if (!isSpace(text[start])) {
+        // The word, then its whitespace up to the next word or newline.
+        while (end < text.len and !isSpace(text[end]) and text[end] != '\n') end += 1;
+        while (end < text.len and isSpace(text[end])) end += 1;
+    }
+    const head = text[before.start_offset..][0..before.length];
+    // Whitespace breaks only after a line's first word: past others, the
+    // word moves down with its whitespace instead.
+    const body = std.mem.trimEnd(u8, head, " \t");
+    if (isSpace(text[start]) and std.mem.indexOfAny(u8, body, " \t") != null) {
+        std.debug.panic("vopr text_area: the preview breaks inside the whitespace after " ++
+            "\"{s}\", which is not the line's only word", .{head});
+    }
+    const width = measure(engine, data, text[before.start_offset..end]);
     if (width > data.container_width - epsilon) return;
     std.debug.panic("vopr text_area: the preview wraps \"{s}\" before \"{s}\", but they fit " ++
-        "on one line: {d} px of {d}", .{ before, word, width, data.container_width });
+        "on one line: {d} px of {d}", .{ head, text[start..end], width, data.container_width });
 }
 
 /// The text is its lines tall, and each fit-height box around it, up to
@@ -272,29 +302,8 @@ fn measure(engine: *LayoutEngine, data: *const layout.TextData, value: []const u
     return size.width;
 }
 
-/// Temporary (`--skip-wrap-whitespace`): measure a line as the wrap does,
-/// each run of spaces and tabs one space wide and none at its start, so
-/// runs get past the known finding (the failing check in core_checks.zig,
-/// "a wrapped line's glyphs stay inside the wrap width") to find others.
-/// Remove it with the fix. Set once by the CLI before the first frame.
-pub var skip_wrap_whitespace: bool = false;
-
-fn collapsedWidth(engine: *LayoutEngine, data: *const layout.TextData, value: []const u8) f32 {
-    var width: f32 = 0;
-    var words = std.mem.tokenizeAny(u8, value, " \t");
-    var count: u32 = 0;
-    while (words.next()) |word| : (count += 1) {
-        if (count > 0) width += measure(engine, data, " ");
-        width += measure(engine, data, word);
-    }
-    return width;
-}
-
-fn whitespace(value: []const u8) bool {
-    for (value) |byte| {
-        if (byte != ' ' and byte != '\t' and byte != '\n') return false;
-    }
-    return true;
+fn isSpace(byte: u8) bool {
+    return byte == ' ' or byte == '\t';
 }
 
 fn failLine(frame_number: u64, index: usize, reason: []const u8, text: []const u8) noreturn {
