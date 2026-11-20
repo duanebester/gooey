@@ -558,15 +558,17 @@ test "WordInfo struct has expected fields" {
     const word = WordInfo{
         .start = 0,
         .end = 5,
+        .space_end = 6,
         .width = 50.0,
-        .trailing_space_width = 8.0,
+        .space_width = 8.0,
         .has_newline = false,
     };
 
     try std.testing.expectEqual(@as(u32, 0), word.start);
     try std.testing.expectEqual(@as(u32, 5), word.end);
+    try std.testing.expectEqual(@as(u32, 6), word.space_end);
     try std.testing.expectEqual(@as(f32, 50.0), word.width);
-    try std.testing.expectEqual(@as(f32, 8.0), word.trailing_space_width);
+    try std.testing.expectEqual(@as(f32, 8.0), word.space_width);
     try std.testing.expect(!word.has_newline);
 }
 
