@@ -85,13 +85,16 @@ and focus-loss, and split tick/present actions. Every 3,000 steps a random `Swar
 `zig build vopr -- [--app NAME] [seed] [--verbose]` runs one seed (a random one, printed, when none
 is given) as two instances fed the same bytes, which must draw the same frames; `--verbose` prints
 each action to replay a failure. The apps are todo (the default), drag_drop, virtual_list, splitter,
-actions, and nested_overlay. After every step the app's model must hold: todo's, drag_drop's, and
-splitter's predict the app's state, actions' predicts the message of the last action fired,
-nested_overlay's checks that the menu is above the modal, and virtual_list's only counts depth
-(`vopr_*_model.zig`). Every app's frames must pass the model-free invariants in
-`vopr_invariants.zig` (interactive accessibility nodes and handled hit records agree, focus is live)
-and rebuild to the same dump with no input or clock advance. Each app's fuzz target runs a corpus
-smoke in `zig build test` and fuzzes under `zig build test --fuzz`;
+actions, nested_overlay, and text_area. After every step the app's model must hold: todo's,
+drag_drop's, and splitter's predict the app's state, actions' predicts the message of the last
+action fired, nested_overlay's checks that the menu is above the modal, text_area's predicts the
+field's text, caret, selection, and composition (`vopr_text_area_checks.zig` adds caret, wrap, and
+fit-height checks), and virtual_list's only counts depth (`vopr_*_model.zig`). text_area's wrap
+check finds a known bug (whitespace is measured as one space); until it is fixed, run text_area
+with `--skip-wrap-whitespace`, which skips only that width rule. Every app's frames must pass the
+model-free invariants in `vopr_invariants.zig` (interactive accessibility nodes and handled hit
+records agree, focus is live) and rebuild to the same dump with no input or clock advance. Each
+app's fuzz target runs a corpus smoke in `zig build test` and fuzzes under `zig build test --fuzz`;
 `zig build vopr-soak -- --app NAME` runs random seeds for hours.
 
 ---

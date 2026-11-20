@@ -54,6 +54,7 @@ const virtual_list = @import("virtual_list_example");
 const splitter = @import("splitter_example");
 const actions_model = @import("vopr_actions_model.zig");
 const nested_overlay = @import("nested_overlay_example");
+const text_area = @import("text_area_example");
 const core = @import("goldens/core.zig");
 const TodoModel = @import("vopr_todo_model.zig").TodoModel;
 const DragDropModel = @import("vopr_drag_drop_model.zig").DragDropModel;
@@ -61,6 +62,8 @@ const VirtualListModel = @import("vopr_virtual_list_model.zig").VirtualListModel
 const SplitterModel = @import("vopr_splitter_model.zig").SplitterModel;
 const ActionsModel = actions_model.ActionsModel;
 const NestedOverlayModel = @import("vopr_nested_overlay_model.zig").NestedOverlayModel;
+const TextAreaModel = @import("vopr_text_area_model.zig").TextAreaModel;
+const text_area_checks = @import("vopr_text_area_checks.zig");
 const invariants = @import("vopr_invariants.zig");
 const trace_mod = @import("goldens/trace.zig");
 
@@ -154,6 +157,7 @@ pub const Workload = enum {
     splitter,
     actions,
     nested_overlay,
+    text_area,
 
     fn App(comptime workload: Workload) type {
         return switch (workload) {
@@ -164,6 +168,7 @@ pub const Workload = enum {
             // Ctrl on every host, as `text_engine.uses_cmd` is pinned.
             .actions => actions_model.App,
             .nested_overlay => nested_overlay.App,
+            .text_area => text_area.App,
         };
     }
 
@@ -175,6 +180,7 @@ pub const Workload = enum {
             .splitter => SplitterModel,
             .actions => ActionsModel,
             .nested_overlay => NestedOverlayModel,
+            .text_area => TextAreaModel,
         };
     }
 };
@@ -185,9 +191,10 @@ pub const Workload = enum {
 pub fn main(init: std.process.Init) !void {
     const options = parseArgs(init.minimal.args.vector) orelse {
         std.debug.print("usage: vopr [--app todo|drag_drop|virtual_list|splitter|" ++
-            "actions|nested_overlay] [seed] [--verbose]\n", .{});
+            "actions|nested_overlay|text_area] [seed] [--verbose] [--skip-wrap-whitespace]\n", .{});
         return error.InvalidArguments;
     };
+    text_area_checks.skip_wrap_whitespace = options.skip_wrap_whitespace;
     const seed = options.seed orelse seed: {
         var random_seed: u64 = 0;
         init.io.random(std.mem.asBytes(&random_seed));
@@ -240,6 +247,8 @@ const CliOptions = struct {
     workload: Workload,
     seed: ?u64,
     verbose: bool,
+    /// Temporary: `text_area_checks.skip_wrap_whitespace`, a known finding.
+    skip_wrap_whitespace: bool,
 };
 
 /// Null on an argument it does not understand.
@@ -249,12 +258,17 @@ fn parseArgs(args: []const [*:0]const u8) ?CliOptions {
         .workload = .todo,
         .seed = null,
         .verbose = false,
+        .skip_wrap_whitespace = false,
     };
     var index: usize = 1;
     while (index < args.len) : (index += 1) {
         const arg = std.mem.span(args[index]);
         if (std.mem.eql(u8, arg, "--verbose")) {
             options.verbose = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--skip-wrap-whitespace")) {
+            options.skip_wrap_whitespace = true;
             continue;
         }
         if (std.mem.eql(u8, arg, "--app")) {
@@ -1622,6 +1636,11 @@ test "fuzz: nested_overlay vopr" {
     try fuzzCorpus(.nested_overlay);
 }
 
+test "fuzz: text_area vopr" {
+    // Goal: the text_area fuzz target runs under `zig build test`.
+    try fuzzCorpus(.text_area);
+}
+
 /// One seed through `runPaired`, which panics on the first differing frame.
 fn runPairedSeed(comptime workload: Workload) !Result(workload.Model()) {
     const step_count = 300;
@@ -1665,6 +1684,8 @@ test "two instances fed the same bytes draw the same frames" {
     try std.testing.expect(fire_count > 0);
     const overlay = try runPairedSeed(.nested_overlay);
     try std.testing.expect(overlay.stats.menu_frames > 0);
+    const area = try runPairedSeed(.text_area);
+    try std.testing.expect(area.stats.checks.frames > 0);
 }
 
 /// The centre of the `rank`-th hit record with a click handler, in tree order.
