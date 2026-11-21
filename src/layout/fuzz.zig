@@ -134,6 +134,12 @@ fn emitContainer(engine: *LayoutEngine, state: *TreeState, depth: u32) anyerror!
         if (state.smith.boolWeighted(1, 1)) .left_to_right else .top_to_bottom;
     const padding_amt: u16 = @intCast(state.smith.valueRangeAtMost(u16, 0, 16));
     const child_gap: u16 = @intCast(state.smith.valueRangeAtMost(u16, 0, 16));
+    // Only rows wrap. Ratios run from 1:4 to 4:1, in quarters.
+    const wrap = layout_direction == .left_to_right and state.smith.boolWeighted(1, 3);
+    const aspect_ratio: ?f32 = if (state.smith.boolWeighted(1, 7))
+        @as(f32, @floatFromInt(state.smith.valueRangeAtMost(u32, 1, 16))) / 4.0
+    else
+        null;
 
     try engine.openElement(.{
         .layout = .{
@@ -141,6 +147,8 @@ fn emitContainer(engine: *LayoutEngine, state: *TreeState, depth: u32) anyerror!
             .padding = Padding.all(padding_amt),
             .child_gap = child_gap,
             .layout_direction = layout_direction,
+            .aspect_ratio = aspect_ratio,
+            .wrap = wrap,
         },
     });
     state.elements_emitted += 1;

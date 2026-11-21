@@ -181,6 +181,21 @@ pub const Style = struct {
     padding: Edges = .zero,
     gap: f32 = 0,
     alignment: Alignment = .start,
+    /// Break a `.row` into lines at its content width, as CSS
+    /// `flex-wrap: wrap`. Children keep their widths; one wider than the row
+    /// takes a line to itself, cut to the row's width unless its width is
+    /// fixed or its `width_min` is wider. Grow children share each
+    /// line's free width by weight, `alignment.main` places each line, and
+    /// `alignment.cross` aligns children within their line, which is as tall
+    /// as its tallest child and fills cross-axis grow children. Lines stack
+    /// `gap` apart. A wrapping row is at least as wide as its widest child,
+    /// so a `.fit` width is that narrow: give it `.grow`, a fixed or percent
+    /// width, or `width_max`. A `.fit` height follows its lines. Rows only.
+    wrap: bool = false,
+    /// Width divided by height: the height follows the width, as CSS
+    /// `aspect-ratio` with `height: auto`, so `height` must stay `.fit` with
+    /// no bounds. Finite and greater than 0.
+    aspect_ratio: ?f32 = null,
     background: ?ColorToken = null,
     border: ?Border = null,
     corner_radius: Corners = .zero,

@@ -236,6 +236,13 @@ pub const LayoutElement = struct {
     child_count: u32 = 0,
     computed: ComputedLayout = .{},
     element_type: ElementType = .container,
+    /// Whether this child starts a line of its wrapping parent. The sizing
+    /// pass breaks the lines once and sets it; positions and fit-content
+    /// heights read it, so they never break the lines differently.
+    line_start: bool = false,
+    /// A fit-content box that a height derived from a width under it grows:
+    /// set by `sizing_pass.markDerivedHeight`, cleared once it has grown.
+    height_marked: bool = false,
     text_data: ?TextData = null,
 };
 
@@ -357,6 +364,14 @@ pub const LayoutEngine = struct {
     /// Wrapped lines this frame, across every text, against
     /// `capacity.wrapped_line_count_frame_max`.
     wrapped_line_count: u32 = 0,
+    /// Whether the sizing pass derived a height from a width this frame, for
+    /// an aspect ratio or a wrapping row, set in the branches that derive
+    /// them. Without one, the pass that grows fit-content parents to such
+    /// heights skips its test on every element.
+    heights_derived: bool = false,
+    /// Whether a box is marked to grow to such a height, so the walk that
+    /// grows marked boxes has work (`sizing_pass.growMarkedParents`).
+    parents_marked: bool = false,
 
     const Self = @This();
 
@@ -445,6 +460,8 @@ pub const LayoutEngine = struct {
         self.viewport_width = width;
         self.viewport_height = height;
         self.wrapped_line_count = 0;
+        self.heights_derived = false;
+        self.parents_marked = false;
     }
 
     pub fn openElement(self: *Self, decl: ElementDeclaration) !void {

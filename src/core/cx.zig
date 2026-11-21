@@ -981,7 +981,7 @@ fn declaration(style: *const element.Style) layout_mod.ElementDeclaration {
         .row => .left_to_right,
         .column => .top_to_bottom,
     };
-    return .{
+    var decl: layout_mod.ElementDeclaration = .{
         .layout = .{
             .sizing = .{
                 .width = sizingAxis(style.width, style.width_min, style.width_max),
@@ -999,8 +999,45 @@ fn declaration(style: *const element.Style) layout_mod.ElementDeclaration {
             .main_axis_distribution = switch (style.alignment.main) {
                 inline else => |tag| @field(layout_mod.MainAxisDistribution, @tagName(tag)),
             },
+            .aspect_ratio = aspectRatio(style),
+            .wrap = wrapsRow(style),
         },
     };
+    // A fixed width fixes the height too, so the layout's minimums, which a
+    // fit-content parent is sized from, already hold it. Any other width is
+    // known only after sizing, which grows such parents to the height.
+    if (decl.layout.aspect_ratio) |ratio| {
+        if (style.width == .fixed) decl.layout.sizing.height = .fixed(style.width.fixed / ratio);
+    }
+    return decl;
+}
+
+/// The layout derives an aspect box's height from its width, so a height of
+/// its own would contradict the ratio rather than bound it.
+fn aspectRatio(style: *const element.Style) ?f32 {
+    const ratio = style.aspect_ratio orelse return null;
+    if (!(ratio > 0 and std.math.isFinite(ratio))) {
+        std.debug.panic("Style.aspect_ratio {d}: a ratio must be finite and greater than 0", .{
+            ratio,
+        });
+    }
+    const height_free = style.height == .fit and style.height_min == null and
+        style.height_max == null;
+    if (!height_free) {
+        std.debug.panic("Style.aspect_ratio: the height follows the width, so `height` " ++
+            "must be .fit, with no height_min or height_max", .{});
+    }
+    return ratio;
+}
+
+/// Lines stack down the cross axis, whose height the layout derives from
+/// them after widths are known; a column's would need its width derived.
+fn wrapsRow(style: *const element.Style) bool {
+    if (!style.wrap) return false;
+    if (style.direction != .row) {
+        std.debug.panic("Style.wrap: only a .row wraps; a .column cannot", .{});
+    }
+    return true;
 }
 
 fn sizingAxis(sizing: element.Sizing, min: ?f32, max: ?f32) layout_mod.SizingAxis {
