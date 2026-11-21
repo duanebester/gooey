@@ -85,8 +85,9 @@ fn getMinSampleIterations(operation_count: u32) u32 {
     return 10;
 }
 
-/// Minimum wall-clock time to sample before concluding a benchmark.
-const MIN_SAMPLE_TIME_NS: u64 = 50 * std.time.ns_per_ms;
+/// Minimum wall-clock time to sample before concluding a benchmark; zero in
+/// the Cachegrind gate's fixed-iteration build (see `bench.sample_time_ns_min`).
+const MIN_SAMPLE_TIME_NS: u64 = bench.sample_time_ns_min;
 
 /// Maximum per-iteration samples collected for percentile computation.
 const MAX_SAMPLE_COUNT: u32 = 4096;
@@ -479,7 +480,6 @@ test "validate: churn marks exactly the changed elements dirty" {
 
 /// Print a per-op benchmark result and record it in the JSON reporter.
 fn collect(reporter: *bench.Reporter, result: BenchmarkResult) void {
-    result.print();
     reporter.addEntry(bench.entryWithPercentiles(
         result.name,
         result.operation_count,
@@ -489,11 +489,13 @@ fn collect(reporter: *bench.Reporter, result: BenchmarkResult) void {
         result.p50_per_op_ns,
         result.p99_per_op_ns,
     ));
+    result.print();
+    // Printing stays outside the next benchmark's Cachegrind region.
+    reporter.beginBenchmark();
 }
 
 /// Record a frame result (frame groups print their own whole-frame budget line).
 fn collectFrame(reporter: *bench.Reporter, result: BenchmarkResult) void {
-    result.printFrameBudget();
     reporter.addEntry(bench.entryWithPercentiles(
         result.name,
         result.operation_count,
@@ -503,6 +505,9 @@ fn collectFrame(reporter: *bench.Reporter, result: BenchmarkResult) void {
         result.p50_per_op_ns,
         result.p99_per_op_ns,
     ));
+    result.printFrameBudget();
+    // Printing stays outside the next benchmark's Cachegrind region.
+    reporter.beginBenchmark();
 }
 
 pub fn main(init: std.process.Init) !void {

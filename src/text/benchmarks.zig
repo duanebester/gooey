@@ -91,8 +91,9 @@ fn getMinSampleIterations(operation_count: u32) u32 {
     return 10;
 }
 
-/// Minimum wall-clock time to sample before concluding a benchmark.
-const MIN_SAMPLE_TIME_NS: u64 = 50 * std.time.ns_per_ms;
+/// Minimum wall-clock time to sample before concluding a benchmark; zero in
+/// the Cachegrind gate's fixed-iteration build (see `bench.sample_time_ns_min`).
+const MIN_SAMPLE_TIME_NS: u64 = bench.sample_time_ns_min;
 
 /// Maximum per-iteration samples collected for percentile computation.
 /// 4096 samples * 8 bytes = 32 KB — fits comfortably on the stack.
@@ -1671,7 +1672,6 @@ test "validate: generatePrintableAscii covers full range" {
 /// Print a text benchmark result and record it in the JSON reporter.
 /// Text benchmarks include p50/p99 percentile data.
 fn collect(reporter: *bench.Reporter, result: BenchmarkResult) void {
-    result.print();
     reporter.addEntry(bench.entryWithPercentiles(
         result.name,
         result.operation_count,
@@ -1681,6 +1681,9 @@ fn collect(reporter: *bench.Reporter, result: BenchmarkResult) void {
         result.p50_per_op_ns,
         result.p99_per_op_ns,
     ));
+    result.print();
+    // Printing stays outside the next benchmark's Cachegrind region.
+    reporter.beginBenchmark();
 }
 
 fn printSectionHeader(title: []const u8) void {
@@ -1895,6 +1898,9 @@ fn printTextPipelineNotes() void {
 /// Heap-allocates TextSystem (~1.7 MB) to avoid stack overflow on constrained
 /// platforms.  Errors propagate to main() for graceful skip messaging.
 fn runTextPipelineBenchmarks(gpa: std.mem.Allocator, reporter: *bench.Reporter) !void {
+    // Font loading is setup, not part of the first shaping benchmark.
+    reporter.pauseBenchmark();
+
     // Heap-allocate TextSystem to avoid blowing the stack (CLAUDE.md rule #14).
 
     const text_sys = try gpa.create(TextSystem);
@@ -1914,6 +1920,7 @@ fn runTextPipelineBenchmarks(gpa: std.mem.Allocator, reporter: *bench.Reporter) 
     defer text_sys.deinit();
 
     try text_sys.loadSystemFont(.monospace, BENCH_FONT_SIZE);
+    reporter.beginBenchmark();
 
     // --- Shaping benchmarks ---
     printShapingBenchmarks(text_sys, reporter);
@@ -1923,6 +1930,7 @@ fn runTextPipelineBenchmarks(gpa: std.mem.Allocator, reporter: *bench.Reporter) 
 
     // --- Glyph rasterization benchmarks ---
     // Shape printable ASCII to extract glyph IDs for the rasterization benchmarks.
+    reporter.pauseBenchmark();
     const printable_ascii = comptime generatePrintableAscii();
     var ascii_run = try text_sys.shapeText(.app, &printable_ascii, .regular, null);
 
@@ -1934,6 +1942,7 @@ fn runTextPipelineBenchmarks(gpa: std.mem.Allocator, reporter: *bench.Reporter) 
         unique_glyphs.count,
         printable_ascii.len,
     });
+    reporter.beginBenchmark();
     printGlyphBenchmarks(text_sys, unique_glyphs.ids[0..unique_glyphs.count], reporter);
 
     // --- Scaling analysis ---
