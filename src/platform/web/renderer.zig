@@ -1,34 +1,18 @@
-//! The WebGPU renderer on the `Renderer` contract (contract §9): it draws the
-//! packed frame (`packed_frame.zig`) into the page's canvas.
-//!
-//! JavaScript owns the device, its queue, and every GPU object; this file
-//! drives them through `imports.zig`. One shader module
-//! (`shaders/packed.wgsl`) holds a vertex and fragment entry point per
-//! `packed_frame.Pipeline`, and one bind group holds every buffer and atlas,
-//! so a frame binds it once.
+//! WebGPU renderer: draws the packed frame into the page's canvas through
+//! `imports.zig`. JavaScript owns the device, its queue, and every GPU
+//! object; WASM holds their handles. One shader module (`shaders/packed.wgsl`)
+//! holds a vertex and fragment entry point per `packed_frame.Pipeline`, and
+//! one bind group holds every buffer and atlas, so a frame binds it once.
 //!
 //! A frame is one command encoder and one render pass. `draw` writes the used
 //! prefix of each packed array into its storage buffer with
-//! `queue.writeBuffer`, opens the pass on the canvas's current texture,
-//! records the draws in order, and submits. Each draw's clip is its scissor
-//! rectangle (`scissor.zig`). `uploadAtlas` writes the atlas with
-//! `queue.writeTexture`, which copies the pixels before it returns and runs
-//! on the queue after every earlier submit and before the next, so an upload
+//! `queue.writeBuffer`, records the draws in order, and submits; each draw's
+//! clip is its scissor rectangle (`scissor.zig`). `uploadAtlas` writes the
+//! atlas with `queue.writeTexture`. Both copy before they return and land on
+//! the queue after every earlier submit and before the next, so an upload
 //! lands after the draws of every frame submitted before it and before the
 //! frame that samples it. The queue keeps that order, so neither path needs
 //! staging or frame slots on the WASM side.
-//!
-//! Performance sketch (CLAUDE.md §7): reservations are GPU-side, all at init
-//! from `RenderLimits`: the frame buffers at the packed frame's capacities
-//! (1.9 MiB at `.standard`: 4,608×96 + 9,472×96 + 1,536×32 + 65,536×8 +
-//! 5,461×4 + 16 B) and the three atlases (12 MiB at `.standard`). WASM memory
-//! holds only this struct's handles. Per frame: at most six `writeBuffer`
-//! copies of the used prefixes (a todo frame copies about 11 KiB), one pass,
-//! and per draw at most one scissor, one pipeline, and one draw call; a mesh
-//! draw issues one draw call per mesh. Draws are bounded by
-//! `records.paint_record_count_frame_max`. Window-sized storage is the
-//! canvas's drawing buffer, at most `limits.window`; `resize` reconfigures
-//! the canvas, and the browser owns that storage.
 
 const std = @import("std");
 const imports = @import("imports.zig");
@@ -387,7 +371,7 @@ fn recordDraws(
         assert(packed_draw.count > 0);
         assert(packed_draw.clip < frame.clip_count);
         const clip = frame.clips[packed_draw.clip];
-        // Pack emits no draw under a zero-area clip (contract §9).
+        // Pack emits no draw under a zero-area clip.
         assert(clip[2] > 0);
         assert(clip[3] > 0);
         // A clip that covers no pixel centre (off the canvas, or between
@@ -466,7 +450,7 @@ fn elementBytes(buffer: FrameBuffer) u32 {
     };
 }
 
-/// Bytes of one buffer (count → size: × unit).
+/// Bytes of one buffer.
 fn bufferBytes(capacity: *const [frame_buffer_count]u32, buffer: FrameBuffer) u64 {
     const bytes = @as(u64, capacity[@backingInt(buffer)]) * elementBytes(buffer);
     assert(bytes > 0);
@@ -514,14 +498,13 @@ fn checkDevice(
     }
 }
 
-/// A framebuffer size the window budget allows (`resize` and `initInPlace`).
+/// A framebuffer size the window budget allows.
 fn assertFits(size_px: backend.SizePx, window: *const limits_mod.WindowLimits) void {
     assert(window.framebuffer_width_max > 0);
     assert(size_px.width <= window.framebuffer_width_max);
     assert(size_px.height <= window.framebuffer_height_max);
 }
 
-/// Logical pixels across `size_px` device pixels.
 fn logicalSize(size_px: u32, scale_factor: f32) f32 {
     assert(size_px > 0);
     assert(scale_factor > 0);

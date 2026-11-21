@@ -1,50 +1,20 @@
 //! A reference model of the todo example for the VOPR, after TigerBeetle's
 //! state checker: what todo should hold (items with text and done flags, the
-//! filter, and the draft), updated from every action the harness performs and
-//! compared with `app.state` after every step. A mismatch panics with the step
-//! and both states.
+//! filter, and the draft), updated from every action the harness performs
+//! and compared with `app.state` after every step; a mismatch panics with
+//! the step and both states. Written from todo's intended behaviour, not
+//! from its code. It does not model the core: focus at the start of a drain,
+//! the caret, hit records, accessibility names, and scrollbar geometry are
+//! read from the window.
 //!
-//! The model is written from todo's intended behaviour, not from its code:
-//! - Add appends the draft, trimmed of spaces, then cut to at most 128 bytes
-//!   at a codepoint boundary (so a cut item may end in a space), unless it is
-//!   blank or the list holds 64 items. Add always empties the draft, even
-//!   when it adds nothing, and the next edit starts from the empty draft.
-//! - A row's checkbox and Delete act on the item the row showed in the frame
-//!   the click landed on, by identity: an item an earlier event removed or
-//!   moved is not confused with whichever item now has that index.
-//! - The filter buttons set the filter; Clear completed removes done items.
-//! - Clicks: the press focuses the innermost focusable record under the
-//!   point (or nothing) and the release fires the innermost `on_click`. One
-//!   press and release is one click whatever its click count. A press on a
-//!   scrollbar with the left button is the scroll box's. Only the left
-//!   button clicks: a right or middle press focuses (on a scrollbar too)
-//!   and its release clicks nothing. A left press and its release may be
-//!   apart, with other actions and other buttons between: the release
-//!   clicks the innermost `on_click` under it whose record the left press
-//!   also landed in, then forgets that press. Enter or Space without Ctrl
-//!   or Alt clicks the focused control; Tab and Shift+Tab move focus
-//!   through tab stops in tree order, wrapping.
-//! - The draft is edited at the caret by committed text, Backspace, Delete,
-//!   arrows, Home, End (Shift extends), Ctrl+A, Ctrl+X, and Ctrl+C. Typing
-//!   past the input's capacity keeps the whole codepoints that fit.
-//! - IME: preedit is not part of the draft; committed text replaces it at
-//!   the caret; an empty composition ends it. When focus leaves mid-
-//!   composition the core commits the preedit into the draft at the input's
-//!   next build, so the draft is unknown until then.
-//!
-//! It does not model the core: focus at the start of a drain, the caret,
-//! hit records, accessibility names, and scrollbar geometry are read from the
-//! window. Events are applied in drain order after each `tickMain`, against
-//! the frame the drain routed against (the rendered frame).
-//!
-//! Where an input's effect is unspecified for todo (a press placing the caret
-//! in a non-empty draft, word, line, and undo shortcuts, paste of the
-//! harness's empty clipboard, keys during an IME composition) the model marks
-//! the draft unknown for the rest of that drain. An unknown draft, and an item
-//! added from one, are adopted from the app at the next check only after they
-//! pass validation: valid UTF-8 from the generator's alphabet, and for an
-//! item, not done, non-empty, at most 128 bytes, and without a leading space.
-//! Everything else must match exactly.
+//! Where an input's effect is unspecified for todo (a press placing the
+//! caret in a non-empty draft, word, line, and undo shortcuts, paste of the
+//! harness's empty clipboard, keys during an IME composition) the model
+//! marks the draft unknown for the rest of that drain. An unknown draft, and
+//! an item added from one, are adopted from the app at the next check only
+//! after they pass validation: valid UTF-8 from the generator's alphabet,
+//! and for an item, not done, non-empty, at most 128 bytes, and without a
+//! leading space. Everything else must match exactly.
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -98,7 +68,6 @@ pub const TodoModel = struct {
     /// Identities for items, so a stale row is never confused with another.
     item_id_next: u32,
     filter: todo.Filter,
-    /// The draft being edited.
     draft: Draft,
     /// Focus within the drain being applied; read from the window first.
     focus: ElementId,
@@ -205,13 +174,11 @@ pub const TodoModel = struct {
         return .{};
     }
 
-    /// Input actions the model can still record before the next drain.
     pub fn pendingRoom(self: *const TodoModel) u32 {
         assert(self.pending_count <= pending_count_max);
         return pending_count_max - self.pending_count;
     }
 
-    /// Record an input action delivered to the queue, for the next drain.
     pub fn queue(self: *TodoModel, action: Action) void {
         assert(self.pending_count < pending_count_max);
         var copy = action;

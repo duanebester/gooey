@@ -1,19 +1,7 @@
-//! Test root for the Windows backend, the DirectWrite text backend, the WIC
-//! image backend, the software SVG rasterizer behind the SVG atlas, and the
-//! UI Automation accessibility bridge.
-//!
-//! The input translation, IME encoding and placement, and binding tests call
-//! no Win32 functions. The
-//! DirectWrite and WIC tests call the system's real DirectWrite and WIC, so
-//! they run on any Windows host. The clipboard tests use the real system
-//! clipboard and replace its contents. The file dialog tests create and
-//! configure real Common Item Dialogs without showing them. The accessibility
-//! tests drive the providers through their COM vtables against hidden
-//! windows. The shared tests run from `root.zig` in a separate binary on the
-//! `gooey` module. That binary reaches some of these files too, but this root
-//! names the Windows set explicitly so its coverage does not depend on what
-//! `root.zig`'s discovery chain happens to reach. It lives in `src/` because a
-//! module cannot import files above its root's directory.
+//! Test root for the Windows backends: Win32 input, DirectWrite, WIC, the software SVG
+//! rasterizer, and UI Automation. This root names the Windows set explicitly so its
+//! coverage does not depend on what `root.zig`'s discovery chain reaches. It lives in
+//! `src/` because a module cannot import files above its root's directory.
 
 test {
     _ = @import("platform/windows/clipboard.zig");

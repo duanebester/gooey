@@ -1,7 +1,7 @@
 //! GPU objects the DirectX 11 renderer creates once, at initialization: the
 //! atlas textures, the per-frame instance and uniform buffers, and the fixed
 //! pipeline states. None is created, grown, or replaced after the window's
-//! initialization boundary (CLAUDE.md §2); `deinit` is the only release.
+//! initialization boundary; `deinit` is the only release.
 //!
 //! Instance buffers are `D3D11_USAGE_DYNAMIC` structured buffers, written
 //! with `Map(WRITE_DISCARD)`, one set per frame in flight. Frame `n` writes
@@ -13,7 +13,7 @@
 //! Atlas textures are `D3D11_USAGE_DEFAULT`, sized from `AtlasLimits`, and
 //! written only on the GPU, by `dx11_uploads.zig` drawing the journal's
 //! records into them as render targets, so Gooey keeps no CPU copy of atlas
-//! pixels (memory budget decision 8).
+//! pixels.
 
 const std = @import("std");
 const d3d11 = @import("d3d11.zig");
@@ -34,9 +34,7 @@ pub const buffer_bytes_max: u32 = 128 << 20;
 pub const ResourceError = error{Dx11ResourceCreationFailed};
 
 pub const AtlasFormat = enum {
-    /// One coverage byte per pixel: glyphs.
     r8,
-    /// Straight RGBA, four bytes per pixel: SVG icons and images.
     rgba8,
 
     pub fn bytesPerPixel(self: AtlasFormat) u32 {
@@ -403,10 +401,6 @@ pub fn createView(
     assert(view != null);
     return view.?;
 }
-
-// =============================================================================
-// Fixed pipeline state
-// =============================================================================
 
 /// Blend, rasterizer, and sampler state shared by every pipeline. Two blend
 /// states, as in the Vulkan renderer's pipelines: straight alpha for quads,

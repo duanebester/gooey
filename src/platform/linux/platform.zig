@@ -1,9 +1,3 @@
-//! LinuxPlatform - Platform implementation for Linux/Wayland
-//!
-//! Owns the Wayland connection, its globals, and the seat's input devices,
-//! and routes their events to the active window. The core host
-//! (`core_host.zig`) runs the event loop on this connection.
-
 const std = @import("std");
 const limits_mod = @import("../../core/limits.zig");
 const wayland = @import("wayland.zig");
@@ -19,7 +13,6 @@ const clipboard = @import("clipboard.zig");
 const CursorSurface = @import("cursor_surface.zig").CursorSurface;
 const linux_backend = @import("../linux_backend.zig");
 
-// Static listeners - must persist for lifetime of Wayland objects
 const fractional_scale_manager_name = wayland.WP_FRACTIONAL_SCALE_MANAGER_V1_INTERFACE_NAME;
 
 /// The highest `wl_compositor` version to bind. `wl_surface` events are demarshaled with
@@ -103,7 +96,6 @@ const touch_listener = wayland.TouchListener{
     .orientation = LinuxPlatform.touchOrientation,
 };
 
-// Text input V3 listener for IME support
 const text_input_listener = wayland.ZwpTextInputV3Listener{
     .enter = LinuxPlatform.textInputEnter,
     .leave = LinuxPlatform.textInputLeave,
@@ -120,16 +112,14 @@ fn nowMs() u64 {
 }
 
 pub const LinuxPlatform = struct {
-    /// Cleared only by `quit`, a 0.3.1 call kept while `context/window.zig`
-    /// compiles. The core host's loop ends when the window closes.
+    /// Cleared only by legacy `quit`; the core host's loop ends when the
+    /// window closes.
     running: bool = false,
 
     display: ?*wayland.Display = null,
 
-    /// Registry for tracking all windows by ID
     window_registry: WindowRegistry,
 
-    // Global Wayland objects
     registry: ?*wayland.Registry = null,
     compositor: ?*wayland.Compositor = null,
     xdg_wm_base: ?*wayland.XdgWmBase = null,
@@ -156,14 +146,10 @@ pub const LinuxPlatform = struct {
     cursor_surface: CursorSurface = .{},
     output: ?*wayland.Output = null,
 
-    // Display refresh rate in millihertz (e.g., 60000 = 60Hz, 144000 = 144Hz)
-    // Default to 60Hz (60000 mHz) until we get actual value from wl_output
     refresh_rate_mhz: i32 = 60000,
 
-    // Clipboard state
     clipboard_state: *clipboard.ClipboardState = clipboard.getState(),
 
-    // Input state
     pointer_x: f64 = 0,
     pointer_y: f64 = 0,
     pointer_buttons: u32 = 0,
@@ -180,20 +166,12 @@ pub const LinuxPlatform = struct {
     /// the deadline and calls `fireKeyRepeat`.
     key_repeat: linux_input.KeyRepeat = .{},
 
-    // Active window for input dispatch, frame pacing and interactive
-    // move/resize. Derived from `window_registry.active_window` — write it
-    // only through `setActiveWindowId` so the two cannot disagree.
     active_window: ?*LinuxWindow = null,
 
-    // Window receiving the current touch gesture sequence
     touch_window: ?*LinuxWindow = null,
 
-    // Scale factor from output
     scale_factor: i32 = 1,
 
-    // IME state (accumulated during event batch, applied on done). The strings
-    // are copies: libwayland frees an event's string arguments when its
-    // callback returns, and `textInputDone` arrives in a later callback.
     ime_preedit_text: ImeText = .{},
     ime_commit_text: ImeText = .{},
     ime_delete_before: u32 = 0,
@@ -202,11 +180,6 @@ pub const LinuxPlatform = struct {
 
     const Self = @This();
 
-    // =========================================================================
-    // Window Registry
-    // =========================================================================
-
-    /// Register a window with the platform and return its ID.
     pub fn registerWindow(self: *Self, window: *anyopaque) !WindowId {
         std.debug.assert(@intFromPtr(window) != 0);
         std.debug.assert(self.window_registry.count() < WindowRegistry.window_count_max);
@@ -216,20 +189,12 @@ pub const LinuxPlatform = struct {
         return id;
     }
 
-    /// Unregister a window by ID.
     pub fn unregisterWindow(self: *Self, id: WindowId) void {
         std.debug.assert(id.isValid());
         _ = self.window_registry.unregister(id);
         std.debug.assert(!self.window_registry.contains(id));
     }
 
-    /// Set the active window by ID.
-    ///
-    /// The `WindowId` is the single authority. Wayland pointer, keyboard, and
-    /// IME dispatch all need the concrete `*LinuxWindow`, so the pointer is
-    /// *derived* here rather than published separately: two setters would let
-    /// the registry's active id name one window while every event went to
-    /// another.
     pub fn setActiveWindowId(self: *Self, id: ?WindowId) void {
         self.window_registry.setActiveWindow(id);
         self.active_window = if (id) |window_id|
@@ -243,15 +208,6 @@ pub const LinuxPlatform = struct {
         if (id == null) std.debug.assert(self.active_window == null);
     }
 
-    /// Hand the active role to a surviving open window after the current one
-    /// closes or dies.
-    ///
-    /// `active_window` is the routing target for every pointer, keyboard, and
-    /// IME event, so leaving it null while other windows remain would strand
-    /// input. Closed windows are skipped: they stay registered until their
-    /// owner reclaims them, so electing one would route events into a window
-    /// that has already declared itself gone. Any open window is a sound
-    /// choice: the compositor corrects us with the next `enter` event.
     pub fn reelectActiveWindow(self: *Self) void {
         std.debug.assert(self.window_registry.count() <= WindowRegistry.window_count_max);
 
@@ -275,14 +231,6 @@ pub const LinuxPlatform = struct {
         std.debug.assert(scanned <= self.window_registry.count());
     }
 
-    /// Initialize the platform against its final address.
-    ///
-    /// This cannot be a by-value `init`: `wl_registry_add_listener` and
-    /// `xdg_wm_base_add_listener` retain the `data` pointer for the lifetime
-    /// of the proxy, so handing them the address of a temporary would leave
-    /// the compositor writing into a dead frame once the value was moved to
-    /// its home. Listener setup therefore runs here as the final step instead
-    /// of in a second call every caller had to remember to make.
     pub fn initInPlace(self: *Self) !void {
         std.debug.assert(@intFromPtr(self) != 0);
 
@@ -316,9 +264,6 @@ pub const LinuxPlatform = struct {
         std.debug.assert(!self.running);
     }
 
-    /// Load the cursor theme fallback while still initializing: a hover change after the
-    /// event loop starts must not allocate. Runs after `setupListeners`, whose second
-    /// roundtrip delivered `wl_output.scale`.
     fn loadCursorSurface(self: *Self) void {
         std.debug.assert(self.compositor != null);
         std.debug.assert(self.cursor_surface.surface == null);
@@ -335,24 +280,16 @@ pub const LinuxPlatform = struct {
         });
     }
 
-    /// Bind the Wayland listeners that capture `self`.
-    ///
-    /// Private because it is only ever correct to run it from `initInPlace`,
-    /// where the address is already final.
     fn setupListeners(self: *Self) !void {
         std.debug.assert(self.display != null);
         std.debug.assert(self.registry != null);
 
-        // Set up registry listener with the FINAL pointer location
         _ = wayland.registryAddListener(self.registry.?, &registry_listener, self);
 
-        // Roundtrip to get all globals
         _ = wayland.wl_display_roundtrip(self.display.?);
 
-        // Second roundtrip to process seat capabilities and bind keyboard/pointer
         _ = wayland.wl_display_roundtrip(self.display.?);
 
-        // Verify we have required globals
         if (self.compositor == null) {
             return error.MissingCompositor;
         }
@@ -360,43 +297,30 @@ pub const LinuxPlatform = struct {
             return error.MissingXdgWmBase;
         }
 
-        // Set up XDG WM base listener for ping/pong with the FINAL pointer
         _ = wayland.xdgWmBaseAddListener(self.xdg_wm_base.?, &wm_base_listener, self);
 
-        // Set up clipboard data device if we have manager and seat
         if (self.clipboard_state.data_device_manager != null and self.seat != null) {
             self.clipboard_state.setupDataDevice(self.seat.?, self.display.?);
         }
     }
 
     pub fn deinit(self: *Self) void {
-        // Clean up window registry
-
-        // Don't try to destroy Wayland objects if display is gone
         if (self.display == null) return;
 
-        // Destroy in reverse order of creation, flushing between major objects
-        // Clipboard first (depends on seat and manager)
         self.clipboard_state.deinit();
         self.destroySeatObjects();
 
-        // Flush to ensure destroy requests are sent before destroying seat
         _ = wayland.wl_display_flush(self.display.?);
         self.destroyGlobals();
 
-        // Final flush before disconnect
         _ = wayland.wl_display_flush(self.display.?);
 
-        // Disconnect last
         wayland.wl_display_disconnect(self.display.?);
         self.display = null;
     }
 
-    /// Destroy the objects created from the seat and its managers, which must
-    /// go before the seat itself.
     fn destroySeatObjects(self: *Self) void {
         std.debug.assert(self.display != null);
-        // Text input (depends on seat and manager)
         if (self.text_input) |ti| {
             wayland.zwpTextInputV3Destroy(ti);
             self.text_input = null;
@@ -406,7 +330,6 @@ pub const LinuxPlatform = struct {
             self.text_input_manager = null;
         }
 
-        // Input devices (they depend on seat)
         if (self.cursor_shape_device) |device| {
             wayland.cursorShapeDeviceDestroy(device);
             self.cursor_shape_device = null;
@@ -423,7 +346,6 @@ pub const LinuxPlatform = struct {
         std.debug.assert(self.keyboard == null);
     }
 
-    /// Destroy the bound globals, the seat first and the registry last.
     fn destroyGlobals(self: *Self) void {
         std.debug.assert(self.display != null);
         std.debug.assert(self.pointer == null);
@@ -443,7 +365,6 @@ pub const LinuxPlatform = struct {
             wayland.fractionalScaleManagerDestroy(manager);
             self.fractional_scale_manager = null;
         }
-        // Before `shm` and `compositor`, which created its pool and surface.
         self.cursor_surface.deinit();
         if (self.xdg_wm_base) |wm| {
             wayland.xdgWmBaseDestroy(wm);
@@ -469,42 +390,34 @@ pub const LinuxPlatform = struct {
         std.debug.assert(self.registry == null);
     }
 
-    /// Get the Wayland display pointer (for wgpu surface creation)
     pub fn getDisplay(self: *Self) ?*anyopaque {
         return @ptrCast(self.display);
     }
 
-    /// Get the compositor for creating surfaces
     pub fn getCompositor(self: *Self) ?*wayland.Compositor {
         return self.compositor;
     }
 
-    /// Get the XDG WM base for window management
     pub fn getXdgWmBase(self: *Self) ?*wayland.XdgWmBase {
         return self.xdg_wm_base;
     }
 
-    /// Get the decoration manager (may be null if not supported)
     pub fn getDecorationManager(self: *Self) ?*wayland.ZxdgDecorationManagerV1 {
         return self.decoration_manager;
     }
 
-    /// Get the shared-memory allocator used by CPU-rendered windows.
     pub fn getShm(self: *Self) ?*wayland.Shm {
         return self.shm;
     }
 
-    /// Get the viewporter (for HiDPI support, may be null)
     pub fn getViewporter(self: *Self) ?*wayland.WpViewporter {
         return self.viewporter;
     }
 
-    /// Get the fractional scale manager (may be null if not supported)
     pub fn getFractionalScaleManager(self: *Self) ?*wayland.WpFractionalScaleManagerV1 {
         return self.fractional_scale_manager;
     }
 
-    /// Get current scale factor
     pub fn getScaleFactor(self: *const Self) f64 {
         return @floatFromInt(self.scale_factor);
     }
@@ -521,7 +434,6 @@ pub const LinuxPlatform = struct {
         std.debug.assert(self.pointer != null);
     }
 
-    /// Prefer `wp_cursor_shape_v1`; without it, show the theme image on the cursor surface.
     pub fn setCursorShape(self: *Self, shape: interface_mod.CursorShape) void {
         if (self.cursor_shape_device != null) std.debug.assert(self.pointer != null);
         if (self.cursor_shape_device != null) std.debug.assert(self.cursor_shape_manager != null);
@@ -544,10 +456,6 @@ pub const LinuxPlatform = struct {
         self.cursor_shape = shape;
     }
 
-    // =========================================================================
-    // Wayland Callbacks
-    // =========================================================================
-
     fn registryGlobal(
         data: ?*anyopaque,
         registry: *wayland.Registry,
@@ -557,9 +465,6 @@ pub const LinuxPlatform = struct {
     ) callconv(.c) void {
         const self: *Self = @ptrCast(@alignCast(data));
         const interface_name = std.mem.span(iface);
-
-        // Debug: log all available protocols (uncomment for debugging)
-        // std.debug.print("Wayland global: {s} (name={d}, version={d})\n", .{ interface_name, name, version });
 
         if (std.mem.eql(u8, interface_name, wayland.WL_COMPOSITOR_INTERFACE_NAME)) {
             self.compositor = @ptrCast(@alignCast(wayland.registryBind(
@@ -599,16 +504,12 @@ pub const LinuxPlatform = struct {
         } else if (std.mem.eql(u8, interface_name, wayland.WP_CURSOR_SHAPE_MANAGER_V1_INTERFACE_NAME)) {
             self.bindCursorShapeManager(registry, name, version);
         } else if (std.mem.eql(u8, interface_name, wayland.WL_OUTPUT_INTERFACE_NAME)) {
-            // Bind to first output only (for refresh rate)
             if (self.output == null) self.bindOutput(registry, name, version);
         } else if (std.mem.eql(u8, interface_name, clipboard.WL_DATA_DEVICE_MANAGER_INTERFACE_NAME)) {
             self.clipboard_state.bindManager(registry, name, version);
-            // Data device setup is deferred to setupListeners() after roundtrips complete
         }
     }
 
-    /// Bind the seat and listen for its capabilities, which create the pointer,
-    /// keyboard, and touch objects.
     fn bindSeat(self: *Self, registry: *wayland.Registry, name: u32, version: u32) void {
         self.seat = @ptrCast(@alignCast(wayland.registryBind(
             registry,
@@ -618,13 +519,10 @@ pub const LinuxPlatform = struct {
         )));
 
         if (self.seat) |seat| {
-            // Uses module-level static listener
             _ = wayland.seatAddListener(seat, &seat_listener, self);
         }
     }
 
-    /// Bind the text input manager and create the seat's text input, which the
-    /// core host enables only while a text field is focused.
     fn bindTextInputManager(
         self: *Self,
         registry: *wayland.Registry,
@@ -638,7 +536,6 @@ pub const LinuxPlatform = struct {
             .{ .advertised = version, .supported_max = 1 },
         )));
 
-        // Create text input object if we have both manager and seat
         const manager = self.text_input_manager orelse return;
         const seat = self.seat orelse return;
         if (self.text_input != null) return;
@@ -648,8 +545,6 @@ pub const LinuxPlatform = struct {
         }
     }
 
-    /// Bind the cursor shape manager and create the pointer's shape device, if
-    /// the pointer already exists.
     fn bindCursorShapeManager(
         self: *Self,
         registry: *wayland.Registry,
@@ -665,7 +560,6 @@ pub const LinuxPlatform = struct {
         self.ensureCursorShapeDevice();
     }
 
-    /// Bind the first output and listen for its mode and scale.
     fn bindOutput(self: *Self, registry: *wayland.Registry, name: u32, version: u32) void {
         std.debug.assert(self.output == null);
         self.output = @ptrCast(@alignCast(wayland.registryBind(
@@ -687,12 +581,7 @@ pub const LinuxPlatform = struct {
         _ = data;
         _ = registry;
         _ = name;
-        // Handle global removal if needed
     }
-
-    // =========================================================================
-    // Output Listener Callbacks
-    // =========================================================================
 
     fn outputGeometry(
         data: ?*anyopaque,
@@ -716,7 +605,6 @@ pub const LinuxPlatform = struct {
         _ = make;
         _ = model;
         _ = transform;
-        // Geometry info is informational, we only care about mode and scale
     }
 
     fn outputMode(
@@ -732,7 +620,6 @@ pub const LinuxPlatform = struct {
         _ = height;
         const self: *Self = @ptrCast(@alignCast(data));
 
-        // WL_OUTPUT_MODE_CURRENT = 0x1
         const WL_OUTPUT_MODE_CURRENT: u32 = 0x1;
         if ((flags & WL_OUTPUT_MODE_CURRENT) != 0 and refresh > 0) {
             self.refresh_rate_mhz = refresh;
@@ -762,7 +649,6 @@ pub const LinuxPlatform = struct {
     ) callconv(.c) void {
         _ = data;
         _ = output;
-        // All output properties have been sent
     }
 
     fn outputName(
@@ -773,7 +659,6 @@ pub const LinuxPlatform = struct {
         _ = data;
         _ = output;
         _ = name;
-        // Output name is informational
     }
 
     fn outputDescription(
@@ -784,7 +669,6 @@ pub const LinuxPlatform = struct {
         _ = data;
         _ = output;
         _ = description;
-        // Output description is informational
     }
 
     fn xdgWmBasePing(
@@ -804,7 +688,6 @@ pub const LinuxPlatform = struct {
         _ = data;
         _ = seat;
         _ = name;
-        // Seat name is informational, we don't need to do anything with it
     }
 
     fn seatCapabilities(
@@ -814,11 +697,9 @@ pub const LinuxPlatform = struct {
     ) callconv(.c) void {
         const self: *Self = @ptrCast(@alignCast(data));
 
-        // Handle pointer
         if (caps.pointer and self.pointer == null) {
             self.pointer = wayland.seatGetPointer(seat);
             if (self.pointer) |ptr| {
-                // Uses module-level static listener
                 _ = wayland.pointerAddListener(ptr, &pointer_listener, self);
             }
             self.ensureCursorShapeDevice();
@@ -833,11 +714,9 @@ pub const LinuxPlatform = struct {
             self.cursor_shape = null;
         }
 
-        // Handle keyboard
         if (caps.keyboard and self.keyboard == null) {
             self.keyboard = wayland.seatGetKeyboard(seat);
             if (self.keyboard) |kb| {
-                // Uses module-level static listener
                 _ = wayland.keyboardAddListener(kb, &keyboard_listener, self);
             }
         } else if (!caps.keyboard and self.keyboard != null) {
@@ -845,7 +724,6 @@ pub const LinuxPlatform = struct {
             self.keyboard = null;
         }
 
-        // Handle touch
         if (caps.touch and self.touch == null) {
             std.debug.print("touch: seat advertises touch capability, acquiring device\n", .{});
             self.touch = wayland.seatGetTouch(seat);
@@ -857,7 +735,6 @@ pub const LinuxPlatform = struct {
             self.touch = null;
         }
 
-        // Create text input if we now have seat and manager
         if (self.text_input_manager != null and self.text_input == null) {
             self.text_input = wayland.zwpTextInputManagerV3GetTextInput(self.text_input_manager.?, seat);
             if (self.text_input) |ti| {
@@ -884,7 +761,6 @@ pub const LinuxPlatform = struct {
         self.cursor_shape = null;
         self.setCursorShape(.default);
 
-        // Dispatch mouse_entered event to active window
         if (self.active_window) |window| {
             const modifiers = linux_input.modifiersFromFlags(
                 self.modifier_shift,
@@ -914,7 +790,6 @@ pub const LinuxPlatform = struct {
         // is gone: cancel it rather than leave a drag waiting for a release.
         self.cancelPointerGesture();
 
-        // Dispatch mouse_exited event to active window
         if (self.active_window) |window| {
             const modifiers = linux_input.modifiersFromFlags(
                 self.modifier_shift,
@@ -940,7 +815,6 @@ pub const LinuxPlatform = struct {
         self.pointer_x = wayland.fixedToDouble(surface_x);
         self.pointer_y = wayland.fixedToDouble(surface_y);
 
-        // Dispatch mouse_moved or mouse_dragged event to active window
         if (self.active_window) |window| {
             const modifiers = linux_input.modifiersFromFlags(
                 self.modifier_shift,
@@ -969,10 +843,8 @@ pub const LinuxPlatform = struct {
         _ = pointer;
         const self: *Self = @ptrCast(@alignCast(data));
 
-        // Save serial for interactive move/resize operations
         self.last_pointer_serial = serial;
 
-        // Update clipboard serial for copy operations
         self.clipboard_state.updateSerial(serial);
 
         const button_bit = pointerButtonBit(button);
@@ -987,12 +859,9 @@ pub const LinuxPlatform = struct {
         if (state == .pressed) {
             self.pointer_buttons |= button_bit;
 
-            // Dispatch mouse_down event to active window
             if (self.active_window) |window| {
                 const handled = self.pointerButtonPressed(window, time, button, modifiers);
 
-                // Handle client-side window management when no server decorations
-                // Only if the event wasn't handled by the app
                 if (!handled and !window.has_server_decorations and button == wayland.BTN_LEFT) {
                     self.startPointerMoveOrResize(window);
                 }
@@ -1000,7 +869,6 @@ pub const LinuxPlatform = struct {
         } else {
             self.pointer_buttons &= ~button_bit;
 
-            // Dispatch mouse_up event to active window
             if (self.active_window) |window| {
                 const event = linux_input.mouseUpEvent(
                     self.pointer_x,
@@ -1024,8 +892,6 @@ pub const LinuxPlatform = struct {
         };
     }
 
-    /// Send a mouse_down, with its click count, to `window`. Returns whether the
-    /// app handled it.
     fn pointerButtonPressed(
         self: *Self,
         window: *LinuxWindow,
@@ -1034,7 +900,6 @@ pub const LinuxPlatform = struct {
         modifiers: input.Modifiers,
     ) bool {
         std.debug.assert(self.active_window == window);
-        // Track click count for double/triple click detection
         const click_count = window.click_tracker.recordClick(
             time,
             self.pointer_x,
@@ -1062,11 +927,9 @@ pub const LinuxPlatform = struct {
         const border_width: f64 = 8.0;
         const title_bar_height: f64 = 32.0;
 
-        // Check for resize edges first
         if (window.getResizeEdge(self.pointer_x, self.pointer_y, border_width)) |edge| {
             window.startResize(edge);
         } else if (window.isInTitleBar(self.pointer_y, title_bar_height)) {
-            // If in title bar area, start move
             window.startMove();
         }
     }
@@ -1082,10 +945,8 @@ pub const LinuxPlatform = struct {
         _ = time;
         const self: *Self = @ptrCast(@alignCast(data));
 
-        // Convert axis value to delta
         const delta = wayland.fixedToDouble(value);
 
-        // Dispatch scroll event to active window
         if (self.active_window) |window| {
             const modifiers = linux_input.modifiersFromFlags(
                 self.modifier_shift,
@@ -1094,7 +955,6 @@ pub const LinuxPlatform = struct {
                 self.modifier_super,
             );
 
-            // Wayland sends separate events for horizontal/vertical scroll
             const delta_x: f64 = if (axis == .horizontal_scroll) delta else 0;
             const delta_y: f64 = if (axis == .vertical_scroll) delta else 0;
 
@@ -1115,7 +975,6 @@ pub const LinuxPlatform = struct {
     ) callconv(.c) void {
         _ = data;
         _ = pointer;
-        // Frame event signals end of a group of pointer events
     }
 
     fn pointerAxisSource(
@@ -1176,10 +1035,6 @@ pub const LinuxPlatform = struct {
         _ = direction;
     }
 
-    // =========================================================================
-    // Touch Callbacks
-    // =========================================================================
-
     fn touchDown(
         data: ?*anyopaque,
         touch: *wayland.Touch,
@@ -1198,7 +1053,6 @@ pub const LinuxPlatform = struct {
         const py = wayland.fixedToDouble(y);
         std.debug.print("touch: down id={d} pos=({d:.1},{d:.1})\n", .{ id, px, py });
 
-        // Find the window owning this surface; fall back to active window.
         var iter = self.window_registry.iterator();
         while (iter.next()) |window_id| {
             const window = self.window_registry.getTyped(LinuxWindow, window_id.*) orelse continue;
@@ -1264,8 +1118,6 @@ pub const LinuxPlatform = struct {
     ) callconv(.c) void {
         _ = data;
         _ = touch;
-        // Frame signals the end of a batch of touch events for the same
-        // logical instant. No action needed — events are dispatched immediately.
     }
 
     fn touchCancel(
@@ -1293,7 +1145,6 @@ pub const LinuxPlatform = struct {
         _ = id;
         _ = major;
         _ = minor;
-        // Shape (contact ellipse) is not yet surfaced in the event model.
     }
 
     fn touchOrientation(
@@ -1306,7 +1157,6 @@ pub const LinuxPlatform = struct {
         _ = touch;
         _ = id;
         _ = orientation;
-        // Orientation (contact angle) is not yet surfaced in the event model.
     }
 
     fn keyboardEnter(
@@ -1345,8 +1195,6 @@ pub const LinuxPlatform = struct {
         self.cancelPointerGesture();
     }
 
-    /// Forget held buttons and send `pointer_cancelled` when any was held,
-    /// so a drag cancels instead of dropping where the pointer last was.
     fn cancelPointerGesture(self: *Self) void {
         if (self.pointer_buttons == 0) return;
         self.pointer_buttons = 0;
@@ -1365,18 +1213,12 @@ pub const LinuxPlatform = struct {
     ) callconv(.c) void {
         _ = data;
         _ = keyboard;
-        // Close the fd - we're not using xkbcommon yet.
-        // In a full implementation, we'd mmap this and parse the keymap.
         // std.posix.close was removed in Zig 0.16 ("posix and os.windows
         // removals" in the release notes); libc is linked on Linux so we
         // call the libc symbol directly.
         _ = std.c.close(fd);
-        // Keymap received - in a full implementation we'd parse this with xkbcommon
     }
 
-    /// Keys per second and milliseconds of delay, from the user's settings;
-    /// a rate of zero turns repeat off. Sent after the keymap and again when
-    /// the settings change.
     fn keyboardRepeatInfo(
         data: ?*anyopaque,
         keyboard: *wayland.Keyboard,
@@ -1401,7 +1243,6 @@ pub const LinuxPlatform = struct {
         const self: *Self = @ptrCast(@alignCast(data));
         self.last_key_serial = serial;
 
-        // Update clipboard serial for copy operations
         self.clipboard_state.updateSerial(serial);
 
         const modifiers = linux_input.modifiersFromFlags(
@@ -1417,24 +1258,19 @@ pub const LinuxPlatform = struct {
             const press = self.key_repeat.press(key, nowMs());
             const is_repeat = press == .synthesized;
 
-            // Dispatch key_down event to active window
             if (self.active_window) |window| {
                 const event = linux_input.keyDownEvent(key, modifiers, is_repeat);
                 const handled = window.handleInput(event);
 
-                // Handle built-in shortcuts only if not handled by app
                 if (!handled and !is_repeat) {
                     if (self.closeOnShortcut(window, key)) return;
                 }
 
-                // Generate text_input event for printable characters
-                // Skip if Ctrl or Alt/Super are held (those are shortcuts, not text)
                 if (!self.modifier_ctrl and !self.modifier_alt and !self.modifier_super) {
                     self.sendKeyText(window, key);
                 }
             }
         } else {
-            // Key released
             self.key_repeat.release(key, nowMs());
             if (self.active_window) |window| {
                 const event = linux_input.keyUpEvent(key, modifiers);
@@ -1443,20 +1279,13 @@ pub const LinuxPlatform = struct {
         }
     }
 
-    /// Milliseconds until the next key repeat is due, 0 when one is, or null
-    /// when no key repeats. The core host sleeps no longer than this.
     pub fn keyRepeatTimeoutMs(self: *const Self) ?u32 {
         return self.key_repeat.timeoutMs(nowMs());
     }
 
-    /// Send the key repeat due now, if any: a key_down marked as a repeat,
-    /// then the key's character, as for a press. Called once per loop turn,
-    /// after that turn's events, so a release read in the same turn cancels
-    /// it, and repeat adds at most two events to the queue per turn.
     pub fn fireKeyRepeat(self: *Self) void {
         const now_ms = nowMs();
         const key = self.key_repeat.fire(now_ms) orelse return;
-        // The next repeat is a full deadline away: at most one per turn.
         std.debug.assert(self.key_repeat.timeoutMs(now_ms).? > 0);
         const window = self.active_window orelse return self.key_repeat.clear();
         // While the input method composes, it owns the keyboard and repeats
@@ -1475,22 +1304,14 @@ pub const LinuxPlatform = struct {
         }
     }
 
-    /// Close `window` for Alt+F4 or Ctrl+Q, and return whether it did. Both
-    /// shortcuts close the focused window rather than clearing `running`,
-    /// matching their messages and what `Window.close` does for
-    /// `xdg_toplevel.close`. Stopping the loop here would reintroduce a
-    /// single-window assumption that `run` and `Window.close` avoid, and would
-    /// skip the application's close veto.
     fn closeOnShortcut(self: *Self, window: *LinuxWindow, key: u32) bool {
         std.debug.assert(self.active_window == window);
-        // Alt+F4 to close
         if (key == linux_input.evdev.KEY_F4 and self.modifier_alt) {
             std.debug.print("Alt+F4 pressed - closing window\n", .{});
             window.close();
             return true;
         }
 
-        // Ctrl+Q to close
         if (key == linux_input.evdev.KEY_Q and self.modifier_ctrl) {
             std.debug.print("Ctrl+Q pressed - closing window\n", .{});
             window.close();
@@ -1499,13 +1320,10 @@ pub const LinuxPlatform = struct {
         return false;
     }
 
-    /// Send the character `key` types with the current Shift state as a
-    /// text_input event, if it types one.
     fn sendKeyText(self: *Self, window: *LinuxWindow, key: u32) void {
         std.debug.assert(!self.modifier_ctrl);
         std.debug.assert(!self.modifier_alt);
         if (linux_input.evdevKeyToChar(key, self.modifier_shift)) |char| {
-            // Create a single-character string on the stack
             var char_buf: [1]u8 = .{char};
             const text_event = linux_input.textInputEvent(&char_buf);
             _ = window.handleInput(text_event);
@@ -1528,13 +1346,11 @@ pub const LinuxPlatform = struct {
         _ = group;
         const self: *Self = @ptrCast(@alignCast(data));
 
-        // Update modifier state using XKB masks
         self.modifier_shift = (mods_depressed & linux_input.xkb_mod.SHIFT) != 0;
         self.modifier_ctrl = (mods_depressed & linux_input.xkb_mod.CTRL) != 0;
         self.modifier_alt = (mods_depressed & linux_input.xkb_mod.ALT) != 0;
         self.modifier_super = (mods_depressed & linux_input.xkb_mod.SUPER) != 0;
 
-        // Dispatch modifiers_changed event to active window
         if (self.active_window) |window| {
             const modifiers = linux_input.modifiersFromFlags(
                 self.modifier_shift,
@@ -1547,10 +1363,6 @@ pub const LinuxPlatform = struct {
         }
     }
 
-    // =========================================================================
-    // Text Input V3 Callbacks (IME Support)
-    // =========================================================================
-
     fn textInputEnter(
         data: ?*anyopaque,
         text_input: *wayland.ZwpTextInputV3,
@@ -1561,7 +1373,6 @@ pub const LinuxPlatform = struct {
 
         const self: *Self = @ptrCast(@alignCast(data orelse return));
 
-        // Text input is now active for this surface
         if (self.active_window) |window| {
             window.ime_active = true;
         }
@@ -1577,7 +1388,6 @@ pub const LinuxPlatform = struct {
 
         const self: *Self = @ptrCast(@alignCast(data orelse return));
 
-        // Text input is no longer active
         if (self.active_window) |window| {
             window.ime_active = false;
             window.clearMarkedText();
@@ -1598,7 +1408,6 @@ pub const LinuxPlatform = struct {
         _ = cursor_begin;
         _ = cursor_end;
 
-        // Copied now, applied on the done event.
         self.ime_preedit_text.set(text);
     }
 
@@ -1611,7 +1420,6 @@ pub const LinuxPlatform = struct {
 
         const self: *Self = @ptrCast(@alignCast(data orelse return));
 
-        // Copied now, applied on the done event.
         self.ime_commit_text.set(text);
     }
 
@@ -1625,7 +1433,6 @@ pub const LinuxPlatform = struct {
 
         const self: *Self = @ptrCast(@alignCast(data orelse return));
 
-        // Store delete info - will be applied on done event
         self.ime_delete_before = before_length;
         self.ime_delete_after = after_length;
     }
@@ -1642,16 +1449,12 @@ pub const LinuxPlatform = struct {
 
         const window = self.active_window orelse return;
 
-        // Apply accumulated IME state
-        // First handle any delete_surrounding_text
         if (self.ime_delete_before > 0 or self.ime_delete_after > 0) {
             // TODO: Implement delete surrounding text support
-            // For now, we just track that it was requested
             self.ime_delete_before = 0;
             self.ime_delete_after = 0;
         }
 
-        // Handle commit string (final text)
         if (self.ime_commit_text.get()) |commit_text| {
             // Whole, up to the protocol's bound: the core queue copies it,
             // cutting it at a codepoint boundary past its text budget.
@@ -1661,14 +1464,12 @@ pub const LinuxPlatform = struct {
             self.ime_commit_text.clear();
         }
 
-        // Handle preedit string (composing text)
         if (self.ime_preedit_text.get()) |preedit_text| {
             window.setMarkedText(preedit_text);
             const event = linux_input.compositionEvent(window.marked_text);
             _ = window.handleInput(event);
             self.ime_preedit_text.clear();
         } else if (self.ime_commit_text.get() == null) {
-            // Empty preedit with no commit means composition cancelled
             if (window.hasMarkedText()) {
                 window.clearMarkedText();
                 const event = linux_input.compositionEvent("");
@@ -1677,19 +1478,11 @@ pub const LinuxPlatform = struct {
         }
     }
 
-    // =========================================================================
-    // Calls from the 0.3.1 `context/window.zig`
-    // =========================================================================
-    //
-    // The core never makes these calls. They stay only while that file
-    // compiles, and go when phase 6 deletes it.
-
     pub fn quit(self: *Self) void {
         self.running = false;
         std.debug.assert(!self.running);
     }
 
-    /// The core's renderer is its host's, so there is nothing to lock here.
     pub fn lockRenderThreads(self: *Self) void {
         std.debug.assert(self.window_registry.count() <= WindowRegistry.window_count_max);
     }
@@ -1698,11 +1491,6 @@ pub const LinuxPlatform = struct {
         std.debug.assert(self.window_registry.count() <= WindowRegistry.window_count_max);
     }
 
-    // =========================================================================
-    // Public IME Control Functions
-    // =========================================================================
-
-    /// Enable text input for the active window
     pub fn enableTextInput(self: *Self) void {
         if (self.text_input) |ti| {
             wayland.zwpTextInputV3Enable(ti);
@@ -1710,7 +1498,6 @@ pub const LinuxPlatform = struct {
         }
     }
 
-    /// Disable text input
     pub fn disableTextInput(self: *Self) void {
         if (self.text_input) |ti| {
             wayland.zwpTextInputV3Disable(ti);
@@ -1718,7 +1505,6 @@ pub const LinuxPlatform = struct {
         }
     }
 
-    /// Set IME cursor rectangle for candidate window positioning
     pub fn setImeCursorRect(self: *Self, x: i32, y: i32, width: i32, height: i32) void {
         if (self.text_input) |ti| {
             wayland.zwpTextInputV3SetCursorRectangle(ti, x, y, width, height);
@@ -1793,10 +1579,6 @@ fn codepointPrefixLen(text: []const u8, len_max: usize) usize {
 }
 
 test "IME strings survive libwayland freeing the event's argument buffer" {
-    // Goal: Bug B. libwayland frees a text-input-v3 event's strings when its
-    // callback returns, and `textInputDone` reads them in a later callback.
-    // Methodology: store a string, overwrite the source the way a freed and
-    // reused buffer would be, and check the stored copy is unchanged.
     var source = "nihongo".*;
     var text: ImeText = .{};
     text.set(@ptrCast(&source));
@@ -1807,10 +1589,6 @@ test "IME strings survive libwayland freeing the event's argument buffer" {
 }
 
 test "an IME string past the buffer is cut on a codepoint boundary" {
-    // Goal: the bound never splits a UTF-8 sequence. Methodology: fill to one
-    // byte before the limit with ASCII, then a 3-byte "か" that crosses it:
-    // the cut must drop the whole sequence. At exactly the limit nothing is
-    // cut, and a 2-byte limit inside a 3-byte sequence cuts to zero.
     const limit = ImeText.bytes_max;
     var long: [limit + 3:0]u8 = undefined;
     @memset(long[0 .. limit - 1], 'a');

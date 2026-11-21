@@ -1,9 +1,6 @@
 //! Golden checks: replay each trace and compare with the checked-in text.
-//!
-//! The `core_*.txt` files are the baseline for counter, todo, and actions.
-//! This binary is built with the synthetic text backend, so the goldens match
-//! on every host. Recapture them with `zig build goldens` after an intended
-//! change.
+//! Built with the synthetic text backend, so the goldens match on every
+//! host; recapture with `zig build goldens` after an intended change.
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -43,9 +40,6 @@ test "core actions matches its golden" {
 }
 
 test "a replayed trace is byte-identical" {
-    // Goal: goldens are stable. Methodology: run the same trace twice in one
-    // process and require identical bytes; any dependence on the clock,
-    // allocation addresses, or leftover state shows up as a difference.
     const first = try std.testing.allocator.alloc(u8, golden_bytes_max);
     defer std.testing.allocator.free(first);
     const second = try std.testing.allocator.alloc(u8, golden_bytes_max);

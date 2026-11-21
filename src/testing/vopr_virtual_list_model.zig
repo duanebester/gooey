@@ -1,19 +1,10 @@
 //! The VOPR's model of the virtual_list example. The app keeps no state of
 //! its own (its `State` has no fields; Top, Bottom, and Jump only scroll),
-//! so the model checks nothing an app model would. It measures how deep a
-//! seed went through the list, from the rendered frames, and it tells the
-//! generator where the list and its scrollbar are, so pointer, wheel, and
-//! drag actions mostly land there (`biasTarget`).
-//!
-//! Depth, per seed:
-//! - rows seen: distinct messages any rendered frame built;
-//! - the furthest row index and scroll offset reached;
-//! - rows entered: rows a rendered frame built that the one before did not,
-//!   which is the List's recycling (each such row is built fresh, and a
-//!   row that left the view has its keyed state swept);
-//! - the most rows one frame built.
-//! Rows are found by their keyed boxes' hit records, whose parent is the
-//! list's record (`components.List` keys each row's box by its index).
+//! so the model checks nothing an app model would: it measures how deep a
+//! seed went, from the rendered frames, and tells the generator where the
+//! list and its scrollbar are (`biasTarget`). Rows are found by their keyed
+//! boxes' hit records, whose parent is the list's record (`components.List`
+//! keys each row's box by its index).
 
 const std = @import("std");
 const gooey = @import("gooey");

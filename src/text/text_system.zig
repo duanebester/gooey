@@ -1,11 +1,3 @@
-//! High-level text system combining all components
-//!
-//! Provides a unified API for text rendering with:
-//! - Font loading and metrics
-//! - Text shaping (simple and complex)
-//! - Glyph caching and atlas management
-//! - GPU-ready glyph data
-
 const std = @import("std");
 const builtin = @import("builtin");
 
@@ -23,11 +15,7 @@ const reservation = @import("../core/reservation.zig");
 
 const assert = std.debug.assert;
 
-// =============================================================================
-// Shaped Run Cache - Fixed Capacity, Zero Runtime Allocation
-// =============================================================================
-
-/// Cache key for shaped text runs using content hash (not pointer)
+/// Content hash key, not a pointer key like `GlyphKey`.
 const ShapedRunKey = struct {
     text_hash: u64,
     text_len: u32,
@@ -44,7 +32,6 @@ const ShapedRunKey = struct {
     /// 26.6 fixed point scale (common in font systems like FreeType)
     const FIXED_POINT_SCALE = 64.0;
 
-    /// FNV-1a hash for text content - fast and good distribution
     fn hashText(text: []const u8) u64 {
         std.debug.assert(text.len > 0);
         std.debug.assert(text.len <= ShapedRunCache.MAX_TEXT_LEN);
@@ -60,7 +47,6 @@ const ShapedRunKey = struct {
         return hash;
     }
 
-    /// Extract prefix bytes, zero-padded if text is shorter
     fn extractPrefix(text: []const u8) [PREFIX_LEN]u8 {
         var prefix: [PREFIX_LEN]u8 = @splat(0);
         const copy_len = @min(text.len, PREFIX_LEN);
@@ -68,7 +54,6 @@ const ShapedRunKey = struct {
         return prefix;
     }
 
-    /// Extract suffix bytes, zero-padded if text is shorter
     fn extractSuffix(text: []const u8) [SUFFIX_LEN]u8 {
         var suffix: [SUFFIX_LEN]u8 = @splat(0);
         const copy_len = @min(text.len, SUFFIX_LEN);
@@ -79,7 +64,7 @@ const ShapedRunKey = struct {
 
     pub fn init(text: []const u8, font_ptr: usize, font_size: f32) Self {
         std.debug.assert(font_size > 0);
-        std.debug.assert(font_size < 1000); // Reasonable font size limit
+        std.debug.assert(font_size < 1000);
 
         return .{
             .text_hash = hashText(text),
@@ -101,7 +86,6 @@ const ShapedRunKey = struct {
     }
 };
 
-/// A single cache entry with fixed-capacity glyph storage
 const CacheEntry = struct {
     key: ShapedRunKey,
     glyphs: [ShapedRunCache.MAX_GLYPHS_PER_ENTRY]ShapedGlyph,
@@ -109,7 +93,6 @@ const CacheEntry = struct {
     width: f32,
     /// LRU tracking - higher = more recently used
     last_access: u32,
-    /// Is this slot in use?
     valid: bool,
 
     const Self = @This();
@@ -122,7 +105,7 @@ const CacheEntry = struct {
 };
 
 /// Cache for shaped text runs, reserved at init from
-/// `ResourceLimits.text.shaped_run_count_max` and never grown (CLAUDE.md §2).
+/// `ResourceLimits.text.shaped_run_count_max` and never grown.
 /// A hash table with open addressing finds an entry in O(1) on average; a full
 /// cache evicts the least recently used entry, so a miss costs shaping time,
 /// never correctness.
@@ -137,25 +120,23 @@ pub const ShapedRunCache = struct {
     /// Hash slot -> entry index + 1, or `slot_empty`; a power of two, at least
     /// twice the entries.
     hash_table: []u16,
-    /// Number of valid entries
     entry_count: u32,
-    /// Entry slots claimed so far; `deinit` zeroes this prefix (§21).
+    /// Entry slots claimed so far; `deinit` zeroes this prefix.
     entry_high_water: u32,
     /// Whether any hash slot was written, for `deinit`'s zeroing.
     hash_written: bool,
-    /// Global access counter for LRU
     access_counter: u32,
 
     const Self = @This();
 
     // Which runs are cacheable at all; longer ones are shaped uncached.
-    pub const MAX_GLYPHS_PER_ENTRY: usize = 128; // ~128 chars per cached string
-    pub const MAX_TEXT_LEN: usize = 512; // Max cacheable text length
+    pub const MAX_GLYPHS_PER_ENTRY: usize = 128;
+    pub const MAX_TEXT_LEN: usize = 512;
 
     const slot_empty: u16 = 0;
 
     comptime {
-        std.debug.assert(@sizeOf(ShapedGlyph) <= 48); // Glyph struct size check
+        std.debug.assert(@sizeOf(ShapedGlyph) <= 48);
         // Entry indexes plus one fit a `u16` at the ceiling.
         std.debug.assert(limits_mod.TextLimits.ceiling.shaped_run_count_max < std.math.maxInt(u16));
     }
@@ -183,7 +164,7 @@ pub const ShapedRunCache = struct {
         return self;
     }
 
-    /// Zero what was written before the pages go back (§21).
+    /// Zero what was written before the pages go back.
     pub fn deinit(self: *Self) void {
         assert(self.entry_count <= self.entry_high_water);
         const hash_used = if (self.hash_written) self.hash_table.len else 0;
@@ -192,9 +173,6 @@ pub const ShapedRunCache = struct {
         self.* = undefined;
     }
 
-    /// Get cached shaped run, returns null if not cached
-    /// Updates LRU access time on hit
-    /// O(1) average case with hash table lookup
     pub fn get(self: *Self, key: ShapedRunKey) ?ShapedRun {
         std.debug.assert(key.text_len > 0);
         std.debug.assert(key.text_len <= MAX_TEXT_LEN);
@@ -210,29 +188,25 @@ pub const ShapedRunCache = struct {
         return ShapedRun{
             .glyphs = entry.glyphs[0..entry.glyph_count],
             .width = entry.width,
-            .owned = false, // Cache owns this memory
+            .owned = false,
         };
     }
 
-    /// Store a shaped run in cache (copies glyphs into pre-allocated storage)
-    /// Uses LRU eviction if cache is full
     pub fn put(self: *Self, key: ShapedRunKey, run: ShapedRun) void {
         std.debug.assert(key.text_len > 0);
         std.debug.assert(run.width >= 0);
 
-        // Don't cache runs that are too long
         if (run.glyphs.len > MAX_GLYPHS_PER_ENTRY) {
             return;
         }
 
-        // Don't cache runs with fallback fonts (font_ref lifecycle issues)
+        // Not cached: `font_ref` lifetime is not tracked by the cache.
         for (run.glyphs) |g| {
             if (g.font_ref != null) {
                 return;
             }
         }
 
-        // Check if key already exists - update in place if so
         const existing_idx = self.findEntryIndex(key);
         if (existing_idx) |idx| {
             const slot = &self.entries[idx];
@@ -248,18 +222,15 @@ pub const ShapedRunCache = struct {
         const target_idx = self.claimSlot();
         const slot = &self.entries[target_idx];
 
-        // If evicting, remove old entry from hash table first
         if (slot.valid) {
             std.debug.assert(self.entry_count > 0);
             self.removeFromHashTable(slot.key, target_idx);
             self.entry_count -= 1;
         }
 
-        // Copy glyphs into slot
         const glyph_count: u16 = @intCast(run.glyphs.len);
         @memcpy(slot.glyphs[0..glyph_count], run.glyphs);
 
-        // Update slot metadata
         slot.key = key;
         slot.glyph_count = glyph_count;
         slot.width = run.width;
@@ -269,7 +240,6 @@ pub const ShapedRunCache = struct {
 
         self.entry_count += 1;
 
-        // Insert into hash table
         self.insertIntoHashTable(key, @intCast(target_idx));
 
         std.debug.assert(self.entry_count <= self.entries.len);
@@ -299,8 +269,8 @@ pub const ShapedRunCache = struct {
         return target_idx;
     }
 
-    /// Find entry index by key, returns null if not found. The table and
-    /// entries are loaded once, so the probe loop reloads neither (§20).
+    /// The table and
+    /// entries are loaded once, so the probe loop reloads neither.
     fn findEntryIndex(self: *const Self, key: ShapedRunKey) ?usize {
         const hash_table = self.hash_table;
         const entries = self.entries;
@@ -341,21 +311,18 @@ pub const ShapedRunCache = struct {
         unreachable;
     }
 
-    /// Remove entry from hash table (used during eviction)
-    /// Uses tombstone-free deletion by rehashing subsequent entries
+    /// Tombstone-free deletion: rehashes the entries after the removed slot.
     fn removeFromHashTable(self: *Self, key: ShapedRunKey, entry_idx: usize) void {
         const mask = self.hash_table.len - 1;
         var probe: usize = @as(usize, @truncate(key.text_hash)) & mask;
         const stored: u16 = @intCast(entry_idx + 1);
 
-        // Find the slot containing this entry
         for (0..self.hash_table.len) |_| {
             if (self.hash_table[probe] == slot_empty) {
                 return; // Entry not in hash table
             }
 
             if (self.hash_table[probe] == stored) {
-                // Found it - remove and rehash subsequent entries
                 self.hash_table[probe] = slot_empty;
                 self.rehashAfterRemoval(probe);
                 return;
@@ -365,7 +332,6 @@ pub const ShapedRunCache = struct {
         }
     }
 
-    /// Rehash entries that may have been displaced by the removed entry
     fn rehashAfterRemoval(self: *Self, removed_slot: usize) void {
         const mask = self.hash_table.len - 1;
         var slot = (removed_slot + 1) & mask;
@@ -376,7 +342,6 @@ pub const ShapedRunCache = struct {
                 return; // Done - hit empty slot
             }
 
-            // Check if this entry needs to be moved
             const entry_idx = stored - 1;
             const entry = &self.entries[entry_idx];
             if (!entry.valid) {
@@ -386,15 +351,13 @@ pub const ShapedRunCache = struct {
 
             const natural_slot = @as(usize, @truncate(entry.key.text_hash)) & mask;
 
-            // If entry's natural slot is between removed_slot and current slot
-            // (wrapping around), it needs to be rehashed
+            // The natural slot falls in the removed slot's gap, wrapping around.
             const needs_rehash = if (removed_slot < slot)
                 (natural_slot <= removed_slot or natural_slot > slot)
             else
                 (natural_slot <= removed_slot and natural_slot > slot);
 
             if (needs_rehash) {
-                // Remove from current slot and reinsert
                 self.hash_table[slot] = slot_empty;
                 self.insertIntoHashTable(entry.key, entry_idx);
             }
@@ -419,17 +382,11 @@ pub const ShapedRunCache = struct {
     }
 };
 
-// =============================================================================
-// Measure Cache - Width-Only, Fixed Capacity, Zero Runtime Allocation
-// =============================================================================
-
-/// A single width-only measurement slot.
 const MeasureEntry = struct {
     key: ShapedRunKey,
     width: f32,
     /// LRU tracking - higher = more recently used
     last_access: u32,
-    /// Is this slot in use?
     valid: bool,
 
     const Self = @This();
@@ -443,23 +400,16 @@ const MeasureEntry = struct {
 
 /// Cache of text *widths*, independent of the shaped-run cache.
 ///
-/// Why this exists as a separate cache: `ShapedRunCache` refuses any run longer
-/// than `MAX_GLYPHS_PER_ENTRY` (128), because every entry embeds its glyph array
-/// inline -- 128 glyphs x 44 bytes is ~5.6KB per entry, and 256 of those already
-/// sit just under the 2MB comptime budget asserted above.  Raising that limit to
-/// cover `MAX_TEXT_LEN` (512) would multiply the cache by 4x and blow it.
+/// `ShapedRunCache` refuses runs longer than `MAX_GLYPHS_PER_ENTRY` (128):
+/// each entry embeds its glyph array inline, so raising the limit to
+/// `MAX_TEXT_LEN` would multiply the cache fourfold. `measureText` only
+/// reads the scalar width, so storing just that (~56 B per entry) covers the
+/// whole 512-byte range; without this, every string of 129..512 bytes is a
+/// permanent miss that shapes again every frame.
 ///
-/// But `measureText` never looks at the glyphs -- it reads the scalar `width` and
-/// throws the rest away.  Storing only the width costs ~56 bytes per entry
-/// instead of ~5.6KB, which is ~100x cheaper and comfortably covers the whole
-/// `MAX_TEXT_LEN` range.  Without this, every string between 129 and 512 bytes is
-/// a *permanent* miss: it passes the lookup gate, shapes through CoreText, then
-/// gets refused on insert, so the next frame repeats the entire cycle.
-///
-/// Layout is set-associative rather than the index-plus-hash-table scheme used by
-/// `ShapedRunCache`.  Entries are small enough to live directly in the probe
-/// window, so a bounded linear probe with LRU eviction inside that window needs no
-/// separate hash table, no tombstones, and no rehash-on-removal.
+/// Set-associative rather than index-plus-hash-table: entries are small
+/// enough to live directly in the probe window, so a bounded linear probe
+/// with LRU eviction needs no separate table, tombstones, or rehash.
 pub const MeasureCache = struct {
     /// Slots indexed directly by hash, `text.measure_slot_count_max` of them
     /// (a power of two). Zero is an empty slot, so fresh pages are an empty
@@ -468,7 +418,6 @@ pub const MeasureCache = struct {
     slots: []MeasureEntry,
     /// Whether any slot was written, for `deinit`'s zeroing.
     written: bool,
-    /// Global access counter for LRU
     access_counter: u32,
 
     const Self = @This();
@@ -492,14 +441,13 @@ pub const MeasureCache = struct {
         return self;
     }
 
-    /// Zero the slots if any were written, then release them (§21).
+    /// Zero the slots if any were written, then release them.
     pub fn deinit(self: *Self) void {
         const used = if (self.written) self.slots.len else 0;
         reservation.release(MeasureEntry, self.slots, used);
         self.* = undefined;
     }
 
-    /// Look up a cached width. Returns null on miss. Updates LRU on hit.
     pub fn get(self: *Self, key: ShapedRunKey) ?f32 {
         std.debug.assert(key.text_len > 0);
         std.debug.assert(key.text_len <= ShapedRunCache.MAX_TEXT_LEN);
@@ -548,7 +496,6 @@ pub const MeasureCache = struct {
             const slot = &slots[index];
 
             if (slot.valid) {
-                // Refresh in place when the key is already present.
                 if (ShapedRunKey.eql(slot.key, key)) {
                     victim_index = index;
                     break;
@@ -588,10 +535,6 @@ pub const MeasureCache = struct {
         std.debug.assert(!self.slots[self.slots.len - 1].valid);
     }
 };
-
-// =============================================================================
-// Text Size Cache - Wrapped Sizes for `cx.measureText`
-// =============================================================================
 
 /// One text measured as layout sizes it: its bytes' hash and length, the
 /// layout style packed into `style`, and the wrap width's bits. A 64-bit hash
@@ -648,7 +591,7 @@ pub const TextSizeCache = struct {
         return self;
     }
 
-    /// Zero the slots if any were written, then release them (§21).
+    /// Zero the slots if any were written, then release them.
     pub fn deinit(self: *Self) void {
         const used = if (self.written) self.slots.len else 0;
         reservation.release(TextSizeEntry, self.slots, used);
@@ -717,10 +660,6 @@ pub const TextSizeCache = struct {
     }
 };
 
-// =============================================================================
-// Platform Selection (compile-time)
-// =============================================================================
-
 const is_wasm = platform.is_wasm;
 const is_linux = platform.is_linux;
 const is_windows = platform.is_windows;
@@ -740,7 +679,6 @@ else if (is_windows)
 else
     @import("backends/coretext/mod.zig");
 
-/// Platform-specific font face type
 const PlatformFace = if (is_synthetic)
     backend.SyntheticFace
 else if (is_wasm)
@@ -752,7 +690,6 @@ else if (is_windows)
 else
     backend.CoreTextFace;
 
-/// Platform-specific shaper type
 const PlatformShaper = if (is_synthetic)
     backend.SyntheticShaper
 else if (is_wasm)
@@ -763,10 +700,6 @@ else if (is_windows)
     backend.DirectWriteShaper
 else
     backend.CoreTextShaper;
-
-// =============================================================================
-// Public Types
-// =============================================================================
 
 /// The most codepoints one shaped run may hold, on every backend; documented
 /// with the budget it bounds in `core/limits.zig`.
@@ -787,13 +720,12 @@ pub const CachedGlyph = cache_mod.CachedGlyph;
 pub const AtlasOptions = cache_mod.AtlasOptions;
 pub const SUBPIXEL_VARIANTS_X = types.SUBPIXEL_VARIANTS_X;
 
-/// High-level text system
 pub const TextSystem = struct {
     allocator: std.mem.Allocator,
     /// Owns every `ShapedRun` a shape miss returns; callers free runs with it.
     /// It is `allocator` unless a caller with reserved scratch storage sets it
     /// (`useRunAllocator`), so a shape miss after initialization claims that
-    /// storage instead of the heap (CLAUDE.md §2; the 0.4.0 core does this).
+    /// storage instead of the heap.
     run_allocator: std.mem.Allocator,
     cache: cache_mod.GlyphCache,
     /// One face per variant in `FontLimits.variants` (the app family), then
@@ -816,10 +748,9 @@ pub const TextSystem = struct {
     /// Complex shaper (native only, void on web)
     shaper: ?PlatformShaper,
     scale_factor: f32,
-    /// Cache for shaped text runs (fixed capacity, pre-allocated)
     shape_cache: ShapedRunCache,
-    /// Cache for text widths (fixed capacity, pre-allocated). Covers the full
-    /// MAX_TEXT_LEN range that `shape_cache` cannot -- see `MeasureCache`.
+    /// Covers the full `MAX_TEXT_LEN` range `shape_cache` cannot; see
+    /// `MeasureCache`.
     measure_cache: MeasureCache,
     /// Wrapped text sizes for `cx.measureText` (see `TextSizeCache`).
     text_size_cache: TextSizeCache,
@@ -862,7 +793,7 @@ pub const TextSystem = struct {
         atlas_options: cache_mod.AtlasOptions,
     ) !void {
         std.debug.assert(scale > 0);
-        std.debug.assert(scale <= 4.0); // Reasonable scale factor limit
+        std.debug.assert(scale <= 4.0);
         std.debug.assert(text_limits.check() == null); // The app's budget checked it.
         const font_limits = &text_limits.fonts;
 
@@ -954,7 +885,6 @@ pub const TextSystem = struct {
         try self.loadFaces(.{ .name = name }, size);
     }
 
-    /// Load every variant in the face set from a system family.
     pub fn loadSystemFont(self: *Self, style: SystemFont, size: f32) !void {
         std.debug.assert(size > 0 and size < 1000);
         try self.loadFaces(.{ .system = style }, size);
@@ -983,7 +913,6 @@ pub const TextSystem = struct {
     /// failed reload can restore it.
     pub const family_name_bytes_max: u32 = 255;
 
-    /// A family to load: an installed name or a platform family.
     pub const FaceSource = union(enum) {
         name: []const u8,
         system: SystemFont,
@@ -1044,15 +973,12 @@ pub const TextSystem = struct {
         std.debug.assert(self.faceFor(.app, .regular).metrics.point_size == size);
     }
 
-    /// Load every app-family slot.
     fn loadEveryFace(self: *Self, source: FaceSource, size: f32) !void {
         std.debug.assert(!self.faces_loaded);
         try self.loadFaceRange(source, size, 0, self.app_face_count);
         self.faces_loaded = true;
     }
 
-    /// Load one face per slot in `first..end`; on failure, release the faces
-    /// already loaded.
     fn loadFaceRange(self: *Self, source: FaceSource, size: f32, first: usize, end: usize) !void {
         std.debug.assert(first < end);
         std.debug.assert(end <= self.faces.len);
@@ -1180,8 +1106,6 @@ pub const TextSystem = struct {
         return self.faceFor(.app, .regular).asFontFace();
     }
 
-    /// Shape text with proper kerning and ligature support.
-    /// Stats parameter is optional - pass null to skip performance tracking.
     pub fn shapeText(
         self: *Self,
         family: FontFamily,
@@ -1199,7 +1123,6 @@ pub const TextSystem = struct {
         const font_ptr = @intFromPtr(face);
         const use_cache = text.len <= ShapedRunCache.MAX_TEXT_LEN;
 
-        // Build the key once, reuse for lookup and store.
         const cache_key = if (use_cache)
             ShapedRunKey.init(text, font_ptr, face.metrics.point_size)
         else
@@ -1225,7 +1148,6 @@ pub const TextSystem = struct {
             }
         }
 
-        // Cache miss - perform shaping
         if (codepointCount(text) > run_codepoint_count_max) return error.TextRunTooLong;
         if (self.shaper == null) {
             self.shaper = PlatformShaper.init(self.allocator);
@@ -1242,16 +1164,13 @@ pub const TextSystem = struct {
         std.debug.assert(result.width >= 0);
         std.debug.assert(result.owned == true);
 
-        // Record stats. On WASM, `elapsed` is always 0 since timing is skipped.
         if (stats) |s| {
             const elapsed_ns: i96 = start_ts.durationTo(end_ts).toNanoseconds();
             std.debug.assert(elapsed_ns >= 0);
             s.recordShapeMiss(@intCast(elapsed_ns));
         }
 
-        // Cache the result for next time (reuse key computed earlier)
         if (use_cache) {
-            // Lock for thread-safe cache write
             self.shape_cache_mutex.lockUncancelable(self.io);
             defer self.shape_cache_mutex.unlock(self.io);
             self.shape_cache.put(cache_key, result);
@@ -1260,18 +1179,10 @@ pub const TextSystem = struct {
         return result;
     }
 
-    /// Shape text into a caller-provided glyph buffer, avoiding heap allocation
-    /// on the warm (cache-hit) path.  On a hit, glyphs are memcpy'd into
-    /// `out_glyphs` and the returned ShapedRun has `owned = false` — no deinit
-    /// needed.  On a cache miss (or if the glyph count exceeds the buffer),
-    /// falls through to `shapeText` which heap-allocates via GPA; the returned
-    /// run then has `owned = true` and the caller must deinit it.
-    ///
-    /// Typical usage with a stack buffer (zero heap alloc on warm path):
-    ///
-    ///   var buf: [ShapedRunCache.MAX_GLYPHS_PER_ENTRY]ShapedGlyph = undefined;
-    ///   var shaped = try ts.shapeTextInto(.app, text, .regular, stats, &buf);
-    ///   defer if (shaped.owned) shaped.deinit(ts.run_allocator);
+    /// Shape text into a caller-provided glyph buffer. On a shape-cache hit the
+    /// glyphs are copied into `out_glyphs` and the run has `owned = false`; on a
+    /// miss or a run longer than the buffer it falls through to `shapeText`,
+    /// which allocates from `run_allocator` and returns `owned = true`.
     pub fn shapeTextInto(
         self: *Self,
         family: FontFamily,
@@ -1311,22 +1222,16 @@ pub const TextSystem = struct {
                         .owned = false,
                     };
                 }
-                // Buffer too small — fall through to heap path.
             }
         }
 
-        // Cold path (or buffer overflow): delegate to heap-allocating shapeText.
-        // Returns owned = true; caller must deinit with self.run_allocator.
         return self.shapeText(family, text, variant, stats);
     }
 
-    /// Get cached glyph with subpixel variant (renders if needed)
-    /// Thread-safe: protected by glyph_cache_mutex for multi-window scenarios.
     pub fn getGlyphSubpixel(self: *Self, glyph_id: u16, font_size: f32, subpixel_x: u8, subpixel_y: u8) !CachedGlyph {
         std.debug.assert(font_size > 0);
         const face = try self.getFontFace();
 
-        // Lock for thread-safe glyph cache/atlas access (multiple DisplayLink threads)
         self.glyph_cache_mutex.lockUncancelable(self.io);
         defer self.glyph_cache_mutex.unlock(self.io);
 
@@ -1336,7 +1241,6 @@ pub const TextSystem = struct {
     /// Simple width measurement, of any length: a text past one shaping run
     /// is measured run by run (`runLength`), which splits only where no
     /// glyph joins its neighbour, so the sum is the whole text's width.
-    /// Work: one pass to find the runs, then one `measureRun` each.
     pub fn measureText(
         self: *Self,
         family: FontFamily,
@@ -1376,8 +1280,8 @@ pub const TextSystem = struct {
         // wider than the same string in regular, so layout must measure it bold.
         const face = self.faceFor(family, variant);
         if (is_wasm and !is_synthetic) {
-            // Web optimization: single JS call to measure entire string.
-            // This avoids N boundary crossings for N characters.
+            // One JS call measures the whole string instead of N boundary
+            // crossings.
             const font_name = face.font_name_buf[0..face.font_name_len];
             const web_imports = @import("../platform/web/imports.zig");
             return web_imports.measureText(
@@ -1499,14 +1403,9 @@ pub const TextSystem = struct {
         return self.cache.getAtlas();
     }
 
-    /// Batch resolve glyphs under a single glyph_cache_mutex lock.
-    /// Writes CachedGlyph results into `out_cached[0..glyphs.len]`.
-    /// For glyphs with font_ref != null, uses the fallback font path;
-    /// otherwise uses the face for `variant`, the one that shaped the run.
-    ///
-    /// This is the glyph-cache equivalent of `shapeTextInto`: same batch
-    /// pattern, next layer down.  Eliminates N-1 lock/unlock pairs when
-    /// rendering a text run of N glyphs.
+    /// Batch resolve glyphs under one `glyph_cache_mutex` lock, eliminating
+    /// the N-1 lock/unlock pairs of per-glyph resolution. Glyphs with a
+    /// `font_ref` take the fallback path; others use the face for `variant`.
     pub fn resolveGlyphBatch(
         self: *Self,
         family: FontFamily,
@@ -1548,14 +1447,9 @@ pub const TextSystem = struct {
     }
 };
 
-// =============================================================================
-// Standalone Helpers — extracted for hot-loop clarity (CLAUDE.md rule #20)
-// =============================================================================
-
-/// Compute text measurement (width, height, line_count) from a glyph slice.
-/// Handles the no-wrap fast path (max_width null or total width fits) and the
-/// word-wrapping slow path.  Takes only primitives and slices — no `self`,
-/// no struct indirection — so the compiler can keep everything in registers.
+/// Compute text measurement (width, height, line_count) from a glyph slice:
+/// the no-wrap fast path first, then word wrapping. Takes only primitives and
+/// slices, so the compiler can keep everything in registers.
 fn measureGlyphRun(
     glyphs: []const types.ShapedGlyph,
     text: []const u8,
@@ -1566,7 +1460,6 @@ fn measureGlyphRun(
     std.debug.assert(line_height > 0);
     std.debug.assert(total_width >= 0);
 
-    // No-wrap fast path: text fits on a single line.
     if (max_width == null or total_width <= max_width.?) {
         return .{
             .width = total_width,
@@ -1578,7 +1471,6 @@ fn measureGlyphRun(
     const limit = max_width.?;
     std.debug.assert(limit > 0);
 
-    // Word-wrapping measurement.
     var current_width: f32 = 0;
     var max_line_width: f32 = 0;
     var line_count: u32 = 1;
@@ -1624,10 +1516,6 @@ fn measureGlyphRun(
     };
 }
 
-// =============================================================================
-// Tests
-// =============================================================================
-
 /// The caches' sizes in these tests: `standard`'s 256 runs and `small`'s
 /// 1,024 width slots.
 const test_shaped_run_count: u32 = TextLimits.standard.shaped_run_count_max;
@@ -1648,7 +1536,6 @@ test "ShapedRunCache basic operations" {
     var cache = try ShapedRunCache.init(test_shaped_run_count);
     defer cache.deinit();
 
-    // Create test glyphs
     var glyphs = [_]ShapedGlyph{
         .{ .glyph_id = 1, .x_offset = 0, .y_offset = 0, .x_advance = 10, .y_advance = 0, .cluster = 0 },
         .{ .glyph_id = 2, .x_offset = 0, .y_offset = 0, .x_advance = 10, .y_advance = 0, .cluster = 1 },
@@ -1662,25 +1549,17 @@ test "ShapedRunCache basic operations" {
 
     const key = ShapedRunKey.init("ab", 0x1000, 16.0);
 
-    // Miss before put
     try std.testing.expect(cache.get(key) == null);
 
-    // Put and hit
     cache.put(key, run);
     const cached = cache.get(key);
     try std.testing.expect(cached != null);
     try std.testing.expectEqual(@as(usize, 2), cached.?.glyphs.len);
     try std.testing.expectEqual(@as(f32, 20.0), cached.?.width);
-    try std.testing.expect(!cached.?.owned); // Cache owns it
+    try std.testing.expect(!cached.?.owned);
 }
 
 test "ShapedRunCache holds exactly its budget, then evicts only the least recent" {
-    // Goal: the cache is sized by `text.shaped_run_count_max` and, full,
-    // evicts the least recently used run and nothing else. Methodology: at
-    // `nano`'s 64 runs, fill exactly and read every run back in insertion
-    // order, which leaves run 0 the least recent; one more put must miss run
-    // 0 alone. A wrong LRU (oldest insert, first slot, or a random slot after
-    // the reads) would drop a different run.
     const capacity = TextLimits.nano.shaped_run_count_max;
     var cache = try ShapedRunCache.init(capacity);
     defer cache.deinit();
@@ -1723,12 +1602,6 @@ test "ShapedRunCache holds exactly its budget, then evicts only the least recent
 }
 
 test "cache keys differ by face, and faces stay resident side by side" {
-    // Goal: the variant contract for every text cache. Each loaded face has its
-    // own slot address, so the same string in regular and bold must key apart
-    // in the shaped-run cache, the width cache, and the glyph cache, and
-    // alternating between faces must not evict the other face's entries.
-    // Methodology: same text and size, two face addresses, distinct payloads;
-    // read both back after interleaved writes, then check `clear` drops both.
     const testing = std.testing;
     const regular_face: usize = 0x1000;
     const bold_face: usize = 0x2000;
@@ -1799,8 +1672,6 @@ test "ShapedRunCache hash collision handling" {
         .owned = true,
     };
 
-    // Insert many entries that may have hash collisions
-    // Using sequential strings which may hash to nearby slots
     var i: usize = 0;
     while (i < 100) : (i += 1) {
         var buf: [32]u8 = undefined;
@@ -1811,7 +1682,6 @@ test "ShapedRunCache hash collision handling" {
 
     try std.testing.expectEqual(@as(u32, 100), cache.entry_count);
 
-    // Verify all entries are still retrievable (hash probing works)
     i = 0;
     while (i < 100) : (i += 1) {
         var buf: [32]u8 = undefined;
@@ -1820,8 +1690,6 @@ test "ShapedRunCache hash collision handling" {
         try std.testing.expect(cache.get(key) != null);
     }
 
-    // Test eviction maintains hash table consistency
-    // Add more entries to trigger evictions
     i = 100;
     while (i < test_shaped_run_count + 50) : (i += 1) {
         var buf: [32]u8 = undefined;
@@ -1830,10 +1698,8 @@ test "ShapedRunCache hash collision handling" {
         cache.put(key, run);
     }
 
-    // Cache should be at capacity
     try std.testing.expectEqual(@as(u32, test_shaped_run_count), cache.entry_count);
 
-    // Most recent entries should be retrievable
     i = test_shaped_run_count;
     while (i < test_shaped_run_count + 50) : (i += 1) {
         var buf: [32]u8 = undefined;
@@ -1850,17 +1716,13 @@ test "ShapedRunKey includes font size" {
     const key2 = ShapedRunKey.init("Hello", 0x1234, 24.0);
     const key3 = ShapedRunKey.init("Hello", 0x1234, 16.0);
 
-    // Same text, same font, different size = different keys
     try testing.expect(!ShapedRunKey.eql(key1, key2));
 
-    // Same text, same font, same size = equal keys
     try testing.expect(ShapedRunKey.eql(key1, key3));
 
-    // size_fixed should reflect the size
     try testing.expectEqual(key1.size_fixed, key3.size_fixed);
     try testing.expect(key1.size_fixed != key2.size_fixed);
 
-    // Verify size_fixed encoding (size * 64 for 26.6 fixed point)
     try testing.expectEqual(@as(u16, 16 * 64), key1.size_fixed);
     try testing.expectEqual(@as(u16, 24 * 64), key2.size_fixed);
 }
@@ -1868,32 +1730,25 @@ test "ShapedRunKey includes font size" {
 test "ShapedRunKey size differentiation" {
     const testing = std.testing;
 
-    // Different sizes should produce different keys even with same text
     const key_14 = ShapedRunKey.init("Test", 0x1234, 14.0);
     const key_16 = ShapedRunKey.init("Test", 0x1234, 16.0);
     const key_18 = ShapedRunKey.init("Test", 0x1234, 18.0);
 
-    // Keys should not be equal due to different sizes
     try testing.expect(!ShapedRunKey.eql(key_14, key_16));
     try testing.expect(!ShapedRunKey.eql(key_16, key_18));
     try testing.expect(!ShapedRunKey.eql(key_14, key_18));
 
-    // Text hash is the same (same text), but size_fixed differs
     try testing.expectEqual(key_14.text_hash, key_16.text_hash);
     try testing.expect(key_14.size_fixed != key_16.size_fixed);
     try testing.expect(key_16.size_fixed != key_18.size_fixed);
 }
 
 test "shapeTextInto warm path copies into caller buffer with owned=false" {
-    // Goal: verify the core pattern that shapeTextInto's warm path uses —
-    // get from cache, memcpy into a caller-provided buffer, return owned=false.
-    // We test at the cache level since the full TextSystem needs a loaded font.
     const testing = std.testing;
 
     var cache = try ShapedRunCache.init(test_shaped_run_count);
     defer cache.deinit();
 
-    // Populate cache with a known 3-glyph run.
     var source_glyphs = [_]ShapedGlyph{
         .{ .glyph_id = 42, .x_offset = 1.0, .y_offset = 2.0, .x_advance = 8.5, .y_advance = 0, .cluster = 0 },
         .{ .glyph_id = 43, .x_offset = 0.5, .y_offset = 0, .x_advance = 7.0, .y_advance = 0, .cluster = 1 },
@@ -1909,7 +1764,6 @@ test "shapeTextInto warm path copies into caller buffer with owned=false" {
     const key = ShapedRunKey.init("abc", font_ptr, 14.0);
     cache.put(key, source_run);
 
-    // Simulate shapeTextInto warm path: get from cache, copy into caller buffer.
     const cached_run = cache.get(key).?;
 
     var out_buffer: [ShapedRunCache.MAX_GLYPHS_PER_ENTRY]ShapedGlyph = undefined;
@@ -1924,12 +1778,10 @@ test "shapeTextInto warm path copies into caller buffer with owned=false" {
         .owned = false,
     };
 
-    // Verify: owned=false (no deinit needed), correct width and glyph count.
     try testing.expect(!result.owned);
     try testing.expectEqual(@as(usize, 3), result.glyphs.len);
     try testing.expectEqual(@as(f32, 24.5), result.width);
 
-    // Verify glyph data was copied correctly.
     try testing.expectEqual(@as(u16, 42), result.glyphs[0].glyph_id);
     try testing.expectEqual(@as(f32, 8.5), result.glyphs[0].x_advance);
     try testing.expectEqual(@as(u16, 43), result.glyphs[1].glyph_id);
@@ -1937,7 +1789,6 @@ test "shapeTextInto warm path copies into caller buffer with owned=false" {
     try testing.expectEqual(@as(u16, 44), result.glyphs[2].glyph_id);
     try testing.expectEqual(@as(f32, 9.0), result.glyphs[2].x_advance);
 
-    // Verify buffer independence: invalidating the cache does not corrupt our copy.
     cache.clear();
     try testing.expectEqual(@as(u16, 42), result.glyphs[0].glyph_id);
     try testing.expectEqual(@as(f32, 24.5), result.width);
@@ -1969,21 +1820,6 @@ fn fillTestRun(glyphs: []ShapedGlyph, text_buf: []u8) ShapedRun {
 }
 
 test "shape cache insert limit is MAX_GLYPHS_PER_ENTRY, not MAX_TEXT_LEN" {
-    // Goal: pin the two different limits that govern the shape cache, because
-    // they disagree.  `MAX_TEXT_LEN` (512) gates the *lookup* in
-    // `TextSystem.measureText`, but `put` refuses any run over
-    // `MAX_GLYPHS_PER_ENTRY` (128).  Text between the two never gets stored, so
-    // it probes, misses, shapes, and is refused again — every frame, forever.
-    // The miss is permanent rather than merely cold.
-    //
-    // This asymmetry is intentional and still holds: an entry embeds its glyph
-    // array inline, so raising the insert limit to MAX_TEXT_LEN would blow the
-    // 2MB comptime budget.  `MeasureCache` is what compensates -- it stores width
-    // without glyphs, so `measureText` does not pay for this refusal.  The test
-    // pins the refusal itself so that compensation stays necessary and visible.
-    //
-    // Methodology: drive the cache at exactly the limit and one past it, using
-    // text short enough that the lookup gate would happily admit both.
     const testing = std.testing;
 
     var cache = try ShapedRunCache.init(test_shaped_run_count);
@@ -1996,7 +1832,6 @@ test "shape cache insert limit is MAX_GLYPHS_PER_ENTRY, not MAX_TEXT_LEN" {
     // below comes from the insert limit alone.
     try testing.expect(over_limit <= ShapedRunCache.MAX_TEXT_LEN);
 
-    // Control: a run exactly at the limit round-trips.
     var glyphs_at: [at_limit]ShapedGlyph = undefined;
     var text_at: [at_limit]u8 = undefined;
     const run_at = fillTestRun(&glyphs_at, &text_at);
@@ -2006,7 +1841,6 @@ test "shape cache insert limit is MAX_GLYPHS_PER_ENTRY, not MAX_TEXT_LEN" {
     try testing.expect(cache.get(key_at) != null);
     try testing.expectEqual(@as(u32, 1), cache.entry_count);
 
-    // One glyph more, and the insert is silently dropped.
     var glyphs_over: [over_limit]ShapedGlyph = undefined;
     var text_over: [over_limit]u8 = undefined;
     const run_over = fillTestRun(&glyphs_over, &text_over);
@@ -2014,7 +1848,7 @@ test "shape cache insert limit is MAX_GLYPHS_PER_ENTRY, not MAX_TEXT_LEN" {
 
     cache.put(key_over, run_over);
     try testing.expect(cache.get(key_over) == null);
-    try testing.expectEqual(@as(u32, 1), cache.entry_count); // unchanged
+    try testing.expectEqual(@as(u32, 1), cache.entry_count);
 
     // Repeating the shape-then-store cycle never converges.  Each iteration
     // stands in for one frame re-shaping the same unchanged string.
@@ -2025,10 +1859,6 @@ test "shape cache insert limit is MAX_GLYPHS_PER_ENTRY, not MAX_TEXT_LEN" {
     }
     try testing.expectEqual(@as(u32, 1), cache.entry_count);
 }
-
-// =============================================================================
-// MeasureCache Tests
-// =============================================================================
 
 /// Fill `buf` with deterministic ASCII derived from `seed`, so each seed yields
 /// a distinct string. Keeps the cache tests free of any font or platform state.
@@ -2056,11 +1886,6 @@ fn fillTestText(buf: []u8, seed: u32) void {
 }
 
 test "TextSizeCache holds its slot count, then evicts the least recently used" {
-    // Goal: the eviction contract of `text.text_size_slot_count_max`. Method:
-    // one key per slot (its hash is its slot), so the cache is filled exactly
-    // and every key must hit. One more key on slot 0 finds its whole probe
-    // window full and must evict that window's least recently used, key 0
-    // (read first), leaving every other key cached.
     const testing = std.testing;
     const slot_count: u32 = 64;
     var cache = try TextSizeCache.init(slot_count);
@@ -2093,9 +1918,6 @@ fn textSizeKey(index: u32) TextSizeKey {
 }
 
 test "MeasureCache stores widths the shape cache refuses" {
-    // Goal: the entire purpose of MeasureCache is covering the band between
-    // MAX_GLYPHS_PER_ENTRY and MAX_TEXT_LEN, where `ShapedRunCache.put` bails
-    // out. Verify a round-trip at the first refused length and across the band.
     const testing = std.testing;
 
     var cache = try MeasureCache.init(test_measure_slot_count);
@@ -2123,17 +1945,13 @@ test "MeasureCache stores widths the shape cache refuses" {
         const key = ShapedRunKey.init(text, font_ptr, 16.0);
         const width: f32 = @floatFromInt(len);
 
-        try testing.expect(cache.get(key) == null); // Cold.
+        try testing.expect(cache.get(key) == null);
         cache.put(key, width);
         try testing.expectEqual(width, cache.get(key).?);
     }
 }
 
 test "MeasureCache converges after a single miss for over-limit text" {
-    // Goal: prove `MeasureCache` covers that band.  The shape-cache test above runs
-    // the same put-then-get cycle and never converges; here the second frame
-    // onward must hit.  Methodology: replay 8 frames of an unchanged string and
-    // count how many of them would have had to shape.
     const testing = std.testing;
 
     var cache = try MeasureCache.init(test_measure_slot_count);
@@ -2163,8 +1981,6 @@ test "MeasureCache converges after a single miss for over-limit text" {
 }
 
 test "MeasureCache keys distinguish font size" {
-    // Goal: the same string at two sizes has two different widths. Guard against
-    // a key that hashes text but forgets the size.
     const testing = std.testing;
 
     var cache = try MeasureCache.init(test_measure_slot_count);
@@ -2186,11 +2002,6 @@ test "MeasureCache keys distinguish font size" {
 }
 
 test "MeasureCache never returns a stale width under eviction pressure" {
-    // Goal: eviction is the riskiest part of a set-associative cache -- a slot
-    // whose key and payload fall out of sync silently returns a wrong width,
-    // which would corrupt layout rather than merely slow it down.  Methodology:
-    // overflow the cache several times over, then verify that every key which
-    // still hits carries exactly the width it was stored with.
     const testing = std.testing;
 
     var cache = try MeasureCache.init(test_measure_slot_count);
@@ -2232,11 +2043,6 @@ test "MeasureCache never returns a stale width under eviction pressure" {
 }
 
 test "MeasureCache fills a probe window exactly, then evicts its least recent" {
-    // Goal: `text.measure_slot_count_max` slots, each key probing at most
-    // `measure_probe_count` of them. Methodology: at the smallest valid size
-    // (16 slots), find nine keys whose natural slot is the same, put eight
-    // (the window, filled exactly) and read all back, touch all but the
-    // first, then put the ninth: only the first misses.
     const testing = std.testing;
     const window = MeasureCache.MAX_PROBE_LENGTH;
     var cache = try MeasureCache.init(window * 2);
@@ -2274,12 +2080,6 @@ test "MeasureCache fills a probe window exactly, then evicts its least recent" {
 }
 
 test "glyph cache re-renders a glyph whose atlas shelf was evicted" {
-    // Goal: a cached glyph never points at evicted pixels. Methodology: a 64²
-    // CPU atlas holds only a few 40 px glyphs. Render 'A' and save its pixels,
-    // then render one other glyph per frame until far more than the atlas
-    // holds have passed, so LRU eviction must have reclaimed 'A's shelf.
-    // Asking for 'A' again must return a region holding 'A's own pixels, not
-    // the pixels of whichever glyph took its place.
     const testing = std.testing;
     var uploads: atlas_mod.AtlasUploads = undefined;
     try uploads.init(testing.allocator, testing.io, .{
@@ -2333,12 +2133,6 @@ test "glyph cache re-renders a glyph whose atlas shelf was evicted" {
 }
 
 test "glyph cache holds exactly its budget in one frame and reuses evicted slots after" {
-    // Goal: the cache has `text.glyph_cache_count_max` entries. Methodology: a
-    // budget of 8; draw 8 distinct glyphs in frame 1 and check every one hits
-    // with its region, filling the cache exactly. In frame 2, after frame 1's
-    // uploads are consumed, a 9th glyph must evict a shelf only frame 1 used
-    // and take a freed slot: the cache never grows past 8. A 9th
-    // glyph in frame 1 itself is the `core-glyph-cache` fail-fast check.
     const testing = std.testing;
     var uploads: atlas_mod.AtlasUploads = undefined;
     try uploads.init(testing.allocator, testing.io, .{
@@ -2396,13 +2190,6 @@ test "glyph cache holds exactly its budget in one frame and reuses evicted slots
 }
 
 test "glyph cache hits protect their shelf in every frame they are used" {
-    // Goal: a glyph used in the current frame is never evicted, although only
-    // its first hit in each frame stamps its shelf. Methodology: 'A' at 20 px
-    // and 'B' at 40 px take separate shelves in frame 1, and 'A' is hit there
-    // too, so a stamp that is merely non-zero would look current. In frame 2
-    // 'A' is hit twice in one batch, uploads are consumed, and every
-    // unprotected shelf is evicted. 'B's shelf (lowest y on a tie would be
-    // 'A's) must go; 'A' must keep its region and pixels.
     const testing = std.testing;
     var uploads: atlas_mod.AtlasUploads = undefined;
     try uploads.init(testing.allocator, testing.io, .{
@@ -2477,17 +2264,11 @@ fn copyRegion(atlas: *const Atlas, region: atlas_mod.Region, out: []u8) usize {
     return @as(usize, region.width) * region.height;
 }
 
-/// The bytes of `text`'s first shaping run. A text of at most
-/// `ShapedRunCache.MAX_TEXT_LEN` (512) bytes is one run, so it keeps its own
-/// cache entries. A longer one ends just after its last line break or space
-/// within those 512 bytes, where no glyph joins its neighbour, so its runs
-/// hit the width cache frame after frame and together measure and place as
-/// the whole text would. With no break in the first 512 bytes it ends at the
-/// first break after them, and an unbroken word at `run_codepoint_count_max`
-/// codepoints, the bound only the shapers know. `measureText` and
-/// `render.placeText` walk a text run by run, so no text length reaches it.
-///
-/// Work: one pass over at most the run's bytes plus one codepoint.
+/// The bytes of `text`'s first shaping run: the whole text when it is at most
+/// `ShapedRunCache.MAX_TEXT_LEN` bytes, else up to the last break within that
+/// size, or the first break after it; an unbroken word ends at
+/// `run_codepoint_count_max` codepoints, the bound only the shapers know.
+/// `measureText` and `render.placeText` walk a text run by run.
 pub fn runLength(text: []const u8) usize {
     std.debug.assert(text.len > 0);
     std.debug.assert(text.len <= std.math.maxInt(u32));
@@ -2527,12 +2308,6 @@ pub fn codepointCount(text: []const u8) u32 {
 }
 
 test "runLength splits at the last break within the cacheable size, or at the bound" {
-    // Goal: runs keep their width-cache entries (at most 512 bytes) and never
-    // join glyphs. Method: a 512-byte text is one run; 600 bytes of "abc "
-    // end after the space that ends at byte 512, and 7-byte words after the
-    // one ending at byte 511, not the next at 518; with no break in the
-    // first 512 bytes a run ends at the first break after them; an unbroken
-    // word of two-byte codepoints ends at the codepoint bound, not a byte one.
     const at_size: [ShapedRunCache.MAX_TEXT_LEN]u8 = @splat('a');
     try std.testing.expectEqual(at_size.len, runLength(&at_size));
     const words = repeatText("abc ", 150);
@@ -2546,7 +2321,7 @@ test "runLength splits at the last break within the cacheable size, or at the bo
     try std.testing.expectEqual(@as(usize, 2 * run_codepoint_count_max), runLength(&wide));
 }
 
-/// `count` copies of `unit`, built at compile time for the tests above.
+/// `count` copies of `unit`.
 fn repeatText(comptime unit: []const u8, comptime count: usize) [unit.len * count]u8 {
     @setEvalBranchQuota(100_000);
     var bytes: [unit.len * count]u8 = undefined;

@@ -1,16 +1,3 @@
-//! Encode a packed frame's draws into a render pass, in draw order.
-//!
-//! Every buffer, texture, and the viewport are bound once per frame
-//! (`shaders.zig` lists the slots); a draw sets its pipeline when it changes
-//! and its clip rectangle. Quads and sprites draw instanced with the draw's
-//! first instance as the base instance; meshes draw one call each, with the
-//! 32 B mesh inline, because each mesh is its own vertex range.
-//!
-//! Performance sketch (CLAUDE.md §7): per draw a 16 B `setFragmentBytes` and
-//! at most one pipeline bind, plus one draw call per quad or sprite draw and
-//! per mesh. Draws are bounded by the paint record budget, meshes by the
-//! paint budget's mesh limits. Nothing allocates; no CPU work scales with instances.
-
 const std = @import("std");
 const assert = std.debug.assert;
 
@@ -33,7 +20,7 @@ pub fn encodeDraws(
     var bound: ?Pipeline = null;
     for (frame.drawList()) |*draw| {
         assert(draw.clip < frame.clip_count);
-        // Pack emits no draw under a zero-area clip (contract §9).
+        // Pack emits no draw under a zero-area clip.
         assert(frame.clips[draw.clip][2] > 0);
         assert(frame.clips[draw.clip][3] > 0);
         if (bound != draw.pipeline) {
@@ -55,8 +42,8 @@ pub fn encodeDraws(
     }
 }
 
-/// `count` instances from `first`, six vertices each. `instance_id` counts
-/// from the base instance, so shaders index the frame's array directly.
+/// `instance_id` counts from the base instance, so shaders index the frame's
+/// array directly.
 fn drawInstances(encoder: objc.Object, draw: *const packed_frame.Draw) void {
     assert(draw.count > 0);
     assert(draw.pipeline.kind() != .mesh);
@@ -112,7 +99,6 @@ fn setBytes(
     });
 }
 
-/// Bind the frame's buffers, the atlas textures, and the viewport once.
 pub fn bindFrame(encoder: objc.Object, bindings: struct {
     quads: objc.Object,
     sprites: objc.Object,

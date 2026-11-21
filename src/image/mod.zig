@@ -1,13 +1,5 @@
-//! Image rendering module
-//!
-//! Provides atlas-cached image rendering with support for:
-//! - PNG/JPEG image loading
-//! - Texture atlas caching
-//! - Tinting, opacity, and grayscale effects
-//! - Rounded corners
-//!
-//! Decoding image files is `core/images.zig`'s worker; `loader.zig` holds
-//! the platform decoder it calls.
+//! Decoding is `core/images.zig`'s worker; `loader.zig` holds the platform
+//! decoder it calls.
 
 pub const ImageAtlas = @import("atlas.zig").ImageAtlas;
 pub const ImageKey = @import("atlas.zig").ImageKey;

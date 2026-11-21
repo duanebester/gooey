@@ -1,25 +1,15 @@
-//! Atlas textures for the Metal renderer.
+//! Atlas textures for the Metal renderer: created once at their `AtlasLimits`
+//! sizes and never recreated; the renderer keeps no CPU copy of atlas pixels.
 //!
-//! The glyph, SVG, and image atlas textures are created once at init at their
-//! `AtlasLimits` sizes and never recreated (memory-budget decision 6). The
-//! renderer keeps no CPU copy of atlas pixels (decision 8): `uploadAtlas`
-//! copies each region into the frame's staging buffer and encodes a blit from
-//! there into the texture, ahead of the frame's render pass in the same
-//! command buffer.
-//!
-//! Ordering (contract §9): an upload reaches a texture only on the GPU
-//! timeline, never as a CPU write. The textures are private, so the CPU
-//! cannot write them; the CPU writes only the frame slot's staging buffer,
-//! after the command buffer that last read that slot completed. The blit is
-//! encoded into the frame's command buffer, committed to the renderer's one
-//! queue after every earlier frame's, and the textures track hazards
+//! An upload reaches a texture only on the GPU timeline, never as a CPU
+//! write: the textures are private, so the CPU writes only the frame slot's
+//! staging buffer, after the command buffer that last read that slot
+//! completed. The blit is encoded into the frame's command buffer, committed
+//! after every earlier frame's, and the textures track hazards
 //! (`createTexture` sets and asserts it), so Metal runs the blit after every
 //! earlier submitted draw that samples the texture and before this frame's.
 //! The atlas may therefore evict a region an in-flight frame still samples:
 //! that frame reads the old pixels before the new ones land.
-//!
-//! Resource sketch (CLAUDE.md §7), `.standard`: private textures of 1 MiB (R8
-//! 1024²) + 4 MiB + 4 MiB. Staging is the renderer's (`frame_slots.zig`).
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -103,8 +93,7 @@ pub const AtlasTextures = struct {
     }
 };
 
-/// No atlas writes colour glyphs yet (`pack` rejects them too); a caller that
-/// sends one has drifted from the contract.
+/// No atlas writes colour glyphs yet; `pack` rejects them too.
 fn unsupported(kind: backend.AtlasKind) noreturn {
     std.debug.panic("Metal has no {t} atlas texture; nothing uploads it yet.", .{kind});
 }

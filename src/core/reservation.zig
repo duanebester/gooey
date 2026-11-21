@@ -1,18 +1,15 @@
 //! Budget-sized CPU reservations that cost resident memory only where written.
 //!
-//! Every pool sized from `ResourceLimits` is reserved during initialization
-//! (CLAUDE.md §2), but a frame typically uses a small prefix of it: counter
-//! fills 22 of 16,384 layout elements. Pages become resident when first
+//! Pools sized from `ResourceLimits` are reserved during initialization, but a
+//! frame typically uses a small prefix of it. Pages become resident when first
 //! written, so a reservation must not be written at init:
 //!
-//! - Storage comes straight from the page allocator, not the app's `gpa`.
-//!   Fresh anonymous pages are zero by kernel contract (CLAUDE.md §21 counts
-//!   them as zeroed) and stay non-resident until a frame writes them. A general
-//!   allocator may instead hand back recycled, already-dirty memory, and release
-//!   builds would then depend on malloc's region behaviour.
+//! - Storage comes straight from the page allocator, not the app's `gpa`:
+//!   fresh anonymous pages are zero by kernel contract and stay non-resident
+//!   until a frame writes them, while a general allocator may hand back
+//!   recycled, already-dirty memory.
 //! - `rawAlloc` skips `Allocator.alloc`'s safe-mode `@memset(undefined)`, which
-//!   writes 0xAA over the whole reservation in Debug and ReleaseSafe builds and
-//!   made Debug residency equal to the full budget. Nothing is zeroed at init.
+//!   writes 0xAA over the whole reservation in Debug and ReleaseSafe builds.
 //! - `release` zeroes the prefix the owner ever used, its high-water mark,
 //!   before the storage returns to the allocator and a different owner could
 //!   read it. The cost is proportional to use, never to capacity.
@@ -20,9 +17,8 @@
 //! Owners must read only what they wrote: lists read `items[0..len]`, and
 //! scratch buffers are written before they are read within the same frame.
 //!
-//! There is no allocation-lifecycle guard yet (CLAUDE.md §2 SHOULD), so the
-//! "initialization only" rule is enforced by the callers, which reserve from
-//! their `init` functions.
+//! There is no allocation-lifecycle guard, so the "initialization only" rule
+//! is enforced by the callers, which reserve from their `init` functions.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -97,10 +93,6 @@ pub fn releaseList(comptime T: type, list: *std.ArrayList(T), used_count_max: us
 }
 
 test "a reservation reads zero, holds its count, and releases after a partial write" {
-    // Goal: the two properties callers rely on. Methodology: reserve more than
-    // a page, check every byte reads zero (fresh pages, no 0xAA fill), write a
-    // prefix, and release with that prefix as the high-water mark. A capacity
-    // of exactly one past a page boundary checks the count-to-bytes conversion.
     const count: u32 = @intCast(std.heap.page_size_min / @sizeOf(u64) + 1);
     const items = try reserve(u64, count);
     try std.testing.expectEqual(@as(usize, count), items.len);
@@ -113,9 +105,6 @@ test "a reservation reads zero, holds its count, and releases after a partial wr
 }
 
 test "reserveList has exact capacity and releases with its high-water mark" {
-    // Goal: lists see the whole reservation as capacity and never more, and
-    // `releaseList` accepts a high-water mark above the current length (a
-    // cleared list) as well as the current length itself.
     var list = try reserveList(u32, 5);
     try std.testing.expectEqual(@as(usize, 5), list.capacity);
     list.appendSliceAssumeCapacity(&.{ 1, 2, 3, 4, 5 });

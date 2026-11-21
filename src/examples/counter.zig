@@ -1,10 +1,3 @@
-//! Counter: state, handlers, and components on the core.
-//!
-//! `ui.box`, `ui.text`, `cx.on`, and components that render through
-//! `cx.render`. Every colour is a theme token, so Catppuccin Macchiato's
-//! palette carries the whole look. Its scripted run is the `core_counter` golden
-//! (`src/testing/goldens/`).
-
 const std = @import("std");
 const gooey = @import("gooey");
 const components = @import("gooey-components");
@@ -56,7 +49,6 @@ pub const App = gooey.App(State, render, .{
     .theme = &gooey.Theme.catppuccin_macchiato,
 });
 
-/// The generated entry point (contract §7).
 pub const main = App.main;
 
 pub fn render(cx: *Cx) void {
@@ -75,7 +67,6 @@ pub fn render(cx: *Cx) void {
     }));
 }
 
-/// The content column's widest; larger windows centre it.
 const column_max: f32 = 560;
 
 const row: ui.Style = .{
@@ -86,7 +77,6 @@ const row: ui.Style = .{
 };
 const spacer: ui.Style = .{ .width = .{ .grow = 1 } };
 
-/// The title on the left, the step choice on the right.
 const Header = struct {
     pub fn render(_: Header, cx: *Cx) void {
         const s = cx.state(State);
@@ -101,7 +91,6 @@ const Header = struct {
     }
 };
 
-/// The count, large, beside the - and + buttons on one raised card.
 const CounterCard = struct {
     pub fn render(_: CounterCard, cx: *Cx) void {
         const s = cx.state(State);
@@ -130,7 +119,6 @@ const CounterCard = struct {
     }
 };
 
-/// The resets, and the last reset's message in the success colour.
 const Footer = struct {
     pub fn render(_: Footer, cx: *Cx) void {
         const s = cx.state(State);

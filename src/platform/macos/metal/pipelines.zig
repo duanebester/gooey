@@ -1,7 +1,3 @@
-//! Render pipeline states for the packed frame, one per
-//! `packed_frame.Pipeline`, compiled from one library (`shaders.zig`) at
-//! init, plus the per-frame buffer helpers the renderer reserves with.
-
 const std = @import("std");
 const assert = std.debug.assert;
 const objc = @import("objc");
@@ -12,9 +8,8 @@ const packed_frame = @import("../../../core/packed_frame.zig");
 
 const Pipeline = packed_frame.Pipeline;
 
-/// Most frames in flight any budget may declare. Per-frame Metal buffers are
-/// declared at this size and created for the window budget's
-/// `ResourceLimits.frame.in_flight_count`.
+/// Per-frame Metal buffers are declared at this size and created for the
+/// budget's `ResourceLimits.frame.in_flight_count`.
 pub const frame_count_max: u32 = limits.MAX_FRAMES_IN_FLIGHT;
 
 /// Samples per pixel of every render target and pipeline. Quads, sprites, and
@@ -60,8 +55,8 @@ const specs = std.EnumArray(Pipeline, Spec).init(.{
 pub const Pipelines = struct {
     states: [pipeline_count]objc.Object,
 
-    /// Compile the library and create every pipeline state. A failure is an
-    /// init error: a missing pipeline would drop instances the frame holds.
+    /// A failure is an init error: a missing pipeline would drop instances
+    /// the frame holds.
     pub fn init(device: objc.Object) !Pipelines {
         assert(device.value != null);
         const library = try compileLibrary(device);
@@ -181,7 +176,6 @@ pub const FrameBuffers = struct {
     buffers: [frame_count_max]objc.Object,
     count: u32,
 
-    /// The buffer of frame slot `frame_index`.
     pub fn at(self: *const FrameBuffers, frame_index: u32) objc.Object {
         assert(self.count <= frame_count_max);
         assert(frame_index < self.count);
@@ -240,7 +234,6 @@ pub fn createFrameBuffers(
     return result;
 }
 
-/// CPU-visible base address of a buffer made by `createFrameBuffers`, as `[*]T`.
 pub fn frameBufferContents(comptime T: type, buffer: objc.Object) [*]T {
     const contents = buffer.msgSend(*anyopaque, "contents", .{});
     assert(@intFromPtr(contents) % @alignOf(T) == 0);

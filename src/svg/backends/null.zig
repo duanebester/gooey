@@ -1,8 +1,3 @@
-//! SVG Rasterizer Stub - For unsupported platforms
-//!
-//! Provides API compatibility for platforms without SVG rasterization support.
-//! All rasterization calls return an error.
-
 const std = @import("std");
 const svg_mod = @import("../path.zig");
 
@@ -14,11 +9,10 @@ pub const RasterizedSvg = struct {
 };
 
 pub const RasterizeError = error{
-    /// SVG rasterization is not supported on this platform
     PlatformNotSupported,
     /// Failed to allocate memory
     OutOfMemory,
-    /// Invalid path data
+    /// The path parsed to no commands.
     EmptyPath,
     /// The path exceeds its `RasterBudget`
     PathTooComplex,
@@ -28,7 +22,6 @@ pub const RasterizeError = error{
     BufferTooSmall,
 };
 
-/// Stroke options for SVG rendering
 pub const StrokeOptions = struct {
     enabled: bool = false,
     width: f32 = 1.0,
@@ -43,9 +36,6 @@ pub fn scratchBytes(budget: RasterBudget, device_size_max: u32) u32 {
     return 0;
 }
 
-/// Rasterize SVG path data to RGBA buffer
-///
-/// Returns PlatformNotSupported on Linux and other unsupported platforms.
 pub fn rasterize(
     allocator: std.mem.Allocator,
     path_data: []const u8,
@@ -65,9 +55,6 @@ pub fn rasterize(
     );
 }
 
-/// Rasterize SVG path data with extended options
-///
-/// Returns PlatformNotSupported on Linux and other unsupported platforms.
 pub fn rasterizeWithOptions(
     allocator: std.mem.Allocator,
     path_data: []const u8,

@@ -1,33 +1,5 @@
-//! `zig build frame-trace-report -- <trace>...`: summarize frame traces
-//! (`-Dframe-trace`, `src/core/frame_trace.zig`) as Markdown.
-//!
-//! Per trace it prints p50, p95, p99, and max of every phase in milliseconds,
-//! the present cadence, missed refreshes, and the headroom against a 120 Hz
-//! frame (8.33 ms). A trace is the native `frame-trace.csv` or a saved browser
-//! console log: any text before `frame-trace,` on a line is ignored.
-//!
-//! Phases of one frame, from its row's timestamps:
-//! - drain: tick → build (event routing and handlers)
-//! - build, layout, emit: the main thread's phases; publish ends emit
-//! - wait: publish → pack, the present-pacing wait on the render side
-//! - pack, draw: the render side; draw ends when `presentBuilt` returns
-//! - main: tick → publish; render: pack → done
-//! - serial: main + render + wake, the work one frame in flight serializes,
-//!   where wake is the previous frame's done → this frame's tick. The web
-//!   (`os=freestanding`) runs both sides in one animation frame, so its done →
-//!   tick gap is the wait for the next frame, not a wake, and is left out.
-//!
-//! Missed refreshes: consecutive frames whose pack starts are `k` refresh
-//! periods apart miss `k − 1` refreshes. `--refresh-hz=<hz>` gives the
-//! display's refresh rate; without it the period is estimated from the median
-//! pack-to-pack interval, snapped to a common display rate. A compositor's
-//! frame callbacks jitter around the period (mutter: p10 15% short), so a low
-//! percentile would snap to a faster rate; a 10th percentile under 3/4 of the
-//! median instead means the app misses most refreshes, and it is used.
-//!
-//! Resource sketch: one trace holds at most `row_count_max` rows (3 MiB of
-//! rows plus 8 MiB of text, both from the page allocator); the tool is a
-//! host-side program, outside Gooey's runtime allocation rules.
+//! Summarizes `-Dframe-trace` traces (CSV or saved browser console log) as
+//! Markdown: phase percentiles, present cadence, and 120 Hz headroom.
 
 const std = @import("std");
 const Io = std.Io;
@@ -193,7 +165,6 @@ fn parseRow(line: []const u8) !Row {
     return row;
 }
 
-/// Every stamp of a complete frame follows the one before it.
 fn ordered(row: *const Row) bool {
     const stamps = [_]u64{
         row.tick, row.build, row.layout, row.emit, row.publish,
@@ -226,6 +197,9 @@ fn phaseMs(rows: []const Row, index: usize, phase: Phase, single_thread: bool) ?
             const previous = &rows[index - 1];
             if (previous.frame + 1 != row.frame) break :blk null;
             if (row.tick < previous.done) break :blk null;
+            // On the web both sides run in one animation frame, so the
+            // previous done → tick gap is the wait for the next frame, not
+            // a wake, and is left out.
             const wake_ms = if (single_thread) 0 else ms(row.tick - previous.done);
             break :blk ms(row.publish - row.tick) + ms(row.done - row.pack) + wake_ms;
         },
@@ -283,7 +257,6 @@ fn report(trace: *const Trace, path: []const u8, refresh_ms: ?f64) void {
     reportHeadroom(rows, trace.single_thread);
 }
 
-/// Present cadence: pack-to-pack intervals of consecutive frames.
 fn reportCadence(rows: []const Row, scratch: *[row_count_max]f64, refresh_ms: ?f64) void {
     var count: usize = 0;
     for (rows[1..], rows[0 .. rows.len - 1]) |row, previous| {
@@ -321,9 +294,7 @@ fn reportCadence(rows: []const Row, scratch: *[row_count_max]f64, refresh_ms: ?f
     });
 }
 
-/// Glass cadence, for hosts that report presents (`present_ns`): intervals
-/// between consecutive frames that both reached the glass, and frames that
-/// never did. Missed refreshes count against the given or estimated period.
+/// Intervals between consecutive frames that both reached the glass.
 fn reportGlass(rows: []const Row, scratch: *[row_count_max]f64, refresh_ms: ?f64) void {
     var count: usize = 0;
     var dropped: u64 = 0;
@@ -368,7 +339,10 @@ fn reportGlass(rows: []const Row, scratch: *[row_count_max]f64, refresh_ms: ?f64
     });
 }
 
-/// The refresh period from sorted pack-to-pack intervals (see the file comment).
+/// The refresh period from sorted pack-to-pack intervals: compositor frame
+/// callbacks jitter below the true period (mutter: p10 15% short), so a
+/// 10th percentile under 3/4 of the median means the app misses most
+/// refreshes and is used instead of the median.
 fn estimatePeriod(sorted: []const f64) f64 {
     assert(sorted.len > 0);
     const median = percentile(sorted, 0.50);
@@ -387,10 +361,7 @@ fn snapPeriod(measured_ms: f64) f64 {
     return measured_ms;
 }
 
-/// How many frames fit 8.33 ms: on the main thread, on the render thread,
-/// and serialized as one frame in flight does today; and how many of the
-/// serialized misses moving draw off the main thread's path (design A)
-/// would recover.
+/// "A" in the output is moving draw off the main thread's path.
 fn reportHeadroom(rows: []const Row, single_thread: bool) void {
     var main_fits: u64 = 0;
     var render_fits: u64 = 0;
@@ -425,7 +396,6 @@ fn reportHeadroom(rows: []const Row, single_thread: bool) void {
 }
 
 test "percentile picks the nearest rank at both ends" {
-    // Goal: p0 and p100 are the extremes, p50 of an odd count the middle.
     const sorted = [_]f64{ 1, 2, 3, 4, 5 };
     try std.testing.expectEqual(@as(f64, 1), percentile(&sorted, 0));
     try std.testing.expectEqual(@as(f64, 3), percentile(&sorted, 0.5));
@@ -433,7 +403,6 @@ test "percentile picks the nearest rank at both ends" {
 }
 
 test "parseRow rejects a frame whose stamps run backwards" {
-    // Goal: a row with pack before publish is corrupt and must not be averaged.
     try std.testing.expectError(
         error.UnorderedRow,
         parseRow("61,10,11,12,13,14,9,15,16,100,20,800,600"),
@@ -447,15 +416,11 @@ test "parseRow rejects a frame whose stamps run backwards" {
 }
 
 test "snapPeriod snaps near a display rate and keeps others" {
-    // Goal: a 8.4 ms interval is 120 Hz; 23 ms is no listed rate.
     try std.testing.expectApproxEqAbs(1000.0 / 120.0, snapPeriod(8.4), 1e-9);
     try std.testing.expectApproxEqAbs(23.0, snapPeriod(23.0), 1e-9);
 }
 
 test "estimatePeriod keeps the median through compositor jitter" {
-    // Goal: mutter's 60 Hz callbacks (p10 14.2 ms, p50 16.65 ms) are 60 Hz,
-    // not the 72 Hz the 10th percentile snaps to; an app at half of 120 Hz
-    // with some on-time frames is still 120 Hz.
     var jitter: [10]f64 = .{ 14.2, 15.0, 16.0, 16.6, 16.6, 16.65, 16.7, 17.0, 18.0, 19.0 };
     try std.testing.expectApproxEqAbs(1000.0 / 60.0, estimatePeriod(&jitter), 1e-9);
     var halved: [10]f64 = .{ 8.3, 8.4, 16.6, 16.6, 16.6, 16.7, 16.7, 16.7, 16.7, 16.8 };

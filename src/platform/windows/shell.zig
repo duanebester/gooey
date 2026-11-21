@@ -2,30 +2,16 @@
 //! Dialog (`IFileOpenDialog`, `IFileSaveDialog`) and the shell items it
 //! returns.
 //!
-//! Only the subset of `shell32.dll` and `ole32.dll` the backend calls,
-//! declared by hand for the same reasons as the WIC and DirectWrite bindings:
-//! Gooey takes no package dependencies (CLAUDE.md §12) and the tree
-//! type-checks from any host.
-//!
 //! These are COM interfaces. Each vtable lists every slot of its interface in
 //! the order of `shobjidl_core.h`, because a method is found by its slot index
 //! alone. Slots the backend never calls are typed `Slot`. A derived vtable
 //! embeds its base vtable as the field `base`, which reproduces the C layout
-//! of single inheritance. The comptime block at the end pins the slot of every
-//! called method and the size of every vtable, so a missing or extra slot
-//! fails to compile.
-//!
-//! Naming follows the SDK so each declaration can be checked against
-//! Microsoft's documentation by name.
+//! of single inheritance.
 
 const std = @import("std");
 const win32 = @import("win32.zig");
 
 const assert = std.debug.assert;
-
-// =============================================================================
-// Scalar types
-// =============================================================================
 
 pub const HRESULT = i32;
 
@@ -59,10 +45,6 @@ pub const COMDLG_FILTERSPEC = extern struct {
     pszName: win32.LPCWSTR,
     pszSpec: win32.LPCWSTR,
 };
-
-// =============================================================================
-// Class and interface identifiers
-// =============================================================================
 
 pub const CLSID_FileOpenDialog: GUID = .{
     .data1 = 0xDC1C_5A9C,
@@ -99,10 +81,6 @@ pub const IID_IShellItem: GUID = .{
     .data4 = .{ 0xBC, 0x55, 0xA1, 0xE2, 0x61, 0xC3, 0x7B, 0xFE },
 };
 
-// =============================================================================
-// Enumerations and flags (C enums: 32 bits)
-// =============================================================================
-
 pub const COINIT_APARTMENTTHREADED: u32 = 0x2;
 pub const COINIT_DISABLE_OLE1DDE: u32 = 0x4;
 pub const CLSCTX_INPROC_SERVER: u32 = 0x1;
@@ -111,7 +89,6 @@ pub const CLSCTX_INPROC_SERVER: u32 = 0x1;
 /// outside the file system.
 pub const SIGDN_FILESYSPATH: u32 = 0x8005_8000;
 
-// `FILEOPENDIALOGOPTIONS`.
 pub const FOS_OVERWRITEPROMPT: u32 = 0x0000_0002;
 pub const FOS_NOCHANGEDIR: u32 = 0x0000_0008;
 pub const FOS_PICKFOLDERS: u32 = 0x0000_0020;
@@ -120,12 +97,8 @@ pub const FOS_ALLOWMULTISELECT: u32 = 0x0000_0200;
 pub const FOS_PATHMUSTEXIST: u32 = 0x0000_0800;
 pub const FOS_FILEMUSTEXIST: u32 = 0x0000_1000;
 
-// =============================================================================
-// Interfaces
-// =============================================================================
-
-/// `IFileDialog`, with its bases `IUnknown` and `IModalWindow`. Both dialogs
-/// derive from it, so the backend configures and shows either through it.
+/// Both dialogs derive from `IFileDialog`, so the backend configures and
+/// shows either through it.
 pub const IFileDialog = extern struct {
     vtable: *const VTable,
 
@@ -205,7 +178,6 @@ pub const IFileSaveDialog = extern struct {
         ApplyProperties: Slot,
     };
 
-    /// See `IFileOpenDialog.dialog`.
     pub fn dialog(self: *IFileSaveDialog) *IFileDialog {
         return @ptrCast(self);
     }
@@ -261,10 +233,6 @@ pub const IShellItemArray = extern struct {
     }
 };
 
-// =============================================================================
-// Functions
-// =============================================================================
-
 pub extern "ole32" fn CoInitializeEx(
     pvReserved: ?*anyopaque,
     dwCoInit: u32,
@@ -289,10 +257,6 @@ pub extern "shell32" fn SHCreateItemFromParsingName(
     ppv: *?*anyopaque,
 ) callconv(.winapi) HRESULT;
 
-// =============================================================================
-// Layout pins
-// =============================================================================
-
 fn assertSlot(comptime VTable: type, comptime name: []const u8, comptime slot: u32) void {
     assert(@offsetOf(VTable, name) == slot * @sizeOf(usize));
 }
@@ -302,7 +266,7 @@ fn assertSlotCount(comptime VTable: type, comptime count: u32) void {
 }
 
 comptime {
-    // `x86_64-windows` only; see `docs/windows-port.md`.
+    // `x86_64-windows` only.
     assert(@sizeOf(usize) == 8);
 
     assert(@sizeOf(GUID) == 16);

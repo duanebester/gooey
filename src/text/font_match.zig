@@ -1,15 +1,7 @@
-//! Face selection within one font family, by the CSS font matching algorithm
-//! (CSS Fonts Level 4, §5.2): width narrows the candidates first, then style,
-//! then weight.
-//!
-//! FreeType (through Fontconfig) and CoreText list a family's faces and pick
-//! one with `select`, so the same request picks the same face class on Linux,
-//! macOS, and in the browser, which applies this rule itself. Nearest-value
-//! matching is wrong here: CoreText places Medium (0.23) nearer Bold (0.4)
-//! than Regular (0.0), so a family without Medium would render medium as bold.
-//!
-//! Pure functions over a caller-provided slice: no allocation, no platform
-//! state, bounded by the slice length.
+//! Face selection within one font family, in the CSS Fonts Level 4 order:
+//! width narrows the candidates first, then style, then weight. Nearest-value
+//! matching is wrong: CoreText places Medium (0.23) nearer Bold (0.4) than
+//! Regular (0.0), so a family without Medium would render medium as bold.
 
 const std = @import("std");
 const types = @import("types.zig");
@@ -18,7 +10,6 @@ const FontVariant = types.FontVariant;
 
 pub const Slant = enum(u8) { upright, italic, oblique };
 
-/// One face of the family being matched.
 pub const Candidate = struct {
     /// CSS `font-weight`, 1...1000.
     weight: u16,
@@ -27,16 +18,12 @@ pub const Candidate = struct {
     stretch: u16,
 };
 
-/// Faces considered per family. Real families have at most a few dozen; the
-/// backends consider the first `candidate_count_max` and log when a family has
-/// more, rather than reserving storage for an unbounded list.
+/// Backends consider the first `candidate_count_max` faces and log when a
+/// family has more, rather than reserving storage for an unbounded list.
 pub const candidate_count_max: u32 = 128;
 
 /// Index into `candidates` of the face CSS matching selects for `variant` at
-/// `stretch_desired`, or null when `candidates` is empty. Backends pass the
-/// width of the face the family name resolved to, so naming a condensed
-/// family keeps it condensed and a regular family never picks its condensed
-/// bold.
+/// `stretch_desired`, or null when `candidates` is empty.
 pub fn select(candidates: []const Candidate, variant: FontVariant, stretch_desired: u16) ?u32 {
     std.debug.assert(candidates.len <= candidate_count_max);
     std.debug.assert(stretch_desired >= stretch_min);
@@ -81,8 +68,7 @@ pub fn weightClass(weight: u16) u16 {
     return result;
 }
 
-/// Whether `slant` satisfies the style the variant asked for: italic and
-/// oblique both satisfy an italic request.
+/// Italic and oblique both satisfy an italic request.
 pub fn slantMatches(slant: Slant, italic_requested: bool) bool {
     return (slant != .upright) == italic_requested;
 }
@@ -160,9 +146,6 @@ fn weightRank(desired: u16, weight: u16) u32 {
 }
 
 test "select follows the CSS weight and style rules, not the nearest weight" {
-    // Goal: the cases where nearest-weight matching and CSS matching disagree.
-    // Methodology: small families as candidate lists; the expected index comes
-    // from the CSS Fonts Level 4 rule written out by hand for each request.
     const testing = std.testing;
     const regular_bold = [_]Candidate{
         .{ .weight = 400, .slant = .upright, .stretch = 100 },
@@ -228,8 +211,6 @@ test "select follows the CSS weight and style rules, not the nearest weight" {
 }
 
 test "weightClass rounds to the nearest hundred" {
-    // Goal: the warning threshold. DejaVu Sans Book is 400 and Bold 700; a
-    // face at 600 answering a bold request is a different class and warns.
     const testing = std.testing;
     try testing.expectEqual(@as(u16, 400), weightClass(400));
     try testing.expectEqual(@as(u16, 400), weightClass(449));

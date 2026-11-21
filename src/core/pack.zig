@@ -1,33 +1,3 @@
-//! Pack: paint records to the packed frame every renderer draws (contract
-//! §8 and §9).
-//!
-//! One pass over the records in draw order. Each record appends one instance
-//! to its kind's array and extends the last draw when the pipeline and clip
-//! are unchanged, so consecutive records of one pipeline become one draw.
-//! Clip pushes and pops resolve to one clip rectangle per draw: a push appends
-//! its intersection with the current clip, a pop returns to the parent's.
-//!
-//! Three decisions are made here once for every backend:
-//!
-//! - Culling: a quad wholly outside its clip is dropped, as the 0.3.1 scene
-//!   dropped it, and so is a shadow whose drawn extent (its bounds moved by
-//!   its offset and grown by twice its blur on every side) is. Nothing else
-//!   is culled.
-//! - Empty clips: while the current clip has zero width or height, no
-//!   instance is packed, so no draw carries an empty clip. Under the
-//!   inclusive-edge rule a zero-size rectangle would still pass the pixel
-//!   centres on its edge.
-//! - Triangle edges: every triangle edge is classified over the whole frame
-//!   (`mesh_edges.zig`) and its modes written to `edge_modes`, so backends
-//!   anti-alias shared edges identically without a pass of their own.
-//!
-//! Performance sketch (CLAUDE.md §7): one sequential read of at most
-//! `records.paint_record_count_frame_max` records and one sequential write of
-//! one 96 B or 32 B instance each, plus at most one 16 B draw and one 16 B
-//! clip. Triangle meshes add three hashed edge inserts per triangle during the
-//! pass and three lookups per triangle after it. Nothing allocates; the
-//! `.standard` worst case writes about 2.4 MB, typical frames a few KiB.
-
 const std = @import("std");
 const records = @import("records.zig");
 const packed_mod = @import("packed_frame.zig");
@@ -47,11 +17,11 @@ pub fn pack(frame: *const records.Frame, packed_frame: *PackedFrame) void {
     assert(frame.mesh_point_count <= frame.mesh_points.len);
     packed_frame.reset(frame.frame_number, frame.mesh_points[0..frame.mesh_point_count]);
     const triangle_points = frame.mesh_point_counts[@backingInt(records.Mesh.Topology.triangles)];
-    // One edge per triangle point: three edges per triangle.
+    // Three edges per triangle point.
     packed_frame.edge_table.begin(triangle_points);
     var packer = Packer{ .target = packed_frame, .clip_stack = undefined, .clip_depth = 0 };
-    // A safe build reserves the debugger overlay's headroom; the app's own
-    // records are checked against its declared limits first.
+    // The overlay's headroom is packed after the app's records, which are
+    // checked against their declared limits first.
     const app_paint_count = debugger.appPaintCount(frame);
     packer.packRecords(frame.paint[0..app_paint_count]);
     debugger.checkAppPacked(packed_frame);
@@ -95,7 +65,8 @@ const Packer = struct {
         return clip;
     }
 
-    /// A clip with zero width or height writes nothing (contract §9).
+    // A zero-sized clip must write nothing: under the inclusive-edge rule it
+    // would still cover the pixel centres on its edge.
     fn currentClipEmpty(self: *const Packer) bool {
         const clip = self.target.clips[self.currentClip()];
         assert(clip[2] >= 0);
@@ -221,9 +192,8 @@ const Packer = struct {
         target.mesh_count += 1;
     }
 
-    /// Extend the last draw with instance `first` when it has the same
-    /// pipeline and clip, or start a draw. Instances of one kind append in
-    /// order, so an extended draw stays contiguous.
+    // Instances of one kind append in order, so extending a draw keeps it
+    // contiguous; the assert relies on that.
     fn appendDraw(self: *Packer, pipeline: Pipeline, first: u32) void {
         const target = self.target;
         const clip = self.currentClip();
@@ -248,7 +218,6 @@ const Packer = struct {
     }
 };
 
-/// Count one instance of `pool` against the window's limit for it.
 fn claim(target: *PackedFrame, pool: Pool) void {
     assert(target.draw_count <= target.draws.len);
     const capacity = pool.capacity(&target.limits);
@@ -269,10 +238,9 @@ fn claim(target: *PackedFrame, pool: Pool) void {
     used.* += 1;
 }
 
-/// Draws and clips are bounded by the paint record budget the frame was
-/// reserved for: each record starts at most one draw, and each push one clip
-/// (plus the unbounded clip). A frame past it was packed into storage
-/// reserved for a smaller budget than its records frame's.
+// Each record starts at most one draw and each push one clip (plus the
+// unbounded clip), so these pools are exactly bounded by the paint record
+// budget; a frame past it was packed into undersized storage.
 fn failRecordPool(target: *const PackedFrame, pool: []const u8, reserved: u32) noreturn {
     @branchHint(.cold);
     assert(pool.len > 0);
@@ -289,15 +257,13 @@ fn failRecordPool(target: *const PackedFrame, pool: []const u8, reserved: u32) n
     });
 }
 
-/// Straight RGBA as the theme wrote it, each channel in 0..1.
+// Straight (non-premultiplied) RGBA, channels in 0..1.
 fn rgba(color: records.Color) packed_mod.Rgba {
     assert(color.a >= 0);
     assert(color.a <= 1);
     return .{ color.r, color.g, color.b, color.a };
 }
 
-/// The overlap of two clips, empty (zero-sized) when they do not meet. The
-/// 0.3.1 scene's rule, so clip rectangles and culling are unchanged.
 fn intersect(a: Rect, b: Rect) Rect {
     assert(a[2] >= 0);
     assert(a[3] >= 0);
@@ -310,9 +276,9 @@ fn intersect(a: Rect, b: Rect) Rect {
     return .{ x, y, @max(0, right - x), @max(0, bottom - y) };
 }
 
-/// What a quad draws into: its bounds, or for a shadow its bounds moved by
-/// the offset and grown by twice the blur on every side, the extent the
-/// shadow shaders rasterize.
+// What a quad rasterizes: its bounds, or for a shadow its bounds moved by
+// the offset and grown by twice the blur on every side, the extent the
+// shadow shaders rasterize.
 fn drawnExtent(quad: *const records.Quad) records.Rect {
     assert(quad.blur >= 0);
     assert(quad.bounds.width >= 0);
@@ -326,7 +292,7 @@ fn drawnExtent(quad: *const records.Quad) records.Rect {
     };
 }
 
-/// `bounds` wholly outside `clip`; bounds touching its edge are kept.
+// Wholly outside; bounds touching the clip's edge are kept.
 fn outside(bounds: records.Rect, clip: Rect) bool {
     assert(bounds.width >= 0);
     assert(bounds.height >= 0);
@@ -338,8 +304,8 @@ fn outside(bounds: records.Rect, clip: Rect) bool {
     return bounds.y > clip[1] + clip[3];
 }
 
-/// Everything that decides a mesh's colour across a shared edge: its fill and
-/// its clip. Two meshes with equal hashes blend identically there.
+// Everything that decides a mesh's colour across a shared edge: its fill and
+// its clip, so equal hashes blend identically there.
 fn fillHash(fill: records.Color, clip: Rect) u32 {
     assert(clip[2] > 0);
     assert(clip[3] > 0);
@@ -357,7 +323,7 @@ fn triangleCorners(points: []const packed_mod.MeshPoint) [3][2]f32 {
     };
 }
 
-/// Record a triangle mesh's edges, in draw order, before any mode is read.
+// All edges must be inserted before any mode is read.
 fn insertEdges(
     target: *PackedFrame,
     range: records.MeshRange,
@@ -377,7 +343,7 @@ fn insertEdges(
     }
 }
 
-/// After every edge is inserted: each triangle's modes, in draw order.
+// Runs after every edge is inserted; modes come out in draw order.
 fn writeEdgeModes(target: *PackedFrame) void {
     assert(target.triangle_count <= target.edge_modes.len);
     var path_index: u32 = 0;
@@ -413,12 +379,6 @@ fn writeMeshEdgeModes(
 }
 
 test "pack resolves clips into draws, culls, and classifies shared triangle edges" {
-    // Goal: the rules backends rely on. Method: pack a hand-built frame with
-    // nested clips, a culled quad, two shadows whose bounds lie outside their
-    // clip (one reaching into it by its offset and blur, one not), and three
-    // triangle meshes, two of one fill sharing an edge and one of another fill
-    // sharing an edge with the second, then read the draws, clips, and edge
-    // modes back.
     const testing = std.testing;
     var frame: records.Frame = undefined;
     try frame.initInPlace(testing.allocator, &.{
@@ -492,12 +452,6 @@ test "pack resolves clips into draws, culls, and classifies shared triangle edge
 }
 
 test "pack skips every instance under a clip with zero area" {
-    // Goal: a child scrolled out of its viewport draws nothing. Its clip
-    // intersects to zero width, and under the inclusive-edge rule a draw with
-    // that clip would still write the pixel centres on its edge. Method: a
-    // quad touching the empty clip's edge (kept by `outside` alone), a glyph,
-    // a nested push, and a triangle mesh all sit under the empty clip; only
-    // the quad after the pops is packed.
     const testing = std.testing;
     var frame: records.Frame = undefined;
     try frame.initInPlace(testing.allocator, &testFrameCapacity(16, 3));
@@ -538,9 +492,6 @@ test "pack skips every instance under a clip with zero area" {
 }
 
 test "pack starts a draw at every pipeline change within one clip" {
-    // Goal: draw order is record order across pipelines. Method: quad,
-    // glyph, quad under one clip must make three draws, not one quad draw of
-    // two and a glyph draw, which would paint the second quad under the glyph.
     const testing = std.testing;
     var frame: records.Frame = undefined;
     try frame.initInPlace(testing.allocator, &testFrameCapacity(8, 0));
@@ -572,12 +523,6 @@ test "pack starts a draw at every pipeline change within one clip" {
 }
 
 test "pack fills its draws and clips exactly at the paint record budget" {
-    // Goal: the boundary of the draw and clip pools (CLAUDE.md §24). Method:
-    // at a budget of 8 records, 8 records alternating quad and glyph make 8
-    // draws, and 8 push/pop pairs make 9 clips with the unbounded one; both
-    // pools are then full and their last entry is the last record's. One
-    // more record panics, naming the pool (`fail_fast_check`
-    // `core-pack-draws` and `core-pack-clips`).
     const testing = std.testing;
     const record_count_max: u32 = 8;
     var frame: records.Frame = undefined;

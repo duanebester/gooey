@@ -1,39 +1,15 @@
-//! VulkanRenderer — the Vulkan backend of the core's `Renderer` contract
-//! (`core/backend.zig`, contract §9), shared by Linux (Wayland) and Windows
-//! (Win32).
-//!
-//! It draws the packed frame (`core/packed_frame.zig`) as it is: each frame
+//! The Vulkan backend of the core's `Renderer` contract
+//! (`core/backend.zig`), shared by Linux (Wayland) and Windows (Win32). It
+//! draws the packed frame (`core/packed_frame.zig`) as it is: each frame
 //! copies the used prefix of every instance array into that frame's storage
-//! buffers and records the draw list in order (`vk_draw.zig`). Delegates to
-//! one module per subsystem:
-//!   - `vk_instance`    : Instance, device, debug messenger
-//!   - `vk_surface`     : Window-system surface and its swapchain teardown
-//!   - `vk_swapchain`   : Swapchain lifecycle, render pass, framebuffers
-//!   - `vk_buffers`     : Buffer, command pool, command buffer, sync object creation
-//!   - `vk_descriptors` : The frame's descriptor layout, pool, sets, sampler
-//!   - `vk_pipelines`   : Generic pipeline creation
-//!   - `vk_atlas`       : Atlas images and their batched uploads
-//!   - `vk_draw`        : Recording the packed frame's draws
+//! buffers and records the draw list in order (`vk_draw.zig`).
 //!
-//! ## One frame
-//!
-//! The frame's command buffer begins at the first `uploadAtlas` or at `draw`,
-//! after the frame's fence shows the GPU is done with its buffers and staging
-//! lane. `uploadAtlas` copies pixels into the lane and records the copies;
-//! `draw` adds the render pass, then submits and presents. When no swapchain
-//! image can be had (an out-of-date or unusable swapchain), `draw` still
-//! submits the uploads, so they are never lost or re-staged, and skips only
-//! the render pass; the host draws again once the swapchain is rebuilt.
-//!
-//! ## Resource sketch (CLAUDE.md §7)
-//!
-//! Reserved at `initInPlace` from the window's `RenderLimits`, never resized:
-//! per frame in flight, the packed frame's storage buffers and a 16 B uniform
-//! (`vk_types.FrameCapacity`: 1.9 MB at `.standard`, 5.6 MiB for three frames),
-//! one atlas staging lane of `atlas.upload_bytes_frame_max`, and the three
-//! atlas images at their budget sizes. Per frame the CPU copies only the used
-//! prefix of each array (about 11 KiB for todo) and the atlas regions uploaded
-//! since the last frame; the GPU draws at most one call per draw and per mesh.
+//! The frame's command buffer begins at the first `uploadAtlas` or at
+//! `draw`, after the frame's fence shows the GPU is done with its buffers
+//! and staging lane. When no swapchain image can be had (an out-of-date or
+//! unusable swapchain), `draw` still submits the uploads, so they are never
+//! lost or re-staged, and skips only the render pass; the host draws again
+//! once the swapchain is rebuilt.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -59,7 +35,6 @@ const WindowLimits = limits_mod.WindowLimits;
 const AtlasLimits = limits_mod.AtlasLimits;
 const Uniforms = vk_types.Uniforms;
 
-/// Enable Vulkan validation layers in debug builds.
 pub const enable_validation_layers = vk_instance.enable_validation_layers;
 
 pub const frame_count_max = vk_types.frame_count_max;
@@ -130,10 +105,6 @@ comptime {
     assert(@backingInt(Pipeline.point_instanced) == 6);
 }
 
-// =============================================================================
-// VulkanRenderer
-// =============================================================================
-
 pub const VulkanRenderer = struct {
     comptime {
         backend.verifyRenderer(@This());
@@ -143,7 +114,6 @@ pub const VulkanRenderer = struct {
     // around swapchain destruction.
     native_surface: ?NativeSurface = null,
 
-    // Core Vulkan objects
     instance: vk.Instance = null,
     debug_messenger: vk.DebugUtilsMessengerEXT = null,
     physical_device: vk.PhysicalDevice = null,
@@ -159,7 +129,6 @@ pub const VulkanRenderer = struct {
     // `maxStorageBufferRange`; every frame buffer is checked against it.
     storage_range_bytes_max: u64 = 0,
 
-    // Swapchain
     swapchain: vk.Swapchain = null,
     swapchain_images: [swapchain_image_count_max]vk.Image = @splat(null),
     swapchain_image_views: [swapchain_image_count_max]vk.ImageView = @splat(null),
@@ -221,7 +190,6 @@ pub const VulkanRenderer = struct {
     // Atlas images (glyph R8, SVG and image RGBA8), indexed by `AtlasSlot`.
     atlases: [atlas_slot_count]vk_atlas.AtlasResources = @splat(.{}),
 
-    // The last frame drawn, named in failure reports.
     frame_number: u64 = 0,
     // A frame skipped for an unusable swapchain was logged; reset on success.
     skip_logged: bool = false,
@@ -229,10 +197,6 @@ pub const VulkanRenderer = struct {
     initialized: bool = false,
 
     const Self = @This();
-
-    // =========================================================================
-    // Contract (§9)
-    // =========================================================================
 
     /// Create the device, swapchain, and every buffer the window's budget
     /// needs. `surface.native` points at a `NativeSurface`, copied here; its
@@ -250,7 +214,7 @@ pub const VulkanRenderer = struct {
         assertFits(surface.size_px, &limits.window);
         self.size_px = surface.size_px;
         // Every per-frame buffer and the staging lanes are sized from the
-        // window's budget here, once, before the first frame (CLAUDE.md §2).
+        // window's budget here, once, before the first frame.
         self.capacity = FrameCapacity.fromPaintLimits(&limits.paint);
         self.window_limits = limits.window;
         self.staging_lane_bytes = limits.atlas.upload_bytes_frame_max;
@@ -431,10 +395,6 @@ pub const VulkanRenderer = struct {
         assert(self.pipelines[@backingInt(Pipeline.triangles)] != null);
         return .{ .meshes = true };
     }
-
-    // =========================================================================
-    // Frame recording
-    // =========================================================================
 
     /// The current frame's resources, its command buffer begun. The first call
     /// of a frame waits for the GPU to finish the frame that last used them.
@@ -626,10 +586,6 @@ pub const VulkanRenderer = struct {
         });
     }
 
-    // =========================================================================
-    // Swapchain
-    // =========================================================================
-
     /// A swapchain handle and one framebuffer per image. A failed rebuild
     /// leaves the framebuffers destroyed.
     fn swapchainUsable(self: *const Self) bool {
@@ -715,10 +671,6 @@ pub const VulkanRenderer = struct {
             &self.framebuffers,
         );
     }
-
-    // =========================================================================
-    // Initialization and teardown, in creation order
-    // =========================================================================
 
     /// Instance, presentation surface, physical and logical device.
     fn initDevice(self: *Self) !void {

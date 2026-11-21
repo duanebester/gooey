@@ -1,12 +1,3 @@
-//! Drag and drop: cards drag between two lists (contract §5).
-//!
-//! A card carries its item id as the drag payload; each list is a drop
-//! target for item ids that restyles while a card is over it, the dragged
-//! card dims, and a preview follows the pointer on a `.drag` layer, which
-//! the pointer passes through, so the list under the preview stays the
-//! target. From the keyboard, Space on a focused card picks it up; Tab or
-//! the arrows choose a list, Space drops, and Escape cancels.
-
 const std = @import("std");
 const gooey = @import("gooey");
 
@@ -17,7 +8,6 @@ const Color = ui.Color;
 
 const assert = std.debug.assert;
 
-/// What a card carries while it is dragged: an index into `items`.
 pub const ItemId = u32;
 
 pub const Item = struct { name: []const u8, color: Color };
@@ -31,10 +21,8 @@ pub const items = [_]Item{
 
 pub const Side = enum(u8) { left, right };
 
-/// Each list's title, by `Side`.
 pub const titles = [_][]const u8{ "Fruits", "Basket" };
 
-/// One list's item ids in display order. Every item is in exactly one list.
 pub const List = struct {
     ids: [items.len]ItemId = undefined,
     count: u32 = 0,
@@ -51,7 +39,6 @@ pub const List = struct {
         self.count += 1;
     }
 
-    /// Remove `id` if this list holds it, keeping the others' order.
     fn remove(self: *List, id: ItemId) bool {
         assert(self.count <= items.len);
         const index = std.mem.indexOfScalar(ItemId, self.slice(), id) orelse return false;
@@ -75,8 +62,6 @@ pub const State = struct {
         return &self.lists[@backingInt(side)];
     }
 
-    /// Move the dropped item to the end of `side`'s list, as 0.3.1 did. A
-    /// keyboard drop says where it went; a pointer drop shows it.
     pub fn dropOn(self: *State, side: Side, effects: *Effects) void {
         const id = effects.dropPayload(ItemId) orelse return;
         assert(id < items.len);
@@ -87,15 +72,12 @@ pub const State = struct {
         }
     }
 
-    /// Space on a focused card picks it up for a keyboard drag.
     pub fn pickUp(_: *State, card: gooey.ElementId, effects: *Effects) void {
         const event = effects.inputEvent() orelse return;
         if (event.* != .key_down) return;
         const key = &event.key_down;
         if (key.key != .space or key.is_repeat) return;
         if (key.modifiers.cmd or key.modifiers.ctrl or key.modifiers.alt) return;
-        // A drag or pointer capture already holding the gesture starts no
-        // pick-up, so there is nothing to announce.
         if (!effects.startDrag(card)) return;
         effects.announce(pick_up_message, .assertive);
     }
@@ -128,7 +110,6 @@ pub const App = gooey.App(State, render, .{
     .limits = .small,
 });
 
-/// The generated entry point (contract §7).
 pub const main = App.main;
 
 pub fn render(cx: *Cx) void {
@@ -152,7 +133,6 @@ pub fn render(cx: *Cx) void {
     }));
 }
 
-/// A list is a drop target for item ids, highlighted while a card is over it.
 const ItemList = struct {
     side: Side,
 
@@ -187,8 +167,8 @@ const ItemList = struct {
             },
         }, .{
             ui.text(title, .{ .size = 18, .color = .{ .rgba = .rgb(0.8, 0.8, 0.8) } }),
-            // 0.3.1's `spacerMin(8)` and trailing `spacer()`: both grow, so a
-            // list taller than its cards shares the slack above and below.
+            // Both spacers grow, so a list taller than its cards
+            // shares the slack above and below.
             // Its minimum added nothing in a column, so neither has one.
             ui.box(.{ .style = .{ .height = .{ .grow = 1 } } }, .{}),
             Cards{ .ids = ids },
@@ -234,7 +214,6 @@ const Cards = struct {
     }
 };
 
-/// Three short lines.
 const DragHandle = struct {
     pub fn render(_: DragHandle, cx: *Cx) void {
         const line: ui.Style = .{

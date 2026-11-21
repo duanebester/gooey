@@ -1,10 +1,7 @@
-//! Hand-written WIC (Windows Imaging Component) bindings for the Windows image
-//! backend.
-//!
-//! Only the subset of `windowscodecs.dll` and `ole32.dll` the backend calls.
-//! Declared by hand for the same reasons as the DirectWrite bindings: Gooey
-//! takes no package dependencies (CLAUDE.md §12) and the tree type-checks from
-//! any host.
+//! Hand-written WIC (Windows Imaging Component) bindings: only the subset of
+//! `windowscodecs.dll` and `ole32.dll` the backend calls, declared by hand as
+//! for the DirectWrite bindings: Gooey takes no package dependencies
+//! (CLAUDE.md §12) and the tree type-checks from any host.
 //!
 //! WIC is COM. Each vtable below lists every slot of its interface in the order
 //! of `wincodec.h` and `objidl.h`, because a method is found by its slot index
@@ -18,10 +15,6 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-
-// =============================================================================
-// Scalar types
-// =============================================================================
 
 pub const HRESULT = i32;
 
@@ -57,10 +50,6 @@ pub const WICRect = extern struct {
     Height: i32,
 };
 
-// =============================================================================
-// Class and interface identifiers
-// =============================================================================
-
 /// `CLSID_WICImagingFactory1`: available since Windows 7, and every interface
 /// the backend uses is on it.
 pub const CLSID_WICImagingFactory: GUID = .{
@@ -86,20 +75,12 @@ pub const GUID_WICPixelFormat32bppRGBA: GUID = .{
     .data4 = .{ 0xA7, 0xA8, 0xA2, 0x99, 0x35, 0x26, 0x1A, 0xE9 },
 };
 
-// =============================================================================
-// Enumerations (C enums: 32 bits)
-// =============================================================================
-
 pub const COINIT_MULTITHREADED: u32 = 0x0;
 pub const CLSCTX_INPROC_SERVER: u32 = 0x1;
 
 pub const WICDecodeMetadataCacheOnDemand: u32 = 0;
 pub const WICBitmapDitherTypeNone: u32 = 0;
 pub const WICBitmapPaletteTypeCustom: u32 = 0;
-
-// =============================================================================
-// Interfaces
-// =============================================================================
 
 pub const IWICImagingFactory = extern struct {
     vtable: *const VTable,
@@ -292,10 +273,6 @@ pub const IWICFormatConverter = extern struct {
     }
 };
 
-// =============================================================================
-// Functions
-// =============================================================================
-
 pub extern "ole32" fn CoInitializeEx(
     pvReserved: ?*anyopaque,
     dwCoInit: u32,
@@ -310,10 +287,6 @@ pub extern "ole32" fn CoCreateInstance(
     riid: *const GUID,
     ppv: *?*anyopaque,
 ) callconv(.winapi) HRESULT;
-
-// =============================================================================
-// Layout pins
-// =============================================================================
 
 fn assertSlot(comptime VTable: type, comptime name: []const u8, comptime slot: u32) void {
     assert(@offsetOf(VTable, name) == slot * @sizeOf(usize));

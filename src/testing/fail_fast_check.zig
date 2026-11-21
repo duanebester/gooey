@@ -1,81 +1,8 @@
-//! Child-process checks for frame- and input-path failures that panic (CLAUDE.md §2, §17).
-//!
-//! Each mode drives one path that used to drop work silently and now panics with the
-//! pool, capacity, and counts. A panic cannot be caught inside a test, so the `test`
-//! build step runs this program once per mode and asserts that it aborts with the
-//! documented message (see `addFailFastChecks` in `build.zig`). Capacity modes fill the
-//! pool exactly and claim one more. No mode may reach the end of `main`.
-//!
-//! Modes (first argument):
-//! - `font-variant`: measures text in a font variant the face set did not load.
-//! - `atlas-item`: inserts one item larger than its fixed atlas.
-//! - `atlas-live-set`: fills an atlas with items used this frame and inserts one more.
-//! - `glyph-cache`: renders 513 distinct glyphs in one frame, one past `nano`'s
-//!   512 `text.glyph_cache_count_max`; every entry is in use, so none is evicted.
-//! - `core-allocation`: allocates through the 0.4.0 core's lifecycle guard after init.
-//! - `core-duplicate-key`: renders two boxes with one key under one parent.
-//! - `core-component-depth`: nests components one level past `component_depth_max`.
-//! - `core-box-depth`: nests boxes one level past `nano`'s `build.box_depth_max`
-//!   of 64, the window root included. The layout open stack is sized from the
-//!   same field, so the build's own check, which knows the frame, stops it.
-//! - `core-layout-elements`: renders one box more than `nano`'s 512 elements.
-//!   The layout engine holds the same budget plus the root, so the build stops
-//!   it first and layout is never asked for more.
-//! - `svg-cache`: caches 9 distinct icons in one frame in an SVG atlas of 8
-//!   `atlas.svg_entry_count_max`; every icon is in use, so none is reclaimed.
-//!   Through the core this cannot fire: the budget holds a frame's icons.
-//! - `image-cache`: the same for images, 9 into 8 `atlas.image_entry_count_max`.
-//! - `core-layer-count`: opens one layer more than `nano`'s 8. Each layer is a
-//!   layout floating root, a pool sized from `build.layer_count_frame_max`.
-//! - `core-a11y-elements`: renders one accessible box more than `nano`'s 128
-//!   `a11y.element_count_max`. The frame's node pool, the tree and every
-//!   bridge are sized from that field, so the frame's pool stops it first.
-//! - `core-a11y-announcement-bytes`: one click announcing 129 bytes, one past
-//!   `nano`'s 128 `a11y.announcement_message_bytes_max`. Pending announcements
-//!   never run out of slots: a newer one replaces an older one (contract §4).
-//! - `core-opacity-range`: a box whose `Style.opacity` is just above 1.
-//! - `core-grow-weight`: a box that grows with a weight of 0.
-//! - `core-wrap-column`: a column that asks to wrap.
-//! - `core-aspect-ratio`: a box whose aspect ratio is 0.
-//! - `core-aspect-height`: a box with an aspect ratio and a fixed height.
-//! - `core-pointer-drag-unkeyed`: a box with `on_pointer_drag` and no key.
-//! - `core-drag-unkeyed`: a box with `draggable` and no key.
-//! - `core-drag-both`: a keyed box with both `draggable` and `on_pointer_drag`.
-//! - `core-start-drag-target`: a click asks `effects.startDrag` for its own box,
-//!   which is keyed and on screen but not draggable.
-//! - `core-dialog-target`: names a non-root state as a file dialog's completion handler.
-//! - `core-dialog-paths`: a dialog selects one path more than `dialog_path_count_max`.
-//! - `core-dialog-count`: one file dialog more than `events.dialog_count_max` stays open.
-//! - `core-job-count`: spawns one background job more than `nano`'s 2
-//!   `events.job_count_max` while both slots run.
-//! - `core-job-count-cancelled`: the same after cancelling the first job and
-//!   letting its interrupt end it: its slot stays held until a drain
-//!   delivers its `on_done`, so the third spawn still finds both in use.
-//! - `core-mono-unset`: draws `.family = .mono` text in an app with no `fonts.mono`.
-//! - `core-wrap-text`: one text of 1,024 newlines and a letter, 1,025 lines,
-//!   one past `nano`'s frame line budget, which one text may fill alone. A
-//!   text's length is otherwise unbounded: layout and emit split it into
-//!   shaping runs, so `text.run_codepoint_count_max` never stops a text.
-//! - `core-wrap-frame`: wraps two texts into one line past the frame's glyph budget.
-//! - `core-deinit-running`: frees a running app without stopping it first.
-//! - `core-list-count`: a `List` of per-row heights one row past its `count_max`.
-//! - `core-mesh-points`: a polyline one point past `nano`'s polyline point limit.
-//! - `core-image-requests`: one more image path than `nano`'s image request entries.
-//! - `core-image-path`: an image path one byte past `nano`'s 1,024
-//!   `atlas.image_path_bytes_max`.
-//! - `core-pack-polylines`: one polyline more than `nano`'s polyline limit, which
-//!   pack checks: emit bounds only their points.
-//! - `core-pack-draws`: packs nine records that each start a draw into a packed
-//!   frame reserved for eight paint records.
-//! - `core-pack-clips`: packs nine clip pushes into the same frame, one past its
-//!   nine clips (eight plus the unbounded clip).
-//! - `core-capabilities-meshes`: checks a frame holding a polyline against a
-//!   renderer that reports no mesh support.
-//! - `chart-points`: fills a line chart series of 4 `point_count_max` exactly,
-//!   then adds a fifth point.
-//! - `chart-categories`: builds a bar chart series of 2 `category_count_max`
-//!   from 3 categories.
-//! - `chart-slices`: draws a pie chart of 2 `slice_count_max` from 3 slices.
+//! Child-process checks for failures that panic. A panic cannot be caught
+//! inside a test, so the `test` build step runs this program once per mode
+//! and asserts that it aborts with the documented message (see
+//! `addFailFastChecks` in `build.zig`). Capacity modes fill the pool exactly
+//! and claim one more. No mode may reach the end of `main`.
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -209,7 +136,6 @@ fn fontVariant(gpa: std.mem.Allocator, io: std.Io) void {
     };
 }
 
-/// A 64² CPU-texture atlas of `kind` over its own journal, at frame 2.
 fn atlasHarness(gpa: std.mem.Allocator, io: std.Io, kind: gooey.internals.text.AtlasKind) *gooey.internals.text.Atlas {
     const text = gooey.internals.text;
     const uploads = gpa.create(text.AtlasUploads) catch |err| {
@@ -309,7 +235,6 @@ fn glyphCache(gpa: std.mem.Allocator, io: std.Io) void {
     }
 }
 
-/// An atlas over its own CPU journal at frame 2, for the cache checks.
 fn cacheUploads(gpa: std.mem.Allocator, io: std.Io) *gooey.internals.text.AtlasUploads {
     const uploads = gpa.create(gooey.internals.text.AtlasUploads) catch |err| {
         std.debug.panic("setup: AtlasUploads allocation failed: {s}", .{@errorName(err)});
@@ -388,10 +313,6 @@ fn imageCache(gpa: std.mem.Allocator, io: std.Io) void {
         };
     }
 }
-
-// =============================================================================
-// 0.4.0 core
-// =============================================================================
 
 const CoreState = struct {
     fn picked(_: *CoreState) void {}
@@ -811,7 +732,6 @@ fn coreJobCountCancelled(gpa: std.mem.Allocator, io: std.Io) void {
     unreachable;
 }
 
-/// A dialog service whose dialogs never close.
 const StaysOpen = struct {
     fn open(
         _: *anyopaque,
@@ -823,7 +743,6 @@ const StaysOpen = struct {
     }
 };
 
-/// A dialog service that selects one path more than `nano` allows.
 const TooManyPaths = struct {
     const count = gooey.ResourceLimits.nano.events.dialog_path_count_max + 1;
     const bytes: []const u8 = &joined: {
@@ -847,7 +766,6 @@ const TooManyPaths = struct {
     }
 };
 
-/// Tick once, then click the window's centre and tick again.
 fn clickCenter(app: anytype) void {
     app.tick(1);
     const point = gooey.input.MouseEvent{
@@ -861,7 +779,6 @@ fn clickCenter(app: anytype) void {
     app.tick(2);
 }
 
-/// Click a button announcing one byte more than `nano`'s announcement slot.
 fn coreAnnounce(gpa: std.mem.Allocator, io: std.Io) void {
     const a11y = gooey.ResourceLimits.nano.a11y;
     const Announcer = struct {
@@ -964,7 +881,6 @@ fn corePackRecords(gpa: std.mem.Allocator, pool: enum { draws, clips }) void {
     internals.pack.pack(frame, target);
 }
 
-/// Pack one polyline and check the frame against a renderer without meshes.
 fn coreCapabilitiesMeshes(gpa: std.mem.Allocator) void {
     const internals = gooey.internals;
     const records = internals.records;
@@ -1019,7 +935,6 @@ fn chartPoints() void {
 }
 
 fn chartCategories() void {
-    // Three categories built into a series of two.
     const Chart = charts.BarChart(.{ .category_count_max = 2, .series_count_max = 1 });
     _ = Chart.Series.fromSlice("sales", &.{
         .{ .label = "A", .value = 1 },
@@ -1029,7 +944,6 @@ fn chartCategories() void {
 }
 
 fn chartSlices() void {
-    // Three slices drawn by a pie of two.
     const Chart = charts.PieChart(.{ .slice_count_max = 2 });
     const slices = [_]charts.CategoryPoint{
         charts.CategoryPoint.init("A", 1),

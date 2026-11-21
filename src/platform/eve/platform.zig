@@ -1,23 +1,16 @@
-//! EvePlatform - a Bridgetek EVE (BT81x) panel over spidev, for embedded
-//! Linux boards with no framebuffer.
+//! Bridgetek EVE (BT81x) platform for embedded Linux boards whose panel sits
+//! behind an EVE display controller on SPI, with no framebuffer (selected
+//! with `-Dlinux-backend=eve`). Input is the chip's capacitive touch engine,
+//! read once per loop turn and delivered as left-button mouse events, so
+//! buttons, hovers, and drags work as with a mouse; there is no keyboard.
 //!
-//! Selected with `-Dlinux-backend=eve`. The platform owns the chip; its single
-//! window covers the panel and is drawn by the chip from display lists
-//! (`renderer.zig`). Input is the chip's capacitive touch engine, read once
-//! per loop turn and delivered as left-button mouse events, so buttons,
-//! hovers, and drags work as with a mouse: contact is a press, movement
-//! while touching a drag, and release a mouse up. There is no keyboard.
-//!
-//! ## Configuration
-//!
-//! - `-Deve-device` (build): the spidev node, default `/dev/spidev1.0`.
-//! - `-Deve-spi-hz` (build): the SPI clock, 1 to 30 MHz, default 10 MHz.
-//! - `GOOEY_EVE_SIMULATE=<path>` (environment): draw into a simulated chip
-//!   instead of the device, dumping `RAM_G` and `RAM_DL` to `<path>` at every
-//!   swap for `eve_preview.py`. For development hosts.
-//!
-//! The chip must already be booted and scanning out: board bring-up (reset,
-//! clocks, panel timing, backlight) stays with the board's own driver.
+//! Configuration: `-Deve-device` (build): the spidev node, default
+//! `/dev/spidev1.0`; `-Deve-spi-hz` (build): the SPI clock, 1 to 30 MHz,
+//! default 10 MHz; `GOOEY_EVE_SIMULATE=<path>` (environment): draw into a
+//! simulated chip instead of the device, dumping `RAM_G` and `RAM_DL` to
+//! `<path>` at every swap for `eve_preview.py`. The chip must already be
+//! booted and scanning out: board bring-up (reset, clocks, panel timing,
+//! backlight) stays with the board's own driver.
 
 const std = @import("std");
 const build_options = @import("gooey_build_options");
@@ -46,8 +39,8 @@ comptime {
 }
 
 pub const EvePlatform = struct {
-    /// Cleared only by `quit`, a 0.3.1 call kept while `context/window.zig`
-    /// compiles. The core host's loop ends when the window closes.
+    /// Cleared only by `quit`; the core host's loop ends when the window
+    /// closes.
     running: bool = false,
     window_registry: WindowRegistry,
     chip: chip_mod.Chip,
@@ -80,10 +73,6 @@ pub const EvePlatform = struct {
         assert(self.window == null);
         self.chip.close();
     }
-
-    // =========================================================================
-    // Touch
-    // =========================================================================
 
     /// Read the touch engine once and deliver what changed. A failed read
     /// counts as no contact, so a lost bus releases a press rather than
@@ -149,10 +138,6 @@ pub const EvePlatform = struct {
         return window;
     }
 
-    // =========================================================================
-    // Window registry
-    // =========================================================================
-
     pub fn registerWindow(self: *Self, window: *anyopaque) !WindowId {
         assert(@intFromPtr(window) != 0);
         const id = try self.window_registry.register(window);
@@ -171,12 +156,8 @@ pub const EvePlatform = struct {
         if (id) |window_id| assert(self.window_registry.contains(window_id));
     }
 
-    // =========================================================================
-    // Calls from the 0.3.1 `context/window.zig`
-    // =========================================================================
-    //
-    // The core never makes these calls. They stay only while that file
-    // compiles, and go when phase 6 deletes it.
+    // Kept only while 0.3.1 `context/window.zig` compiles; the core never
+    // calls these, and they go when phase 6 deletes that file.
 
     pub fn quit(self: *Self) void {
         self.running = false;

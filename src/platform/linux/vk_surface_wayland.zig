@@ -1,5 +1,3 @@
-//! Wayland implementation of the Vulkan presentation surface (`vk_surface`).
-
 const std = @import("std");
 const assert = std.debug.assert;
 const vk = @import("vulkan.zig");
@@ -17,7 +15,7 @@ pub const WaylandSurface = struct {
         WaylandSurfaceCreationFailed,
     };
 
-    /// Create the `VkSurfaceKHR` for presentation; the caller owns it.
+    /// The caller owns the returned `VkSurfaceKHR`.
     pub fn create(self: *const WaylandSurface, instance: vk.Instance) CreateError!vk.Surface {
         assert(instance != null);
 
@@ -44,25 +42,18 @@ pub const WaylandSurface = struct {
     // only fail once the display connection is lost, and a lost compositor has
     // already released every buffer, so swapchain teardown proceeds either way.
 
-    /// Flush pending Wayland requests before the swapchain is destroyed.
     pub fn swapchainDestroyBegin(self: *const WaylandSurface) void {
         _ = wayland.wl_display_flush(self.display);
         _ = wayland.wl_display_roundtrip(self.display);
     }
 
-    /// Roundtrip after destroying the swapchain to process compositor release
-    /// events.
-    ///
-    /// A "queue destroyed while proxies still attached" warning may still
-    /// appear. This is a known limitation of Mesa's Vulkan Wayland WSI:
-    /// - Mesa creates internal wl_buffer objects for each swapchain image.
-    /// - When the swapchain is destroyed, Mesa destroys these wl_buffers.
-    /// - The compositor may still hold references, sending wl_buffer.release later.
-    /// - If the app exits before processing release events, the warning appears.
-    ///
-    /// The warning is harmless: the compositor cleans up properly regardless.
-    /// It is a libwayland-client debugging message, not a resource leak. The
-    /// roundtrips minimize but cannot fully eliminate this race.
+    // Roundtrips drain compositor wl_buffer.release events after swapchain
+    // destruction. A "queue destroyed while proxies still attached" warning
+    // may still appear: Mesa creates an internal wl_buffer per swapchain
+    // image, destroys them with the swapchain, and the compositor may send
+    // releases after the app exits. The warning is a libwayland-client debug
+    // message, not a resource leak; the roundtrips minimize but cannot fully
+    // eliminate the race.
     pub fn swapchainDestroyEnd(self: *const WaylandSurface) void {
         _ = wayland.wl_display_flush(self.display);
         _ = wayland.wl_display_roundtrip(self.display);
@@ -71,6 +62,5 @@ pub const WaylandSurface = struct {
 };
 
 comptime {
-    // Two borrowed pointers: small enough to pass by value (CLAUDE.md §13).
     assert(@sizeOf(WaylandSurface) == 2 * @sizeOf(usize));
 }

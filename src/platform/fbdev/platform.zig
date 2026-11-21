@@ -1,21 +1,16 @@
-//! FbdevPlatform - display-server-free platform for embedded Linux.
+//! Display-server-free platform for embedded Linux (`-Dlinux-backend=fbdev`):
+//! it owns the framebuffer device and every evdev input device, and its
+//! single window covers the whole panel, rendered on the CPU. There is no
+//! compositor, so the core host (`core_host.zig`) paces frames itself: it
+//! waits in `poll` on the input devices, has `dispatchInput` deliver what
+//! arrived, and presents at most once per `frame_period_ns_min`.
 //!
-//! Selected with `-Dlinux-backend=fbdev`. The platform owns the framebuffer
-//! device and every evdev input device; its single window covers the whole
-//! panel and is rendered on the CPU. There is no compositor, so the core host
-//! (`core_host.zig`) paces frames itself: it waits in `poll` on the input
-//! devices, has `dispatchInput` deliver what arrived, and presents at most once
-//! per `frame_period_ns_min`.
-//!
-//! ## Configuration (environment, read once at initialization)
-//!
-//! - `GOOEY_FBDEV`: framebuffer device path. Default `/dev/fb0`.
-//! - `GOOEY_SCALE`: device pixels per logical pixel, 1 through 8. Default 1.
-//! - `GOOEY_EVDEV_GRAB=1`: take exclusive access to input devices so the
-//!   virtual console underneath does not also receive keystrokes.
-//!
-//! The process needs read/write access to the framebuffer and read access to
-//! `/dev/input/event*`, usually through the `video` and `input` groups.
+//! Environment (read once at initialization): `GOOEY_FBDEV` framebuffer path
+//! (default `/dev/fb0`), `GOOEY_SCALE` device pixels per logical pixel, 1
+//! through 8 (default 1), and `GOOEY_EVDEV_GRAB=1` to take exclusive input
+//! access. The process needs read/write access to the framebuffer and read
+//! access to `/dev/input/event*`, usually through the `video` and `input`
+//! groups.
 
 const std = @import("std");
 const posix = std.posix;
@@ -36,8 +31,7 @@ const WindowRegistry = window_registry.WindowRegistry;
 pub const frame_period_ns_min: u64 = 16_666_667;
 
 pub const FbdevPlatform = struct {
-    /// Cleared only by `quit`, a 0.3.1 call kept while `context/window.zig`
-    /// compiles. The core host's loop ends when the window closes.
+    /// Cleared only by `quit`; kept while `context/window.zig` compiles.
     running: bool = false,
     window_registry: WindowRegistry,
     framebuffer: framebuffer_mod.Framebuffer = .{},
@@ -87,7 +81,6 @@ pub const FbdevPlatform = struct {
         self.framebuffer.close();
     }
 
-    /// Logical size of the panel: the size of the one window.
     pub fn logicalWidth(self: *const Self) f64 {
         assert(self.scale_factor > 0);
         return @as(f64, @floatFromInt(self.framebuffer.width)) / self.scale_factor;
@@ -98,10 +91,6 @@ pub const FbdevPlatform = struct {
         return @as(f64, @floatFromInt(self.framebuffer.height)) / self.scale_factor;
     }
 
-    // =========================================================================
-    // Input
-    // =========================================================================
-
     fn openWindow(self: *const Self) ?*FbdevWindow {
         const window = self.window orelse return null;
         assert(window.window_id.isValid());
@@ -109,13 +98,13 @@ pub const FbdevPlatform = struct {
         return window;
     }
 
-    /// Deliver what each readable device queued, reading from each only as
-    /// many raw events as `queue` has room for, at `evdev.Batch.capacity`
-    /// events each; the rest wait in the kernel until a tick drains the
-    /// queue. A device that reports an error or hangup, or fails to read, is
-    /// closed and forgotten so the loop does not wake for it again. Walks
-    /// from the last device because removal moves the last device into the
-    /// removed slot.
+    // Deliver what each readable device queued, reading from each only as
+    // many raw events as `queue` has room for, at `evdev.Batch.capacity`
+    // events each; the rest wait in the kernel until a tick drains the
+    // queue. A device that reports an error or hangup, or fails to read, is
+    // closed and forgotten so the loop does not wake for it again. Walks
+    // from the last device because removal moves the last device into the
+    // removed slot.
     pub fn dispatchInput(
         self: *Self,
         pollfds: []const posix.pollfd,
@@ -164,10 +153,6 @@ pub const FbdevPlatform = struct {
         }
     }
 
-    // =========================================================================
-    // Window registry
-    // =========================================================================
-
     pub fn registerWindow(self: *Self, window: *anyopaque) !WindowId {
         assert(@intFromPtr(window) != 0);
         const id = try self.window_registry.register(window);
@@ -186,13 +171,8 @@ pub const FbdevPlatform = struct {
         if (id) |window_id| assert(self.window_registry.contains(window_id));
     }
 
-    // =========================================================================
-    // Calls from the 0.3.1 `context/window.zig`
-    // =========================================================================
-    //
-    // The core never makes these calls. They stay only while that file
-    // compiles, and go when phase 6 deletes it.
-
+    // The core never makes these calls; they stay only while
+    // `context/window.zig` compiles.
     pub fn quit(self: *Self) void {
         self.running = false;
         assert(!self.running);

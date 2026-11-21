@@ -1,10 +1,3 @@
-//! SVG Rasterizer - Platform dispatcher
-//!
-//! Routes to platform-specific SVG rasterization backends:
-//! - CoreGraphics (macOS) - rasterizer_cg.zig
-//! - Software renderer (Linux, Windows) - backends/cairo.zig
-//! - Canvas2D (Web/WASM) - rasterizer_web.zig
-
 const builtin = @import("builtin");
 const interface_verify = @import("../core/interface_verify.zig");
 
@@ -18,18 +11,15 @@ else switch (builtin.os.tag) {
     else => @import("backends/null.zig"),
 };
 
-// Compile-time interface verification
 comptime {
     interface_verify.verifySvgRasterizerModule(backend);
 }
 
-// Re-export types
 pub const RasterizedSvg = backend.RasterizedSvg;
 pub const RasterizeError = backend.RasterizeError;
 pub const StrokeOptions = backend.StrokeOptions;
 pub const RasterBudget = backend.RasterBudget;
 
-// Re-export functions
 pub const rasterize = backend.rasterize;
 pub const rasterizeWithOptions = backend.rasterizeWithOptions;
 /// Scratch bytes one rasterization within a `RasterBudget` allocates.

@@ -1,11 +1,6 @@
-//! IME Composition Buffer
-//! Handles preedit/marked text during IME composition
-//!
-//! This buffer stores the composing text that appears with underlines
-//! before the user commits their input (e.g., typing Chinese pinyin). It
-//! holds `ResourceLimits.text.preedit_bytes_max` bytes, reserved by the core
-//! host at init; JavaScript cuts a longer preedit on a codepoint boundary and
-//! logs the field (decision R2).
+//! IME composition buffer: JavaScript writes the preedit it cuts to
+//! `ResourceLimits.text.preedit_bytes_max` on a codepoint boundary (a longer
+//! preedit is logged), reserved by the core host at init.
 //!
 //! Exported layout, read by JavaScript after `init`: byte 0 `len`, byte 4
 //! `active`, byte 5 `pending`, byte 8 `capacity`, byte 12 the address of the
@@ -15,17 +10,13 @@ const std = @import("std");
 
 const assert = std.debug.assert;
 
-/// Composition state from IME
 pub const CompositionBuffer = extern struct {
-    /// Current length of composing text
     len: u32 align(4) = 0,
-    /// Whether composition is active
     active: u8 = 0,
     /// One-shot event flag, including the empty event emitted on end/cancel.
     pending: u8 = 0,
     _pad: [2]u8 = .{ 0, 0 },
     capacity: u32 = 0,
-    /// The composing/preedit text
     data: [*]u8 = undefined,
 
     const Self = @This();
@@ -34,7 +25,7 @@ pub const CompositionBuffer = extern struct {
         if (@sizeOf(usize) == 4) assert(@sizeOf(Self) == 16);
     }
 
-    /// Reserve `capacity` bytes, during initialization only.
+    /// Reserve `capacity` bytes; initialization only.
     pub fn reserve(self: *Self, gpa: std.mem.Allocator, capacity: u32) !void {
         assert(self.capacity == 0);
         assert(capacity > 0);
@@ -58,10 +49,8 @@ pub const CompositionBuffer = extern struct {
     }
 };
 
-// Global instance
 pub var g_composition_buffer: CompositionBuffer = .{};
 
-// Export pointer for JS
 fn getCompositionBufferPtr() callconv(.c) [*]u8 {
     return @ptrCast(&g_composition_buffer);
 }

@@ -1,24 +1,12 @@
 //! evdev input for the fbdev backend: keyboards, mice, and touchscreens read
 //! straight from `/dev/input/event*` with no display server or libinput.
-//!
 //! Devices are discovered once during initialization by probing their
-//! capability bits; hot-plugged devices are not picked up. Raw kernel events
-//! are turned into Gooey `InputEvent`s by `Translator`, a pure state machine
-//! that accumulates each device's packet and emits events at `SYN_REPORT`, so
-//! motion, buttons, and touch contacts from one packet are reported together
-//! and in that order.
-//!
-//! Key codes are the same evdev codes Wayland delivers, so key mapping and
-//! the built-in US layout come from `linux/input.zig`.
-//!
-//! ## Bounds
-//!
-//! - At most `device_count_max` devices are opened, from the first
-//!   `device_scan_max` event nodes.
-//! - Each read takes at most `raw_batch_max` events per device, and one raw
-//!   event produces at most `Batch.capacity` Gooey events, so the host reads
-//!   no more raw events than the core queue has room for `Batch.capacity`
-//!   events each (`FbdevPlatform.dispatchInput`).
+//! capability bits; hot-plugged devices are not picked up. `Translator` is a
+//! pure state machine that accumulates each device's packet and emits events
+//! at `SYN_REPORT`, so motion, buttons, and touch contacts from one packet
+//! are reported together and in that order. Key codes are the same evdev
+//! codes Wayland delivers, so key mapping and the built-in US layout come
+//! from `linux/input.zig`.
 
 const std = @import("std");
 const posix = std.posix;
@@ -132,7 +120,7 @@ pub const AxisRange = struct {
     maximum: i32 = 1,
 };
 
-/// Values of one device's packet, accumulated until `SYN_REPORT`.
+// Values of one device's packet, accumulated until `SYN_REPORT`.
 const Packet = struct {
     relative_x: i32 = 0,
     relative_y: i32 = 0,
@@ -153,10 +141,6 @@ pub const Device = struct {
     y_range: AxisRange = .{},
     packet: Packet = .{},
 };
-
-// =============================================================================
-// Translation
-// =============================================================================
 
 /// Gooey events produced by one raw event, with storage for the one-byte
 /// strings `text_input` events point at.
@@ -205,8 +189,8 @@ const modifier_keys = [_]struct { code: u32, bit: u8 }{
     .{ .code = 126, .bit = 1 << 7 }, // KEY_RIGHTMETA
 };
 
-/// Pointer, button, and modifier state shared by every device, in logical
-/// pixels of the screen.
+// Pointer, button, and modifier state shared by every device, in logical
+// pixels of the screen.
 pub const Translator = struct {
     screen_width: f64,
     screen_height: f64,
@@ -242,7 +226,6 @@ pub const Translator = struct {
         );
     }
 
-    /// Translate one raw event from `device`, appending any results to `out`.
     pub fn feed(self: *Translator, device: *Device, raw: RawEvent, out: *Batch) void {
         assert(device.capabilities.any());
         assert(out.count == 0);
@@ -360,7 +343,6 @@ pub const Translator = struct {
         }
     }
 
-    /// Update the pointer from a packet. Returns true when it moved.
     fn applyMotion(self: *Translator, device: *const Device, packet: *const Packet) bool {
         assert(self.scale_factor > 0);
         assert(self.screen_width > 0);
@@ -429,18 +411,13 @@ fn timeMilliseconds(raw: RawEvent) u32 {
     return @truncate(ms);
 }
 
-// =============================================================================
-// Devices
-// =============================================================================
-
-/// Every input device the backend reads.
 pub const DeviceSet = struct {
     devices: [device_count_max]Device = undefined,
     count: u32 = 0,
 
-    /// Open every usable `/dev/input/event*` node. Nodes that cannot be
-    /// opened (permissions) or report nothing useful are skipped; a device
-    /// with no input at all is a valid, if unusual, configuration.
+    // Open every usable `/dev/input/event*` node. Nodes that cannot be
+    // opened (permissions) or report nothing useful are skipped; a device
+    // with no input at all is a valid, if unusual, configuration.
     pub fn openAll(self: *DeviceSet, grab: bool) void {
         assert(self.count == 0);
         var index: u32 = 0;
@@ -483,8 +460,6 @@ pub const DeviceSet = struct {
         return self.devices[0..self.count];
     }
 
-    /// True when any device moves an on-screen pointer, which then needs a
-    /// drawn cursor.
     pub fn hasPointer(self: *const DeviceSet) bool {
         for (self.devices[0..self.count]) |device| {
             if (device.capabilities.moves_pointer()) return true;
@@ -565,8 +540,6 @@ fn probeAxis(fd: posix.fd_t, axis: u16) ?AxisRange {
     return .{ .minimum = info.minimum, .maximum = info.maximum };
 }
 
-/// Raw events one read may take with `room` free queue slots: each produces
-/// at most `Batch.capacity` events.
 pub fn rawCountMax(room: u32) u32 {
     const count = @min(raw_batch_max, room / Batch.capacity);
     assert(count * Batch.capacity <= room);
@@ -574,10 +547,10 @@ pub fn rawCountMax(room: u32) u32 {
     return count;
 }
 
-/// Read up to `buffer.len` (at most `raw_batch_max`) pending events from a
-/// non-blocking device. Returns an empty slice when nothing is pending, and
-/// `error.DeviceLost` when the device can no longer be read (unplugged or
-/// revoked).
+// Read up to `buffer.len` (at most `raw_batch_max`) pending events from a
+// non-blocking device. Returns an empty slice when nothing is pending, and
+// `error.DeviceLost` when the device can no longer be read (unplugged or
+// revoked).
 pub fn readEvents(
     device: *const Device,
     buffer: []RawEvent,
@@ -598,16 +571,9 @@ pub fn readEvents(
     return buffer[0 .. count / @sizeOf(RawEvent)];
 }
 
-// =============================================================================
-// Tests
-// =============================================================================
-
 const testing = std.testing;
 
 test "rawCountMax reads only what the queue has room for" {
-    // Boundary test: one raw event needs a whole batch of room, so one slot
-    // short of a batch reads nothing, exactly a batch reads one, and room
-    // past `raw_batch_max` batches still reads `raw_batch_max`.
     const batch = Batch.capacity;
     try testing.expectEqual(@as(u32, 0), rawCountMax(0));
     try testing.expectEqual(@as(u32, 0), rawCountMax(batch - 1));
@@ -647,8 +613,6 @@ fn feedAll(
 }
 
 test "relative packet reports motion before the button pressed in it" {
-    // Goal: motion and a press in one packet must arrive as move-then-down at
-    // the new position, and relative motion is divided by the scale factor.
     var translator = Translator.init(400, 300, 2);
     var device = Device{ .fd = 0, .capabilities = .{ .relative_pointer = true } };
     var events: [8]input.InputEvent = undefined;
@@ -667,8 +631,6 @@ test "relative packet reports motion before the button pressed in it" {
 }
 
 test "motion with a button held is a drag and the pointer stays on screen" {
-    // Goal: held-button motion must be `mouse_dragged`, and motion past the
-    // edge must clamp to the last pixel instead of leaving the screen.
     var translator = Translator.init(100, 100, 1);
     var device = Device{ .fd = 0, .capabilities = .{ .relative_pointer = true } };
     var events: [8]input.InputEvent = undefined;
@@ -685,8 +647,6 @@ test "motion with a button held is a drag and the pointer stays on screen" {
 }
 
 test "touchscreen maps its axis range and reports down, move, up" {
-    // Goal: a touch contact maps raw axis values onto the logical screen and
-    // produces touch events, not mouse events, in contact order.
     var translator = Translator.init(800, 480, 1);
     var device = Device{
         .fd = 0,
@@ -714,8 +674,6 @@ test "touchscreen maps its axis range and reports down, move, up" {
 }
 
 test "shifted key produces an uppercase character; ctrl suppresses text" {
-    // Goal: modifiers come from either side's key, shift changes the
-    // character, and a ctrl chord is a shortcut with no `text_input`.
     var translator = Translator.init(100, 100, 1);
     var device = Device{ .fd = 0, .capabilities = .{ .keyboard = true } };
     var events: [8]input.InputEvent = undefined;
@@ -741,8 +699,6 @@ test "shifted key produces an uppercase character; ctrl suppresses text" {
 }
 
 test "wheel detents become Wayland-signed scroll deltas" {
-    // Goal: a wheel turned away from the user scrolls up, i.e. a negative
-    // delta, matching what the Wayland backend passes through.
     var translator = Translator.init(100, 100, 1);
     var device = Device{ .fd = 0, .capabilities = .{ .relative_pointer = true } };
     var events: [8]input.InputEvent = undefined;

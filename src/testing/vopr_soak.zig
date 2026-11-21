@@ -1,20 +1,10 @@
 //! `zig build vopr-soak -- [--app NAME] [--hours H | --minutes M] [--jobs N]
 //! [--out DIR]`: run the VOPR on random seeds for hours, one child process
-//! per seed, because a failing seed panics and aborts its process. `--app`
-//! names the VOPR's app (todo by default) for every child.
-//!
-//! The build passes the `vopr` executable, built ReleaseSafe for throughput
-//! with every assertion still on, as the first argument. Each worker thread
-//! runs one child at a time with a fresh random seed until the deadline. A
-//! failing seed (a nonzero exit, a signal, or a child past
-//! `seed_timeout_seconds`) is appended to `DIR/results.txt` with its replay
-//! command and the tail of its stderr; `DIR/progress.log` gets a line with
-//! the running counts every `progress_interval_seconds` and at the end.
-//!
-//! Resource sketch: `jobs` children at once, each one VOPR process (about
-//! 100 MiB resident); per child, at most `stderr_bytes_max` of captured
-//! stderr held until it exits. The results file grows by at most
-//! `stderr_tail_bytes_max` plus a header per failure.
+//! per seed, because a failing seed panics and aborts its process. The build
+//! passes the `vopr` executable as the first argument. Resource sketch:
+//! `jobs` children at once, each one VOPR process (about 100 MiB resident);
+//! per child, at most `stderr_bytes_max` of captured stderr held until it
+//! exits.
 
 const std = @import("std");
 
@@ -30,7 +20,6 @@ const seed_timeout_seconds: i64 = 300;
 const progress_interval_seconds: u32 = 60;
 /// Stderr kept per child: a panic's trace is a few KiB, a verbose run more.
 const stderr_bytes_max: usize = 4 * 1024 * 1024;
-/// Bytes of a failing child's stderr copied into the results file.
 const stderr_tail_bytes_max: usize = 16 * 1024;
 
 const Options = struct {
@@ -156,7 +145,6 @@ const Soak = struct {
         self.results.close(self.io);
     }
 
-    /// One worker: seeds until the deadline, one child each.
     fn work(self: *Soak, gpa: std.mem.Allocator) void {
         defer {
             self.mutex.lockUncancelable(self.io);
@@ -212,8 +200,6 @@ const Soak = struct {
         self.recordFailure(seed, term, result.stderr);
     }
 
-    /// Append the seed, how it failed, its replay command, and the tail of
-    /// its stderr to the results file.
     fn recordFailure(self: *Soak, seed: u64, how: []const u8, stderr: []const u8) void {
         const tail = stderr[stderr.len - @min(stderr.len, stderr_tail_bytes_max) ..];
         var header_buffer: [512]u8 = undefined;
@@ -231,8 +217,7 @@ const Soak = struct {
         appendTo(self.io, self.results, &self.results_len, tail);
     }
 
-    /// Log the counts every interval until the deadline and the workers end,
-    /// checking each second so the last line follows the last child.
+    /// Log the counts every interval until the deadline and the workers end.
     fn reportUntilDeadline(self: *Soak) void {
         const second_count_max = (self.options.minutes + 1) * 60 + seed_timeout_seconds;
         var second: u64 = 1;

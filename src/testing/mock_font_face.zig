@@ -1,24 +1,3 @@
-//! Mock font face for testing
-//!
-//! Provides a configurable FontFace implementation without platform dependencies.
-//! Use this to test text layout, shaping, and rendering pipelines in isolation.
-//!
-//! Example:
-//! ```zig
-//! var mock = MockFontFace.init(std.testing.allocator);
-//! defer mock.deinit();
-//!
-//! // Configure glyph mappings
-//! try mock.setGlyphMapping('A', 65);
-//! try mock.setGlyphMapping('B', 66);
-//!
-//! // Get FontFace interface
-//! var face = mock.fontFace();
-//!
-//! try std.testing.expectEqual(@as(u16, 65), face.glyphIndex('A'));
-//! try std.testing.expectEqual(@as(u32, 1), mock.glyph_index_count);
-//! ```
-
 const std = @import("std");
 const text_types = @import("../text/types.zig");
 const font_face_mod = @import("../text/font_face.zig");
@@ -29,19 +8,11 @@ pub const RasterizedGlyph = text_types.RasterizedGlyph;
 pub const FontFace = font_face_mod.FontFace;
 
 pub const MockFontFace = struct {
-    // =========================================================================
-    // Call Tracking
-    // =========================================================================
-
     glyph_index_count: u32 = 0,
     glyph_advance_count: u32 = 0,
     glyph_metrics_count: u32 = 0,
     render_glyph_count: u32 = 0,
     deinit_count: u32 = 0,
-
-    // =========================================================================
-    // Last Values (for verification)
-    // =========================================================================
 
     last_codepoint: ?u21 = null,
     last_glyph_id: ?u16 = null,
@@ -50,26 +21,16 @@ pub const MockFontFace = struct {
     last_subpixel_x: ?f32 = null,
     last_subpixel_y: ?f32 = null,
 
-    // =========================================================================
-    // Configurable Behavior
-    // =========================================================================
-
-    /// Codepoint to glyph ID mapping
     glyph_map: std.AutoHashMap(u21, u16),
 
-    /// Glyph ID to advance width mapping
     advance_map: std.AutoHashMap(u16, f32),
 
-    /// Glyph ID to metrics mapping
     metrics_map: std.AutoHashMap(u16, GlyphMetrics),
 
-    /// Default glyph ID for unmapped codepoints (0 = .notdef)
     default_glyph_id: u16 = 0,
 
-    /// Default advance width for unmapped glyphs
     default_advance: f32 = 10.0,
 
-    /// Default glyph metrics
     default_glyph_metrics: GlyphMetrics = .{
         .glyph_id = 0,
         .advance_x = 10.0,
@@ -80,26 +41,15 @@ pub const MockFontFace = struct {
         .height = 12.0,
     },
 
-    /// Font metrics (accessible via FontFace.metrics)
     metrics: Metrics = defaultMetrics(),
-
-    // =========================================================================
-    // Controllable Failures
-    // =========================================================================
 
     should_fail_render: bool = false,
     render_error: anyerror = error.MockRenderFailure,
 
-    /// Fill rendered glyph buffer with this value
     render_fill_value: u8 = 0xAA,
 
-    /// Dimensions for rendered glyphs
     render_width: u32 = 10,
     render_height: u32 = 12,
-
-    // =========================================================================
-    // Internal State
-    // =========================================================================
 
     allocator: std.mem.Allocator,
 
@@ -109,10 +59,6 @@ pub const MockFontFace = struct {
         MockRenderFailure,
         BufferTooSmall,
     };
-
-    // =========================================================================
-    // Lifecycle
-    // =========================================================================
 
     pub fn init(allocator: std.mem.Allocator) Self {
         return Self{
@@ -130,66 +76,48 @@ pub const MockFontFace = struct {
         self.metrics_map.deinit();
     }
 
-    // =========================================================================
-    // Configuration Methods
-    // =========================================================================
-
-    /// Map a codepoint to a glyph ID
     pub fn setGlyphMapping(self: *Self, codepoint: u21, glyph_id: u16) !void {
         try self.glyph_map.put(codepoint, glyph_id);
     }
 
-    /// Set advance width for a glyph
     pub fn setGlyphAdvance(self: *Self, glyph_id: u16, advance: f32) !void {
         try self.advance_map.put(glyph_id, advance);
     }
 
-    /// Set full metrics for a glyph
     pub fn setGlyphMetrics(self: *Self, glyph_id: u16, glyph_metrics: GlyphMetrics) !void {
         try self.metrics_map.put(glyph_id, glyph_metrics);
     }
 
-    /// Configure as a simple ASCII font (A-Z, a-z, 0-9 mapped to sequential IDs)
     pub fn configureAsAsciiFont(self: *Self) !void {
         var id: u16 = 1;
 
-        // Uppercase A-Z
         var c: u21 = 'A';
         while (c <= 'Z') : (c += 1) {
             try self.setGlyphMapping(c, id);
             id += 1;
         }
 
-        // Lowercase a-z
         c = 'a';
         while (c <= 'z') : (c += 1) {
             try self.setGlyphMapping(c, id);
             id += 1;
         }
 
-        // Digits 0-9
         c = '0';
         while (c <= '9') : (c += 1) {
             try self.setGlyphMapping(c, id);
             id += 1;
         }
 
-        // Space
         try self.setGlyphMapping(' ', id);
     }
 
-    /// Configure as a monospace font with uniform advance
     pub fn configureAsMonospace(self: *Self, cell_width: f32) void {
         self.default_advance = cell_width;
         self.metrics.is_monospace = true;
         self.metrics.cell_width = cell_width;
     }
 
-    // =========================================================================
-    // FontFace Interface Implementation
-    // =========================================================================
-
-    /// Get glyph ID for a codepoint
     pub fn glyphIndex(self: *Self, codepoint: u21) u16 {
         self.glyph_index_count += 1;
         self.last_codepoint = codepoint;
@@ -197,7 +125,6 @@ pub const MockFontFace = struct {
         return self.glyph_map.get(codepoint) orelse self.default_glyph_id;
     }
 
-    /// Get advance width for a glyph
     pub fn glyphAdvance(self: *Self, glyph_id: u16) f32 {
         self.glyph_advance_count += 1;
         self.last_glyph_id = glyph_id;
@@ -205,7 +132,6 @@ pub const MockFontFace = struct {
         return self.advance_map.get(glyph_id) orelse self.default_advance;
     }
 
-    /// Get metrics for a glyph
     pub fn glyphMetrics(self: *Self, glyph_id: u16) GlyphMetrics {
         self.glyph_metrics_count += 1;
         self.last_glyph_id = glyph_id;
@@ -221,7 +147,6 @@ pub const MockFontFace = struct {
         return m;
     }
 
-    /// Render a glyph with subpixel positioning
     pub fn renderGlyphSubpixel(
         self: *Self,
         glyph_id: u16,
@@ -243,16 +168,14 @@ pub const MockFontFace = struct {
             return self.render_error;
         }
 
-        // Calculate buffer requirements (RGBA for color, grayscale otherwise)
         const w = self.render_width;
         const h = self.render_height;
-        const required = w * h; // Grayscale
+        const required = w * h;
 
         if (buffer_size < required or buffer.len < required) {
             return Error.BufferTooSmall;
         }
 
-        // Fill buffer with test pattern
         @memset(buffer[0..required], self.render_fill_value);
 
         const glyph_metrics = self.glyphMetrics(glyph_id);
@@ -269,20 +192,10 @@ pub const MockFontFace = struct {
         };
     }
 
-    // =========================================================================
-    // FontFace VTable Interface
-    // =========================================================================
-
-    /// Get a FontFace interface backed by this mock
     pub fn fontFace(self: *Self) FontFace {
         return font_face_mod.createFontFace(Self, self);
     }
 
-    // =========================================================================
-    // Test Utilities
-    // =========================================================================
-
-    /// Reset all counters and last values (for test isolation)
     pub fn reset(self: *Self) void {
         self.glyph_index_count = 0;
         self.glyph_advance_count = 0;
@@ -300,24 +213,18 @@ pub const MockFontFace = struct {
         self.should_fail_render = false;
     }
 
-    /// Clear all glyph mappings
     pub fn clearMappings(self: *Self) void {
         self.glyph_map.clearRetainingCapacity();
         self.advance_map.clearRetainingCapacity();
         self.metrics_map.clearRetainingCapacity();
     }
 
-    /// Get total method calls (excluding deinit)
     pub fn totalCalls(self: *const Self) u32 {
         return self.glyph_index_count +
             self.glyph_advance_count +
             self.glyph_metrics_count +
             self.render_glyph_count;
     }
-
-    // =========================================================================
-    // Default Metrics
-    // =========================================================================
 
     fn defaultMetrics() Metrics {
         return Metrics{
@@ -337,10 +244,6 @@ pub const MockFontFace = struct {
     }
 };
 
-// =============================================================================
-// Tests
-// =============================================================================
-
 test "MockFontFace basic glyph lookup" {
     var mock = MockFontFace.init(std.testing.allocator);
     defer mock.deinit();
@@ -350,7 +253,7 @@ test "MockFontFace basic glyph lookup" {
 
     try std.testing.expectEqual(@as(u16, 65), mock.glyphIndex('A'));
     try std.testing.expectEqual(@as(u16, 66), mock.glyphIndex('B'));
-    try std.testing.expectEqual(@as(u16, 0), mock.glyphIndex('C')); // unmapped
+    try std.testing.expectEqual(@as(u16, 0), mock.glyphIndex('C'));
 
     try std.testing.expectEqual(@as(u32, 3), mock.glyph_index_count);
     try std.testing.expectEqual(@as(u21, 'C'), mock.last_codepoint.?);
@@ -415,7 +318,6 @@ test "MockFontFace render glyph" {
     try std.testing.expectEqual(@as(f32, 2.0), mock.last_scale.?);
     try std.testing.expectEqual(@as(f32, 0.25), mock.last_subpixel_x.?);
 
-    // Verify buffer was filled
     try std.testing.expectEqual(@as(u8, 0xAA), buffer[0]);
 }
 
@@ -437,7 +339,7 @@ test "MockFontFace buffer too small" {
     var mock = MockFontFace.init(std.testing.allocator);
     defer mock.deinit();
 
-    var buffer: [10]u8 = undefined; // Too small for 10x12 glyph
+    var buffer: [10]u8 = undefined;
     const result = mock.renderGlyphSubpixel(1, 12.0, 1.0, 0, 0, &buffer, 10);
 
     try std.testing.expectError(MockFontFace.Error.BufferTooSmall, result);
@@ -449,19 +351,15 @@ test "MockFontFace configureAsAsciiFont" {
 
     try mock.configureAsAsciiFont();
 
-    // A-Z should be 1-26
     try std.testing.expectEqual(@as(u16, 1), mock.glyphIndex('A'));
     try std.testing.expectEqual(@as(u16, 26), mock.glyphIndex('Z'));
 
-    // a-z should be 27-52
     try std.testing.expectEqual(@as(u16, 27), mock.glyphIndex('a'));
     try std.testing.expectEqual(@as(u16, 52), mock.glyphIndex('z'));
 
-    // 0-9 should be 53-62
     try std.testing.expectEqual(@as(u16, 53), mock.glyphIndex('0'));
     try std.testing.expectEqual(@as(u16, 62), mock.glyphIndex('9'));
 
-    // Space should be 63
     try std.testing.expectEqual(@as(u16, 63), mock.glyphIndex(' '));
 }
 
@@ -496,11 +394,9 @@ test "MockFontFace metrics access" {
     var mock = MockFontFace.init(std.testing.allocator);
     defer mock.deinit();
 
-    // Modify metrics
     mock.metrics.point_size = 24.0;
     mock.metrics.ascender = 20.0;
 
-    // Access via FontFace interface
     const face = mock.fontFace();
     try std.testing.expectEqual(@as(f32, 24.0), face.metrics.point_size);
     try std.testing.expectEqual(@as(f32, 20.0), face.metrics.ascender);
@@ -527,5 +423,5 @@ test "MockFontFace clearMappings" {
 
     mock.clearMappings();
 
-    try std.testing.expectEqual(@as(u16, 0), mock.glyphIndex('A')); // Now returns default
+    try std.testing.expectEqual(@as(u16, 0), mock.glyphIndex('A'));
 }

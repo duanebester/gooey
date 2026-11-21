@@ -1,14 +1,3 @@
-//! Splitter: resizable panes on `Box.on_pointer_drag` (contract §5).
-//!
-//! A sidebar of a fixed width beside a content pane that grows, divided by
-//! a 6 px splitter, as a terminal multiplexer or an editor's file tree
-//! lays out. The content pane splits again, top and bottom, by grow weights
-//! that sum to 1, so the split keeps its proportion as the window resizes.
-//! Each splitter keeps the size it had at the press, so a drag
-//! moves it by the pointer's distance from the press and Escape restores it.
-//! Each is also focusable: the arrow keys move it, Shift by more, and Home
-//! and End go to its ends; screen readers read its position as a range.
-
 const std = @import("std");
 const gooey = @import("gooey");
 
@@ -19,18 +8,14 @@ const input = gooey.input;
 
 pub const sidebar_width_min: f32 = 120;
 pub const sidebar_width_max: f32 = 480;
-/// The smallest share of the content pane either half keeps.
 pub const share_min: f32 = 0.1;
 pub const splitter_size: f32 = 6;
-/// Arrow-key steps, in points, and with Shift.
 pub const step_small: f32 = 16;
 pub const step_large: f32 = 64;
 
 pub const State = struct {
     sidebar_width: f32 = 240,
-    /// The top pane's share of the content pane's height, 0 to 1.
     top_share: f32 = 0.6,
-    /// The value each splitter had at its press.
     sidebar_width_start: f32 = 240,
     top_share_start: f32 = 0.6,
 
@@ -49,8 +34,8 @@ pub const State = struct {
         assert(self.sidebar_width <= sidebar_width_max);
     }
 
-    /// `content` is the pane the top and bottom panes share, whose height
-    /// turns the pointer's distance into a share.
+    /// `content` is the pane the top and bottom panes share; its
+    /// height turns the pointer's distance into a share.
     pub fn resizeTop(self: *State, content: gooey.ElementId, effects: *Effects) void {
         const drag = effects.pointerDrag().?;
         if (drag.button != .left) return;
@@ -125,7 +110,6 @@ pub const App = gooey.App(State, render, .{
     .limits = .nano,
 });
 
-/// The generated entry point (contract §7).
 pub const main = App.main;
 
 const pane: ui.Style = .{
@@ -205,9 +189,6 @@ pub fn render(cx: *Cx) void {
     }));
 }
 
-/// A focusable divider. A `vertical` one, by its range's orientation, sits
-/// between columns and moves left and right; a `horizontal` one sits
-/// between rows.
 const Splitter = struct {
     key: []const u8,
     label: []const u8,

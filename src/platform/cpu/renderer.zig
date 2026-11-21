@@ -1,40 +1,18 @@
-//! CPU renderer: draws a packed frame (`core/packed_frame.zig`) into a
-//! caller-owned `Target`.
+//! CPU counterpart of the Vulkan renderer: walks a packed frame
+//! (`core/packed_frame.zig`) in order and draws every pipeline the GPU
+//! renderers draw, each clipped to pixels whose centres lie inside its clip
+//! rectangle, edges included.
 //!
-//! The software counterpart of the Vulkan renderer: it walks the frame's
-//! draws in order and draws every pipeline the GPU renderers draw (quads and
-//! shadows, glyph, SVG and image sprites, triangle meshes, polylines, and
-//! point clouds). There is no pipeline it skips. Each draw writes only the
-//! pixels whose centres lie inside its clip rectangle, edges included
-//! (contract §9), shadows too.
+//! The target's pixels belong to the presenter; the renderer owns its raster
+//! scratch and three atlases, written only by `uploadAtlas`, all reserved by
+//! `initInPlace` from the window's `RenderLimits` and never resized.
 //!
-//! The pixels belong to the presenter (a Wayland shared-memory buffer or the
-//! fbdev back buffer), so `draw` takes the frame's `Target`; the presenters
-//! wrap this renderer in the contract's `Renderer` (`backend.verifyRenderer`).
-//! The renderer owns its raster scratch and its three atlases, which only
-//! `uploadAtlas` writes, all reserved by `initInPlace` from the window's
-//! `RenderLimits` and never resized (CLAUDE.md §2).
-//!
-//! ## Resource sketch (CLAUDE.md §7)
-//!
-//! - Memory: the shadow row profile (4 B per framebuffer column), the mesh
-//!   scratch (`mesh.zig`, about 420 KiB at `.standard` limits), and the glyph
-//!   (1 B per texel), SVG and image (4 B per texel) atlases at the atlas
-//!   limits, 0.75 MiB at `.nano`. All are fresh pages: an atlas is resident
-//!   only in the rows uploads wrote. The target is the presenter's (4 B per
-//!   pixel). `uploadAtlas` copies at most `atlas.upload_bytes_frame_max` per
-//!   frame, row by row.
-//! - CPU: one clear pass, then one pass per instance over its clipped
-//!   bounding box. Interior spans of quads and shadows are filled with
-//!   `@memset` or a single-color blend; only edge and corner pixels evaluate
-//!   the distance function, sprites take one bilinear sample per covered
-//!   pixel, and meshes shade each covered pixel once per mesh.
-//! - Worst case per frame: `width * height * (1 + overdraw)` pixel writes for
-//!   the packed frame's instance capacities, plus mesh work bounded by the
-//!   paint budget's mesh point limits, which the frame build enforces. A 1280x800
-//!   frame with 3x overdraw is roughly 4 M pixel writes, a few milliseconds
-//!   on one desktop core.
-//! - GPU, disk, and network: none.
+//! Resource sketch: shadow row profile (4 B per framebuffer column), mesh
+//! scratch (`mesh.zig`, about 420 KiB at `.standard` limits), and the glyph
+//! (1 B per texel), SVG and image (4 B per texel) atlases, 0.75 MiB at
+//! `.nano`; all fresh pages, resident only where written. Worst case is
+//! `width * height * (1 + overdraw)` pixel writes per frame, bounded by the
+//! packed frame's instance capacities and the paint budget's mesh limits.
 
 const std = @import("std");
 const geometry = @import("../../geometry/geometry.zig");
@@ -53,7 +31,6 @@ const PackedFrame = packed_mod.PackedFrame;
 /// bound keeps every logical-to-device product finite and well inside `f32`.
 pub const scale_factor_max: f32 = 8.0;
 
-/// Per-frame drawing parameters besides the frame and the target.
 pub const Viewport = struct {
     /// Device pixels per logical pixel.
     scale_factor: f32,
@@ -97,8 +74,8 @@ const AtlasTexture = struct {
         self.* = undefined;
     }
 
-    /// Copy `pixels`, tightly packed rows of `dirty.width` texels, into the
-    /// region `dirty`.
+    /// Copy `pixels`, tightly packed rows of `dirty.width` texels, into
+    /// `dirty`.
     fn write(self: *AtlasTexture, dirty: backend.RectPx, pixels: []const u8) void {
         assert(dirty.x + dirty.width <= self.size);
         assert(dirty.y + dirty.height <= self.size);
@@ -122,7 +99,7 @@ const AtlasTexture = struct {
     }
 };
 
-/// The atlases sprites sample, indexed like `Pipeline.glyph`, `.svg`, `.image`.
+/// Indexed like `Pipeline.glyph`, `.svg`, `.image`.
 const AtlasSlot = enum(u8) { glyph, svg, image };
 
 pub const Renderer = struct {
@@ -133,9 +110,8 @@ pub const Renderer = struct {
     mesh_scratch: mesh.Scratch,
     atlases: [3]AtlasTexture,
 
-    /// Reserve every byte of raster scratch for the budget's largest
-    /// framebuffer and largest single mesh, and the three atlases at the
-    /// atlas limits. Fresh pages: nothing is resident until it is written.
+    /// Reserves all raster scratch for the budget's largest framebuffer and
+    /// largest single mesh, and the three atlases at the atlas limits.
     pub fn initInPlace(self: *Renderer, limits: *const backend.RenderLimits) !void {
         assert(limits.window.framebuffer_width_max > 0);
         assert(limits.window.framebuffer_height_max > 0);
@@ -214,7 +190,7 @@ pub const Renderer = struct {
     }
 
     /// Copy `pixels`, tightly packed rows of `dirty` (1 byte per texel for
-    /// `.glyph`, 4 bytes RGBA otherwise), into the atlas. The renderer draws
+    /// `.glyph`, 4 bytes RGBA otherwise), into the atlas. Drawing runs
     /// synchronously on the caller's thread, so every earlier draw has
     /// finished reading the atlas and the next one sees the region.
     pub fn uploadAtlas(
@@ -241,7 +217,6 @@ pub const Renderer = struct {
         return .{ .meshes = true };
     }
 
-    /// Clear `target` and draw every draw of `frame` in order.
     pub fn draw(
         self: *Renderer,
         target: Target,
@@ -286,7 +261,7 @@ fn polygonCountMax(limits: *const limits_mod.PaintLimits) u32 {
     return count_max;
 }
 
-/// One frame's walk over the draws. Stack-owned by `Renderer.draw`.
+/// One frame's walk over the draws, stack-owned by `Renderer.draw`.
 const Walk = struct {
     renderer: *Renderer,
     target: Target,
@@ -298,7 +273,7 @@ const Walk = struct {
         assert(packed_draw.count > 0);
         assert(packed_draw.clip < self.frame.clip_count);
         const logical_clip = self.frame.clips[packed_draw.clip];
-        // Pack emits no draw under a zero-area clip (contract §9).
+        // Pack emits no draw under a zero-area clip.
         assert(logical_clip[2] > 0);
         assert(logical_clip[3] > 0);
         const clip = deviceRect(logical_clip, self.scale);
@@ -371,7 +346,7 @@ const Walk = struct {
         }
     }
 
-    /// A triangle list in one solid colour. The triangles of one mesh cover
+    /// A triangle list in one solid colour: the triangles of one mesh cover
     /// each sample once, so a shared edge never blends twice.
     fn drawTriangles(self: *Walk, instance: *const packed_mod.Mesh, clip: raster.DeviceRect) void {
         const points = self.frame.meshPoints(instance);
@@ -456,11 +431,6 @@ fn segmentPolygon(
     });
 }
 
-// =============================================================================
-// Packed instance to device shape
-// =============================================================================
-
-/// A logical rectangle (x, y, width, height) in device pixels.
 fn deviceRect(rect: packed_mod.Rect, scale: f32) raster.DeviceRect {
     assert(scale > 0);
     assert(!std.math.isNan(rect[0]));
@@ -595,13 +565,8 @@ fn drawImage(
     raster.drawImage(target, &rect, atlas, &effects);
 }
 
-// =============================================================================
-// Tests
-// =============================================================================
-
 const testing = std.testing;
 
-/// A small framebuffer budget so test renderers write kilobytes.
 const test_limits = backend.RenderLimits{
     .paint = limits_mod.PaintLimits.nano,
     .window = .{ .framebuffer_width_max = 16, .framebuffer_height_max = 16 },
@@ -619,8 +584,7 @@ fn testRenderer() !Renderer {
     return renderer;
 }
 
-/// A packed frame for frame 1 borrowing `points`, filled by the helpers
-/// below the way `pack` fills it: one draw per instance, in call order.
+/// Fills `frame` the way `pack` does: one draw per instance, in call order.
 fn testFrame(frame: *PackedFrame, points: []const packed_mod.MeshPoint) !void {
     try frame.initInPlace(&.{ .paint = test_limits.paint, .paint_record_count_max = 16 });
     frame.reset(1, points);
@@ -690,9 +654,9 @@ fn testMesh(fill: packed_mod.Rgba, first: u32, count: u32, width: f32) packed_mo
 }
 
 test "draw scales logical bounds and draws later draws on top" {
-    // Goal: exercise the draw walk end to end. At scale 2 a logical quad at
-    // (1, 1) of size 1 covers device pixels 2 and 3 only, and a later quad
-    // that overlaps it wins because draws are drawn in order.
+    // At scale 2 a logical quad at (1, 1) of size 1 covers device pixels 2
+    // and 3 only; the later overlapping quad wins because draws are drawn in
+    // order.
     var frame: PackedFrame = undefined;
     try testFrame(&frame, &.{});
     defer frame.deinit();
@@ -713,10 +677,6 @@ test "draw scales logical bounds and draws later draws on top" {
 }
 
 test "every mesh pipeline draws, in place, at the device scale" {
-    // Goal: triangles, polylines, and point clouds all reach pixels through
-    // the draw walk, none is skipped, and each honors the logical-to-device
-    // scale and its mesh's point range. Each sits in its own quadrant of a
-    // 16x16 device target drawn at scale 2.
     const points = [_]packed_mod.MeshPoint{
         // Triangle: logical (0, 0) (3, 0) (0, 3), device (0, 0) (6, 0) (0, 6).
         .{ .x = 0, .y = 0 },     .{ .x = 3, .y = 0 },   .{ .x = 0, .y = 3 },
@@ -753,10 +713,10 @@ test "every mesh pipeline draws, in place, at the device scale" {
 }
 
 test "a translucent polyline blends once where its segments overlap" {
-    // Goal: the GPU's per-sample resolve covers each sample of a draw once,
-    // so a V-shaped line at half alpha must not darken at its joint. Pixel
-    // (3, 3) lies under both segments of (0, 0) (4, 4) (8, 0) at width 2;
-    // blending each segment separately would lift its red byte above 128.
+    // The GPU's per-sample resolve covers each sample of a draw once, so a
+    // V-shaped line at half alpha must not darken at its joint. Pixel (3, 3)
+    // lies under both segments of (0, 0) (4, 4) (8, 0) at width 2; blending
+    // each segment separately would lift its red byte above 128.
     const points = [_]packed_mod.MeshPoint{
         .{ .x = 0, .y = 0 },
         .{ .x = 4, .y = 4 },
@@ -779,13 +739,10 @@ test "a translucent polyline blends once where its segments overlap" {
 }
 
 test "each draw keeps to its own clip, shadows and meshes included" {
-    // Goal: the contract's clip rule reaches every pipeline through
-    // `Draw.clip`, including shadows, which 0.3.1 never clipped. A blurred
-    // shadow and a triangle both span the whole 8x4 target; the shadow's clip
-    // is logical x [0, 2] and the triangle's x [6, 8] at scale 1, so pixels
-    // 2..5 of every row keep the clear colour, and pixel 1 (centre 1.5,
-    // inside) and pixel 6 (centre 6.5, inside) are drawn. A wrong clip index
-    // or an unclipped shadow fails.
+    // A blurred shadow and a triangle both span the whole 8x4 target; the
+    // shadow's clip is logical x [0, 2] and the triangle's x [6, 8] at scale
+    // 1, so pixels 2..5 of every row keep the clear colour, and pixels 1 and
+    // 6 (centres 1.5 and 6.5, inside) are drawn.
     const points = [_]packed_mod.MeshPoint{
         .{ .x = -4, .y = -4 }, .{ .x = 20, .y = -4 }, .{ .x = -4, .y = 20 },
     };
@@ -815,12 +772,10 @@ test "each draw keeps to its own clip, shadows and meshes included" {
 }
 
 test "uploadAtlas places rows where sprites sample them" {
-    // Goal: an upload lands at its own x, y, and row stride in the owned
-    // atlas, and a glyph sprite samples it. A 4x4 opaque block uploaded at
-    // (8, 4) of the 512-texel glyph atlas; a 2x2 sprite samples its inner
-    // 2x2 texels, so every pixel is fully tinted. Swapped x and y, or a row
-    // stride of the upload's width instead of the atlas's, would sample the
-    // still-zero texels around it and leave the clear colour.
+    // A 4x4 opaque block uploaded at (8, 4) of the 512-texel glyph atlas; a
+    // 2x2 sprite samples its inner texels. A swapped x/y or an upload-width
+    // row stride would sample the still-zero texels and leave the clear
+    // colour.
     var frame: PackedFrame = undefined;
     try testFrame(&frame, &.{});
     defer frame.deinit();

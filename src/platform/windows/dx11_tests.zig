@@ -1,11 +1,11 @@
 //! Tests for the DirectX 11 renderer: its device, swapchain, and resources,
 //! and packed frames drawn through a headless renderer.
 //!
-//! Methodology: every test runs on a WARP device, Microsoft's software
-//! rasterizer, so the results are the same on every Windows machine with or
-//! without a GPU. Results are read back through a staging texture and compared
-//! byte for byte, with asymmetric values so a swapped channel, a transposed
-//! coordinate, or an off-by-one edge produces a different byte.
+//! Every test runs on a WARP device, Microsoft's software rasterizer, so the
+//! results are the same on every Windows machine. Results are read back
+//! through a staging texture and compared byte for byte, with asymmetric
+//! values so a swapped channel, a transposed coordinate, or an off-by-one
+//! edge produces a different byte.
 
 const std = @import("std");
 const d3d11 = @import("d3d11.zig");
@@ -481,10 +481,8 @@ test "triangle, strip, and point meshes cover their shapes with one-pixel fades"
 }
 
 test "bufferPastBound names the buffer the D3D11 resource bound cannot hold" {
-    // Goal: every named profile fits the 128 MiB every device accepts, and a
-    // budget past it is refused by name before any buffer is created.
-    // Methodology: the paint ceiling's mesh points (as in the Vulkan
-    // renderer's `bufferPastRange` test) pass 2^27 bytes.
+    // The paint ceiling's mesh points pass 2^27 bytes, as in the Vulkan
+    // renderer's `bufferPastRange` test.
     const profiles = [_]limits_mod.ResourceLimits{ .nano, .small, .standard, .large };
     for (&profiles) |*profile| {
         const limits = backend.RenderLimits.fromResourceLimits(profile);

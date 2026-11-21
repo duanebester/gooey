@@ -1,30 +1,7 @@
-//! Mock SVG rasterizer for testing
-//!
-//! Simulates SVG rasterization without platform graphics dependencies.
-//! Use this to test SVG rendering pipelines in isolation.
-//!
-//! Example:
-//! ```zig
-//! var rasterizer = MockSvgRasterizer.init();
-//!
-//! const result = try rasterizer.rasterize(
-//!     std.testing.allocator,
-//!     "M0 0 L10 10",
-//!     24.0,
-//!     48,
-//!     &buffer,
-//! );
-//!
-//! try std.testing.expectEqual(@as(u32, 1), rasterizer.rasterize_count);
-//! try std.testing.expectEqual(@as(u32, 48), result.width);
-//! ```
-
 const std = @import("std");
 const interface_verify = @import("../core/interface_verify.zig");
 
-// =============================================================================
-// Types (matching real SVG rasterizer interface)
-// =============================================================================
+// Must match the real SVG rasterizer's interface.
 
 pub const RasterizedSvg = struct {
     width: u32,
@@ -34,15 +11,10 @@ pub const RasterizedSvg = struct {
 };
 
 pub const RasterizeError = error{
-    /// SVG path data is empty or invalid
     EmptyPath,
-    /// Graphics system error
     GraphicsError,
-    /// Output buffer is too small
     BufferTooSmall,
-    /// Out of memory
     OutOfMemory,
-    /// Mock-specific: simulated failure
     MockFailure,
 };
 
@@ -61,21 +33,9 @@ pub fn scratchBytes(budget: RasterBudget, device_size_max: u32) u32 {
     return 0;
 }
 
-// =============================================================================
-// Mock Implementation
-// =============================================================================
-
 pub const MockSvgRasterizer = struct {
-    // =========================================================================
-    // Call Tracking
-    // =========================================================================
-
     rasterize_count: u32 = 0,
     rasterize_with_options_count: u32 = 0,
-
-    // =========================================================================
-    // Last Values (for verification)
-    // =========================================================================
 
     last_path_data: ?[]const u8 = null,
     last_viewbox: f32 = 0,
@@ -83,27 +43,17 @@ pub const MockSvgRasterizer = struct {
     last_fill: bool = true,
     last_stroke_options: StrokeOptions = .{},
 
-    // =========================================================================
-    // Controllable Behavior
-    // =========================================================================
-
     should_fail: bool = false,
     fail_error: RasterizeError = RasterizeError.MockFailure,
 
-    /// Custom dimensions to return (if set)
     result_width: ?u32 = null,
     result_height: ?u32 = null,
     result_offset_x: i16 = 0,
     result_offset_y: i16 = 0,
 
-    /// Fill buffer with this value (default: 0 = transparent)
     fill_value: u8 = 0,
 
     const Self = @This();
-
-    // =========================================================================
-    // Lifecycle
-    // =========================================================================
 
     pub fn init() Self {
         return Self{};
@@ -111,11 +61,6 @@ pub const MockSvgRasterizer = struct {
 
     // No deinit needed - no allocations
 
-    // =========================================================================
-    // SVG Rasterizer Interface
-    // =========================================================================
-
-    /// Rasterize SVG path data to RGBA buffer
     pub fn rasterize(
         self: *Self,
         allocator: std.mem.Allocator,
@@ -135,7 +80,6 @@ pub const MockSvgRasterizer = struct {
         );
     }
 
-    /// Rasterize SVG path data with extended options
     pub fn rasterizeWithOptions(
         self: *Self,
         _: std.mem.Allocator,
@@ -146,36 +90,30 @@ pub const MockSvgRasterizer = struct {
         fill: bool,
         stroke_options: StrokeOptions,
     ) RasterizeError!RasterizedSvg {
-        // Track calls
         self.rasterize_count += 1;
         self.rasterize_with_options_count += 1;
 
-        // Store last values
         self.last_path_data = path_data;
         self.last_viewbox = viewbox;
         self.last_device_size = device_size;
         self.last_fill = fill;
         self.last_stroke_options = stroke_options;
 
-        // Check for simulated failure
         if (self.should_fail) {
             return self.fail_error;
         }
 
-        // Validate inputs
         if (path_data.len == 0) {
             return RasterizeError.EmptyPath;
         }
 
-        const required_size = device_size * device_size * 4; // RGBA
+        const required_size = device_size * device_size * 4;
         if (buffer.len < required_size) {
             return RasterizeError.BufferTooSmall;
         }
 
-        // Fill buffer with test pattern
         @memset(buffer[0..required_size], self.fill_value);
 
-        // Return result
         return RasterizedSvg{
             .width = self.result_width orelse device_size,
             .height = self.result_height orelse device_size,
@@ -184,11 +122,6 @@ pub const MockSvgRasterizer = struct {
         };
     }
 
-    // =========================================================================
-    // Test Utilities
-    // =========================================================================
-
-    /// Reset all counters and state (for test isolation)
     pub fn reset(self: *Self) void {
         self.rasterize_count = 0;
         self.rasterize_with_options_count = 0;
@@ -206,51 +139,38 @@ pub const MockSvgRasterizer = struct {
         self.fill_value = 0;
     }
 
-    /// Configure to return specific dimensions
     pub fn setResultDimensions(self: *Self, width: u32, height: u32) void {
         self.result_width = width;
         self.result_height = height;
     }
 
-    /// Configure to return specific offsets
     pub fn setResultOffsets(self: *Self, offset_x: i16, offset_y: i16) void {
         self.result_offset_x = offset_x;
         self.result_offset_y = offset_y;
     }
 
-    /// Configure failure mode
     pub fn setFailure(self: *Self, err: RasterizeError) void {
         self.should_fail = true;
         self.fail_error = err;
     }
-
-    // =========================================================================
-    // Interface Verification
-    // =========================================================================
 
     comptime {
         interface_verify.verifySvgRasterizerInterface(@This());
     }
 };
 
-// =============================================================================
-// Module-level functions (matching real rasterizer module interface)
-// =============================================================================
+// Must match the real rasterizer module's interface.
 
-/// Global mock instance for module-level function tests
 var global_mock: ?*MockSvgRasterizer = null;
 
-/// Set the global mock instance (for module-level function testing)
 pub fn setGlobalMock(mock: *MockSvgRasterizer) void {
     global_mock = mock;
 }
 
-/// Clear the global mock instance
 pub fn clearGlobalMock() void {
     global_mock = null;
 }
 
-/// Module-level rasterize (delegates to global mock or returns error)
 pub fn rasterize(
     allocator: std.mem.Allocator,
     path_data: []const u8,
@@ -264,7 +184,6 @@ pub fn rasterize(
     return RasterizeError.GraphicsError;
 }
 
-/// Module-level rasterizeWithOptions (delegates to global mock or returns error)
 pub fn rasterizeWithOptions(
     allocator: std.mem.Allocator,
     path_data: []const u8,
@@ -280,17 +199,9 @@ pub fn rasterizeWithOptions(
     return RasterizeError.GraphicsError;
 }
 
-// =============================================================================
-// Module Interface Verification
-// =============================================================================
-
 comptime {
     interface_verify.verifySvgRasterizerModule(@This());
 }
-
-// =============================================================================
-// Tests
-// =============================================================================
 
 test "MockSvgRasterizer basic rasterize" {
     var rasterizer = MockSvgRasterizer.init();
@@ -368,7 +279,7 @@ test "MockSvgRasterizer returns EmptyPath for empty data" {
 test "MockSvgRasterizer returns BufferTooSmall" {
     var rasterizer = MockSvgRasterizer.init();
 
-    var buffer: [100]u8 = undefined; // Too small for 48x48x4
+    var buffer: [100]u8 = undefined;
     const result = rasterizer.rasterize(
         std.testing.allocator,
         "M0 0 L10 10",
@@ -415,7 +326,6 @@ test "MockSvgRasterizer fills buffer" {
         &buffer,
     );
 
-    // All bytes should be 0xFF
     for (buffer) |byte| {
         try std.testing.expectEqual(@as(u8, 0xFF), byte);
     }

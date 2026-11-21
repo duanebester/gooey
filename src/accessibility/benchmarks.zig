@@ -1,31 +1,5 @@
-//! Accessibility Module Benchmarks
-//!
-//! Benchmark suite for the per-frame accessibility diff (`accessibility/tree.zig`
-//! + `fingerprint.zig`). Immediate mode rebuilds the a11y tree every frame, then
-//! diffs it against the previous frame to compute the dirty/removed sets the
-//! platform bridge syncs. This suite measures that whole cycle against the frame
-//! budget, plus the fingerprint hash underneath it.
-//!
-//! Run as executable: zig build bench-accessibility
-//! Quick tests only:  zig test src/accessibility/benchmarks.zig (validates the
-//!                    diff produces the expected dirty/removed counts)
-//!
-//! Groups:
-//!   - Fingerprint    — `fingerprint.compute` micro-bench (the pure hot fn that
-//!                      runs once per element per frame). Reports ns / call.
-//!   - Frame diff     — `beginFrame → pushElement×N (+popElement) → endFrame`,
-//!                      the full snapshot + rebuild + dirty/removed diff, reported
-//!                      against the 16.6 ms (60 Hz) / 8.3 ms (120 Hz) budget.
-//!                      Two variants: a stable tree (steady state, no churn) and
-//!                      a churn tree (a fraction of elements change content each
-//!                      frame, driving the dirty + auto-announce path).
-//!
-//! Why this shape: it mirrors the scene suite's frame-e2e group directly — a
-//! whole-frame µs number against the budget is the only thing that answers "does
-//! the a11y diff fit the frame?". The fingerprint micro-bench sits underneath as
-//! the per-element primitive. The tree reserves every table once, at init, from
-//! the `standard` profile's `ResourceLimits.a11y`, so there is no allocator churn
-//! to gate (CLAUDE.md §2).
+//! Measures the per-frame a11y diff (`tree.zig` + `fingerprint.zig`) against
+//! the frame budget; run via `zig build bench-accessibility`.
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -33,10 +7,8 @@ const bench = @import("bench");
 
 const Allocator = std.mem.Allocator;
 
-/// Minimal `Instant.now()` / `.since()` shim over `std.Io.Clock.awake`, kept
-/// local to the benchmark module so every sample site reads as a two-line
-/// capture-then-diff. `.awake` is the monotonic clock — deltas here can never
-/// go negative regardless of NTP or sysadmin clock edits.
+/// Shim over `std.Io.Clock.awake`; the monotonic clock means deltas here can
+/// never go negative regardless of NTP or sysadmin clock edits.
 const time = struct {
     inline fn benchIo() std.Io {
         return std.Io.Threaded.global_single_threaded.io();
@@ -65,10 +37,6 @@ const Fingerprint = fingerprint.Fingerprint;
 /// The `standard` profile's tree: 2,048 elements, enough for every case below.
 const capacity = a11y.TreeCapacity.standard;
 
-// =============================================================================
-// Benchmark Configuration
-// =============================================================================
-
 /// Adaptive warmup iterations based on operation count.
 fn getWarmupIterations(operation_count: u32) u32 {
     std.debug.assert(operation_count > 0);
@@ -85,30 +53,22 @@ fn getMinSampleIterations(operation_count: u32) u32 {
     return 10;
 }
 
-/// Minimum wall-clock time to sample before concluding a benchmark; zero in
-/// the Cachegrind gate's fixed-iteration build (see `bench.sample_time_ns_min`).
+/// Zero in the Cachegrind gate's fixed-iteration build (see
+/// `bench.sample_time_ns_min`).
 const MIN_SAMPLE_TIME_NS: u64 = bench.sample_time_ns_min;
 
-/// Maximum per-iteration samples collected for percentile computation.
 const MAX_SAMPLE_COUNT: u32 = 4096;
 
-/// Per-frame budgets in nanoseconds for the frame-budget summary.
 const FRAME_BUDGET_60HZ_NS: f64 = 16_666_667.0;
 const FRAME_BUDGET_120HZ_NS: f64 = 8_333_333.0;
 
-/// Fixed name length for generated element names. Wide enough to hold
-/// "a11y_elem_" plus a multi-digit index without truncation.
+/// Wide enough to hold "a11y_elem_" plus a multi-digit index without truncation.
 const NAME_STRIDE: u32 = 20;
 
-/// Table width for benchmark output formatting (characters per row).
 const TABLE_WIDTH = 99;
 
-// =============================================================================
-// Iteration Sample Collection and Percentile Computation
-// =============================================================================
-
 /// Per-iteration timing data for percentile analysis. Fixed capacity avoids
-/// dynamic allocation during benchmark runs. Mirrors the scene/animation suites.
+/// dynamic allocation during benchmark runs.
 const IterationSamples = struct {
     times_ns: [MAX_SAMPLE_COUNT]u64,
     count: u32,
@@ -124,7 +84,6 @@ const IterationSamples = struct {
         }
     }
 
-    /// Sort collected samples and extract min/p50/p99 percentiles as ns/op.
     fn computePercentiles(self: *IterationSamples, operation_count: u32) PercentileResult {
         std.debug.assert(self.count > 0);
         std.debug.assert(operation_count > 0);
@@ -150,16 +109,11 @@ const IterationSamples = struct {
     }
 };
 
-/// Percentile statistics computed from iteration samples.
 const PercentileResult = struct {
     min_per_op_ns: f64,
     p50_per_op_ns: f64,
     p99_per_op_ns: f64,
 };
-
-// =============================================================================
-// Benchmark Results
-// =============================================================================
 
 const BenchmarkResult = struct {
     name: []const u8,
@@ -187,8 +141,6 @@ const BenchmarkResult = struct {
         );
     }
 
-    /// Frame-budget summary line: whole-frame time (avg + p99) in microseconds
-    /// and avg as a percentage of the 60 Hz and 120 Hz budgets.
     pub fn printFrameBudget(self: BenchmarkResult) void {
         std.debug.assert(self.iterations > 0);
         std.debug.assert(self.operation_count > 0);
@@ -209,7 +161,6 @@ const BenchmarkResult = struct {
     }
 };
 
-/// Assemble a result from the common runner outputs.
 fn makeResult(
     name: []const u8,
     operation_count: u32,
@@ -230,21 +181,15 @@ fn makeResult(
     };
 }
 
-// =============================================================================
-// Element Name Table
-//
 // Fingerprints fold in the element name hash, so giving every child a unique,
 // frame-stable name keeps fingerprints distinct independently of sibling
 // positions. Names are generated once and reused across frames so the diff
 // sees a stable structure.
-// =============================================================================
-
 const NameTable = struct {
     backing: []u8,
     names: [][]const u8,
 };
 
-/// Allocate `count` unique, stable element names ("a11y_elem_<i>").
 fn allocNames(allocator: Allocator, count: u32) !NameTable {
     std.debug.assert(count > 0);
 
@@ -267,18 +212,15 @@ fn freeNames(allocator: Allocator, table: NameTable) void {
     allocator.free(table.backing);
 }
 
-// =============================================================================
-// Tree Building
-// =============================================================================
-
-/// Build one frame's tree: a root group containing `names.len` children. The
-/// first `churn_count` children are live `.status` regions whose `value` toggles
-/// each frame (driving the dirty-detection + auto-announce path); the rest are
-/// stable `.button`s whose content never changes (the no-churn steady state).
-///
-/// Fingerprints stay stable frame-to-frame because role/name/position are
-/// fixed; only the non-fingerprinted `value` changes, so churn elements take the
-/// "existed, content changed" branch rather than being seen as removed + new.
+// Build one frame's tree: a root group containing `names.len` children. The
+// first `churn_count` children are live `.status` regions whose `value`
+// toggles each frame (driving the dirty-detection + auto-announce path); the
+// rest are stable `.button`s whose content never changes.
+//
+// Fingerprints stay stable frame-to-frame because role/name/position are
+// fixed; only the non-fingerprinted `value` changes, so churn elements take
+// the "existed, content changed" branch rather than being seen as removed +
+// new.
 fn buildTree(tree: *Tree, names: [][]const u8, churn_count: u32, toggle: bool) void {
     std.debug.assert(names.len >= 1);
     std.debug.assert(churn_count <= names.len);
@@ -300,8 +242,8 @@ fn buildTree(tree: *Tree, names: [][]const u8, churn_count: u32, toggle: bool) v
     tree.popElement();
 }
 
-/// Run one full diff frame and return the observed dirty + removed counts so the
-/// timed caller can keep the work from being optimized away.
+/// Run one full diff frame and return the observed dirty + removed counts so
+/// the timed caller can keep the work from being optimized away.
 fn runDiffFrame(tree: *Tree, names: [][]const u8, churn_count: u32, toggle: bool) u32 {
     std.debug.assert(names.len >= 1);
     tree.beginFrame();
@@ -311,10 +253,6 @@ fn runDiffFrame(tree: *Tree, names: [][]const u8, churn_count: u32, toggle: bool
     const removed: u32 = @intCast(tree.getRemovedFingerprints().len);
     return dirty + removed;
 }
-
-// =============================================================================
-// Hot Loop (CLAUDE.md §20 — primitive args, no struct receiver)
-// =============================================================================
 
 /// Compute `count` fingerprints, varying the position so the call is not folded
 /// to a constant, and sum the results so the work is observable. `position`
@@ -331,12 +269,6 @@ fn fingerprintSum(count: u32, name: []const u8, parent: ?Fingerprint) u64 {
     return sum;
 }
 
-// =============================================================================
-// Benchmark Runners
-// =============================================================================
-
-/// Fingerprint micro-bench: time `count` `fingerprint.compute` calls. Reports
-/// ns per fingerprint — the per-element primitive under the frame diff.
 fn benchFingerprint(comptime name: []const u8, count: u32, with_parent: bool) BenchmarkResult {
     std.debug.assert(count > 0);
 
@@ -371,9 +303,7 @@ fn benchFingerprint(comptime name: []const u8, count: u32, with_parent: bool) Be
     return makeResult(name, count, total_time_ns, iterations, percentiles);
 }
 
-/// Frame diff: time the full `beginFrame → build → endFrame` cycle over a tree
-/// of `child_count` children (`churn_count` of them changing content each
-/// frame). Reports against the frame budget; operation_count = total elements.
+/// `operation_count` is total elements (children + the root group).
 fn benchFrameDiff(allocator: Allocator, comptime name: []const u8, child_count: u32, churn_count: u32) !BenchmarkResult {
     std.debug.assert(child_count > 0);
     std.debug.assert(churn_count <= child_count);
@@ -419,12 +349,9 @@ fn benchFrameDiff(allocator: Allocator, comptime name: []const u8, child_count: 
     return makeResult(name, operation_count, total_time_ns, iterations, percentiles);
 }
 
-// =============================================================================
-// Validation Tests (run with `zig test src/accessibility/benchmarks.zig`)
-//
-// These do not time anything — they assert the diff produces the dirty/removed
-// counts the timed runners assume, so a structural regression fails the build.
-// =============================================================================
+// These tests do not time anything: they assert the diff produces the
+// dirty/removed counts the timed runners assume, so a structural regression
+// fails the build.
 
 test "validate: a stable rebuild reports zero dirty after the first frame" {
     const allocator = std.testing.allocator;
@@ -442,8 +369,6 @@ test "validate: a stable rebuild reports zero dirty after the first frame" {
     _ = runDiffFrame(tree, table.names, 0, false);
     try std.testing.expectEqual(@as(usize, 65), tree.getDirtyElements().len);
 
-    // Second identical frame: fingerprints + content hashes match → nothing
-    // dirty, nothing removed. This is the steady-state diff the bench measures.
     _ = runDiffFrame(tree, table.names, 0, false);
     try std.testing.expectEqual(@as(usize, 0), tree.getDirtyElements().len);
     try std.testing.expectEqual(@as(usize, 0), tree.getRemovedFingerprints().len);
@@ -469,16 +394,11 @@ test "validate: churn marks exactly the changed elements dirty" {
     const changed = runDiffFrame(tree, table.names, churn_count, true);
 
     // Only the churn elements changed content; fingerprints are stable, so
-    // they are dirty (not removed). Nothing should be reported as removed.
+    // they are dirty (not removed).
     try std.testing.expectEqual(@as(u32, churn_count), changed);
     try std.testing.expectEqual(@as(usize, 0), tree.getRemovedFingerprints().len);
 }
 
-// =============================================================================
-// Main Entry Point (for benchmark executable)
-// =============================================================================
-
-/// Print a per-op benchmark result and record it in the JSON reporter.
 fn collect(reporter: *bench.Reporter, result: BenchmarkResult) void {
     reporter.addEntry(bench.entryWithPercentiles(
         result.name,
@@ -494,7 +414,6 @@ fn collect(reporter: *bench.Reporter, result: BenchmarkResult) void {
     reporter.beginBenchmark();
 }
 
-/// Record a frame result (frame groups print their own whole-frame budget line).
 fn collectFrame(reporter: *bench.Reporter, result: BenchmarkResult) void {
     reporter.addEntry(bench.entryWithPercentiles(
         result.name,
@@ -517,18 +436,10 @@ pub fn main(init: std.process.Init) !void {
 
     var reporter = bench.Reporter.init("accessibility", init.io, init.minimal.args.vector);
 
-    // =========================================================================
-    // Fingerprint (the per-element hash primitive)
-    // =========================================================================
-
     printSectionHeader("Gooey Accessibility Benchmarks — Fingerprint (fingerprint.compute)");
     collect(&reporter, benchFingerprint("fingerprint_flat_4k", 4000, false));
     collect(&reporter, benchFingerprint("fingerprint_parented_4k", 4000, true));
     std.debug.print(&@as([TABLE_WIDTH]u8, @splat('=')) ++ "\n", .{});
-
-    // =========================================================================
-    // Frame Diff (the full per-frame snapshot + rebuild + dirty/removed diff)
-    // =========================================================================
 
     printFrameHeader();
     collectFrame(&reporter, try benchFrameDiff(allocator, "frame_stable_64", 64, 0));
@@ -557,10 +468,6 @@ pub fn main(init: std.process.Init) !void {
 
     reporter.finish();
 }
-
-// =============================================================================
-// Section Printers
-// =============================================================================
 
 fn printSectionHeader(comptime title: []const u8) void {
     comptime std.debug.assert(title.len > 0);

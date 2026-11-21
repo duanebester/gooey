@@ -1,21 +1,17 @@
-//! Text dumps of packed frames for goldens.
-//!
-//! A golden is plain text so a reviewer can read a diff: one line per paint
-//! primitive in draw order, then hit records and the accessibility tree (see
-//! `src/testing/goldens/`). Numbers print with two decimals and colours as
-//! 8-bit RGBA, so float noise below 1/200 of a pixel or 1/510 of a channel
-//! cannot change a golden, while any visible change does.
-//!
-//! Glyphs are folded into runs (consecutive glyphs sharing a colour, clip,
-//! and top edge). A run prints its glyph count, its union bounds, and a hash
-//! of every glyph's position, size, and, when the caller passes the glyph
-//! atlas, the coverage at the centre of its atlas region. Atlas UVs are left
-//! out: they record where a rasterizer packed a glyph, which is not behaviour
-//! a port must keep. The synthetic text backend shades each glyph by its id
-//! (`glyphShade`), so the sampled coverage tells "0" from "1" at one position.
-//!
-//! Storage is one fixed buffer reserved by the owner; writing past it panics
-//! with the buffer's name and capacity (CLAUDE.md §2, §4).
+//! Text dumps of packed frames for goldens: one line per paint primitive in
+//! draw order, then hit records and the accessibility tree. Numbers print
+//! with two decimals and colours as 8-bit RGBA, so float noise below 1/200
+//! of a pixel or 1/510 of a channel cannot change a golden, while any
+//! visible change does. Glyphs are folded into runs (consecutive glyphs
+//! sharing a colour, clip, and top edge); a run prints its glyph count, its
+//! union bounds, and a hash of every glyph's position, size, and, when the
+//! caller passes the glyph atlas, the coverage at the centre of its atlas
+//! region; the synthetic text backend shades each glyph by its id
+//! (`glyphShade`), so the sampled coverage tells "0" from "1" at one
+//! position. Atlas UVs are left out: they record where a rasterizer packed
+//! a glyph, which is not behaviour a port must keep. Storage is one fixed
+//! buffer reserved by the owner; writing past it panics with the buffer's
+//! name and capacity.
 
 const std = @import("std");
 const packed_mod = @import("../core/packed_frame.zig");
@@ -115,8 +111,7 @@ pub fn writePacked(
 fn writeQuad(out: *TextBuffer, quad: *const packed_mod.Quad, clip: packed_mod.Rect) void {
     if (quad.blur > 0) {
         // Shadows print their clip: the packed frame clips them like every
-        // other draw. A known difference from 0.3.1's dumps, which drew and
-        // printed shadows unclipped; no golden holds a shadow today.
+        // other draw; no golden holds a shadow today.
         out.print("  shadow {f} blur={d:.2} offset={d:.2},{d:.2} {f}", .{
             rect(quad.bounds),
             quad.blur,
@@ -169,7 +164,7 @@ fn writeImage(out: *TextBuffer, image: *const packed_mod.Sprite, clip: packed_mo
 }
 
 /// Consecutive glyphs folded into runs that share a colour, clip, and top
-/// edge; see the file comment. A run ends at any other draw.
+/// edge. A run ends at any other draw.
 const GlyphRun = struct {
     count: u32 = 0,
     first: packed_mod.Sprite = undefined,
@@ -324,8 +319,6 @@ test "TextBuffer formats rects and colours deterministically" {
 }
 
 test "a shadow prints the clip it is drawn under" {
-    // Goal: shadow clipping is visible to goldens. Method: dump a shadow
-    // under a real clip and one under the unbounded clip.
     var storage: [256]u8 = undefined;
     var out = TextBuffer.init(&storage, "test");
     const shadow = packed_mod.Quad{

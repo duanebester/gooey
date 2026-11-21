@@ -1,58 +1,22 @@
-//! Runs a 0.4.0 core app in a Wayland window (phase 4), drawn by Vulkan
+//! Runs a 0.4.0 core app in a Wayland window, drawn by Vulkan
 //! (`wayland_vulkan`) or by the CPU renderer into `wl_shm` buffers
-//! (`wayland_cpu`, contract decision 17). The loop, pacing, input, IME, and
-//! dialogs are the same for both; only the presenter and atlas binding differ.
+//! (`wayland_cpu`); only the presenter and atlas binding differ.
 //!
-//! Two threads, one owner each (contract rule 1), as on macOS:
-//! - The main thread runs the Wayland event loop (`runLoop`). The window
-//!   pushes input and configures into the core's queue and schedules a tick.
-//!   The loop runs at most one tick (drain, build, layout, emit) per turn,
-//!   between dispatches, so no tick nests inside a Wayland callback. A
-//!   handler's file dialog is a portal request sent on the main thread after
-//!   the drain; the loop keeps turning while it is open, polling the
-//!   request's D-Bus connection beside the display fd, and queues the outcome
-//!   once the portal's Response arrives (`pollDialog`).
-//! - The render thread presents the frame in flight (pack, then draw on
-//!   Vulkan), paced by the compositor: it requests a `wl_surface.frame`
-//!   callback on a private event queue with each present and presents the
-//!   next frame only once that callback is done, or `frame_callback_timeout_ms`
-//!   has passed (a hidden surface's callback can be withheld indefinitely).
-//!   Presents are also at least `present_interval_ns` apart, three quarters
-//!   of the output's refresh period. SER9 (mutter 46) showed input followed
-//!   by an animation presenting three frames within 9 ms and then skipping
-//!   refreshes: a compositor waking from idle can answer a burst's first
-//!   callbacks early. The first present after idle still goes out at once.
-//!   After each present it schedules a main tick, which makes the frame
-//!   `rendered` and builds the next one if a render is pending.
-//!
-//! They meet only at `frame_in_flight` (see `core/tick.zig`) and two
-//! eventfds that wake each loop. Both threads wait on the display fd with
-//! libwayland's prepare/read protocol, so either can read events for the
-//! other's queue.
-//!
-//! CPU renderer: it samples the core's atlases in place while it draws. The
-//! tick never builds while a frame is in flight, so the atlases have one
-//! writer at a time and no upload journal is consumed. Its buffer releases
-//! arrive on the render queue, so only the render thread touches its slots;
-//! a frame waits for a released slot as Vulkan's present waits for an image.
-//!
-//! IME: text-input-v3 has no synchronous rect query; the client pushes the
-//! rect. The main loop compares the rendered frame's IME record with what it
-//! last sent each turn (`syncIme`), so the rect it sends is always the one the
-//! core's `Query` would answer.
-//!
-//! Resource sketch: one thread whose stack the OS maps at init, two eventfds,
-//! one event queue, one surface wrapper, at most one frame callback, one
-//! frame in flight, and at most one open file dialog with its D-Bus
-//! connection and a `dialog_path_bytes_max` path buffer. Per turn the main
-//! thread runs at most one tick, one dispatch (with libwayland 1.25, at most
-//! `dispatch_single_count_max` single events, each only while the core queue
-//! has `input_room_count_single` free slots), and one non-blocking read of
-//! the dialog's connection that handles at most
-//! `PortalRequest.messages_per_poll_max` messages; per compositor frame the
-//! render thread does at most one pack and one draw. Every allocation happens
-//! before `finishInit`; the core's lifecycle guard panics on any later one,
-//! including the Vulkan renderer's, which shares the guard.
+//! Two threads, one owner each: the main thread runs the Wayland loop
+//! (`runLoop`), at most one tick per turn between dispatches, and the
+//! render thread presents the frame in flight, paced by the compositor's
+//! `wl_surface.frame` callback (or `frame_callback_timeout_ms`: a hidden
+//! surface's callback can be withheld indefinitely) and at least
+//! `present_interval_ns` apart. SER9 (mutter 46) showed a compositor waking
+//! from idle answering a burst's first callbacks early; the first present
+//! after idle still goes out at once. They meet only at `frame_in_flight`
+//! and two eventfds; both threads wait on the display fd with libwayland's
+//! prepare/read protocol, so either can read events for the other's queue.
+//! The CPU renderer samples the core's atlases in place while it draws; the
+//! tick never builds while a frame is in flight, and only the render thread
+//! touches its slots. IME: text-input-v3 has no synchronous rect query, so
+//! the client pushes it; `syncIme` keeps it the one the core's `Query`
+//! answers.
 
 const std = @import("std");
 const linux = std.os.linux;
@@ -210,7 +174,6 @@ pub const Host = struct {
     /// The window's surface, with requests' new proxies on `render_queue`.
     surface_wrapper: *wayland.Surface,
     thread: ?std.Thread,
-    /// A main tick is scheduled and has not started.
     tick_scheduled: std.atomic.Value(bool),
     stopping: std.atomic.Value(bool),
     /// The shortest gap between presents, from the output's refresh rate.
@@ -224,7 +187,6 @@ pub const Host = struct {
     ime_rect: ?records.Rect,
     /// The text field the IME composed for at the last `syncIme`.
     ime_owner: ?core_window.ElementId,
-    /// The cursor last set on the window.
     cursor: core_element.CursorShape,
     /// The portal dialog that is open, at most one (`openDialog`).
     dialog: ?PendingDialog,
@@ -438,9 +400,7 @@ pub const Host = struct {
         return @intCast(ns);
     }
 
-    // =========================================================================
-    // Main thread
-    // =========================================================================
+    // Main thread only.
 
     /// The event loop. Each turn runs at most one tick, syncs the IME, reads
     /// an open dialog's connection, and waits for and dispatches one batch of
@@ -597,7 +557,7 @@ pub const Host = struct {
         pending.request.end();
         self.dialog = null;
         self.core.queue.push(.{ .completion = .{ .request_id = request_id, .outcome = outcome } });
-        // The queue copied the paths; zero what they used (CLAUDE.md §21).
+        // The queue copied the paths; zero what they used.
         switch (outcome) {
             .file_selected => |paths| @memset(self.dialog_paths[0..paths.bytes.len], 0),
             .cancelled, .failed => {},
@@ -704,9 +664,7 @@ pub const Host = struct {
         self.ime_rect = null;
     }
 
-    // =========================================================================
-    // Render thread
-    // =========================================================================
+    // Render thread only.
 
     /// A frame is in flight, the compositor is ready for it, and the last
     /// present is at least `present_interval_ns` old. The CPU renderer also
@@ -950,10 +908,6 @@ fn onClose(window: *PlatformWindow) bool {
     return true;
 }
 
-// =============================================================================
-// File dialogs
-// =============================================================================
-
 /// The core's file dialog service, on the main thread during the drain. It
 /// sends the portal call and returns null: the dialog stays open while the
 /// loop keeps turning, and `pollDialog` queues the outcome once the Response
@@ -1005,10 +959,6 @@ fn openDialog(
     assert(pending.fd >= 0);
     return null;
 }
-
-// =============================================================================
-// Wake fds
-// =============================================================================
 
 fn eventFd() !posix.fd_t {
     const fd = std.c.eventfd(0, linux.EFD.CLOEXEC | linux.EFD.NONBLOCK);

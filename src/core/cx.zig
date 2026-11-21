@@ -1,14 +1,5 @@
-//! Cx: the build context (contract §1–§4).
-//!
-//! One untyped `Cx` serves every app (approved decision 2). Render functions
-//! and components call `cx.render(child)`; the build turns each element into
-//! one layout element and one node, both in pre-order, so node `i` is layout
-//! element `i`. Strings are copied into the built frame as they arrive
-//! (contract rule 6), and handlers into its handler table.
-//!
-//! Component recursion is the one bounded §6 exception (approved decision
-//! 1): `render` counts nesting and panics past `build.component_depth_max`
-//! with the limit, the depth, and the component type that crossed it.
+//! One untyped `Cx` serves every app; the build turns each element into one
+//! layout element and one node in pre-order, so node `i` is layout element `i`.
 
 const std = @import("std");
 const id_mod = @import("id.zig");
@@ -34,7 +25,7 @@ const ResourceLimits = window_mod.ResourceLimits;
 const Node = window_mod.Node;
 const index_none = records.index_none;
 
-/// What `Cx.drag` reports about a drag in progress (contract §5).
+/// What `Cx.drag` reports about a drag in progress.
 pub fn Drag(comptime T: type) type {
     return struct {
         payload: T,
@@ -51,24 +42,21 @@ pub fn Drag(comptime T: type) type {
     };
 }
 
-/// The window a `Cx` builds, for the core's own modules (`text_engine`,
-/// `animation`). A `*Cx` is the window's address under an opaque type, so an
-/// app or component holding one reaches only `Cx`'s methods.
+/// A `*Cx` is the window's address under an opaque type, so an app or
+/// component holding one reaches only `Cx`'s methods.
 pub fn windowOf(cx: *const Cx) *Window {
     const window: *Window = @ptrCast(@alignCast(@constCast(cx)));
     assert(window.phase != .idle);
     return window;
 }
 
-/// The build context of `window`: the same address under the opaque type.
 pub fn of(window: *Window) *Cx {
     return @ptrCast(window);
 }
 
-/// Opaque, so the window behind it stays internal (contract "Shape"): what
-/// an app or component reads during a build is these methods.
+/// Opaque, so the window behind it stays internal: what an app or component
+/// reads during a build is these methods.
 pub const Cx = opaque {
-    /// What `Cx.scroll` reports about a scroll box.
     pub const ScrollPosition = struct {
         /// How far the content is scrolled, in pixels from its start.
         offset_x: f32,
@@ -87,7 +75,7 @@ pub const Cx = opaque {
     };
 
     /// The app's root state. In Debug and ReleaseSafe a wrong `T` panics on
-    /// the first frame (approved decision 2).
+    /// the first frame.
     pub fn state(self: *Cx, comptime T: type) *T {
         const store = windowOf(self).store;
         if (comptime std.debug.runtime_safety) {
@@ -138,7 +126,7 @@ pub const Cx = opaque {
     }
 
     /// Render again no later than `delay_ms` from now, for a view that
-    /// changes with the clock alone (0.3.1 `notifyAfter`). Call it each build
+    /// changes with the clock alone. Call it each build
     /// while the view depends on the clock: the window keeps the earliest
     /// request of the last build, and a build that asks for none clears it.
     pub fn requestRenderAfter(self: *Cx, delay_ms: u32) void {
@@ -242,7 +230,7 @@ pub const Cx = opaque {
         };
     }
 
-    /// Build a handler for `method` (contract §4). Its state is the root
+    /// Build a handler for `method`. Its state is the root
     /// state, an entity (`.entity`), or state retained with `cx.retain`
     /// (`.entity` with the retained handle), which lets a component handle
     /// events on state of its own.
@@ -285,7 +273,7 @@ pub const Cx = opaque {
         std.debug.panic("cx.on({s}): entity slot {d} is stale", .{ name, target.slot });
     }
 
-    /// Find or create retained `T` for keyed `target` (contract §3). Text
+    /// Find or create retained `T` for keyed `target`. Text
     /// engines come from their dedicated pool.
     pub fn retain(
         self: *Cx,
@@ -318,7 +306,7 @@ pub const Cx = opaque {
         if (T == text_engine.InputEngine) return window.inputs.get(handle);
         if (T == text_engine.AreaEngine) return window.areaPool().get(handle);
         if (T == text_engine.EditorEngine) return window.editorPool().get(handle);
-        // An entity from `Config.entities` (decision 17): checked in every
+        // An entity from `Config.entities`: checked in every
         // build mode, since handles outlive the frame they were read in.
         if (window.store.findPool(handler_mod.typeId(T))) |pool| {
             assert(pool.app_pool != null);
@@ -530,7 +518,7 @@ pub const Cx = opaque {
     }
 
     /// The layout engine's line height is a percent of the font size; the
-    /// element's is a percent of the font's line height (contract decision 9).
+    /// element's is a percent of the font's line height.
     /// Wrapped boxes and emit both pitch lines by this one value, so they agree.
     fn lineHeightPercent(metrics: *const text_mod.Metrics, font_percent: u16) u16 {
         assert(font_percent > 0);
@@ -589,8 +577,7 @@ pub fn endBuild(window: *Window) void {
     window.render_deadline_ns = window.build_deadline_ns;
 }
 
-/// Deepest component nesting seen, and the stack it took (milestone 1
-/// measures both; see the contract's approved decision 1).
+/// Deepest component nesting seen, and the stack it took.
 fn noteDepth(window: *Window) void {
     const address = @frameAddress();
     if (window.component_depth == 1) window.depth_base_address = address;
@@ -856,8 +843,8 @@ fn floating(anchor: element.Anchor) layout_mod.FloatingConfig {
     return config;
 }
 
-/// A scroll box's offset, retained by its key for as long as it renders
-/// (contract §1). The last emit's measurement clamps it, so content that
+/// A scroll box's offset, retained by its key for as long as it renders.
+/// The last emit's measurement clamps it, so content that
 /// shrank never shows past its end.
 fn retainScroll(
     window: *Window,
@@ -948,7 +935,7 @@ fn layoutFailed(window: *const Window, err: anyerror) noreturn {
     std.debug.panic("layout failed in frame {d}: {s}", .{ window.frame_number, @errorName(err) });
 }
 
-/// The 0.3.1 layout engine's text measurement, over the window's text system.
+/// Text measurement over the window's text system.
 fn measureText(
     content: []const u8,
     font_id: u16,
@@ -971,10 +958,6 @@ fn measureText(
     };
     return .{ .width = width * scale, .height = metrics.line_height * scale };
 }
-
-// =============================================================================
-// Style to layout declaration (the 0.3.1 builder's mapping, `ui/builder.zig`)
-// =============================================================================
 
 fn declaration(style: *const element.Style) layout_mod.ElementDeclaration {
     const direction: layout_mod.LayoutDirection = switch (style.direction) {
@@ -1098,7 +1081,7 @@ fn childAlignment(
     };
 }
 
-/// Layout padding and gaps are whole pixels in the 0.3.1 engine.
+/// Layout padding and gaps are whole pixels.
 fn pixels(value: f32) u16 {
     assert(value >= 0);
     assert(value <= std.math.maxInt(u16));

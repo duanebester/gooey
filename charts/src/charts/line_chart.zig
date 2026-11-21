@@ -1,13 +1,6 @@
-//! Line Chart Component for Gooey Charts
-//!
-//! Renders continuous X/Y data as connected lines with optional point markers
-//! and area fill. Supports multiple series with different colors.
-//!
-//! NOTE: LineChart stores a *slice* to externally-owned series data.
-//! The caller is responsible for ensuring the data outlives the chart.
-//! This avoids embedding large arrays on the stack (per CLAUDE.md).
-//!
-//! Capacities are the app's, fixed at comptime:
+//! LineChart stores a slice to externally-owned series data; the caller must
+//! keep the data alive while the chart renders. Capacities are the app's,
+//! fixed at comptime:
 //! `const Revenue = LineChart(.{ .point_count_max = 64, .series_count_max = 2 });`
 //! sizes `Revenue.Series` and the per-render projection scratch for 64 points.
 //! Each render keeps at most one `[point_count_max][2]f32` array (8 bytes per
@@ -37,66 +30,46 @@ pub const Painter = paint.Painter;
 
 const LOD_THRESHOLD = constants.LOD_THRESHOLD;
 
-// =============================================================================
-// Default Color Palette (imported from theme.zig - single source of truth)
-// =============================================================================
-
 pub const default_palette = theme_mod.google_palette;
-
-// =============================================================================
-// LineChart
-// =============================================================================
 
 /// A line chart drawing up to `capacity.series_count_max` series, each holding
 /// up to `capacity.point_count_max` points.
 pub fn LineChart(comptime capacity: types.PointCapacity) type {
     capacity.check();
     return struct {
-        // Data - stored as a slice to avoid large stack allocation
-        // The caller owns the underlying data; chart just references it
         data: []const Series,
 
-        // Dimensions
         width: f32 = constants.DEFAULT_WIDTH,
         height: f32 = constants.DEFAULT_HEIGHT,
 
-        // Margins
         margin_top: f32 = constants.DEFAULT_MARGIN_TOP,
         margin_right: f32 = constants.DEFAULT_MARGIN_RIGHT,
         margin_bottom: f32 = constants.DEFAULT_MARGIN_BOTTOM,
         margin_left: f32 = constants.DEFAULT_MARGIN_LEFT,
 
-        // Line styling
         line_width: f32 = constants.DEFAULT_LINE_WIDTH,
 
-        // Point markers
         show_points: bool = true,
         point_radius: f32 = constants.DEFAULT_POINT_RADIUS,
 
-        // Area fill
         show_area: bool = false,
         area_opacity: f32 = 0.3,
 
-        // Domain overrides (null = auto-detect from data)
         x_domain_min: ?f32 = null,
         x_domain_max: ?f32 = null,
         y_domain_min: ?f32 = null,
         y_domain_max: ?f32 = null,
 
-        // Axes
         show_x_axis: bool = true,
         show_y_axis: bool = true,
         x_axis_opts: Axis.Options = .{ .orientation = .bottom },
         y_axis_opts: Axis.Options = .{ .orientation = .left },
 
-        // Grid
         show_grid: bool = true,
         grid_opts: Grid.Options = .{ .show_horizontal = true, .show_vertical = true },
 
-        // Theme (optional - uses default colors if null)
         chart_theme: ?*const ChartTheme = null,
 
-        // Accessibility
         accessible_title: ?[]const u8 = null,
         accessible_description: ?[]const u8 = null,
 
@@ -107,48 +80,29 @@ pub fn LineChart(comptime capacity: types.PointCapacity) type {
 
         const Self = @This();
 
-        /// Most points one series holds.
         pub const point_count_max: u32 = capacity.point_count_max;
 
-        /// Most series one chart draws.
         pub const series_count_max: u32 = capacity.series_count_max;
 
-        /// The series this chart draws, sized by `point_count_max`.
         pub const Series = types.Series(point_count_max);
 
-        // ==========================================================================
-        // Initialization
-        // ==========================================================================
-
-        /// Create a line chart from a slice of series.
-        /// The slice must outlive the chart - data is NOT copied.
+        /// The slice must outlive the chart; the data is not copied.
         pub fn init(data: []const Series) Self {
             std.debug.assert(data.len > 0);
             std.debug.assert(data.len <= series_count_max);
             return .{ .data = data };
         }
 
-        /// Create a line chart from a single series (as a 1-element slice).
-        /// The series must outlive the chart - data is NOT copied.
+        /// The series must outlive the chart; the data is not copied.
         pub fn initSingle(series: *const Series) Self {
             const slice: []const Series = @as([*]const Series, @ptrCast(series))[0..1];
             return .{ .data = slice };
         }
 
-        // ==========================================================================
-        // Accessors
-        // ==========================================================================
-
         pub fn seriesCount(self: *const Self) u32 {
             return @intCast(self.data.len);
         }
 
-        // ==========================================================================
-        // Accessibility
-        // ==========================================================================
-
-        /// Get accessibility information for this chart.
-        /// Use with `charts.describeChart()` to generate screen reader descriptions.
         pub fn getAccessibilityInfo(self: *const Self) a11y.ChartInfo {
             var info = a11y.infoFromSeries(Series, self.data, .line);
             info.title = self.accessible_title;
@@ -156,30 +110,22 @@ pub fn LineChart(comptime capacity: types.PointCapacity) type {
             return info;
         }
 
-        /// Generate a full accessible description for this chart.
-        /// Returns a slice into the provided buffer.
+        /// Writes into `buf` and returns a slice of it.
         pub fn describe(self: *const Self, buf: []u8) []const u8 {
             const info = self.getAccessibilityInfo();
             return a11y.describe(&info, buf);
         }
 
-        /// Generate a short summary for tooltips or live regions.
         pub fn summarize(self: *const Self, buf: []u8) []const u8 {
             const info = self.getAccessibilityInfo();
             return a11y.summarize(&info, buf);
         }
 
-        // ==========================================================================
-        // Rendering
-        // ==========================================================================
-
         /// Render the line chart, offset by the paint element's bounds.
         pub fn render(self: *const Self, painter: *Painter) void {
-            // Assertions at API boundary
             std.debug.assert(self.data.len > 0);
             std.debug.assert(self.width > 0 and self.height > 0);
 
-            // Calculate inner bounds
             const inner_x = painter.bounds.x + self.margin_left;
             const inner_y = painter.bounds.y + self.margin_top;
             const inner_width = self.width - self.margin_left - self.margin_right;
@@ -187,14 +133,11 @@ pub fn LineChart(comptime capacity: types.PointCapacity) type {
 
             std.debug.assert(inner_width > 0 and inner_height > 0);
 
-            // Calculate data extents
             const x_extent = self.findXExtent();
             const y_extent = self.findYExtent();
 
-            // Apply nice range for Y axis
             const nice_y = util.niceRange(y_extent.min, y_extent.max, 5);
 
-            // Create scales
             const x_scale = LinearScale.init(
                 self.x_domain_min orelse x_extent.min,
                 self.x_domain_max orelse x_extent.max,
@@ -209,7 +152,6 @@ pub fn LineChart(comptime capacity: types.PointCapacity) type {
                 inner_y,
             );
 
-            // Draw grid (behind lines)
             if (self.show_grid) {
                 self.drawGrid(
                     painter,
@@ -222,20 +164,16 @@ pub fn LineChart(comptime capacity: types.PointCapacity) type {
                 );
             }
 
-            // Draw area fills first (behind lines)
             if (self.show_area) {
                 self.drawAreas(painter, x_scale, y_scale, inner_y + inner_height);
             }
 
-            // Draw lines
             self.drawLines(painter, x_scale, y_scale);
 
-            // Draw point markers (on top of lines)
             if (self.show_points) {
                 self.drawPoints(painter, x_scale, y_scale);
             }
 
-            // Axes on top.
             if (self.show_x_axis) {
                 const x_opts = Axis.themed(self.x_axis_opts, .bottom, self.chart_theme);
                 Axis.drawLinear(painter, x_scale, inner_x, inner_y + inner_height, x_opts);
@@ -247,11 +185,6 @@ pub fn LineChart(comptime capacity: types.PointCapacity) type {
             }
         }
 
-        // ==========================================================================
-        // Private Helpers - Domain Calculation
-        // ==========================================================================
-
-        /// Find the min/max X values across all series.
         fn findXExtent(self: *const Self) struct { min: f32, max: f32 } {
             var min: f32 = std.math.inf(f32);
             var max: f32 = -std.math.inf(f32);
@@ -262,7 +195,6 @@ pub fn LineChart(comptime capacity: types.PointCapacity) type {
                 max = @max(max, extent.max);
             }
 
-            // Handle empty data case
             if (min > max) {
                 return .{ .min = 0, .max = 1 };
             }
@@ -270,7 +202,6 @@ pub fn LineChart(comptime capacity: types.PointCapacity) type {
             return .{ .min = min, .max = max };
         }
 
-        /// Find the min/max Y values across all series.
         fn findYExtent(self: *const Self) struct { min: f32, max: f32 } {
             var min: f32 = std.math.inf(f32);
             var max: f32 = -std.math.inf(f32);
@@ -281,12 +212,11 @@ pub fn LineChart(comptime capacity: types.PointCapacity) type {
                 max = @max(max, extent.max);
             }
 
-            // Handle empty data case
             if (min > max) {
                 return .{ .min = 0, .max = 1 };
             }
 
-            // For line charts, often want to include 0 in Y range
+            // With an area fill, include 0 in the Y range.
             if (min > 0 and self.show_area) {
                 min = 0;
             }
@@ -294,11 +224,6 @@ pub fn LineChart(comptime capacity: types.PointCapacity) type {
             return .{ .min = min, .max = max };
         }
 
-        // ==========================================================================
-        // Private Helpers - Drawing
-        // ==========================================================================
-
-        /// Draw grid lines.
         fn drawGrid(
             self: *const Self,
             painter: *Painter,
@@ -309,7 +234,6 @@ pub fn LineChart(comptime capacity: types.PointCapacity) type {
             w: f32,
             h: f32,
         ) void {
-            // Apply theme colors if available
             var grid_opts = self.grid_opts;
             if (self.chart_theme) |t| {
                 grid_opts.color = t.grid_color;
@@ -326,7 +250,6 @@ pub fn LineChart(comptime capacity: types.PointCapacity) type {
             );
         }
 
-        /// Draw filled areas under lines.
         fn drawAreas(
             self: *const Self,
             painter: *Painter,
@@ -373,7 +296,6 @@ pub fn LineChart(comptime capacity: types.PointCapacity) type {
             }
         }
 
-        /// Draw all series lines.
         fn drawLines(
             self: *const Self,
             painter: *Painter,
@@ -421,7 +343,7 @@ pub fn LineChart(comptime capacity: types.PointCapacity) type {
             }
         }
 
-        /// Project `series` into `out` at this chart's LOD; returns the point count.
+        /// Projects at this chart's LOD; returns the point count.
         fn project(
             self: *const Self,
             series: *const Series,
@@ -443,9 +365,8 @@ pub fn LineChart(comptime capacity: types.PointCapacity) type {
             return count;
         }
 
-        /// Get color for a series (use series color or fall back to theme/default palette).
         fn getSeriesColor(self: *const Self, series: *const Series, index: usize) Color {
-            // Priority: series explicit color > theme palette > default palette
+            // Priority: series explicit color > theme palette > default palette.
             if (series.color) |color| {
                 return color;
             }
@@ -504,10 +425,6 @@ fn areaSegment(
         .{ crossing, to, base_to };
     return 3;
 }
-
-// =============================================================================
-// Tests
-// =============================================================================
 
 /// A chart with room for two series of 16 points, enough for every test below.
 const TestChart = LineChart(.{ .point_count_max = 16, .series_count_max = 2 });
@@ -591,8 +508,6 @@ test "LineChart defaults" {
 }
 
 test "LineChart struct size is small" {
-    // Ensure LineChart itself is small (just a slice + options + theme ptr)
-    // Should be < 400 bytes (increased due to LOD fields), not ~300KB
     const size = @sizeOf(TestChart);
     try std.testing.expect(size < 400);
 }
@@ -601,7 +516,6 @@ test "LineChart LOD defaults" {
     var series_array = [_]TestSeries{TestSeries.init("Test", Color.hex(0xff0000))};
     const chart = TestChart.init(&series_array);
 
-    // LOD should be enabled by default
     try std.testing.expect(chart.enable_lod);
     try std.testing.expectEqual(LOD_THRESHOLD, chart.lod_target_points);
 }
@@ -665,7 +579,6 @@ test "areaSegment tiles a trapezoid, cuts at the baseline, and skips the rest" {
     var count = areaSegment(&out, .{ 0, 90 }, .{ 40, 70 }, 100);
     try std.testing.expectEqual(@as(u32, 6), count);
     try std.testing.expectEqual(@as(f32, 800), trianglesArea(out[0..count]));
-    // The two triangles share the vertical edges' corners exactly.
     try std.testing.expectEqual([2]f32{ 40, 100 }, out[2]);
     try std.testing.expectEqual([2]f32{ 0, 100 }, out[5]);
     // One end on the baseline: one triangle, 20 * 10 / 2.
@@ -677,7 +590,6 @@ test "areaSegment tiles a trapezoid, cuts at the baseline, and skips the rest" {
     try std.testing.expectEqual(@as(u32, 3), count);
     try std.testing.expectEqual([2]f32{ 10, 100 }, out[1]);
     try std.testing.expectEqual(@as(f32, 100), trianglesArea(out[0..count]));
-    // The mirror image keeps the other end.
     count = areaSegment(&out, .{ 0, 160 }, .{ 40, 80 }, 100);
     try std.testing.expectEqual(@as(u32, 3), count);
     try std.testing.expectEqual([2]f32{ 30, 100 }, out[0]);

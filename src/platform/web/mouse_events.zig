@@ -1,29 +1,7 @@
-//! Mouse Event Ring Buffer
-//! Zero-copy shared memory between JS and Zig
-//!
-//! This implements a lock-free SPSC (Single-Producer Single-Consumer) ring buffer
-//! for mouse events. JavaScript writes to the buffer, Zig reads from it.
-//! No JS↔WASM calls needed during frame processing.
-//!
-//! Features:
-//! - Double/triple click detection (JS tracks timing)
-//! - Left/right/middle button support
-//! - Keyboard modifiers on mouse events
-//! - Drag events (mouse_moved vs mouse_dragged), kept past the canvas edge by
-//!   pointer capture, and cancelled when the page takes the gesture away
-
 const input = @import("../../input/events.zig");
 const event_ring = @import("event_ring.zig");
 
-/// Packed mouse event - exactly 24 bytes
-/// Layout matches JavaScript writer:
-///   bytes 0-7: position_x (f64, little-endian)
-///   bytes 8-15: position_y (f64, little-endian)
-///   byte 16: event_type
-///   byte 17: button
-///   byte 18: click_count
-///   byte 19: modifiers
-///   bytes 20-23: reserved
+/// Layout matches the JavaScript writer.
 pub const RawMouseEvent = extern struct {
     position_x: f64,
     position_y: f64,
@@ -81,11 +59,9 @@ comptime {
     if (@sizeOf(RawMouseEvent) != 24) @compileError("RawMouseEvent must be exactly 24 bytes");
 }
 
-// Global instance
 /// Events reserved by the core host from `events.queue_count_max`.
 pub var g_mouse_ring: event_ring.EventRing(RawMouseEvent) = .{};
 
-// Export pointer for JS
 fn getMouseRingPtr() callconv(.c) [*]u8 {
     return @ptrCast(&g_mouse_ring);
 }
@@ -97,7 +73,6 @@ comptime {
 const InputEvent = input.InputEvent;
 const MouseEvent = input.MouseEvent;
 
-/// Convert raw mouse event to InputEvent
 pub fn toInputEvent(raw: RawMouseEvent) InputEvent {
     const mouse_event = MouseEvent{
         .position = .{ .x = raw.position_x, .y = raw.position_y },

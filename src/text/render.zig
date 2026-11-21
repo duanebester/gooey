@@ -1,13 +1,9 @@
 //! Text placement: shaped text to glyph quads in the glyph atlas.
 //!
-//! `placeText` runs in three phases, optimized for minimal lock contention:
-//!   Phase 1 — Compute device-pixel positions and subpixel offsets (no lock).
-//!   Phase 2 — Batch-resolve all glyphs from the cache under a single mutex lock.
-//!   Phase 3 — Place each glyph and hand it to the caller's sink (no lock).
-//!
-//! The batch glyph resolve (Phase 2) eliminates N-1 mutex lock/unlock pairs per
-//! text run compared to the per-glyph locking pattern, saving ~500–2000 ns for
-//! a 50-character string on macOS (atomic CAS + memory fence per lock).
+//! `placeText` computes device positions without the cache lock, then
+//! batch-resolves all glyphs under one lock per batch, eliminating the N-1
+//! lock/unlock pairs of per-glyph locking, and places each glyph into the
+//! caller's sink without the lock.
 
 const std = @import("std");
 const platform = @import("../platform/mod.zig");
@@ -25,21 +21,16 @@ const is_wasm = platform.is_wasm;
 const SUBPIXEL_VARIANTS_X = types.SUBPIXEL_VARIANTS_X;
 const SUBPIXEL_VARIANTS_F: f32 = @floatFromInt(SUBPIXEL_VARIANTS_X);
 
-/// Maximum glyphs per text run.  Matches ShapedRunCache capacity.
+/// Matches `ShapedRunCache.MAX_GLYPHS_PER_ENTRY`.
 const MAX_GLYPHS_PER_RUN: u32 = ShapedRunCache.MAX_GLYPHS_PER_ENTRY;
 
-// WASM stack budget check (rule #14): a run's shaped-glyph buffer and the four
-// batch buffers in `placeBatches` are sized at MAX_GLYPHS_PER_RUN. Assert the
-// combined footprint stays under 16 KB so it fits comfortably within WASM's
-// 1 MB stack even in deep call chains (tick → emit → placeText).
+// The run's shaped-glyph buffer and the four batch buffers in `placeBatches`
+// are sized at MAX_GLYPHS_PER_RUN; keep their combined footprint within the
+// WASM stack budget even in deep call chains (tick → emit → placeText).
 comptime {
     const frame_bytes = MAX_GLYPHS_PER_RUN * (@sizeOf(ShapedGlyph) + @sizeOf(f32) + @sizeOf(f32) + @sizeOf(u8) + @sizeOf(CachedGlyph));
     std.debug.assert(frame_bytes <= 16384);
 }
-
-// =============================================================================
-// Batches
-// =============================================================================
 
 /// Where a shaped run starts, and how its base-size advances scale.
 const RunOrigin = struct {
@@ -125,13 +116,8 @@ fn GlyphSink(comptime Sink: type) type {
     };
 }
 
-// =============================================================================
-// Phase 1: Device Position Computation
-// =============================================================================
-
 /// Compute device-pixel coordinates and subpixel X offsets for each glyph,
 /// returning the pen after the last advance, where the next batch starts.
-/// Tracks pen_x cumulatively across the glyph run.
 fn computeGlyphDevicePositions(
     shaped_glyphs: []const ShapedGlyph,
     start_x: f32,
@@ -151,16 +137,13 @@ fn computeGlyphDevicePositions(
 
     var pen_x = start_x;
     for (shaped_glyphs, 0..) |glyph, index| {
-        // Scale offsets and advances from base font size to requested size.
         const scaled_x_offset = glyph.x_offset * size_scale;
         const scaled_y_offset = glyph.y_offset * size_scale;
         const scaled_advance = glyph.x_advance * size_scale;
 
-        // Convert logical coordinates to device pixels.
         const device_x = (pen_x + scaled_x_offset) * scale_factor;
         const device_y = (baseline_y + scaled_y_offset) * scale_factor;
 
-        // Extract fractional part for subpixel variant selection.
         const fractional_x = device_x - @floor(device_x);
 
         out_device_x[index] = device_x;
@@ -171,10 +154,6 @@ fn computeGlyphDevicePositions(
     }
     return pen_x;
 }
-
-// =============================================================================
-// Phase 3: Glyph Placement
-// =============================================================================
 
 /// One glyph `placeText` placed: its quad in logical pixels and its glyph
 /// atlas rectangle, each UV edge in the normalized 0..1 range.
@@ -197,8 +176,6 @@ fn placeGlyph(cached: CachedGlyph, device_x: f32, device_y: f32, scale_factor: f
     std.debug.assert(scale_factor > 0);
     if (cached.region.width == 0 or cached.region.height == 0) return null;
 
-    // Use cached atlas size for thread-safe UV calculation.
-    // (Atlas may grow between glyph caching and UV calculation in multi-window.)
     const uv = cached.uv();
     std.debug.assert(uv.u0 >= 0);
     std.debug.assert(uv.u0 <= 1);
@@ -223,14 +200,9 @@ fn placeGlyph(cached: CachedGlyph, device_x: f32, device_y: f32, scale_factor: f
     return placed;
 }
 
-// =============================================================================
-// Public API
-// =============================================================================
-
 /// Shape `text` and hand each placed glyph to `sink.glyph(placed)`, in
-/// order, returning its width. Glyphs land where the 0.3.1 runtime placed
-/// them. A text past one shaping run is placed run by run
-/// (`text_system.runLength`), each starting where the last one's advance
+/// order, returning its width. A text past one shaping run is placed run by
+/// run (`text_system.runLength`), each starting where the last one's advance
 /// ended, so it lands as one run would; the bound is the shapers' detail.
 pub fn placeText(
     text_system: *TextSystem,

@@ -1,25 +1,22 @@
 //! Bridgetek EVE (BT81x) display controller over Linux spidev, or simulated.
-//!
 //! EVE is a display coprocessor, not a framebuffer: the panel scans out
 //! whatever its display list draws. `display_list.zig` builds those lists;
 //! this file moves bytes: memory writes, register reads, display list swaps
 //! on vertical blank, and the capacitive touch engine's contact register.
 //!
 //! The chip must already be booted, configured for its panel, and scanning
-//! out (`REG_PCLK` non-zero) before this opens it. Board bring-up (reset line,
-//! clocks, panel timing, backlight limits) is board-specific and stays with
-//! the board's own driver; nothing here writes the reset line, the clocks, or
-//! the backlight registers.
+//! out (`REG_PCLK` non-zero) before this opens it; board bring-up (reset
+//! line, clocks, panel timing, backlight limits) stays with the board's own
+//! driver, and nothing here writes the reset line, the clocks, or the
+//! backlight registers.
 //!
 //! `openSimulated` replaces the hardware with a 1024x600, 59.76 Hz chip in
-//! memory. Each display list swap can dump `RAM_G` (1 MiB) followed by
+//! memory; each display list swap can dump `RAM_G` (1 MiB) followed by
 //! `RAM_DL` (8 KiB) to a file, which `eve_preview.py` renders to a PNG.
 //!
-//! ## Memory (CLAUDE.md §2)
-//!
 //! `open` reserves one SPI message buffer (at most `message_bytes_max`) and
-//! `openSimulated` also the simulated address space (4 MiB), both from fresh
-//! pages at initialization. Transfers allocate nothing.
+//! `openSimulated` also the simulated address space (4 MiB), both at
+//! initialization; transfers allocate nothing.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -36,7 +33,6 @@ pub const ram_dl: u32 = 0x300000;
 pub const ram_dl_size: u32 = 8 * 1024;
 /// Display list capacity in 32-bit commands.
 pub const display_list_words_max: u32 = ram_dl_size / 4;
-/// Size of the chip's address space the simulation covers.
 const address_space_size: u32 = 0x40_0000;
 const reg_id: u32 = 0x302000;
 const reg_frequency: u32 = 0x30200C;
@@ -128,7 +124,6 @@ pub const Chip = struct {
     /// address each SPI message starts with.
     bytes_written: u64 = 0,
 
-    /// Open the chip behind spidev node `path`, clocked at `speed_hz`.
     pub fn open(self: *Chip, path: [*:0]const u8, speed_hz: u32) !void {
         assert(self.fd < 0);
         assert(speed_hz >= spi_hz_min);
@@ -168,8 +163,6 @@ pub const Chip = struct {
         assert(self.isSimulated());
     }
 
-    /// Check that the chip runs and scans out, read the panel size, and
-    /// reserve the message buffer.
     fn attach(self: *Chip, message_len: u32) !void {
         assert(message_len >= message_bytes_min);
         assert(self.message.len == 0);
@@ -214,7 +207,6 @@ pub const Chip = struct {
         return bytes;
     }
 
-    /// Write any amount of data to consecutive chip addresses.
     pub fn writeMemory(self: *Chip, address: u32, data: []const u8) Error!void {
         assert(data.len > 0);
         assert(address + data.len <= address_space_size);
@@ -269,7 +261,6 @@ pub const Chip = struct {
         return self.read32(reg_underrun);
     }
 
-    /// The current touch contact, or null when there is none.
     pub fn readTouch(self: *Chip) Error!?Touch {
         assert(self.fd >= 0 or self.isSimulated());
         const xy = try self.read32(reg_ctouch_touch0_xy);
@@ -298,7 +289,6 @@ pub const Chip = struct {
         try self.write(address, &bytes);
     }
 
-    /// Read `out.len` bytes (at most 4) starting at `address`.
     fn read(self: *Chip, address: u32, out: []u8) Error!void {
         assert(address < address_space_size);
         assert(out.len > 0);
@@ -334,7 +324,6 @@ pub const Chip = struct {
         if (linux.errno(rc) != .SUCCESS) return error.EveSpiTransferFailed;
     }
 
-    /// Apply one SPI message to the simulated address space.
     fn simulateTransfer(self: *Chip, tx: []const u8, rx: ?[]u8) void {
         assert(tx.len >= 3);
         assert(self.sim_memory.len == address_space_size);
@@ -419,15 +408,9 @@ fn readSpidevBufsiz() u32 {
     return value;
 }
 
-// =============================================================================
-// Tests
-// =============================================================================
-
 const testing = std.testing;
 
 test "a simulated swap loads the list into RAM_DL and completes at the next refresh" {
-    // Goal: the swap protocol the renderer paces on. The first swap may go
-    // at once; the second must wait most of a 16.7 ms refresh for it.
     var chip: Chip = .{};
     try chip.openSimulated(null);
     defer chip.close();

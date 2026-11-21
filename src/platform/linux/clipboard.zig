@@ -1,23 +1,8 @@
-//! Linux/Wayland Clipboard Support
-//!
-//! Provides clipboard access using the Wayland wl_data_device protocol.
-//! This implements copy/paste via wl_data_source and wl_data_offer.
-//!
-//! The Wayland clipboard model:
-//! - Copy (setText): Create wl_data_source, offer MIME types, set as selection
-//! - Paste (readText): Receive wl_data_offer, request data, read from fd
-//!
-//! MIME type used: "text/plain;charset=utf-8"
-
 const std = @import("std");
 const builtin = @import("builtin");
 const wayland = @import("wayland.zig");
 const core_clipboard = @import("../../core/clipboard.zig");
 const assert = std.debug.assert;
-
-// =============================================================================
-// Wayland Data Device Protocol Types
-// =============================================================================
 
 pub const WlDataDeviceManager = opaque {};
 pub const WlDataDevice = opaque {};
@@ -26,19 +11,16 @@ pub const WlDataOffer = opaque {};
 
 /// Data offer listener - receives events about available paste data
 pub const WlDataOfferListener = extern struct {
-    /// Advertise offered mime type
     offer: *const fn (
         data: ?*anyopaque,
         data_offer: *WlDataOffer,
         mime_type: [*:0]const u8,
     ) callconv(.c) void,
-    /// Source actions available
     source_actions: ?*const fn (
         data: ?*anyopaque,
         data_offer: *WlDataOffer,
         source_actions: u32,
     ) callconv(.c) void = null,
-    /// Action selected by compositor
     action: ?*const fn (
         data: ?*anyopaque,
         data_offer: *WlDataOffer,
@@ -48,35 +30,29 @@ pub const WlDataOfferListener = extern struct {
 
 /// Data source listener - receives events when our data is requested
 pub const WlDataSourceListener = extern struct {
-    /// Target accepts mime type (may be null)
     target: ?*const fn (
         data: ?*anyopaque,
         data_source: *WlDataSource,
         mime_type: ?[*:0]const u8,
     ) callconv(.c) void = null,
-    /// Request to send data to fd
     send: *const fn (
         data: ?*anyopaque,
         data_source: *WlDataSource,
         mime_type: [*:0]const u8,
         fd: i32,
     ) callconv(.c) void,
-    /// Selection was replaced
     cancelled: *const fn (
         data: ?*anyopaque,
         data_source: *WlDataSource,
     ) callconv(.c) void,
-    /// DnD drop performed (unused for clipboard)
     dnd_drop_performed: ?*const fn (
         data: ?*anyopaque,
         data_source: *WlDataSource,
     ) callconv(.c) void = null,
-    /// DnD finished (unused for clipboard)
     dnd_finished: ?*const fn (
         data: ?*anyopaque,
         data_source: *WlDataSource,
     ) callconv(.c) void = null,
-    /// Action selected (unused for clipboard)
     action: ?*const fn (
         data: ?*anyopaque,
         data_source: *WlDataSource,
@@ -86,13 +62,11 @@ pub const WlDataSourceListener = extern struct {
 
 /// Data device listener - receives selection/DnD events
 pub const WlDataDeviceListener = extern struct {
-    /// New data offer created
     data_offer: ?*const fn (
         data: ?*anyopaque,
         data_device: *WlDataDevice,
         id: *WlDataOffer,
     ) callconv(.c) void = null,
-    /// DnD enter (unused for clipboard)
     enter: ?*const fn (
         data: ?*anyopaque,
         data_device: *WlDataDevice,
@@ -102,12 +76,10 @@ pub const WlDataDeviceListener = extern struct {
         y: i32,
         id: ?*WlDataOffer,
     ) callconv(.c) void = null,
-    /// DnD leave (unused for clipboard)
     leave: ?*const fn (
         data: ?*anyopaque,
         data_device: *WlDataDevice,
     ) callconv(.c) void = null,
-    /// DnD motion (unused for clipboard)
     motion: ?*const fn (
         data: ?*anyopaque,
         data_device: *WlDataDevice,
@@ -115,12 +87,10 @@ pub const WlDataDeviceListener = extern struct {
         x: i32,
         y: i32,
     ) callconv(.c) void = null,
-    /// DnD drop (unused for clipboard)
     drop: ?*const fn (
         data: ?*anyopaque,
         data_device: *WlDataDevice,
     ) callconv(.c) void = null,
-    /// Selection changed - new clipboard content available
     selection: ?*const fn (
         data: ?*anyopaque,
         data_device: *WlDataDevice,
@@ -128,44 +98,27 @@ pub const WlDataDeviceListener = extern struct {
     ) callconv(.c) void = null,
 };
 
-// =============================================================================
-// Protocol Interface Declarations (from libwayland-client)
-// =============================================================================
-
-// These are part of the core Wayland protocol and exported from libwayland-client
 pub extern "wayland-client" var wl_data_device_manager_interface: wayland.Interface;
 pub extern "wayland-client" var wl_data_device_interface: wayland.Interface;
 pub extern "wayland-client" var wl_data_source_interface: wayland.Interface;
 pub extern "wayland-client" var wl_data_offer_interface: wayland.Interface;
-
-// =============================================================================
-// Protocol Constants
-// =============================================================================
 
 pub const WL_DATA_DEVICE_MANAGER_INTERFACE_NAME = "wl_data_device_manager";
 pub const MIME_TYPE_TEXT_PLAIN = "text/plain;charset=utf-8";
 pub const MIME_TYPE_TEXT_UTF8 = "text/plain";
 pub const MIME_TYPE_UTF8_STRING = "UTF8_STRING";
 
-// Data device manager method opcodes
 const WL_DATA_DEVICE_MANAGER_CREATE_DATA_SOURCE = 0;
 const WL_DATA_DEVICE_MANAGER_GET_DATA_DEVICE = 1;
 
-// Data device method opcodes
 const WL_DATA_DEVICE_SET_SELECTION = 1;
 const WL_DATA_DEVICE_RELEASE = 2;
 
-// Data source method opcodes
 const WL_DATA_SOURCE_OFFER = 0;
 const WL_DATA_SOURCE_DESTROY = 1;
 
-// Data offer method opcodes
 const WL_DATA_OFFER_RECEIVE = 1;
 const WL_DATA_OFFER_DESTROY = 2;
-
-// =============================================================================
-// Wrapper Functions
-// =============================================================================
 
 pub fn dataDeviceManagerCreateDataSource(manager: *WlDataDeviceManager) ?*WlDataSource {
     return @ptrCast(wayland.wl_proxy_marshal_flags(
@@ -211,7 +164,6 @@ pub fn dataDeviceRelease(device: *WlDataDevice) void {
     std.debug.assert(version <= 3);
 
     if (version >= 2) {
-        // wl_data_device::release request was added in version 2
         _ = wayland.wl_proxy_marshal_flags(
             @ptrCast(device),
             WL_DATA_DEVICE_RELEASE,
@@ -281,17 +233,10 @@ pub fn dataOfferAddListener(offer: *WlDataOffer, listener: *const WlDataOfferLis
     return wayland.wl_proxy_add_listener(@ptrCast(offer), @ptrCast(listener), data);
 }
 
-// =============================================================================
-// Clipboard State
-// =============================================================================
-
-/// Clipboard state - managed by the platform
 pub const ClipboardState = struct {
-    // Wayland objects
     data_device_manager: ?*WlDataDeviceManager = null,
     data_device: ?*WlDataDevice = null,
 
-    // Current clipboard selection offer (for paste)
     current_offer: ?*WlDataOffer = null,
     offer_has_text: bool = false,
 
@@ -299,7 +244,6 @@ pub const ClipboardState = struct {
     pending_offer: ?*WlDataOffer = null,
     pending_has_text: bool = false,
 
-    // Currently active data source (for copy)
     active_source: ?*WlDataSource = null,
 
     // Text we're offering (copy): the core clipboard's size (the largest
@@ -308,20 +252,16 @@ pub const ClipboardState = struct {
     copy_buffer: []u8 = &.{},
     copy_len: usize = 0,
 
-    // Serial for set_selection
     last_serial: u32 = 0,
 
-    // Display for flushing
     display: ?*wayland.Display = null,
 
     const Self = @This();
 
-    /// Initialize clipboard state
     pub fn init() Self {
         return .{};
     }
 
-    /// Reserve the copy buffer, during the core host's initialization.
     pub fn reserveCopy(self: *Self, gpa: std.mem.Allocator, bytes: u32) !void {
         assert(self.copy_buffer.len == 0);
         assert(bytes > 0);
@@ -343,7 +283,6 @@ pub const ClipboardState = struct {
         self.copy_len = 0;
     }
 
-    /// Clean up clipboard resources
     pub fn deinit(self: *Self) void {
         if (self.current_offer) |offer| {
             dataOfferDestroy(offer);
@@ -361,7 +300,6 @@ pub const ClipboardState = struct {
         self.display = null;
     }
 
-    /// Bind the data device manager from registry
     pub fn bindManager(self: *Self, registry: *wayland.Registry, name: u32, version: u32) void {
         self.data_device_manager = @ptrCast(@alignCast(wayland.registryBind(
             registry,
@@ -371,7 +309,6 @@ pub const ClipboardState = struct {
         )));
     }
 
-    /// Create data device once we have both manager and seat
     pub fn setupDataDevice(self: *Self, seat: *wayland.Seat, display: *wayland.Display) void {
         if (self.data_device_manager == null) return;
         if (self.data_device != null) return;
@@ -384,18 +321,13 @@ pub const ClipboardState = struct {
         }
     }
 
-    /// Handle new data offer (clipboard content changed)
     fn handleDataOffer(self: *Self, offer: *WlDataOffer) void {
-        // New offer being advertised - track it as pending until selection event
         self.pending_offer = offer;
         self.pending_has_text = false;
-        // Add listener to receive mime type events for this offer
         _ = dataOfferAddListener(offer, &data_offer_listener, self);
     }
 
-    /// Handle selection event (clipboard content available)
     fn handleSelection(self: *Self, offer: ?*WlDataOffer) void {
-        // Destroy old offer if any
         if (self.current_offer) |old| {
             if (old != offer) {
                 dataOfferDestroy(old);
@@ -404,22 +336,18 @@ pub const ClipboardState = struct {
 
         self.current_offer = offer;
 
-        // If this is the pending offer we've been tracking, use its accumulated has_text flag
         if (offer != null and offer == self.pending_offer) {
             self.offer_has_text = self.pending_has_text;
         } else {
             self.offer_has_text = false;
         }
 
-        // Clear pending state
         self.pending_offer = null;
         self.pending_has_text = false;
     }
 
-    /// Handle mime type advertisement from offer
     fn handleOfferMimeType(self: *Self, mime_type: [*:0]const u8) void {
         const mime = std.mem.span(mime_type);
-        // Check if this is a text type we can use
         if (std.mem.eql(u8, mime, MIME_TYPE_TEXT_PLAIN) or
             std.mem.eql(u8, mime, MIME_TYPE_TEXT_UTF8) or
             std.mem.eql(u8, mime, MIME_TYPE_UTF8_STRING))
@@ -430,7 +358,7 @@ pub const ClipboardState = struct {
 
     /// Read the clipboard text into `out`, cut at a codepoint boundary, and
     /// return its length (0 for none). Blocks on the offer's pipe, on the
-    /// main thread, as 0.3.1 does; claims no storage.
+    /// main thread; claims no storage.
     pub fn readText(self: *Self, out: []u8) u32 {
         assert(out.len > 0);
         // Wayland gives no data_offer for our own selection.
@@ -464,7 +392,6 @@ pub const ClipboardState = struct {
         return @intCast(total);
     }
 
-    /// Write text to clipboard
     pub fn setText(self: *Self, text: []const u8) bool {
         const manager = self.data_device_manager orelse return false;
         const device = self.data_device orelse return false;
@@ -474,32 +401,25 @@ pub const ClipboardState = struct {
         const len = text.len;
         if (len == 0) return false;
 
-        // Store text in our buffer
         @memcpy(self.copy_buffer[0..len], text[0..len]);
         self.copy_len = len;
 
-        // Destroy old source if any
         if (self.active_source) |old| {
             dataSourceDestroy(old);
             self.active_source = null;
         }
 
-        // Create new data source
         const source = dataDeviceManagerCreateDataSource(manager) orelse return false;
         self.active_source = source;
 
-        // Add listener for send requests
         _ = dataSourceAddListener(source, &data_source_listener, self);
 
-        // Offer text mime types
         dataSourceOffer(source, MIME_TYPE_TEXT_PLAIN);
         dataSourceOffer(source, MIME_TYPE_TEXT_UTF8);
         dataSourceOffer(source, MIME_TYPE_UTF8_STRING);
 
-        // Set as current selection
         dataDeviceSetSelection(device, source, self.last_serial);
 
-        // Flush to ensure it's sent
         if (self.display) |display| {
             _ = wayland.wl_display_flush(display);
         }
@@ -507,7 +427,6 @@ pub const ClipboardState = struct {
         return true;
     }
 
-    /// Handle send request - write our data to the fd
     fn handleSend(self: *Self, fd: i32) void {
         if (self.copy_len == 0) {
             _ = std.c.close(@intCast(fd));
@@ -522,7 +441,6 @@ pub const ClipboardState = struct {
             const remaining = self.copy_buffer[written..self.copy_len];
             const rc = std.c.write(@intCast(fd), remaining.ptr, remaining.len);
             if (rc < 0) {
-                // Retry on EINTR, otherwise give up.
                 const err = std.posix.errno(rc);
                 if (err == .INTR) continue;
                 break;
@@ -534,7 +452,6 @@ pub const ClipboardState = struct {
         _ = std.c.close(@intCast(fd));
     }
 
-    /// Handle cancelled event - our selection was replaced
     fn handleCancelled(self: *Self, source: *WlDataSource) void {
         if (self.active_source == source) {
             dataSourceDestroy(source);
@@ -543,15 +460,10 @@ pub const ClipboardState = struct {
         }
     }
 
-    /// Update serial (should be called on input events)
     pub fn updateSerial(self: *Self, serial: u32) void {
         self.last_serial = serial;
     }
 };
-
-// =============================================================================
-// Static Listeners
-// =============================================================================
 
 const data_device_listener = WlDataDeviceListener{
     .data_offer = dataDeviceDataOfferCallback,
@@ -635,7 +547,6 @@ fn dataOfferOfferCallback(
     state.handleOfferMimeType(mime_type);
 }
 
-// Stub callbacks for DnD-related offer events - required to prevent null pointer crashes
 fn dataOfferSourceActionsCallback(
     _: ?*anyopaque,
     _: *WlDataOffer,
@@ -661,7 +572,6 @@ const data_source_listener = WlDataSourceListener{
     .action = dataSourceActionCallback,
 };
 
-// Stub callbacks for optional data source events
 fn dataSourceTargetCallback(
     _: ?*anyopaque,
     _: *WlDataSource,
@@ -710,26 +620,17 @@ fn dataSourceCancelledCallback(
     state.handleCancelled(source);
 }
 
-// =============================================================================
-// Global Clipboard State (singleton for simple API)
-// =============================================================================
-
 var global_state: ClipboardState = ClipboardState.init();
 
-/// Get the global clipboard state (for platform integration)
 pub fn getState() *ClipboardState {
     return &global_state;
 }
 
-// =============================================================================
-// Public API (matching mac/clipboard.zig interface)
-// =============================================================================
-
-/// Write text to the system clipboard.
-/// Returns true on success.
 pub fn setText(text: []const u8) bool {
     return global_state.setText(text);
 }
+
+// Matches the mac/clipboard.zig interface.
 
 /// Read the clipboard text into `out` without allocating (core hosts).
 pub fn readText(out: []u8) u32 {

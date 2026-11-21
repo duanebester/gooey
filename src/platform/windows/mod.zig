@@ -1,12 +1,5 @@
-//! Windows platform module: Win32 windows rendered with Vulkan.
-//!
-//! The Vulkan renderer is shared with the Wayland backend and still lives
-//! under `platform/linux/`; this backend adds only the window system half
-//! (`vk_surface_win32.zig`). See `docs/windows-port.md` for the plan and the
-//! seams 0.4.0 changes.
-//!
-//! 64-bit only: `linux/vulkan.zig` declares every handle as a pointer, which
-//! matches the C ABI only on 64-bit targets.
+//! Windows platform backend: Win32 windows rendered by the shared Vulkan
+//! renderer (`platform/linux/`) or by Direct3D 11. 64-bit targets only.
 
 const std = @import("std");
 

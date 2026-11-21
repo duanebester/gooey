@@ -1,13 +1,3 @@
-//! Platform accessibility bridge interface.
-//!
-//! Each platform implements this interface to translate
-//! the accessibility tree to native APIs (VoiceOver, AT-SPI2, ARIA).
-//!
-//! Design:
-//! - VTable pattern for runtime polymorphism
-//! - NullBridge for disabled/unsupported platforms
-//! - All methods are safe to call (null-safe)
-
 const std = @import("std");
 const tree_mod = @import("tree.zig");
 const types = @import("types.zig");
@@ -17,16 +7,13 @@ pub const Tree = tree_mod.Tree;
 pub const Element = tree_mod.Element;
 pub const Fingerprint = fingerprint_mod.Fingerprint;
 
-/// Platform bridge interface
 pub const Bridge = struct {
     ptr: *anyopaque,
     vtable: *const VTable,
 
     pub const VTable = struct {
-        /// Sync dirty elements to platform. Called at the end of every
-        /// synced frame, with an empty list when no element changed, so a
-        /// pull-based bridge (Windows) can refresh bounds that moved.
-        /// Receives only indices of elements that changed.
+        /// Called every synced frame, even with an empty list, so pull-based
+        /// bridges (Windows) can refresh bounds that moved.
         syncDirty: *const fn (
             ptr: *anyopaque,
             tree: *const Tree,
@@ -34,118 +21,89 @@ pub const Bridge = struct {
         ) void,
 
         /// Remove elements that no longer exist.
-        /// Receives fingerprints for stable identity lookup.
         removeElements: *const fn (
             ptr: *anyopaque,
             fingerprints: []const Fingerprint,
         ) void,
 
-        /// Process announcements.
         announce: *const fn (
             ptr: *anyopaque,
             message: []const u8,
             live: types.Live,
         ) void,
 
-        /// Notify focus change.
         focusChanged: *const fn (
             ptr: *anyopaque,
             tree: *const Tree,
             element_index: ?u16,
         ) void,
 
-        /// Check if screen reader is active.
-        /// Called periodically (not every frame) to gate a11y work.
+        /// Called periodically, not every frame, to gate a11y work.
         isActive: *const fn (ptr: *anyopaque) bool,
 
-        /// Clean up platform resources.
         deinit: *const fn (ptr: *anyopaque) void,
     };
 
-    // =========================================================================
-    // Convenience Wrappers
-    // =========================================================================
-
-    /// Sync dirty elements to platform
     pub fn syncDirty(self: Bridge, tree: *const Tree, dirty: []const u16) void {
-        // Assertion: tree must be valid
         std.debug.assert(tree.count() <= tree.elements.len);
-        // Assertion: each element is dirty at most once
         std.debug.assert(dirty.len <= tree.count());
 
         self.vtable.syncDirty(self.ptr, tree, dirty);
     }
 
-    /// Remove elements by fingerprint
     pub fn removeElements(self: Bridge, fps: []const Fingerprint) void {
-        // Assertion: removal list bounded by the largest tree
         std.debug.assert(fps.len <= @import("../core/limits.zig").a11y_element_count_ceiling);
 
         self.vtable.removeElements(self.ptr, fps);
     }
 
-    /// Announce message to screen reader
     pub fn announce(self: Bridge, msg: []const u8, live: types.Live) void {
-        // Assertion: live level valid
         std.debug.assert(@backingInt(live) <= @backingInt(types.Live.assertive));
 
         self.vtable.announce(self.ptr, msg, live);
     }
 
-    /// Notify that focus changed
     pub fn focusChanged(self: Bridge, tree: *const Tree, idx: ?u16) void {
-        // Assertion: index within bounds if present
         std.debug.assert(idx == null or idx.? < tree.count());
 
         self.vtable.focusChanged(self.ptr, tree, idx);
     }
 
-    /// Check if screen reader is currently active
     pub fn isActive(self: Bridge) bool {
         return self.vtable.isActive(self.ptr);
     }
 
-    /// Clean up resources
     pub fn deinit(self: Bridge) void {
         self.vtable.deinit(self.ptr);
     }
 
-    /// Perform full frame sync: sync dirty, remove old, announce, handle focus
     pub fn syncFrame(self: Bridge, tree: *const Tree) void {
-        // Assertion: tree state is valid
         std.debug.assert(tree.count() <= tree.elements.len);
-        std.debug.assert(tree.stack_depth == 0); // Frame must be ended
+        std.debug.assert(tree.stack_depth == 0);
 
-        // Only sync if screen reader is active
         if (!self.isActive()) return;
 
-        // Sync dirty elements (new or changed). Called even when none are,
-        // see `VTable.syncDirty`.
+        // Called even when none are dirty; see `VTable.syncDirty`.
         self.syncDirty(tree, tree.getDirtyElements());
 
-        // Remove elements that no longer exist
         const removed = tree.getRemovedFingerprints();
         if (removed.len > 0) {
             self.removeElements(removed);
         }
 
-        // Process announcements
         const announcements = tree.getAnnouncements();
         for (announcements) |ann| {
             self.announce(ann.message, ann.live);
         }
 
-        // Notify focus changes
         if (tree.focusChanged()) {
             self.focusChanged(tree, tree.getFocusedIndex());
         }
     }
 };
 
-/// Null bridge for when a11y is disabled or unsupported.
-/// All operations are safe no-ops.
+/// Safe no-ops, for when a11y is disabled or unsupported.
 pub const NullBridge = struct {
-    /// Get Bridge interface pointing to null implementation
     pub fn bridge() Bridge {
         return .{
             .ptr = undefined,
@@ -174,7 +132,6 @@ pub const NullBridge = struct {
     fn deinit_(_: *anyopaque) void {}
 };
 
-/// Test bridge that records calls for verification
 pub const TestBridge = struct {
     sync_count: u32 = 0,
     remove_count: u32 = 0,
@@ -189,7 +146,6 @@ pub const TestBridge = struct {
 
     const Self = @This();
 
-    /// Get Bridge interface
     pub fn bridge(self: *Self) Bridge {
         return .{
             .ptr = self,
@@ -241,7 +197,6 @@ pub const TestBridge = struct {
         return @ptrCast(@alignCast(ptr));
     }
 
-    /// Reset all counters and state
     pub fn reset(self: *Self) void {
         self.sync_count = 0;
         self.remove_count = 0;
@@ -254,12 +209,9 @@ pub const TestBridge = struct {
     }
 };
 
-// Compile-time assertions per CLAUDE.md
 comptime {
-    // Bridge should be small (just two pointers)
     std.debug.assert(@sizeOf(Bridge) == 2 * @sizeOf(usize));
 
-    // VTable should have all required functions
     std.debug.assert(@sizeOf(Bridge.VTable) == 6 * @sizeOf(usize));
 }
 
@@ -279,7 +231,6 @@ fn destroyTestTree(tree: *Tree) void {
 test "null bridge is safe" {
     const b = NullBridge.bridge();
 
-    // All operations should be no-ops.
     const tree = try createTestTree();
     defer destroyTestTree(tree);
     tree.beginFrame();
@@ -311,7 +262,6 @@ test "test bridge records calls" {
     tree.announce("Button focused", .polite);
     tree.endFrame();
 
-    // Sync frame (active = true)
     b.syncFrame(tree);
 
     try std.testing.expectEqual(@as(u32, 1), test_bridge.sync_count);
@@ -332,7 +282,7 @@ test "test bridge respects active flag" {
     tree.popElement();
     tree.endFrame();
 
-    // syncFrame should early-out when not active
+    // syncFrame early-outs when not active.
     b.syncFrame(tree);
 
     try std.testing.expectEqual(@as(u32, 0), test_bridge.sync_count);
@@ -342,7 +292,6 @@ test "bridge syncFrame handles all operations" {
     var test_bridge = TestBridge{};
     const b = test_bridge.bridge();
 
-    // Frame 1: Create two elements
     const tree = try createTestTree();
     defer destroyTestTree(tree);
     tree.beginFrame();
@@ -358,7 +307,6 @@ test "bridge syncFrame handles all operations" {
 
     test_bridge.reset();
 
-    // Frame 2: Remove one element
     tree.beginFrame();
     _ = tree.pushElement(.{ .role = .button, .name = "Button 1" });
     tree.popElement();

@@ -1,6 +1,3 @@
-//! Render pass helpers: the single-sample pass over a drawable, its encoder,
-//! its viewport, and the present.
-
 const std = @import("std");
 const assert = std.debug.assert;
 const objc = @import("objc");
@@ -8,7 +5,6 @@ const mtl = @import("api.zig");
 const geometry = @import("../../../geometry/geometry.zig");
 const backend = @import("../../../core/backend.zig");
 
-/// Configuration for a single-sample render pass (`pipelines.sample_count`).
 pub const SimpleRenderPassConfig = struct {
     texture: objc.Object,
     clear_color: ?geometry.Color = null,
@@ -16,7 +12,6 @@ pub const SimpleRenderPassConfig = struct {
     store_action: mtl.MTLStoreAction = .store,
 };
 
-/// Create a single-sample render pass descriptor that draws into `texture`.
 pub fn createSimpleRenderPass(config: SimpleRenderPassConfig) ?objc.Object {
     assert(config.texture.value != null);
     if (config.load_action == .clear) assert(config.clear_color != null);
@@ -41,7 +36,6 @@ pub fn createSimpleRenderPass(config: SimpleRenderPassConfig) ?objc.Object {
     return render_pass;
 }
 
-/// Create a render command encoder from a render pass
 pub fn createEncoder(command_buffer: objc.Object, render_pass: objc.Object) ?objc.Object {
     assert(command_buffer.value != null);
     assert(render_pass.value != null);
@@ -54,7 +48,6 @@ pub fn createEncoder(command_buffer: objc.Object, render_pass: objc.Object) ?obj
     return objc.Object.fromId(encoder_ptr);
 }
 
-/// Get the next drawable from a layer
 pub fn getNextDrawable(layer: objc.Object) ?struct { drawable: objc.Object, texture: objc.Object } {
     assert(layer.value != null);
     const drawable_ptr = layer.msgSend(?*anyopaque, "nextDrawable", .{});
@@ -68,7 +61,6 @@ pub fn getNextDrawable(layer: objc.Object) ?struct { drawable: objc.Object, text
     return .{ .drawable = drawable, .texture = texture };
 }
 
-/// Map the render pass onto the whole framebuffer of `size_px`.
 pub fn setViewport(encoder: objc.Object, size_px: backend.SizePx) void {
     assert(size_px.width > 0);
     assert(size_px.height > 0);
@@ -83,7 +75,6 @@ pub fn setViewport(encoder: objc.Object, size_px: backend.SizePx) void {
     encoder.msgSend(void, "setViewport:", .{viewport});
 }
 
-/// Finish encoding, schedule the present, and commit.
 pub fn finishAndPresent(
     encoder: objc.Object,
     command_buffer: objc.Object,

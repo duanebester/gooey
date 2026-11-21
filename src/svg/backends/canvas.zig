@@ -1,9 +1,5 @@
-//! SVG Rasterizer - Web/Canvas2D-based SVG path rendering
-//!
-//! Rasterizes SVG icons to RGBA bitmaps via JavaScript's Path2D and Canvas2D APIs.
-//! Uses two-channel encoding: R = fill alpha, G = stroke alpha.
-//! This allows the shader to apply different colors to fill and stroke.
-//!
+//! Web/Canvas2D SVG rasterization. Two-channel encoding: R = fill alpha,
+//! G = stroke alpha, so the shader colors fill and stroke differently.
 //! `Path2D` reads only path data, so the icon is parsed here, as the native
 //! backends parse it, and handed over as the path data of its commands.
 
@@ -41,15 +37,10 @@ pub const RasterizeError = error{
     OutOfMemory,
 };
 
-/// Stroke options for SVG rendering
 pub const StrokeOptions = struct {
     enabled: bool = false,
     width: f32 = 1.0,
 };
-
-// =============================================================================
-// JavaScript Imports
-// =============================================================================
 
 /// Draw `path_data` into a `device_size` square of RGBA pixels at `out_buffer`
 /// (`buffer_size` = `device_size² × 4` bytes), with `viewbox` units scaled to
@@ -66,11 +57,6 @@ extern "env" fn rasterizeSvgPath(
     buffer_size: u32,
 ) bool;
 
-// =============================================================================
-// Public API
-// =============================================================================
-
-/// Rasterize SVG path data to RGBA buffer (fill only, no stroke)
 pub fn rasterize(
     allocator: std.mem.Allocator,
     path_data: []const u8,
@@ -90,8 +76,7 @@ pub fn rasterize(
     );
 }
 
-/// Rasterize SVG path data with fill and stroke options.
-/// Output format: R = fill alpha, G = stroke alpha, B = unused, A = combined alpha
+/// Output format: R = fill alpha, G = stroke alpha, B = unused, A = combined alpha.
 pub fn rasterizeWithOptions(
     allocator: std.mem.Allocator,
     path_data: []const u8,
@@ -109,7 +94,6 @@ pub fn rasterizeWithOptions(
     const required_size = pixel_count * 4;
     if (buffer.len < required_size) return error.BufferTooSmall;
 
-    // Clear buffer (transparent black)
     @memset(buffer[0..required_size], 0);
 
     const path_data_bytes = RasterBudget.pathDataBytes(@intCast(path_data.len));

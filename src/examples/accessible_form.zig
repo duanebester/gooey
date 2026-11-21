@@ -1,16 +1,3 @@
-//! Accessible form: accessibility patterns on the core.
-//!
-//! Headings, groups, labelled inputs, a `RadioGroup` with set positions, a
-//! checkbox, a combobox `Select`, a `Tooltip`, live-region error alerts, and
-//! announcements from the submit handler. Every accessible element is a box
-//! whose `a11y` names its role, so a screen reader also gets its bounds.
-//!
-//! To test accessibility:
-//! - macOS: Enable VoiceOver with Cmd+F5
-//! - Web: Use browser accessibility tools or NVDA/VoiceOver
-//!
-//! Navigate with Tab and type into the focused field.
-
 const std = @import("std");
 const gooey = @import("gooey");
 const components = @import("gooey-components");
@@ -26,25 +13,17 @@ const Select = components.Select;
 const RadioGroup = components.RadioGroup;
 const Tooltip = components.Tooltip;
 
-// =============================================================================
-// Form State
-// =============================================================================
-
 pub const State = struct {
-    // Personal info, bound to the text inputs.
     name: []const u8 = "",
     email: []const u8 = "",
     phone: []const u8 = "",
 
-    // Preferences.
     contact_method: ContactMethod = .email,
     newsletter: bool = true,
     terms_accepted: bool = false,
 
-    // Experience level selection.
     experience_level: ?usize = null,
 
-    // Form status.
     form_submitted: bool = false,
     validation_errors: ValidationErrors = .{},
     show_success: bool = false,
@@ -94,7 +73,6 @@ pub const State = struct {
         return !errors.name and !errors.email and !errors.terms;
     }
 
-    /// Announces the outcome: errors assertively, success politely.
     pub fn submit(self: *State, effects: *Effects) void {
         if (self.validate()) {
             self.form_submitted = true;
@@ -117,10 +95,6 @@ pub const State = struct {
 
 const assert = std.debug.assert;
 
-// =============================================================================
-// Entry Point
-// =============================================================================
-
 pub const App = gooey.App(State, render, .{
     .title = "Accessible Form Example",
     .width = 600,
@@ -128,12 +102,7 @@ pub const App = gooey.App(State, render, .{
     .limits = .small,
 });
 
-/// The generated entry point (contract §7).
 pub const main = App.main;
-
-// =============================================================================
-// Main Render
-// =============================================================================
 
 pub fn render(cx: *Cx) void {
     const s = cx.state(State);
@@ -173,15 +142,11 @@ const FormBody = struct {
     }
 };
 
-// =============================================================================
-// Shared Pieces
-// =============================================================================
-
 const error_color = ui.Color.rgb(0.9, 0.3, 0.3);
 const title_color = ui.Color.rgb(0.2, 0.2, 0.3);
 const label_color = ui.Color.rgb(0.3, 0.3, 0.4);
 
-/// A white card. `group` names it for screen readers.
+/// `group` names the card for screen readers.
 fn card(group: ?[]const u8, has_error: bool) ui.Box {
     return .{
         .style = .{
@@ -225,10 +190,6 @@ fn sectionHeading(text: []const u8) Heading {
     return .{ .text = text, .level = .h2, .size = 18, .weight = .semibold, .color = title_color };
 }
 
-// =============================================================================
-// Header
-// =============================================================================
-
 const FormHeader = struct {
     pub fn render(_: FormHeader, cx: *Cx) void {
         cx.render(ui.box(.{ .style = .{ .gap = 8 } }, .{
@@ -246,10 +207,6 @@ const FormHeader = struct {
         }));
     }
 };
-
-// =============================================================================
-// Form Sections
-// =============================================================================
 
 const PersonalInfoSection = struct {
     errors: State.ValidationErrors,
@@ -322,7 +279,6 @@ const ContactPreferencesSection = struct {
                 .selected = @backingInt(self.contact_method),
                 .label = "Preferred Contact Method",
             },
-            // 0.3.1's `ui.spacerMin(8)`: the newsletter sits apart from the radios.
             ui.box(.{ .style = .{ .height = .{ .fixed = 8 } } }, .{}),
             Checkbox{
                 .key = .{ .name = "newsletter" },
@@ -416,10 +372,6 @@ const FormActions = struct {
     }
 };
 
-// =============================================================================
-// Helper Components
-// =============================================================================
-
 const FormField = struct {
     label: []const u8,
     error_message: ?[]const u8,
@@ -485,10 +437,6 @@ const SuccessMessage = struct {
         }));
     }
 };
-
-// =============================================================================
-// Tests
-// =============================================================================
 
 test "form validation" {
     var s = State{};

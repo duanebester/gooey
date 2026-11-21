@@ -1,15 +1,4 @@
-//! Input System
-//!
-//! Input events, keycodes, and keystrokes.
-//!
-//! - `events` - InputEvent, KeyEvent, MouseEvent, KeyCode, Modifiers
-//! - `keystroke` - Keystroke, parsed from strings such as "cmd-shift-z"
-
 const std = @import("std");
-
-// =============================================================================
-// Events (input primitives)
-// =============================================================================
 
 pub const events = @import("events.zig");
 
@@ -26,15 +15,7 @@ pub const FocusLostEvent = events.FocusLostEvent;
 pub const HeldKeys = events.HeldKeys;
 pub const held_key_count_max = events.held_key_count_max;
 
-// =============================================================================
-// Keystrokes (keymaps live in the core, `core/keymap.zig`)
-// =============================================================================
-
 pub const Keystroke = @import("keystroke.zig").Keystroke;
-
-// =============================================================================
-// Tests
-// =============================================================================
 
 test {
     std.testing.refAllDecls(@This());

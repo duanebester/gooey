@@ -1,21 +1,5 @@
-//! Text engines and their dedicated pools (contract §3, approved decision 6).
-//!
-//! The single-line input engine: a fixed byte buffer, a caret and selection
-//! anchor, an IME preedit, and an undo history, edited by key, text, and
-//! composition events with 0.3.1's bindings (edit commands use the platform's
-//! command modifier). Each pool slot reserves `bytes_max` text bytes,
-//! `bytes_max` history bytes, and `undo_depth_max` edits at init and never
-//! grows; a full buffer keeps what fits of further input (an operating limit
-//! the app declared, not a programmer error). Copy, cut, and paste go through
-//! the window's clipboard (`clipboard.zig`), which has no public API.
-//!
-//! An engine pool is registered with the store as an entity pool, so a
-//! component targets its engine with `cx.on(InputEngine.onKey, .{ .entity =
-//! handle })` and the router invokes it like any other handler.
-//!
-//! The caret is shown for `blink_interval_ms` after each edit or move, then
-//! blinks: `prepare` computes the phase at build and asks for a render at the
-//! next toggle through the window's one render deadline (decision 10).
+//! Each pool slot reserves `bytes_max` text bytes, `bytes_max` history
+//! bytes, and `undo_depth_max` edits at init and never grows.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -44,7 +28,6 @@ pub const Clipboard = clipboard_mod.Clipboard;
 /// keeps only what fits, as it does for `bytes_max`.
 pub const line_codepoint_count_max: u32 = text_mod.run_codepoint_count_max;
 
-/// The caret's on and off phases, as in 0.3.1.
 pub const blink_interval_ms: u32 = 530;
 
 /// What an engine's paint function draws this tick, set each build. One
@@ -71,7 +54,6 @@ pub const Indent = struct {
     size: u8,
     hard_tabs: bool,
 
-    /// 0.3.1's spaces are at most 16 per Tab.
     pub const size_max: u8 = 16;
 };
 
@@ -80,7 +62,7 @@ pub const Indent = struct {
 pub const ClickOrigin = struct { text_x: f32, text_y: f32, gutter_end: f32 };
 
 /// The engine of one kind. An input is one line; an area adds lines split
-/// on '\n' (no soft wrap, as in 0.3.1), vertical moves, Return inserting a
+/// on '\n' (no soft wrap), vertical moves, Return inserting a
 /// newline, a scroll offset that follows the caret, and click positioning.
 /// An editor is an area that also indents with Tab and selects a line when
 /// its gutter is clicked.
@@ -116,7 +98,7 @@ pub fn Engine(comptime kind: Kind) type {
         /// What Tab inserts (editor), set each build by the component.
         indent: Indent,
         /// What the input's paint function draws this tick, set each build.
-        /// `placeholder` is read during this tick's emit only (contract rule 6).
+        /// `placeholder` is read during this tick's emit only.
         view: View,
 
         pub const View = EngineView;
@@ -205,10 +187,9 @@ pub fn Engine(comptime kind: Kind) type {
                 return;
             }
             if (value.len == self.len and std.mem.eql(u8, value, self.text())) return;
-            // As 0.3.1's `syncBoundText`: the caret and anchor keep their
-            // offsets, clamped to the new text and moved back to a character
-            // start, so an app replacing the text (opening a file) does not
-            // move the view to its end.
+            // The caret and anchor keep their offsets, clamped to the new
+            // text and moved back to a character start, so an app replacing
+            // the text (opening a file) does not move the view to its end.
             const cursor = self.cursor;
             const anchor = self.anchor;
             self.setText(value);
@@ -314,8 +295,8 @@ pub fn Engine(comptime kind: Kind) type {
             self.replaceAsStep(self.selectionStart(), self.selectionEnd(), value);
         }
 
-        /// Commit the preedit as typed text, as native text fields and GPUI do
-        /// when focus leaves mid-composition: the IME composes for the focused
+        /// Commit the preedit as typed text, as native text fields do when
+        /// focus leaves mid-composition: the IME composes for the focused
         /// field only, and the host makes it forget the composition once that
         /// field changes (`Query.imeOwner`), so the field that showed the text
         /// keeps it. The binding follows, as after a key.
@@ -335,7 +316,7 @@ pub fn Engine(comptime kind: Kind) type {
         }
 
         /// Show `value` as the composition. The OS supplies it, so a longer
-        /// one is cut at a code point boundary and logged (decision R2).
+        /// one is cut at a code point boundary and logged.
         pub fn setPreedit(self: *Self, value: []const u8) void {
             assert(self.preedit.len > 0);
             const kept = clipboard_mod.prefixFitting(value, self.preedit.len);
@@ -381,8 +362,8 @@ pub fn Engine(comptime kind: Kind) type {
             self.preferred_column = null;
         }
 
-        /// Left or right with 0.3.1's modifiers: shift extends, the command
-        /// modifier goes to the line's end, alt moves by word, and an unshifted
+        /// Left or right: shift extends, the command modifier goes to the
+        /// line's end, alt moves by word, and an unshifted
         /// move with a selection collapses it to that side.
         fn moveHorizontal(self: *Self, forward: bool, mods: input.Modifiers) void {
             if (!mods.shift and self.hasSelection()) {
@@ -447,7 +428,7 @@ pub fn Engine(comptime kind: Kind) type {
         }
 
         /// Select line `start`'s text and its newline, with the caret at
-        /// the line's start, as 0.3.1's gutter click does.
+        /// the line's start.
         fn selectLine(self: *Self, start: u32) void {
             comptime assert(kind == .editor);
             assert(start == self.lineStart(start));
@@ -458,8 +439,8 @@ pub fn Engine(comptime kind: Kind) type {
         }
 
         /// Move to the line above or below at the preferred byte column,
-        /// clamped to that line and snapped back to a codepoint start (0.3.1
-        /// counts columns in bytes). On the first or last line it stays.
+        /// clamped to that line and snapped back to a codepoint start (the
+        /// columns count bytes). On the first or last line it stays.
         fn moveLine(self: *Self, down: bool, extend: bool) void {
             const start = self.lineStart(self.cursor);
             const column = self.preferred_column orelse self.cursor - start;
@@ -686,9 +667,9 @@ pub const AreaEngine = Engine(.area);
 pub const EditorEngine = Engine(.editor);
 
 /// Edit commands use Cmd on Apple platforms and Ctrl elsewhere, ignored with
-/// Alt held. Linux uses Ctrl, not 0.3.1's Super: GNOME's shell takes Super+A
+/// Alt held. Linux uses Ctrl, not Super: GNOME's shell takes Super+A
 /// and Super+V, and an IME such as ibus-mozc turns Super+letters into preedit
-/// text (approved 2026-10-31 after SER9's check).
+/// text.
 pub fn editCommand(mods: input.Modifiers) bool {
     if (uses_cmd) return mods.cmd;
     return mods.ctrl and !mods.alt;
@@ -697,7 +678,7 @@ pub fn editCommand(mods: input.Modifiers) bool {
 /// Whether edit commands use Cmd. Native targets know their OS at build time.
 /// One wasm build runs in browsers on every OS, so the web host sets this
 /// once during init from the browser's platform, before the first frame, and
-/// nothing writes it afterwards (0.3.1 used Cmd in every browser).
+/// nothing writes it afterwards.
 pub var uses_cmd: bool = builtin.os.tag == .macos;
 
 /// The codepoint boundary in `line` nearest to `x` pixels from its start.
@@ -836,7 +817,7 @@ fn nextBoundary(bytes: []const u8, index: u32) u32 {
     return position;
 }
 
-/// The start of the word before `index`, skipping spaces first (0.3.1).
+/// The start of the word before `index`, skipping spaces first.
 fn previousWord(bytes: []const u8, index: u32) u32 {
     assert(index <= bytes.len);
     var position = index;
@@ -854,7 +835,6 @@ fn nextWord(bytes: []const u8, index: u32) u32 {
     return @intCast(position);
 }
 
-/// The pool of one engine kind.
 pub fn Pool(comptime kind: Kind) type {
     return struct {
         const Self = @This();
@@ -966,7 +946,6 @@ pub const InputPool = Pool(.input);
 pub const AreaPool = Pool(.area);
 pub const EditorPool = Pool(.editor);
 
-/// An engine over caller storage, for the tests below.
 fn TestOf(comptime kind: Kind) type {
     // The input tests fill 16 bytes; the area tests need a few lines.
     const size = if (kind == .input) 16 else 32;
@@ -1007,43 +986,26 @@ fn TestOf(comptime kind: Kind) type {
 const TestEngine = TestOf(.input);
 
 test "an edit keeps the prefix that leaves every line within the bound" {
-    // Goal: typed, pasted, and committed text stops at the line bound on a
-    // codepoint boundary, counting codepoints rather than bytes, and the
-    // text after the edit counts toward the line it joins. Method: the pure
-    // `lineFitting` with a 4-codepoint bound; each expectation is the byte
-    // length of the prefix a reader would keep by hand.
     const fit = lineFitting;
-    // Typing a fifth codepoint on a full line is refused; a newline is not.
     try std.testing.expectEqual(@as(?u32, 0), fit("abcd", 4, 4, "e", 4));
     try std.testing.expectEqual(@as(?u32, 1), fit("abcd", 4, 4, "\n", 4));
     // "東京" after three codepoints: "東" (3 bytes) fits, "京" does not.
     try std.testing.expectEqual(@as(?u32, 3), fit("abc", 3, 3, "\u{6771}\u{4eac}", 4));
-    // A paste cut mid-way: its first line fits, its second stops at four.
     try std.testing.expectEqual(@as(?u32, 6), fit("ab", 2, 2, "c\nwxyz!", 4));
-    // The tail joins the last line: "ab|c" takes one codepoint, not two.
     try std.testing.expectEqual(@as(?u32, 1), fit("abc", 2, 2, "XY", 4));
-    // Replacing a selection frees its codepoints; other lines do not count.
     try std.testing.expectEqual(@as(?u32, 3), fit("12345\nabcd\n1", 7, 10, "XYZ", 4));
-    // A line already past the bound never grows, but a newline splits it
-    // and an edit may shorten it.
     try std.testing.expectEqual(@as(?u32, 0), fit("abcdef", 3, 3, "x", 4));
     try std.testing.expectEqual(@as(?u32, 1), fit("abcdef", 3, 3, "\n", 4));
     try std.testing.expectEqual(@as(?u32, 0), fit("abcdef", 2, 3, "", 4));
-    // Removing a newline joins lines: refused past the bound, by deleting or
-    // by typing over it, and allowed when the joined line fits.
     try std.testing.expectEqual(@as(?u32, null), fit("abc\nde", 3, 4, "", 4));
     try std.testing.expectEqual(@as(?u32, null), fit("abcd\nef", 4, 5, "q", 4));
     try std.testing.expectEqual(@as(?u32, 0), fit("ab\ncd", 2, 3, "", 4));
     try std.testing.expectEqual(@as(?u32, 1), fit("ab\ncd", 1, 4, "X", 4));
-    // Joining a long line's head to another's tail may not outgrow either.
     try std.testing.expectEqual(@as(?u32, 0), fit("abcdefg\nxy", 5, 9, "", 4));
     try std.testing.expectEqual(@as(?u32, null), fit("abcdef\nxy", 6, 7, "", 4));
 }
 
 test "a preedit fills its budget exactly and cuts one more byte at a code point" {
-    // Goal: `text.preedit_bytes_max` bounds the composition. Method: the test
-    // engine's 16-byte preedit; 16 ASCII bytes fit whole, and 14 bytes then a
-    // 3-byte "東" (17 bytes) keeps the 14, since the codepoint cannot split.
     var t: TestEngine = undefined;
     t.init();
     const engine = &t.engine;
@@ -1055,9 +1017,6 @@ test "a preedit fills its budget exactly and cuts one more byte at a code point"
 }
 
 test "input engine edits by codepoint and commits over a preedit" {
-    // Goal: the edits counter and todo need, including the sequence that
-    // asserts in 0.3.1 (a commit straight over a preedit). Method: drive one
-    // engine over a 16-byte buffer and read its text after each step.
     var t: TestEngine = undefined;
     t.init();
     const engine = &t.engine;
@@ -1071,7 +1030,6 @@ test "input engine edits by codepoint and commits over a preedit" {
     try std.testing.expect(t.key(.left, .{}));
     engine.insert("X");
     try std.testing.expectEqualStrings("caXf", engine.text());
-    // Full buffer: keep what fits without splitting a codepoint.
     engine.insert("\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}");
     try std.testing.expectEqualStrings("caX\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}f", engine.text());
     engine.insert("\u{e9}");
@@ -1081,10 +1039,6 @@ test "input engine edits by codepoint and commits over a preedit" {
 }
 
 test "a value the app binds keeps the caret's offset, as 0.3.1's did" {
-    // Goal: an app replacing the text (code_editor opening a file) leaves the
-    // caret where it was rather than at the end, which would scroll an area
-    // to its last line. Method: place the caret, then bind a text with a
-    // codepoint across it, then a shorter one that clamps a selection.
     var t: TestOf(.area) = undefined;
     t.init();
     const engine = &t.engine;
@@ -1107,8 +1061,6 @@ test "a value the app binds keeps the caret's offset, as 0.3.1's did" {
 }
 
 test "shift moves select, typing replaces the selection, and words and lines move" {
-    // Goal: 0.3.1's key bindings. Method: asymmetric text so a wrong word
-    // boundary or a selection collapsed to the wrong side changes the text.
     var t: TestEngine = undefined;
     t.init();
     const engine = &t.engine;
@@ -1122,7 +1074,6 @@ test "shift moves select, typing replaces the selection, and words and lines mov
     try std.testing.expectEqualStrings("one 2 three", engine.text());
     try std.testing.expect(t.key(.right, .{ .shift = true }));
     try std.testing.expect(t.key(.right, .{ .shift = true }));
-    // An unshifted move collapses to the side it moves towards.
     try std.testing.expect(t.key(.left, .{}));
     try std.testing.expectEqual(@as(u32, 6), engine.cursor);
     try std.testing.expect(!engine.hasSelection());
@@ -1148,7 +1099,6 @@ test "undo and redo restore text and caret; a new edit drops redo" {
     redo.shift = true;
     try std.testing.expect(t.key(.z, redo));
     try std.testing.expectEqualStrings("ab", engine.text());
-    // Undo a deletion of a selection: the selection comes back.
     try std.testing.expect(t.key(.a, TestEngine.command()));
     engine.backspace();
     try std.testing.expect(t.key(.z, TestEngine.command()));
@@ -1160,9 +1110,6 @@ test "undo and redo restore text and caret; a new edit drops redo" {
 }
 
 test "a paste and an IME phrase are undo steps of their own" {
-    // Goal: typing next to a paste or a commit does not join its step (the
-    // Mac runner's TextEdit comparison). Method: paste "abc", type "Q",
-    // commit "日本", type "z"; each undo removes exactly one of the four.
     var t: TestEngine = undefined;
     t.init();
     const engine = &t.engine;
@@ -1193,7 +1140,6 @@ test "copy, cut, and paste go through the clipboard; other commands bubble" {
     try std.testing.expect(t.key(.v, TestEngine.command()));
     try std.testing.expectEqualStrings("worldhello ", engine.text());
     try std.testing.expectEqual(@as(u32, 5), engine.cursor);
-    // Copy with no selection writes nothing; cmd-s is the app's.
     t.clipboard.flush();
     try std.testing.expect(t.key(.c, TestEngine.command()));
     try std.testing.expect(t.clipboard.pending_len == null);
@@ -1202,8 +1148,6 @@ test "copy, cut, and paste go through the clipboard; other commands bubble" {
 }
 
 test "edit commands use Cmd on macOS and Ctrl elsewhere, not with Alt" {
-    // Goal: the approved Linux change keeps Super out and Ctrl+Alt (AltGr
-    // on Windows layouts) from acting as a command.
     try std.testing.expectEqual(uses_cmd, editCommand(.{ .cmd = true }));
     try std.testing.expectEqual(!uses_cmd, editCommand(.{ .ctrl = true }));
     try std.testing.expect(!editCommand(.{ .ctrl = true, .alt = true }));
@@ -1211,8 +1155,6 @@ test "edit commands use Cmd on macOS and Ctrl elsewhere, not with Alt" {
 }
 
 test "the caret shows after a move, then blinks at 530 ms" {
-    // Goal: blink phases and the delay to the next toggle. Method: prepare at
-    // instants on both sides of each 530 ms boundary.
     var t: TestEngine = undefined;
     t.init();
     const engine = &t.engine;
@@ -1225,7 +1167,6 @@ test "the caret shows after a move, then blinks at 530 ms" {
     try std.testing.expect(!engine.view.caret_visible);
     try std.testing.expect(engine.prepare(true, 2060 * ms) != null);
     try std.testing.expect(engine.view.caret_visible);
-    // An edit restarts the on phase; an unfocused input asks for nothing.
     engine.insert("a");
     _ = engine.prepare(true, 2400 * ms);
     try std.testing.expect(engine.view.caret_visible);
@@ -1234,9 +1175,6 @@ test "the caret shows after a move, then blinks at 530 ms" {
 }
 
 test "an area moves between lines at the preferred column" {
-    // Goal: 0.3.1's vertical moves keep the column a short line clamps.
-    // Method: a long, a short, and a long line; a wrong implementation that
-    // forgets the column lands at the short line's length on the way back.
     var t: TestOf(.area) = undefined;
     t.init();
     const engine = &t.engine;
@@ -1256,8 +1194,6 @@ test "an area moves between lines at the preferred column" {
     try std.testing.expect(t.key(.down, .{ .shift = true }));
     try std.testing.expectEqual(@as(u32, 0), engine.selectionStart());
     try std.testing.expectEqual(@as(u32, 7), engine.selectionEnd());
-    // Home and End, and the command modifier with Left, stay on the
-    // caret's line; with Home and End it reaches the text's ends.
     try std.testing.expect(t.key(.end, TestOf(.area).command()));
     try std.testing.expectEqual(@as(u32, 21), engine.cursor);
     try std.testing.expect(t.key(.home, TestOf(.area).command()));
@@ -1279,8 +1215,6 @@ test "an area moves between lines at the preferred column" {
 }
 
 test "a vertical move never lands inside a codepoint" {
-    // Goal: byte columns snap back to a codepoint start. Method: column 1
-    // below is the middle of the two-byte é.
     var t: TestOf(.area) = undefined;
     t.init();
     const engine = &t.engine;
@@ -1289,7 +1223,6 @@ test "a vertical move never lands inside a codepoint" {
     try std.testing.expect(t.key(.right, .{}));
     try std.testing.expect(t.key(.down, .{}));
     try std.testing.expectEqual(@as(u32, 3), engine.cursor);
-    // An input has no lines: Up, Down, and Return are the app's.
     var input_test: TestEngine = undefined;
     input_test.init();
     try std.testing.expect(!input_test.key(.up, .{}));
@@ -1297,9 +1230,6 @@ test "a vertical move never lands inside a codepoint" {
 }
 
 test "an area scrolls to keep the caret's line in view" {
-    // Goal: `follow` scrolls only as far as the caret needs, only after a
-    // move, and never past the last line. Method: ten lines 10 px tall in a
-    // 30 px viewport.
     var t: TestOf(.area) = undefined;
     t.init();
     const engine = &t.engine;
@@ -1324,7 +1254,6 @@ test "an area scrolls to keep the caret's line in view" {
     try std.testing.expect(t.key(.up, .{}));
     engine.follow(10, 30);
     try std.testing.expectEqual(@as(f32, 10), engine.scroll_y);
-    // Deleting lines clamps the offset to the shorter text.
     try std.testing.expect(t.key(.a, TestOf(.area).command()));
     engine.backspace();
     engine.follow(10, 30);
@@ -1332,12 +1261,6 @@ test "an area scrolls to keep the caret's line in view" {
 }
 
 test "the wheel scrolls an area the way it scrolls a scroll box" {
-    // Goal: one notch toward the end of the text moves the area 15 px toward
-    // its end on Linux and Windows, and the other way where
-    // `window.wheel_delta_inverted` is set (macOS), as `ScrollState.wheel`
-    // does. Method: a +15 px delta (one notch down on Linux and Windows) from
-    // an offset of 100 px. 0.3.1's formula,
-    // `-= delta * 20`, moves 300 px the other way and lands at -200.
     var t: TestOf(.area) = undefined;
     t.init();
     const engine = &t.engine;
@@ -1350,16 +1273,12 @@ test "the wheel scrolls an area the way it scrolls a scroll box" {
     try std.testing.expect(engine.apply(&event, &t.clipboard));
     const expected: f32 = if (@import("window.zig").wheel_delta_inverted) 85 else 115;
     try std.testing.expectEqual(expected, engine.scroll_y);
-    // A single-line input leaves the wheel to its ancestors.
     var line: TestOf(.input) = undefined;
     line.init();
     try std.testing.expect(!line.engine.apply(&event, &line.clipboard));
 }
 
 test "a click finds the nearest codepoint boundary" {
-    // Goal: `columnAt` rounds to the nearer boundary and never returns the
-    // middle of a codepoint. Method: a fake measure at 10 px per codepoint,
-    // so "aéb" has boundaries 0, 1, 3, 4 at 0, 10, 20, 30 px.
     const Fake = struct {
         fn measureText(_: @This(), _: anytype, value: []const u8, _: anytype) !f32 {
             // The test's literals are valid UTF-8.
@@ -1377,10 +1296,6 @@ test "a click finds the nearest codepoint boundary" {
 }
 
 test "an editor's Tab indents as one step, and a line selection takes its newline" {
-    // Goal: 0.3.1's editor Tab and gutter selection. Method: Tab after typing
-    // must undo alone (a wrong merge would also remove "ab"); a modified Tab
-    // bubbles; a middle line's selection ends after its newline, the last
-    // line's at the text's end.
     var t: TestOf(.editor) = undefined;
     t.init();
     const engine = &t.engine;

@@ -1,18 +1,15 @@
-//! Undo and redo for one text engine, in storage reserved by its pool.
+//! Undo and redo for one text engine, in storage reserved by its pool: at
+//! most `undo_depth_max` edits and `bytes_max` bytes of edited text, both
+//! claimed at init. Each edit stores the bytes it deleted and then the bytes
+//! it inserted, packed in recording order, so the oldest edit's bytes are
+//! always at the front; when a bound is reached the oldest edit is dropped.
+//! An edit whose text alone exceeds the byte bound cannot be undone: it
+//! clears the history, an operating limit rather than an error.
 //!
-//! An engine's history holds at most `undo_depth_max` edits and at most
-//! `bytes_max` bytes of edited text (the engine's own buffer size), both
-//! claimed from the pool at init. Each edit stores the bytes it deleted and
-//! then the bytes it inserted, packed in recording order, so the oldest edit's
-//! bytes are always at the front. When either bound is reached the oldest
-//! edit is dropped, which costs one bounded move. An edit whose text alone
-//! exceeds the byte bound (replacing a full buffer with a full paste) cannot
-//! be undone: it clears the history, an operating limit rather than an error.
-//!
-//! Typing coalesces: an insert that continues the previous insert at its end
-//! extends that edit, and a backspace that continues the previous deletion
-//! extends it at the front, so one undo removes a typed word. Whitespace
-//! after a word, a caret move, or an undo starts a new edit (`seal`).
+//! Typing coalesces: an insert that continues the previous insert extends it,
+//! and a backspace that continues the previous deletion extends it at the
+//! front. Whitespace after a word, a caret move, or an undo starts a new edit
+//! (`seal`).
 
 const std = @import("std");
 
@@ -114,7 +111,6 @@ pub const History = struct {
         assert(self.bytesUsed() <= self.bytes.len);
     }
 
-    /// The edit to reverse, or null when nothing can be undone.
     pub fn undo(self: *History) ?*const Edit {
         if (!self.canUndo()) return null;
         self.open = false;
@@ -122,7 +118,6 @@ pub const History = struct {
         return &self.edits[self.applied];
     }
 
-    /// The edit to apply again, or null when nothing can be redone.
     pub fn redo(self: *History) ?*const Edit {
         if (!self.canRedo()) return null;
         self.open = false;
@@ -135,7 +130,6 @@ pub const History = struct {
         return self.edits[self.count - 1].bytesEnd();
     }
 
-    /// Extend the newest edit with a continuing insert or backspace.
     fn coalesce(self: *History, edit: *const Edit, deleted: []const u8, inserted: []const u8) bool {
         assert(self.count == self.applied);
         const last = &self.edits[self.count - 1];
@@ -191,8 +185,6 @@ fn insertEdit(offset: u32, len: u32) Edit {
 }
 
 test "typing coalesces per word and undo walks back in order" {
-    // Goal: one undo removes one typed word, and redo restores it. Method:
-    // record single-byte inserts as typing does and read the edits back.
     var edits: [4]Edit = undefined;
     var bytes: [16]u8 = undefined;
     var history = History.init(&edits, &bytes);
@@ -237,8 +229,6 @@ test "backspace runs coalesce at the front" {
 }
 
 test "full depth and full bytes drop the oldest edit; oversized edits clear" {
-    // Goal: both bounds hold exactly and the newest edits survive. Method:
-    // fill the depth, add one more, then exceed the byte bound.
     var edits: [2]Edit = undefined;
     var bytes: [8]u8 = undefined;
     var history = History.init(&edits, &bytes);

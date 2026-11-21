@@ -1,5 +1,4 @@
-//! Direct3D 11 renderer for Win32 windows on the contract §9 `Renderer`,
-//! selected with `-Dwindows-renderer=dx11`; the shared Vulkan renderer stays
+//! Direct3D 11 renderer for Win32 windows; the shared Vulkan renderer stays
 //! the default.
 //!
 //! The renderer owns a device (hardware, or WARP without a driver; see
@@ -9,37 +8,15 @@
 //! (`dx11_resources.zig`). Shaders are precompiled DXBC embedded from
 //! `shaders/`; rebuild them with `zig build compile-hlsl` after editing HLSL.
 //!
-//! `draw` walks the packed frame's draws in order. Each draw sets the scissor
-//! to its clip, which is exactly the contract's rule (pixel centres inside the
-//! clip, edges included), binds its pipeline when it changes, and issues one
-//! instanced draw: quads and sprites as six vertices per instance, meshes as
-//! one call per mesh. A non-indexed draw's `SV_VertexID` and `SV_InstanceID`
-//! ignore the start location, so an immutable buffer of 0, 1, 2, ... is bound
-//! as per-instance vertex data and gives each shader the absolute index of its
-//! instance (`shaders/common.hlsl`). Nothing is written per draw.
+//! `draw` walks the packed frame's draws in order, sets each draw's scissor to
+//! its clip, binds its pipeline when it changes, and issues one instanced
+//! draw. A non-indexed draw's `SV_VertexID` and `SV_InstanceID` ignore the
+//! start location, so an immutable buffer of 0, 1, 2, ... is bound as
+//! per-instance vertex data and gives each shader the absolute index of its
+//! instance (`shaders/common.hlsl`).
 //!
 //! Threads: created on the main thread inside `Window.init`, then owned by the
 //! core host's render thread from `bindCore` on, like the Vulkan renderer.
-//!
-//! Resource sketch (CLAUDE.md §7), one window at `.standard`, 3 frames in flight:
-//! - Instance buffers per frame, sized like the packed frame: quads 4,608 ×
-//!   96 B, sprites 9,472 × 96 B, meshes 1,536 × 32 B, edge modes 5,461 × 4 B,
-//!   mesh points (path + polyline + point budgets) × 8 B: about 1.9 MiB per
-//!   frame, 5.7 MiB in all. Per frame the CPU writes only the used prefix of
-//!   each, one `Map(WRITE_DISCARD)` per non-empty array: a todo frame writes
-//!   about 11 KiB.
-//! - The instance index buffer: 16,384 × 4 B = 64 KiB (the most upload records
-//!   a frame stages), written once at init.
-//! - Atlases at `AtlasLimits` sides, created once: text 2048² R8 (4 MiB), SVG
-//!   and image RGBA. Uploads per frame are the journal's records, at most
-//!   `upload_bytes_frame_max` (1 MiB), staged and drawn into the atlases on
-//!   the GPU timeline: 1.25 MiB of staging per frame in flight and one
-//!   1.25 MiB GPU buffer (`dx11_uploads.zig`).
-//! - Swapchain: one back buffer per frame in flight at the client area, within
-//!   `ResourceLimits.window`, driver memory (`dx11_swapchain.zig`).
-//! - Per frame: one latency wait, one uniform write, at most five maps, one
-//!   clear, at most `paint_record_count_frame_max` draw calls plus one per
-//!   mesh, and one present. No call allocates Gooey memory.
 
 const std = @import("std");
 const d3d11 = @import("d3d11.zig");
@@ -240,7 +217,7 @@ pub const Dx11Renderer = struct {
     }
 
     /// Every buffer, texture, shader, and state, created once at the budget's
-    /// sizes (CLAUDE.md §2).
+    /// sizes.
     fn initResources(self: *Self) InitError!void {
         assert(self.frame_count > 0);
         if (bufferPastBound(&self.limits)) |buffer| {
@@ -299,8 +276,6 @@ pub const Dx11Renderer = struct {
         return .{ .meshes = true };
     }
 
-    /// Whether frames can be presented: a swapchain with a render target. A
-    /// failed resize leaves none until a later one succeeds.
     pub fn swapchainUsable(self: *const Self) bool {
         assert(self.initialized);
         const swapchain = self.swapchain orelse return false;
@@ -341,8 +316,8 @@ pub const Dx11Renderer = struct {
             .glyph => .glyph,
             .svg => .svg,
             .image => .image,
-            // Nothing emits colour glyphs yet (contract §9, phase 5), so no
-            // journal record names this atlas and none is reserved.
+            // Nothing emits colour glyphs yet, so no journal record names
+            // this atlas and none is reserved.
             .glyph_color => std.debug.panic("dx11: no glyph_color atlas is reserved", .{}),
         };
         const side_px = self.atlasTargets()[@backingInt(slot)].side_px;
@@ -361,7 +336,7 @@ pub const Dx11Renderer = struct {
     ) void {
         assert(self.initialized);
         assert(viewport.scale_factor > 0);
-        // `resize` precedes a draw at a new size (contract §9).
+        // `resize` precedes a draw at a new size.
         assert(viewport.size_px.width == self.size_px.width);
         assert(viewport.size_px.height == self.size_px.height);
         if (self.device_lost) return;
@@ -474,7 +449,7 @@ pub const Dx11Renderer = struct {
             if (clip_bound != packed_draw.clip) {
                 assert(packed_draw.clip < clips.len);
                 const clip = clips[packed_draw.clip];
-                // Pack emits no draw whose clip has zero area (contract §9).
+                // Pack emits no draw whose clip has zero area.
                 assert(clip[2] > 0);
                 assert(clip[3] > 0);
                 const rect = scissorRect(clip, viewport);

@@ -1,16 +1,3 @@
-//! Web Accessibility Bridge using Shadow DOM + ARIA
-//!
-//! Provides screen reader support in browsers by maintaining a hidden
-//! DOM tree that mirrors the accessibility tree. Screen readers read
-//! the DOM; users see the canvas.
-//!
-//! Strategy:
-//! - Hidden container using visually-hidden CSS technique
-//! - ARIA roles/attributes for semantic meaning
-//! - Batched DOM operations to minimize reflows
-//! - Focus synchronization between DOM and Gooey
-//! - Cannot reliably detect screen readers (use heuristics)
-
 const std = @import("std");
 const bridge_mod = @import("bridge.zig");
 const tree_mod = @import("tree.zig");
@@ -33,23 +20,14 @@ fn wasmLog(comptime fmt: []const u8, args: anytype) void {
     consoleLog(str.ptr, @intCast(str.len));
 }
 
-// ============================================================================
-// JavaScript Imports (WASM externals)
-// ============================================================================
-
-/// Create the hidden accessibility container
 extern "a11y" fn js_createContainer() u32;
 
-/// Create a DOM element with the given ARIA role
 extern "a11y" fn js_createElement(role_ptr: [*]const u8, role_len: u32) u32;
 
-/// Remove a DOM element by ID
 extern "a11y" fn js_removeElement(id: u32) void;
 
-/// Set parent-child relationship in DOM
 extern "a11y" fn js_setParent(child_id: u32, parent_id: u32) void;
 
-/// Set an attribute on a DOM element
 extern "a11y" fn js_setAttribute(
     id: u32,
     attr_ptr: [*]const u8,
@@ -58,33 +36,22 @@ extern "a11y" fn js_setAttribute(
     val_len: u32,
 ) void;
 
-/// Remove an attribute from a DOM element
 extern "a11y" fn js_removeAttribute(id: u32, attr_ptr: [*]const u8, attr_len: u32) void;
 
-/// Set bounds for touch exploration (stored as data attribute)
 extern "a11y" fn js_setBounds(id: u32, x: f32, y: f32, w: f32, h: f32) void;
 
-/// Focus a DOM element
 extern "a11y" fn js_focus(id: u32) void;
 
-/// Announce a message via live region
 extern "a11y" fn js_announce(msg_ptr: [*]const u8, msg_len: u32, assertive: bool) void;
 
-/// Check if screen reader might be active (heuristic)
 extern "a11y" fn js_isScreenReaderHinted() bool;
 
-/// Begin batching DOM operations
 extern "a11y" fn js_beginBatch() void;
 
-/// End batching and flush DOM operations
 extern "a11y" fn js_endBatch() void;
 
-// ============================================================================
-// WebBridge
-// ============================================================================
-
 pub const WebBridge = struct {
-    /// Container element ID (the hidden root div, 0 = not initialized)
+    /// Hidden root div's DOM id; 0 = not initialized.
     container_id: u32 = 0,
 
     /// Pool of DOM element IDs (0 = unused), `a11y.element_count_max` slots
@@ -108,19 +75,11 @@ pub const WebBridge = struct {
     /// Web can't reliably detect screen readers, so we default to true
     assumed_active: bool = true,
 
-    /// Frame counter for periodic checks
     check_counter: u32 = 0,
 
     const Self = @This();
 
-    // =========================================================================
-    // Initialization
-    // =========================================================================
-
-    /// Initialize the web accessibility bridge in-place.
-    /// Uses out-pointer pattern to avoid large stack copy in WASM.
-    /// Creates the hidden container element in the DOM.
-    /// Marked noinline to prevent stack accumulation in WASM builds.
+    /// In-place initialization; noinline prevents stack accumulation in WASM.
     /// `element_count_max` is the tree's (`a11y.element_count_max`): stale
     /// slots are reclaimed before a new one is taken, so the frame's elements
     /// always fit. A failed reservation leaves the bridge inert and logged, as
@@ -149,7 +108,6 @@ pub const WebBridge = struct {
         self.fingerprint_to_slot = fingerprints;
     }
 
-    /// Get the Bridge interface (vtable pattern)
     pub fn bridge(self: *Self) bridge_mod.Bridge {
         return .{
             .ptr = self,
@@ -165,10 +123,6 @@ pub const WebBridge = struct {
         .isActive = isActive,
         .deinit = deinit_,
     };
-
-    // =========================================================================
-    // Bridge Implementation
-    // =========================================================================
 
     /// The slot for `fingerprint`, claimed when it has none. When every slot
     /// is taken, some hold elements that left the tree in frames the bridge
@@ -189,15 +143,12 @@ pub const WebBridge = struct {
     ) void {
         const self = castSelf(ptr);
 
-        // Assertion: dirty list is bounded
         std.debug.assert(dirty.len <= tree.count());
-        // Assertion: tree count is valid
         std.debug.assert(tree.count() <= self.dom_ids.len);
 
         if (!self.assumed_active) return;
         if (dirty.len == 0) return;
 
-        // Batch DOM operations for performance
         js_beginBatch();
         defer js_endBatch();
 
@@ -205,7 +156,6 @@ pub const WebBridge = struct {
             const elem = tree.getElement(idx) orelse continue;
             const slot = self.claimSlot(tree, elem.fingerprint);
 
-            // Create DOM element if needed
             if (self.dom_ids[slot] == 0) {
                 const role = elem.role.toAriaRole();
                 self.dom_ids[slot] = js_createElement(role.ptr, @intCast(role.len));
@@ -214,7 +164,6 @@ pub const WebBridge = struct {
             const dom_id = self.dom_ids[slot];
             if (dom_id == 0) continue; // Failed to create
 
-            // Update aria-label (name)
             if (elem.name) |name| {
                 js_setAttribute(
                     dom_id,
@@ -225,24 +174,20 @@ pub const WebBridge = struct {
                 );
             }
 
-            // Update state attributes
             self.syncStateAttributes(dom_id, elem.state, elem.role);
 
-            // Update value attributes (for sliders, progress, etc.)
             if (elem.value_min != null or elem.value_max != null or elem.value_now != null) {
                 self.syncValueAttributes(dom_id, elem);
             }
 
-            // Update relationship attributes (aria-labelledby, aria-describedby, aria-controls)
             if (elem.labelled_by != null or elem.described_by != null or elem.controls != null) {
                 self.syncRelationshipAttributes(tree, dom_id, elem);
             }
 
-            // Set parent relationship
             const parent_dom = self.resolveParentDomId(tree, elem.parent);
             js_setParent(dom_id, parent_dom);
 
-            // Set bounds (for touch exploration on mobile)
+            // Bounds enable touch exploration on mobile.
             if (elem.bounds.width > 0 and elem.bounds.height > 0) {
                 js_setBounds(
                     dom_id,
@@ -253,29 +198,23 @@ pub const WebBridge = struct {
                 );
             }
 
-            // Update tracking state
             self.slot_active[slot] = true;
             self.fingerprint_to_slot[slot] = elem.fingerprint;
         }
     }
 
-    /// Sync ARIA state attributes to DOM
     fn syncStateAttributes(self: *Self, dom_id: u32, state: types.State, role: types.Role) void {
         _ = self;
 
-        // Assertion: dom_id must be valid
         std.debug.assert(dom_id != 0);
-        // Assertion: role enum value is valid
         std.debug.assert(@backingInt(role) <= @backingInt(types.Role.none));
 
-        // aria-disabled
         if (state.disabled) {
             js_setAttribute(dom_id, "aria-disabled", 13, "true", 4);
         } else {
             js_removeAttribute(dom_id, "aria-disabled", 13);
         }
 
-        // aria-checked (for checkbox, radio, switch)
         if (role == .checkbox or role == .radio or role == .switch_) {
             if (state.checked) {
                 js_setAttribute(dom_id, "aria-checked", 12, "true", 4);
@@ -284,14 +223,12 @@ pub const WebBridge = struct {
             }
         }
 
-        // aria-pressed (for toggle buttons)
         if (role == .button and state.pressed) {
             js_setAttribute(dom_id, "aria-pressed", 12, "true", 4);
         } else if (role == .button) {
             js_removeAttribute(dom_id, "aria-pressed", 12);
         }
 
-        // aria-expanded (for disclosure widgets)
         if (role == .tree or role == .treeitem or role == .combobox or role == .menu) {
             if (state.expanded) {
                 js_setAttribute(dom_id, "aria-expanded", 13, "true", 4);
@@ -300,7 +237,6 @@ pub const WebBridge = struct {
             }
         }
 
-        // aria-selected (for selectable items)
         if (role == .option or role == .tab or role == .treeitem or role == .listitem) {
             if (state.selected) {
                 js_setAttribute(dom_id, "aria-selected", 13, "true", 4);
@@ -309,44 +245,37 @@ pub const WebBridge = struct {
             }
         }
 
-        // aria-readonly
         if (state.readonly) {
             js_setAttribute(dom_id, "aria-readonly", 13, "true", 4);
         } else {
             js_removeAttribute(dom_id, "aria-readonly", 13);
         }
 
-        // aria-required
         if (state.required) {
             js_setAttribute(dom_id, "aria-required", 13, "true", 4);
         } else {
             js_removeAttribute(dom_id, "aria-required", 13);
         }
 
-        // aria-invalid
         if (state.invalid) {
             js_setAttribute(dom_id, "aria-invalid", 12, "true", 4);
         } else {
             js_removeAttribute(dom_id, "aria-invalid", 12);
         }
 
-        // aria-busy
         if (state.busy) {
             js_setAttribute(dom_id, "aria-busy", 9, "true", 4);
         } else {
             js_removeAttribute(dom_id, "aria-busy", 9);
         }
 
-        // aria-hidden
         if (state.hidden) {
             js_setAttribute(dom_id, "aria-hidden", 11, "true", 4);
         } else {
             js_removeAttribute(dom_id, "aria-hidden", 11);
         }
 
-        // aria-haspopup (for combobox, menu triggers, etc.)
         if (state.has_popup) {
-            // Determine popup type based on role
             const popup_type: []const u8 = switch (role) {
                 .combobox => "listbox",
                 .menu, .menubar => "menu",
@@ -359,14 +288,11 @@ pub const WebBridge = struct {
         }
     }
 
-    /// Sync value-related ARIA attributes (for sliders, progress bars, etc.)
     fn syncValueAttributes(self: *Self, dom_id: u32, elem: *const tree_mod.Element) void {
         _ = self;
         var buf: [32]u8 = undefined;
 
-        // Assertion: dom_id must be valid
         std.debug.assert(dom_id != 0);
-        // Assertion: at least one value attribute should be set
         std.debug.assert(elem.value_min != null or elem.value_max != null or elem.value_now != null);
 
         if (elem.value_min) |min| {
@@ -390,20 +316,16 @@ pub const WebBridge = struct {
             js_setAttribute(dom_id, "aria-orientation", 16, axis.ptr, @intCast(axis.len));
         }
 
-        // aria-valuetext from value field
         if (elem.value) |value| {
             js_setAttribute(dom_id, "aria-valuetext", 14, value.ptr, @intCast(value.len));
         }
     }
 
-    /// Sync ARIA relationship attributes (aria-labelledby, aria-describedby, aria-controls)
     fn syncRelationshipAttributes(self: *Self, tree: *const tree_mod.Tree, dom_id: u32, elem: *const tree_mod.Element) void {
-        // Assertion: dom_id must be valid
         std.debug.assert(dom_id != 0);
 
         var id_buf: [16]u8 = undefined;
 
-        // aria-labelledby
         if (elem.labelled_by) |label_idx| {
             if (tree.getElement(label_idx)) |label_elem| {
                 if (self.findSlotByFingerprint(label_elem.fingerprint)) |label_slot| {
@@ -418,7 +340,6 @@ pub const WebBridge = struct {
             js_removeAttribute(dom_id, "aria-labelledby", 15);
         }
 
-        // aria-describedby
         if (elem.described_by) |desc_idx| {
             if (tree.getElement(desc_idx)) |desc_elem| {
                 if (self.findSlotByFingerprint(desc_elem.fingerprint)) |desc_slot| {
@@ -433,7 +354,6 @@ pub const WebBridge = struct {
             js_removeAttribute(dom_id, "aria-describedby", 16);
         }
 
-        // aria-controls
         if (elem.controls) |ctrl_idx| {
             if (tree.getElement(ctrl_idx)) |ctrl_elem| {
                 if (self.findSlotByFingerprint(ctrl_elem.fingerprint)) |ctrl_slot| {
@@ -449,11 +369,8 @@ pub const WebBridge = struct {
         }
     }
 
-    /// Resolve parent element to DOM ID
     fn resolveParentDomId(self: *Self, tree: *const tree_mod.Tree, parent_idx: ?u16) u32 {
-        // Assertion: container_id should be valid (non-zero or valid from JS)
         std.debug.assert(self.container_id != 0xFFFFFFFF); // Sentinel for error
-        // Assertion: tree is valid
         std.debug.assert(tree.count() <= tree.elements.len);
 
         if (parent_idx) |pi| {
@@ -472,9 +389,7 @@ pub const WebBridge = struct {
     fn removeElements(ptr: *anyopaque, fingerprints: []const fingerprint_mod.Fingerprint) void {
         const self = castSelf(ptr);
 
-        // Assertion: removal list bounded
         std.debug.assert(fingerprints.len <= self.dom_ids.len);
-        // Assertion: container_id is valid
         std.debug.assert(self.container_id != 0xFFFFFFFF);
 
         if (fingerprints.len == 0) return;
@@ -497,9 +412,7 @@ pub const WebBridge = struct {
     fn announce_(ptr: *anyopaque, message: []const u8, live: types.Live) void {
         _ = ptr;
 
-        // Assertion: message is bounded (reasonable limit)
         std.debug.assert(message.len <= 4096);
-        // Assertion: live level is valid
         std.debug.assert(@backingInt(live) <= @backingInt(types.Live.assertive));
 
         if (live == .off) return;
@@ -510,16 +423,13 @@ pub const WebBridge = struct {
     fn focusChanged(ptr: *anyopaque, tree: *const tree_mod.Tree, idx: ?u16) void {
         const self = castSelf(ptr);
 
-        // Assertion: tree is valid
         std.debug.assert(tree.count() <= tree.elements.len);
-        // Assertion: idx is valid if present
         std.debug.assert(idx == null or idx.? < tree.count());
 
         if (idx) |i| {
             if (tree.getElement(i)) |elem| {
                 if (self.findSlotByFingerprint(elem.fingerprint)) |slot| {
                     const dom_id = self.dom_ids[slot];
-                    // Prevent focus loops
                     if (dom_id != 0 and self.focused_slot != slot) {
                         js_focus(dom_id);
                         self.focused_slot = slot;
@@ -534,11 +444,9 @@ pub const WebBridge = struct {
     fn isActive(ptr: *anyopaque) bool {
         const self = castSelf(ptr);
 
-        // Periodic check (not every frame)
         self.check_counter += 1;
         if (self.check_counter >= constants.SCREEN_READER_CHECK_INTERVAL) {
             self.check_counter = 0;
-            // Use heuristic - can't reliably detect screen readers on web
             // An inert bridge (its reservation failed) never syncs.
             self.assumed_active = self.dom_ids.len > 0 and js_isScreenReaderHinted();
         }
@@ -547,7 +455,7 @@ pub const WebBridge = struct {
     }
 
     /// DOM elements are cleaned up by the browser when the page unloads; the
-    /// slots any frame took are zeroed before their pages go back (§21).
+    /// slots any frame took are zeroed before their pages go back.
     fn deinit_(ptr: *anyopaque) void {
         const self = castSelf(ptr);
         if (self.dom_ids.len == 0) return;
@@ -560,13 +468,7 @@ pub const WebBridge = struct {
         self.slot_count = 0;
     }
 
-    // =========================================================================
-    // Slot Management
-    // =========================================================================
-
-    /// Find slot by fingerprint (linear search is fine for typical counts)
     fn findSlotByFingerprint(self: *Self, fp: fingerprint_mod.Fingerprint) ?u16 {
-        // Assertion: fingerprint should be valid when searching
         std.debug.assert(fp.isValid());
 
         std.debug.assert(self.slot_count <= self.fingerprint_to_slot.len);
@@ -576,15 +478,11 @@ pub const WebBridge = struct {
         return null;
     }
 
-    /// Find existing slot or allocate a new one
     fn findOrAllocSlot(self: *Self, fp: fingerprint_mod.Fingerprint) ?u16 {
-        // Assertion: fingerprint must be valid
         std.debug.assert(fp.isValid());
 
-        // First, try to find existing slot
         if (self.findSlotByFingerprint(fp)) |slot| return slot;
 
-        // Find an inactive slot, else take the next untouched one.
         for (self.slot_active[0..self.slot_count], 0..) |active, i| {
             if (!active) {
                 self.fingerprint_to_slot[i] = fp;
@@ -624,32 +522,24 @@ pub const WebBridge = struct {
     }
 };
 
-// ============================================================================
-// Compile-time Assertions (per CLAUDE.md)
-// ============================================================================
-
 comptime {
     // The slots are reserved slices, so the bridge itself stays a few dozen
     // bytes and needs no in-place initialization on the WASM stack.
     std.debug.assert(@sizeOf(WebBridge) < 256);
 }
 
-// ============================================================================
-// Tests (run on non-WASM targets)
-// ============================================================================
+// Tests (run on non-WASM targets).
 
 test "web bridge slot management" {
-    // Note: Can't test actual JS calls, but can test slot logic
+    // Can't test actual JS calls, only slot logic.
     const fp1 = fingerprint_mod.compute(.button, "Test1", null, 0);
     const fp2 = fingerprint_mod.compute(.button, "Test2", null, 1);
 
-    // Test fingerprint equality used in slot lookup
     try std.testing.expect(!fp1.eql(fp2));
     try std.testing.expect(fp1.eql(fp1));
 }
 
 test "aria role mapping" {
-    // Test that roles map to valid ARIA strings
     try std.testing.expectEqualStrings("button", types.Role.button.toAriaRole());
     try std.testing.expectEqualStrings("checkbox", types.Role.checkbox.toAriaRole());
     try std.testing.expectEqualStrings("slider", types.Role.slider.toAriaRole());
@@ -671,14 +561,13 @@ test "state flag combinations" {
 }
 
 test "has_popup state for combobox" {
-    // Test that has_popup works with combobox role (used by Select component)
+    // Used by the Select component.
     const combobox_state = types.State{ .expanded = true, .has_popup = true };
 
     try std.testing.expect(combobox_state.has_popup);
     try std.testing.expect(combobox_state.expanded);
     try std.testing.expect(!combobox_state.disabled);
 
-    // Verify role-based popup type mapping
     try std.testing.expectEqualStrings("combobox", types.Role.combobox.toAriaRole());
     try std.testing.expectEqualStrings("menu", types.Role.menu.toAriaRole());
     try std.testing.expectEqualStrings("tree", types.Role.tree.toAriaRole());

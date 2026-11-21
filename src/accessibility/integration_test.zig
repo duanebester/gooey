@@ -1,9 +1,3 @@
-//! Integration tests for Gooey A11Y
-//!
-//! Tests the accessibility tree integration with Gooey context
-//! and Builder API. Uses TestBridge to verify correct behavior.
-//! The platform bridge tests cover MacBridge for VoiceOver integration.
-
 const std = @import("std");
 const builtin = @import("builtin");
 const a11y = @import("accessibility.zig");
@@ -34,15 +28,10 @@ fn destroyTree(tree: *Tree) void {
     std.testing.allocator.destroy(tree);
 }
 
-// ============================================================================
-// Tree Integration Tests
-// ============================================================================
-
 test "tree frame lifecycle" {
     const tree = try createTree();
     defer destroyTree(tree);
 
-    // Simulate frame 1
     tree.beginFrame();
     _ = tree.pushElement(.{ .role = .button, .name = "Submit" });
     tree.popElement();
@@ -51,13 +40,11 @@ test "tree frame lifecycle" {
     try std.testing.expectEqual(@as(u16, 1), tree.count());
     try std.testing.expectEqual(@as(usize, 1), tree.getDirtyElements().len);
 
-    // Simulate frame 2 - same content
     tree.beginFrame();
     _ = tree.pushElement(.{ .role = .button, .name = "Submit" });
     tree.popElement();
     tree.endFrame();
 
-    // Same content = not dirty
     try std.testing.expectEqual(@as(usize, 0), tree.getDirtyElements().len);
 }
 
@@ -67,7 +54,6 @@ test "tree with multiple elements" {
 
     tree.beginFrame();
 
-    // Build a simple form structure
     _ = tree.pushElement(.{ .role = .group, .name = "Login Form" });
     {
         _ = tree.pushElement(.{ .role = .textbox, .name = "Username" });
@@ -92,7 +78,6 @@ test "tree nested structure" {
 
     tree.beginFrame();
 
-    // Dialog with nested content
     _ = tree.pushElement(.{ .role = .dialog, .name = "Confirm" });
     {
         _ = tree.pushElement(.{ .role = .heading, .name = "Are you sure?", .heading_level = .h2 });
@@ -114,7 +99,6 @@ test "tree nested structure" {
 
     try std.testing.expectEqual(@as(u16, 5), tree.count());
 
-    // Verify focus tracking
     const focused_idx = tree.getFocusedIndex();
     try std.testing.expect(focused_idx != null);
 
@@ -124,10 +108,6 @@ test "tree nested structure" {
     }
 }
 
-// ============================================================================
-// Bridge Integration Tests
-// ============================================================================
-
 test "bridge syncFrame handles all operations" {
     var test_bridge = TestBridge{};
     const b = test_bridge.bridge();
@@ -135,7 +115,6 @@ test "bridge syncFrame handles all operations" {
     const tree = try createTree();
     defer destroyTree(tree);
 
-    // Frame 1: create elements and announce
     tree.beginFrame();
     _ = tree.pushElement(.{ .role = .button, .name = "Test", .state = .{ .focused = true } });
     tree.popElement();
@@ -160,7 +139,6 @@ test "bridge respects active flag" {
     tree.popElement();
     tree.endFrame();
 
-    // Should early-out since not active
     b.syncFrame(tree);
 
     try std.testing.expectEqual(@as(u32, 0), test_bridge.sync_count);
@@ -177,14 +155,9 @@ test "null bridge is safe no-op" {
     tree.announce("Hello", .polite);
     tree.endFrame();
 
-    // All operations should be no-ops
     b.syncFrame(tree);
     try std.testing.expect(!b.isActive());
 }
-
-// ============================================================================
-// Element Removal Tests
-// ============================================================================
 
 test "element removal tracked across frames" {
     var test_bridge = TestBridge{};
@@ -193,7 +166,6 @@ test "element removal tracked across frames" {
     const tree = try createTree();
     defer destroyTree(tree);
 
-    // Frame 1: Two buttons
     tree.beginFrame();
     _ = tree.pushElement(.{ .role = .button, .name = "Button 1" });
     tree.popElement();
@@ -204,7 +176,6 @@ test "element removal tracked across frames" {
     b.syncFrame(tree);
     test_bridge.reset();
 
-    // Frame 2: Only one button (Button 2 removed)
     tree.beginFrame();
     _ = tree.pushElement(.{ .role = .button, .name = "Button 1" });
     tree.popElement();
@@ -212,14 +183,9 @@ test "element removal tracked across frames" {
 
     b.syncFrame(tree);
 
-    // Should have 1 removal
     try std.testing.expectEqual(@as(u32, 1), test_bridge.remove_count);
     try std.testing.expectEqual(@as(usize, 1), test_bridge.last_removed_count);
 }
-
-// ============================================================================
-// Announcement Tests
-// ============================================================================
 
 test "announcements with different priorities" {
     const tree = try createTree();
@@ -227,10 +193,8 @@ test "announcements with different priorities" {
 
     tree.beginFrame();
 
-    // Polite announcement
     tree.announce("Item saved", .polite);
 
-    // Assertive announcement
     tree.announce("Error occurred", .assertive);
 
     tree.endFrame();
@@ -254,15 +218,10 @@ test "off announcements are ignored" {
     try std.testing.expectEqual(@as(usize, 0), tree.getAnnouncements().len);
 }
 
-// ============================================================================
-// State Change Tests
-// ============================================================================
-
 test "state changes mark element dirty" {
     const tree = try createTree();
     defer destroyTree(tree);
 
-    // Frame 1: unchecked checkbox
     tree.beginFrame();
     _ = tree.pushElement(.{
         .role = .checkbox,
@@ -272,7 +231,6 @@ test "state changes mark element dirty" {
     tree.popElement();
     tree.endFrame();
 
-    // Frame 2: checked checkbox
     tree.beginFrame();
     _ = tree.pushElement(.{
         .role = .checkbox,
@@ -282,7 +240,6 @@ test "state changes mark element dirty" {
     tree.popElement();
     tree.endFrame();
 
-    // State change = dirty
     try std.testing.expectEqual(@as(usize, 1), tree.getDirtyElements().len);
 }
 
@@ -290,7 +247,6 @@ test "value changes mark element dirty" {
     const tree = try createTree();
     defer destroyTree(tree);
 
-    // Frame 1: initial value
     tree.beginFrame();
     _ = tree.pushElement(.{
         .role = .textbox,
@@ -300,7 +256,6 @@ test "value changes mark element dirty" {
     tree.popElement();
     tree.endFrame();
 
-    // Frame 2: changed value
     tree.beginFrame();
     _ = tree.pushElement(.{
         .role = .textbox,
@@ -310,19 +265,13 @@ test "value changes mark element dirty" {
     tree.popElement();
     tree.endFrame();
 
-    // Value change = dirty
     try std.testing.expectEqual(@as(usize, 1), tree.getDirtyElements().len);
 }
-
-// ============================================================================
-// Focus Tracking Tests
-// ============================================================================
 
 test "focus change detected" {
     const tree = try createTree();
     defer destroyTree(tree);
 
-    // Frame 1: no focus
     tree.beginFrame();
     _ = tree.pushElement(.{ .role = .button, .name = "A" });
     tree.popElement();
@@ -332,7 +281,6 @@ test "focus change detected" {
 
     try std.testing.expect(!tree.focusChanged());
 
-    // Frame 2: focus on B
     tree.beginFrame();
     _ = tree.pushElement(.{ .role = .button, .name = "A" });
     tree.popElement();
@@ -342,10 +290,6 @@ test "focus change detected" {
 
     try std.testing.expect(tree.focusChanged());
 }
-
-// ============================================================================
-// Role-Specific Tests
-// ============================================================================
 
 test "slider with value range" {
     const tree = try createTree();
@@ -387,15 +331,10 @@ test "list with position tracking" {
 
     try std.testing.expectEqual(@as(u16, 4), tree.count());
 
-    // Verify position tracking
     const first_item = tree.getElement(1).?;
     try std.testing.expectEqual(@as(?u16, 1), first_item.pos_in_set);
     try std.testing.expectEqual(@as(?u16, 3), first_item.set_size);
 }
-
-// ============================================================================
-// Capacity Tests
-// ============================================================================
 
 test "tree holds exactly its element capacity" {
     // Fill the tree to its capacity with siblings; the last push still lands.
@@ -438,33 +377,23 @@ test "tree holds exactly its depth capacity" {
     try std.testing.expectEqual(depth_max, tree.count());
 }
 
-// ============================================================================
-// Zero-Cost When Disabled Tests
-// ============================================================================
-
 test "zero overhead pattern" {
-    // Simulate the pattern used in Builder.accessible()
+    // The pattern used in Builder.accessible().
     const a11y_enabled = false;
 
     var work_done = false;
 
     if (a11y_enabled) {
-        // This block should never execute
         work_done = true;
     }
 
     try std.testing.expect(!work_done);
 }
 
-// ============================================================================
-// Platform Bridge Tests
-// ============================================================================
-
 test "platform bridge creation" {
     var platform_bridge: PlatformBridge = undefined;
     const b = a11y.createPlatformBridge(&platform_bridge, element_count_max, null, null);
 
-    // Bridge should be usable regardless of platform
     const tree = try createTree();
     defer destroyTree(tree);
     tree.beginFrame();
@@ -472,7 +401,7 @@ test "platform bridge creation" {
     tree.popElement();
     tree.endFrame();
 
-    // These should all be safe no-ops when VoiceOver isn't running
+    // Safe no-ops when VoiceOver isn't running.
     b.syncDirty(tree, tree.getDirtyElements());
     b.removeElements(tree.getRemovedFingerprints());
     b.announce("Test announcement", .polite);
@@ -487,7 +416,6 @@ test "platform bridge with full frame sync" {
     const tree = try createTree();
     defer destroyTree(tree);
 
-    // Frame 1: Create elements
     tree.beginFrame();
     _ = tree.pushElement(.{ .role = .dialog, .name = "Settings" });
     {
@@ -500,10 +428,8 @@ test "platform bridge with full frame sync" {
     tree.announce("Settings opened", .polite);
     tree.endFrame();
 
-    // Sync to platform (no-op when screen reader inactive)
     b.syncFrame(tree);
 
-    // Frame 2: Remove an element
     tree.beginFrame();
     _ = tree.pushElement(.{ .role = .dialog, .name = "Settings" });
     {
@@ -517,7 +443,6 @@ test "platform bridge with full frame sync" {
     b.deinit();
 }
 
-// macOS-specific tests (only compiled on macOS)
 test "macos bridge slot allocation" {
     if (builtin.os.tag != .macos) return;
 
@@ -526,7 +451,6 @@ test "macos bridge slot allocation" {
     var mac_bridge = MacBridge.init(element_count_max, null, null);
     defer mac_bridge.bridge().deinit();
 
-    // Allocate multiple slots
     const fp1 = fingerprint.compute(.button, "Button1", null, 0);
     const fp2 = fingerprint.compute(.button, "Button2", null, 1);
     const fp3 = fingerprint.compute(.checkbox, "Check", null, 2);
@@ -544,7 +468,6 @@ test "macos bridge slot allocation" {
     try std.testing.expect(slot2.? != slot3.?);
     try std.testing.expect(slot1.? != slot3.?);
 
-    // Re-requesting same fingerprint returns same slot
     const slot1_again = mac_bridge.findOrAllocSlot(fp1);
     try std.testing.expectEqual(slot1, slot1_again);
 }
@@ -558,16 +481,13 @@ test "macos bridge slot reuse after invalidation" {
     const b = mac_bridge.bridge();
     defer b.deinit();
 
-    // Allocate a slot
     const fp1 = fingerprint.compute(.button, "Button1", null, 0);
     const slot1 = mac_bridge.findOrAllocSlot(fp1);
     try std.testing.expect(slot1 != null);
 
-    // Remove the element
     const fps_to_remove = [_]fingerprint.Fingerprint{fp1};
     b.removeElements(&fps_to_remove);
 
-    // Allocate new element - should reuse slot 0
     const fp2 = fingerprint.compute(.button, "Button2", null, 0);
     const slot2 = mac_bridge.findOrAllocSlot(fp2);
     try std.testing.expect(slot2 != null);
@@ -580,10 +500,8 @@ test "macos bridge voiceover detection" {
     var mac_bridge = MacBridge.init(element_count_max, null, null);
     const b = mac_bridge.bridge();
 
-    // isActive checks VoiceOver status
-    // Will be false in test environment (no VoiceOver running)
+    // The value depends on the system; just verify no crash.
     const is_active = b.isActive();
-    // Just verify it doesn't crash - actual value depends on system state
     _ = is_active;
 
     b.deinit();
@@ -598,7 +516,6 @@ test "macos bridge full lifecycle" {
     const tree = try createTree();
     defer destroyTree(tree);
 
-    // Simulate several frames
     for (0..3) |frame| {
         tree.beginFrame();
 
@@ -615,7 +532,6 @@ test "macos bridge full lifecycle" {
 
         tree.endFrame();
 
-        // Sync each frame
         b.syncFrame(tree);
     }
 

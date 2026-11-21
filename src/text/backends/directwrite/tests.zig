@@ -1,7 +1,5 @@
-//! DirectWrite backend tests against the system's real DirectWrite.
-//!
-//! They load fonts that ship with every supported Windows release (Segoe UI,
-//! Consolas), so they run on any Windows host and nowhere else.
+//! Runs only on Windows: loads fonts that ship with every supported Windows
+//! release.
 
 const std = @import("std");
 const testing = std.testing;
@@ -12,7 +10,6 @@ const DirectWriteShaper = shaper_mod.DirectWriteShaper;
 
 const buffer_bytes = limits.MAX_GLYPH_SIZE * limits.MAX_GLYPH_SIZE;
 
-/// Render at the face's 16 px with no vertical shift.
 fn render(
     face: *const DirectWriteFace,
     glyph_id: u16,
@@ -36,9 +33,6 @@ fn destroyShaper(shaper: *DirectWriteShaper) void {
 }
 
 test "system faces load with plausible metrics" {
-    // Goal: font discovery and metric scaling. Methodology: the sans-serif
-    // and monospace system faces at 16 px, checked against properties every
-    // text face has, and monospace detection on both.
     var sans = try DirectWriteFace.initSystem(.sans_serif, 16.0, .regular);
     defer sans.deinit();
     try testing.expect(sans.metrics.ascender > 8);
@@ -57,10 +51,6 @@ test "system faces load with plausible metrics" {
 }
 
 test "variants select distinct faces and unknown families fall back" {
-    // Goal: CSS matching over DirectWrite's family list, and the documented
-    // fallback for a family that is not installed. Methodology: Segoe UI has
-    // real bold and italic faces, which differ from regular in advance width;
-    // an unknown family must load exactly Segoe UI's regular face.
     var regular = try DirectWriteFace.init("Segoe UI", 16.0, .regular);
     defer regular.deinit();
     var bold = try DirectWriteFace.init("Segoe UI", 16.0, .bold);
@@ -81,9 +71,6 @@ test "variants select distinct faces and unknown families fall back" {
 }
 
 test "glyph lookup and metrics at the font's boundaries" {
-    // Goal: the .notdef and out-of-range paths. Methodology: a noncharacter
-    // maps to glyph 0, and a glyph id past the font reports zero metrics and
-    // refuses to rasterize.
     var face = try DirectWriteFace.initSystem(.sans_serif, 16.0, .regular);
     defer face.deinit();
     try testing.expectEqual(@as(u16, 0), face.glyphIndex(0x10FFFF));
@@ -102,11 +89,6 @@ test "glyph lookup and metrics at the font's boundaries" {
 }
 
 test "rasterization covers the glyph, honors subpixel shifts, and bounds size" {
-    // Goal: the coverage bitmap and its placement contract. Methodology:
-    // 'H' at 16 px has ink whose top sits near the cap height above the
-    // baseline; a half-pixel shift changes the bitmap; a space has an
-    // advance but no pixels; a glyph past MAX_GLYPH_SIZE comes back blank,
-    // not cropped; a buffer too small for the glyph is refused, not overrun.
     var face = try DirectWriteFace.initSystem(.sans_serif, 16.0, .regular);
     defer face.deinit();
     const buffer = try testing.allocator.alloc(u8, buffer_bytes);
@@ -138,8 +120,6 @@ test "rasterization covers the glyph, honors subpixel shifts, and bounds size" {
     try testing.expectEqual(@as(u32, 0), space.width);
     try testing.expect(space.advance_x > 0);
 
-    // Over MAX_GLYPH_SIZE (256 px): blank with its advance, so only this
-    // glyph is missing from its run. Just under it still rasterizes.
     const oversized = try face.renderGlyphSubpixel(glyph_h, 400.0, 1.0, 0, 0, buffer, buffer_bytes);
     try testing.expectEqual(@as(u32, 0), oversized.width);
     try testing.expectEqual(@as(u32, 0), oversized.height);
@@ -158,9 +138,6 @@ test "rasterization covers the glyph, honors subpixel shifts, and bounds size" {
 }
 
 test "shaping maps glyphs to UTF-8 clusters across scripts" {
-    // Goal: script itemization and cluster mapping. Methodology: Latin plus
-    // Greek forces two script runs; a two-byte and a four-byte character
-    // check byte offsets; widths must equal the summed advances.
     var face = try DirectWriteFace.initSystem(.sans_serif, 16.0, .regular);
     defer face.deinit();
     const shaper = try createShaper();
@@ -196,10 +173,6 @@ test "shaping maps glyphs to UTF-8 clusters across scripts" {
 }
 
 test "shaping capacity: exactly full succeeds, one unit more fails" {
-    // Goal: the documented capacity contract. Methodology: fill the UTF-16
-    // buffer exactly with ASCII, then exceed it by one unit, then by a
-    // surrogate pair that would straddle the last slot; the shaper stays
-    // usable after each failure.
     var face = try DirectWriteFace.initSystem(.sans_serif, 16.0, .regular);
     defer face.deinit();
     const shaper = try createShaper();

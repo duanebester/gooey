@@ -1,50 +1,16 @@
 //! VOPR: deterministic simulation testing of the core, after TigerBeetle's.
-//!
-//! One generator, driven by `std.testing.Smith`, turns bytes into a stream of
-//! actions against a headless app on the goldens' `CoreDriver`: pointer
-//! clicks, moves, and held presses of the left, right, and middle buttons
-//! (overlapping in any order, never a press of a button that is down) aimed
-//! at the rendered frame's hit records, held-button
-//! drag gestures (a press mostly on a draggable, moves onto drop targets,
-//! outside them, and back, then a release or none), wheel scrolls, keys,
-//! committed and composed text, clock gaps, window resizes (size and scale),
-//! and the two sides of a tick
-//! (`tickMain` and `presentBuilt`) driven separately, so a frame stays in
-//! flight while input keeps arriving. The same generator serves `zig build
-//! vopr -- [--app NAME] [seed]`, whose bytes come from a seeded PRNG, and a
-//! `std.testing.fuzz` target per app, whose bytes come from the fuzzer. Each
-//! app (`Workload`) has a reference model, which lists the action kinds its
-//! swarm draws (todo's never drags, so its seeds replay as before) and may
-//! list the keys it presses (`key_choices`) and the area its pointer
-//! actions favour (`biasTarget`).
-//!
-//! Swarm testing: every `swarm_epoch_step_count` steps the generator draws a
-//! fresh `Swarm` (action-kind weights, some of them zero, and how pointer
-//! targets are picked), so a seed goes deep in a few directions instead of
-//! staying near the initial state: filling todo's list, typing past its
-//! 128-byte cut, holding frames in flight, or working a full list.
-//!
-//! Every action keeps the core inside its declared budget (`limits.events`)
-//! and away from wall-clock paths, so any panic or failed assertion is a
-//! finding: a core bug, or a harness bug to fix here. On top of the core's
-//! own assertions, the harness checks after every action that the event queue
-//! is empty after `tickMain`, the rendered frame number never decreases, and
-//! the render side is idle with no frame in flight; on every new rendered
-//! frame, the model-free invariants of `vopr_invariants.zig`; and every
-//! `Swarm.rebuild_period` actions, that a current frame rebuilt with no input
-//! and no clock advance draws the same dump (`checkStableRebuild`). Each run
-//! ends with a
-//! bounded quiescence loop that must settle. The seed CLI also runs two
-//! instances side by side on the same bytes and requires identical frame
-//! dumps after every action (determinism).
-//!
-//! Resource sketch, per action: at most 5 queued events (a click that first
-//! releases a held gesture's button) and 16 bytes of text
-//! (`text_bytes_action_max`); per `tickMain`, at most the queue's capacity,
-//! which the generator never exceeds. Per run: one app and one 64 KiB
-//! `NullRenderer` per instance, reserved before the first action, and
-//! `bytes_cli` Smith bytes for the CLI. A 12,000-step CLI run takes under a
-//! second in Debug; frames over a full list dominate.
+//! One generator, driven by `std.testing.Smith`, turns bytes into actions
+//! against a headless app on the goldens' `CoreDriver`, and each app
+//! (`Workload`) has a reference model. Every action keeps the core inside its
+//! declared budget (`limits.events`) and away from wall-clock paths, so any
+//! panic or failed assertion is a finding: a core bug, or a harness bug to
+//! fix here. The harness checks the queue, the rendered frame number, and
+//! the render side after every action, the model-free invariants of
+//! `vopr_invariants.zig` on every new rendered frame, and every
+//! `Swarm.rebuild_period` actions that a current frame rebuilt with no input
+//! and no clock advance draws the same dump (`checkStableRebuild`); the seed
+//! CLI also runs two instances on the same bytes and requires identical
+//! frame dumps after every action (determinism).
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -778,7 +744,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             self.perform(self.generate(smith));
         }
 
-        /// Run `action` and check the harness invariants after it.
         pub fn perform(self: *Self, action: Action) void {
             switch (action) {
                 .pointer, .key, .text, .compose, .scroll, .drag, .resize, .cancel => {
@@ -947,8 +912,8 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
         /// byte for byte, to the rendered frame's. A view that changes with
         /// the clock (an animation, a caret blink, a scroll settling, a
         /// first build after a resize reading old bounds) must ask for a
-        /// timed render (`cx.requestRenderAfter`, contract §5) or request a
-        /// render itself, so those frames are exactly the exempt ones.
+        /// timed render (`cx.requestRenderAfter`) or request a render
+        /// itself, so those frames are exactly the exempt ones.
         fn checkStableRebuild(self: *Self) void {
             const win = self.window();
             if (win.frame_in_flight.load(.acquire)) return;
@@ -1598,37 +1563,30 @@ fn fuzzCorpus(comptime workload: Workload) !void {
 }
 
 test "fuzz: todo vopr" {
-    // Goal: the todo fuzz target runs under `zig build test` (`fuzzCorpus`).
     try fuzzCorpus(.todo);
 }
 
 test "fuzz: drag_drop vopr" {
-    // Goal: the drag_drop fuzz target runs under `zig build test`.
     try fuzzCorpus(.drag_drop);
 }
 
 test "fuzz: virtual_list vopr" {
-    // Goal: the virtual_list fuzz target runs under `zig build test`.
     try fuzzCorpus(.virtual_list);
 }
 
 test "fuzz: splitter vopr" {
-    // Goal: the splitter fuzz target runs under `zig build test`.
     try fuzzCorpus(.splitter);
 }
 
 test "fuzz: actions vopr" {
-    // Goal: the actions fuzz target runs under `zig build test`.
     try fuzzCorpus(.actions);
 }
 
 test "fuzz: nested_overlay vopr" {
-    // Goal: the nested_overlay fuzz target runs under `zig build test`.
     try fuzzCorpus(.nested_overlay);
 }
 
 test "fuzz: text_area vopr" {
-    // Goal: the text_area fuzz target runs under `zig build test`.
     try fuzzCorpus(.text_area);
 }
 
@@ -1657,11 +1615,6 @@ fn runPairedSeed(comptime workload: Workload, prng_seed: u64) !Result(workload.M
 }
 
 test "two instances fed the same bytes draw the same frames" {
-    // Goal: the seed CLI's determinism self-check passes, and a run makes
-    // progress. Methodology: run one seed of each app through `runPaired`
-    // and require frames beyond the first, and for each app with counts
-    // some depth: a drop, rows seen, a splitter moved, an action fired,
-    // the menu shown.
     _ = try runPairedSeed(.todo, 1);
     const result = try runPairedSeed(.drag_drop, 1);
     try std.testing.expect(result.stats.drags_completed > 0);
@@ -1697,14 +1650,11 @@ fn clickTarget(frame: *const records.Frame, rank: u32) Point {
 }
 
 test "a List scrolled by a target rebuilds the same rows" {
-    // Goal: List predicts the offset layout resolves for a `.child` and an
-    // `.end` target to the bit, so the rows it builds for the target are the
-    // rows the resolved offset shows. Methodology: Jump to 500 (centred)
-    // built one row off at 1006x216 and 1.25x (virtual_list seed 284) and at
-    // 475x1732 and 1.25x (soak seed 6858813265271003337); click Jump, Top,
-    // and Bottom (`.end`) at those sizes and others, and require a rebuild
-    // with no input to draw the same frame. Before the fix the first Jump
-    // failed "dumps differ".
+    // List predicts the offset layout resolves for a `.child` and an `.end`
+    // target to the bit: Jump built one row off at 1006x216 and 1.25x
+    // (virtual_list seed 284) and at 475x1732 and 1.25x (soak seed
+    // 6858813265271003337). Before the fix the first Jump failed "dumps
+    // differ".
     const V = Vopr(virtual_list.App, VirtualListModel);
     const vopr_instance = try std.testing.allocator.create(V);
     defer std.testing.allocator.destroy(vopr_instance);

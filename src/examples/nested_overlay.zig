@@ -1,15 +1,3 @@
-//! Nested overlay regression example, on the core.
-//!
-//! The modal starts open, with a Select inside. Its menu, once opened, must
-//! paint above the modal and take clicks over it: a layer opened inside a modal
-//! comes after the modal's fragment (contract §6). In 0.3.1, floating
-//! z-indexes that replaced inherited values painted the modal over the menu.
-//!
-//! "Open dialog" opens a second modal inside the first. Reached from the
-//! keyboard (Shift+Tab, then Enter) while the menu is open, both layers open
-//! from the first modal's fragment in one frame: the menu, a popover, comes
-//! first, and the second modal covers it and blocks everything beneath.
-
 const std = @import("std");
 const gooey = @import("gooey");
 const components = @import("gooey-components");
@@ -51,7 +39,6 @@ pub const App = gooey.App(State, render, .{
     .limits = .small,
 });
 
-/// The generated entry point (contract §7).
 pub const main = App.main;
 
 pub fn render(cx: *Cx) void {

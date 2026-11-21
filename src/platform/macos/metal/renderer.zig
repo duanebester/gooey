@@ -1,5 +1,4 @@
-//! The Metal renderer on the `Renderer` contract (contract §9): it draws the
-//! packed frame (`packed_frame.zig`) into a `CAMetalLayer`.
+//! The Metal renderer: it draws the packed frame into a `CAMetalLayer`.
 //!
 //! A frame is one command buffer. It begins at the first `uploadAtlas` or
 //! `draw` after the previous present: that call waits for the frame slot's
@@ -7,14 +6,6 @@
 //! Uploads stage their pixels in the slot and encode blits; `draw` copies the
 //! packed instance arrays into the slot, encodes one render pass over the
 //! draws, presents, and commits. The packed frame is read only during `draw`.
-//!
-//! Performance sketch (CLAUDE.md §7): reservations are `frame_slots.zig`'s
-//! (8.4 MiB at `.standard`), `atlas_textures.zig`'s (9 MiB), and seven
-//! pipeline states. Per frame: one command buffer, at most one blit pass,
-//! one render pass, the copies `frame_slots.zig` lists, and the draw calls
-//! `encode.zig` lists. Window-sized storage is the layer's drawables, exactly
-//! `drawable_count` of at most `limits.window` each; nothing is recreated on
-//! resize.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -41,7 +32,6 @@ pub const Renderer = struct {
     /// The frame being encoded (retained), from its first upload or draw
     /// until it is committed; null between frames.
     command_buffer: ?objc.Object,
-    /// The open blit pass of this frame's atlas uploads.
     blit: ?objc.Object,
     staging_used_bytes: u32,
     size_px: backend.SizePx,
@@ -58,9 +48,7 @@ pub const Renderer = struct {
         backend.verifyRenderer(Self);
     }
 
-    /// `surface.native` is the window's `CAMetalLayer`. Every buffer and
-    /// texture is created here at `render_limits`; the layer keeps exactly
-    /// `drawable_count` drawables.
+    /// `surface.native` is the window's `CAMetalLayer`.
     pub noinline fn initInPlace(
         self: *Self,
         surface: *const backend.Surface,
@@ -214,8 +202,6 @@ pub const Renderer = struct {
         });
     }
 
-    /// The open frame's command buffer, or a new one once the slot it will
-    /// write is free.
     fn beginFrame(self: *Self) objc.Object {
         if (self.command_buffer) |command_buffer| return command_buffer;
         assert(self.blit == null);
@@ -310,7 +296,6 @@ fn checkSize(size_px: backend.SizePx, window: *const limits_mod.WindowLimits) !v
     if (size_px.height > window.framebuffer_height_max) return error.WindowTooLarge;
 }
 
-/// Bind `layer` to `device`, size its drawables, and keep `drawable_count`.
 fn configureLayer(
     layer: objc.Object,
     device: objc.Object,

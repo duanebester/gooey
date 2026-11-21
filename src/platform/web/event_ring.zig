@@ -1,15 +1,12 @@
-//! A single-producer, single-consumer ring of raw input events shared with
-//! JavaScript, which writes events and advances `write_head`; the core host
-//! reads them and advances `read_head`. The browser runs both on one thread,
-//! so volatile reads are enough to see JavaScript's writes.
+//! SPSC event ring shared with JavaScript, which writes events and advances
+//! `write_head`; the core host reads and advances `read_head`. The browser
+//! runs both on one thread, so volatile reads are enough to see the writes.
 //!
-//! The header is the exported layout JavaScript reads once after `init`:
-//! byte 0 `write_head`, byte 4 `read_head`, byte 8 `capacity` (events, a
-//! power of two), byte 12 the address of the events. The events are reserved
-//! by `reserve` during initialization from the app's
+//! Header layout JavaScript reads once after `init`: byte 0 `write_head`,
+//! byte 4 `read_head`, byte 8 `capacity` (a power of two), byte 12 the
+//! address of `events`. Events are reserved during initialization from
 //! `ResourceLimits.events.queue_count_max`, so one frame's worth of input
-//! the core queue can take always fits; JavaScript drops an event that finds
-//! the ring full and logs the field (an operating error, CLAUDE.md §2).
+//! always fits; JavaScript drops an event that finds the ring full.
 
 const std = @import("std");
 
@@ -30,8 +27,7 @@ pub fn EventRing(comptime Raw: type) type {
             if (@sizeOf(usize) == 4) assert(@sizeOf(Self) == 16);
         }
 
-        /// Reserve `capacity` events, during initialization only. The ring
-        /// stays empty until JavaScript writes.
+        /// Reserve `capacity` events; initialization only.
         pub fn reserve(self: *Self, gpa: std.mem.Allocator, capacity: u32) !void {
             assert(self.capacity == 0);
             assert(std.math.isPowerOfTwo(capacity));
@@ -43,7 +39,6 @@ pub fn EventRing(comptime Raw: type) type {
             assert(self.capacity == events.len);
         }
 
-        /// The oldest event, or null when the ring is empty.
         pub fn pop(self: *volatile Self) ?Raw {
             const write = self.write_head;
             const read = self.read_head;

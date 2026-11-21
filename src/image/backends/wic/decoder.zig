@@ -32,7 +32,6 @@ const wic = @import("bindings.zig");
 const ImageData = atlas.ImageData;
 const log = std.log.scoped(.image_wic);
 
-// Compile-time interface verification
 comptime {
     interface_verify.verifyImageLoaderModule(@This());
 }
@@ -48,7 +47,6 @@ comptime {
     assert(frame_bytes_max <= std.math.maxInt(u32));
 }
 
-/// Result of image decoding
 pub const DecodedImage = struct {
     width: u32,
     height: u32,
@@ -74,7 +72,6 @@ pub const DecodedImage = struct {
     }
 };
 
-/// Load error types
 pub const LoadError = error{
     FileNotFound,
     InvalidFormat,

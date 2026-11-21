@@ -1,30 +1,11 @@
-//! 2D math vector and index slice primitives
-//!
-//! `Vec2` is a computation-oriented 2D vector with math operations (dot, cross,
-//! lengthSq) used by triangulation, stroke expansion, and path building.
-//!
-//! This is distinct from `geometry.Point(T)` which serves layout/positioning.
-//! `Vec2` is always `f32` and carries no unit semantics — it's for raw geometry
-//! math on the data plane.
-//!
-//! `IndexSlice` describes a contiguous range of vertex indices within a shared
-//! buffer, used to delineate sub-polygons inside a flattened path.
+//! `Vec2` is raw f32 geometry math; `geometry.Point(T)` serves layout and positioning.
 
 const std = @import("std");
 
-// =============================================================================
-// Vec2
-// =============================================================================
-
-/// A 2D vector for geometry computation (triangulation, strokes, paths).
-/// Always f32 — no unit type parameter, no GPU alignment constraints.
 pub const Vec2 = struct {
     x: f32,
     y: f32,
 
-    /// Construct from explicit (x, y). Useful in expressions where field
-    /// initialization syntax would be noisy (e.g. inside path-flattening
-    /// loops that emit many transient vectors).
     pub fn init(x: f32, y: f32) Vec2 {
         return .{ .x = x, .y = y };
     }
@@ -53,28 +34,24 @@ pub const Vec2 = struct {
         return self.x * self.x + self.y * self.y;
     }
 
-    /// Euclidean length. Prefer `lengthSq` when comparing magnitudes.
     pub fn length(self: Vec2) f32 {
         return @sqrt(self.lengthSq());
     }
 
-    /// Unit vector in the same direction. Returns (1, 0) for degenerate
-    /// (near-zero) inputs so callers never see NaN.
+    /// Returns (1, 0) for degenerate (near-zero) inputs, never NaN.
     pub fn normalize(self: Vec2) Vec2 {
         const len_sq = self.lengthSq();
         if (len_sq < 1e-12) {
-            return Vec2{ .x = 1, .y = 0 }; // Default direction for degenerate vectors.
+            return Vec2{ .x = 1, .y = 0 };
         }
         const inv_len = 1.0 / @sqrt(len_sq);
         return self.scale(inv_len);
     }
 
-    /// Negate both components. Avoids the multiply in `.scale(-1)`.
     pub fn negate(self: Vec2) Vec2 {
         return .{ .x = -self.x, .y = -self.y };
     }
 
-    /// Perpendicular vector (90° counter-clockwise rotation).
     pub fn perp(self: Vec2) Vec2 {
         return .{ .x = -self.y, .y = self.x };
     }
@@ -82,17 +59,12 @@ pub const Vec2 = struct {
     pub const zero = Vec2{ .x = 0, .y = 0 };
 };
 
-// =============================================================================
-// IndexSlice
-// =============================================================================
-
-/// A half-open range [start, end) of vertex indices within a shared buffer.
-/// Used to delineate individual polygons inside a flattened multi-polygon path.
+/// A half-open [start, end) range of vertex indices within a shared buffer.
 ///
 /// `closed` records whether the source subpath ended with an explicit close
 /// command (SVG `Z`). Fill rasterization wraps polygons implicitly and
-/// ignores this; stroke rendering needs it so that open subpaths (arcs,
-/// curves without `Z`) do not get a phantom segment joining their endpoints.
+/// ignores this; stroke rendering needs it so open subpaths (arcs, curves
+/// without `Z`) do not get a phantom segment joining their endpoints.
 /// Defaults to `false` so non-SVG callers (triangulator, mesh builder) can
 /// keep using positional `IndexSlice{ .start = ..., .end = ... }` literals.
 pub const IndexSlice = struct {
@@ -100,16 +72,11 @@ pub const IndexSlice = struct {
     end: u32,
     closed: bool = false,
 
-    /// Number of indices in the range. Asserts `end >= start`.
     pub fn len(self: IndexSlice) u32 {
         std.debug.assert(self.end >= self.start);
         return self.end - self.start;
     }
 };
-
-// =============================================================================
-// Tests
-// =============================================================================
 
 test "Vec2 arithmetic" {
     const a = Vec2{ .x = 3, .y = 4 };
@@ -132,7 +99,6 @@ test "Vec2 dot and cross" {
     const a = Vec2{ .x = 1, .y = 0 };
     const b = Vec2{ .x = 0, .y = 1 };
 
-    // Perpendicular vectors: dot = 0, cross = ±1.
     try std.testing.expectApproxEqAbs(@as(f32, 0), a.dot(b), 1e-6);
     try std.testing.expectApproxEqAbs(@as(f32, 1), a.cross(b), 1e-6);
     try std.testing.expectApproxEqAbs(@as(f32, -1), b.cross(a), 1e-6);
@@ -155,7 +121,6 @@ test "Vec2 normalize" {
     const n = v.normalize();
     try std.testing.expectApproxEqAbs(@as(f32, 0.6), n.x, 1e-6);
     try std.testing.expectApproxEqAbs(@as(f32, 0.8), n.y, 1e-6);
-    // Normalized vector has unit length.
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), n.length(), 1e-6);
 }
 
@@ -175,10 +140,8 @@ test "Vec2 negate" {
 test "Vec2 perp is perpendicular and CCW" {
     const v = Vec2{ .x = 1, .y = 0 };
     const p = v.perp();
-    // 90° CCW rotation of (1,0) is (0,1).
     try std.testing.expectApproxEqAbs(@as(f32, 0), p.x, 1e-6);
     try std.testing.expectApproxEqAbs(@as(f32, 1), p.y, 1e-6);
-    // Perpendicular vectors have zero dot product.
     try std.testing.expectApproxEqAbs(@as(f32, 0), v.dot(p), 1e-6);
 }
 

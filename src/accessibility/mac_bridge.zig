@@ -1,15 +1,6 @@
-//! macOS Accessibility Bridge using NSAccessibility
-//!
-//! Provides VoiceOver support by translating Gooey's accessibility tree
-//! to native NSAccessibilityElement objects. Uses a pooled wrapper approach
-//! for zero-allocation after init.
-//!
-//! Strategy:
-//! - Pool of NSAccessibilityElement wrappers, one per `a11y.element_count_max`,
-//!   reserved at init from fresh pages
-//! - Fingerprint-based identity mapping for stable object references
-//! - Value and caret change notifications for elements whose content changed
-//! - Periodic VoiceOver detection (not every frame)
+//! VoiceOver bridge: a pool of NSAccessibilityElement wrappers, one per
+//! `a11y.element_count_max`, reserved at init; fingerprint identity; zero
+//! allocation after init.
 
 const std = @import("std");
 const objc = @import("objc");
@@ -28,44 +19,23 @@ const TextSelection = @import("element.zig").TextSelection;
 /// focus into its elements (AppKit asks the first responder).
 pub const focus_ivar = "_gooeyAccessibilityFocus";
 
-// ============================================================================
-// External Declarations
-// ============================================================================
-
-/// NSAccessibilityFocusedUIElementChangedNotification
 extern "c" var NSAccessibilityFocusedUIElementChangedNotification: objc.c.id;
 
-/// NSAccessibilityValueChangedNotification
 extern "c" var NSAccessibilityValueChangedNotification: objc.c.id;
 
-/// NSAccessibilitySelectedTextChangedNotification
 extern "c" var NSAccessibilitySelectedTextChangedNotification: objc.c.id;
 
-/// NSAccessibilityAnnouncementRequestedNotification
 extern "c" var NSAccessibilityAnnouncementRequestedNotification: objc.c.id;
 
-/// NSAccessibilityAnnouncementKey
 extern "c" var NSAccessibilityAnnouncementKey: objc.c.id;
 
-/// NSAccessibilityPriorityKey
 extern "c" var NSAccessibilityPriorityKey: objc.c.id;
 
-// ============================================================================
-// Constants
-// ============================================================================
-
-/// NSAccessibilityPriorityHigh - for assertive announcements
 const NSAccessibilityPriorityHigh: c_long = 90;
 
-/// NSAccessibilityPriorityMedium - for polite announcements
 const NSAccessibilityPriorityMedium: c_long = 50;
 
-/// NSUTF8StringEncoding
 const NSUTF8StringEncoding: c_ulong = 4;
-
-// ============================================================================
-// MacBridge
-// ============================================================================
 
 pub const MacBridge = struct {
     /// Pool of native accessibility element wrappers, `a11y.element_count_max`
@@ -74,39 +44,28 @@ pub const MacBridge = struct {
     /// Slots below this were initialized; the rest are untouched pages.
     wrapper_count: u16 = 0,
 
-    /// Map fingerprint -> wrapper slot for stable identity
-    /// Linear search is fine for typical element counts (<500)
+    /// Map fingerprint -> wrapper slot for stable identity.
     fingerprint_to_slot: []fingerprint_mod.Fingerprint = &.{},
 
-    /// Root accessibility element (the window)
     root_element: ?objc.Object = null,
 
-    /// Content view for coordinate conversion (view coords -> screen coords)
     content_view: ?objc.Object = null,
 
-    /// Cached VoiceOver state (checked periodically, not every frame)
+    /// Cached VoiceOver state; checked periodically, not every frame.
     voiceover_active: bool = false,
 
-    /// Frame counter for periodic checks
     check_counter: u32 = 0,
 
     const Self = @This();
-
-    // =========================================================================
-    // Wrapper - Native Element Container
-    // =========================================================================
 
     /// No screen frame has width -1, so a wrapper's first frame always sets.
     const frame_unset = layout.BoundingBox{ .x = 0, .y = 0, .width = -1, .height = -1 };
 
     const Wrapper = struct {
-        /// The native NSAccessibilityElement
         ns_element: ?objc.Object = null,
 
-        /// Last synced fingerprint (for identity tracking)
         fingerprint: fingerprint_mod.Fingerprint = fingerprint_mod.Fingerprint.INVALID,
 
-        /// Is this slot currently in use?
         active: bool = false,
 
         /// `valueHash` at the last sync; meaningful once `value_synced`.
@@ -123,12 +82,9 @@ pub const MacBridge = struct {
         /// The screen frame last set; `frame_unset` before the first (a
         /// sentinel rather than an optional keeps the wrapper in 64 bytes).
         frame: layout.BoundingBox = frame_unset,
-        /// Whether children were last set non-empty.
         has_children: bool = false,
-        /// Whether previous and next contents were last set (a splitter).
         has_contents: bool = false,
 
-        /// Update wrapper from accessibility element
         pub fn update(
             self: *Wrapper,
             elem: *const tree_mod.Element,
@@ -136,12 +92,9 @@ pub const MacBridge = struct {
             ns_window: ?objc.Object,
             content_view: ?objc.Object,
         ) void {
-            // Assertion: element must have valid fingerprint
             std.debug.assert(elem.fingerprint.isValid());
-            // Assertion: parent must be valid
             std.debug.assert(parent_ns.value != null);
 
-            // Lazily create NS element if needed
             if (self.ns_element == null) {
                 self.ns_element = createNSAccessibilityElement();
                 if (self.ns_element == null) return;
@@ -149,11 +102,9 @@ pub const MacBridge = struct {
 
             const ns = self.ns_element.?;
 
-            // Set role
             setAccessibilityRole(ns, elem.role);
             setAccessibilityRoleDescription(ns, roleDescription(elem.role));
 
-            // Set label (name)
             if (elem.name) |name| {
                 setAccessibilityLabel(ns, name);
             } else {
@@ -167,10 +118,9 @@ pub const MacBridge = struct {
             // tool tip is; VoiceOver reads it as the hint after the name.
             setAccessibilityHelp(ns, elem.description);
 
-            // Set value. A toggle or option without a text value reports
-            // whether it is on as VoiceOver expects (0 or 1); otherwise a
-            // value that went away is cleared, so a reused wrapper never
-            // reports stale text.
+            // A toggle or option reports its on state as the value; a value
+            // that went away is cleared so a reused wrapper never reports
+            // stale text.
             if (elem.value) |value| {
                 setAccessibilityValue(ns, value);
             } else if (toggleState(elem)) |on| {
@@ -185,10 +135,8 @@ pub const MacBridge = struct {
             // Unknown when null, which a reused wrapper needs as well.
             setAccessibilityOrientation(ns, elem.orientation);
 
-            // Set parent relationship
             setAccessibilityParent(ns, parent_ns);
 
-            // Set state properties
             setAccessibilityEnabled(ns, !elem.state.disabled);
             setAccessibilityFocused(ns, elem.state.focused);
             if (isSelectable(elem.role)) setAccessibilitySelected(ns, elem.state.selected);
@@ -196,7 +144,6 @@ pub const MacBridge = struct {
             self.refreshFrame(elem, ns_window, content_view);
             self.notifyChanges(ns, elem);
 
-            // Update tracking
             self.fingerprint = elem.fingerprint;
             self.active = true;
         }
@@ -247,9 +194,8 @@ pub const MacBridge = struct {
             }
         }
 
-        /// Mark wrapper as inactive (available for reuse)
+        /// Mark wrapper as inactive (available for reuse).
         pub fn invalidate(self: *Wrapper) void {
-            // Assertion: wrapper was active
             std.debug.assert(self.active or self.fingerprint.eql(fingerprint_mod.Fingerprint.INVALID));
 
             self.active = false;
@@ -257,25 +203,13 @@ pub const MacBridge = struct {
             self.value_hash = 0;
             self.value_synced = false;
             self.selection = null;
-            // NOTE: Don't release ns_element - we reuse it from the pool
+            // `ns_element` is not released: the pool reuses it.
         }
     };
 
-    // =========================================================================
-    // Initialization
-    // =========================================================================
-
-    /// Initialize the macOS accessibility bridge
-    /// Call after window creation with the main window and view objects
-    ///
-    /// Parameters:
-    ///   window: NSWindow object (for screen coordinate conversion)
-    ///   view: NSView object (the content view where layout coordinates are relative to)
     /// `element_count_max` is the tree's (`a11y.element_count_max`): stale
     /// wrappers are reclaimed before a new one is taken, so the frame's
-    /// elements always fit. A failed reservation leaves the bridge inert, as
-    /// the Windows bridge does: the app runs without VoiceOver support and the
-    /// error is logged.
+    /// elements always fit. A failed reservation leaves the bridge inert.
     pub fn init(element_count_max: u16, window: ?objc.Object, view: ?objc.Object) Self {
         std.debug.assert(element_count_max > 0);
         var self = Self{};
@@ -286,7 +220,6 @@ pub const MacBridge = struct {
         std.debug.assert(self.wrappers.len == element_count_max);
 
         self.root_element = window;
-        // Store view directly - layout bounds are in view coordinates
         self.content_view = view;
 
         self.voiceover_active = checkVoiceOverRunning();
@@ -305,7 +238,6 @@ pub const MacBridge = struct {
         self.wrappers = wrappers;
     }
 
-    /// Get the Bridge interface (vtable pattern)
     pub fn bridge(self: *Self) bridge_mod.Bridge {
         return .{
             .ptr = self,
@@ -322,10 +254,6 @@ pub const MacBridge = struct {
         .deinit = deinit_,
     };
 
-    // =========================================================================
-    // Bridge Implementation
-    // =========================================================================
-
     fn syncDirty(
         ptr: *anyopaque,
         tree: *const tree_mod.Tree,
@@ -333,9 +261,7 @@ pub const MacBridge = struct {
     ) void {
         const self = castSelf(ptr);
 
-        // Assertion: dirty list is bounded
         std.debug.assert(dirty.len <= tree.count());
-        // Assertion: self is valid
         std.debug.assert(self.root_element != null or !self.voiceover_active);
 
         if (!self.voiceover_active) return;
@@ -344,7 +270,6 @@ pub const MacBridge = struct {
         // window's children would hide its titlebar buttons from VoiceOver.
         const root = self.content_view orelse self.root_element orelse return;
 
-        // Sync each dirty element
         for (dirty) |idx| {
             self.syncElement(tree, idx, root);
         }
@@ -376,31 +301,24 @@ pub const MacBridge = struct {
         }
     }
 
-    /// Update accessibilityChildren on root and parent elements
-    /// VoiceOver requires children to be set on parents for element discovery
+    /// VoiceOver requires children to be set on parents for element discovery.
     fn updateAccessibilityChildren(self: *Self, tree: *const tree_mod.Tree, root: objc.Object) void {
-        // Assertion: root is valid
         std.debug.assert(root.value != null);
-        // Assertion: tree element count is bounded
         std.debug.assert(tree.count() <= tree.elements.len);
 
         const NSMutableArray = objc.getClass("NSMutableArray") orelse return;
 
-        // Collect all top-level elements (parent == null in tree)
         const root_children_id: objc.c.id = NSMutableArray.msgSend(objc.c.id, "array", .{});
         if (root_children_id == null) return;
         const root_children = objc.Object.fromId(root_children_id);
 
-        // Iterate through all elements and add top-level ones to root's children
         var i: u16 = 0;
         while (i < tree.count()) : (i += 1) {
             const elem = tree.getElement(i) orelse continue;
 
-            // Find the wrapper for this element
             const slot = self.findSlotByFingerprint(elem.fingerprint) orelse continue;
             const ns = self.wrappers[slot].ns_element orelse continue;
 
-            // If element has no parent in tree, it's a child of root
             if (elem.parent == null) self.addNativeChild(tree, elem, root_children);
 
             // Update children for elements that have children in the tree.
@@ -419,7 +337,6 @@ pub const MacBridge = struct {
             }
         }
 
-        // Set children on root element
         setAccessibilityChildren(root, root_children);
         self.updateSplitterContents(tree);
     }
@@ -452,7 +369,6 @@ pub const MacBridge = struct {
         }
     }
 
-    /// The native element of the sibling just before or after `index`.
     fn siblingElement(
         self: *Self,
         tree: *const tree_mod.Tree,
@@ -483,16 +399,13 @@ pub const MacBridge = struct {
         return self.nativeElement(sibling);
     }
 
-    /// Update accessibilityChildren for a single element
     fn updateElementChildren(
         self: *Self,
         tree: *const tree_mod.Tree,
         elem: *const tree_mod.Element,
         ns: objc.Object,
     ) void {
-        // Assertion: element has children
         std.debug.assert(elem.child_count > 0);
-        // Assertion: ns element is valid
         std.debug.assert(ns.value != null);
 
         const NSMutableArray = objc.getClass("NSMutableArray") orelse return;
@@ -501,7 +414,6 @@ pub const MacBridge = struct {
         if (children_id == null) return;
         const children = objc.Object.fromId(children_id);
 
-        // Walk through children via linked list
         var child_idx = elem.first_child;
         while (child_idx) |idx| {
             const child_elem = tree.getElement(idx) orelse break;
@@ -554,7 +466,6 @@ pub const MacBridge = struct {
         idx: u16,
         root: objc.Object,
     ) void {
-        // Assertion: index in bounds
         std.debug.assert(idx < tree.count());
 
         const elem = tree.getElement(idx) orelse return;
@@ -569,12 +480,11 @@ pub const MacBridge = struct {
         };
 
         // Resolve parent's NS element. A top-level element's parent is the
-        // window, as in 0.3.1, even though it hangs in the content view's
-        // children: AppKit ignores the content view, so an AXParent naming it
-        // points outside the chain VoiceOver walks (#121 regression).
+        // window, even though it hangs in the content view's children: AppKit
+        // ignores the content view, so an AXParent naming it points outside
+        // the chain VoiceOver walks (#121 regression).
         const parent_ns = self.resolveParentNS(tree, elem, self.root_element orelse root);
 
-        // Update the wrapper with coordinate conversion context
         self.wrappers[slot].update(elem, parent_ns, self.root_element, self.content_view);
     }
 
@@ -584,7 +494,6 @@ pub const MacBridge = struct {
         elem: *const tree_mod.Element,
         root: objc.Object,
     ) objc.Object {
-        // Assertion: inputs are valid
         std.debug.assert(root.value != null);
         std.debug.assert(elem.fingerprint.isValid());
 
@@ -600,7 +509,6 @@ pub const MacBridge = struct {
     fn removeElements(ptr: *anyopaque, fingerprints: []const fingerprint_mod.Fingerprint) void {
         const self = castSelf(ptr);
 
-        // Assertion: removal list bounded
         std.debug.assert(fingerprints.len <= self.wrappers.len);
 
         for (fingerprints) |fp| {
@@ -614,9 +522,7 @@ pub const MacBridge = struct {
     fn announce_(ptr: *anyopaque, message: []const u8, live: types.Live) void {
         const self = castSelf(ptr);
 
-        // Assertion: message is bounded
         std.debug.assert(message.len <= 65535);
-        // Assertion: live level is valid
         std.debug.assert(@backingInt(live) <= @backingInt(types.Live.assertive));
 
         if (!self.voiceover_active) return;
@@ -629,7 +535,6 @@ pub const MacBridge = struct {
     fn focusChanged(ptr: *anyopaque, tree: *const tree_mod.Tree, idx: ?u16) void {
         const self = castSelf(ptr);
 
-        // Assertion: tree is valid
         std.debug.assert(tree.count() <= tree.elements.len);
 
         if (!self.voiceover_active) return;
@@ -661,7 +566,6 @@ pub const MacBridge = struct {
 
         // An inert bridge (its reservation failed) never syncs.
         if (self.wrappers.len == 0) return false;
-        // Update cached state
         self.voiceover_active = checkVoiceOverRunning();
         return self.voiceover_active;
     }
@@ -672,7 +576,6 @@ pub const MacBridge = struct {
         // The view must not hand VoiceOver an element released below.
         self.publishFocus(null);
 
-        // Release all NS objects
         for (self.wrappers[0..self.wrapper_count]) |*w| {
             if (w.ns_element) |ns| {
                 releaseNSObject(ns);
@@ -681,7 +584,7 @@ pub const MacBridge = struct {
             w.active = false;
             w.fingerprint = fingerprint_mod.Fingerprint.INVALID;
         }
-        // Zero the slots any frame initialized before the pages go back (§21).
+        // Zero the slots any frame initialized before the pages go back.
         if (self.wrappers.len > 0) {
             reservation.release(Fingerprint, self.fingerprint_to_slot, self.wrapper_count);
             reservation.release(Wrapper, self.wrappers, self.wrapper_count);
@@ -695,12 +598,7 @@ pub const MacBridge = struct {
         self.voiceover_active = false;
     }
 
-    // =========================================================================
-    // Slot Management
-    // =========================================================================
-
     fn findSlotByFingerprint(self: *Self, fp: fingerprint_mod.Fingerprint) ?u16 {
-        // Assertion: fingerprint is valid
         std.debug.assert(fp.isValid());
 
         // Slots at or past `wrapper_count` were never allocated.
@@ -712,19 +610,15 @@ pub const MacBridge = struct {
     }
 
     pub fn findOrAllocSlot(self: *Self, fp: fingerprint_mod.Fingerprint) ?u16 {
-        // Assertion: fingerprint is valid
         std.debug.assert(fp.isValid());
-        // Assertion: wrapper_count is bounded
         std.debug.assert(self.wrapper_count <= self.wrappers.len);
 
-        // Try existing slot
         if (self.findSlotByFingerprint(fp)) |slot| return slot;
 
-        // Find a free initialized slot, else initialize the next one.
         for (self.wrappers[0..self.wrapper_count], 0..) |*w, i| {
             if (!w.active) {
                 self.fingerprint_to_slot[i] = fp;
-                w.active = true; // Mark as allocated
+                w.active = true;
                 w.fingerprint = fp;
                 return @intCast(i);
             }
@@ -760,13 +654,8 @@ pub const MacBridge = struct {
     }
 };
 
-// ============================================================================
-// Objective-C Helpers
-// ============================================================================
-
 fn createNSAccessibilityElement() ?objc.Object {
     const cls = element_class.?;
-    // Standard Objective-C pattern: [[GooeyAccessibilityElement alloc] init]
     const alloc_id: objc.c.id = cls.msgSend(objc.c.id, "alloc", .{});
     if (alloc_id == null) return null;
     const alloc_obj = objc.Object.fromId(alloc_id);
@@ -776,7 +665,6 @@ fn createNSAccessibilityElement() ?objc.Object {
 }
 
 fn setAccessibilityRole(elem: objc.Object, role: types.Role) void {
-    // Assertion: element is valid
     std.debug.assert(elem.value != null);
 
     const role_str = role.toNSRole();
@@ -801,9 +689,7 @@ fn setAccessibilityRoleDescription(elem: objc.Object, description: ?[]const u8) 
 }
 
 fn setAccessibilityLabel(elem: objc.Object, label: []const u8) void {
-    // Assertion: element is valid
     std.debug.assert(elem.value != null);
-    // Assertion: label is bounded
     std.debug.assert(label.len <= 65535);
 
     const ns_label = createNSStringFromSlice(label) orelse return;
@@ -812,7 +698,6 @@ fn setAccessibilityLabel(elem: objc.Object, label: []const u8) void {
     elem.msgSend(void, "setAccessibilityLabel:", .{ns_label.value});
 }
 
-/// Set or, with null, clear the element's title (AXTitle).
 fn setAccessibilityTitle(elem: objc.Object, title: ?[]const u8) void {
     std.debug.assert(elem.value != null);
     const text = title orelse {
@@ -916,8 +801,6 @@ fn setAccessibilityOrientation(elem: objc.Object, orientation: ?types.Orientatio
     elem.msgSend(void, "setAccessibilityOrientation:", .{value});
 }
 
-/// Set a splitter's previous or next contents to `element` alone, or to
-/// an empty array when there is none.
 fn setAccessibilityContents(elem: objc.Object, selector: [:0]const u8, element: ?objc.Object) void {
     std.debug.assert(elem.value != null);
     std.debug.assert(selector.len > 0);
@@ -979,23 +862,19 @@ fn convertToScreenRect(
     ns_window: ?objc.Object,
     content_view: ?objc.Object,
 ) layout.BoundingBox {
-    // Assertion: bounds are valid
     std.debug.assert(!std.math.isNan(bounds.x) and !std.math.isNan(bounds.y));
 
     const window = ns_window orelse return bounds;
     const view = content_view orelse return bounds;
 
-    // Create NSRect in view coordinates
     const view_rect = NSRect{
         .origin = .{ .x = @floatCast(bounds.x), .y = @floatCast(bounds.y) },
         .size = .{ .width = @floatCast(bounds.width), .height = @floatCast(bounds.height) },
     };
 
-    // Convert view coords -> window coords (handles flipped coordinate system)
     // Zig 0.16: ?[*c]T is not allowed in C calling convention; [*c] is already nullable.
     const window_rect: NSRect = view.msgSend(NSRect, "convertRect:toView:", .{ view_rect, @as(objc.c.id, @ptrFromInt(0)) });
 
-    // Convert window coords -> screen coords (handles multiple monitors)
     const screen_rect: NSRect = window.msgSend(NSRect, "convertRectToScreen:", .{window_rect});
 
     return layout.BoundingBox{
@@ -1008,11 +887,10 @@ fn convertToScreenRect(
 
 fn setAccessibilityFrame(elem: objc.Object, bounds: layout.BoundingBox) void {
     std.debug.assert(elem.value != null);
-    // Assertion: bounds are valid (default bounds have x=0, y=0 which is valid)
     std.debug.assert(!std.math.isNan(bounds.x) and !std.math.isNan(bounds.y));
 
-    // NSRect for setAccessibilityFrame (requires f64 for Cocoa)
-    // Bounds should already be in screen coordinates from convertToScreenRect
+    // setAccessibilityFrame requires f64 for Cocoa; bounds are already screen
+    // coordinates from `convertToScreenRect`.
     const frame = NSRect{
         .origin = .{ .x = @floatCast(bounds.x), .y = @floatCast(bounds.y) },
         .size = .{ .width = @floatCast(bounds.width), .height = @floatCast(bounds.height) },
@@ -1091,10 +969,6 @@ test "utf16Length counts surrogate pairs" {
     // é is 2 bytes and 1 unit, 日 is 3 bytes and 1 unit, 😀 is 4 bytes and 2 units.
     try std.testing.expectEqual(@as(u32, 5), utf16Length("é日😀a"));
 }
-
-// ============================================================================
-// GooeyAccessibilityElement: NSAccessibilityElement with text queries
-// ============================================================================
 
 /// Registered once, at the first bridge's initialization.
 var element_class: ?objc.Class = null;
@@ -1234,11 +1108,9 @@ fn postAnnouncement(root: objc.Object, message: []const u8, live: types.Live) vo
     const ns_message = createNSStringFromSlice(message) orelse return;
     defer releaseNSObject(ns_message);
 
-    // Create userInfo dictionary
     const NSDictionary = objc.getClass("NSDictionary") orelse return;
     const NSNumber = objc.getClass("NSNumber") orelse return;
 
-    // Priority based on live level
     const priority: c_long = switch (live) {
         .assertive => NSAccessibilityPriorityHigh,
         .polite => NSAccessibilityPriorityMedium,
@@ -1247,7 +1119,6 @@ fn postAnnouncement(root: objc.Object, message: []const u8, live: types.Live) vo
 
     const ns_priority = NSNumber.msgSend(objc.Object, "numberWithLong:", .{priority});
 
-    // Build dictionary: @{ NSAccessibilityAnnouncementKey: message, NSAccessibilityPriorityKey: priority }
     const keys = [_]objc.c.id{ NSAccessibilityAnnouncementKey, NSAccessibilityPriorityKey };
     const values = [_]objc.c.id{ ns_message.value, ns_priority.value };
 
@@ -1258,7 +1129,6 @@ fn postAnnouncement(root: objc.Object, message: []const u8, live: types.Live) vo
     );
     if (dict_id == null) return;
 
-    // Post notification with userInfo
     const postNotificationWithUserInfo = @extern(*const fn (objc.c.id, objc.c.id, objc.c.id) callconv(std.builtin.CallingConvention.c) void, .{
         .name = "NSAccessibilityPostNotificationWithUserInfo",
     });
@@ -1266,16 +1136,11 @@ fn postAnnouncement(root: objc.Object, message: []const u8, live: types.Live) vo
 }
 
 fn checkVoiceOverRunning() bool {
-    // Query NSWorkspace.sharedWorkspace.isVoiceOverEnabled
-    // Available in macOS 10.13+
+    // Available in macOS 10.13+.
     const NSWorkspace = objc.getClass("NSWorkspace") orelse return false;
     const workspace = NSWorkspace.msgSend(objc.Object, "sharedWorkspace", .{});
     return workspace.msgSend(bool, "isVoiceOverEnabled", .{});
 }
-
-// ============================================================================
-// NSString Helpers
-// ============================================================================
 
 fn createNSString(str: []const u8) ?objc.Object {
     std.debug.assert(str.len <= 65535);
@@ -1314,39 +1179,26 @@ fn releaseNSObject(obj: objc.Object) void {
     }
 }
 
-// ============================================================================
-// Compile-Time Assertions (per CLAUDE.md)
-// ============================================================================
-
 comptime {
-    // MacBridge should fit in reasonable stack space
-    std.debug.assert(@sizeOf(MacBridge) <= 1024 * 1024); // 1MB max
+    std.debug.assert(@sizeOf(MacBridge) <= 1024 * 1024); // Fits the 1 MiB WASM stack
 
-    // Wrapper should be cache-friendly
-    std.debug.assert(@sizeOf(MacBridge.Wrapper) <= 64); // Fit in cache line
+    std.debug.assert(@sizeOf(MacBridge.Wrapper) <= 64); // Fits a cache line
 }
-
-// ============================================================================
-// Tests
-// ============================================================================
 
 test "mac bridge initialization" {
     var bridge_impl = MacBridge.init(8, null, null);
     const b = bridge_impl.bridge();
     defer b.deinit();
 
-    // Should work with null window (VoiceOver disabled)
     try std.testing.expect(!b.isActive());
 }
 
 test "mac bridge wrapper lifecycle" {
     var wrapper = MacBridge.Wrapper{};
 
-    // Initial state
     try std.testing.expect(!wrapper.active);
     try std.testing.expect(!wrapper.fingerprint.isValid());
 
-    // Invalidate is safe on inactive wrapper
     wrapper.active = true;
     wrapper.fingerprint = fingerprint_mod.compute(.button, "Test", null, 0);
     wrapper.invalidate();
@@ -1362,7 +1214,6 @@ test "mac bridge slot management" {
     const fp1 = fingerprint_mod.compute(.button, "Button1", null, 0);
     const fp2 = fingerprint_mod.compute(.button, "Button2", null, 1);
 
-    // Allocate slots
     const slot1 = bridge_impl.findOrAllocSlot(fp1);
     const slot2 = bridge_impl.findOrAllocSlot(fp2);
 
@@ -1370,21 +1221,16 @@ test "mac bridge slot management" {
     try std.testing.expect(slot2 != null);
     try std.testing.expect(slot1.? != slot2.?);
 
-    // Find existing slot
     const found = bridge_impl.findSlotByFingerprint(fp1);
     try std.testing.expectEqual(slot1, found);
 
-    // Same fingerprint returns same slot
     const slot1_again = bridge_impl.findOrAllocSlot(fp1);
     try std.testing.expectEqual(slot1, slot1_again);
 }
 
 test "a full wrapper pool reclaims elements that left the tree in skipped frames" {
-    // Goal: a pool of exactly the tree's capacity always holds the current
-    // frame, even when removals were never synced (VoiceOver was off). Method:
-    // fill a two-slot pool with two elements, build a frame of two others,
-    // and check that the full pool reports no slot until the stale ones are
-    // reclaimed, then takes both new elements without growing.
+    // A pool of exactly the tree's capacity always holds the current frame,
+    // even when removals were never synced (VoiceOver was off).
     const capacity: tree_mod.Capacity = .{
         .element_count_max = 2,
         .depth_max = 1,
@@ -1468,11 +1314,8 @@ fn childCount(ns: objc.Object) usize {
 }
 
 test "mac bridge moves the frame of an element whose content did not change" {
-    // Goal: a scroll or layout shift moves elements without changing their
-    // content, so the tree marks nothing dirty; VoiceOver must still get the
-    // new frames. Methodology: sync two frames in which a button moves and
-    // another stays put, check the second had no dirty elements, and read
-    // the native frames.
+    // A scroll or layout shift moves elements without changing their content,
+    // so the tree marks nothing dirty; VoiceOver must still get the frames.
     var rig: TestRig = undefined;
     try rig.init();
     defer rig.deinit();
@@ -1491,10 +1334,8 @@ test "mac bridge moves the frame of an element whose content did not change" {
 }
 
 test "mac bridge clears the children of a reused wrapper that became a leaf" {
-    // Goal: a pooled wrapper keeps its native object, so one reused for a
-    // leaf must not keep the children it had. Methodology: a group with a
-    // child takes the first slots; the next frame removes both, and the one
-    // after adds a leaf button, which reuses the group's slot.
+    // A pooled wrapper keeps its native object, so one reused for a leaf
+    // must not keep the children it had.
     var rig: TestRig = undefined;
     try rig.init();
     defer rig.deinit();
@@ -1522,11 +1363,10 @@ test "mac bridge clears the children of a reused wrapper that became a leaf" {
 }
 
 test "mac bridge hangs a combobox's listbox beside it and reports chosen options" {
-    // Goal: VoiceOver puts its cursor back on the child it last visited when
-    // focus returns to a container, so a combobox holding its listbox sent
-    // the cursor into the closed list; and it reads "selected" only from a
-    // radio button's value. Methodology: sync a group holding an open
-    // combobox with a chosen option, read the native tree, then close it.
+    // VoiceOver puts its cursor back on the child it last visited when focus
+    // returns to a container, so a combobox holding its listbox sent the
+    // cursor into the closed list; and it reads "selected" only from a radio
+    // button's value.
     var rig: TestRig = undefined;
     try rig.init();
     defer rig.deinit();
@@ -1563,10 +1403,8 @@ test "mac bridge hangs a combobox's listbox beside it and reports chosen options
 }
 
 test "a description is the element's help, cleared when a reused wrapper has none" {
-    // Goal: `A11y.description` reaches VoiceOver as AXHelp, which it reads
-    // as the hint. Methodology: sync a button with a description and read
-    // `accessibilityHelp`; then sync the same element without one, which
-    // keeps its fingerprint and so its wrapper, and the help is gone.
+    // `A11y.description` reaches VoiceOver as AXHelp, which it reads as the
+    // hint.
     var rig: TestRig = undefined;
     try rig.init();
     defer rig.deinit();
@@ -1606,7 +1444,6 @@ fn expectOption(ns: objc.Object, selected: bool) !void {
 }
 
 test "role to ns role mapping" {
-    // Verify key mappings exist and are reasonable
     try std.testing.expectEqualStrings("AXButton", types.Role.button.toNSRole());
     try std.testing.expectEqualStrings("AXCheckBox", types.Role.checkbox.toNSRole());
     try std.testing.expectEqualStrings("AXTextField", types.Role.textbox.toNSRole());

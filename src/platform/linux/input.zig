@@ -1,21 +1,11 @@
-//! Linux Input Handling
-//!
-//! Maps Linux evdev keycodes to Gooey's cross-platform input types
-//! and provides utilities for parsing Wayland input events.
-
 const std = @import("std");
 const input = @import("../../input/events.zig");
 const geometry = @import("../../geometry/geometry.zig");
 
 const assert = std.debug.assert;
 
-// =============================================================================
-// Evdev Keycode Constants
-// =============================================================================
-
-/// Linux evdev keycodes (from linux/input-event-codes.h)
+/// Linux evdev keycodes, from `linux/input-event-codes.h`.
 pub const evdev = struct {
-    // Escape and function keys
     pub const KEY_ESC: u32 = 1;
     pub const KEY_F1: u32 = 59;
     pub const KEY_F2: u32 = 60;
@@ -38,7 +28,6 @@ pub const evdev = struct {
     pub const KEY_F19: u32 = 189;
     pub const KEY_F20: u32 = 190;
 
-    // Number row
     pub const KEY_1: u32 = 2;
     pub const KEY_2: u32 = 3;
     pub const KEY_3: u32 = 4;
@@ -50,7 +39,6 @@ pub const evdev = struct {
     pub const KEY_9: u32 = 10;
     pub const KEY_0: u32 = 11;
 
-    // Top row (QWERTY)
     pub const KEY_Q: u32 = 16;
     pub const KEY_W: u32 = 17;
     pub const KEY_E: u32 = 18;
@@ -62,7 +50,6 @@ pub const evdev = struct {
     pub const KEY_O: u32 = 24;
     pub const KEY_P: u32 = 25;
 
-    // Home row (ASDF)
     pub const KEY_A: u32 = 30;
     pub const KEY_S: u32 = 31;
     pub const KEY_D: u32 = 32;
@@ -73,7 +60,6 @@ pub const evdev = struct {
     pub const KEY_K: u32 = 37;
     pub const KEY_L: u32 = 38;
 
-    // Bottom row (ZXCV)
     pub const KEY_Z: u32 = 44;
     pub const KEY_X: u32 = 45;
     pub const KEY_C: u32 = 46;
@@ -82,7 +68,6 @@ pub const evdev = struct {
     pub const KEY_N: u32 = 49;
     pub const KEY_M: u32 = 50;
 
-    // Special keys
     pub const KEY_TAB: u32 = 15;
     pub const KEY_ENTER: u32 = 28;
     pub const KEY_SPACE: u32 = 57;
@@ -91,19 +76,16 @@ pub const evdev = struct {
     pub const KEY_CAPSLOCK: u32 = 58;
     pub const KEY_SCROLLLOCK: u32 = 70;
 
-    // Arrow keys
     pub const KEY_LEFT: u32 = 105;
     pub const KEY_RIGHT: u32 = 106;
     pub const KEY_UP: u32 = 103;
     pub const KEY_DOWN: u32 = 108;
 
-    // Navigation
     pub const KEY_HOME: u32 = 102;
     pub const KEY_END: u32 = 107;
     pub const KEY_PAGEUP: u32 = 104;
     pub const KEY_PAGEDOWN: u32 = 109;
 
-    // Modifiers
     pub const KEY_LEFTSHIFT: u32 = 42;
     pub const KEY_RIGHTSHIFT: u32 = 54;
     pub const KEY_LEFTCTRL: u32 = 29;
@@ -113,7 +95,6 @@ pub const evdev = struct {
     pub const KEY_LEFTMETA: u32 = 125;
     pub const KEY_RIGHTMETA: u32 = 126;
 
-    // Punctuation and symbols
     pub const KEY_MINUS: u32 = 12; // - _
     pub const KEY_EQUAL: u32 = 13; // = +
     pub const KEY_LEFTBRACE: u32 = 26; // [ {
@@ -126,7 +107,6 @@ pub const evdev = struct {
     pub const KEY_DOT: u32 = 52; // . >
     pub const KEY_SLASH: u32 = 53; // / ?
 
-    // Keypad
     pub const KEY_NUMLOCK: u32 = 69;
     pub const KEY_KPASTERISK: u32 = 55;
     pub const KEY_KP7: u32 = 71;
@@ -154,16 +134,9 @@ pub const evdev = struct {
     pub const BTN_MIDDLE: u32 = 0x112;
 };
 
-// =============================================================================
-// Key to Character Conversion
-// =============================================================================
-
-/// Convert evdev keycode to a character, considering shift state.
-/// Returns null for non-printable keys (modifiers, function keys, etc.)
-/// This is a simple US QWERTY layout mapping - full xkbcommon integration
-/// would be needed for proper international keyboard support.
+/// Simple US QWERTY layout mapping; full xkbcommon integration would be
+/// needed for proper international keyboard support.
 pub fn evdevKeyToChar(key: u32, shift: bool) ?u8 {
-    // Letters (a-z / A-Z)
     const char: ?u8 = switch (key) {
         evdev.KEY_A => if (shift) 'A' else 'a',
         evdev.KEY_B => if (shift) 'B' else 'b',
@@ -192,7 +165,6 @@ pub fn evdevKeyToChar(key: u32, shift: bool) ?u8 {
         evdev.KEY_Y => if (shift) 'Y' else 'y',
         evdev.KEY_Z => if (shift) 'Z' else 'z',
 
-        // Numbers and their shifted symbols
         evdev.KEY_1 => if (shift) '!' else '1',
         evdev.KEY_2 => if (shift) '@' else '2',
         evdev.KEY_3 => if (shift) '#' else '3',
@@ -204,7 +176,6 @@ pub fn evdevKeyToChar(key: u32, shift: bool) ?u8 {
         evdev.KEY_9 => if (shift) '(' else '9',
         evdev.KEY_0 => if (shift) ')' else '0',
 
-        // Punctuation
         evdev.KEY_MINUS => if (shift) '_' else '-',
         evdev.KEY_EQUAL => if (shift) '+' else '=',
         evdev.KEY_LEFTBRACE => if (shift) '{' else '[',
@@ -228,10 +199,6 @@ pub fn evdevKeyToChar(key: u32, shift: bool) ?u8 {
     return char;
 }
 
-// =============================================================================
-// XKB Modifier Masks
-// =============================================================================
-
 /// Standard XKB modifier bit positions
 pub const xkb_mod = struct {
     pub const SHIFT: u32 = 1 << 0;
@@ -242,14 +209,8 @@ pub const xkb_mod = struct {
     pub const SUPER: u32 = 1 << 6; // Mod4
 };
 
-// =============================================================================
-// Keycode Mapping
-// =============================================================================
-
-/// Convert Linux evdev keycode to cross-platform KeyCode
 pub fn evdevToKeyCode(evdev_key: u32) input.KeyCode {
     return switch (evdev_key) {
-        // Letters
         evdev.KEY_A => .a,
         evdev.KEY_B => .b,
         evdev.KEY_C => .c,
@@ -277,7 +238,6 @@ pub fn evdevToKeyCode(evdev_key: u32) input.KeyCode {
         evdev.KEY_Y => .y,
         evdev.KEY_Z => .z,
 
-        // Numbers
         evdev.KEY_1 => .@"1",
         evdev.KEY_2 => .@"2",
         evdev.KEY_3 => .@"3",
@@ -289,7 +249,6 @@ pub fn evdevToKeyCode(evdev_key: u32) input.KeyCode {
         evdev.KEY_9 => .@"9",
         evdev.KEY_0 => .@"0",
 
-        // Special keys
         evdev.KEY_ESC => .escape,
         evdev.KEY_TAB => .tab,
         evdev.KEY_ENTER => .@"return",
@@ -298,19 +257,16 @@ pub fn evdevToKeyCode(evdev_key: u32) input.KeyCode {
         evdev.KEY_DELETE => .forward_delete,
         evdev.KEY_CAPSLOCK => .caps_lock,
 
-        // Arrow keys
         evdev.KEY_LEFT => .left,
         evdev.KEY_RIGHT => .right,
         evdev.KEY_UP => .up,
         evdev.KEY_DOWN => .down,
 
-        // Navigation
         evdev.KEY_HOME => .home,
         evdev.KEY_END => .end,
         evdev.KEY_PAGEUP => .page_up,
         evdev.KEY_PAGEDOWN => .page_down,
 
-        // Function keys
         evdev.KEY_F1 => .f1,
         evdev.KEY_F2 => .f2,
         evdev.KEY_F3 => .f3,
@@ -367,7 +323,6 @@ pub fn evdevToKeyCode(evdev_key: u32) input.KeyCode {
         evdev.KEY_KPEQUAL => .keypad_equals,
         evdev.KEY_NUMLOCK => .keypad_clear,
 
-        // Modifiers
         evdev.KEY_LEFTSHIFT => .shift,
         evdev.KEY_RIGHTSHIFT => .right_shift,
         evdev.KEY_LEFTCTRL => .control,
@@ -381,11 +336,6 @@ pub fn evdevToKeyCode(evdev_key: u32) input.KeyCode {
     };
 }
 
-// =============================================================================
-// Modifier Parsing
-// =============================================================================
-
-/// Parse XKB modifier state into cross-platform Modifiers
 pub fn parseModifiers(mods_depressed: u32) input.Modifiers {
     return .{
         .shift = (mods_depressed & xkb_mod.SHIFT) != 0,
@@ -395,7 +345,6 @@ pub fn parseModifiers(mods_depressed: u32) input.Modifiers {
     };
 }
 
-/// Create Modifiers from individual boolean flags
 pub fn modifiersFromFlags(shift: bool, ctrl: bool, alt: bool, super: bool) input.Modifiers {
     return .{
         .shift = shift,
@@ -405,11 +354,6 @@ pub fn modifiersFromFlags(shift: bool, ctrl: bool, alt: bool, super: bool) input
     };
 }
 
-// =============================================================================
-// Mouse Event Parsing
-// =============================================================================
-
-/// Convert Wayland button code to MouseButton
 pub fn parseMouseButton(button: u32) input.MouseButton {
     return switch (button) {
         evdev.BTN_LEFT => .left,
@@ -419,7 +363,6 @@ pub fn parseMouseButton(button: u32) input.MouseButton {
     };
 }
 
-/// Create a MouseEvent from Wayland pointer data
 pub fn createMouseEvent(
     x: f64,
     y: f64,
@@ -435,7 +378,6 @@ pub fn createMouseEvent(
     };
 }
 
-/// Create a ScrollEvent from Wayland axis data
 pub fn createScrollEvent(
     x: f64,
     y: f64,
@@ -450,11 +392,6 @@ pub fn createScrollEvent(
     };
 }
 
-// =============================================================================
-// Keyboard Event Parsing
-// =============================================================================
-
-/// Create a KeyEvent from Wayland keyboard data
 pub fn createKeyEvent(
     evdev_key: u32,
     modifiers: input.Modifiers,
@@ -469,11 +406,6 @@ pub fn createKeyEvent(
     };
 }
 
-// =============================================================================
-// Input Event Construction Helpers
-// =============================================================================
-
-/// Construct a mouse_down InputEvent
 pub fn mouseDownEvent(
     x: f64,
     y: f64,
@@ -486,7 +418,6 @@ pub fn mouseDownEvent(
     };
 }
 
-/// Construct a mouse_up InputEvent
 pub fn mouseUpEvent(
     x: f64,
     y: f64,
@@ -498,7 +429,6 @@ pub fn mouseUpEvent(
     };
 }
 
-/// Construct a mouse_moved InputEvent
 pub fn mouseMovedEvent(
     x: f64,
     y: f64,
@@ -509,7 +439,6 @@ pub fn mouseMovedEvent(
     };
 }
 
-/// Construct a mouse_dragged InputEvent (mouse moved while button pressed)
 pub fn mouseDraggedEvent(
     x: f64,
     y: f64,
@@ -521,7 +450,6 @@ pub fn mouseDraggedEvent(
     };
 }
 
-/// Construct a mouse_entered InputEvent
 pub fn mouseEnteredEvent(
     x: f64,
     y: f64,
@@ -532,7 +460,6 @@ pub fn mouseEnteredEvent(
     };
 }
 
-/// Construct a mouse_exited InputEvent
 pub fn mouseExitedEvent(
     x: f64,
     y: f64,
@@ -543,7 +470,6 @@ pub fn mouseExitedEvent(
     };
 }
 
-/// Construct a scroll InputEvent
 pub fn scrollEvent(
     x: f64,
     y: f64,
@@ -556,7 +482,6 @@ pub fn scrollEvent(
     };
 }
 
-/// Construct a key_down InputEvent
 pub fn keyDownEvent(
     evdev_key: u32,
     modifiers: input.Modifiers,
@@ -567,7 +492,6 @@ pub fn keyDownEvent(
     };
 }
 
-/// Construct a key_up InputEvent
 pub fn keyUpEvent(
     evdev_key: u32,
     modifiers: input.Modifiers,
@@ -577,58 +501,44 @@ pub fn keyUpEvent(
     };
 }
 
-/// Construct a modifiers_changed InputEvent
 pub fn modifiersChangedEvent(modifiers: input.Modifiers) input.InputEvent {
     return .{
         .modifiers_changed = modifiers,
     };
 }
 
-/// Construct a text_input InputEvent
 pub fn textInputEvent(text: []const u8) input.InputEvent {
     return .{
         .text_input = .{ .text = text },
     };
 }
 
-/// Construct a composition InputEvent (IME preedit)
 pub fn compositionEvent(text: []const u8) input.InputEvent {
     return .{
         .composition = .{ .text = text },
     };
 }
 
-/// Construct a touch_down InputEvent
 pub fn touchDownEvent(id: i32, x: f64, y: f64) input.InputEvent {
     return .{ .touch_down = .{ .id = id, .position = .{ .x = x, .y = y } } };
 }
 
-/// Construct a touch_up InputEvent
 pub fn touchUpEvent(id: i32, x: f64, y: f64) input.InputEvent {
     return .{ .touch_up = .{ .id = id, .position = .{ .x = x, .y = y } } };
 }
 
-/// Construct a touch_moved InputEvent
 pub fn touchMovedEvent(id: i32, x: f64, y: f64) input.InputEvent {
     return .{ .touch_moved = .{ .id = id, .position = .{ .x = x, .y = y } } };
 }
 
-/// Construct a touch_cancelled InputEvent
 pub fn touchCancelledEvent() input.InputEvent {
     return .touch_cancelled;
 }
 
-// =============================================================================
-// Click Detection
-// =============================================================================
-
-/// Maximum time between clicks for multi-click detection (milliseconds)
 pub const MULTI_CLICK_TIME_MS: u32 = 500;
 
-/// Maximum distance between clicks for multi-click detection (pixels)
 pub const MULTI_CLICK_DISTANCE: f64 = 5.0;
 
-/// Click state tracker for detecting double/triple clicks
 pub const ClickTracker = struct {
     last_click_time: u32 = 0,
     last_click_x: f64 = 0,
@@ -638,14 +548,12 @@ pub const ClickTracker = struct {
 
     const Self = @This();
 
-    /// Record a click and return the click count (1 = single, 2 = double, etc.)
     pub fn recordClick(self: *Self, time_ms: u32, x: f64, y: f64, button: u32) u32 {
         const time_delta = time_ms -% self.last_click_time;
         const dx = x - self.last_click_x;
         const dy = y - self.last_click_y;
         const distance = @sqrt(dx * dx + dy * dy);
 
-        // Check if this is a continuation of a multi-click sequence
         if (time_delta < MULTI_CLICK_TIME_MS and
             distance < MULTI_CLICK_DISTANCE and
             button == self.last_click_button)
@@ -655,7 +563,6 @@ pub const ClickTracker = struct {
             self.click_count = 1;
         }
 
-        // Update state
         self.last_click_time = time_ms;
         self.last_click_x = x;
         self.last_click_y = y;
@@ -664,15 +571,10 @@ pub const ClickTracker = struct {
         return self.click_count;
     }
 
-    /// Reset click tracking (e.g., on focus loss)
     pub fn reset(self: *Self) void {
         self.* = .{};
     }
 };
-
-// =============================================================================
-// Key Repeat
-// =============================================================================
 
 /// Client-side key repeat for one seat's keyboard.
 ///
@@ -834,10 +736,6 @@ pub fn repeats(key: u32) bool {
     };
 }
 
-// =============================================================================
-// Tests
-// =============================================================================
-
 test "evdev to keycode mapping" {
     const testing = std.testing;
 
@@ -872,25 +770,16 @@ test "click tracker" {
 
     var tracker = ClickTracker{};
 
-    // First click
     try testing.expectEqual(@as(u32, 1), tracker.recordClick(1000, 100, 100, evdev.BTN_LEFT));
 
-    // Second click (double-click)
     try testing.expectEqual(@as(u32, 2), tracker.recordClick(1200, 101, 100, evdev.BTN_LEFT));
 
-    // Third click (triple-click)
     try testing.expectEqual(@as(u32, 3), tracker.recordClick(1400, 100, 101, evdev.BTN_LEFT));
 
-    // Click after timeout - resets
     try testing.expectEqual(@as(u32, 1), tracker.recordClick(2500, 100, 100, evdev.BTN_LEFT));
 }
 
 test "key repeat: a held key repeats at repeat_info's rate after its delay" {
-    // A spec-following compositor sends one `pressed` for a held key and
-    // nothing more, so every repeat must come from the client's timer.
-    // Methodology: replay GNOME's repeat_info(33, 500) and a 1 s hold, turning
-    // the loop exactly when `timeoutMs` says, as the core host does, then
-    // count the repeats and check both sides of each deadline.
     const testing = std.testing;
     var repeat = KeyRepeat{};
     repeat.configure(33, 500);
@@ -903,7 +792,6 @@ test "key repeat: a held key repeats at repeat_info's rate after its delay" {
     try testing.expectEqual(@as(?u32, 30), repeat.timeoutMs(1500));
     try testing.expectEqual(@as(?u32, null), repeat.fire(1529));
 
-    // Repeats at 1500, 1530, ..., 1980: (1980 - 1500) / 30 + 1 = 17.
     var count: u32 = 1;
     var now_ms: u64 = 1500;
     while (now_ms < 2000) : (count += 1) {
@@ -920,13 +808,9 @@ test "key repeat: a held key repeats at repeat_info's rate after its delay" {
 }
 
 test "key repeat: rate zero, stalls, and what stops a repeat" {
-    // Each case pairs the last state that repeats with the first that must
-    // not. Methodology: explicit clock values against the scheduler.
     const testing = std.testing;
     var repeat = KeyRepeat{};
 
-    // Before repeat_info, and at rate zero, nothing repeats; a rate of zero
-    // also stops a repeat already armed.
     try testing.expectEqual(KeyRepeat.Press.fresh, repeat.press(evdev.KEY_A, 0));
     try testing.expectEqual(@as(?u32, null), repeat.timeoutMs(0));
     repeat.release(evdev.KEY_A, 100);
@@ -936,8 +820,6 @@ test "key repeat: rate zero, stalls, and what stops a repeat" {
     repeat.configure(0, 200);
     try testing.expectEqual(@as(?u32, null), repeat.fire(5000));
 
-    // A loop stalled past nine deadlines gets one repeat, and the grid
-    // restarts from that turn instead of bursting the missed ones.
     repeat.configure(10, 200);
     repeat.clear();
     _ = repeat.press(evdev.KEY_A, 1000);
@@ -945,21 +827,18 @@ test "key repeat: rate zero, stalls, and what stops a repeat" {
     try testing.expectEqual(@as(?u32, 100), repeat.timeoutMs(2100));
     try testing.expectEqual(@as(?u32, null), repeat.fire(2199));
 
-    // Releasing another key keeps the repeat; the latest press takes it over.
     repeat.release(evdev.KEY_C, 2150);
     try testing.expectEqual(@as(?u32, 50), repeat.timeoutMs(2150));
     _ = repeat.press(evdev.KEY_B, 2160);
     try testing.expectEqual(@as(?u32, 200), repeat.timeoutMs(2160));
     try testing.expectEqual(@as(?u32, evdev.KEY_B), repeat.fire(2360));
 
-    // A modifier press or release stops it, as in GTK.
     try testing.expectEqual(KeyRepeat.Press.fresh, repeat.press(evdev.KEY_LEFTSHIFT, 2400));
     try testing.expectEqual(@as(?u32, null), repeat.timeoutMs(2400));
     _ = repeat.press(evdev.KEY_C, 2500);
     repeat.release(evdev.KEY_LEFTSHIFT, 2510);
     try testing.expectEqual(@as(?u32, null), repeat.timeoutMs(2510));
 
-    // Keyboard focus leaving forgets the held key.
     _ = repeat.press(evdev.KEY_D, 3000);
     repeat.clear();
     try testing.expectEqual(@as(?u32, null), repeat.fire(4000));
@@ -967,11 +846,6 @@ test "key repeat: rate zero, stalls, and what stops a repeat" {
 }
 
 test "key repeat: compositor repeats are forwarded, never doubled" {
-    // Some compositors repeat for the client, as a `pressed` for a key never
-    // released or as press/release pairs one interval apart. Methodology:
-    // replay both shapes and check each beat classifies as `.synthesized`
-    // and the timer stays off, while a hand's re-press 61 ms after the
-    // release, one past the gap, is fresh again.
     const testing = std.testing;
     var repeat = KeyRepeat{};
     repeat.configure(25, 600);
@@ -1010,30 +884,24 @@ test "IME text input event" {
 test "evdevKeyToChar" {
     const testing = std.testing;
 
-    // Letters
     try testing.expectEqual(@as(?u8, 'a'), evdevKeyToChar(evdev.KEY_A, false));
     try testing.expectEqual(@as(?u8, 'A'), evdevKeyToChar(evdev.KEY_A, true));
     try testing.expectEqual(@as(?u8, 'z'), evdevKeyToChar(evdev.KEY_Z, false));
     try testing.expectEqual(@as(?u8, 'Z'), evdevKeyToChar(evdev.KEY_Z, true));
 
-    // Numbers and symbols
     try testing.expectEqual(@as(?u8, '1'), evdevKeyToChar(evdev.KEY_1, false));
     try testing.expectEqual(@as(?u8, '!'), evdevKeyToChar(evdev.KEY_1, true));
     try testing.expectEqual(@as(?u8, '2'), evdevKeyToChar(evdev.KEY_2, false));
     try testing.expectEqual(@as(?u8, '@'), evdevKeyToChar(evdev.KEY_2, true));
 
-    // Punctuation
     try testing.expectEqual(@as(?u8, '.'), evdevKeyToChar(evdev.KEY_DOT, false));
     try testing.expectEqual(@as(?u8, '>'), evdevKeyToChar(evdev.KEY_DOT, true));
     try testing.expectEqual(@as(?u8, ' '), evdevKeyToChar(evdev.KEY_SPACE, false));
 
-    // Tab and Return are keys, not text: a '\t' would follow Tab's focus move
-    // into the next field.
     try testing.expectEqual(@as(?u8, null), evdevKeyToChar(evdev.KEY_TAB, false));
     try testing.expectEqual(@as(?u8, null), evdevKeyToChar(evdev.KEY_TAB, true));
     try testing.expectEqual(@as(?u8, null), evdevKeyToChar(evdev.KEY_ENTER, false));
 
-    // Non-printable keys return null
     try testing.expectEqual(@as(?u8, null), evdevKeyToChar(evdev.KEY_LEFTSHIFT, false));
     try testing.expectEqual(@as(?u8, null), evdevKeyToChar(evdev.KEY_F1, false));
     try testing.expectEqual(@as(?u8, null), evdevKeyToChar(evdev.KEY_LEFT, false));
@@ -1042,7 +910,6 @@ test "evdevKeyToChar" {
 test "IME composition event" {
     const testing = std.testing;
 
-    // Composition with text (preedit)
     const event1 = compositionEvent("日本");
     switch (event1) {
         .composition => |c| {
@@ -1051,7 +918,6 @@ test "IME composition event" {
         else => try testing.expect(false),
     }
 
-    // Empty composition (composition ended)
     const event2 = compositionEvent("");
     switch (event2) {
         .composition => |c| {

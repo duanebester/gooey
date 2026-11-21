@@ -1,31 +1,13 @@
-//! The VOPR's model of the nested_overlay example: a modal that stays open,
-//! holding a Select whose menu (a popover) opens inside it, and a second
-//! modal, the dialog, that "Open dialog" opens inside the first. The app's
-//! state is the Select's and the dialog's, which the model-free invariants
-//! already exercise through focus and a11y records, so the model does not
-//! predict it. It checks the layer order the example exists for (contract
-//! §6): fragments paint in kind order (popovers before modals) and, within
-//! a kind, in open order; a layer opened inside a layer's fragment comes
-//! after it; and a modal blocks the pointer to everything before it.
-//!
-//! On every newly rendered frame:
-//! - `modal_hit_start` is the topmost modal's own record: the dialog's when
-//!   it is open, else the first modal's, so everything beneath is blocked;
-//! - with the dialog open, its records are the frame's last, in one run,
-//!   after the menu's when both are open (the menu and the dialog open from
-//!   the first modal's fragment in one frame, and the popover goes first),
-//!   and the topmost record at each of its controls' centres is that
-//!   control;
-//! - with the menu open and the dialog closed, every option's record is
-//!   reachable, after every record of the first modal's panel, and topmost
-//!   at its centre.
-//! When the dialog closes, the first modal is the topmost again: its record
-//! is `modal_hit_start` in the next frame (the check above), and when focus
-//! was inside the dialog and no pointer action moved it, the frame that
-//! closed the dialog has focus on a control of the first modal
-//! (`checkFocusReturned`). It also counts how far a seed went:
-//! frames with both layers open, menu opens, flipped and edge-crossing
-//! menus, dialog opens, and choices.
+//! The VOPR's model of the nested_overlay example. The app's state is the
+//! Select's and the dialog's, which the model-free invariants already
+//! exercise through focus and a11y records, so the model does not predict
+//! it. It checks the layer order the example exists for: fragments paint in
+//! kind order (popovers before modals) and, within a kind, in open order; a
+//! layer opened inside a layer's fragment comes after it; and a modal blocks
+//! the pointer to everything before it. When the dialog closes while focus
+//! was inside it and no pointer action moved focus, focus lands on a control
+//! of the first modal (`checkFocusReturned`). It also counts how far a seed
+//! went.
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -267,7 +249,6 @@ fn layersOf(frame: *const records.Frame) ?Layers {
     };
 }
 
-/// The layer-order checks on one rendered frame.
 fn checkLayers(window: *const Window, frame: *const records.Frame, layers: *const Layers) void {
     const top = layers.dialog orelse layers.modal;
     if (frame.modal_hit_start != top) {
@@ -283,8 +264,6 @@ fn checkLayers(window: *const Window, frame: *const records.Frame, layers: *cons
     }
 }
 
-/// The dialog, the last layer opened, is the frame's last run of records,
-/// after the first modal's and the menu's, and topmost at its controls.
 fn checkDialogOnTop(
     window: *const Window,
     frame: *const records.Frame,
@@ -313,8 +292,6 @@ fn checkDialogOnTop(
     }
 }
 
-/// The layer-order checks on a frame that shows the menu, whose record is
-/// at `menu`, with no dialog over it.
 fn checkMenuOnTop(window: *const Window, frame: *const records.Frame, menu: u32) void {
     assert(menu < frame.hit_count);
     const panel_last = panelLastIndex(frame, menu);
@@ -337,7 +314,6 @@ fn checkMenuOnTop(window: *const Window, frame: *const records.Frame, menu: u32)
     assert(options_seen == option_count);
 }
 
-/// The topmost record at the record's centre is the record or a child.
 fn checkTopmostAtCentre(window: *const Window, frame: *const records.Frame, target: u32) void {
     const bounds = frame.hits[target].bounds;
     if (bounds.width == 0 or bounds.height == 0) return;
@@ -366,7 +342,6 @@ fn panelLastIndex(frame: *const records.Frame, menu: u32) u32 {
     return last;
 }
 
-/// Whether record `index` is `root` or inside it.
 fn inside(frame: *const records.Frame, index: u32, root: u32) bool {
     assert(root < frame.hit_count);
     var current = index;
@@ -388,7 +363,6 @@ fn firstChild(frame: *const records.Frame, parent: u32) ?u32 {
     return null;
 }
 
-/// The record of the button whose accessible name is `name`.
 fn buttonNamed(frame: *const records.Frame, name: []const u8) ?u32 {
     for (frame.a11y[0..frame.a11y_count]) |*node| {
         if (node.role != .button) continue;
@@ -398,7 +372,6 @@ fn buttonNamed(frame: *const records.Frame, name: []const u8) ?u32 {
     return null;
 }
 
-/// The hit record of the `rank`th a11y node with `role`, in tree order.
 fn nodeIndex(frame: *const records.Frame, role: anytype, rank: u32) ?u32 {
     var seen: u32 = 0;
     for (frame.a11y[0..frame.a11y_count]) |*node| {

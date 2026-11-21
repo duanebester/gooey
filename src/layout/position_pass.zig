@@ -1,23 +1,9 @@
-//! Layout position pass — Phase 3 of the layout pipeline.
-//!
-//! Reads sized elements from the sizing pass and writes
-//! `LayoutElement.computed.{bounding_box,content_box}`.
-//!
-//! Two sub-phases:
-//!   1. `computePositions` walks the main tree top-down, threading scroll
-//!      offsets and child-alignment / main-axis-distribution rules through
-//!      `planChildPositions`.
-//!   2. `computeFloatingPositions` re-enters the sizing pass for each
-//!      floating subtree (sizes can shift once the parent bbox is known),
-//!      then positions the floating root and its children.
-//!
-//! Floating elements never affect parent sizing (enforced by the sizing
-//! pass); this file relies on that invariant when computing constraints.
-//!
-//! Like the sizing pass, nothing here recurses (CLAUDE.md §6): placement keeps
-//! an explicit stack of open parents bounded by the engine's open depth, and
-//! the floating passes walk a subtree's pre-order index range forwards
-//! (`sizing_pass.subtreeEnd`).
+// Writes `LayoutElement.computed.{bounding_box,content_box}` after the
+// sizing pass. Relies on the sizing pass's invariant that floating elements
+// never affect parent sizing. Nothing recurses (CLAUDE.md §6): placement
+// keeps an explicit stack of open parents bounded by the engine's open
+// depth, and the floating passes walk a subtree's pre-order index range
+// forwards (`sizing_pass.subtreeEnd`).
 
 const std = @import("std");
 
@@ -34,13 +20,9 @@ const FloatingConfig = types.FloatingConfig;
 /// The explicit stack's ceiling; `sizing_pass.zig` explains the choice.
 const box_depth_ceiling = @import("../core/limits.zig").box_depth_ceiling;
 
-// ============================================================================
-// Phase 3: Compute positions (top-down)
-// ============================================================================
-
 /// Place `root` at (`x`, `y`), then place the rest of its subtree.
 pub fn computePositions(engine: *LayoutEngine, root: u32, x: f32, y: f32) void {
-    std.debug.assert(root < engine.elements.len()); // Valid element index
+    std.debug.assert(root < engine.elements.len());
     placeElement(engine.elements.get(root), x, y);
     positionSubtree(engine, root);
 }
@@ -86,7 +68,7 @@ fn positionSubtree(engine: *LayoutEngine, root: u32) void {
 
     const root_plan = planChildPositions(engine, root);
     if (!root_plan.has_grandchildren) {
-        placeLeaves(engine, root_plan); // No frame needed.
+        placeLeaves(engine, root_plan);
         return;
     }
 
@@ -139,7 +121,6 @@ fn planChildPositions(engine: *LayoutEngine, parent_index: u32) PositionFrame {
         .next_y = 0,
         .gap = 0,
     };
-    // Sum non-floating child sizes and count them along the main axis.
     const totals = sumChildrenAlongMainAxis(engine, first_child, is_horizontal);
     if (totals.child_count == 0) {
         // Only floating children: nothing flows here, and a scroll target
@@ -151,7 +132,6 @@ fn planChildPositions(engine: *LayoutEngine, parent_index: u32) PositionFrame {
         return frame;
     }
 
-    // Convert distribution mode into concrete gap + start offset.
     const dist = distributionParams(layout, content_box, totals);
     if (parent.config.scroll) |scroll| {
         if (scroll.target != .none) {
@@ -432,7 +412,6 @@ fn placeElement(elem: *LayoutElement, x: f32, y: f32) void {
         .height = elem.computed.sized_height,
     };
 
-    // Content box (inside padding)
     // Use @max(0, ...) to prevent negative dimensions when element shrinks below padding
     elem.computed.content_box = .{
         .x = x + @as(f32, @floatFromInt(padding.left)),
@@ -450,8 +429,7 @@ const MainAxisTotals = struct {
     has_grandchildren: bool,
 };
 
-/// Pre-pass: count non-floating children and sum their main-axis sizes.
-/// Floating siblings are excluded because they don't participate in flow.
+/// Floating siblings are excluded: they don't participate in flow.
 fn sumChildrenAlongMainAxis(engine: *LayoutEngine, first_child: u32, is_horizontal: bool) MainAxisTotals {
     std.debug.assert(first_child < engine.elements.len());
 
@@ -478,16 +456,14 @@ fn sumChildrenAlongMainAxis(engine: *LayoutEngine, first_child: u32, is_horizont
 }
 
 /// Resolved `main_axis_distribution` parameters — concrete gap and start
-/// offset both ≥ 0. Branchless caller code, easy to reason about.
+/// offset both ≥ 0.
 const DistributionParams = struct {
     effective_gap: f32,
     start_offset: f32,
 };
 
-/// Translate the `main_axis_distribution` enum into concrete spacing.
-/// Pure function — no engine state touched. Clamps both outputs to ≥0
-/// because children that overflow the container can otherwise produce
-/// negative gaps which the cursor loop would interpret as overlap.
+/// Clamps both outputs to ≥ 0: children overflowing the container would
+/// otherwise produce negative gaps the cursor loop reads as overlap.
 fn distributionParams(
     layout: LayoutConfig,
     content_box: BoundingBox,
@@ -506,7 +482,6 @@ fn distributionParams(
 
     switch (layout.main_axis_distribution) {
         .start => {
-            // Children packed at start with base gap
             effective_gap = base_gap;
             start_offset = 0;
         },
@@ -521,18 +496,16 @@ fn distributionParams(
             start_offset = container_main_size - total_with_gaps;
         },
         .space_between => {
-            // Equal space between children, none at edges. Single-child layouts collapse to start.
+            // Single-child layouts collapse to start.
             effective_gap = if (totals.child_count > 1) remaining_space / @as(f32, @floatFromInt(totals.child_count - 1)) else 0;
             start_offset = 0;
         },
         .space_around => {
-            // Equal space around each child (half at edges).
             const space_per_child = remaining_space / child_count_f;
             effective_gap = space_per_child;
             start_offset = space_per_child / 2;
         },
         .space_evenly => {
-            // Equal space between and around children.
             effective_gap = remaining_space / @as(f32, @floatFromInt(totals.child_count + 1));
             start_offset = effective_gap;
         },
@@ -569,10 +542,6 @@ fn crossAxisOffset(
     };
 }
 
-// ============================================================================
-// Phase 3b: Position floating elements
-// ============================================================================
-
 /// Position each floating element in two passes per element. Re-enters the
 /// sizing pass for the floating subtree so nested layouts see the parent's
 /// bbox as their constraint, then assigns concrete coordinates.
@@ -585,18 +554,14 @@ pub fn computeFloatingPositions(engine: *LayoutEngine) !void {
 
         const parent_bbox = resolveFloatingParentBbox(engine, elem, floating);
 
-        // expand uses parent dimensions as constraints.
         const constraint_width = if (floating.expand.width) parent_bbox.width else engine.viewport_width;
         const constraint_height = if (floating.expand.height) parent_bbox.height else engine.viewport_height;
 
-        // PASS 1: Compute sizes with integrated text wrapping.
         try computeFloatingSizesWithText(engine, float_idx, constraint_width, constraint_height);
 
-        // Apply expand after sizing (override computed sizes if expand is set).
         if (floating.expand.width) elem.computed.sized_width = parent_bbox.width;
         if (floating.expand.height) elem.computed.sized_height = parent_bbox.height;
 
-        // PASS 2: Position element and children.
         positionFloatingElement(engine, float_idx, floating, parent_bbox);
     }
 }
@@ -715,15 +680,12 @@ fn positionFloatingElement(
 ) void {
     const elem = engine.elements.get(float_idx);
 
-    // Calculate attach point on parent.
     const parent_x = parent_bbox.x + parent_bbox.width * floating.parent_attach.normalizedX();
     const parent_y = parent_bbox.y + parent_bbox.height * floating.parent_attach.normalizedY();
 
-    // Calculate element anchor offset.
     const elem_offset_x = elem.computed.sized_width * floating.element_attach.normalizedX();
     const elem_offset_y = elem.computed.sized_height * floating.element_attach.normalizedY();
 
-    // Final position (before clamping).
     var final_x = parent_x - elem_offset_x + floating.offset.x;
     var final_y = parent_y - elem_offset_y + floating.offset.y;
     if (floating.attach_to_parent) {
@@ -731,7 +693,6 @@ fn positionFloatingElement(
         final_y = flipIntoViewport(final_y, height, parent_bbox, engine.viewport_height);
     }
 
-    // Clamp to viewport bounds (keep floating elements on-screen).
     if (final_x < 0) final_x = 0;
     if (final_y < 0) final_y = 0;
     const max_x = engine.viewport_width - elem.computed.sized_width;
@@ -739,7 +700,6 @@ fn positionFloatingElement(
     if (final_x > max_x) final_x = @max(0, max_x);
     if (final_y > max_y) final_y = @max(0, max_y);
 
-    // Update bounding boxes.
     elem.computed.bounding_box = .{
         .x = final_x,
         .y = final_y,
@@ -756,6 +716,5 @@ fn positionFloatingElement(
         .height = @max(0, elem.computed.sized_height - padding.totalY()),
     };
 
-    // Place the floating element's subtree inside it.
     positionSubtree(engine, float_idx);
 }

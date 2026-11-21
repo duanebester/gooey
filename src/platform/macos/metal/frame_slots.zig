@@ -1,21 +1,11 @@
 //! Per-frame GPU storage for the Metal renderer: one slot per frame in
 //! flight, each holding the frame's copy of the packed instance arrays and
-//! its atlas staging, all created at init from `RenderLimits` and never
-//! replaced.
+//! its atlas staging, all created at init and never replaced.
 //!
-//! In-flight safety: a slot is reused only after the command buffer that
-//! last read it has completed (`acquire` waits on it), so no reasoning about
-//! drawable counts is needed, and atlas uploads, which write a slot before
-//! its frame has a drawable, are covered too.
-//!
-//! Resource sketch (CLAUDE.md §7), per slot, from the packed frame's
-//! capacities (`packed_frame.zig`): quads and shadows × 96 B, sprites × 96 B,
-//! mesh points × 8 B, triangles × 4 B of edge modes, and
-//! `upload_bytes_frame_max` of staging. `.standard` (three slots): 4,608 ×
-//! 96 + 9,472 × 96 + 65,536 × 8 + 5,461 × 4 + 1 MiB = 2,946,388 B per slot,
-//! 8.4 MiB per window. Per frame: one memcpy of each array's used prefix
-//! (typical frames a few KiB, the `.standard` worst case 1.9 MB) and the
-//! uploads' bytes. Nothing allocates after init.
+//! A slot is reused only after the command buffer that last read it has
+//! completed (`acquire` waits on it), so no reasoning about drawable counts
+//! is needed, and atlas uploads, which write a slot before its frame has a
+//! drawable, are covered too.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -52,7 +42,6 @@ pub const Capacity = struct {
         };
     }
 
-    /// Bytes of one slot.
     pub fn slotBytes(self: *const Capacity) u64 {
         const bytes = @as(u64, self.quads) * @sizeOf(packed_frame.Quad) +
             @as(u64, self.sprites) * @sizeOf(packed_frame.Sprite) +
@@ -103,7 +92,6 @@ pub const FrameSlots = struct {
         assert(self.staging.count == count);
     }
 
-    /// Wait for every frame in flight, then release the slots.
     pub fn deinit(self: *Self) void {
         assert(self.count <= pipelines.frame_count_max);
         for (self.command_buffers[0..self.count]) |*slot| waitAndRelease(slot);
@@ -115,15 +103,13 @@ pub const FrameSlots = struct {
         self.* = undefined;
     }
 
-    /// Make the current slot writable: wait for the frame that last read it.
     pub fn acquire(self: *Self) void {
         assert(self.index < self.count);
         waitAndRelease(&self.command_buffers[self.index]);
         assert(self.command_buffers[self.index] == null);
     }
 
-    /// Hand the current slot to `command_buffer`, committed and retained by
-    /// the caller, and move to the next slot.
+    /// `command_buffer` must be committed and retained by the caller.
     pub fn retire(self: *Self, command_buffer: objc.Object) void {
         assert(self.index < self.count);
         assert(self.command_buffers[self.index] == null);
@@ -131,7 +117,6 @@ pub const FrameSlots = struct {
         self.index = (self.index + 1) % self.count;
     }
 
-    /// Copy the frame's instances into the current slot.
     pub fn copyFrame(self: *const Self, frame: *const packed_frame.PackedFrame) void {
         assert(self.command_buffers[self.index] == null);
         const index = self.index;

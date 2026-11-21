@@ -1,17 +1,3 @@
-//! AppResources — shared, app-lifetime rendering resources.
-//!
-//! Bundles the three "expensive to duplicate per window" subsystems —
-//! `TextSystem`, `SvgAtlas`, `ImageAtlas` — into one struct.
-//!
-//! ## Ownership & lifetime
-//!
-//! `initOwned` / `initOwnedInPlace` allocate the three pointees and set
-//! `owned`; `deinit` frees them and clears it. `Window` embeds an
-//! `AppResources` by value.
-//!
-//! The struct is small; the heavy storage lives in the three pointees,
-//! which are heap-allocated for WASM stack reasons (CLAUDE.md §14).
-
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
@@ -30,30 +16,21 @@ const AtlasUploads = text_mod.AtlasUploads;
 const AtlasLimits = @import("limits.zig").AtlasLimits;
 const platform = @import("../platform/mod.zig");
 
-/// Font configuration. Duplicated as a small POD struct so
-/// `AppResources.initOwned` avoids a circular import on `window.zig`.
-/// Kept field-for-field identical to
-/// `window.FontConfig`, except `mono`, which only the 0.4.0 core sets; any
-/// other divergence must be added in both places.
+/// Font configuration. Duplicated as a small POD struct so `initOwned` avoids
+/// a circular import on `window.zig`. Kept field-for-field identical to
+/// `window.FontConfig`; any divergence must be added in both places.
 pub const FontConfig = struct {
-    /// Font family name (e.g., "Inter", "JetBrains Mono"). When null,
-    /// loads the platform's default sans-serif font.
+    /// Family name; null loads the platform's default sans-serif.
     font_name: ?[]const u8 = null,
-    /// Font size in points. Asserted `> 0` and `< 1000` at load time.
     font_size: f32 = 16.0,
     /// The app's text budget, `ResourceLimits.text`: the faces loaded at init,
-    /// one per variant, and the text caches' sizes. No default (CLAUDE.md §2).
+    /// one per variant, and the text caches' sizes.
     text: *const TextLimits,
-    /// The optional second family (contract decision 8), loaded into
-    /// `text.fonts.mono_variants` at `font_size`. Null loads none; 0.3.1 apps
-    /// never set it.
+    /// The optional second family, loaded into `text.fonts.mono_variants` at
+    /// `font_size`.
     mono: ?TextSystem.FaceSource = null,
 };
 
-/// Bundle of shared, app-lifetime rendering resources.
-///
-/// Holds heap-allocated `TextSystem`, `SvgAtlas`, `ImageAtlas`, and the
-/// upload journal they share.
 pub const AppResources = struct {
     allocator: Allocator,
     io: std.Io,
@@ -70,16 +47,7 @@ pub const AppResources = struct {
 
     const Self = @This();
 
-    // =========================================================================
-    // Owning init paths
-    // =========================================================================
-
-    /// Allocate and initialise all subsystems against `scale`.
-    ///
-    /// Returns an `AppResources` that owns the heap allocations; the caller
-    /// must invoke `deinit` exactly once. The `font_config` drives
-    /// `TextSystem.loadFont` / `loadSystemFont` inline so callers don't
-    /// need a separate "load default font" step.
+    /// The caller must invoke `deinit` exactly once.
     pub fn initOwned(
         allocator: Allocator,
         io: std.Io,
@@ -92,8 +60,6 @@ pub const AppResources = struct {
         return self;
     }
 
-    /// Load the app's primary family, or the system sans-serif, and its mono
-    /// family when it names one.
     fn loadFonts(text_system: *TextSystem, font_config: *const FontConfig) !void {
         std.debug.assert(font_config.font_size > 0);
         std.debug.assert(font_config.font_size < 1000);
@@ -107,14 +73,9 @@ pub const AppResources = struct {
         }
     }
 
-    /// In-place owning init for callers that need to avoid a stack temp.
-    /// Marked `noinline` so ReleaseSmall doesn't fold the stack frame back
-    /// into the caller (WASM stack budget — CLAUDE.md §14).
-    ///
-    /// `self` must point at uninitialised memory; the function writes
-    /// every field. On error, partially-allocated subsystems are torn
-    /// down via the `errdefer` chain. Every atlas is reserved here at its
-    /// budget size and never grows (CLAUDE.md §2).
+    /// `noinline` so ReleaseSmall doesn't fold the stack frame back into the
+    /// caller (WASM stack budget). Every atlas is reserved at its budget size
+    /// and never grows.
     pub noinline fn initOwnedInPlace(
         self: *Self,
         allocator: Allocator,
@@ -172,8 +133,7 @@ pub const AppResources = struct {
         });
         errdefer image_atlas.deinit();
 
-        // Field-by-field — no struct literal — to avoid a stack temp
-        // (CLAUDE.md §14 WASM stack budget).
+        // Field-by-field, no struct literal, to avoid a stack temp (WASM stack budget).
         self.allocator = allocator;
         self.io = io;
         self.text_system = text_system;
@@ -182,16 +142,11 @@ pub const AppResources = struct {
         self.atlas_uploads = atlas_uploads;
         self.owned = true;
 
-        // Pair-assert: pointer-equality between the subsystems would imply a
-        // cross-aliased allocation bug somewhere upstream.
+        // Pointer equality between the subsystems would imply a cross-aliased allocation bug.
         std.debug.assert(@intFromPtr(self.text_system) != @intFromPtr(self.svg_atlas));
         std.debug.assert(@intFromPtr(self.svg_atlas) != @intFromPtr(self.image_atlas));
         std.debug.assert(self.text_system.getAtlas().uploads == atlas_uploads);
     }
-
-    // =========================================================================
-    // Atlas consumers (renderers)
-    // =========================================================================
 
     /// Register the renderer identified by `key` (its platform window's
     /// address) as a consumer of the atlas uploads. Its texture starts empty,
@@ -222,18 +177,11 @@ pub const AppResources = struct {
         self.atlas_uploads.unregisterConsumer(key);
     }
 
-    // =========================================================================
-    // Teardown
-    // =========================================================================
-
     /// Tear down the three subsystems if `owned`; a second call is a no-op.
     pub fn deinit(self: *Self) void {
         if (!self.owned) return;
 
-        // Image atlas first (holds decoded pixel buffers and cache
-        // entries), then svg atlas, then text system. Order is not
-        // load-bearing — there are no inter-pointer references between
-        // the three.
+        // Order is not load-bearing: no inter-pointer references between the three.
         self.image_atlas.deinit();
         self.allocator.destroy(self.image_atlas);
 
@@ -247,8 +195,7 @@ pub const AppResources = struct {
         self.atlas_uploads.deinit();
         self.allocator.destroy(self.atlas_uploads);
 
-        // Null out so an accidental re-deinit fails fast on the
-        // pointer check, rather than double-freeing.
+        // Null out so an accidental re-deinit fails fast rather than double-freeing.
         self.text_system = undefined;
         self.svg_atlas = undefined;
         self.image_atlas = undefined;
@@ -256,13 +203,6 @@ pub const AppResources = struct {
         self.owned = false;
     }
 };
-
-// =============================================================================
-// Tests
-// =============================================================================
-//
-// These tests pin the owning init paths against `std.testing.allocator`,
-// which would surface a leak or double-free immediately.
 
 const testing = std.testing;
 
@@ -286,9 +226,6 @@ test "AppResources: initOwned allocates and frees cleanly" {
 }
 
 test "AppResources: initOwnedInPlace produces an owned instance" {
-    // Heap-allocate so we can exercise the `noinline initInPlace`
-    // entry point without taking the by-value copy that the stack
-    // path would.
     const slot = try testing.allocator.create(AppResources);
     defer testing.allocator.destroy(slot);
 
@@ -317,8 +254,7 @@ test "AppResources: custom font config loads named font" {
     );
     defer resources.deinit();
 
-    // The text system loaded *something* — exact metrics are platform
-    // dependent, but a positive baseline confirms the font path ran.
+    // Exact metrics are platform dependent; a positive size confirms the font path ran.
     const metrics = resources.text_system.getMetrics() orelse
         return error.SkipZigTest; // No font loader on this platform.
     try testing.expect(metrics.point_size > 0);

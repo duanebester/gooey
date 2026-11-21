@@ -1,24 +1,11 @@
-//! Metal API type definitions for gooey
-//!
-//! Clean Zig types instead of @cImport magic numbers.
-//! Inspired by Ghostty's approach - see https://github.com/ghostty-org/ghostty
-//!
-//! Reference: https://developer.apple.com/metal/cpp/
-
 const std = @import("std");
 
-// ============================================================================
-// Enums
-// ============================================================================
-
-/// https://developer.apple.com/documentation/metal/mtlloadaction
 pub const MTLLoadAction = enum(c_ulong) {
     dont_care = 0,
     load = 1,
     clear = 2,
 };
 
-/// https://developer.apple.com/documentation/metal/mtlstoreaction
 pub const MTLStoreAction = enum(c_ulong) {
     dont_care = 0,
     store = 1,
@@ -28,7 +15,6 @@ pub const MTLStoreAction = enum(c_ulong) {
     custom_sample_depth_store = 5,
 };
 
-/// https://developer.apple.com/documentation/metal/mtlprimitivetype
 pub const MTLPrimitiveType = enum(c_ulong) {
     point = 0,
     line = 1,
@@ -37,13 +23,11 @@ pub const MTLPrimitiveType = enum(c_ulong) {
     triangle_strip = 4,
 };
 
-/// https://developer.apple.com/documentation/metal/mtlindextype
 pub const MTLIndexType = enum(c_ulong) {
     uint16 = 0,
     uint32 = 1,
 };
 
-/// https://developer.apple.com/documentation/metal/mtlvertexformat
 pub const MTLVertexFormat = enum(c_ulong) {
     invalid = 0,
     uchar2 = 1,
@@ -96,7 +80,6 @@ pub const MTLVertexStepFunction = enum(c_ulong) {
     per_patch_control_point = 4,
 };
 
-/// https://developer.apple.com/documentation/metal/mtlpixelformat
 pub const MTLPixelFormat = enum(c_ulong) {
     invalid = 0,
     a8unorm = 1,
@@ -152,7 +135,6 @@ pub const MTLPixelFormat = enum(c_ulong) {
     depth32float_stencil8 = 260,
 };
 
-/// https://developer.apple.com/documentation/metal/mtltexturetype
 pub const MTLTextureType = enum(c_ulong) {
     type_1d = 0,
     type_1d_array = 1,
@@ -164,7 +146,6 @@ pub const MTLTextureType = enum(c_ulong) {
     type_3d = 7,
 };
 
-/// https://developer.apple.com/documentation/metal/mtltextureusage
 pub const MTLTextureUsage = packed struct(c_ulong) {
     shader_read: bool = false,
     shader_write: bool = false,
@@ -179,7 +160,6 @@ pub const MTLTextureUsage = packed struct(c_ulong) {
     pub const shader_read_only: MTLTextureUsage = .{ .shader_read = true };
 };
 
-/// https://developer.apple.com/documentation/metal/mtlresourceoptions
 pub const MTLResourceOptions = packed struct(c_ulong) {
     cpu_cache_mode: CPUCacheMode = .default,
     storage_mode: StorageMode = .shared,
@@ -204,13 +184,10 @@ pub const MTLResourceOptions = packed struct(c_ulong) {
         tracked = 2,
     };
 
-    /// Convenience: default shared storage
     pub const storage_shared: MTLResourceOptions = .{ .storage_mode = .shared };
-    /// Convenience: private GPU-only storage
     pub const storage_private: MTLResourceOptions = .{ .storage_mode = .private };
 };
 
-/// https://developer.apple.com/documentation/metal/mtlblendfactor
 pub const MTLBlendFactor = enum(c_ulong) {
     zero = 0,
     one = 1,
@@ -229,7 +206,6 @@ pub const MTLBlendFactor = enum(c_ulong) {
     one_minus_blend_alpha = 14,
 };
 
-/// https://developer.apple.com/documentation/metal/mtlblendoperation
 pub const MTLBlendOperation = enum(c_ulong) {
     add = 0,
     subtract = 1,
@@ -237,10 +213,6 @@ pub const MTLBlendOperation = enum(c_ulong) {
     min = 3,
     max = 4,
 };
-
-// ============================================================================
-// Structs
-// ============================================================================
 
 pub const MTLClearColor = extern struct {
     red: f64,
@@ -288,7 +260,6 @@ pub const MTLRegion = extern struct {
     size: MTLSize,
 };
 
-/// https://developer.apple.com/documentation/metal/mtlstoragemode
 pub const MTLStorageMode = enum(c_ulong) {
     shared = 0, // CPU + GPU (unified memory)
     managed = 1, // CPU + GPU with sync (discrete GPUs)
@@ -296,18 +267,11 @@ pub const MTLStorageMode = enum(c_ulong) {
     memoryless = 3, // Tile memory only (Apple GPUs, render targets)
 };
 
-/// CoreGraphics size - used by CAMetalLayer
 pub const CGSize = extern struct {
     width: f64,
     height: f64,
 };
 
-// ============================================================================
-// External Functions
-// ============================================================================
-
-/// https://developer.apple.com/documentation/metal/1433401-mtlcreatesystemdefaultdevice
 pub extern "c" fn MTLCreateSystemDefaultDevice() ?*anyopaque;
 
-/// https://developer.apple.com/documentation/metal/1433367-mtlcopyalldevices
 pub extern "c" fn MTLCopyAllDevices() ?*anyopaque;

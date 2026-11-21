@@ -1,23 +1,12 @@
-//! WindowsWindow - one Win32 top-level window rendered with Vulkan.
-//!
-//! The window procedure (`windowProc`) is the only entry point Windows calls.
-//! It routes every input message through `input.Translator.translate` and
-//! delivers the result through `handleInput` into the core's event queue,
-//! once the core host binds the window (`CoreBinding`). The window never draws:
-//! the host's render thread owns the shared Vulkan renderer after `bindCore`.
-//!
-//! ## Sizes
+//! One Win32 top-level window rendered with the shared renderer.
 //!
 //! The process is per-monitor DPI aware (v2), so Windows reports the client
 //! area in device pixels. `size` is that area in logical pixels, divided by
 //! `scale_factor` (the monitor's DPI over 96). The host's render thread sizes
 //! the swapchain to each frame's viewport, fitted to `ResourceLimits.window`.
 //!
-//! ## Memory (CLAUDE.md §2)
-//!
 //! `init` allocates the window and its renderer storage, sized from the app's
-//! `ResourceLimits`, before the event loop starts. Title, IME text, and the
-//! translated event's text live in fixed inline buffers; nothing is allocated
+//! `ResourceLimits`, before the event loop starts; nothing is allocated
 //! afterwards.
 
 const std = @import("std");
@@ -52,7 +41,6 @@ const ime_cursor_rect_initial = geometry.RectF{
     .size = .{ .width = 1, .height = 20 },
 };
 
-/// Window style for every Gooey window: a standard resizable frame.
 const window_style: u32 = win32.WS_OVERLAPPEDWINDOW;
 const window_style_extended: u32 = win32.WS_EX_APPWINDOW;
 
@@ -74,10 +62,9 @@ comptime {
     assert(input_burst_count_max >= windows_input.message_event_count_max);
 }
 
-/// How the core host drives this window (contract §9), as on macOS and
-/// Linux: the window pushes input into the core's queue and asks the host for
-/// a tick. The window never draws, and its renderer belongs to the host's
-/// render thread.
+/// How the core host drives this window, as on macOS and Linux: the window
+/// pushes input into the core's queue and asks the host for a tick. The
+/// window never draws, and its renderer belongs to the host's render thread.
 pub const CoreBinding = struct {
     queue: *core_events.EventQueue,
     query: *const core_router.Query,
@@ -93,7 +80,6 @@ pub const CoreBinding = struct {
     screen_reader_requested: *const fn (context: *anyopaque) void,
 };
 
-/// A client area in device pixels, as `WM_SIZE` and `GetClientRect` report.
 const ClientSize = struct {
     width_px: u32,
     height_px: u32,
@@ -155,7 +141,7 @@ pub const Window = struct {
     /// Set once the core host binds the window; see `CoreBinding`.
     core: ?CoreBinding = null,
 
-    // Written only by the section of 0.3.1 calls below.
+    // Written only by the legacy calls below.
     dark_appearance: bool = false,
     needs_redraw: bool = false,
     render_deadline_ms: ?i64 = null,
@@ -234,7 +220,7 @@ pub const Window = struct {
 
     /// Establish every field before the window can be observed. Assigned field
     /// by field: one struct literal for the whole window, renderer included,
-    /// may be built in a stack temporary and copied (CLAUDE.md §13 and §14).
+    /// may be built in a stack temporary and copied.
     noinline fn initInPlace(
         self: *Self,
         allocator: Allocator,
@@ -436,10 +422,6 @@ pub const Window = struct {
         self.allocator.destroy(self);
     }
 
-    // =========================================================================
-    // Client area
-    // =========================================================================
-
     /// Whether a frame can be shown: the window is open, not minimized, and
     /// has a client area. A zero-area client is not reported as minimized
     /// (a restore animation, a shell that collapses the window), and the
@@ -518,10 +500,6 @@ pub const Window = struct {
             &self.window_limits,
         );
     }
-
-    // =========================================================================
-    // Input
-    // =========================================================================
 
     /// Translate one input message and deliver the event it produces, at
     /// most one (`windows_input.message_event_count_max`), a focus loss
@@ -675,10 +653,6 @@ pub const Window = struct {
         }
     }
 
-    // =========================================================================
-    // Properties
-    // =========================================================================
-
     /// Store the title as NUL-terminated UTF-16. Returns false, with the
     /// stored title untouched, when `title` is not valid UTF-8.
     fn storeTitle(self: *Self, title: []const u8) bool {
@@ -715,12 +689,9 @@ pub const Window = struct {
         assert(self.closed);
     }
 
-    // =========================================================================
-    // Calls from the 0.3.1 `context/window.zig`
-    // =========================================================================
-    //
-    // The core never makes these calls. They stay only while that file
-    // compiles, and go when phase 6 deletes it.
+    // Calls from the 0.3.1 `context/window.zig`; the core never makes these
+    // calls. They stay only while that file compiles, and go when phase 6
+    // deletes it.
 
     /// Stored only. Windows applies the system theme to the frame; asking
     /// for a dark title bar needs `DwmSetWindowAttribute`, a later item.
@@ -755,10 +726,6 @@ pub const Window = struct {
         self.render_deadline_ms = deadline_ms;
         assert(self.render_deadline_ms.? <= deadline_ms);
     }
-
-    // =========================================================================
-    // IME
-    // =========================================================================
 
     // IME text on this backend is one `ime.utf8FromUtf16` result: at most
     // `ime.units_max` (1024) UTF-16 units, each at most three UTF-8 bytes
@@ -882,10 +849,6 @@ pub const Window = struct {
         _ = self.handleInput(.{ .composition = .{ .text = "" } });
     }
 
-    // =========================================================================
-    // Callbacks
-    // =========================================================================
-
     pub fn setCloseCallback(self: *Self, callback: ?CloseCallback) void {
         self.on_close = callback;
     }
@@ -898,10 +861,6 @@ pub const Window = struct {
         const ptr = self.user_data orelse return null;
         return @ptrCast(@alignCast(ptr));
     }
-
-    // =========================================================================
-    // Window procedure handlers
-    // =========================================================================
 
     fn handleSize(self: *Self, wparam: win32.WPARAM, lparam: win32.LPARAM) void {
         assert(self.hwnd != null);
@@ -1191,8 +1150,8 @@ fn encodeTitle(target: *TitleBuffer, title: []const u8) bool {
 
 comptime {
     // About 13.1 KiB, the shared renderer 4.3 KiB of it: heap-allocated and
-    // initialized in place, but under the 50 KiB WASM stack threshold
-    // (CLAUDE.md §14). Revisit `initInPlace` if this bound has to grow.
+    // initialized in place, under the 50 KiB WASM stack threshold. Revisit
+    // `initInPlace` if this bound has to grow.
     assert(@sizeOf(Window) <= 16 * 1024);
     assert(@sizeOf(TitleBuffer) == (Window.title_bytes_max + 1) * @sizeOf(u16));
 }
@@ -1398,9 +1357,6 @@ fn expectTitle(buffer: *const TitleBuffer, expected: []const u8) !void {
 }
 
 test "title encoding fills the buffer exactly at the byte limit" {
-    // Methodology: the empty title, then the longest ASCII title (one unit
-    // per byte, so the terminator lands in the last slot), then the longest
-    // three-byte title (fewer units than bytes).
     var buffer = try testTitleBuffer("");
     try std.testing.expectEqual(@as(u16, 0), buffer[0]);
 
@@ -1416,9 +1372,8 @@ test "title encoding fills the buffer exactly at the byte limit" {
 }
 
 test "invalid title UTF-8 leaves the stored title intact" {
-    // Methodology: each rejected title starts with an ASCII run longer than
-    // any SIMD chunk, which `utf8ToUtf16Le` would copy before failing. The
-    // previous title must survive unit for unit up to its terminator.
+    // Each rejected title starts with an ASCII run longer than any SIMD
+    // chunk, which `utf8ToUtf16Le` would copy before failing.
     var buffer = try testTitleBuffer("Old title");
     const ascii_run: [70]u8 = @splat('x');
     const rejected = [_][]const u8{
@@ -1431,15 +1386,11 @@ test "invalid title UTF-8 leaves the stored title intact" {
         try std.testing.expect(!encodeTitle(&buffer, title));
         try expectTitle(&buffer, "Old title");
     }
-    // One valid title after the rejections still replaces it.
     try std.testing.expect(encodeTitle(&buffer, &ascii_run));
     try expectTitle(&buffer, &ascii_run);
 }
 
 test "client extents round up and clamp at the Win32 limit" {
-    // Methodology: the smallest sizes, a fractional-scale size, one device
-    // pixel either side of `client_px_max`, and infinity, which a caller may
-    // pass as "no maximum" and which must not reach `@intFromFloat`.
     const max_f: f64 = @floatFromInt(client_px_max);
     try std.testing.expectEqual(@as(i32, 1), clientPxFromLogical(1, 1));
     try std.testing.expectEqual(@as(i32, 1), clientPxFromLogical(1e-9, 1));
@@ -1453,9 +1404,6 @@ test "client extents round up and clamp at the Win32 limit" {
 }
 
 test "outer size stays in range for unbounded client sizes" {
-    // Methodology: the real `AdjustWindowRectExForDpi` adds the frame to the
-    // clamped client size at 100% and 300%; the result must be positive and
-    // at least the client extent, which an `i32` overflow would break.
     const dpis = [_]u32{ win32.USER_DEFAULT_SCREEN_DPI, 3 * win32.USER_DEFAULT_SCREEN_DPI };
     for (dpis) |dpi| {
         const unbounded = std.math.inf(f64);
@@ -1478,11 +1426,6 @@ fn testLimitsWindow(options: *const WindowOptions) Window {
 }
 
 test "track limits cap the client at the window budget, then max_size, then min_size" {
-    // Methodology: a 2560x1600 px budget at 200% (192 DPI). `max_size` is
-    // 1000 logical wide (2000 px, under the budget) and unbounded tall (the
-    // budget applies); `min_size` is 2000 logical wide (4000 px, over the
-    // budget), so the minimum yields to the maximum. Expected outer sizes
-    // come from `outerFromClient`, the real frame arithmetic.
     const dpi = 2 * win32.USER_DEFAULT_SCREEN_DPI;
     var options = WindowOptions{
         .limits = limits_mod.ResourceLimits.standard,
@@ -1497,7 +1440,6 @@ test "track limits cap the client at the window budget, then max_size, then min_
     try std.testing.expectEqual(limits.max.x, limits.min.?.x);
     try std.testing.expectEqual(outerFromClient(.{ .x = 4000, .y = 200 }, dpi).y, limits.min.?.y);
 
-    // Without `max_size`, the budget alone bounds both axes.
     options.max_size = null;
     options.min_size = null;
     const budget_only = testLimitsWindow(&options).trackLimits(dpi);
@@ -1506,9 +1448,6 @@ test "track limits cap the client at the window budget, then max_size, then min_
 }
 
 test "a new window fits the work area, then grows to min_size, never past the budget" {
-    // Methodology: at 100%, ask for 3000x3000 logical on a 1920x1040 work
-    // area. With no minimum it shrinks to the work area. A 1600x1200 minimum
-    // wins over the work area on height but not past the 1500 px budget.
     const dpi = win32.USER_DEFAULT_SCREEN_DPI;
     const work_area = win32.RECT{ .left = 0, .top = 0, .right = 1920, .bottom = 1040 };
     var options = WindowOptions{
@@ -1539,7 +1478,6 @@ test "centering keeps the window's corner inside the work area" {
     const small = centeredOrigin(.{ .x = 400, .y = 200 }, area);
     try std.testing.expectEqual(@as(i32, 400), small.x);
     try std.testing.expectEqual(@as(i32, 350), small.y);
-    // Larger than the area on both axes: pinned to its top-left corner.
     const large = centeredOrigin(.{ .x = 1400, .y = 1000 }, area);
     try std.testing.expectEqual(@as(i32, 100), large.x);
     try std.testing.expectEqual(@as(i32, 50), large.y);

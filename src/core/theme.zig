@@ -1,43 +1,16 @@
-//! Theme - Semantic Color and Style Definitions
-//!
-//! Provides a standard `Theme` struct that components can use for consistent styling.
-//! Components automatically fall back to theme colors when explicit values aren't provided.
-//!
-//! ## Usage
-//!
-//! ```zig
-//! // Set theme at start of render
-//! cx.setTheme(&Theme.dark);
-//!
-//! // Components automatically inherit theme colors:
-//! TextInput{ .id = "name", .placeholder = "Enter name" }
-//!
-//! // Override specific colors when needed:
-//! TextInput{ .id = "special", .background = Color.red }
-//! ```
-
 const std = @import("std");
 const assert = std.debug.assert;
 
 const Color = @import("../geometry/geometry.zig").Color;
 
-/// Standard theme interface for semantic colors and styling.
-/// Components resolve null color fields against the current theme.
+// Components resolve null color fields against the current theme.
 pub const Theme = struct {
-    // =========================================================================
-    // Background Colors
-    // =========================================================================
-
     /// Page/app background - the base layer
     bg: Color,
     /// Card/panel backgrounds - slightly elevated surfaces
     surface: Color,
     /// Dropdowns, tooltips, modals - highest elevation surfaces
     overlay: Color,
-
-    // =========================================================================
-    // Accent Colors
-    // =========================================================================
 
     /// Primary actions, links, focus indicators
     primary: Color,
@@ -60,10 +33,6 @@ pub const Theme = struct {
     /// against `danger` in every built-in theme.
     on_danger: Color,
 
-    // =========================================================================
-    // Text Colors
-    // =========================================================================
-
     /// Primary text - headings, body text
     text: Color,
     /// Secondary text - subtitles, less important info
@@ -71,18 +40,10 @@ pub const Theme = struct {
     /// Muted text - disabled states, placeholders
     muted: Color,
 
-    // =========================================================================
-    // Border Colors
-    // =========================================================================
-
     /// Default borders - inputs, cards (derived from muted with alpha)
     border: Color,
     /// Focused input borders (typically primary)
     border_focus: Color,
-
-    // =========================================================================
-    // Semantic Sizing
-    // =========================================================================
 
     /// Small corner radius (e.g., buttons, badges)
     radius_sm: f32 = 4,
@@ -95,18 +56,12 @@ pub const Theme = struct {
     /// Aligned with FontConfig.font_size (16pt) so UI text matches rasterization size.
     font_size_base: u16 = 16,
 
-    // =========================================================================
-    // Built-in Presets - Catppuccin
-    // =========================================================================
-
     /// Catppuccin Latte - light theme
     pub const light = Theme{
-        // Backgrounds
         .bg = Color.rgb(0.937, 0.945, 0.961), // #eff1f5
         .surface = Color.rgb(0.902, 0.914, 0.933), // #e6e9ef
         .overlay = Color.rgb(0.804, 0.827, 0.867), // #cdd6f4
 
-        // Accents
         .primary = Color.rgb(0.118, 0.400, 0.961), // #1e66f5
         .secondary = Color.rgb(0.800, 0.816, 0.855), // #ccd0da, 5.2:1 under text
         .accent = Color.rgb(0.533, 0.239, 0.753), // #8839c0
@@ -116,16 +71,13 @@ pub const Theme = struct {
         .on_primary = Color.white, // 4.9:1 on primary
         .on_danger = Color.white, // 4.7:1 on danger
 
-        // Text
         .text = Color.rgb(0.298, 0.310, 0.412), // #4c4f69
         .subtext = Color.rgb(0.424, 0.435, 0.522), // #6c6f85
         .muted = Color.rgb(0.608, 0.620, 0.694), // #9ca0b0
 
-        // Borders (muted with alpha for default, primary for focus)
         .border = Color.rgba(0.608, 0.620, 0.694, 0.3),
         .border_focus = Color.rgb(0.118, 0.400, 0.961), // primary
 
-        // Sizing
         .radius_sm = 4,
         .radius_md = 8,
         .radius_lg = 16,
@@ -139,7 +91,6 @@ pub const Theme = struct {
         .surface = Color.rgb(0.212, 0.227, 0.310), // #363a4f
         .overlay = Color.rgb(0.282, 0.298, 0.384), // #494d64
 
-        // Accents
         .primary = Color.rgb(0.541, 0.678, 0.957), // #8aadf4
         .secondary = Color.rgb(0.286, 0.302, 0.392), // #494d64, 5.6:1 under text
         .accent = Color.rgb(0.769, 0.565, 0.922), // #c490eb
@@ -150,29 +101,25 @@ pub const Theme = struct {
         .on_primary = Color.rgb(0.141, 0.153, 0.227), // #24273a, 6.6:1
         .on_danger = Color.rgb(0.141, 0.153, 0.227), // #24273a, 5.5:1
 
-        // Text
         .text = Color.rgb(0.792, 0.827, 0.961), // #cad3f5
         .subtext = Color.rgb(0.718, 0.757, 0.898), // #b8c0e5
         .muted = Color.rgb(0.545, 0.584, 0.729), // #8b95ba
 
-        // Borders (muted with alpha for default, primary for focus)
         .border = Color.rgba(0.545, 0.584, 0.729, 0.3),
         .border_focus = Color.rgb(0.541, 0.678, 0.957), // primary
 
-        // Sizing
         .radius_sm = 4,
         .radius_md = 8,
         .radius_lg = 16,
         .font_size_base = 16,
     };
 
-    /// Catppuccin Macchiato, from the published palette (catppuccin/palette,
-    /// `palette.json`) with mauve as the primary accent. `dark` is a
-    /// Macchiato-derived theme with a blue primary and translucent borders;
-    /// this one uses palette colours only, and every token is opaque.
+    // From the published palette (catppuccin/palette, `palette.json`) with
+    // mauve as the primary accent; `dark` instead derives from Macchiato with
+    // a blue primary and translucent borders.
     pub const catppuccin_macchiato = catppuccin(&macchiato_palette);
 
-    /// Catppuccin Latte, mapped as `catppuccin_macchiato` is.
+    // Catppuccin Latte, mapped as `catppuccin_macchiato` is.
     pub const catppuccin_latte = catppuccin(&latte_palette);
 
     comptime {
@@ -237,9 +184,8 @@ pub const Theme = struct {
         return std.math.pow(f32, (component + 0.055) / 1.055, 2.4);
     }
 
-    /// The Catppuccin colours the built-in themes take, as 0xRRGGBB, named
-    /// as in `palette.json`. The same palettes as chat-zig's `theme.zig`,
-    /// plus yellow for `warning`.
+    // The Catppuccin colours the built-in themes take, as 0xRRGGBB, named as
+    // in `palette.json`.
     const CatppuccinPalette = struct {
         base: u32,
         mantle: u32,
@@ -303,14 +249,13 @@ pub const Theme = struct {
         .yellow = 0xeed49f,
     };
 
-    /// One role mapping for every flavour, following chat-zig's
-    /// `gooeyTheme`: base is the window; mantle fills raised panes; surface1
-    /// marks hovered rows; surface2 outlines inputs and cards; overlay0 is
-    /// the faintest readable text. Secondary buttons fill with surface1 on
-    /// dark flavours and surface0 on light ones: Latte's text on surface1 is
-    /// 4.4:1, under the 4.5:1 the comptime check requires.
-    /// Accents: mauve primary, blue as the second accent, lavender for
-    /// focus, and green, yellow, and red for success, warning, and danger.
+    // One role mapping for every flavour: base is the window; mantle fills
+    // raised panes; surface1 marks hovered rows; surface2 outlines inputs and
+    // cards; overlay0 is the faintest readable text. Secondary buttons fill
+    // with surface1 on dark flavours and surface0 on light ones: Latte's text
+    // on surface1 is 4.4:1, under the 4.5:1 the comptime check requires.
+    // Accents: mauve primary, blue as the second accent, lavender for focus,
+    // and green, yellow, and red for success, warning, and danger.
     fn catppuccin(palette: *const CatppuccinPalette) Theme {
         assert(palette.base != palette.text);
         assert(palette.mantle != palette.base);
@@ -337,27 +282,22 @@ pub const Theme = struct {
         };
     }
 
-    // =========================================================================
-    // Helper Methods
-    // =========================================================================
-
-    /// Returns a color with adjusted alpha, useful for hover/disabled states
     pub fn withAlpha(self: *const Theme, color: Color, alpha: f32) Color {
         _ = self;
         return color.withAlpha(alpha);
     }
 
-    /// Whether the host's own chrome (the macOS title bar) should be dark.
-    /// A theme is dark when its background is darker than its text: the
-    /// relation every legible theme states, with no threshold to tune, so a
-    /// dim grey theme with white text counts as dark. Ties count as light.
+    // Whether the host's own chrome (the macOS title bar) should be dark. A
+    // theme is dark when its background is darker than its text: the relation
+    // every legible theme states, with no threshold to tune, so a dim grey
+    // theme with white text counts as dark. Ties count as light.
     pub fn isDark(self: *const Theme) bool {
         return luma(self.bg) < luma(self.text);
     }
 
-    /// Rec. 709 luma of the stored (gamma-encoded) components, enough to
-    /// order two colours by lightness. Components outside 0 to 1 are a
-    /// malformed theme, which the bounds catch.
+    // Rec. 709 luma of the stored (gamma-encoded) components, enough to order
+    // two colours by lightness. Components outside 0 to 1 are a malformed
+    // theme, which the bounds catch.
     fn luma(color: Color) f32 {
         const value = 0.2126 * color.r + 0.7152 * color.g + 0.0722 * color.b;
         assert(value >= 0);
@@ -366,17 +306,9 @@ pub const Theme = struct {
     }
 };
 
-// =============================================================================
-// Tests
-// =============================================================================
-
 const testing = @import("std").testing;
 
 test "contrastRatio matches WCAG's published endpoints and a known pair" {
-    // Goal: the comptime contrast checks rest on this formula. Methodology:
-    // black on white is 21:1 by definition and a colour on itself 1:1;
-    // white on #1e66f5 is 4.91:1 by WCAG's formula, which an unlinearized
-    // (gamma-encoded) luminance would put at 3.4:1.
     const ratio = Theme.contrastRatio;
     try testing.expectApproxEqAbs(@as(f32, 21), ratio(Color.black, Color.white), 0.01);
     const primary = Theme.light.primary;
@@ -387,16 +319,11 @@ test "contrastRatio matches WCAG's published endpoints and a known pair" {
 test "Theme.light preset has valid colors" {
     const t = Theme.light;
 
-    // All colors should have full opacity by default (except border)
     try testing.expectEqual(@as(f32, 1.0), t.bg.a);
     try testing.expectEqual(@as(f32, 1.0), t.surface.a);
     try testing.expectEqual(@as(f32, 1.0), t.primary.a);
     try testing.expectEqual(@as(f32, 1.0), t.text.a);
-
-    // Border should have alpha for subtle appearance
     try testing.expect(t.border.a < 1.0);
-
-    // Sizing defaults
     try testing.expectEqual(@as(f32, 4), t.radius_sm);
     try testing.expectEqual(@as(f32, 8), t.radius_md);
     try testing.expectEqual(@as(f32, 16), t.radius_lg);
@@ -406,13 +333,10 @@ test "Theme.light preset has valid colors" {
 test "Theme.dark preset has valid colors" {
     const t = Theme.dark;
 
-    // All colors should have full opacity by default (except border)
     try testing.expectEqual(@as(f32, 1.0), t.bg.a);
     try testing.expectEqual(@as(f32, 1.0), t.surface.a);
     try testing.expectEqual(@as(f32, 1.0), t.primary.a);
     try testing.expectEqual(@as(f32, 1.0), t.text.a);
-
-    // Border should have alpha for subtle appearance
     try testing.expect(t.border.a < 1.0);
 }
 
@@ -421,7 +345,6 @@ test "Theme.withAlpha helper" {
     const faded = t.withAlpha(t.primary, 0.5);
 
     try testing.expectEqual(@as(f32, 0.5), faded.a);
-    // RGB should remain unchanged
     try testing.expectEqual(t.primary.r, faded.r);
     try testing.expectEqual(t.primary.g, faded.g);
     try testing.expectEqual(t.primary.b, faded.b);
@@ -446,11 +369,8 @@ test "Theme light and dark are different" {
     const light = Theme.light;
     const dark = Theme.dark;
 
-    // Background should be different (light vs dark)
     try testing.expect(light.bg.r != dark.bg.r);
     try testing.expect(light.bg.g != dark.bg.g);
     try testing.expect(light.bg.b != dark.bg.b);
-
-    // Text should be different (dark text on light vs light text on dark)
     try testing.expect(light.text.r != dark.text.r);
 }

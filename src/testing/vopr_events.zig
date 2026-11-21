@@ -1,9 +1,6 @@
 //! The platform events one VOPR action delivers, in order, for the models
-//! that route events themselves (splitter, actions). It mirrors
-//! `Vopr.deliverPointer`, `deliverGesture`, and `cancelEvent`: a click that
-//! releases a held button first sends that button's held move and release;
-//! a press reports the pointer before its button; a release reports its
-//! held move first.
+//! that route events themselves (splitter, actions); it mirrors
+//! `Vopr.deliverPointer`, `deliverGesture`, and `cancelEvent`.
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -52,7 +49,6 @@ pub const Events = struct {
     }
 };
 
-/// The events `action` delivers, in delivery order.
 pub fn lower(action: *const Action) Events {
     var events: Events = .{ .buffer = undefined, .count = 0 };
     switch (action.*) {

@@ -1,36 +1,13 @@
-//! Exact compile-time verification of backend signatures.
-//!
-//! The core binds to its renderer (`core/backend.zig`) and the Vulkan
-//! renderer to its presentation surface (`linux/vk_surface.zig`) through
-//! declarations that each target provides. Zig only analyzes the selected
-//! target, so presence checks with `@hasDecl` would let drift accumulate on
-//! the others: a parameter that is `f32` on one target and `f64` on another,
-//! or a fallible call on one and an infallible one on another.
-//!
-//! This module checks complete function types — parameter types and order,
-//! receiver mutability, numeric widths, error-union presence, and payload
-//! types — so a signature change fails to compile with a message naming the
-//! offending declaration.
-//!
-//! ## Why a descriptor instead of comparing whole `fn` types
-//!
-//! Implementations use inferred error sets (`!*Self`), so an expected type
-//! written as `fn (...) anyerror!*Self` would never compare equal. `Sig`
-//! therefore states the parameter list and the *payload* type, plus whether an
-//! error union is required, and the verifier destructures `@typeInfo` to
-//! compare piecewise.
+//! Compile-time verification of backend signatures against `Sig` descriptors.
+//! Implementations use inferred error sets (`!*Self`), so whole `fn` types
+//! never compare equal; `Sig` states the parameter list and payload type and
+//! the verifier destructures `@typeInfo` to compare piecewise instead.
 
 const std = @import("std");
 
-// =============================================================================
-// Signature descriptors
-// =============================================================================
-
 /// Whether a verified declaration must return an error union.
 pub const ErrorPolicy = enum {
-    /// The return type must be `E!Payload` for some error set `E`.
     required,
-    /// The return type must be exactly the payload type.
     forbidden,
 };
 
@@ -40,15 +17,9 @@ pub const Sig = struct {
     params: []const type,
     /// Return payload type, with any error union already unwrapped.
     returns: type,
-    /// Whether the declaration must be fallible.
     errors: ErrorPolicy = .forbidden,
 };
 
-// =============================================================================
-// Primitive checks
-// =============================================================================
-
-/// Verify that `Owner.name` is a function exactly matching `sig`.
 pub fn verifyFn(
     comptime Owner: type,
     comptime name: []const u8,
@@ -90,7 +61,6 @@ pub fn verifyFn(
     }
 }
 
-/// Compare a declaration's parameter list against `sig`, receiver included.
 fn verifyFnParams(
     comptime Owner: type,
     comptime name: []const u8,
@@ -120,7 +90,6 @@ fn verifyFnParams(
     }
 }
 
-/// Compare a declaration's return type against `sig`, honouring `ErrorPolicy`.
 fn verifyFnReturn(
     comptime Owner: type,
     comptime name: []const u8,
@@ -167,7 +136,6 @@ fn verifyFnReturn(
     }
 }
 
-/// Verify that `Owner.name` is a non-function declaration of type `Expected`.
 pub fn verifyConst(
     comptime Owner: type,
     comptime name: []const u8,
@@ -190,7 +158,6 @@ pub fn verifyConst(
     }
 }
 
-/// Render a signature descriptor for compile-error messages.
 fn describe(comptime sig: Sig) []const u8 {
     comptime {
         var text: []const u8 = "fn (";
@@ -203,10 +170,6 @@ fn describe(comptime sig: Sig) []const u8 {
         return text ++ @typeName(sig.returns);
     }
 }
-
-// =============================================================================
-// Tests
-// =============================================================================
 
 const testing = std.testing;
 
@@ -223,8 +186,6 @@ test "verifyFn matches an exact signature" {
 }
 
 test "verifyFn accepts an inferred error set as a required error union" {
-    // Backends universally use inferred error sets, so the payload — not the
-    // error set — is what the verifier may compare.
     const Fixture = struct {
         pub fn fallible(_: *@This()) !u16 {
             return 7;

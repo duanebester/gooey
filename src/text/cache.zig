@@ -1,9 +1,4 @@
-//! Glyph cache - maps (font_id, glyph_id, size, subpixel) to atlas regions
-//!
-//! Renders glyphs on-demand using the FontFace interface and caches
-//! them in the texture atlas.
-//!
-//! Uses fixed-capacity hash table (no dynamic allocation after init).
+//! Glyph cache mapping (face, glyph, size, subpixel) keys to atlas regions.
 
 const std = @import("std");
 const atlas_mod = @import("atlas.zig");
@@ -20,9 +15,7 @@ const reservation = @import("../core/reservation.zig");
 
 const assert = std.debug.assert;
 
-/// Where the glyph atlas comes from: its fixed side and the shared upload journal.
 pub const AtlasOptions = struct {
-    /// `AtlasLimits.text_size`.
     size: u32,
     uploads: *AtlasUploads,
 };
@@ -36,19 +29,14 @@ const is_wasm = platform.is_wasm;
 const is_linux = platform.is_linux;
 const is_windows = platform.is_windows;
 
-/// Key for glyph lookup - includes subpixel variant
 pub const GlyphKey = struct {
-    /// Font identifier (pointer-based)
     font_ptr: usize,
-    /// Glyph ID from the font
     glyph_id: u16,
-    /// Font size in 1/64th points (for subpixel precision)
+    /// Font size in 1/64th points.
     size_fixed: u16,
-    /// Scale factor (1-4x)
+    /// 1...4.
     scale_fixed: u8,
-    /// Subpixel X variant (0 to SUBPIXEL_VARIANTS_X - 1)
     subpixel_x: u8,
-    /// Subpixel Y variant (0 to SUBPIXEL_VARIANTS_Y - 1)
     subpixel_y: u8,
 
     pub inline fn init(face: FontFace, glyph_id: u16, font_size: f32, scale: f32, subpixel_x: u8, subpixel_y: u8) GlyphKey {
@@ -62,7 +50,7 @@ pub const GlyphKey = struct {
         };
     }
 
-    /// Create key for a fallback font (uses raw CTFontRef pointer)
+    /// Key for a fallback font: `font_ptr` is the raw CTFontRef.
     pub inline fn initWithFontPtr(font_ptr: usize, glyph_id: u16, size: f32, scale: f32, subpixel_x: u8, subpixel_y: u8) GlyphKey {
         return .{
             .font_ptr = font_ptr,
@@ -74,12 +62,9 @@ pub const GlyphKey = struct {
         };
     }
 
-    /// Compute hash using wyhash-style 2-multiply mix.
-    /// Packs non-pointer fields into a single u64 (56 bits: 16+16+8+8+8)
-    /// then mixes with the font pointer in two dependent multiplies.
-    /// Two multiplies instead of a 15-round FNV-1a serial chain: they
-    /// have excellent avalanche properties and allow instruction-level
-    /// parallelism on the pack and pointer loads.
+    /// Wyhash-style 2-multiply mix: packs the non-pointer fields into one u64
+    /// then mixes with the font pointer in two dependent multiplies, chosen
+    /// over a 15-round FNV-1a serial chain for instruction-level parallelism.
     pub fn hash(self: GlyphKey) u64 {
         // Pack glyph_id(16) | size_fixed(16) | scale_fixed(8) | subpixel_x(8) | subpixel_y(8).
         const fields: u64 = @as(u64, self.glyph_id) |
@@ -88,19 +73,17 @@ pub const GlyphKey = struct {
             (@as(u64, self.subpixel_x) << 40) |
             (@as(u64, self.subpixel_y) << 48);
 
-        // Convert to u64 for platform independence (wasm32 has 32-bit usize).
+        // wasm32 has 32-bit usize.
         const ptr_u64: u64 = @intCast(self.font_ptr);
 
         const PRIME_A: u64 = 0x9E3779B97F4A7C15; // golden ratio fractional bits
         const PRIME_B: u64 = 0xBF58476D1CE4E5B9;
 
-        // Two dependent multiplies with xor-shift finalization.
         var h = (ptr_u64 ^ PRIME_A) *% (fields ^ PRIME_B);
         h = (h ^ (h >> 32)) *% PRIME_A;
         return h ^ (h >> 32);
     }
 
-    /// Check equality of two keys
     pub fn eql(a: GlyphKey, b: GlyphKey) bool {
         return a.font_ptr == b.font_ptr and
             a.glyph_id == b.glyph_id and
@@ -111,22 +94,19 @@ pub const GlyphKey = struct {
     }
 };
 
-/// Cached glyph information
 pub const CachedGlyph = struct {
-    /// Region in the atlas (physical pixels)
+    /// Physical pixels.
     region: Region,
-    /// Horizontal offset from pen position to glyph left edge (physical pixels)
+    /// From pen position to glyph left edge, physical pixels.
     offset_x: i32,
-    /// Vertical offset from baseline to glyph top edge (physical pixels)
+    /// From baseline to glyph top edge, physical pixels.
     offset_y: i32,
-    /// Horizontal advance to next glyph (logical pixels)
+    /// Logical pixels.
     advance_x: f32,
-    /// Whether this glyph uses the color atlas (emoji)
     is_color: bool,
     /// Side of the atlas the region lies in; fixed for the atlas's lifetime.
     atlas_size: u32,
 
-    /// UV coordinates of the region.
     pub fn uv(self: CachedGlyph) atlas_mod.UVCoords {
         return self.region.uv(self.atlas_size);
     }
@@ -153,7 +133,7 @@ const Lookup = union(enum) {
 };
 
 /// Glyph cache with atlas management. Every table is reserved at init from
-/// `ResourceLimits.text.glyph_cache_count_max` and never grows (CLAUDE.md §2).
+/// `ResourceLimits.text.glyph_cache_count_max` and never grows.
 ///
 /// Zero is "empty" everywhere, so the tables come from fresh pages and stay
 /// non-resident until glyphs are cached: hash slots and free-list links hold
@@ -170,20 +150,17 @@ pub const GlyphCache = struct {
     /// Hash slot -> entry index + 1, or `slot_empty`. A power of two, at
     /// least twice the entries, so the modulo is a mask and probes stay short.
     hash_table: []u16,
-    /// Number of valid entries
     entry_count: u32,
     /// Entry slots claimed so far; slots below it are valid or on the free
-    /// list. `deinit` zeroes this prefix (§21).
+    /// list. `deinit` zeroes this prefix.
     entry_high_water: u16,
     /// Whether any slot of `hash_table` was written, for `deinit`'s zeroing.
     hash_written: bool,
 
     /// Free-list link of each claimed slot: the next free index + 1, or
-    /// `slot_empty` at the end of the list.
-    ///
-    /// INVARIANT: Any code path that sets `entry.valid = false` on an individual entry
-    /// MUST push that entry's index back onto this free list. `reclaimStale`
-    /// and bulk `clear()` do.
+    /// `slot_empty` at the end of the list. Any code path that sets
+    /// `entry.valid = false` on an individual entry MUST push that index back
+    /// onto this list; `reclaimStale` and bulk `clear()` do.
     free_chain: []u16,
     /// Head of the free list (index + 1), or `slot_empty`; when empty, the
     /// next slot is `entry_high_water`.
@@ -192,7 +169,6 @@ pub const GlyphCache = struct {
     /// Grayscale atlas for regular text, fixed at `AtlasLimits.text_size`.
     grayscale_atlas: Atlas,
 
-    /// Reusable bitmap buffer for rendering
     render_buffer: []u8,
     render_buffer_size: u32,
     scale_factor: f32,
@@ -201,7 +177,7 @@ pub const GlyphCache = struct {
 
     const MAX_PROBE_LENGTH: usize = 64;
     const slot_empty: u16 = 0;
-    const RENDER_BUFFER_SIZE: u32 = limits.MAX_GLYPH_SIZE; // Max glyph size
+    const RENDER_BUFFER_SIZE: u32 = limits.MAX_GLYPH_SIZE;
 
     /// Hash slots for `glyph_count_max` entries: twice as many, rounded up to
     /// a power of two.
@@ -266,7 +242,7 @@ pub const GlyphCache = struct {
         }
     }
 
-    /// Zero what any frame wrote before the pages go back (§21).
+    /// Zero what any frame wrote before the pages go back.
     pub fn deinit(self: *Self) void {
         assert(self.entry_count <= self.entry_high_water);
         assert(self.entry_high_water <= self.entries.len);
@@ -352,7 +328,7 @@ pub const GlyphCache = struct {
     }
 
     /// The valid entry holding `key`, if any. The table and entries are loaded
-    /// once, so the probe loop reloads neither (§20), and the hit path uses the
+    /// once, so the probe loop reloads neither, and the hit path uses the
     /// pointer instead of indexing the entries again.
     inline fn findEntry(self: *const Self, key: GlyphKey) ?*GlyphEntry {
         const hash_table = self.hash_table;
@@ -451,7 +427,6 @@ pub const GlyphCache = struct {
         return freed;
     }
 
-    /// Insert entry into hash table using linear probing
     fn insertIntoHashTable(self: *Self, key: GlyphKey, entry_idx: u16) void {
         assert(entry_idx < self.entry_high_water);
 
@@ -482,7 +457,6 @@ pub const GlyphCache = struct {
         cached: bool,
     };
 
-    /// Get a cached glyph with subpixel variant, or render and cache it
     pub inline fn getOrRenderSubpixel(
         self: *Self,
         face: FontFace,
@@ -557,11 +531,9 @@ pub const GlyphCache = struct {
 
         @memset(self.render_buffer, 0);
 
-        // Calculate subpixel shift (0.0, 0.25, 0.5, or 0.75)
         const subpixel_shift_x = @as(f32, @floatFromInt(subpixel_x)) / @as(f32, @floatFromInt(SUBPIXEL_VARIANTS_X));
         const subpixel_shift_y = @as(f32, @floatFromInt(subpixel_y)) / @as(f32, @floatFromInt(SUBPIXEL_VARIANTS_Y));
 
-        // Use the FontFace interface to render with subpixel shift
         const rasterized = try face.renderGlyphSubpixel(
             glyph_id,
             font_size,
@@ -649,8 +621,7 @@ pub const GlyphCache = struct {
         subpixel_y: u8,
     ) !Rendered {
         std.debug.assert(font_size > 0);
-        // Fallback fonts are only supported on native platforms
-        // On web, the browser handles font fallback automatically
+        // Native platforms only: on web the browser handles font fallback.
         if (is_wasm) {
             return error.FallbackNotSupported;
         }
@@ -668,7 +639,6 @@ pub const GlyphCache = struct {
         const subpixel_shift_x = @as(f32, @floatFromInt(subpixel_x)) / @as(f32, @floatFromInt(SUBPIXEL_VARIANTS_X));
         const subpixel_shift_y = @as(f32, @floatFromInt(subpixel_y)) / @as(f32, @floatFromInt(SUBPIXEL_VARIANTS_Y));
 
-        // Platform-specific fallback rendering
         const rasterized = if (is_linux) blk: {
             const FreeTypeFace = @import("backends/freetype/face.zig").FreeTypeFace;
             break :blk try FreeTypeFace.renderGlyphFromFont(
@@ -700,8 +670,6 @@ pub const GlyphCache = struct {
     /// Clear the cache (call when changing fonts or scale). The atlas condemns
     /// every shelf; their space returns once no open frame still uses it.
     pub fn clear(self: *Self) void {
-        // Every claimed slot goes back on the free list; slots past the
-        // high-water mark are still unwritten.
         self.next_free = slot_empty;
         for (self.entries[0..self.entry_high_water], 0..) |*entry, index| {
             entry.valid = false;
@@ -716,35 +684,26 @@ pub const GlyphCache = struct {
         assert(self.hasFreeSlot());
     }
 
-    /// Get the grayscale atlas for GPU upload
     pub inline fn getAtlas(self: *const Self) *const Atlas {
         return &self.grayscale_atlas;
     }
 };
 
-// =============================================================================
-// Tests
-// =============================================================================
-
 test "GlyphKey size encoding" {
     const testing = std.testing;
 
-    // Different sizes should produce different keys
     const key_16 = GlyphKey.initWithFontPtr(0x1234, 65, 16.0, 1.0, 0, 0);
     const key_24 = GlyphKey.initWithFontPtr(0x1234, 65, 24.0, 1.0, 0, 0);
     const key_32 = GlyphKey.initWithFontPtr(0x1234, 65, 32.0, 1.0, 0, 0);
 
-    // size_fixed should be size * 64 (26.6 fixed point)
     try testing.expectEqual(@as(u16, 16 * 64), key_16.size_fixed);
     try testing.expectEqual(@as(u16, 24 * 64), key_24.size_fixed);
     try testing.expectEqual(@as(u16, 32 * 64), key_32.size_fixed);
 
-    // Keys with different sizes should not be equal
     try testing.expect(!GlyphKey.eql(key_16, key_24));
     try testing.expect(!GlyphKey.eql(key_16, key_32));
     try testing.expect(!GlyphKey.eql(key_24, key_32));
 
-    // Same size should produce equal keys
     const key_16_dup = GlyphKey.initWithFontPtr(0x1234, 65, 16.0, 1.0, 0, 0);
     try testing.expect(GlyphKey.eql(key_16, key_16_dup));
 }
@@ -752,7 +711,6 @@ test "GlyphKey size encoding" {
 test "GlyphKey size hash distribution" {
     const testing = std.testing;
 
-    // Different sizes should produce different hashes
     const hash_14 = GlyphKey.initWithFontPtr(0x1234, 65, 14.0, 1.0, 0, 0).hash();
     const hash_16 = GlyphKey.initWithFontPtr(0x1234, 65, 16.0, 1.0, 0, 0).hash();
     const hash_18 = GlyphKey.initWithFontPtr(0x1234, 65, 18.0, 1.0, 0, 0).hash();
@@ -765,7 +723,6 @@ test "GlyphKey size hash distribution" {
 test "GlyphKey subpixel variants" {
     const testing = std.testing;
 
-    // Different subpixel positions should produce different keys
     const key_sub0 = GlyphKey.initWithFontPtr(0x1234, 65, 16.0, 1.0, 0, 0);
     const key_sub1 = GlyphKey.initWithFontPtr(0x1234, 65, 16.0, 1.0, 1, 0);
     const key_sub2 = GlyphKey.initWithFontPtr(0x1234, 65, 16.0, 1.0, 2, 0);
@@ -773,15 +730,11 @@ test "GlyphKey subpixel variants" {
     try testing.expect(!GlyphKey.eql(key_sub0, key_sub1));
     try testing.expect(!GlyphKey.eql(key_sub1, key_sub2));
 
-    // Different hashes
     try testing.expect(key_sub0.hash() != key_sub1.hash());
     try testing.expect(key_sub1.hash() != key_sub2.hash());
 }
 
 test "GlyphKey wyhash distribution — printable ASCII × subpixel variants" {
-    // Hash all printable ASCII glyph IDs (32–126 = 95 chars) × 4 subpixel variants = 380 keys.
-    // Use `standard`'s table (8,192 slots): that is what determines probe-chain length in practice.
-    // At load factor 380/8192 ≈ 4.6%, birthday-paradox predicts ~2.4% collision rate.
     const testing = std.testing;
     const glyph_count = limits.TextLimits.standard.glyph_cache_count_max;
     const TABLE_SLOTS: u32 = comptime GlyphCache.hashSlotCount(glyph_count);
@@ -801,7 +754,6 @@ test "GlyphKey wyhash distribution — printable ASCII × subpixel variants" {
         }
     }
 
-    // Count collisions: any bucket with >1 entry contributes (count - 1) collisions.
     var collisions: u32 = 0;
     for (buckets) |count| {
         if (count > 1) {
@@ -809,10 +761,8 @@ test "GlyphKey wyhash distribution — printable ASCII × subpixel variants" {
         }
     }
 
-    // Collision rate must stay below 5%.
     const collision_rate = @as(f64, @floatFromInt(collisions)) / @as(f64, @floatFromInt(total_keys));
     try testing.expect(collision_rate < 0.05);
 
-    // Sanity: we generated the expected number of keys.
     try testing.expectEqual(@as(u32, 95) * @as(u32, SUBPIXEL_VARIANTS_X), total_keys);
 }

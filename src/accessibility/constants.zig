@@ -1,9 +1,5 @@
-//! Accessibility policy constants.
-//!
-//! Every capacity is in the app's budget (`ResourceLimits.a11y`, and
-//! `build.box_depth_max` for nesting) and reaches the tree and bridges through
-//! `tree.Capacity`; what remains here is policy, not storage.
+//! Capacity policy here; storage is sized in `tree.Capacity` from the app's
+//! `ResourceLimits.a11y` and reaches the tree and bridges through it.
 
-/// Frames between screen reader activity checks.
 /// Check every ~1 second at 60fps to avoid per-frame IPC.
 pub const SCREEN_READER_CHECK_INTERVAL: u32 = 60;

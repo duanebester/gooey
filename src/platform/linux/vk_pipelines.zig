@@ -1,27 +1,8 @@
-//! Vulkan graphics pipeline creation.
-//!
-//! One generic helper creates every pipeline (one per packed-frame pipeline:
-//! quad, glyph, SVG, image, and the three mesh topologies), parameterized by
-//! shader SPV and blend mode, so the pipelines cannot drift apart.
-//!
-//! Axes of variation across the pipelines:
-//!   1. Shader SPIR-V bytecode (vert + frag)
-//!   2. Blend mode — SVG and meshes output premultiplied colour; the rest
-//!      use standard SRC_ALPHA
-//!
-//! Everything else (vertex input, topology, rasterizer, dynamic viewport and
-//! scissor, and the one pipeline layout) is identical.
-//!
-//! Pipeline cache support: callers pass a `VkPipelineCache`
-//! handle to amortize shader compilation across pipelines within a session and
-//! across sessions when the cache is serialized to disk.
+//! One generic helper creates every pipeline (one per packed-frame pipeline),
+//! parameterized by shader SPV and blend mode, so the pipelines cannot drift apart.
 
 const std = @import("std");
 const vk = @import("vulkan.zig");
-
-// =============================================================================
-// Public Types
-// =============================================================================
 
 pub const BlendMode = enum {
     /// srcAlpha / oneMinusSrcAlpha — used by the quad, glyph, and image pipelines.
@@ -44,14 +25,7 @@ pub const PipelineError = error{
     PipelineCreationFailed,
 };
 
-// =============================================================================
-// Public API
-// =============================================================================
-
-/// Create the `VkPipelineLayout` every pipeline shares: the frame's descriptor
-/// set and the vertex-stage push constants (`vk_types.PushConstants`).
-/// Caller owns the returned handle and must destroy it via
-/// `vkDestroyPipelineLayout` when no longer needed.
+/// Caller owns the returned handle and must destroy it.
 pub fn createPipelineLayout(device: vk.Device, descriptor_layout: vk.DescriptorSetLayout) PipelineError!vk.PipelineLayout {
     std.debug.assert(device != null);
     std.debug.assert(descriptor_layout != null);
@@ -80,11 +54,8 @@ pub fn createPipelineLayout(device: vk.Device, descriptor_layout: vk.DescriptorS
     return layout;
 }
 
-/// Create an empty `VkPipelineCache`.
-///
-/// If `initial_data` is provided (e.g. loaded from disk), the driver will
-/// attempt to use it. If the data is missing, corrupt, or from an incompatible
-/// driver, Vulkan silently ignores it and creates an empty cache — zero risk.
+/// If `initial_data` is missing, corrupt, or from an incompatible driver,
+/// Vulkan silently ignores it and creates an empty cache — zero risk.
 pub fn createPipelineCache(
     device: vk.Device,
     initial_data: ?[]const u8,
@@ -107,12 +78,8 @@ pub fn createPipelineCache(
     return cache;
 }
 
-/// Create a complete graphics pipeline from a config and pre-created layout.
-///
-/// One generic function serves every pipeline instead of one copy per pipeline.
-/// The caller provides both the pipeline layout (via `config.pipeline_layout`)
-/// and an optional pipeline cache. The caller owns the layout and cache;
-/// this function only creates and returns the `VkPipeline` handle.
+/// The caller owns the layout and cache; this function only creates and
+/// returns the `VkPipeline` handle.
 pub fn createGraphicsPipeline(
     device: vk.Device,
     render_pass: vk.RenderPass,
@@ -125,13 +92,11 @@ pub fn createGraphicsPipeline(
     std.debug.assert(config.vert_spv.len > 0);
     std.debug.assert(config.frag_spv.len > 0);
 
-    // Create transient shader modules — destroyed after pipeline creation
     const vert_module = try createShaderModule(device, config.vert_spv);
     defer vk.vkDestroyShaderModule(device, vert_module, null);
     const frag_module = try createShaderModule(device, config.frag_spv);
     defer vk.vkDestroyShaderModule(device, frag_module, null);
 
-    // Assemble fixed-function state
     const stages = shaderStages(vert_module, frag_module);
     const vertex_input = vertexInputState();
     const input_assembly = inputAssemblyState();
@@ -146,7 +111,6 @@ pub fn createGraphicsPipeline(
     };
     const dynamic_state = dynamicState(&dynamic_states);
 
-    // Create the pipeline
     const pipeline = try createPipeline(
         device,
         render_pass,
@@ -165,16 +129,11 @@ pub fn createGraphicsPipeline(
     return pipeline;
 }
 
-/// Destroy a pipeline handle. Safe to call with null.
 /// Does NOT destroy the pipeline layout — the caller owns that separately.
 pub fn destroyPipeline(device: vk.Device, pipeline: vk.Pipeline) void {
     std.debug.assert(device != null);
     if (pipeline) |p| vk.vkDestroyPipeline(device, p, null);
 }
-
-// =============================================================================
-// Internal Helpers — Vulkan object creation
-// =============================================================================
 
 fn createShaderModule(device: vk.Device, code: []align(4) const u8) PipelineError!vk.ShaderModule {
     std.debug.assert(device != null);
@@ -250,10 +209,6 @@ fn createPipeline(
     std.debug.assert(pipeline != null);
     return pipeline;
 }
-
-// =============================================================================
-// Internal Helpers — Fixed-function state builders
-// =============================================================================
 
 fn shaderStages(
     vert_module: vk.ShaderModule,
@@ -355,8 +310,6 @@ fn multisampleState() vk.PipelineMultisampleStateCreateInfo {
     };
 }
 
-/// Returns the blend attachment state for the given mode.
-///
 /// The only difference between modes is srcColorBlendFactor:
 ///   standard:      SRC_ALPHA (straight alpha from shader)
 ///   premultiplied: ONE       (shader pre-multiplies RGB by alpha)

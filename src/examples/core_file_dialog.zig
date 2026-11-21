@@ -1,13 +1,3 @@
-//! File dialogs from handlers on the 0.4.0 core.
-//!
-//! Each button's handler only requests a dialog through `Effects`, with
-//! GPUI's options (decision 11): open files, several files, or a folder, or
-//! save with a suggested name. The window opens the dialog on the main
-//! thread after the drain, outside any handler, and the next drain delivers
-//! the outcome to `completed`: the selected paths, a cancellation, or a
-//! failure. The request names its completion handler directly with
-//! `effects.handler` (decision 7).
-
 const std = @import("std");
 const gooey = @import("gooey");
 const components = @import("gooey-components");
@@ -105,7 +95,6 @@ pub const App = gooey.App(State, render, .{
     .limits = .nano,
 });
 
-/// The generated entry point (contract §7).
 pub const main = App.main;
 
 pub fn render(cx: *Cx) void {

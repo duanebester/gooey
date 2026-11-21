@@ -1,26 +1,11 @@
-//! Layout sizing pass — Phases 1 and 2 of the layout pipeline.
-//!
-//! Every function takes a `*LayoutEngine` and mutates
-//! `LayoutElement.computed.{min_,sized_}{width,height}` in place; positions
-//! belong to `position_pass.zig`.
-//!
-//! Phase order:
-//!   1. `computeMinSizes`     — bottom-up content minimums.
-//!   2. `computeFinalSizes`   — top-down concrete sizes (`planChildSizes`).
-//!   3. `computeTextWrapping` — wraps text once container widths are known.
-//!
-//! No pass recurses (CLAUDE.md §6). Min and final sizes keep an explicit
-//! stack of open parents, one frame per level, bounded by the engine's open
-//! depth, and visit elements in the recursive passes' order: a child's
-//! subtree is done while the child is still in cache. A parent whose
-//! children are all leaves needs no frame. The engine also stores elements
-//! in pre-order (`createElement` appends a parent before its children), so a
-//! subtree is the contiguous index range `root..subtreeEnd(root)`, which text
-//! wrapping and the floating passes walk forwards.
-//!
-//! Helpers are `pub` because the orchestrator and
-//! `position_pass.computeFloatingSizesWithText` re-enter the pipeline
-//! mid-frame for floating subtrees.
+// Mutates `LayoutElement.computed.{min_,sized_}{width,height}`; positions
+// belong to `position_pass.zig`. No pass recurses (CLAUDE.md §6): each pass
+// keeps an explicit stack of open parents bounded by the engine's open depth
+// and visits elements in the recursive passes' order, and elements are
+// stored in pre-order, so a subtree is the contiguous index range
+// `root..subtreeEnd(root)`. Helpers are `pub` because
+// `position_pass.computeFloatingSizesWithText` re-enters the pipeline
+// mid-frame for floating subtrees.
 
 const std = @import("std");
 
@@ -41,10 +26,6 @@ const MeasureTextFn = engine_mod.MeasureTextFn;
 /// by the engine's `box_depth_max`, so no pass needs reserved scratch.
 const box_depth_ceiling = @import("../core/limits.zig").box_depth_ceiling;
 const UNCONSTRAINED_MAX = engine_mod.UNCONSTRAINED_MAX;
-
-// ============================================================================
-// Pre-order subtrees
-// ============================================================================
 
 /// One past the last element of `root`'s subtree: the next sibling of `root`
 /// or of its nearest ancestor that has one, else the end of the list. The
@@ -74,10 +55,6 @@ inline fn assertPreOrder(engine: *const LayoutEngine, root: u32, index: u32) voi
     }
 }
 
-// ============================================================================
-// Phase 1: Compute minimum sizes (bottom-up)
-// ============================================================================
-
 /// One parent whose children's minimums the bottom-up walk is summing. The
 /// walk finishes a leaf child at once and opens a child that has children,
 /// so each child's minimum is added while it is still in cache, in the order
@@ -99,7 +76,7 @@ const MinSizeFrame = struct {
 /// Content minimums for `root`'s whole subtree, floating elements included
 /// (they size themselves but do not count toward their parent).
 pub fn computeMinSizes(engine: *LayoutEngine, root: u32) void {
-    std.debug.assert(root < engine.elements.len()); // Valid element index
+    std.debug.assert(root < engine.elements.len());
     if (engine.elements.getConst(root).first_child_index == null) {
         finishMinSize(engine.elements.get(root), 0, 0);
         return;
@@ -233,25 +210,18 @@ fn finishMinSize(elem: *LayoutElement, children_width: f32, children_height: f32
     var content_width = children_width;
     var content_height = children_height;
 
-    // Text content measurement
     if (elem.text_data) |td| {
         content_width = @max(content_width, td.measured_width);
         content_height = @max(content_height, td.measured_height);
     }
 
-    // Add padding to get total minimum size
     const padding = elem.config.layout.padding;
     const min_width = content_width + padding.totalX();
     const min_height = content_height + padding.totalY();
 
-    // Apply sizing constraints from declaration
     elem.computed.min_width = applyMinMax(min_width, elem.config.layout.sizing.width);
     elem.computed.min_height = applyMinMax(min_height, elem.config.layout.sizing.height);
 }
-
-// ============================================================================
-// Phase 2: Compute final sizes (top-down)
-// ============================================================================
 
 /// One parent whose children the top-down walk is sizing, and the rule that
 /// gives each remaining child its size. The rule is planned once per parent
@@ -292,14 +262,14 @@ pub fn computeFinalSizes(
     available_height: f32,
 ) void {
     std.debug.assert(root < engine.elements.len()); // Valid element index
-    std.debug.assert(available_width >= 0 or available_width == std.math.floatMax(f32)); // Valid width
+    std.debug.assert(available_width >= 0 or available_width == std.math.floatMax(f32));
 
     sizeElement(engine, engine.elements.get(root), available_width, available_height);
     if (engine.elements.getConst(root).first_child_index == null) return;
 
     const root_plan = planChildSizes(engine, root);
     if (!root_plan.has_grandchildren) {
-        sizeLeafChildren(engine, &root_plan); // No frame needed.
+        sizeLeafChildren(engine, &root_plan);
         return;
     }
 
@@ -433,7 +403,6 @@ fn planChildSizes(engine: *LayoutEngine, parent_index: u32) SizingFrame {
         );
         return frame; // Every child is sized: `.assigned`.
     }
-    // Fast path: Check if all children are uniform grow elements (very common case)
     const fast_path = tryUniformGrowFastPath(
         engine,
         first_child,
@@ -453,7 +422,6 @@ fn planChildSizes(engine: *LayoutEngine, parent_index: u32) SizingFrame {
         },
     }
 
-    // Slow path: classify children, then shrink or grow them.
     const totals = sumDesiredSizes(engine, first_child, is_horizontal, available);
     frame.has_grandchildren = totals.has_grandchildren;
     planDistribution(&frame, &totals, available, gap);
@@ -512,13 +480,10 @@ fn sizeElement(
     const layout = elem.config.layout;
     const sizing = layout.sizing;
 
-    // Compute base sizes
     const final_width = computeAxisSize(sizing.width, elem.computed.min_width, available_width);
     var final_height = computeAxisSize(sizing.height, elem.computed.min_height, available_height);
 
-    // ASPECT RATIO (Phase 1): Derive height from width
     if (layout.aspect_ratio) |ratio| {
-        // aspect_ratio = width / height, so height = width / ratio
         final_height = final_width / ratio;
         engine.heights_derived = true;
     }
@@ -580,7 +545,7 @@ fn sumDesiredSizes(
                 break :blk @max(child_min, effective_max);
             },
             .fixed => |mm| mm.min, // fixed wants exactly this size
-            .percent => |p| available * p.value, // percent of available
+            .percent => |p| available * p.value,
         };
 
         if (child_sizing.value != .grow) total_desired += child_desired;
@@ -598,13 +563,9 @@ fn sumDesiredSizes(
     };
 }
 
-// ============================================================================
-// Phase 2 — fast path for uniform grow children
-// ============================================================================
-
-/// Result of the speculative uniform-grow pass: was it eligible, how many
-/// floating siblings did we step over (we recompute per-child size after
-/// subtracting those out), and does any flow child have children?
+/// Result of the speculative uniform-grow pass: eligibility, floating
+/// siblings stepped over (sizes are recomputed after subtracting them),
+/// and whether any flow child has children.
 const SpeculativeResult = struct {
     eligible: bool,
     floating_count: u32,
@@ -626,7 +587,7 @@ fn tryUniformGrowFastPath(
     available: f32,
     gap: f32,
 ) FastPathResult {
-    std.debug.assert(first_child < engine.elements.len()); // Valid child index
+    std.debug.assert(first_child < engine.elements.len());
     std.debug.assert(gap >= 0);
 
     // Get parent's child_count to pre-compute sizes (avoids counting pass)
@@ -637,7 +598,6 @@ fn tryUniformGrowFastPath(
 
     if (total_children == 0) return .ineligible;
 
-    // Pre-compute uniform size assuming no floating elements
     const total_gap = if (total_children > 1) gap * @as(f32, @floatFromInt(total_children - 1)) else 0;
     var per_child = @max(0, (available - total_gap) / @as(f32, @floatFromInt(total_children)));
     const cross_size = if (is_horizontal) height else width;
@@ -645,7 +605,6 @@ fn tryUniformGrowFastPath(
     const result = speculativeUniformAssign(engine, first_child, is_horizontal, per_child, cross_size);
     if (!result.eligible) return .ineligible;
 
-    // If we had floating elements, recalculate and re-assign
     if (result.floating_count > 0) {
         const actual_children = total_children - result.floating_count;
         if (actual_children == 0) return .ineligible;
@@ -685,7 +644,6 @@ fn speculativeUniformAssign(
             continue;
         }
 
-        // Check if child qualifies for fast path
         if (!isUnconstrainedGrow(child, is_horizontal)) {
             return .{ .eligible = false, .floating_count = 0, .has_grandchildren = false };
         }
@@ -693,7 +651,6 @@ fn speculativeUniformAssign(
         // A floating child sizes itself, so only flow children count here.
         if (child.first_child_index != null) has_grandchildren = true;
 
-        // Assign sizes speculatively
         if (is_horizontal) {
             child.computed.sized_width = per_child;
             child.computed.sized_height = cross_size;
@@ -719,7 +676,6 @@ fn isUnconstrainedGrow(child: *const LayoutElement, is_horizontal: bool) bool {
     std.debug.assert(child.config.layout.aspect_ratio == null or child.config.layout.aspect_ratio.? > 0);
     std.debug.assert(UNCONSTRAINED_MAX > 0);
 
-    // Aspect ratio requires special handling - bail to slow path
     if (child.config.layout.aspect_ratio != null) return false;
 
     const main_sizing = if (is_horizontal) child.config.layout.sizing.width else child.config.layout.sizing.height;
@@ -736,7 +692,6 @@ fn isUnconstrainedGrow(child: *const LayoutElement, is_horizontal: bool) bool {
     };
 }
 
-/// Re-assign uniform sizes after adjusting for floating elements
 fn reassignUniformSizes(
     engine: *LayoutEngine,
     first_child: u32,
@@ -762,10 +717,6 @@ fn reassignUniformSizes(
         child_idx = child.next_sibling_index;
     }
 }
-
-// ============================================================================
-// Phase 2 — shrink / grow distribution (slow path)
-// ============================================================================
 
 /// Compute and assign the shrunk size for a single child on the main axis,
 /// honoring its min constraint, then resolve the cross axis and aspect
@@ -797,7 +748,6 @@ fn assignShrunkSize(
     const new_size: f32 = if (child_sizing.value == .grow)
         child_min_constraint
     else
-        // Shrink proportionally but respect minimum constraint
         @max(child_min_constraint, child_desired * shrink_ratio);
 
     if (is_horizontal) {
@@ -884,10 +834,6 @@ fn assignGrownSize(
 
     sizeElement(engine, child, child_width, child_height);
 }
-
-// ============================================================================
-// Phase 2 — wrapping rows
-// ============================================================================
 
 /// One line of a wrapping row, as `breakWrapLine` finds it.
 const WrapLine = struct {
@@ -1124,10 +1070,6 @@ pub fn wrapLineSpan(
     return .{ .start = 0, .size = total };
 }
 
-// ============================================================================
-// Phase 2b: Text wrapping (container widths now known)
-// ============================================================================
-
 /// Wrap text in `root`'s subtree, floating elements included, once container
 /// widths are settled, and propagate height changes back up to fit-content
 /// parents, with the heights that aspect ratios and wrapping rows derived
@@ -1211,7 +1153,7 @@ fn wrapElementText(engine: *LayoutEngine, index: u32) !void {
     if (elem.text_data) |*td| {
         const max_width = textContainerWidth(engine, elem);
 
-        // Always store container width for alignment calculations (used even when no wrap)
+        // Stored even when not wrapping; alignment reads it.
         td.container_width = max_width;
 
         if (td.config.wrap_mode != .none and max_width > 0) {
@@ -1225,7 +1167,6 @@ fn wrapElementText(engine: *LayoutEngine, index: u32) !void {
                 elem.computed.sized_width = wrap_result.max_line_width;
                 elem.computed.sized_height = wrap_result.total_height;
 
-                // Propagate height change up to fit-content parents
                 propagateHeightChange(engine, elem.parent_index);
             }
         }
@@ -1254,8 +1195,6 @@ pub fn propagateHeightChange(engine: *LayoutEngine, parent_idx: ?u32) void {
         const parent = engine.elements.get(pi);
         const sizing = parent.config.layout.sizing.height;
 
-        // Only update fit-content parents (not fixed, grow, or percent),
-        // and not one whose height follows its width.
         if (sizing.value != .fit) break;
         if (parent.config.layout.aspect_ratio != null) break;
 
@@ -1296,10 +1235,6 @@ fn childrenHeight(engine: *const LayoutEngine, parent: *const LayoutElement) f32
     std.debug.assert(total_height >= 0);
     return total_height;
 }
-
-// ============================================================================
-// Text wrapping — two-pass algorithm
-// ============================================================================
 
 /// Output of `wrapText` — owned by the per-frame arena.
 pub const WrapResult = struct {
@@ -1567,10 +1502,6 @@ fn appendWord(words: *BoundedList(WordInfo), word: WordInfo) void {
     words.append(word) catch unreachable;
 }
 
-// ============================================================================
-// Word-boundary scanning
-// ============================================================================
-
 /// Scanner state for `findWordBoundaries`: the unit in progress, a word and
 /// the run of spaces and tabs after it. A paragraph's leading whitespace is
 /// a unit with an empty word.
@@ -1719,18 +1650,12 @@ fn scanWords(state: *WordScanState) bool {
     return true;
 }
 
-// ============================================================================
-// Sizing axis primitives
-// ============================================================================
-
-/// Apply min/max constraints to a size
 pub fn applyMinMax(size: f32, axis: SizingAxis) f32 {
     const min_val = axis.getMin();
     const max_val = axis.getMax();
     return @max(min_val, @min(max_val, size));
 }
 
-/// Compute final size based on sizing type
 pub fn computeAxisSize(axis: SizingAxis, min_size: f32, available: f32) f32 {
     return switch (axis.value) {
         .fit => |mm| blk: {

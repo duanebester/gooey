@@ -1,9 +1,3 @@
-//! Milestone 1 exit checks for the 0.4.0 core on TestBackend (plan, phase 3):
-//! the IME rect query is answered synchronously, a file dialog requested by a
-//! handler opens on the main thread outside the handler, and counter and
-//! todo run their traces with no allocation after initialization (the
-//! lifecycle guard panics on one) within their component-depth budget.
-
 const std = @import("std");
 const builtin = @import("builtin");
 const gooey = @import("gooey");
@@ -38,7 +32,6 @@ const TextBuffer = gooey.testing.record_dump.TextBuffer;
 const testing = std.testing;
 const assert = std.debug.assert;
 
-/// Set to print the depth and stack measurements recorded in the plan.
 const print_measurements = false;
 
 fn mouse(x: f32, y: f32) gooey.input.MouseEvent {
@@ -51,10 +44,6 @@ fn mouse(x: f32, y: f32) gooey.input.MouseEvent {
 }
 
 test "the IME rect query is answered synchronously from the rendered frame" {
-    // Goal: a platform asking for the caret rect inside its IME callback gets
-    // an answer without a tick. Methodology: focus todo's draft, compose, and
-    // query between ticks. Expected rects come from the synthetic face: "ca"
-    // is two 0.5 em glyphs at 16 px, 16 px wide, after the 9 px inset at x 24.
     const Driver = core_driver.CoreDriver(todo.App);
     const driver = try testing.allocator.create(Driver);
     defer testing.allocator.destroy(driver);
@@ -77,12 +66,9 @@ test "the IME rect query is answered synchronously from the rendered frame" {
     try testing.expectEqual(@as(f32, 49), query.imeCursorRect().?.x);
     try testing.expectEqual(@as(u32, 0), query.imeSelectedRange().?.offset);
 
-    // Committing straight over the preedit, as AppKit's insertText: does,
-    // replaces it (0.3.1 asserts here; see the plan's "Noticed" list).
     driver.deliver(.{ .text_input = .{ .text = "caf\u{e9}" } });
     driver.frame();
     try testing.expectEqualStrings("caf\u{e9}", driver.app.state.draft);
-    // Three 0.5 em glyphs and one past ASCII at 0.7 em: 24 + 11.2 px.
     try testing.expectApproxEqAbs(@as(f32, 33 + 35.2), query.imeCursorRect().?.x, 0.001);
     try testing.expectEqual(@as(u32, 5), query.imeSelectedRange().?.offset);
 
@@ -95,7 +81,6 @@ test "the IME rect query is answered synchronously from the rendered frame" {
     try testing.expectEqual(@as(u32, 2), selected.len);
 }
 
-/// A two-row TextArea, for the area check.
 const AreaState = struct { notes: []const u8 = "" };
 
 const AreaApp = gooey.App(AreaState, areaRender, .{
@@ -149,7 +134,6 @@ fn glyphClip(frame: *const internals.records.Frame) ?internals.records.Rect {
     return null;
 }
 
-/// `count` copies of the two-byte "é", built at comptime.
 fn repeatedE(comptime count: u32) [2 * count]u8 {
     @setEvalBranchQuota(4 * count + 1000);
     var bytes: [2 * count]u8 = undefined;
@@ -161,10 +145,6 @@ fn repeatedE(comptime count: u32) [2 * count]u8 {
 }
 
 test "one shaped run holds run_codepoint_count_max codepoints and no more" {
-    // Goal: the per-run bound every shaper and the text scratch hold, in
-    // codepoints rather than bytes. Method: shape exactly the bound in
-    // two-byte codepoints (twice the bound in bytes), then one ASCII
-    // codepoint past it, which must fail before reaching the shaper.
     const app = try testing.allocator.create(LongRunApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -220,11 +200,6 @@ fn spriteCount(frame: *const internals.records.Frame) u32 {
 }
 
 test "a run past 128 glyphs places every glyph, as text and as a TextArea line" {
-    // Goal: glyph placement batches its 128-entry stack buffers. Before
-    // batching, a 129-glyph run failed an assertion in Debug and wrote past
-    // the buffers in release. Method: paint 129 'a's as a text element and as
-    // a TextArea line wide enough to show them all; count the glyph sprites,
-    // and check that the last glyph sits 128 advances (8 px) after the first.
     inline for (.{ false, true }) |area| {
         const app = try testing.allocator.create(LongRunApp);
         defer testing.allocator.destroy(app);
@@ -273,14 +248,6 @@ fn longTextRender(cx: *Cx) void {
 }
 
 test "a text past one shaping run draws and wraps as one run would" {
-    // Goal: one `ui.text` of any length (it panicked past 1,024 codepoints).
-    // Method: 3,000 codepoints of "abc " at 16 px, where the synthetic face
-    // advances 8 px a letter and 4 px a space, 28 px a copy. Unwrapped,
-    // every glyph must sit where one run would put it, across the runs it is
-    // shaped in, and the text measures 750 copies. Wrapped at 400 px, a line
-    // holds 14 copies (392 px with its trailing space, which counts toward
-    // fitting), so 54 lines of 56 codepoints, each starting at the left edge
-    // one line below the last.
     inline for (.{ false, true }) |wrap| {
         const app = try testing.allocator.create(LongTextApp);
         defer testing.allocator.destroy(app);
@@ -319,18 +286,12 @@ test "a text past one shaping run draws and wraps as one run would" {
     }
 }
 
-/// Texts whose whitespace the wrap once measured short, each wrapped in a
-/// 40 px box at 16 px (the synthetic face: a letter 8 px, a space 4 px, a
-/// tab 5.6 px).
 const WrapSpaceState = struct {
     case: u32 = 0,
 
     const cases = [_][]const u8{
-        // Five spaces: drawn 52 px, once measured as one space, 36 px.
         "aa     aa",
-        // Two tabs: drawn 43.2 px, once measured as one space, 36 px.
         "aa\t\taa",
-        // Three spaces leading the second line: drawn 48 px, once 36 px.
         "aa\n   aa aa",
     };
 };
@@ -350,13 +311,6 @@ fn wrapSpaceRender(cx: *Cx) void {
 }
 
 test "a wrapped line's glyphs stay inside the wrap width" {
-    // Goal: words wrapping keeps every line's glyphs within the text's
-    // container. Method: wrap each case in a 40 px box at x 0 and require
-    // every glyph sprite (spaces and tabs draw boxes too) to end by x 40.
-    // The text_area VOPR found the overflow: the wrap gave a run of spaces
-    // or tabs one space's width, and did not count a line's leading spaces,
-    // while `emitText` draws every byte of the line. Each space and tab now
-    // counts at its own advance, as GPUI's `LineWrapper` counts them.
     var overflow_count: u32 = 0;
     for (0..WrapSpaceState.cases.len) |case| {
         const app = try testing.allocator.create(WrapSpaceApp);
@@ -384,8 +338,6 @@ test "a wrapped line's glyphs stay inside the wrap width" {
     try testing.expectEqual(@as(u32, 0), overflow_count);
 }
 
-/// Texts `cx.measureText` measures during render, each also laid out in a
-/// box as wide as its `max_width`, for the measure check.
 const MeasureState = struct {
     measured: [measure_cases.len]Cx.TextSize = undefined,
 };
@@ -393,7 +345,6 @@ const MeasureState = struct {
 const MeasureCase = struct { content: []const u8, style: ui.Text, max_width: f32 };
 
 const measure_cases = [_]MeasureCase{
-    // "abc abc" is 52 px, a third copy 80 px: two lines at 60 px.
     .{ .content = "abc abc abc", .style = .{ .wrap = .words }, .max_width = 60 },
     .{ .content = "abc abc abc", .style = .{ .wrap = .none }, .max_width = 60 },
     .{ .content = "ab\n\ncd", .style = .{ .wrap = .newlines }, .max_width = 300 },
@@ -404,7 +355,6 @@ const measure_cases = [_]MeasureCase{
     },
     .{ .content = "   ", .style = .{ .wrap = .words }, .max_width = 60 },
     .{ .content = "abcabcabcabc abc", .style = .{ .wrap = .words, .size = 32 }, .max_width = 100 },
-    // 3,000 codepoints, past one shaping run: 54 lines of 388 px.
     .{ .content = &LongTextState.text, .style = .{ .wrap = .words }, .max_width = 400 },
 };
 
@@ -426,14 +376,6 @@ fn measureRender(cx: *Cx) void {
 }
 
 test "cx.measureText sizes a text as layout lays it out" {
-    // Goal: a row sized with `cx.measureText` fits the text layout then
-    // draws in it. Method: each case is measured during render and laid out
-    // in a box as wide as its `max_width`; the text element layout sizes
-    // must match the measure. The synthetic face advances 8 px a letter and
-    // 4 px a space at 16 px, so the widths are also checked by hand: two
-    // lines, the first "abc abc " 56 px with the space that counts toward
-    // fitting it; one of 80 px; and 54 lines of 392 px for the text past one
-    // shaping run.
     const app = try testing.allocator.create(MeasureApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -467,7 +409,6 @@ fn deliverAll(app: *LongRunApp, now: *u64, inputs: []const gooey.input.InputEven
     app.tick(now.*);
 }
 
-/// A clipboard service that counts the writes it receives and reads empty.
 const CountingClipboard = struct {
     fn read(context: *anyopaque, out: []u8) u32 {
         _ = context;
@@ -483,12 +424,6 @@ const CountingClipboard = struct {
 };
 
 test "a TextArea refuses a line's 1025th character and keeps running" {
-    // Goal: typing, an IME commit, a paste, and a join stop at the line bound
-    // (`line_codepoint_count_max`) rather than reaching the paint, where a
-    // longer run fails fast. Method: bind a TextArea to a line of 1024 'c's,
-    // put the caret at its end, then type, commit, and paste past the bound;
-    // each edit keeps only what fits, cut on a codepoint boundary, and the
-    // app keeps ticking with its lifecycle still running.
     const app = try testing.allocator.create(LongRunApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -510,7 +445,6 @@ test "a TextArea refuses a line's 1025th character and keeps running" {
     });
     try testing.expectEqualStrings(&full, app.state.notes);
 
-    // Three codepoints free: the commit keeps "東京!" and drops the "x".
     deliverAll(app, &now, &.{
         .{ .key_down = chord(.delete, .{}) },
         .{ .key_down = chord(.delete, .{}) },
@@ -553,12 +487,6 @@ test "a TextArea refuses a line's 1025th character and keeps running" {
 }
 
 test "a TextArea takes lines, follows the caret, and places it where clicked" {
-    // Goal: the area's engine through the real router, layout, and paint.
-    // Methodology: type three lines into two rows, so the area scrolls one
-    // line; read the caret from the IME query (its rect is the caret's), then
-    // click on the first visible line and move up. The synthetic face draws
-    // ASCII at 8 px per glyph, so a click just left of 2.5 glyphs lands at
-    // column 2, and one past it would land at 3.
     const app = try testing.allocator.create(AreaApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -582,14 +510,10 @@ test "a TextArea takes lines, follows the caret, and places it where clicked" {
     try testing.expectEqualStrings("one\ntwo\nthree", app.state.notes);
     const caret = query.imeCursorRect().?;
     const line_height = caret.height;
-    // Line 2 of 3 in two rows: scrolled by one line, so it is the second row.
     try testing.expectApproxEqAbs(inset + line_height, caret.y, 0.001);
     try testing.expectApproxEqAbs(inset + 5 * 8, caret.x, 0.001);
 
-    // The wheel over the area scrolls it, clamped at both ends; over the
-    // window outside it, nothing scrolls. `down` is pixels toward the end,
-    // and 20 px is past one line; the delta is inverted by
-    // `window.wheel_delta_inverted`, as `ScrollState.wheel` reads it.
+    // The delta is inverted by `window.wheel_delta_inverted`, as `ScrollState.wheel` reads it.
     const direction: f32 = if (internals.window.wheel_delta_inverted) -1 else 1;
     const wheel_events = [_]struct { x: f32, y: f32, down: f32, caret_y: f32 }{
         .{ .x = inset + 1, .y = inset + 1, .down = -20, .caret_y = inset + 2 * line_height },
@@ -607,7 +531,6 @@ test "a TextArea takes lines, follows the caret, and places it where clicked" {
         try testing.expectApproxEqAbs(step.caret_y, query.imeCursorRect().?.y, 0.001);
     }
 
-    // The first visible row is "two"; 2.5 glyphs in is nearest "tw|o".
     const click = mouse(inset + 2.5 * 8 - 0.5, inset + line_height / 2);
     app.window.queue.push(.{ .input = .{ .mouse_down = click } });
     app.window.queue.push(.{ .input = .{ .mouse_up = click } });
@@ -617,7 +540,6 @@ test "a TextArea takes lines, follows the caret, and places it where clicked" {
     app.tick(now);
     try testing.expectEqual(@as(u32, 6), query.imeSelectedRange().?.offset);
 
-    // Up keeps column 2 and scrolls the first line back into view.
     app.window.queue.push(.{ .input = .{ .key_down = chord(.up, .{}) } });
     now += 1;
     app.tick(now);
@@ -626,13 +548,6 @@ test "a TextArea takes lines, follows the caret, and places it where clicked" {
 }
 
 test "a filling TextArea draws at the window's new width in the resize's own frame" {
-    // Goal: `TextArea.width = null` fills its parent, and a live resize
-    // shows the new width in the frame that handles it, not one frame later.
-    // Method: grow and shrink the window, one tick each, and read that
-    // tick's frame: the area must span the window less the 20 px padding,
-    // its text must clip at its inset edges (the line is longer than any
-    // width here), the caret must stay at its column, and no render but the
-    // caret's blink may be pending, since nothing waits on a later frame.
     const app = try testing.allocator.create(FillAreaApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -673,7 +588,6 @@ test "a filling TextArea draws at the window's new width in the resize's own fra
     try testing.expectEqual(internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
 }
 
-/// A one-row CodeEditor, for the editor check. No profile reserves editors.
 const EditorState = struct { source: []const u8 = "" };
 
 const editor_limits = limits: {
@@ -697,11 +611,6 @@ fn editorRender(cx: *Cx) void {
 }
 
 test "a CodeEditor indents with Tab, selects a line from its gutter, and scrolls" {
-    // Goal: what the editor adds to the area, through the real router and
-    // layout. Methodology: type two lines with a Tab into one row, so the
-    // editor scrolls one line; click the gutter beside the visible line, then
-    // wheel up. The text starts after the border, the 50 px gutter, its 1 px
-    // separator, and the padding.
     const app = try testing.allocator.create(EditorApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -725,10 +634,8 @@ test "a CodeEditor indents with Tab, selects a line from its gutter, and scrolls
     const caret = query.imeCursorRect().?;
     const line_height = caret.height;
     try testing.expectApproxEqAbs(text_y, caret.y, 0.001);
-    // Four spaces at 4 px, then "x" at 8 px.
     try testing.expectApproxEqAbs(text_x + 4 * 4 + 8, caret.x, 0.001);
 
-    // The visible row is line 2; its number selects it, newline-less.
     const gutter_click = mouse(20, text_y + line_height / 2);
     app.window.queue.push(.{ .input = .{ .mouse_down = gutter_click } });
     app.window.queue.push(.{ .input = .{ .mouse_up = gutter_click } });
@@ -740,8 +647,7 @@ test "a CodeEditor indents with Tab, selects a line from its gutter, and scrolls
     try testing.expectEqual(@as(u32, 12), selected.offset);
     try testing.expectEqual(@as(u32, 5), selected.len);
 
-    // The wheel reaches the editor: 20 px toward the start, past one line
-    // and inverted by `window.wheel_delta_inverted`, so line 2 moves down a row.
+    // The delta is inverted by `window.wheel_delta_inverted`.
     const direction: f32 = if (internals.window.wheel_delta_inverted) -1 else 1;
     app.window.queue.push(.{ .input = .{ .scroll = .{
         .position = .{ .x = text_x + 1, .y = text_y + 1 },
@@ -753,8 +659,6 @@ test "a CodeEditor indents with Tab, selects a line from its gutter, and scrolls
     try testing.expectApproxEqAbs(text_y + line_height, query.imeCursorRect().?.y, 0.001);
 }
 
-/// A scroll box holding a shorter scroll box and a filler, for the scroll
-/// check. The inner box shows 60 of its 90 px; the outer shows 150 of 260.
 const ScrollApp = gooey.App(struct {}, scrollRender, .{
     .title = "Scroll",
     .width = 300,
@@ -795,7 +699,6 @@ const ScrollRows = struct {
     }
 };
 
-/// The rendered frame's two scroll boxes and their retained offsets.
 const ScrollView = struct {
     outer: *const internals.records.HitRecord,
     inner: *const internals.records.HitRecord,
@@ -840,10 +743,6 @@ fn scrollWheel(app: *ScrollApp, now: *u64, x: f32, y: f32, down: f32) void {
 }
 
 test "a scroll box clips its content, clamps its offset, and passes the wheel on at its end" {
-    // Goal: `Style.scroll` through the real router, layout, and emit.
-    // Methodology: wheel the inner box past its end, then again so the outer
-    // box takes it; wheel the outer past its start. The inner box's rows
-    // must hit only inside its clip, which leaves room for its scrollbar.
     const app = try testing.allocator.create(ScrollApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -870,8 +769,6 @@ test "a scroll box clips its content, clamps its offset, and passes the wheel on
     try testing.expectEqual(@as(f32, 30), view.inner_offset);
     try testing.expectEqual(@as(f32, 0), view.outer_offset);
 
-    // Row 0 is scrolled out of the inner clip and row 1 fills its top half,
-    // 200 px wide less the 10 px scrollbar room.
     const frame = app.window.rendered();
     var rows: u32 = 0;
     for (frame.hits[0..frame.hit_count]) |*record| {
@@ -891,7 +788,6 @@ test "a scroll box clips its content, clamps its offset, and passes the wheel on
     try testing.expectEqual(@as(f32, 30), view.inner_offset);
     try testing.expectEqual(@as(f32, 50), view.outer_offset);
 
-    // Past the outer box's start, over the filler: it clamps to zero.
     scrollWheel(app, &now, inner_x, view.outer.bounds.y + 140, -100);
     view = ScrollView.read(&app.window);
     try testing.expectEqual(@as(f32, 0), view.outer_offset);
@@ -899,12 +795,6 @@ test "a scroll box clips its content, clamps its offset, and passes the wheel on
 }
 
 test "wheel_delta_inverted turns the same wheel event the opposite way" {
-    // Goal: the global, not the build's OS, decides the wheel's direction,
-    // so a harness that pins it replays a seed on every host.
-    // Methodology: deliver one raw +20 px event (not `scrollWheel`, which
-    // compensates) over the inner box with the global false, then the same
-    // event with it true: the offset goes 0 to 20, then back to 0. Starting
-    // from 0, an inverted event first would clamp and prove nothing.
     const inverted_before = internals.window.wheel_delta_inverted;
     defer internals.window.wheel_delta_inverted = inverted_before;
     const app = try testing.allocator.create(ScrollApp);
@@ -936,9 +826,6 @@ test "wheel_delta_inverted turns the same wheel event the opposite way" {
     }
 }
 
-/// A 200 px scroll box of 100 focusable 24 px rows, each with a one-line
-/// label, then a wrapped text of 200 lines: 2,400 px of rows and 200 lines
-/// of text, of which the box shows 200 px.
 const CullApp = gooey.App(struct {}, cullRender, .{
     .title = "Cull",
     .width = 400,
@@ -986,7 +873,6 @@ const CullRows = struct {
     }
 };
 
-/// The row fills drawn and the topmost one's y; the glyphs and the lowest's y.
 const CullCount = struct { fills: u32, top: f32, sprites: u32, sprite_bottom: f32 };
 
 fn cullCount(frame: *const internals.records.Frame) CullCount {
@@ -1014,15 +900,6 @@ fn cullCount(frame: *const internals.records.Frame) CullCount {
 }
 
 test "a scroll box draws only what is in view, and keeps every row's hit and node" {
-    // Goal: paint follows the viewport, not the content (culling), while
-    // hit testing, Tab and the screen reader still see every row. Method: a
-    // 200 px box of 100 rows of 24 px and a 200-line text below them. Rows
-    // 0 to 8 meet the clip (row 8 spans 192 to 216), so 9 fills draw, and
-    // only labels within a line of the clip draw glyphs: at most rows 0 to
-    // 9, 8 glyphs each, and none of the long text. Every row keeps its hit
-    // record and its accessibility node. Wheeled to 1,200 px, rows 50 to 58
-    // draw, the first at the box's top. Tab then focuses row 0, out of view,
-    // through its hit record, and the reveal scrolls it back in.
     const app = try testing.allocator.create(CullApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -1069,9 +946,6 @@ test "a scroll box draws only what is in view, and keeps every row's hit and nod
     try testing.expect(count.fills <= 10);
 }
 
-/// A "go" button above a 200 px scroll box anchored at its end, holding
-/// `count` rows of 24 px keyed by index. "go" scrolls the box to `target`;
-/// "add" appends five rows.
 const FollowState = struct {
     count: u32 = 20,
     target: ui.ScrollTarget = .end,
@@ -1136,8 +1010,6 @@ const FollowRows = struct {
     }
 };
 
-/// Press and release at (`x`, `y`) and build one frame: what that frame shows
-/// is what the click asked for, with no frame between.
 fn clickOnce(app: anytype, now: *u64, x: f32, y: f32) void {
     app.window.queue.push(.{ .input = .{ .mouse_down = mouse(x, y) } });
     app.window.queue.push(.{ .input = .{ .mouse_up = mouse(x, y) } });
@@ -1150,7 +1022,6 @@ fn followOffset(app: *FollowApp) f32 {
     return app.window.retained.find(State, FollowState.log()).?.offset_y;
 }
 
-/// Row `index`'s top in the frame on screen, relative to the box's top.
 fn followRowTop(app: *FollowApp, index: u32) f32 {
     const frame = app.window.rendered();
     const log = FollowState.log();
@@ -1168,14 +1039,6 @@ fn followRowTop(app: *FollowApp, index: u32) f32 {
 }
 
 test "an end-anchored scroll box follows its content until scrolled away" {
-    // Goal: `Scroll.anchor = .end` and `effects.scrollTo`, each resolved in
-    // the frame that builds them. Method: 20 rows of 24 px in a 200 px box
-    // (480 px, at most 280 px of offset) start at the end. Five more rows
-    // move the end to 400 in the frame that adds them. A wheel 50 px up
-    // releases the anchor, so five more stay at 350; a wheel back to the end
-    // pins it again. Then "go" moves it to the start, an offset clamped to
-    // the content, a child at each alignment, and the end, each in the frame
-    // the click builds.
     const app = try testing.allocator.create(FollowApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -1206,16 +1069,12 @@ test "an end-anchored scroll box follows its content until scrolled away" {
         .{ .target = .start, .offset = 0 },
         .{ .target = .{ .offset = .{ .y = 100 } }, .offset = 100 },
         .{ .target = .{ .offset = .{ .y = 5_000 } }, .offset = 640 },
-        // Row 3 spans 72 to 96: its start, centred (84 - 100), clamped to
-        // 0, and its end at the box's (96 - 200), clamped.
         .{ .target = .{ .child = .{ .key = .{ .index = 3 }, .alignment = .start } }, .offset = 72 },
         .{
             .target = .{ .child = .{ .key = .{ .index = 20 }, .alignment = .center } },
             .offset = 392,
         },
         .{ .target = .{ .child = .{ .key = .{ .index = 20 }, .alignment = .end } }, .offset = 304 },
-        // Nearest from 304: row 20 shows whole, so nothing moves; row 2
-        // (48 to 72) is above, so it lands at the top.
         .{ .target = .{ .child = .{ .key = .{ .index = 20 } } }, .offset = 304 },
         .{ .target = .{ .child = .{ .key = .{ .index = 2 } } }, .offset = 48 },
         .{ .target = .{ .child = .{ .key = .{ .index = 99 } } }, .offset = 48 },
@@ -1226,7 +1085,6 @@ test "an end-anchored scroll box follows its content until scrolled away" {
         clickOnce(app, &now, 25, 15);
         try testing.expectEqual(case.offset, followOffset(app));
     }
-    // Back at the end, the anchor follows again.
     clickOnce(app, &now, 75, 15);
     try testing.expectEqual(@as(f32, 760), followOffset(app));
 }
@@ -1258,11 +1116,6 @@ fn thumbDragged(app: *ScrollApp) bool {
 }
 
 test "a scroll box's thumb drags and its track jumps, as 0.3.1's did" {
-    // Goal: scrollbar parity with 0.3.1's ScrollContainer. Methodology: the
-    // outer box shows 150 of 260 px, so its 146 px track holds an 84.23 px
-    // thumb with 61.77 px of travel for 110 px of offset. Drag the thumb half
-    // its travel and past its end, then press the track a quarter down. (The
-    // inner box's bar lies under the outer one's gutter, outside its clip.)
     const app = try testing.allocator.create(ScrollApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -1279,19 +1132,15 @@ test "a scroll box's thumb drags and its track jumps, as 0.3.1's did" {
     try testing.expect(thumbDragged(app));
     scrollMouse(app, &now, .{ .mouse_dragged = mouse(bar_x, box.y + 10 + travel / 2) });
     try testing.expectApproxEqAbs(@as(f32, 55), ScrollView.read(&app.window).outer_offset, 0.01);
-    // Dragging past the end clamps; the inner box does not move.
     scrollMouse(app, &now, .{ .mouse_dragged = mouse(bar_x, box.y + 400) });
     const view = ScrollView.read(&app.window);
     try testing.expectEqual(@as(f32, 110), view.outer_offset);
     try testing.expectEqual(@as(f32, 0), view.inner_offset);
     scrollMouse(app, &now, .{ .mouse_up = mouse(bar_x, box.y + 400) });
     try testing.expect(!thumbDragged(app));
-    // Moving after the release drags nothing.
     scrollMouse(app, &now, .{ .mouse_moved = mouse(bar_x, box.y + 5) });
     try testing.expectEqual(@as(f32, 110), ScrollView.read(&app.window).outer_offset);
 
-    // At the end the thumb sits at the bottom; the track's top quarter
-    // jumps to a quarter of the offset.
     const quarter = box.y + 2 + 146 * 0.25;
     scrollMouse(app, &now, .{ .mouse_down = mouse(bar_x, quarter) });
     scrollMouse(app, &now, .{ .mouse_up = mouse(bar_x, quarter) });
@@ -1315,12 +1164,6 @@ fn scrollAppReady(app: *ScrollApp, now: *u64) !void {
 }
 
 test "a second button pressed during a thumb drag leaves the drag alone" {
-    // Goal: a right press while the left button drags a scrollbar thumb,
-    // which every platform delivers (two buttons down at once), neither
-    // trips the router nor takes the drag over. Methodology: left-press the
-    // outer box's thumb and drag it a quarter of its travel, press and
-    // release the right button there, then drag on to half: the left drag
-    // still moves the offset, as in the thumb test above.
     const app = try testing.allocator.create(ScrollApp);
     defer testing.allocator.destroy(app);
     var now: u64 = 0;
@@ -1345,9 +1188,6 @@ test "a second button pressed during a thumb drag leaves the drag alone" {
 }
 
 test "a right press on a scrollbar thumb drags nothing" {
-    // Goal: only the left button drags a thumb, as native scrollbars do.
-    // Methodology: right-press the outer box's thumb and move 30 px down
-    // with the right button held: no drag starts and the offset stays 0.
     const app = try testing.allocator.create(ScrollApp);
     defer testing.allocator.destroy(app);
     var now: u64 = 0;
@@ -1366,9 +1206,6 @@ test "a right press on a scrollbar thumb drags nothing" {
 }
 
 test "another button's release leaves a thumb drag alive" {
-    // Goal: only the left release ends a thumb drag. Methodology: hold the
-    // right button in the content, left-press the thumb, release the right
-    // button, then drag on: the left drag reaches half the travel, 55 px.
     const app = try testing.allocator.create(ScrollApp);
     defer testing.allocator.destroy(app);
     var now: u64 = 0;
@@ -1390,7 +1227,6 @@ test "another button's release leaves a thumb drag alive" {
     try testing.expectEqual(gooey.ElementId.root, app.window.scroll_drag);
 }
 
-/// A button that counts its clicks, for the left-only click check.
 const ClickCountState = struct {
     clicks: u32 = 0,
 
@@ -1422,10 +1258,6 @@ fn clickWith(app: *ClickCountApp, now: *u64, button: gooey.input.MouseButton) vo
 }
 
 test "only the left button clicks" {
-    // Goal: `on_click` fires on a left press and release only, as a
-    // browser's `click` (not `auxclick`) and native buttons do. Right and
-    // middle clicks on the button fire nothing; a left click fires once;
-    // and a right click in the middle of a left one leaves it to click.
     const app = try testing.allocator.create(ClickCountApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -1448,7 +1280,6 @@ test "only the left button clicks" {
     try testing.expectEqual(@as(u32, 2), state.clicks);
 }
 
-/// What `readsRender` saw through the public reads in its last build.
 const ReadsState = struct {
     position: ?Cx.ScrollPosition = null,
     bounds: ?ui.Rect = null,
@@ -1481,12 +1312,6 @@ fn readsRender(cx: *Cx) void {
 }
 
 test "cx.scroll, cx.bounds, and cx.now read the last frame and the tick from render" {
-    // Goal: the public reads that replaced `cx.window` report what the
-    // router, layout, and tick left, in the build that follows them.
-    // Method: before the box first renders both reads are null; after the
-    // first frame they hold its layout (y 20, 60 px tall); a 20 px wheel is
-    // routed before the next build, which must see offset 20, not 0. The
-    // clock is the tick's own stamp, which no other source would give.
     const app = try testing.allocator.create(ReadsApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -1530,13 +1355,6 @@ const NanoScrollApp = gooey.App(struct {}, scrollRender, .{
 });
 
 test "a stalled tick's 300 held-button moves fold into one on a 64-event queue" {
-    // Goal: regression for a crash in 0.5.2, where `mouse_dragged` did not
-    // coalesce, so a held-button drag across one stalled tick overflowed
-    // `.nano`'s 64-event queue and panicked. Methodology: press the scroll
-    // thumb (the drag the core already follows), push 300 moves without a
-    // tick, the last one half the thumb's travel down, then tick once. The
-    // queue holds the press and one move, and the offset is the last move's:
-    // 55 of 110 px, as in the thumb test above.
     const app = try testing.allocator.create(NanoScrollApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -1563,8 +1381,6 @@ test "a stalled tick's 300 held-button moves fold into one on a 64-event queue" 
     try testing.expectApproxEqAbs(@as(f32, 55), ScrollView.read(&app.window).outer_offset, 0.01);
 }
 
-/// A Select in a clipped panel above a button, for the popover check. The
-/// panel is shorter than the open menu, and the menu covers the button.
 const SelectState = struct {
     selected: ?usize = null,
     below_clicks: u32 = 0,
@@ -1628,10 +1444,6 @@ fn comboboxState(app: *SelectApp) gooey.accessibility.State {
 }
 
 test "a Select's menu opens on a popover above content and outside its clip" {
-    // Goal: the `.popover` layer through the real router and emit. Method:
-    // open the menu, whose options overflow the 50 px clipped panel and
-    // cover the button below it; click where an option and the button
-    // overlap; reopen and click outside. The option must win the click.
     const app = try testing.allocator.create(SelectApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -1658,7 +1470,6 @@ test "a Select's menu opens on a popover above content and outside its clip" {
         }
     }
     try testing.expectEqual(@as(u32, 3), option_count);
-    // The panel clips at y = 60; the menu escapes it.
     try testing.expect(options[2].y + options[2].height > 60);
     const target = button.?;
     var chosen: ?usize = null;
@@ -1721,10 +1532,6 @@ fn blockRender(cx: *Cx) void {
 }
 
 test "a modal blocks the pointer on every fragment opened before it" {
-    // Goal: contract §6, "a modal fragment blocks hit testing of earlier
-    // fragments". Method: a 120 x 80 modal at (200, 150) leaves the content
-    // button at the top left uncovered; clicking, hovering, and the hit
-    // query over the button must all miss it until the modal closes.
     const app = try testing.allocator.create(BlockApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -1755,8 +1562,6 @@ test "a modal blocks the pointer on every fragment opened before it" {
     try testing.expectEqual(@as(u32, 1), app.state.below_clicks);
 }
 
-/// Whether nested_overlay's combobox shows its menu open in the frame on
-/// screen, and its bounds.
 fn overlayCombobox(app: *nested_overlay.App) *const internals.records.A11yNode {
     const frame = app.window.rendered();
     for (frame.a11y[0..frame.a11y_count]) |*node| {
@@ -1770,12 +1575,6 @@ fn overlayComboboxExpanded(app: *nested_overlay.App) bool {
 }
 
 test "nested_overlay: a Select's menu inside a modal sits above the modal" {
-    // Goal: contract §6, "a layer opened inside a layer's fragment comes
-    // after that fragment", through the ported 0.3.1 regression example.
-    // Method: the modal starts open; a click on its Select opens the menu,
-    // whose options cover the modal's keyed yellow area. The options must
-    // come after the modal in paint and hit order and take the click over
-    // the area beneath, which closes the menu.
     const app = try testing.allocator.create(nested_overlay.App);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -1805,7 +1604,6 @@ test "nested_overlay: a Select's menu inside a modal sits above the modal" {
         }
     }
     try testing.expectEqual(@as(u32, nested_overlay.options.len), option_count);
-    // "Bravo" lies over the yellow area, as the example promises.
     const bravo = options[1];
     const x = bravo.x + 20;
     const y = bravo.y + bravo.height / 2;
@@ -1825,9 +1623,6 @@ fn dialogCount(frame: *const internals.records.Frame) u32 {
     return count;
 }
 
-/// An app whose button opens a file dialog, for the dialog check. Its first
-/// three clicks open a multiple selection; the fourth saves with a name it
-/// builds in its state.
 const DialogState = struct {
     clicks: u32 = 0,
     name: [11]u8 = "draft-0.txt".*,
@@ -1881,7 +1676,6 @@ fn openDialog(self: *DialogState, effects: *Effects) void {
     });
 }
 
-/// A dialog service that records where it ran and answers from a script.
 const ScriptedDialog = struct {
     window: *const internals.window.Window,
     main_thread: std.Thread.Id,
@@ -1922,13 +1716,6 @@ const ScriptedDialog = struct {
 };
 
 test "a file dialog opened from a handler runs on the main thread after the handler" {
-    // Goal: plan exit criterion and decision 11's options. Methodology: click
-    // a button whose handler requests a dialog; the scripted service records
-    // the thread and phase it ran in, and answers two selected paths, then
-    // cancelled, then failed, then one saved path. Each answer must reach
-    // the completion handler as a distinct outcome a tick later, and only
-    // that tick may build (the Mac's stale frame after a dialog). The save's
-    // folder and name must reach the service from the window's own copy.
     const app = try testing.allocator.create(DialogApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -1953,12 +1740,12 @@ test "a file dialog opened from a handler runs on the main thread after the hand
         app.window.queue.push(.{ .input = .{ .mouse_up = mouse(20, 20) } });
         const built = app.window.frame_number;
         now += 1;
-        app.tick(now); // The click opens the dialog after the drain.
+        app.tick(now);
         // No frame of the state before the outcome; the render waits for it.
         try testing.expectEqual(built, app.window.frame_number);
         try testing.expect(app.window.render_requested);
         now += 1;
-        app.tick(now); // The next drain delivers the outcome and builds once.
+        app.tick(now);
         try testing.expectEqual(built + 1, app.window.frame_number);
         if (round == 0) {
             try testing.expectEqual(@as(u32, 2), app.state.path_count);
@@ -1977,12 +1764,6 @@ test "a file dialog opened from a handler runs on the main thread after the hand
 }
 
 test "a file dialog that stays open completes later through the queue" {
-    // Goal: the deferred half of `FileDialogService` (Linux's portal keeps
-    // its loop turning). Methodology: the service returns no outcome and
-    // records the request ids. The tick that opened a dialog must still
-    // build, two dialogs may be open at once, and each completion pushed
-    // between ticks must reach its handler, in either order, free its slot,
-    // and build the frame that shows it.
     const app = try testing.allocator.create(DialogApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -2006,7 +1787,6 @@ test "a file dialog that stays open completes later through the queue" {
     }
     try testing.expect(service.ids[0] != service.ids[1]);
 
-    // The second dialog closes first.
     app.window.queue.push(.{ .completion = .{
         .request_id = service.ids[1],
         .outcome = .cancelled,
@@ -2035,10 +1815,8 @@ test "a file dialog that stays open completes later through the queue" {
 }
 
 test "counter and todo run their traces with no allocation after init" {
-    // Goal: plan exit criterion and the depth measurement approved decision 1
-    // asks for. Methodology: every core allocation goes through the
-    // lifecycle guard, which panics while running, so finishing each trace
-    // proves none happened. The deepest nesting must fit the budget.
+    // The lifecycle guard panics on any allocation while running, so finishing a
+    // trace proves none happened.
     inline for (.{
         .{ counter.App, counter.render, &traces.counter },
         .{ todo.App, todo.render, &traces.todo },
@@ -2071,11 +1849,6 @@ test "counter and todo run their traces with no allocation after init" {
 }
 
 test "a frame in flight defers the next build while input keeps draining" {
-    // Goal: contract rule 1's handoff, run on one thread. Methodology: build
-    // a frame with `tickMain` and hold it in flight; a second click must
-    // still reach its handler (against the rendered frame) but must neither
-    // build nor flip until the render side presents, and the main thread
-    // flips and builds at its next tick.
     const Driver = core_driver.CoreDriver(counter.App);
     const driver = try testing.allocator.create(Driver);
     defer testing.allocator.destroy(driver);
@@ -2111,12 +1884,6 @@ test "a frame in flight defers the next build while input keeps draining" {
 }
 
 test "every build opens an atlas frame so the glyph LRU can evict" {
-    // Goal: regression for the Mac run that exhausted counter's nano text
-    // atlas: the core never opened atlas frames, so every glyph stayed
-    // protected "since frame 1" and the LRU never evicted. Methodology: the
-    // synthetic face's glyphs are too few to fill the atlas, so check the
-    // mechanism directly: each built frame advances the atlas frame clock,
-    // and a tick that builds nothing leaves it alone.
     const Driver = core_driver.CoreDriver(counter.App);
     const driver = try testing.allocator.create(Driver);
     defer testing.allocator.destroy(driver);
@@ -2133,13 +1900,10 @@ test "every build opens an atlas frame so the glyph LRU can evict" {
         driver.frame();
     }
     try testing.expectEqual(first + 3, uploads.frameCurrent());
-    driver.frame(); // Nothing requested a render.
+    driver.frame();
     try testing.expectEqual(first + 3, uploads.frameCurrent());
 }
 
-/// Four 40 px rows above empty space, for the cursor check: a Button, a
-/// TextInput, a box that sets only a cursor around a keyed child that sets
-/// none, and a keyed box whose cursor follows its state.
 const CursorState = struct {
     draft: []const u8 = "",
     text: bool = false,
@@ -2194,13 +1958,6 @@ fn cursorAt(app: *CursorApp, now: *u64, x: f32, y: f32) CursorShape {
 }
 
 test "boxes nest exactly to build.box_depth_max and every level lays out inside its parent" {
-    // Goal: the layout passes take every depth the budget admits. They used to
-    // recurse with a cap of 48 below the stack's 64, so about 47 nested boxes
-    // stopped layout with a bare assertion. Method: nest the 63 boxes that fit
-    // inside the window root at `nano`'s `build.box_depth_max` of 64 (one more
-    // fails fast: `core-box-depth`), each padded by 1 px around a 10 px box at the
-    // bottom, and check every level's bounds: box `i` (1-based, pre-order
-    // index `i` in layout) sits at `i - 1` and spans 10 + 2 × (63 − i).
     const app = try testing.allocator.create(DeepApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -2256,11 +2013,6 @@ const DeepBoxes = struct {
 };
 
 test "the cursor resolves from the hovered record and its ancestors" {
-    // Goal: the cursor hosts apply after a tick comes from the record under
-    // the pointer, as `Box.cursor` did in 0.3.1. Method: move over each row.
-    // The leaf sets no cursor, so its cursor-only parent's applies; a box
-    // whose cursor changes under a still pointer resolves anew from the next
-    // frame; empty space and a pointer outside the window give `.default`.
     const app = try testing.allocator.create(CursorApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -2276,7 +2028,6 @@ test "the cursor resolves from the hovered record and its ancestors" {
     try testing.expectEqual(CursorShape.default, cursorAt(app, &now, 10, 180));
     try testing.expectEqual(CursorShape.default, cursorAt(app, &now, 280, 4));
 
-    // The flip box turns its cursor to `.text` while the pointer stays put.
     _ = cursorAt(app, &now, 10, 130);
     clickAt(app, &now, 10, 130);
     try testing.expect(app.state.text);
@@ -2288,10 +2039,6 @@ test "the cursor resolves from the hovered record and its ancestors" {
 }
 
 test "clicks fire on release over the pressed control" {
-    // Goal: decision 7's click-on-release rule. Methodology: on counter, a
-    // press alone must not click; releasing over the pressed "+" clicks it
-    // once; pressing "+" and releasing over "-" clicks neither; a release
-    // with no press clicks nothing. Expected counts follow from step 1.
     const Driver = core_driver.CoreDriver(counter.App);
     const driver = try testing.allocator.create(Driver);
     defer testing.allocator.destroy(driver);
@@ -2323,8 +2070,6 @@ const FontState = struct {
     }
 };
 
-/// Two families (decision 8): the app family and a synthetic `.monospace`
-/// second family, whose glyphs all advance by 0.6 em.
 const FontApp = gooey.App(FontState, fontRender, .{
     .title = "Fonts",
     .width = 300,
@@ -2350,7 +2095,6 @@ fn fontRender(cx: *Cx) void {
     }));
 }
 
-/// The x of every glyph sprite in the rendered frame, in paint order.
 fn spriteXs(window: *const internals.window.Window, out: []f32) u32 {
     const frame = window.rendered();
     var count: u32 = 0;
@@ -2368,12 +2112,6 @@ fn spriteXs(window: *const internals.window.Window, out: []f32) u32 {
 }
 
 test "mono text draws with the second family's advances" {
-    // Goal: decision 8's `Text.family`. Methodology: the synthetic app face
-    // advances 'm' by 0.8 em and the synthetic `.monospace` face by 0.6 em,
-    // so at 16 px the app run's glyphs sit 12.8 px apart and the mono run's
-    // 9.6 px apart. A run measured or placed with the wrong family would
-    // show the other spacing. Glyphs snap to whole pixels, hence the
-    // tolerance on each run's two-advance span.
     const app = try testing.allocator.create(FontApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -2386,10 +2124,6 @@ test "mono text draws with the second family's advances" {
 }
 
 test "effects.setFont reloads the app family once no frame is in flight" {
-    // Goal: decision 8's `setFont`, applied after the drain. Methodology: the
-    // first click lands while a frame is in flight, so the reload waits: the
-    // app family stays at 16 pt until the render side presents, then the
-    // next tick loads it at 20 pt. The mono family keeps its own size.
     const app = try testing.allocator.create(FontApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -2397,7 +2131,7 @@ test "effects.setFont reloads the app family once no frame is in flight" {
     const tick = internals.tick;
     const window = &app.window;
     const text_system = app.resources.text_system;
-    app.tick(1); // A rendered frame for the click to hit.
+    app.tick(1);
     window.render_requested = true;
     try testing.expect(tick.tickMain(app, window, 2));
     try testing.expect(window.frame_in_flight.load(.acquire));
@@ -2425,7 +2159,6 @@ const WrapApp = gooey.App(WrapState, wrapRender, .{
     .limits = .nano,
 });
 
-/// A 110 px column with 10 px of left padding, so text wraps against 100 px.
 fn wrapRender(cx: *Cx) void {
     cx.render(ui.box(.{
         .style = .{ .width = .{ .fixed = 110 }, .padding = .{ .left = 10 } },
@@ -2441,7 +2174,6 @@ fn wrapRender(cx: *Cx) void {
     }));
 }
 
-/// The first sprite of each run of glyphs that share a top edge.
 fn lineStarts(window: *const internals.window.Window, out: []internals.records.Rect) u32 {
     const frame = window.rendered();
     var count: u32 = 0;
@@ -2459,18 +2191,6 @@ fn lineStarts(window: *const internals.window.Window, out: []internals.records.R
 }
 
 test "wrapped text draws one run per line, pitched and aligned like its layout box" {
-    // Goal: decision 9's `wrap`, `line_height`, and `alignment`. Methodology:
-    // the synthetic face advances 'm' by 0.8 em and space by 0.25 em with a
-    // 1.2 em line height, so at 10 px "mmm" is 24 px, a space 2.5 px, and a
-    // line 12 px. In 100 px, ".words" fits three words and their spaces
-    // (79.5 px: the last space stays on the line and counts) and wraps the
-    // fourth (24 px); right-aligned they start 20.5 and 76 px in, 18 px apart
-    // at 150%. ".newlines" ignores the width: "mm" (16 px) and the 103.5 px
-    // line center at 42 and -1.75 px, 12 px apart. Each block's height is
-    // its line count times its pitch (36 and 24 px), so the blocks stack
-    // above the last text at -60 and -24 px. Every line starts with 'm', so
-    // the unwrapped last text is the reference for both axes; glyphs snap to
-    // whole pixels.
     const app = try testing.allocator.create(WrapApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -2487,10 +2207,6 @@ test "wrapped text draws one run per line, pitched and aligned like its layout b
     }
 }
 
-/// One case of `AlignApp`: a 100 px box laid out by `box_alignment` along
-/// `direction`, holding "mm" over "mmmmm" wrapped at newlines. A `scrolled`
-/// box also holds a 120 px spacer and scrolls along x, pinned to its end,
-/// so its content sits 20 px left.
 const AlignCase = struct {
     direction: ui.Direction = .column,
     box_alignment: ui.Alignment,
@@ -2540,7 +2256,6 @@ const AlignApp = gooey.App(AlignState, alignRender, .{
     .limits = .nano,
 });
 
-/// A left-aligned "m" as the reference, then every case, stacked at x = 0.
 fn alignRender(cx: *Cx) void {
     cx.render(ui.box(.{}, .{
         ui.text("m", .{ .size = 10 }),
@@ -2557,19 +2272,6 @@ fn alignRender(cx: *Cx) void {
 }
 
 test "aligned text lines sit in the parent's content width whatever the parent's alignment" {
-    // Goal: a `.center` or `.right` text is placed once, not once by its
-    // parent's alignment and again by its own. Methodology: the synthetic
-    // face draws "mm" 16 px and "mmmmm" 40 px wide at 10 px, so in a 100 px
-    // box a centred text's lines start 42 and 30 px in and a right-aligned
-    // one's 84 and 60 px in, whether the box aligns its children to the
-    // start, centre, or end, along either axis. A `.left` text starts both
-    // lines where the box put the 40 px text: 30 px in centred, 60 px at
-    // the end. Adding the box's offset twice puts the centred-in-centred
-    // case at 72 and 60, the cross-end one at 102 and 90, and the row one at
-    // 72 and 60. The box scrolled 20 px moves its centred lines with its
-    // content, to 22 and 10; aligning from the unscrolled edge leaves them
-    // at 42 and 30. Each value is relative to a left-aligned "m" at x = 0,
-    // since every line starts with 'm'; glyphs snap to whole pixels.
     const app = try testing.allocator.create(AlignApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -2593,13 +2295,6 @@ test "aligned text lines sit in the parent's content width whatever the parent's
 }
 
 test "a host's teardown frees through the guard after stop and leaves no atlas consumer" {
-    // Goal: the shutdown order every platform host follows (Bug A on Linux:
-    // frees under a running guard, then an atlas consumer left registered).
-    // Methodology: replay a host's lifecycle on TestBackend. A host record is
-    // reserved through the guard during init and registers an atlas consumer;
-    // after a tick, `stop` leaves `running`, the host unregisters and frees
-    // its record, and `deinit` frees the core, whose upload journal asserts
-    // that no consumer is left. A free before `stop` would panic in the guard.
     const app = try testing.allocator.create(WrapApp);
     defer testing.allocator.destroy(app);
     app.beginInit(testing.allocator);
@@ -2659,11 +2354,6 @@ fn firstFill(frame: *const internals.records.Frame) internals.records.Color {
 }
 
 test "setTheme reaches the next build and announcements ride exactly one frame" {
-    // Goal: decision 10's C11 and C9 on the core. Methodology: click while a
-    // frame is in flight, so neither request may touch that frame; the next
-    // build resolves tokens and the clear colour against the dark theme and
-    // carries the announcement, and the build after it carries none. The
-    // accessibility fields reach the rendered frame unchanged.
     const app = try testing.allocator.create(ThemeApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -2706,11 +2396,6 @@ test "setTheme reaches the next build and announcements ride exactly one frame" 
 }
 
 test "keymapClaims answers from the rendered focus path" {
-    // Goal: the synchronous query platforms ask before handing a key to the
-    // IME (`performKeyEquivalent`) agrees with what the drain dispatches.
-    // Methodology: cmd-s is bound only in the editor's context, so it is
-    // claimed only once the editor input is focused; an unbound key never
-    // is, and a global binding always is.
     const Driver = core_driver.CoreDriver(actions.AppWith(.cmd));
     const driver = try testing.allocator.create(Driver);
     defer testing.allocator.destroy(driver);
@@ -2742,12 +2427,6 @@ const ChromeState = struct {
     }
 };
 
-/// A 300 by 200 window drawn without server decorations, as Linux draws
-/// it: a 32 px toolbar holding a button flush with the top-left corner, an
-/// empty title strip, and a focusable box flush with the top-right corner;
-/// below it a draggable card at x 0 to 40, a pointer-drag splitter at x 40
-/// to 46, and a list at x 200 to 300 whose content overflows, so its
-/// scrollbar track spans x 290 to 298.
 const ChromeApp = gooey.App(ChromeState, chromeRender, .{
     .title = "Chrome",
     .width = 300,
@@ -2798,13 +2477,6 @@ fn chromeRender(cx: *Cx) void {
 }
 
 test "pressClaims takes presses on controls and leaves empty chrome to the window" {
-    // Goal: Linux moves an undecorated window from its top 32 px and resizes
-    // it from its 8 px edges only on a press the app does not handle. Clicks
-    // fire on release, so the platform asks `pressClaims` at the press; before
-    // it, every press counted as unhandled and the toolbar's buttons moved the
-    // window. Methodology: probe each kind of handled press inside the title
-    // strip or an edge, where a wrong answer starts a move or resize, and the
-    // empty strip, edges, and background beside them, which must stay free.
     const app = try testing.allocator.create(ChromeApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -2816,37 +2488,29 @@ test "pressClaims takes presses on controls and leaves empty chrome to the windo
     app.tick(now);
     const query = internals.Query{ .window = &app.window };
 
-    // The button, at the top-left corner, on its plain child, and in the strip.
     try testing.expect(query.pressClaims(.{ .x = 1, .y = 1 }));
     try testing.expect(query.pressClaims(.{ .x = 10, .y = 10 }));
     try testing.expect(query.pressClaims(.{ .x = 39, .y = 31 }));
     try testing.expect(!query.pressClaims(.{ .x = 40, .y = 16 }));
     try testing.expect(!query.pressClaims(.{ .x = 150, .y = 1 }));
     try testing.expect(!query.pressClaims(.{ .x = 239, .y = 31 }));
-    // Focus, at the top-right corner.
     try testing.expect(query.pressClaims(.{ .x = 299, .y = 1 }));
-    // A drag source on the left edge and a pointer-drag box beside it.
     try testing.expect(query.pressClaims(.{ .x = 1, .y = 50 }));
     try testing.expect(query.pressClaims(.{ .x = 45, .y = 50 }));
     try testing.expect(!query.pressClaims(.{ .x = 47, .y = 50 }));
     try testing.expect(!query.pressClaims(.{ .x = 1, .y = 150 }));
     try testing.expect(!query.pressClaims(.{ .x = 120, .y = 199 }));
-    // The scrollbar track on the right edge, but not the list beside it or
-    // the 2 px between the track and the edge.
     try testing.expect(query.pressClaims(.{ .x = 294, .y = 100 }));
     try testing.expect(!query.pressClaims(.{ .x = 289, .y = 100 }));
     try testing.expect(!query.pressClaims(.{ .x = 299, .y = 100 }));
 
-    // The claimed corner press is a click the router delivers on release.
     clickAt(app, &now, 1, 1);
     try testing.expectEqual(@as(u32, 1), app.state.clicks);
 }
 
 const InsetState = struct {};
 
-/// A toolbar that lines its one button up with a transparent title bar's
-/// traffic lights, as chat-zig does: the row is the strip's height and
-/// starts past the lights. Headless, the host is the test.
+/// Headless, the host is the test.
 const InsetApp = gooey.App(InsetState, insetRender, .{
     .title = "Inset",
     .width = 300,
@@ -2872,10 +2536,6 @@ fn insetRender(cx: *Cx) void {
 }
 
 test "titleBarInset reaches the next build when the host reports a new one" {
-    // Goal: macOS reports the traffic lights' area as a `title_bar` window
-    // event, at bind and whenever a resize or full screen moves them. The
-    // tick that drains it must rebuild with it, with no other input to
-    // prompt a render, and a later report must replace it, not add to it.
     const app = try testing.allocator.create(InsetApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -2893,7 +2553,6 @@ test "titleBarInset reaches the next build when the host reports a new one" {
     try testing.expectEqual(@as(f32, 74), beside.x);
     try testing.expectEqual(@as(f32, 6), beside.y);
 
-    // Full screen: nothing is inset, so the toolbar returns to the corner.
     app.window.queue.push(.{ .window = .{ .title_bar = .{} } });
     now += 1;
     app.tick(now);
@@ -2913,7 +2572,6 @@ fn chord(key: gooey.input.KeyCode, modifiers: gooey.input.Modifiers) gooey.input
 }
 
 const ClockState = struct {
-    /// The delay each build asks for; 0 asks for nothing.
     delay_ms: u32 = 100,
     builds: u32 = 0,
 };
@@ -2933,10 +2591,6 @@ fn clockRender(cx: *Cx) void {
 }
 
 test "cx.requestRenderAfter renders once at the earliest deadline of the last build" {
-    // Goal: the per-window deadline (contract §5). Methodology: a build at
-    // t = 1 ms asks for 100 ms. Ticks before 101 ms build nothing; the tick
-    // at 101 ms builds and renews it. A build that asks for nothing clears
-    // the deadline, so no later tick builds.
     const ms = std.time.ns_per_ms;
     const app = try testing.allocator.create(ClockApp);
     defer testing.allocator.destroy(app);
@@ -2960,8 +2614,6 @@ test "cx.requestRenderAfter renders once at the earliest deadline of the last bu
     try testing.expectEqual(@as(u32, 3), state.builds);
 }
 
-/// Which helper `motionRender` builds, so each check sees only its own
-/// render requests.
 const MotionPart = enum { tween, tween_on, row, loop, motion };
 
 const MotionState = struct {
@@ -3001,7 +2653,6 @@ fn motionRender(cx: *Cx) void {
     cx.render(ui.box(.{ .style = .{ .width = .{ .grow = 1 } } }, .{}));
 }
 
-/// Change the state as a handler would, then build at `now_ms`.
 fn motionBuild(app: *MotionApp, now_ms: u64) void {
     app.window.render_requested = true;
     app.tick(now_ms * std.time.ns_per_ms);
@@ -3012,11 +2663,6 @@ fn motionIdle(app: *MotionApp) bool {
 }
 
 test "tweens follow the clock, wait out their delay, replay on return, and then go idle" {
-    // Goal: `animation.tween` and `tweenOn` against the window clock, with
-    // render requests only while they move. Method: build a 100 ms linear
-    // tween at 0, 50, and 100 ms; a 50 ms delayed one must ask for its first
-    // frame at the delay's end, not sooner; a finished one hidden for a build
-    // plays again; a trigger tween starts at 1 and replays from 0 on change.
     const ms = std.time.ns_per_ms;
     const app = try testing.allocator.create(MotionApp);
     defer testing.allocator.destroy(app);
@@ -3042,7 +2688,6 @@ test "tweens follow the clock, wait out their delay, replay on return, and then 
     try testing.expectApproxEqAbs(@as(f32, 0.5), s.value, 1e-6);
     app.tick(2_150 * ms);
     try testing.expectEqual(@as(f32, 1), s.value);
-    // Built again without leaving: it stays finished.
     motionBuild(app, 2_200);
     try testing.expectEqual(@as(f32, 1), s.value);
     try testing.expect(motionIdle(app));
@@ -3070,12 +2715,6 @@ test "tweens follow the clock, wait out their delay, replay on return, and then 
 }
 
 test "a loop wraps its phase every period, and draws nothing once it is not built" {
-    // Goal: `animation.loop` follows the clock modulo its period, asks for a
-    // frame in every build that reads it, and leaves an idle window once a
-    // build skips it. Method: build a 400 ms loop from 1 s; read the phase a
-    // quarter in, one nanosecond before the wrap, and past two wraps. Hide
-    // it: that build must ask for nothing and a later tick must build
-    // nothing. Show it again: it restarts from 0.
     const ms = std.time.ns_per_ms;
     const app = try testing.allocator.create(MotionApp);
     defer testing.allocator.destroy(app);
@@ -3112,11 +2751,6 @@ test "a loop wraps its phase every period, and draws nothing once it is not buil
 }
 
 test "a motion springs in, reverses mid-flight without a snap, and settles hidden" {
-    // Goal: `animation.motion`'s enter and exit, and that a toggle keeps the
-    // spring's velocity (0.3.1's springMotion). Method: show at 1 s and step
-    // at 60 Hz for 100 ms; hide, and the next frame must still be further in
-    // (the spring was moving out) and report `.exiting`. Step to rest: the
-    // motion ends hidden with nothing left to draw.
     const ms = std.time.ns_per_ms;
     const app = try testing.allocator.create(MotionApp);
     defer testing.allocator.destroy(app);
@@ -3153,8 +2787,6 @@ test "a motion springs in, reverses mid-flight without a snap, and settles hidde
     try testing.expectEqual(built, app.window.frame_number);
 }
 
-/// Tick at 60 Hz until the window has nothing left to draw; returns the
-/// frames built on the way.
 fn animationSettle(app: *animation.App, now: *u64) u32 {
     const built = app.window.frame_number;
     var ticks: u32 = 0;
@@ -3172,19 +2804,12 @@ fn animationClick(app: *animation.App, now: *u64, label: []const u8) void {
 }
 
 test "animation plays its entrances, toggles, and stagger, then goes idle" {
-    // Goal: the animation example on the core: every animation ends and the
-    // window then draws nothing, with no allocation after init (the
-    // lifecycle guard panics on one). Method: settle the launch fade and
-    // panel spring; show the list and count its rows; interrupt the panel's
-    // exit with a show; pulse the counter; hide the list. Each must settle
-    // within the bound and leave no render pending.
     const app = try testing.allocator.create(animation.App);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
     defer app.deinitHeadless();
     var now: u64 = std.time.ns_per_s;
     app.tick(now);
-    // The 500 ms fade alone needs about 31 frames at 60 Hz.
     try testing.expect(animationSettle(app, &now) >= 30);
     try testing.expect(nodeNamed(&app.window, .button, "Hide Panel") != null);
 
@@ -3204,7 +2829,6 @@ test "animation plays its entrances, toggles, and stagger, then goes idle" {
     animationClick(app, &now, "Hide List");
     try testing.expect(animationSettle(app, &now) > 5);
 
-    // The pulse loops until it is turned off, then the window settles.
     animationClick(app, &now, "Start Pulse");
     for (0..120) |_| {
         now += 16 * std.time.ns_per_ms;
@@ -3220,7 +2844,6 @@ test "animation plays its entrances, toggles, and stagger, then goes idle" {
     try testing.expectEqual(internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
 }
 
-/// The rendered accessibility node named `name`, by role.
 fn formNode(
     app: *accessible_form.App,
     role: gooey.ui.Role,
@@ -3234,7 +2857,6 @@ fn formNode(
     return null;
 }
 
-/// Scroll the form until the node is in the window; returns its bounds.
 fn formReveal(
     app: *accessible_form.App,
     now: *u64,
@@ -3259,7 +2881,6 @@ fn formReveal(
     return node.bounds;
 }
 
-/// Click the centre of a node, scrolling the form first so it is visible.
 fn formClick(app: *accessible_form.App, now: *u64, role: gooey.ui.Role, name: []const u8) void {
     const bounds = formReveal(app, now, role, name);
     clickAt(app, now, bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
@@ -3272,7 +2893,6 @@ fn formType(app: *accessible_form.App, now: *u64, name: []const u8, text: []cons
     app.tick(now.*);
 }
 
-/// Queue one input event and tick.
 fn formInput(app: *accessible_form.App, now: *u64, event: gooey.input.InputEvent) void {
     app.window.queue.push(.{ .input = event });
     now.* += 1;
@@ -3280,14 +2900,6 @@ fn formInput(app: *accessible_form.App, now: *u64, event: gooey.input.InputEvent
 }
 
 test "accessible_form commits a composition into the field that lost focus" {
-    // Goal: a preedit left in a field that loses focus is committed there,
-    // as native text fields and GPUI do, and the IME's answers move to the
-    // field that took focus, so hosts can make the IME forget it there
-    // (`Query.imeOwner`). A kept preedit showed underlined text nothing could
-    // commit and kept every key from its field; a discarded one lost text.
-    // Method: commit "ab" in Full Name, compose "に", click Email and type
-    // "x"; Full Name must read "abに" and Email only "x". Backspace back in
-    // Full Name must delete the "に", so the field no longer composes.
     const app = try testing.allocator.create(accessible_form.App);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -3320,11 +2932,6 @@ test "accessible_form commits a composition into the field that lost focus" {
 }
 
 test "accessible_form validates, announces, and submits on the core" {
-    // Goal: the accessible_form port end to end through the router, with the
-    // lifecycle guard proving no allocation after init. Methodology: submit
-    // the empty form and read the alerts, field descriptions, and the
-    // assertive announcement; fill it in, pick a radio, an experience level,
-    // and the terms, then submit and read the success alert.
     const app = try testing.allocator.create(accessible_form.App);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -3362,7 +2969,6 @@ test "accessible_form validates, announces, and submits on the core" {
     try testing.expect(formNode(app, .radio, "Phone").?.state.checked);
     formClick(app, &now, .combobox, "Experience level");
     try testing.expect(formNode(app, .combobox, "Experience level").?.state.expanded);
-    // The first option sits just below the 40 px trigger.
     const combobox = formNode(app, .combobox, "Experience level").?.bounds;
     clickAt(app, &now, combobox.x + 20, combobox.y + 60);
     try testing.expectEqual(@as(?usize, 0), app.state.experience_level);
@@ -3375,7 +2981,6 @@ test "accessible_form validates, announces, and submits on the core" {
     try testing.expectEqual(internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
 }
 
-/// A folder dialog that answers with one path, as the platform's would.
 const FolderDialog = struct {
     path: []const u8,
     opened: u32 = 0,
@@ -3418,7 +3023,6 @@ const DeferredDialog = struct {
     }
 };
 
-/// The rendered accessibility node named `name`, by role, in any app.
 fn nodeNamed(
     window: *internals.window.Window,
     role: gooey.ui.Role,
@@ -3463,7 +3067,6 @@ fn editorResize(app: *code_editor.App, now: *u64, height: f32) void {
     app.tick(now.*);
 }
 
-/// Wheel the file list down until the row named `name` is built.
 fn editorWheelTo(app: *code_editor.App, now: *u64, name: []const u8) void {
     const list = nodeNamed(&app.window, .button, "a.zig").?.bounds;
     const direction: f32 = if (internals.window.wheel_delta_inverted) -1 else 1;
@@ -3482,8 +3085,6 @@ fn editorWheelTo(app: *code_editor.App, now: *u64, name: []const u8) void {
     }
 }
 
-/// A folder of 47 visible files: 40 numbered text files and seven that
-/// exercise each status, plus a hidden file and a folder the list skips.
 /// `line1024.txt` holds a line of 1024 two-byte codepoints, at the shaping
 /// bound in codepoints but twice it in bytes; `line1025.txt` is one past.
 fn editorFolder(dir: std.Io.Dir) !void {
@@ -3510,13 +3111,6 @@ fn editorFolder(dir: std.Io.Dir) !void {
 }
 
 test "code_editor's editor fills its panel at any window height" {
-    // Goal: the editor's rows follow the window, as 0.3.1's growing editor
-    // did, so none draws past its border. Method: settle at the 700 px
-    // launch height, then shrink to 635 px (the height the Windows report
-    // used) and grow to 900. At each, the editor's bottom must sit inside
-    // the panel (window less the 16 px outer and 8 px panel padding) and
-    // within one line of it, so it fills without overflowing, and the
-    // window must go idle: the resize's extra render converges.
     const app = try testing.allocator.create(code_editor.App);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -3543,12 +3137,6 @@ test "code_editor's editor fills its panel at any window height" {
 }
 
 test "code_editor lists a folder in a List and opens its files on the core" {
-    // Goal: the code_editor port end to end, with the lifecycle guard
-    // proving no allocation after init. Methodology: choose a folder of 47
-    // files through a scripted dialog; the List must build only the rows in
-    // view, sorted without case, and build the last rows once wheeled to the
-    // end. Clicking rows opens a text file into the editor and shows the
-    // binary, too-large, image, and line-too-long statuses for the others.
     var folder = std.testing.tmpDir(.{ .iterate = true });
     defer folder.cleanup();
     try editorFolder(folder.dir);
@@ -3575,8 +3163,6 @@ test "code_editor lists a folder in a List and opens its files on the core" {
     try testing.expectEqual(@as(u32, 47), app.state.file_count);
     try testing.expectEqualStrings("a.zig", app.state.files[0].text());
     try testing.expectEqualStrings("Notes.md", app.state.files[46].text());
-    // Rows of 26 px in a list about 22 rows tall: the visible ones and one
-    // partial row, never the folder's last file.
     const built = editorRowsBuilt(app);
     try testing.expect(built >= 10);
     try testing.expect(built < 30);
@@ -3596,15 +3182,12 @@ test "code_editor lists a folder in a List and opens its files on the core" {
     editorClickRow(app, &now, "big.txt");
     try testing.expectEqual(code_editor.FileStatus.file_too_large, app.state.status);
 
-    // Wheel the list to its end: its last rows are built, its first are not.
     editorWheelTo(app, &now, "Notes.md");
     try testing.expect(nodeNamed(&app.window, .button, "a.zig") == null);
     try testing.expect(editorRowsBuilt(app) < 47);
     editorClickRow(app, &now, "img.png");
     try testing.expectEqual(code_editor.FileStatus.image_file, app.state.status);
     try testing.expectEqualStrings("png", app.state.extension_bytes[0..app.state.extension_len]);
-    // A line past the shaping bound is refused; one at it opens and paints
-    // as eight batches of glyphs.
     editorClickRow(app, &now, "line1025.txt");
     try testing.expectEqual(code_editor.FileStatus.line_too_long, app.state.status);
     editorClickRow(app, &now, "line1024.txt");
@@ -3613,8 +3196,6 @@ test "code_editor lists a folder in a List and opens its files on the core" {
     try testing.expectEqual(internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
 }
 
-/// Numbered lines of 16 bytes, "line 0000000001\n", up to `bytes` bytes; the
-/// last line is cut short when `bytes` is not a multiple of 16.
 fn editorLines(dir: std.Io.Dir, name: []const u8, bytes: usize) !void {
     const data = try testing.allocator.alloc(u8, bytes);
     defer testing.allocator.free(data);
@@ -3645,14 +3226,6 @@ fn editorValueStart(app: *code_editor.App) !usize {
 }
 
 test "code_editor opens a file of up to its editor's bytes and says the caret's lines" {
-    // Goal: a file larger than the frame's 64 KiB of text opens, and a
-    // screen reader gets the lines around the caret, not the document (the
-    // whole copy exhausted the frame's text bytes on any file over 64 KiB).
-    // Method: open a file one byte past 64 KiB and one of exactly
-    // `text.editor.bytes_max`; the value must be whole lines of the file
-    // within `a11y.value_bytes_max`. Then click the smaller file's text and
-    // type a marker (the full one takes no more): the value must hold it,
-    // with the reported caret right after it.
     var folder = std.testing.tmpDir(.{ .iterate = true });
     defer folder.cleanup();
     const frame_text_bytes = code_editor.limits.build.text_bytes_frame_max;
@@ -3701,8 +3274,6 @@ test "code_editor opens a file of up to its editor's bytes and says the caret's 
     try testing.expectEqual(internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
 }
 
-/// Chat rows of 0.3.1's virtual_list_example: its five message heights in
-/// its ten-row pattern, read from the app's state as a real app's would be.
 const ChatState = struct {
     heights: [10]f32 = .{ 48, 48, 48, 72, 72, 120, 180, 48, 48, 32 },
 };
@@ -3725,7 +3296,6 @@ const ChatRow = struct {
     }
 };
 
-/// Uniform rows of 30 px, with the same gap and padding as the chat list.
 const PlainRow = struct {
     index: u32,
 
@@ -3763,7 +3333,6 @@ fn ListApp(comptime Row: type) type {
     });
 }
 
-/// The rows built this frame, and the a11y bounds of row `index` if built.
 fn listRows(window: *internals.window.Window, index: u32) struct {
     count: u32,
     row: ?internals.records.Rect,
@@ -3781,8 +3350,6 @@ fn listRows(window: *internals.window.Window, index: u32) struct {
     return .{ .count = count, .row = row };
 }
 
-/// Wheel the list down by `down` px at its centre and settle the render the
-/// emit requests once it measures the new rows.
 fn listWheel(app: anytype, now: *u64, down: f32) void {
     const direction: f32 = if (internals.window.wheel_delta_inverted) -1 else 1;
     app.window.queue.push(.{ .input = .{ .scroll = .{
@@ -3805,8 +3372,6 @@ fn listOffset(window: *internals.window.Window) *const internals.window.ScrollSt
     unreachable;
 }
 
-/// Rows of 40, 64, and 100 px in turn, for a `List` that scrolls from a
-/// handler and follows its end.
 const SteerRow = struct {
     index: u32,
 
@@ -3876,15 +3441,6 @@ fn steerRender(cx: *Cx) void {
 }
 
 test "a List scrolls to a row and follows its end in the frame that asks" {
-    // Goal: `List.scrollTo` and `List.anchor = .end` build the rows they
-    // land on in the same frame, where the core's layout puts them. Method:
-    // a 300 px list (30 px below the buttons, padded by 8) of rows of 40,
-    // 64, and 100 px with 8 px gaps, a 228 px cycle. It starts at its end,
-    // row 899 ending at the padding; one more row moves the end in the frame
-    // that adds it. Row 450 (150 cycles down, 34,200 px) then lands at the
-    // top of the padding, and row 10 (three cycles plus 40 + 8, 732 px; its
-    // box 64 px and the 8 px gap below) is centred in the 284 px view, its
-    // top at 30 + 8 + 142 - 36 = 144.
     const app = try testing.allocator.create(SteerApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -3910,7 +3466,6 @@ test "a List scrolls to a row and follows its end in the frame that asks" {
     clickOnce(app, &now, 25, 15);
     rows = listRows(&app.window, 10);
     try testing.expectEqual(@as(f32, 144), rows.row.?.y);
-    // Scrolled away from the end, a new row does not move the list.
     clickOnce(app, &now, 75, 15);
     rows = listRows(&app.window, 10);
     try testing.expectEqual(@as(f32, 144), rows.row.?.y);
@@ -3918,12 +3473,6 @@ test "a List scrolls to a row and follows its end in the frame that asks" {
 }
 
 test "a List of per-row heights builds the rows in view, spaced by its gap and padding" {
-    // Goal: variable row heights, as 0.3.1's virtual list, with the
-    // lifecycle guard proving no allocation after init. Methodology: 1,000
-    // rows, exactly the type's count_max, of the 0.3.1 chat heights (a ten-
-    // row cycle of 796 px with 8 px gaps) in a 300 px list padded by 8. Row
-    // tops are worked out by hand from that cycle, not from the List, at the
-    // start, 500 px down, and at the end.
     const App = ListApp(ChatRow);
     const app = try testing.allocator.create(App);
     defer testing.allocator.destroy(app);
@@ -3933,16 +3482,12 @@ test "a List of per-row heights builds the rows in view, spaced by its gap and p
     app.tick(now);
     now += 1;
     app.tick(now);
-    // Rows 0-4 start at 0, 56, 112, 168, 248 (+8 padding); row 5 at 328 is
-    // past the 292 px the padding leaves in view.
     var rows = listRows(&app.window, 3);
     try testing.expectEqual(@as(u32, 5), rows.count);
     try testing.expectEqual(@as(f32, 176), rows.row.?.y);
     try testing.expectEqual(@as(f32, 72), rows.row.?.height);
     try testing.expect(listRows(&app.window, 5).row == null);
 
-    // 500 px down the view spans content 492-792: row 6 (456-636) through
-    // row 9 (756-788); row 10 starts at 796.
     listWheel(app, &now, 500);
     try testing.expectEqual(@as(f32, 500), listOffset(&app.window).offset_y);
     rows = listRows(&app.window, 7);
@@ -3952,8 +3497,6 @@ test "a List of per-row heights builds the rows in view, spaced by its gap and p
     try testing.expect(listRows(&app.window, 5).row == null);
     try testing.expect(listRows(&app.window, 10).row == null);
 
-    // 100 cycles less the last gap, plus padding: 79,608 px of content, so
-    // the end is 79,308 down, where row 999 (32 px) ends at the padding.
     listWheel(app, &now, 100_000);
     const state = listOffset(&app.window);
     try testing.expectEqual(@as(f32, 79_608), state.content_height);
@@ -3965,11 +3508,6 @@ test "a List of per-row heights builds the rows in view, spaced by its gap and p
 }
 
 test "a List of one row height takes its gap and padding into the rows in view" {
-    // Goal: the constant-time range of uniform rows with a gap. Methodology:
-    // 30 px rows 8 px apart pitch at 38 px. At the start, rows 0-7 start
-    // before 292 px (row 7 at 266). 500 px down the view spans content
-    // 492-792: the pitch puts row 12 (456-486) first, an extra row above
-    // the view, row 13 (494) first in it, and row 20 (760) last.
     const App = ListApp(PlainRow);
     const app = try testing.allocator.create(App);
     defer testing.allocator.destroy(app);
@@ -3990,13 +3528,11 @@ test "a List of one row height takes its gap and padding into the rows in view" 
     try testing.expect(listRows(&app.window, 20).row != null);
     try testing.expect(listRows(&app.window, 11).row == null);
     try testing.expect(listRows(&app.window, 22).row == null);
-    // 1,000 rows less the last gap, plus padding.
     listWheel(app, &now, 100_000);
     try testing.expectEqual(@as(f32, 1000 * 38 - 8 + 16), listOffset(&app.window).content_height);
 }
 
-/// The list's scroll record and the hit records of its rows. Its spacers
-/// have no width, so they are not counted.
+/// The list's spacers have no width, so they are not counted.
 fn listChildren(window: *internals.window.Window, rows: []internals.records.Rect) struct {
     list: internals.records.Rect,
     count: u32,
@@ -4017,14 +3553,6 @@ fn listChildren(window: *internals.window.Window, rows: []internals.records.Rect
 }
 
 test "virtual_list sizes each chat bubble to its measured text, to the last" {
-    // Goal: the virtual_list port end to end, with rows sized by
-    // `cx.measureText` and the lifecycle guard proving no allocation after
-    // init. Methodology: the List gives each row the height its `height`
-    // measured, and layout then wraps the bubble's text on its own; a row
-    // that measured differently from layout leaves the text short of, or
-    // past, the bubble's 8 px bottom padding. Every wrapped body in view must
-    // end exactly there, some on more than one line, at the top and at the
-    // end of the list.
     const App = virtual_list.App;
     const app = try testing.allocator.create(App);
     defer testing.allocator.destroy(app);
@@ -4040,7 +3568,6 @@ test "virtual_list sizes each chat bubble to its measured text, to the last" {
     try testing.expect(children.count < 20);
     try testing.expectEqual(children.list.y + 8, rows[0].y);
     try expectBubblesFit(&app.window);
-    // Rows past the view's bottom are not built.
     const last = rows[children.count - 1];
     try testing.expect(last.y < children.list.y + children.list.height);
 
@@ -4054,8 +3581,6 @@ test "virtual_list sizes each chat bubble to its measured text, to the last" {
     try testing.expectEqual(internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
 }
 
-/// Each word-wrapped text laid out last frame ends at its bubble's bottom
-/// padding (8 px), and at least one of them wraps to several lines.
 fn expectBubblesFit(window: *internals.window.Window) !void {
     const elements = window.layout.elements.items();
     var checked: u32 = 0;
@@ -4091,11 +3616,6 @@ fn tableSorted(state: *const data_table.State, up: bool) bool {
 }
 
 test "data_table sorts 10,000 rows from its headers and builds only the rows in view" {
-    // Goal: the data_table port end to end, with the lifecycle guard
-    // proving no allocation after init. Methodology: click the Size header
-    // three times; the order must be ascending, then descending (checked
-    // against every adjacent pair of rows), then the generated order, and
-    // the header's name must carry the arrow. Only rows in view are built.
     const App = data_table.App;
     const app = try testing.allocator.create(App);
     defer testing.allocator.destroy(app);
@@ -4111,7 +3631,6 @@ test "data_table sorts 10,000 rows from its headers and builds only the rows in 
     try testing.expect(children.count < 30);
     try testing.expectEqual(@as(f32, 32), rows[0].height);
     try testing.expectEqual(@as(u32, 3), app.state.order[3]);
-    // Name grows, so the last column ends at the list's right edge.
     const modified = nodeNamed(&app.window, .button, "Modified").?.bounds;
     try testing.expectEqual(children.list.x + children.list.width, modified.x + modified.width);
 
@@ -4128,7 +3647,6 @@ test "data_table sorts 10,000 rows from its headers and builds only the rows in 
         try testing.expectEqual(@as(u32, @intCast(index)), order);
     }
     try testing.expect(nodeNamed(&app.window, .button, "Size") != null);
-    // Another column starts ascending.
     tableHeader(app, &now, "Size");
     tableHeader(app, &now, "ID");
     try testing.expectEqual(data_table.Column.id, app.state.sort_column.?);
@@ -4155,7 +3673,6 @@ fn meshRender(cx: *Cx) void {
 }
 
 fn meshPaint(_: *const u8, painter: *ui.Painter) void {
-    // Two red triangles in a row join one mesh; the blue circle starts another.
     painter.triangles(&.{ .{ 0, 0 }, .{ 10, 0 }, .{ 0, 10 } }, mesh_red);
     painter.triangles(&.{ .{ 20, 0 }, .{ 30, 0 }, .{ 20, 10 } }, mesh_red);
     painter.circle(.{ 100, 100 }, 10, mesh_blue);
@@ -4166,13 +3683,6 @@ fn meshPaint(_: *const u8, painter: *ui.Painter) void {
 }
 
 test "Painter meshes pack into triangle, polyline, and point meshes" {
-    // Goal: paint meshes end to end on TestBackend, under the lifecycle
-    // guard (packing triangles must not allocate after init). Methodology:
-    // the paint function draws two touching red triangle fills, a circle of
-    // 10 px (12 sides at scale 1, so 10 fan triangles), an axis-aligned and a
-    // diagonal line, a polyline, and a point cloud. The records and the packed
-    // frame are checked by kind and count, and the circle's first fan
-    // triangle by its corners.
     const app = try testing.allocator.create(MeshApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -4208,8 +3718,6 @@ test "Painter meshes pack into triangle, polyline, and point meshes" {
     try testing.expectEqual(@as(f32, 2), meshes[3].width);
     try testing.expectEqual(Topology.point_instanced, meshes[4].topology);
     try testing.expectEqual(@as(u32, 4), meshes[4].range.count);
-    // The fan starts at the circle's rightmost corner; the next corner is
-    // 30 degrees on. The paint box sits at the window's origin.
     const fan = frame.meshPoints(meshes[1].range);
     try testing.expectEqual(@as(f32, 110), fan[0].x);
     try testing.expectEqual(@as(f32, 100), fan[0].y);
@@ -4221,19 +3729,12 @@ test "Painter meshes pack into triangle, polyline, and point meshes" {
     try testing.expectEqual(@as(u32, 3), packed_frame.counts[@backingInt(Pool.triangle_meshes)]);
     try testing.expectEqual(@as(u32, 1), packed_frame.counts[@backingInt(Pool.polylines)]);
     try testing.expectEqual(@as(u32, 1), packed_frame.counts[@backingInt(Pool.point_clouds)]);
-    // Meshes keep record order: three triangle meshes, the line, the points.
     try testing.expectEqual(@as(u32, 3), packed_frame.meshList()[3].count);
     try testing.expectEqual(@as(u32, 14), packed_frame.triangle_count);
     try testing.expectEqual(internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
 }
 
 test "one polyline and the triangle meshes may fill their whole frame budget" {
-    // Goal: a draw is bounded only by its kind's frame budget. Before 0.6 a
-    // polyline stopped at 8,192 points and a frame at 256 triangle meshes,
-    // whatever the budget said. Methodology: a budget of 16,384 polyline
-    // points and 512 paths; one polyline uses every point and 512 triangles
-    // alternate colour so none join, filling both pools exactly. One more of
-    // either fails fast (`core-mesh-points` covers the points).
     for (&full_line, 0..) |*point, index| {
         const x: f32 = @floatFromInt(index % 200);
         point.* = .{ x, @floatFromInt(index / 200) };
@@ -4292,7 +3793,6 @@ fn fullMeshPaint(_: *const u8, painter: *ui.Painter) void {
     }
 }
 
-/// The 32 px icon cells built this frame, in tree order.
 fn lucideCells(window: *internals.window.Window, cells: []internals.records.Rect) u32 {
     const frame = window.rendered();
     var count: u32 = 0;
@@ -4320,18 +3820,12 @@ fn lucideCellQuad(
 }
 
 test "lucide_demo builds the icon rows in view and lights the cell under the pointer" {
-    // Goal: the lucide_demo port end to end, with the lifecycle guard
-    // proving no allocation after init. Methodology: only whole rows of 16
-    // cells in view are built, each with an SVG sprite once rasterized; the
-    // cell under the pointer takes the hover colour and its neighbour keeps
-    // the cell colour; wheeled to the end, the last row holds the remainder.
     const app = try testing.allocator.create(lucide.App);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
     defer app.deinitHeadless();
     var now: u64 = 0;
-    // Rasterization is budgeted per frame; settle until every icon is drawn
-    // (87 ticks at the time of writing).
+    // Rasterization is budgeted per frame; settle until every icon is drawn.
     var settle: u32 = 0;
     while (settle < 200) : (settle += 1) {
         app.tick(now);
@@ -4387,8 +3881,6 @@ const WakeCounter = struct {
     }
 };
 
-/// Tick until the image worker's decode lands, waiting 1 ms between ticks;
-/// a decode that takes more than 5 s fails the test.
 fn settleImages(app: anytype, now: *u64) !void {
     var attempt: u32 = 0;
     while (attempt < 5_000) : (attempt += 1) {
@@ -4427,12 +3919,6 @@ fn showWhole(app: anytype, height: f32) void {
 }
 
 test "images: one decode lands off the main thread and draws every cell" {
-    // Goal: the async loader's contract. Methodology: the images example
-    // draws one file in 18 cells. The first frame queues one request and
-    // draws no image; the worker decodes off the main thread, wakes the
-    // host, and the next emit lands it, so every cell draws from one atlas
-    // entry with no allocation after init (the lifecycle guard). Expected
-    // bounds come from the logo's 512² source and each cell's box.
     const app = try testing.allocator.create(images.App);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -4463,16 +3949,13 @@ test "images: one decode lands off the main thread and draws every cell" {
     for (app.window.images.entries) |entry| try testing.expect(entry.state == .free);
     try testing.expectEqual(@as(u32, 1), app.window.images.landed_count);
 
-    // 200x80 contain: an 80 px square centred, 60 px in.
     const wide = sprites[3];
     try testing.expectEqual(@as(f32, 80), wide.bounds.width);
     try testing.expectEqual(@as(f32, 80), wide.bounds.height);
-    // `none` shows the middle 100 of 512 source px at their own size.
     const none = sprites[7];
     try testing.expectEqual(@as(f32, 100), none.bounds.width);
     const full_uv = sprites[4].uv.width;
     try testing.expectApproxEqAbs(full_uv * 100.0 / 512.0, none.uv.width, 1e-5);
-    // Effects carry through to the record.
     const combined = sprites[cell_count - 1];
     try testing.expectEqual(@as(f32, 0.8), combined.grayscale);
     try testing.expectEqual(@as(f32, 0.9), combined.opacity);
@@ -4495,10 +3978,6 @@ fn missingImagePaint(_: *const u8, painter: *ui.Painter) void {
 }
 
 test "images: a missing file fails once and is not read again" {
-    // Goal: a missing file is an operating error, not a crash, and does not
-    // re-read the disk every frame. Methodology: paint a missing path, let
-    // its failure land, then render again: the entry stays failed, nothing
-    // more is queued, and nothing is drawn.
     const MissingApp = gooey.App(struct {}, missingImageRender, .{
         .title = "Missing",
         .width = 100,
@@ -4531,13 +4010,6 @@ test "images: a missing file fails once and is not read again" {
 }
 
 test "dashboard draws every chart within .standard and t switches its theme" {
-    // Goal: the charts reach the core's mesh records within the dashboard's
-    // `.standard` limits (an overflow panics), every series draws, and the
-    // keymap's "t" toggles the theme. Methodology: one frame, then the mesh
-    // records by kind: the two line series are one polyline each and one
-    // marker cloud each at radius 4; the three scatter segments are one
-    // cloud each at radius 7 and 0.85 alpha. The root box's fill is the
-    // dark background, then the light one after "t".
     const App = dashboard.App;
     const app = try testing.allocator.create(App);
     defer testing.allocator.destroy(app);
@@ -4580,8 +4052,6 @@ test "dashboard draws every chart within .standard and t switches its theme" {
     }
     try testing.expectEqual(@as(u32, 2), lines);
     try testing.expectEqual(@as(u32, expected_clouds.len), clouds);
-    // The accent dot, the legend's three circles, two rings of slices, and
-    // the conversion ring's centre circles: one mesh per run of a colour.
     try testing.expect(triangle_meshes >= 1 + 3 + 5 + 2 + 3);
     try checkRevenueArea(frame);
 
@@ -4593,7 +4063,6 @@ test "dashboard draws every chart within .standard and t switches its theme" {
     try testing.expectEqual(internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
 }
 
-/// The revenue series' area fill, at 0.3 alpha of its line's colour.
 fn isRevenueArea(fill: ui.Color) bool {
     const line = ui.Color.hex(0x06b6d4);
     return @abs(fill.a - 0.3) < 0.001 and @abs(fill.r - line.r) < 0.001 and
@@ -4634,7 +4103,6 @@ fn checkRevenueArea(frame: *const internals.records.Frame) !void {
     try testing.expectApproxEqRel(area_line, area_triangles, 0.0001);
 }
 
-/// The fill of the frame's window-sized quad: the root box's background.
 fn rootFill(window: *internals.window.Window) ui.Color {
     const frame = window.rendered();
     for (frame.paint[0..frame.paint_count]) |record| {
@@ -4648,12 +4116,6 @@ fn rootFill(window: *internals.window.Window) ui.Color {
 }
 
 test "dynamic_counters creates, removes within a drain, and reuses entity slots" {
-    // Goal: entities through the real router and tick (decision 17). Method:
-    // add three counters and bump the third; in one drain, remove it and
-    // click its "+" (the frame still names it, so the handler must reach
-    // it); after the tick its slot must be free, zeroed, and one generation
-    // on, and the next add must reuse it fresh. Then fill to the example's
-    // cap of ten, under the `.nano` pool's 16, with no allocation after init.
     const App = dynamic_counters.App;
     const app = try testing.allocator.create(App);
     defer testing.allocator.destroy(app);
@@ -4670,7 +4132,6 @@ test "dynamic_counters creates, removes within a drain, and reuses entity slots"
     try testing.expectEqual(@as(i32, -1), countersValue(app, 0).count);
     try testing.expectEqual(@as(i32, 2), countersValue(app, 2).count);
 
-    // Remove, then "+" on the removed card, in one drain.
     const remove = nodeNamed(&app.window, .button, "- Remove Counter").?.bounds;
     const plus = countersButton(app, "+", 2).bounds;
     for ([_]gooey.ui.Rect{ remove, plus }) |bounds| {
@@ -4707,7 +4168,6 @@ fn countersValue(app: *dynamic_counters.App, index: u32) *const dynamic_counters
     return @ptrCast(@alignCast(bytes.ptr));
 }
 
-/// The `nth` button named `name`, in tree order.
 fn countersButtonIndex(
     app: *dynamic_counters.App,
     name: []const u8,
@@ -4737,8 +4197,6 @@ fn countersClick(app: *dynamic_counters.App, now: *u64, name: []const u8, nth: u
     clickAt(app, now, bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
 }
 
-/// A box built with a source location beside one without, for the inspector
-/// check.
 const InspectApp = gooey.App(struct {}, inspectRender, .{
     .title = "Inspect",
     .width = 400,
@@ -4762,10 +4220,6 @@ fn inspectRender(cx: *Cx) void {
 }
 
 test "the inspector selects the element under a press and shows its source" {
-    // Goal: `Style.source` reaches the inspector's selection in a safe build
-    // (contract decision 16). Methodology: open the inspector with
-    // Cmd+Shift+I, press inside the annotated box, then inside its sibling,
-    // which has no source; cycling through the profiler closes it again.
     if (!internals.debugger.enabled) return error.SkipZigTest;
     const app = try testing.allocator.create(InspectApp);
     defer testing.allocator.destroy(app);
@@ -4833,9 +4287,8 @@ fn paintCounts(frame: *const internals.records.Frame) PaintCounts {
     return counts;
 }
 
-/// Fill the frame to exactly its declared glyphs, then quads, then records:
-/// lines of 64 glyphs, 2 px quads, and empty clip pairs, all in view so none
-/// is culled when packed.
+/// Fill the frame to exactly its declared glyphs, then quads, then records, all
+/// in view so none is culled when packed.
 fn fullPaint(_: *const u8, painter: *ui.Painter) void {
     const paint_limits = full_limits.paint;
     const frame = internals.emit.targetOf(painter).window.built();
@@ -4864,12 +4317,6 @@ fn fullPaint(_: *const u8, painter: *ui.Painter) void {
 }
 
 test "the debugger opens over an app filled to exactly its limits" {
-    // Goal: the overlay paints into its own headroom, never the app's budget
-    // (contract decision 16), so a correct app cannot crash from opening it.
-    // Methodology: the app fills its declared quads, glyphs, and paint
-    // records exactly; open the inspector, hover and select its element, then
-    // the profiler, and check each records frame and the packed frame hold
-    // the app's full budget plus the overlay.
     if (!internals.debugger.enabled) return error.SkipZigTest;
     const app = try testing.allocator.create(FullApp);
     defer testing.allocator.destroy(app);
@@ -4901,18 +4348,15 @@ test "the debugger opens over an app filled to exactly its limits" {
     scrollMouse(app, &now, toggle);
     try testing.expectEqual(.profiler, app.window.debugger.mode);
     const profiled = paintCounts(app.window.rendered());
-    // The panel, the graph, its target line, and at least one bar.
     try testing.expect(profiled.quads >= app_counts.quads + 4);
     try testing.expect(glyphs.* > paint_limits.glyph_count_frame_max);
 }
 
-/// The bounds of the first button named `name`, or null when none is built.
 fn todoButton(app: *todo.App, name: []const u8) ?gooey.ui.Rect {
     const node = nodeNamed(&app.window, .button, name) orelse return null;
     return node.bounds;
 }
 
-/// The checkbox rows the list built, and the first one's top.
 fn todoRowCount(app: *todo.App, first_y: *f32) u32 {
     const frame = app.window.rendered();
     var count: u32 = 0;
@@ -4935,12 +4379,6 @@ fn todoResize(app: *todo.App, now: *u64, width: f32, height: f32) void {
 }
 
 test "the first frame fits a window whose size changed before the host bound it" {
-    // Goal: a window resized before `bindCore` (AppKit fitting it to the
-    // screen, a tiling compositor's first configure) gets a first frame of
-    // its own size, not the app's configured 480x560. Methodology: bind the
-    // configured geometry and expect nothing queued, then a scale change
-    // alone and a size change alone, each queueing one resize; the first
-    // build must carry the window's viewport and lay Add out across it.
     const app = try testing.allocator.create(todo.App);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -4962,13 +4400,6 @@ test "the first frame fits a window whose size changed before the host bound it"
 }
 
 test "todo acts on a todo's id and cuts a draft on a codepoint boundary" {
-    // Goal: the state methods todo's rows and Add call. Methodology: remove
-    // the middle of three todos by id twice and toggle it after: the list
-    // keeps the other two, "c" moved into its slot, untouched (VOPR seeds
-    // 17, 106, 107 had an index act on whatever moved there). Then add
-    // drafts of 127 and 126 bytes of "a" before an "é" (2 bytes): the
-    // 128-byte cut must keep 127 and 128 bytes, never half the "é" (seeds
-    // 42, 250, 302).
     var state = todo.State{};
     for ([_][]const u8{ "a", "b", "c" }) |text| {
         state.draft = text;
@@ -4995,13 +4426,6 @@ test "todo acts on a todo's id and cuts a draft on a codepoint boundary" {
 }
 
 test "a handler that clears a bound draft gets the next edit on the empty text" {
-    // Goal: a TextInput's next edit applies to what the app assigned to its
-    // binding, even before a build syncs the engine (VOPR seeds 101-103).
-    // Methodology: on todo, focus the draft and type "abc", then in one
-    // drain click Add, whose handler pushes the draft and assigns "", click
-    // the draft again, and type "x". The list must hold "abc" and the draft
-    // only "x"; the engine once kept "abc" until the next build and wrote
-    // back "abcx".
     const app = try testing.allocator.create(todo.App);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -5031,13 +4455,6 @@ test "a handler that clears a bound draft gets the next edit on the empty text" 
 }
 
 test "todo keeps its header, footer, and Add in view at 20 items and narrow widths" {
-    // Goal: the default example holds its layout past a screenful (SER9 saw
-    // rows overlap the header from 8 items) and down to narrow windows (Add
-    // went off screen at 350 px). Methodology: add 20 todos at 480x560; Add,
-    // the filters, and Clear completed must keep their places inside the
-    // padding, and a wheel over the list must move the rows up while the
-    // header stays. Then narrow the window to 360 px and check Add ends at
-    // the right padding with a row's Delete inside it.
     const app = try testing.allocator.create(todo.App);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -5085,18 +4502,11 @@ test "todo keeps its header, footer, and Add in view at 20 items and narrow widt
     const input = nodeNamed(&app.window, .textbox, "What needs doing?").?.bounds;
     try testing.expect(input.width > 100);
     try testing.expect(input.x + input.width < add_narrow.x);
-    // Rows fill the list, so Delete ends inside it.
     const delete = todoButton(app, "Delete").?;
     try testing.expect(delete.x + delete.width <= 360 - 24);
     try testing.expectEqual(internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
 }
 
-// =============================================================================
-// Keyboard access
-// =============================================================================
-
-/// Press `key` once and settle: the drain routes it against the frame on
-/// screen, and the build shows the result.
 fn pressKey(
     app: anytype,
     now: *u64,
@@ -5110,7 +4520,6 @@ fn pressKey(
     app.tick(now.*);
 }
 
-/// The accessibility node holding keyboard focus in the frame on screen.
 fn focusedNode(window: *internals.window.Window) ?*const internals.records.A11yNode {
     const frame = window.rendered();
     var found: ?*const internals.records.A11yNode = null;
@@ -5157,13 +4566,6 @@ fn expectRingAround(window: *internals.window.Window, bounds: internals.records.
 }
 
 test "Tab walks accessible_form's controls in tree order and draws the focus ring" {
-    // Goal: Tab reaches every control, components and the app's own radios
-    // alike, in tree order, wrapping at both ends, and only keyboard focus
-    // draws a ring, scrolled into the window. Methodology: Tab from nothing
-    // focused through the whole form, taller than its 800 px window, and
-    // once more, then Shift+Tab back; the expected order is read off the
-    // example's render. A click on a focused control keeps focus but drops
-    // the ring.
     const app = try testing.allocator.create(accessible_form.App);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -5175,7 +4577,6 @@ test "Tab walks accessible_form's controls in tree order and draws the focus rin
         .{ .role = .textbox, .name = "Full name, required field" },
         .{ .role = .textbox, .name = "Email address, required field" },
         .{ .role = .textbox, .name = "Phone number, optional field" },
-        // Only the selected radio is a tab stop.
         .{ .role = .radio, .name = "Email" },
         .{ .role = .checkbox, .name = "Subscribe to newsletter" },
         .{ .role = .combobox, .name = "Experience level" },
@@ -5196,7 +4597,6 @@ test "Tab walks accessible_form's controls in tree order and draws the focus rin
         try testing.expect(bounds.y + bounds.height + 4 <= 800.01);
         try expectRingAround(&app.window, bounds);
     }
-    // Wrapping to the first field scrolls the form back up to it.
     pressKey(app, &now, .tab, .{});
     try expectFocused(&app.window, order[0].role, order[0].name);
     try testing.expect(focusedNode(&app.window).?.bounds.y - 4 >= -0.01);
@@ -5209,18 +4609,12 @@ test "Tab walks accessible_form's controls in tree order and draws the focus rin
     }
     try expectFocused(&app.window, order[order.len - 1].role, order[order.len - 1].name);
 
-    // A pointer press on the focused Reset button keeps it focused, ringless.
     formClick(app, &now, .button, "Reset form to default values");
     try expectFocused(&app.window, .button, "Reset form to default values");
     try testing.expectEqual(@as(u32, 0), focusRings(&app.window, &ring));
 }
 
 test "Enter and Space click the focused control once per press" {
-    // Goal: the core's activation rule. Methodology: on accessible_form,
-    // focus the newsletter checkbox (checked by default) by Tab and toggle it
-    // with Space and Enter; a key repeat, Cmd+Enter, and Ctrl+Space must not
-    // click. Space in a text field clicks nothing. Enter on a radio
-    // selects it, and Enter on Submit submits, which announces.
     const app = try testing.allocator.create(accessible_form.App);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -5267,13 +4661,6 @@ test "Enter and Space click the focused control once per press" {
 }
 
 test "keyboard focus stays in view when a layout change moves it, but not after a wheel" {
-    // Goal: the reveal follows the focused box when content around it
-    // changes size, not only when focus moves, and leaves a scroll the user
-    // made alone. Methodology: on accessible_form, Tab to Submit, which
-    // scrolls it to the bottom of the 800 px window, and press Enter on the
-    // empty form: three error messages appear above it, pushing it down by
-    // more than its margin. It must stay in the window with its ring. Then
-    // wheel the form up, which moves Submit off the bottom: it stays there.
     const app = try testing.allocator.create(accessible_form.App);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -5309,15 +4696,6 @@ test "keyboard focus stays in view when a layout change moves it, but not after 
 }
 
 test "focus revealed at a scroll box's end settles instead of trading an ulp" {
-    // Goal: a focus reveal that lands on the clamp boundary stops rendering
-    // (VOPR seed 5284955851540158440). Methodology: give todo six rows, whose
-    // 332.8 px of content overflow its 317.6 px list by 15.2 px, and Tab to
-    // the last Delete, which wants 2 px more room below than the content
-    // has, so the reveal scrolls to the measured end. Laying the rows out at
-    // that offset moves them and the content's end by an ulp, which once read
-    // as a layout shift and re-revealed past a clamp that pulled back, every
-    // frame. Within a few frames nothing may be requested, with Delete in
-    // view and its ring drawn.
     const app = try testing.allocator.create(todo.App);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -5332,7 +4710,6 @@ test "focus revealed at a scroll box's end settles instead of trading an ulp" {
     app.window.render_requested = true;
     now += 1;
     app.tick(now);
-    // The draft, Add, three filters, then a checkbox and a Delete per row.
     for (0..5 + row_count * 2) |_| pressKey(app, &now, .tab, .{});
     const focused = focusedNode(&app.window).?;
     try testing.expectEqual(.button, focused.role);
@@ -5347,7 +4724,6 @@ test "focus revealed at a scroll box's end settles instead of trading an ulp" {
     try expectRingAround(&app.window, delete);
 }
 
-/// Todo's list scroll box in the frame on screen.
 fn todoListScroll(app: *todo.App) *internals.window.ScrollState {
     const frame = app.window.rendered();
     for (frame.hits[0..frame.hit_count]) |*record| {
@@ -5358,14 +4734,6 @@ fn todoListScroll(app: *todo.App) *internals.window.ScrollState {
 }
 
 test "a scroll box scrolled to its end clamps to shrunk content in one frame" {
-    // Goal: when the content under a far-scrolled box shrinks, the offset
-    // lands on the new end at once. Methodology: give todo 30 rows (48.8 px
-    // each, 8 px apart), wheel its list to the end, then remove 22 rows
-    // behind the frame's back and build. Every remaining row now lies above
-    // the old offset; measuring the content from the box's top once read
-    // that as content ending at the offset, so each frame clamped back only
-    // one viewport. Eight rows are 446.4 px: the build that shrank must put
-    // the offset at 446.4 less the viewport, and the box rest within two.
     const app = try testing.allocator.create(todo.App);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -5395,7 +4763,6 @@ test "a scroll box scrolled to its end clamps to shrunk content in one frame" {
     app.window.render_requested = true;
     now += 1;
     app.tick(now);
-    // The build that shrank measures the content and clamps to its end.
     const content_height: f32 = 8 * 48.8 + 7 * 8;
     try testing.expectApproxEqAbs(content_height, scroll.content_height, 0.01);
     const offset_max = content_height - scroll.viewport.height;
@@ -5413,13 +4780,6 @@ test "a scroll box scrolled to its end clamps to shrunk content in one frame" {
 }
 
 test "a radio group is one tab stop whose arrow keys select and wrap" {
-    // Goal: accessible_form's radios behave as a native group. Methodology:
-    // Tab enters at the selected option; Down and Right select the next,
-    // Up and Left the previous, wrapping at both ends, with focus and its
-    // ring following; Tab leaves the group in one press and Shift+Tab
-    // comes back to the option now selected. Then Shift+Tab from the open
-    // Select's menu closes it and lands on the newsletter checkbox before
-    // it, past the radios.
     const app = try testing.allocator.create(accessible_form.App);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -5463,8 +4823,6 @@ test "a radio group is one tab stop whose arrow keys select and wrap" {
 
 const reset_tooltip = "Clears every field and choice";
 
-/// Queue a pointer move and settle: the drain moves the hover against the
-/// frame on screen, the build shows it, and the next tick flips it on screen.
 fn formHover(app: *accessible_form.App, now: *u64, x: f32, y: f32) void {
     app.window.queue.push(.{ .input = .{ .mouse_moved = mouse(x, y) } });
     now.* += 1;
@@ -5473,8 +4831,6 @@ fn formHover(app: *accessible_form.App, now: *u64, x: f32, y: f32) void {
     app.tick(now.*);
 }
 
-/// Advance the clock by `ms` and settle, so a render the last build asked
-/// for with `requestRenderAfter` runs and reaches the screen.
 fn formWait(app: *accessible_form.App, now: *u64, ms: u64) void {
     now.* += ms * std.time.ns_per_ms;
     app.tick(now.*);
@@ -5483,13 +4839,6 @@ fn formWait(app: *accessible_form.App, now: *u64, ms: u64) void {
 }
 
 test "a Tooltip shows after the hover delay and hides when the pointer leaves" {
-    // Goal: accessible_form's Reset tooltip waits for the pointer to rest,
-    // then shows beside its button, and is not hoverable. Methodology:
-    // hover Reset and step the clock to just short of the 500 ms delay,
-    // then past it; the tooltip node must appear only then, with no input
-    // in between, so the component's own `requestRenderAfter` drove that
-    // render. Then move the pointer onto the tooltip itself, which ends the
-    // button's hover: it hides.
     const app = try testing.allocator.create(accessible_form.App);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -5504,7 +4853,6 @@ test "a Tooltip shows after the hover delay and hides when the pointer leaves" {
     try testing.expect(formNode(app, .tooltip, reset_tooltip) == null);
     formWait(app, &now, 10);
     const tooltip = formNode(app, .tooltip, reset_tooltip) orelse return error.NoTooltip;
-    // Below the button, or above it when the window's bottom is too near.
     const below = tooltip.bounds.y >= button.y + button.height;
     const above = tooltip.bounds.y + tooltip.bounds.height <= button.y;
     try testing.expect(below or above);
@@ -5518,13 +4866,6 @@ test "a Tooltip shows after the hover delay and hides when the pointer leaves" {
 }
 
 test "a Tooltip shows at once for keyboard focus, and Escape hides it" {
-    // Goal: keyboard users get the tooltip without a pointer, and can
-    // dismiss it, as WCAG 1.4.13 asks. Methodology: Tab to Reset; the
-    // tooltip must show with no wait. Escape hides it while focus stays;
-    // Shift+Tab and Tab back show it again, since leaving clears the
-    // dismissal. Then a pointer press on Reset, which focuses it without a
-    // ring, and a move away: the tooltip must hide, though Reset keeps
-    // focus, so a click never leaves one standing.
     const app = try testing.allocator.create(accessible_form.App);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -5549,7 +4890,6 @@ test "a Tooltip shows at once for keyboard focus, and Escape hides it" {
     try testing.expect(formNode(app, .tooltip, reset_tooltip) == null);
 }
 
-/// The options in the frame on screen whose `selected` state is set.
 fn selectedOptions(window: *internals.window.Window) u32 {
     const frame = window.rendered();
     var count: u32 = 0;
@@ -5560,11 +4900,6 @@ fn selectedOptions(window: *internals.window.Window) u32 {
 }
 
 test "a Select near the window's bottom opens its menu above, clear of the combobox" {
-    // Goal: an open menu never covers its combobox's open border when it
-    // fits on either side. Methodology: Tab to accessible_form's Select,
-    // which the focus reveal scrolls to the bottom of the 800 px window,
-    // where its four-option menu does not fit below; open it with Down.
-    // The listbox must end above the combobox, inside the window.
     const app = try testing.allocator.create(accessible_form.App);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -5583,12 +4918,6 @@ test "a Select near the window's bottom opens its menu above, clear of the combo
 }
 
 test "a Select opens, moves, and chooses from the keyboard" {
-    // Goal: the Select's keys through its retained key handler and
-    // `effects.click`, with focus as the highlight. Methodology: on the
-    // three-option Select, Tab to the combobox, open with Down, walk the
-    // options with Down past the end, Up, Home, and End, and choose with
-    // Enter; reopen with Space on the chosen option and close with Esc; then
-    // choose with Up and Space.
     const app = try testing.allocator.create(SelectApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -5642,15 +4971,6 @@ test "a Select opens, moves, and chooses from the keyboard" {
 }
 
 test "Tab from a Select's menu closes it and moves on, and a click opens it on the combobox" {
-    // Goal: Tab and Shift+Tab from an open menu close it and reach the next
-    // or previous tab stop in one press, without stepping into the closing
-    // menu's options, which the frame on screen still holds; and the pointer
-    // path still works beside the keys. Methodology: here the button follows
-    // the Select, and the options follow both in hit order, so Shift+Tab
-    // from the combobox wraps past the options to the button only if they
-    // are not tab stops. Open with Down and Space, leave with Tab and
-    // Shift+Tab, then click the trigger and close with Enter; the button is
-    // never clicked.
     const app = try testing.allocator.create(SelectApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -5675,8 +4995,6 @@ test "Tab from a Select's menu closes it and moves on, and a click opens it on t
     try testing.expectEqual(@as(u32, 0), app.state.below_clicks);
     try testing.expectEqual(@as(?usize, null), app.state.selected);
 
-    // A click opens the menu with focus on the combobox, ringless, where
-    // Enter closes it again.
     clickAt(app, &now, 20, 20);
     try testing.expect(comboboxState(app).expanded);
     try expectFocused(&app.window, .combobox, "Level");
@@ -5688,12 +5006,6 @@ test "Tab from a Select's menu closes it and moves on, and a click opens it on t
 }
 
 test "keys drained together after a Select choice leave its menu closed" {
-    // Goal: a browser delivers every key of one animation frame to one
-    // drain, so the keys after the choice route against the frame that still
-    // shows the menu open; closing from that frame must not reopen the menu
-    // the choice closed. Methodology: accessible_form's reported sequence.
-    // Open the Select and move to Intermediate one key per tick, then queue
-    // Enter, Tab, Tab, and Enter for a single drain.
     const app = try testing.allocator.create(accessible_form.App);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -5714,18 +5026,10 @@ test "keys drained together after a Select choice leave its menu closed" {
     try testing.expect(!formNode(app, .combobox, "Experience level").?.state.expanded);
     try testing.expect(formNode(app, .listbox, "Experience level") == null);
     try expectFocused(&app.window, .button, "Submit registration form");
-    // The last Enter submitted the empty form, which fails validation.
     try testing.expect(app.state.validation_errors.name);
 }
 
 test "focus on an element that leaves passes to its combobox or the next tab stop" {
-    // Goal: lost focus goes somewhere sensible instead of nowhere, so the
-    // next Tab continues from there. Methodology: choose a Select option
-    // with the pointer, which removes the pressed option: focus passes to
-    // its combobox, ringless as the press left it. Then on todo, delete the
-    // last row with Enter on its Delete button: focus passes to the next
-    // tab stop, Clear completed, with its ring, and Shift+Tab goes on to the
-    // previous row's Delete button.
     const select = try testing.allocator.create(SelectApp);
     defer testing.allocator.destroy(select);
     try select.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -5756,9 +5060,7 @@ test "focus on an element that leaves passes to its combobox or the next tab sto
     }
     now = 0;
     app.tick(now);
-    // The input, Add, three filters, then each row's checkbox and Delete.
     for (0..10) |_| pressKey(app, &now, .tab, .{});
-    // Each row's checkbox is named by its todo.
     try expectFocused(&app.window, .checkbox, "c");
     pressKey(app, &now, .tab, .{});
     try expectFocused(&app.window, .button, "Delete");
@@ -5774,7 +5076,6 @@ test "focus on an element that leaves passes to its combobox or the next tab sto
     try testing.expectEqual(internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
 }
 
-/// A CodeEditor beside a Button, for the claimed-Tab check.
 const EditorButtonState = struct {
     source: []const u8 = "",
     clicks: u32 = 0,
@@ -5800,11 +5101,6 @@ fn editorButtonRender(cx: *Cx) void {
 }
 
 test "a Tab the focused editor claims indents and keeps focus" {
-    // Goal: Tab moves focus only when no key handler stopped it, so an
-    // editor's indent does not also send focus to the next control.
-    // Methodology: Tab into the editor, Tab again to indent, and check the
-    // indent and that focus stayed; Shift+Tab, which the editor leaves alone,
-    // then moves focus back around to the button, where Enter clicks it.
     const app = try testing.allocator.create(EditorButtonApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -5824,12 +5120,6 @@ test "a Tab the focused editor claims indents and keeps focus" {
 }
 
 test "Tab stays inside a modal, so Enter never clicks what the modal blocks" {
-    // Goal: keyboard focus follows the pointer's modal rule (contract §6).
-    // Methodology: with the small modal open over the content button, Tab
-    // from nothing and again must land on the modal's button both times;
-    // Enter clicks it and closes the modal, which passes focus to the
-    // content button, the tab stop before it, where Tab stays and Space
-    // clicks.
     const app = try testing.allocator.create(BlockApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -5850,10 +5140,6 @@ test "Tab stays inside a modal, so Enter never clicks what the modal blocks" {
     pressKey(app, &now, .space, .{});
     try testing.expectEqual(@as(u32, 1), app.state.below_clicks);
 }
-
-// =============================================================================
-// Style.opacity, Sizing.grow weights, and Style.pointer_events
-// =============================================================================
 
 const StyleState = struct {
     pointer_events: @FieldType(ui.Style, "pointer_events") = .none,
@@ -5914,7 +5200,6 @@ fn opacityRender(cx: *Cx) void {
     }));
 }
 
-/// Two fills of one colour, which join into one mesh record.
 fn paintTwoTriangles(_: *const StyleState, painter: *gooey.Painter) void {
     const b = painter.bounds;
     const color = gooey.Color{ .r = 1, .g = 0, .b = 1, .a = 1 };
@@ -5923,13 +5208,6 @@ fn paintTwoTriangles(_: *const StyleState, painter: *gooey.Painter) void {
 }
 
 test "Style.opacity fades every record its subtree draws, nested opacities multiply" {
-    // Goal: `Style.opacity` reaches the paint records, as 0.3.1 folded it
-    // into each command. Method: a full-opacity control box beside a 0.5
-    // box holding a 0.5 child and a text, and a 0.5 paint element that
-    // fills one colour twice. Expected alphas are the products: the control
-    // stays at 1, the box's fill and border halve (1 to 0.5, 0.8 to 0.4),
-    // the child quarters, the glyphs halve, and the two fills still join
-    // into one mesh at half alpha.
     const app = try testing.allocator.create(OpacityApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -6006,19 +5284,12 @@ fn growRender(cx: *Cx) void {
 }
 
 test "grow siblings share free space by weight on the main axis only" {
-    // Goal: `Sizing.grow` weights through the core and the layout's slow
-    // path. Method: a 430 px row with a 100 px fixed box and two 15 px gaps
-    // leaves 300 px for grow weights 1 and 2, so 100 and 200; an equal
-    // split would give 150 each. Cross-axis weights (3 and 1) must not
-    // matter: every row child fills the 50 px height. A 90 px column splits
-    // weights 2 and 1 into 60 and 30.
     const app = try testing.allocator.create(GrowApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
     defer app.deinitHeadless();
     app.tick(0);
     const frame = app.window.rendered();
-    // The five keyed boxes, in tree order, are the only hit records.
     try testing.expectEqual(@as(u32, 5), frame.hit_count);
     const hits = frame.hits[0..5];
     const expected_x = [3]f32{ 0, 115, 230 };
@@ -6035,8 +5306,6 @@ test "grow siblings share free space by weight on the main axis only" {
 
 const FlexWrapApp = gooey.App(StyleState, flexWrapRender, style_config);
 
-/// A fit column holding a 230 px wrapping row of four keyed 100x20 boxes
-/// and a keyed 2:1 box that fills the column's width, then a keyed marker.
 fn flexWrapRender(cx: *Cx) void {
     const tile: ui.Style = .{ .width = .{ .fixed = 100 }, .height = .{ .fixed = 20 } };
     const names = [4][]const u8{ "a", "b", "c", "d" };
@@ -6062,19 +5331,12 @@ fn flexWrapRender(cx: *Cx) void {
 }
 
 test "Style.wrap breaks a row into lines and Style.aspect_ratio derives a height" {
-    // Goal: both fields through the core, into the layout, out as hit
-    // records. Method: two 100 px tiles and a 10 px gap fit 230 px (210) and
-    // a third does not, so the tiles make two lines 10 px apart, each
-    // centred: (230 - 210) / 2 = 10 from the left. The 2:1 box is 230 wide,
-    // so 115 tall, and the marker after it sits at 20 + 10 + 20 + 115 = 165,
-    // which only holds when the fit column learns both derived heights.
     const app = try testing.allocator.create(FlexWrapApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
     defer app.deinitHeadless();
     app.tick(0);
     const frame = app.window.rendered();
-    // The six keyed boxes, in tree order, are the only hit records.
     try testing.expectEqual(@as(u32, 6), frame.hit_count);
     const hits = frame.hits[0..6];
     const expected = [4][2]f32{ .{ 10, 0 }, .{ 120, 0 }, .{ 10, 30 }, .{ 120, 30 } };
@@ -6123,13 +5385,6 @@ fn pointerRender(cx: *Cx) void {
 }
 
 test "pointer_events none passes the pointer to the box below but keeps its keys" {
-    // Goal: `Style.pointer_events = .none` makes a box transparent to the
-    // pointer, as in 0.3.1. Method: a popover exactly covering a clickable
-    // box. With `.none`, a click, the hover cursor, and the hit query over
-    // the popover reach the box below; a click on the popover's own child
-    // still reaches the child and bubbles through the popover's handler;
-    // Tab still focuses the popover. Switching it to `.auto` is the control:
-    // the same click then lands on the popover and the box below gets none.
     const app = try testing.allocator.create(PointerApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -6192,13 +5447,6 @@ fn dragged(x: f32, y: f32) gooey.input.InputEvent {
 }
 
 test "splitter: the sidebar follows a drag from its press, clamped, outside the window too" {
-    // Goal: `Box.on_pointer_drag` through the router, with the cursor held
-    // while captured. Methodology: the sidebar starts 240 px wide, so its
-    // 6 px splitter spans x 240 to 246. Press at x 243 and move by +30: the
-    // width is 270, not 30 (the move applied to nothing) and not 240 (no
-    // move delivered). Move to x -500, outside the window: clamped to 120,
-    // with the resize cursor still showing far off the divider. Release at
-    // x 273: 270 stays, and the cursor resolves from what is under it again.
     const app = try testing.allocator.create(SplitterApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -6233,8 +5481,6 @@ test "splitter: the sidebar follows a drag from its press, clamped, outside the 
     try testing.expectEqual(CursorShape.default, app.window.cursor);
     scrollMouse(app, &now, dragged(700, y));
     try testing.expectEqual(@as(f32, 270), app.state.sidebar_width);
-    // The splitter answers the primary button only: a right-button drag
-    // from the divider leaves the width where it is.
     var right = mouse(273, y);
     right.button = .right;
     scrollMouse(app, &now, .{ .mouse_down = right });
@@ -6245,11 +5491,6 @@ test "splitter: the sidebar follows a drag from its press, clamped, outside the 
 }
 
 test "splitter: Escape and a lost gesture restore the width the press began with" {
-    // Goal: `cancel` reaches the handler, which restores its start, and the
-    // Escape goes no further. Methodology: drag +50 from 240, press Escape:
-    // 240 again, and the release that follows changes nothing. Then drag
-    // again and deliver `pointer_cancelled`, as a platform does when it
-    // loses capture: 240 again, rather than the 290 a release would keep.
     const app = try testing.allocator.create(SplitterApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -6276,10 +5517,6 @@ test "splitter: Escape and a lost gesture restore the width the press began with
 }
 
 test "splitter: arrow keys move a focused splitter, which reports its range" {
-    // Goal: the keyboard alternative and its accessibility. Methodology:
-    // Tab reaches the sidebar splitter first; → adds 16, Shift+→ adds 64,
-    // Home goes to the minimum, and End to the maximum. The splitter's
-    // accessibility node is a separator whose range follows the width.
     const app = try testing.allocator.create(SplitterApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -6305,7 +5542,6 @@ test "splitter: arrow keys move a focused splitter, which reports its range" {
         try testing.expectEqual(gooey.ui.Role.separator, node.role);
         try testing.expectEqual(splitter.sidebar_width_min, node.range.?.min);
         try testing.expectEqual(splitter.sidebar_width_max, node.range.?.now);
-        // It stands between left and right panes: a vertical separator.
         try testing.expectEqual(gooey.ui.Orientation.vertical, node.range.?.orientation);
         try testing.expect(node.state.focused);
     }
@@ -6313,12 +5549,6 @@ test "splitter: arrow keys move a focused splitter, which reports its range" {
 }
 
 test "splitter: the top pane's share follows a drag through effects.bounds" {
-    // Goal: a weighted split turns pixels into grow weights from its
-    // container's bounds. Methodology: the content pane is the window's
-    // 600 px tall, so its two panes share 594 px beside the 6 px splitter;
-    // the top pane starts at 0.6 of that, 356.4 px. Dragging the splitter
-    // down 59.4 px (0.1 of 594) gives a share of 0.7, not 0.6 + 59.4 / 600,
-    // and the splitter lands where the pointer left it, at 415.8 px.
     const app = try testing.allocator.create(SplitterApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -6336,8 +5566,6 @@ test "splitter: the top pane's share follows a drag through effects.bounds" {
     try testing.expectApproxEqAbs(@as(f32, 415.8), recordBounds(app, top_splitter_id).y, 0.01);
 }
 
-/// One captured box with a click handler, a button beside it, and a flag
-/// that stops rendering the captured box, for the capture's edge cases.
 const CaptureState = struct {
     shown: bool = true,
     phases: [8]gooey.Effects.PointerDrag.Phase = undefined,
@@ -6395,14 +5623,6 @@ fn captureRender(cx: *Cx) void {
 }
 
 test "a capture clicks only without a move, and ends quietly when its box leaves" {
-    // Goal: the click rule beside capture, and a capture whose box stops
-    // rendering. Methodology: the captured box is x 0 to 50, the button x
-    // 100 to 150. A press and release with a 1 px move clicks the box
-    // (within the 2 px slop) after `begin`, `move`, `end`. A press dragged
-    // to the button and released there clicks neither, and one dragged 20 px
-    // and back to the box clicks nothing either. A press, then the
-    // box hidden, then a move and a release, call nothing more and leave no
-    // capture: the handler is looked up in the frame on screen each step.
     const app = try testing.allocator.create(CaptureApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -6422,7 +5642,6 @@ test "a capture clicks only without a move, and ends quietly when its box leaves
     try app.state.expectPhases(&.{ .begin, .move, .end });
     try testing.expectEqual(@as(u32, 1), app.state.box_clicks);
     try testing.expectEqual(@as(u32, 0), app.state.button_clicks);
-    // A drag that comes back and releases on the box still clicks nothing.
     scrollMouse(app, &now, .{ .mouse_down = mouse(20, 20) });
     scrollMouse(app, &now, dragged(40, 20));
     scrollMouse(app, &now, dragged(20, 20));
@@ -6455,10 +5674,6 @@ fn nanoA11yRender(cx: *Cx) void {
 }
 
 test "a nano app records exactly its a11y.element_count_max nodes" {
-    // Goal: the frame's node pool comes from `ResourceLimits.a11y`, not the
-    // element budget, and holds that many. Methodology: render exactly
-    // `nano`'s 128 accessible boxes and count the rendered frame's nodes and
-    // capacity; one more is the `core-a11y-elements` fail-fast check.
     const app = try testing.allocator.create(NanoA11yApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -6473,8 +5688,6 @@ test "a nano app records exactly its a11y.element_count_max nodes" {
 
 const DragDropApp = drag_drop.App;
 
-/// The hit record of the card carrying `id`, or with `id` null, of the list
-/// on the right (`right`) or left.
 fn dragDropRecord(
     app: *DragDropApp,
     id: ?drag_drop.ItemId,
@@ -6495,8 +5708,6 @@ fn dragDropRecord(
     unreachable;
 }
 
-/// The alpha of the first quad filled with `color` at `x`, or at any x when
-/// `x` is null; null when there is none.
 fn quadAlphaAt(frame: *const internals.records.Frame, color: ui.Color, x: ?f32) ?f32 {
     for (frame.paint[0..frame.paint_count]) |record| {
         if (record != .quad) continue;
@@ -6511,14 +5722,6 @@ fn quadAlphaAt(frame: *const internals.records.Frame, color: ui.Color, x: ?f32) 
 }
 
 test "drag_drop: a card drags to the other list; a short press, Escape, or a miss moves none" {
-    // Goal: contract §5's drag and drop through the router, the `.drag`
-    // layer, and emit, on the example. Methodology: press Banana and move 2
-    // px, the slop: still armed. Move to the right list's centre: the drag
-    // starts and the list is `over`, though the preview is laid out under
-    // the pointer (a `.drag` layer never takes it). The source dims to 0.4,
-    // the preview paints at 0.85, and the press no longer clicks. Release:
-    // Banana moves right. Then a drag cancelled by Escape and one released
-    // over the title move nothing.
     const app = try testing.allocator.create(DragDropApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -6556,7 +5759,6 @@ test "drag_drop: a card drags to the other list; a short press, Escape, or a mis
     app.tick(now);
     try testing.expectEqual(@as(?f32, 1), quadAlphaAt(app.window.rendered(), banana_color, null));
 
-    // Escape cancels: Apple stays put though released over the right list.
     const apple = dragDropRecord(app, 0, false).bounds;
     scrollMouse(app, &now, .{ .mouse_down = mouse(apple.x + 20, apple.y + 10) });
     scrollMouse(app, &now, dragged(target_x, target_y));
@@ -6564,7 +5766,6 @@ test "drag_drop: a card drags to the other list; a short press, Escape, or a mis
     scrollMouse(app, &now, .{ .key_down = chord(.escape, .{}) });
     try testing.expect(app.window.drag.phase == .idle);
     scrollMouse(app, &now, .{ .mouse_up = mouse(target_x, target_y) });
-    // A drag released over the title, outside both lists, moves nothing.
     scrollMouse(app, &now, .{ .mouse_down = mouse(apple.x + 20, apple.y + 10) });
     scrollMouse(app, &now, dragged(40, 20));
     scrollMouse(app, &now, .{ .mouse_up = mouse(40, 20) });
@@ -6573,20 +5774,13 @@ test "drag_drop: a card drags to the other list; a short press, Escape, or a mis
     try testing.expectEqual(internals.lifecycle.Lifecycle.running, app.guard.lifecycle);
 }
 
-/// A row: a draggable source at x 0 to 40, then drop targets 60 px wide,
-/// `near` at x 100 (or with `shifted`, x 200), `other` of another payload
-/// type at x 300, and `blocked` at x 400, which a modal covers while
-/// `modal` is set. While a drag is on, a `.drag` preview with a label and a
-/// click handler sits under the pointer.
 const DropProbe = struct {
     shifted: bool = false,
     modal: bool = false,
     source_shown: bool = true,
     near_shown: bool = true,
     near_drops: u32 = 0,
-    /// Keys the source's `on_key` received.
     source_keys: u32 = 0,
-    /// Key releases the source's `on_key` received.
     source_key_ups: u32 = 0,
     other_drops: u32 = 0,
     blocked_drops: u32 = 0,
@@ -6615,13 +5809,11 @@ const DropProbe = struct {
         self.preview_clicks += 1;
     }
 
-    /// Space on the focused source picks it up.
     fn sourceKey(self: *DropProbe, effects: *Effects) void {
         const event = effects.inputEvent().?;
         if (event.* == .key_up) self.source_key_ups += 1;
         if (event.* != .key_down) return;
         self.source_keys += 1;
-        // The checks read the drag from the window, so the result is not needed.
         if (event.key_down.key == .space) _ = effects.startDrag(probeId("source"));
     }
 };
@@ -6695,12 +5887,6 @@ fn probeId(name: []const u8) gooey.ElementId {
 }
 
 test "a drag preview never takes the pointer and adds no accessibility node" {
-    // Goal: the `.drag` layer's two rules. Methodology: drag the source to
-    // x 130, inside `near`; the preview is laid out at x 110 to 150, under
-    // the pointer, with a click handler and a label. `near` is still the
-    // target, a hit test there finds `near`, the preview's record does not
-    // take the pointer, and no accessibility node carries its label. A
-    // release drops on `near` and does not click the preview.
     const app = try testing.allocator.create(DropProbeApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -6732,9 +5918,6 @@ test "a drag preview never takes the pointer and adds no accessibility node" {
     try testing.expectEqual(@as(u32, 0), app.state.preview_clicks);
 }
 
-/// A 60 by 40 `trigger` at the top left whose `.tooltip` layer, keyed
-/// `tip` with a click handler, opens 40 px down, over `below`, a clickable
-/// box that spans the window under the trigger.
 const TooltipProbe = struct {
     below_clicks: u32 = 0,
     tip_clicks: u32 = 0,
@@ -6776,13 +5959,6 @@ fn tooltipProbeRender(cx: *Cx) void {
 }
 
 test "a tooltip layer never takes the pointer and keeps its accessibility node" {
-    // Goal: the `.tooltip` layer's rules (contract decision 21). Methodology:
-    // the probe's tooltip, with a click handler, lies over `below` at
-    // (30, 55). A hit test there finds `below`, the tooltip's record does
-    // not take the pointer, the pointer there does not hover the trigger
-    // (a record that took it would bubble to its opener), and a click there
-    // clicks `below`, not the tooltip. Unlike a drag preview, the tooltip
-    // keeps its accessibility node.
     const app = try testing.allocator.create(TooltipProbeApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -6814,13 +5990,6 @@ test "a tooltip layer never takes the pointer and keeps its accessibility node" 
 }
 
 test "over follows the payload type, a flip under a still pointer, and a modal" {
-    // Goal: `over` is the innermost target of the payload's type that the
-    // pointer can reach, recomputed after a flip. Methodology: over `other`
-    // (another payload type) it is `.root`. Back over `near` at x 130, then
-    // `near` moves to x 200 with the pointer still: after the flip `over`
-    // is `.root`, so a target that slid away is not kept. With a modal
-    // over `blocked`, the pointer on `blocked` finds no target, and the
-    // release there drops nothing anywhere.
     const app = try testing.allocator.create(DropProbeApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -6857,10 +6026,6 @@ test "over follows the payload type, a flip under a still pointer, and a modal" 
 }
 
 test "a drag drops its payload after its source stops rendering, and is cancelled by the platform" {
-    // Goal: the payload is copied at the press, and a lost gesture ends the
-    // drag. Methodology: start a drag, hide the source, and release on
-    // `near`: it gets 7. Then a drag over `near` that the platform cancels
-    // (`pointer_cancelled`) drops nothing, and its release clicks nothing.
     const app = try testing.allocator.create(DropProbeApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -6892,13 +6057,6 @@ test "a drag drops its payload after its source stops rendering, and is cancelle
 }
 
 test "a focus loss cancels the drag and releases each held key in one event" {
-    // Goal: decision R3 of the 0.6 budget plan. A platform reports a focus
-    // loss as one `focus_lost` carrying the gesture and the held keys; the
-    // core cancels the gesture as `pointer_cancelled` does and releases each
-    // key to the focused element. Methodology: focus the source, drag it
-    // over `near`, then lose focus with A and Shift held. The drag ends with
-    // no drop, the source's `on_key` sees two releases, and the release that
-    // follows clicks nothing. A second loss with nothing held changes nothing.
     const app = try testing.allocator.create(DropProbeApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -6931,16 +6089,6 @@ fn keyDown(app: anytype, now: *u64, key: gooey.input.KeyCode, modifiers: gooey.i
 }
 
 test "drag_drop: Space picks a card up, Tab and the arrows choose a list, Space drops" {
-    // Goal: the keyboard path of contract §5 on the example. Methodology:
-    // Tab twice focuses Banana, the second card; Space starts a keyboard
-    // drag at Banana's centre, which dims it. Tab goes to Basket, the first
-    // target after the source in tree order (not Fruits, the first in the
-    // tree), with focus and its ring; Tab again wraps to Fruits, and
-    // Shift+Tab and the arrows walk back and forth. Space drops Banana in
-    // Basket and says so, and focus stays on Basket, which is focusable, so
-    // the screen reader is not moved off the announcement. Tab then reaches
-    // the moved Banana; Escape cancels a drag of it and focuses it again,
-    // and a press cancels another.
     const app = try testing.allocator.create(DragDropApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -6996,14 +6144,12 @@ test "drag_drop: Space picks a card up, Tab and the arrows choose a list, Space 
     try testing.expectEqual(basket, app.window.focus);
     try testing.expect(app.window.focus_visible);
 
-    // Escape cancels and focuses the source; a press cancels too.
     keyDown(app, &now, .tab, .{});
     const moved_id = dragDropRecord(app, 1, false).id;
     try testing.expect(moved_id != banana_id);
     try testing.expectEqual(moved_id, app.window.focus);
     keyDown(app, &now, .space, .{});
     try testing.expect(drag.keyboard);
-    // Back from the source, the first target is its own list, before it.
     keyDown(app, &now, .left, .{});
     try testing.expectEqual(basket, drag.over);
     keyDown(app, &now, .escape, .{});
@@ -7019,15 +6165,6 @@ test "drag_drop: Space picks a card up, Tab and the arrows choose a list, Space 
 }
 
 test "a keyboard drag skips other types and modal-covered targets, and follows the frame" {
-    // Goal: which targets the keys reach, and what a flip does to a
-    // keyboard drag. Methodology: Space on the focused source starts it, and
-    // `a` then reaches no `on_key`. Right walks `near`, `blocked` (skipping
-    // `other`, another type), and wraps to `near`. When `near` moves 100
-    // px, `x` follows it after the flip. A modal blocks every record before
-    // it, so Right reaches no target and `over` stays. With the modal gone,
-    // when `near` stops rendering, `over` is none and focus is back on the
-    // source. Enter then drops nothing; Right finds `near` again, and Enter
-    // drops 7.
     const app = try testing.allocator.create(DropProbeApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -7091,22 +6228,12 @@ test "a keyboard drag skips other types and modal-covered targets, and follows t
     try testing.expectEqual(@as(u32, 1), app.state.source_keys);
 }
 
-/// Press and release `key` with no modifiers, queued for the next drain.
 fn dragDropKey(app: *DragDropApp, key: gooey.input.KeyCode) void {
     app.window.queue.push(.{ .input = .{ .key_down = chord(key, .{}) } });
     app.window.queue.push(.{ .input = .{ .key_up = chord(key, .{}) } });
 }
 
 test "drag_drop: keyboard drags during one frame in flight keep only the newest announcement" {
-    // Goal: pending announcements follow the live-region rules (contract §4, "Announcements")
-    // instead of exhausting a pool, the VOPR's 18-keystroke finding. Method:
-    // Tab to a card and tick, which publishes a frame and leaves it in
-    // flight, so no build empties the pending set. Then four cycles of
-    // Space (pick up), Tab (choose a list), Space (drop), Tab (next card),
-    // one drain each, and one more Space: nine assertive announcements, one
-    // past `small`'s eight slots, which used to panic on the ninth. Only the
-    // newest, the last pick-up, stays pending, and the next build carries
-    // it to the screen reader at its flip, and the build after it nothing.
     const app = try testing.allocator.create(DragDropApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -7137,8 +6264,6 @@ test "drag_drop: keyboard drags during one frame in flight keep only the newest 
     try testing.expectEqual(.assertive, pending.live);
     try testing.expect(std.mem.startsWith(u8, window.announcements.text(pending), "Picked up."));
 
-    // Present the frame in flight; the next tick builds the pending
-    // announcement into a frame, and the tick after it flips that frame on.
     tick.presentBuilt(window);
     try testing.expect(tick.tickMain(app, window, now));
     try testing.expectEqual(@as(u32, 0), window.announcements.count);
@@ -7156,11 +6281,6 @@ test "drag_drop: keyboard drags during one frame in flight keep only the newest 
     try testing.expectEqual(@as(u32, 0), window.rendered().announcements.count);
 }
 
-// =============================================================================
-// Context menus
-// =============================================================================
-
-/// The rendered accessibility node of `role` named `name`, if any.
 fn menuNode(
     app: *context_menu.App,
     role: gooey.ui.Role,
@@ -7183,7 +6303,6 @@ fn menuApp(app: *context_menu.App, now: *u64) !void {
 
 const first_task = context_menu.State.titles[0];
 
-/// Press and release `button` at a point, with `modifiers`, and settle.
 fn menuPress(
     app: *context_menu.App,
     now: *u64,
@@ -7206,14 +6325,6 @@ fn centre(node: *const internals.records.A11yNode) [2]f32 {
 }
 
 test "a right press opens a ContextMenu at the pointer, and a choice runs and closes it" {
-    // Goal: `Box.on_context_menu` from the pointer, end to end. Methodology:
-    // a right press on the first card at (100, y) opens its menu with the
-    // panel's corner at the press and focus on its first action, changes no
-    // state, and passes the VOPR's frame invariants (every handled record
-    // belongs to an interactive accessibility node). A left click on the disabled "Rename" keeps it open; one on
-    // "Mark done" runs its handler, closes the menu, and returns focus to
-    // the card the right press focused. A right press, then a left press
-    // outside, closes it without a choice.
     const app = try testing.allocator.create(context_menu.App);
     defer testing.allocator.destroy(app);
     var now: u64 = 0;
@@ -7245,12 +6356,6 @@ test "a right press opens a ContextMenu at the pointer, and a choice runs and cl
 }
 
 test "Shift+F10 opens a ContextMenu whose keys skip disabled rows and wrap" {
-    // Goal: the keyboard path. Methodology: Tab to the first card and press
-    // Shift+F10: the menu opens below the card with "Mark done" focused.
-    // Down skips the disabled "Rename" and the separator to "Delete", Down
-    // again wraps to "Mark done", and Up wraps back to "Delete". Escape
-    // closes it with focus back on the card; Shift+F10 and Enter on "Mark
-    // done" choose it, close, and return focus to the card.
     const app = try testing.allocator.create(context_menu.App);
     defer testing.allocator.destroy(app);
     var now: u64 = 0;
@@ -7289,10 +6394,6 @@ test "Shift+F10 opens a ContextMenu whose keys skip disabled rows and wrap" {
 }
 
 test "a Ctrl+press opens a context menu only on macOS, and clicks nothing there" {
-    // Goal: AppKit's Ctrl+click is a context press on macOS and an ordinary
-    // left press elsewhere. Methodology: a Ctrl+left press and release on
-    // the second card. On macOS the menu opens; elsewhere it does not, and
-    // the press focuses the card as any left press does.
     const app = try testing.allocator.create(context_menu.App);
     defer testing.allocator.destroy(app);
     var now: u64 = 0;

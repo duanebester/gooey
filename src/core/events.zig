@@ -1,10 +1,9 @@
-//! Events, the bounded event queue, and the completion ring (contract §5).
+//! The bounded event queue and the completion ring.
 //!
-//! Platforms push events on the main thread; `tick` drains the whole queue
-//! once per tick, so a push never waits on a handler and a handler never runs
-//! inside a platform callback. Event text (typed text, IME preedit, key
-//! characters, dialog paths) is copied into the queue's own bytes at push
-//! (contract rule 6) and stays valid until the drain that delivers it ends.
+//! `tick` drains the whole queue once per tick, so a push never waits on a
+//! handler and a handler never runs inside a platform callback. Event text
+//! is copied into the queue's own bytes at push and stays valid until the
+//! drain that delivers it ends.
 //!
 //! Overflow policy: consecutive pointer moves (with or without the same held
 //! button) and scroll deltas coalesce. Any other overflow panics with the
@@ -29,13 +28,6 @@ pub const WindowEvent = union(enum) {
 /// How the window's title bar meets the content (`Config.title_bar`).
 ///
 /// macOS only; every other platform ignores it and draws its usual frame.
-/// - `standard`: the system title bar sits above the content.
-/// - `transparent`: the content fills the whole window and the title bar
-///   draws over it without a background or title, so only the traffic
-///   lights show. `cx.titleBarInset` says how much of the top edge they
-///   occupy. A press in that strip that no element claims
-///   (`on_click`, focus, a drag, a scrollbar) moves the window, and a
-///   double click zooms it (or does what the user set in System Settings).
 pub const TitleBar = enum {
     standard,
     transparent,
@@ -55,7 +47,7 @@ pub const TitleBar = enum {
 };
 
 /// The result of an operation that finished outside the handler that asked
-/// for it. Selection, cancellation, and failure are distinct (rule 5).
+/// for it.
 pub const Completion = struct {
     request_id: u32,
     outcome: Outcome,
@@ -71,8 +63,7 @@ pub const Completion = struct {
 
 /// The paths a file dialog selected, in the platform's order, joined by NUL
 /// bytes. No supported platform allows NUL in a path, so the join is
-/// unambiguous, and one path is kept without a copy. The count and total
-/// bytes are bounded by `ResourceLimits.events` (contract decision 11).
+/// unambiguous, and one path is kept without a copy.
 pub const Paths = struct {
     bytes: []const u8,
     count: u32,
@@ -105,14 +96,12 @@ pub const Paths = struct {
         return .{ .bytes = bytes, .count = @intCast(paths.len) };
     }
 
-    /// The paths in order; yields exactly `count` slices.
     pub fn iterator(self: Paths) std.mem.SplitIterator(u8, .scalar) {
         assert(self.count > 0);
         assert(self.bytes.len >= 2 * self.count - 1);
         return std.mem.splitScalar(u8, self.bytes, separator);
     }
 
-    /// The first path: the only one for a save or a single selection.
     pub fn first(self: Paths) []const u8 {
         var paths = self.iterator();
         const path = paths.first();
@@ -120,7 +109,6 @@ pub const Paths = struct {
         return path;
     }
 
-    /// Whether `count` matches the separators, so `iterator` yields `count`.
     fn consistent(self: Paths) bool {
         if (self.count == 0) return false;
         return std.mem.count(u8, self.bytes, &.{separator}) == self.count - 1;
@@ -134,10 +122,8 @@ pub const Event = union(enum) {
 };
 
 /// One delivery from a background job (`jobs.zig`): a result it posted, or
-/// its end. Core-internal: the drain collects these into a `JobInbox` and the
-/// router turns each into a call of the job's `on_result` or `on_done`.
+/// its end.
 pub const JobEntry = struct {
-    /// The job's slot and the generation it was spawned in.
     slot: u32,
     generation: u32,
     kind: Kind,
@@ -555,8 +541,6 @@ pub const CompletionRing = struct {
 };
 
 test "queue coalesces moves and scrolls and copies text" {
-    // Goal: the overflow policy and rule 6. Method: push two moves, two
-    // scrolls, and text from a buffer that is then overwritten.
     var queue: EventQueue = undefined;
     try queue.initInPlace(std.testing.allocator, .{ .event_count_max = 4, .text_bytes_max = 16 });
     defer queue.deinit(std.testing.allocator);
@@ -589,9 +573,6 @@ test "queue coalesces moves and scrolls and copies text" {
     queue.clear();
     try std.testing.expectEqual(@as(usize, 0), queue.pending().len);
 
-    // Held-button moves fold only into a held-button move of the same
-    // button: a right drag after a left one, and a plain move after a drag,
-    // each stay their own event.
     queue.push(.{ .input = .{ .mouse_dragged = move } });
     queue.push(.{ .input = .{ .mouse_dragged = moved } });
     var right = moved;
@@ -607,12 +588,9 @@ test "queue coalesces moves and scrolls and copies text" {
 }
 
 test "platform text past the free text bytes is cut on a codepoint boundary" {
-    // Goal: long dictation or an IME commit never splits a UTF-8 sequence
-    // or panics (the 0.3.1 macOS host cut "a" x 255 + "東京" at byte 256).
-    // Methodology: a 256-byte queue keeps the 255 'a' bytes and drops "東京"
-    // whole; a composition that no longer fits at all arrives empty, which
-    // clears the preedit until the next update. A 512-byte queue keeps the
-    // string whole.
+    // Long dictation or an IME commit must never split a UTF-8 sequence or
+    // panic. A composition that no longer fits at all arrives empty, which
+    // clears the preedit until the next update.
     var long: [255 + "東京".len]u8 = undefined;
     @memset(long[0..255], 'a');
     @memcpy(long[255..], "東京");
@@ -634,8 +612,6 @@ test "platform text past the free text bytes is cut on a codepoint boundary" {
 }
 
 test "completion ring delivers distinct outcomes in order" {
-    // Goal: selection, cancellation, and failure arrive as distinct values,
-    // and an image decode between them goes to the loader, not the queue.
     var queue: EventQueue = undefined;
     try queue.initInPlace(std.testing.allocator, .{ .event_count_max = 4, .text_bytes_max = 64 });
     defer queue.deinit(std.testing.allocator);
@@ -672,11 +648,9 @@ test "completion ring delivers distinct outcomes in order" {
 }
 
 test "completion ring holds a selection of exactly the dialog path budget per request" {
-    // Goal: each pending dialog owns a path slot of `dialog_path_bytes_max`
-    // bytes (the ring held 1 KiB per slot before, so a selection between that
-    // and the budget panicked). Method: two dialogs complete in one drain,
-    // each with a selection filling its slot exactly, the second written
-    // before the first is drained; both arrive whole and distinct.
+    // The ring once held 1 KiB per slot: a selection between that and the
+    // budget panicked. Each pending dialog owns a path slot of
+    // `dialog_path_bytes_max` bytes.
     const path_bytes_max: u32 = 8;
     var queue: EventQueue = undefined;
     try queue.initInPlace(std.testing.allocator, .{ .event_count_max = 4, .text_bytes_max = 16 });
@@ -717,9 +691,6 @@ test "completion ring holds a selection of exactly the dialog path budget per re
 }
 
 test "paths join without copying one path and refuse platform errors" {
-    // Goal: the join is exact at its edges. Method: one path keeps its
-    // memory; two paths fill a scratch of exactly their joined size, and one
-    // byte less fails; an empty path or one with a NUL is refused.
     var scratch: [7]u8 = undefined;
     var fixed = std.heap.FixedBufferAllocator.init(&scratch);
     const path = "/a/b.txt";

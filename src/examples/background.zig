@@ -1,19 +1,3 @@
-//! Background work: `Effects.spawn` and the jobs in `Config.jobs`.
-//!
-//! "Fetch" starts a fake request: after a delay its job streams a reply in
-//! chunks, each posted with `job.post` and delivered to `State.onChunk` by the
-//! next drain, then `State.onFetched` once. Nothing polls: each post wakes
-//! the event loop, so the window rebuilds once per delivered chunk and is
-//! idle otherwise. "Cancel" interrupts the job's sleep at once.
-//! "Count lines…" opens a file dialog whose completion spawns a second job
-//! that reads the file off the main thread.
-//!
-//! A job sees only its `Input`, copied at spawn; it never touches `State`.
-//! At shutdown Gooey cancels and joins every job before `on_deinit` runs.
-//!
-//! On the web there are no threads: a spawned job runs after the drain that
-//! spawned it, the browser io's sleep returns at once, and files fail.
-
 const std = @import("std");
 const builtin = @import("builtin");
 const gooey = @import("gooey");
@@ -24,10 +8,8 @@ const Cx = gooey.Cx;
 const Effects = gooey.Effects;
 const Button = components.Button;
 
-/// Bytes the transcript keeps; a reply past it is cut.
 const reply_bytes_max = 900;
 
-/// The fake reply, one chunk per post.
 const reply_chunks = [_][]const u8{
     "Gooey runs handlers on the main thread. ",
     "This reply comes from a job ",
@@ -41,7 +23,6 @@ const reply_chunks = [_][]const u8{
     "When `run` returns, `onFetched` runs once.",
 };
 
-/// A fake network request: wait, then stream `reply_chunks`.
 pub const Fetch = struct {
     pub const Input = struct {
         delay_ms: u32,
@@ -65,7 +46,6 @@ pub const Fetch = struct {
     }
 };
 
-/// Count a file's bytes and lines off the main thread.
 pub const CountLines = struct {
     pub const Input = struct {
         path_len: u16,
@@ -76,7 +56,6 @@ pub const CountLines = struct {
         lines: u64,
     };
 
-    /// Files past this are counted up to it.
     const file_bytes_max: u64 = 1 << 30;
     const buffer_bytes = 16 * 1024;
 
@@ -102,7 +81,6 @@ pub const CountLines = struct {
     }
 };
 
-/// The longest path `CountLines` takes; longer selections are refused.
 const path_bytes_max = 512;
 
 pub const State = struct {
@@ -110,7 +88,6 @@ pub const State = struct {
     reply_len: u32 = 0,
     status_bytes: [96]u8 = @splat(0),
     status_len: u32 = 0,
-    /// The fetch in flight, so Fetch is disabled and Cancel enabled.
     fetch: ?gooey.JobId = null,
     counting: bool = false,
     chunks: u32 = 0,
@@ -162,7 +139,6 @@ pub const State = struct {
         });
     }
 
-    /// A dialog's completion spawns the job that reads the file.
     pub fn onPicked(self: *State, effects: *Effects) void {
         const completion = effects.completionEvent().?;
         switch (completion.outcome) {
@@ -228,7 +204,6 @@ pub const App = gooey.App(State, render, .{
     .on_deinit = State.deinit,
 });
 
-/// The generated entry point (contract §7).
 pub const main = App.main;
 
 pub fn render(cx: *Cx) void {

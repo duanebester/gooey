@@ -1,14 +1,6 @@
-//! Local, zero-dependency Objective-C runtime wrapper.
-//!
-//! This is a trimmed in-tree port of the subset of `mitchellh/zig-objc` that
-//! Gooey actually uses, written so the project has no external package
-//! dependencies and no `translate-c` / xcrun / Apple-SDK-path build steps. The
-//! public surface below matches the upstream `objc` module's shape, so files
-//! that `@import("objc")` are written exactly as they would be against upstream.
-//!
-//! Intentionally omitted (unused by Gooey): blocks, fast-enumeration
-//! iterators, properties, the superclass message-send path, metaclasses,
-//! retain, and class-pair disposal.
+//! Local, zero-dependency Objective-C runtime wrapper: a trimmed in-tree port
+//! of the subset of `mitchellh/zig-objc` Gooey uses, with the same public
+//! surface so files that `@import("objc")` read as against upstream.
 
 const autorelease = @import("autorelease.zig");
 const class = @import("class.zig");
@@ -17,9 +9,6 @@ const object = @import("object.zig");
 const protocol = @import("protocol.zig");
 const selpkg = @import("sel.zig");
 
-/// The raw Objective-C runtime namespace (types + `extern` functions). Exposed
-/// so call sites can name `objc.c.id`, `objc.c.SEL`, etc., and so framework
-/// globals can be declared as `extern "c" var x: objc.c.id`.
 pub const c = @import("c.zig").c;
 
 pub const AutoreleasePool = autorelease.AutoreleasePool;

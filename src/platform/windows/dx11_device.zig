@@ -1,12 +1,5 @@
 //! The Direct3D 11 device behind the DirectX 11 renderer, with a WARP fallback.
 //!
-//! `create` asks for a hardware device at feature level 11_1 or 11_0 and, when
-//! no driver provides one (a VM without GPU passthrough, a Remote Desktop
-//! session, a machine with only a basic display driver), falls back to WARP,
-//! Microsoft's software rasterizer that ships with every supported Windows
-//! release. Feature level 11_0 is the floor because the shaders read instance
-//! data from structured buffers in the vertex stage, a shader model 5 feature.
-//!
 //! The device and its immediate context are created on the main thread during
 //! window initialization, then owned by the render thread once the core host
 //! binds the window, so they are never used from two threads at once. The
@@ -19,15 +12,11 @@ const d3d11 = @import("d3d11.zig");
 const assert = std.debug.assert;
 const log = std.log.scoped(.dx11);
 
-/// Which devices `create` may return.
 pub const DriverPreference = enum {
-    /// A hardware device, or WARP when none can be created.
     hardware_then_warp,
-    /// WARP only: deterministic output on every machine, for tests.
     warp,
 };
 
-/// The kind of device `create` returned.
 pub const Driver = enum { hardware, warp };
 
 pub const Device = struct {
@@ -106,8 +95,6 @@ pub const Device = struct {
         return result_adapter;
     }
 
-    /// Log the adapter's name and memory once, so a report shows which GPU
-    /// (or WARP) drew the frames.
     pub fn logAdapter(self: *const Device) void {
         const device_adapter = self.queryAdapter() orelse return;
         defer device_adapter.release();

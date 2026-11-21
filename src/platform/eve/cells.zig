@@ -1,18 +1,14 @@
 //! Glyph and icon cells in `RAM_G`, so a cached glyph draws with one
-//! `VERTEX2II`.
-//!
-//! Gooey's atlases pack glyphs and icons at arbitrary positions, but a
-//! `VERTEX2II` names a bitmap handle and a cell index, and EVE finds the cell
-//! at `source + index * cell bytes`. So each atlas region a frame draws is
-//! copied into a fixed-size, zero-padded square L8 cell. Cells of one size
-//! share a page; each page is one bitmap handle and one 64 KiB slot of
-//! `RAM_G`.
-//!
-//! ## Ownership and lifetime
+//! `VERTEX2II`. Gooey's atlases pack glyphs and icons at arbitrary
+//! positions, but a `VERTEX2II` names a bitmap handle and a cell index, and
+//! EVE finds the cell at `source + index * cell bytes`. So each atlas region
+//! a frame draws is copied into a fixed-size, zero-padded square L8 cell.
+//! Cells of one size share a page; each page is one bitmap handle and one
+//! 64 KiB slot of `RAM_G`.
 //!
 //! `upload` copies atlas pixels into host mirrors (`uploadAtlas` hands them
-//! over once). A cached cell stays valid until an upload rewrites any texel of
-//! its atlas region; then its entry is removed and its cell retired. The
+//! over once). A cached cell stays valid until an upload rewrites any texel
+//! of its atlas region; then its entry is removed and its cell retired. The
 //! panel keeps scanning out the last swapped list, which may still draw a
 //! retired cell, so retired cells return to the free pool only at the second
 //! `beginFrame` after they retire: by then the renderer has waited for a swap
@@ -27,26 +23,12 @@
 //! the one being built can name a cell. Exhaustion then means the cells of two
 //! consecutive frames do not fit.
 //!
-//! ## Memory (CLAUDE.md §2)
-//!
 //! Reserved by `initInPlace` from the window's `AtlasLimits`: the glyph
 //! mirror (`text_size²` bytes) and two SVG coverage planes (`svg_size²`
 //! bytes each), from fresh pages. Everything else is inline and fixed: the
 //! entry table (4096 slots, 64 KiB), up to 14 pages, the retirement lists,
 //! and a 64 KiB upload staging buffer. Nothing allocates after
 //! initialization.
-//!
-//! ## Resource sketch (CLAUDE.md §7)
-//!
-//! - `RAM_G`: the pages the image mirror leaves (`limits.zig`), 64 KiB
-//!   each: 10 at `.embedded`, 13 at `.nano`.
-//! - Cells: at most 128 per page and 1792 in all; a page holds one size
-//!   class, from 8 px (8 KiB used of 64) to 128 px (4 cells).
-//! - Per frame: one hash probe per sprite; misses copy one cell (at most
-//!   16 KiB) through staging into `RAM_G`. Each upload record scans the entry
-//!   table once (4096 slots) to retire what it overwrote.
-//! - A miss that finds no free cell scans the entry table once (4096 slots)
-//!   to drop idle entries, then fails fast if still no cell fits (§2).
 
 const std = @import("std");
 const chip_mod = @import("chip.zig");
@@ -61,7 +43,6 @@ const Chip = chip_mod.Chip;
 /// Square cell sides in pixels. A region uses the smallest that holds it.
 pub const cell_sizes = [_]u32{ 8, 16, 24, 32, 40, 48, 64, 80, 96, 128 };
 pub const cell_size_max: u32 = cell_sizes[cell_sizes.len - 1];
-/// One page's slot of `RAM_G`.
 pub const page_bytes: u32 = eve_limits.EveLimits.bt81x.cell_page_bytes;
 pub const page_count_max: u32 = display_list.handle_count_max;
 /// `VERTEX2II` names cells 0..127.
@@ -178,7 +159,7 @@ pub const CellCache = struct {
         if (atlas.svg_size > atlas_size_max) return error.EveSvgAtlasTooLarge;
         if (atlas.svg_icon_size_max > cell_size_max) return error.EveSvgIconsExceedCells;
         // Field by field: the cache is about 140 KiB, too large for a
-        // struct literal's stack temporary (CLAUDE.md §13).
+        // struct literal's stack temporary.
         self.glyph_size = atlas.text_size;
         self.svg_size = atlas.svg_size;
         self.glyph_bytes_used = 0;
@@ -206,10 +187,6 @@ pub const CellCache = struct {
         self.svg_fill = &.{};
         self.svg_stroke = &.{};
     }
-
-    // =========================================================================
-    // Atlas uploads
-    // =========================================================================
 
     /// Copy a glyph atlas region (1 byte per texel, rows of `dirty.w`) into
     /// the mirror, and retire every glyph cell it overwrote.
@@ -276,10 +253,6 @@ pub const CellCache = struct {
         }
         assert(self.retired[0].count + self.retired[1].count <= cell_count_max);
     }
-
-    // =========================================================================
-    // Frames
-    // =========================================================================
 
     /// Start a frame, after the renderer has waited for the previous swap:
     /// cells retired before the previous frame are free again.
@@ -386,17 +359,12 @@ pub const CellCache = struct {
         };
     }
 
-    /// Pages holding at least one live or retiring cell.
     pub fn pagesInUse(self: *const Self) u32 {
         var count: u32 = 0;
         for (self.pages[0..self.page_count]) |page| count += @intFromBool(page.used_count > 0);
         assert(count <= self.page_count);
         return count;
     }
-
-    // =========================================================================
-    // Cells
-    // =========================================================================
 
     /// A free cell of `class`: in a page of that class with room, else in an
     /// empty page, which takes the class. Null when every page is in use.
@@ -463,7 +431,6 @@ pub const CellCache = struct {
         return count;
     }
 
-    /// Append one zero-padded L8 cell to the staged burst.
     fn stageCell(
         self: *Self,
         chip: *Chip,
@@ -496,10 +463,6 @@ pub const CellCache = struct {
             .svg_stroke => .{ self.svg_stroke, self.svg_size },
         };
     }
-
-    // =========================================================================
-    // Entry table: linear probing with backward-shift removal
-    // =========================================================================
 
     fn findSlot(self: *const Self, key: u64) u32 {
         assert(key != 0);
@@ -546,7 +509,6 @@ fn homeSlot(key: u64) u32 {
     return @truncate(std.hash.int(key) & (slot_count - 1));
 }
 
-/// Cells per page of `class`: as many as fit 64 KiB, at most 128.
 fn pageCapacity(class: u32) u32 {
     assert(class < cell_sizes.len);
     const size = cell_sizes[class];
@@ -601,7 +563,6 @@ fn splitCoverage(rgba: []const u8, fill: []u8, stroke: []u8) void {
     }
 }
 
-/// Copy `region` of a `stride`-wide plane into a `size`² cell, zero-padded.
 fn copyCell(plane: []const u8, stride: u32, region: Region, target: []u8, size: u32) void {
     assert(target.len == size * size);
     assert((region.y + region.h - 1) * stride + region.x + region.w <= plane.len);
@@ -612,10 +573,6 @@ fn copyCell(plane: []const u8, stride: u32, region: Region, target: []u8, size: 
         @memcpy(target[row * size ..][0..region.w], plane[source..][0..region.w]);
     }
 }
-
-// =============================================================================
-// Tests
-// =============================================================================
 
 const testing = std.testing;
 
@@ -648,9 +605,6 @@ test "a glyph uploads once into a zero-padded cell and later draws reuse it" {
 }
 
 test "a rewritten atlas region retires its cell, which frees two frames later" {
-    // Goal: the panel may still show a retired cell until a list built after
-    // the retirement is swapped in, so the cell must not be reused at the
-    // next `beginFrame`, only at the one after.
     var chip: Chip = .{};
     try chip.openSimulated(null);
     defer chip.close();
@@ -662,7 +616,6 @@ test "a rewritten atlas region retires its cell, which frees two frames later" {
     cache.beginFrame();
     const cell = try cache.lookup(&chip, .glyph, region, 1);
     try cache.flush(&chip);
-    // An upload overlapping one texel of the region retires the entry.
     cache.uploadGlyphs(.{ .x = 7, .y = 7, .w = 1, .h = 1 }, &.{255});
     try testing.expectEqual(@as(u32, 0), cache.entry_count);
     cache.beginFrame();
@@ -676,8 +629,6 @@ test "a rewritten atlas region retires its cell, which frees two frames later" {
 }
 
 test "removal keeps every other key of a probe chain reachable" {
-    // Fill many entries, remove every third through overlapping uploads, and
-    // check the rest still hit without staging again.
     var chip: Chip = .{};
     try chip.openSimulated(null);
     defer chip.close();
@@ -724,13 +675,6 @@ test "the page pool fills exactly, then the next size class has no page" {
 }
 
 test "glyphs churned over many frames reuse idle cells and keep the shown list's cells" {
-    // Goal: the core text atlas drops glyphs without uploading over them, so
-    // a long-running app draws far more distinct regions over time than the
-    // pool holds. Methodology: 14 pages of 16 px cells hold 1792; draw 120
-    // frames of 8 steady glyphs plus 40 glyphs never seen before (4808
-    // distinct regions). No lookup may fail, the steady glyphs must keep their
-    // cells, no new cell may be one the previous frame drew, and every cell
-    // must hold its region's texels.
     var chip: Chip = .{};
     try chip.openSimulated(null);
     defer chip.close();
@@ -785,7 +729,6 @@ fn churnRegion(number: u32) Region {
     };
 }
 
-/// Fill the whole glyph mirror with a position pattern.
 fn churnFillAtlas(cache: *CellCache) void {
     assert(cache.glyph_size == 512);
     assert(cache.entry_count == 0);

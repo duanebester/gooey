@@ -1,14 +1,3 @@
-//! Actions: keymaps, key contexts, and action handlers on the core.
-//!
-//! Undo, Redo, and Cancel are bound globally and handled by the root box.
-//! Save is bound only inside the "Editor" key context, so the save chord does
-//! nothing until focus is inside the editor panel. Its scripted run is the
-//! `core_actions` golden.
-//!
-//! The shortcuts use Cmd on macOS and Ctrl elsewhere, chosen at comptime:
-//! a keymap names exact modifiers, and the Windows shell owns Win+Z and
-//! Win+S. The goldens build `AppWith(.cmd)`, so they match on every host.
-
 const builtin = @import("builtin");
 const gooey = @import("gooey");
 const components = @import("gooey-components");
@@ -44,8 +33,6 @@ pub const State = struct {
     }
 };
 
-/// The modifier the shortcuts use; its name is the keymap prefix and the
-/// labels' spelling.
 pub const Modifier = enum { cmd, ctrl };
 
 pub const modifier_native: Modifier = if (builtin.os.tag == .macos) .cmd else .ctrl;
@@ -83,7 +70,6 @@ fn Demo(comptime modifier: Modifier) type {
     };
 }
 
-/// The texts that name the shortcuts.
 const Labels = struct {
     placeholder: []const u8,
     undo: []const u8,

@@ -1,8 +1,3 @@
-//! FontFace interface - abstraction over platform-specific font implementations
-//!
-//! This trait defines the operations that all font backends must support.
-//! Use the concrete backend types (e.g., CoreTextFace) for platform-specific features.
-
 const std = @import("std");
 const types = @import("types.zig");
 
@@ -11,24 +6,18 @@ pub const GlyphMetrics = types.GlyphMetrics;
 pub const RasterizedGlyph = types.RasterizedGlyph;
 pub const SystemFont = types.SystemFont;
 
-/// Font face interface - implemented by platform backends
 pub const FontFace = struct {
     ptr: *anyopaque,
     vtable: *const VTable,
-    /// Cached metrics (computed at font load time)
     metrics: Metrics,
 
     pub const VTable = struct {
-        /// Get glyph ID for a Unicode codepoint
         glyphIndex: *const fn (ptr: *anyopaque, codepoint: u21) u16,
 
-        /// Get advance width for a glyph (fast path for text measurement)
         glyphAdvance: *const fn (ptr: *anyopaque, glyph_id: u16) f32,
 
-        /// Get metrics for a specific glyph
         glyphMetrics: *const fn (ptr: *anyopaque, glyph_id: u16) GlyphMetrics,
 
-        /// Render a glyph with subpixel positioning
         renderGlyphSubpixel: *const fn (
             ptr: *anyopaque,
             glyph_id: u16,
@@ -40,28 +29,22 @@ pub const FontFace = struct {
             buffer_size: u32,
         ) anyerror!RasterizedGlyph,
 
-        /// Release resources
         deinit: *const fn (ptr: *anyopaque) void,
     };
 
-    /// Get glyph ID for a Unicode codepoint
-    /// Returns 0 for missing glyphs (.notdef)
+    /// Returns 0 (.notdef) for missing glyphs.
     pub inline fn glyphIndex(self: FontFace, codepoint: u21) u16 {
         return self.vtable.glyphIndex(self.ptr, codepoint);
     }
 
-    /// Get advance width for a glyph (fast path for text measurement)
-    /// This is optimized to avoid loading full glyph outlines
     pub inline fn glyphAdvance(self: FontFace, glyph_id: u16) f32 {
         return self.vtable.glyphAdvance(self.ptr, glyph_id);
     }
 
-    /// Get metrics for a specific glyph
     pub inline fn glyphMetrics(self: FontFace, glyph_id: u16) GlyphMetrics {
         return self.vtable.glyphMetrics(self.ptr, glyph_id);
     }
 
-    /// Render a glyph with subpixel positioning
     pub inline fn renderGlyphSubpixel(
         self: FontFace,
         glyph_id: u16,
@@ -75,14 +58,12 @@ pub const FontFace = struct {
         return self.vtable.renderGlyphSubpixel(self.ptr, glyph_id, font_size, scale, subpixel_x, subpixel_y, buffer, buffer_size);
     }
 
-    /// Release resources
     pub fn deinit(self: *FontFace) void {
         self.vtable.deinit(self.ptr);
         self.* = undefined;
     }
 };
 
-/// Helper to create a FontFace from a concrete implementation
 pub fn createFontFace(comptime T: type, impl: *T) FontFace {
     const gen = struct {
         fn glyphIndex(ptr: *anyopaque, codepoint: u21) u16 {
@@ -92,7 +73,6 @@ pub fn createFontFace(comptime T: type, impl: *T) FontFace {
 
         fn glyphAdvance(ptr: *anyopaque, glyph_id: u16) f32 {
             const self: *T = @ptrCast(@alignCast(ptr));
-            // Use glyphAdvance if available, otherwise fall back to glyphMetrics
             if (@hasDecl(T, "glyphAdvance")) {
                 return self.glyphAdvance(glyph_id);
             } else {

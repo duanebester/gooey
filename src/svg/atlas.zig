@@ -1,15 +1,5 @@
-//! SVG Atlas - Texture cache for rasterized SVG icons
-//!
-//! Caches rasterized SVGs in a texture atlas, keyed by path hash and size.
-//! Thread-safe for multi-window scenarios where multiple DisplayLink threads
-//! may access the atlas concurrently.
-//!
-//! **Per-frame rasterization budget**: Software SVG rasterization is expensive
-//! (~0.5–2ms per icon). When many uncached icons appear at once (e.g. scrolling
-//! a grid of 1600+ icons), rasterizing them all in one frame blows the 16.67ms
-//! budget. Instead, we cap rasterizations per frame and progressively load the
-//! rest over subsequent frames. The caller should check `hasDeferredWork()` after
-//! rendering and request a redraw if true.
+//! Texture cache for rasterized SVG icons. Rasterizations are capped per
+//! frame; the caller checks `hasDeferredWork()` and requests a redraw.
 
 const std = @import("std");
 const Atlas = @import("../text/atlas.zig").Atlas;
@@ -21,15 +11,11 @@ const limits = @import("../core/limits.zig");
 
 const assert = std.debug.assert;
 
-/// Cache key for SVG lookup
 pub const SvgKey = struct {
-    /// Hash of SVG path data
     path_hash: u64,
-    /// Device pixel size (width = height for square icons)
+    /// Device pixels; width = height for square icons.
     device_size: u16,
-    /// Whether fill is enabled
     has_fill: bool,
-    /// Whether stroke is enabled
     has_stroke: bool,
     /// Stroke width (quantized to 0.25 increments)
     stroke_width_q: u8,
@@ -47,15 +33,12 @@ pub const SvgKey = struct {
             .device_size = @intFromFloat(@ceil(logical_size * scale_factor)),
             .has_fill = has_fill,
             .has_stroke = has_stroke,
-            // Quantize stroke width to reduce cache variations
             .stroke_width_q = if (has_stroke) @intFromFloat(@min(255, (stroke_width.? * 4))) else 0,
         };
     }
 };
 
-/// Cached SVG entry
 pub const CachedSvg = struct {
-    /// Region in atlas texture
     region: Region,
     /// Offset from logical position (device pixels)
     offset_x: i16,
@@ -66,13 +49,11 @@ pub const CachedSvg = struct {
     shelf: u16,
     generation: u32,
 
-    /// UV coordinates of the region.
     pub fn uv(self: CachedSvg) UVCoords {
         return self.region.uv(self.atlas_size);
     }
 };
 
-/// SVG texture atlas with caching
 pub const SvgAtlas = struct {
     allocator: std.mem.Allocator,
     /// RGBA texture atlas, fixed at `AtlasLimits.svg_size`.
@@ -95,7 +76,6 @@ pub const SvgAtlas = struct {
     /// `AtlasLimits.svg_path_bytes_max` and `svg_path_vertex_count_max`,
     /// which size `raster_scratch`; an icon past either fails fast.
     raster_budget: rasterizer.RasterBudget,
-    /// Current scale factor
     scale_factor: f64,
     /// IO instance for mutex operations. Stored on the struct because lock
     /// sites run on CVDisplayLink threads that have no access to `*Cx` and
@@ -109,16 +89,11 @@ pub const SvgAtlas = struct {
     /// enough that cancelation points would add noise without value.
     mutex: std.Io.Mutex,
 
-    // =========================================================================
-    // Per-frame rasterization budget
-    // =========================================================================
-
     /// Software rasterizations performed this frame, at most
     /// `rasterization_count_frame_max`.
     rasterizations_this_frame: u32 = 0,
 
     /// Set when a cache miss was skipped due to budget exhaustion.
-    /// Caller should check this via `hasDeferredWork()` and request a redraw.
     deferred_this_frame: bool = false,
 
     const Self = @This();
@@ -225,31 +200,17 @@ pub const SvgAtlas = struct {
         }
     }
 
-    // =========================================================================
-    // Frame budget API
-    // =========================================================================
-
-    /// Reset the per-frame rasterization counter. Call at the start of each
-    /// frame before any `getOrRasterize` calls.
+    /// Call at the start of each frame, before any `getOrRasterize`.
     pub fn resetFrameBudget(self: *Self) void {
         self.rasterizations_this_frame = 0;
         self.deferred_this_frame = false;
     }
 
-    /// Returns true if any SVGs were skipped this frame due to budget limits.
-    /// When true, the caller should request another render so the remaining
-    /// icons can be progressively rasterized.
     pub fn hasDeferredWork(self: *const Self) bool {
         return self.deferred_this_frame;
     }
 
-    // =========================================================================
-    // Core API
-    // =========================================================================
-
     /// Get cached SVG or rasterize and cache it.
-    ///
-    /// Thread-safe: protected by mutex for multi-window scenarios.
     ///
     /// If the per-frame rasterization budget or the upload staging is
     /// exhausted, returns `error.RasterizationDeferred` — the icon won't render
@@ -274,16 +235,13 @@ pub const SvgAtlas = struct {
             }
         }
 
-        // Cache miss — check per-frame budget before doing expensive work.
-        // This prevents a single frame from stalling on dozens of software
-        // rasterizations when many uncached icons scroll into view at once.
+        // Cache miss: defer rather than stall the frame on many uncached icons.
         assert(self.rasterizations_this_frame <= self.rasterization_count_frame_max);
         if (self.rasterizations_this_frame == self.rasterization_count_frame_max) {
             self.deferred_this_frame = true;
             return error.RasterizationDeferred;
         }
 
-        // Rasterize at most `svg_icon_size_max` device pixels.
         if (key.device_size > self.render_buffer_size) return error.IconTooLarge;
         if (path_data.len > self.raster_budget.path_bytes_max) self.failPathBytes(path_data.len);
 
@@ -820,7 +778,6 @@ test "SvgAtlas holds exactly its entries and rasterizes exactly its frame budget
     };
     var regions: [paths.len]?Region = @splat(null);
     var frame_count: u32 = 0;
-    // Three icons a frame finish eight in three frames.
     while (frame_count < 3) : (frame_count += 1) {
         _ = uploads.beginFrame(consumer);
         svg_atlas.resetFrameBudget();

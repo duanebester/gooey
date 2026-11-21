@@ -2,12 +2,6 @@
 //! `IFileSaveDialog`), the dialog Explorer and every current Windows
 //! application use.
 //!
-//! The API matches `macos/file_dialog.zig` and `linux/file_dialog.zig`:
-//! `promptForPaths` and `promptForNewPath` block until the user chooses or
-//! cancels, and return paths in the caller's scratch, null for a cancel, or
-//! the error that failed the dialog, which the core host reports as
-//! `.failed`, never as `.cancelled`.
-//!
 //! ## Behaviour
 //!
 //! - **Modality.** The dialog is owned by the thread's active window, which
@@ -16,15 +10,13 @@
 //!   not turn. Call it from a deferred command (`cx.deferCommand`), not from
 //!   inside an input handler; the core host calls it from the drain, after
 //!   every handler.
-//! - **Directories.** `directories = true` picks folders only, as on Linux:
-//!   the Common Item Dialog cannot offer files and folders together.
+//! - **Directories.** `directories = true` picks folders only: the Common
+//!   Item Dialog cannot offer files and folders together.
 //! - **Paths.** Returned paths are WTF-8, the encoding Zig's file APIs take on
 //!   Windows, so a name with an unpaired surrogate still opens. Input paths
 //!   and the suggested name are read as WTF-8, a superset of UTF-8.
 //! - **Working directory.** `FOS_NOCHANGEDIR` keeps the dialog from changing
-//!   the process's working directory, which examples use to find `assets/`.
-//! - **New folders.** The dialog always offers "New folder", as the shared
-//!   options promise (contract decision 11).
+//!   the process's working directory.
 //!
 //! ## COM
 //!
@@ -32,28 +24,6 @@
 //! single-threaded apartment and balances the entry. A thread already in the
 //! multithreaded apartment (`RPC_E_CHANGED_MODE`) keeps it; COM then hosts the
 //! dialog in an apartment of its own.
-//!
-//! ## Allocation and bounds (CLAUDE.md sections 2 and 4)
-//!
-//! Every buffer comes from the app's `ResourceLimits.events`, reserved by the
-//! core before the event loop:
-//!
-//! - Results are allocated in the core's text scratch, which holds a
-//!   selection of `dialog_path_bytes_max` bytes and `dialog_path_count_max`
-//!   paths (`limits.textScratchBytes`). A selection the scratch cannot hold
-//!   fails with `error.DialogPathTooLong`, logged with the field to raise;
-//!   one within the scratch but past the budget fails fast in the core
-//!   (`tick.checkSelection`), as on macOS and Linux.
-//! - The save dialog's folder and suggested name: the host's wide buffer of
-//!   `wideUnitCount(dialog_path_bytes_max)` units, which the core's request
-//!   copy (both strings, at most `dialog_path_bytes_max` bytes together)
-//!   always fits. The name stays there until the dialog is released.
-//! - Scans: at most `path_count_ceiling` items, the selection ceiling of
-//!   every budget, and at most `path_units_max` units per path, Windows' own
-//!   limit. A longer path or a larger selection fails, never truncated.
-//!
-//! The shell allocates its own strings (`GetDisplayName`), freed here with
-//! `CoTaskMemFree` on every path.
 
 const std = @import("std");
 const interface_mod = @import("../interface.zig");
@@ -108,10 +78,6 @@ comptime {
     assert(path_count_ceiling > 0);
     assert(path_count_ceiling <= std.math.maxInt(u32) / @sizeOf([]const u8));
 }
-
-// =============================================================================
-// Open dialog
-// =============================================================================
 
 /// Show a file or folder open dialog (blocking, modal). Returns null if the
 /// user cancels, or the error that failed it, logged here. The paths live in
@@ -232,10 +198,6 @@ fn arrayItemPath(
     return itemPath(scratch, item);
 }
 
-// =============================================================================
-// Save dialog
-// =============================================================================
-
 /// Show a file save dialog (blocking, modal). Returns null if the user
 /// cancels, or the error that failed it, logged here. The path lives in
 /// `scratch`; `wide` is the host's buffer of `wideUnitCount` units for the
@@ -324,10 +286,6 @@ fn savePath(scratch: Allocator, dialog: *shell.IFileDialog) DialogError![]const 
 
     return itemPath(scratch, item);
 }
-
-// =============================================================================
-// Shared dialog steps
-// =============================================================================
 
 fn comEnter() Apartment {
     const result = shell.CoInitializeEx(
@@ -458,10 +416,6 @@ fn hresultBits(result: shell.HRESULT) u32 {
     return @bitCast(result);
 }
 
-// =============================================================================
-// Encoding: WTF-8 to terminated UTF-16 and back
-// =============================================================================
-
 /// Encode `text` into `target` with a terminating zero. Fails when `text` is
 /// not WTF-8, holds a zero byte, or does not fit with its terminator.
 fn wideEncode(target: []u16, text: []const u8) DialogError![:0]const u16 {
@@ -519,15 +473,10 @@ fn pathDecode(allocator: Allocator, units: []const u16) Allocator.Error![]const 
     return path;
 }
 
-// =============================================================================
-// Tests
-// =============================================================================
-
 const testing = std.testing;
 const L = std.unicode.utf8ToUtf16LeStringLiteral;
 
 test "wideEncode fills to capacity and refuses one unit more or invalid text" {
-    // Capacity test: a buffer of four units holds three and the terminator.
     var buffer: [4]u16 = undefined;
     try testing.expectEqualSlices(u16, L("abc"), try wideEncode(&buffer, "abc"));
     try testing.expectEqual(@as(u16, 0), buffer[3]);
@@ -580,8 +529,6 @@ test "unitsTerminated stops at the terminator and refuses one unit past the boun
 }
 
 test "pathDecode yields WTF-8 that keeps an unpaired surrogate" {
-    // Goal: NTFS names may hold unpaired surrogates; WTF-8 keeps them so the
-    // path still opens through Zig's file APIs.
     const units = [_]u16{ 'C', ':', '\\', 0xD800, 'x', 0xD83C, 0xDF89 };
     const path = try pathDecode(testing.allocator, &units);
     defer testing.allocator.free(path);
@@ -607,9 +554,6 @@ fn testWorkingDirectory() ![]const u8 {
 }
 
 test "system shell item round-trips the working directory" {
-    // Methodology: the real shell parses the working directory into an
-    // `IShellItem` and returns its file system path, which pins
-    // `IID_IShellItem`, `GetDisplayName`'s slot, and the WTF-16 decoding.
     const apartment = comEnter();
     defer comLeave(apartment);
 
@@ -630,9 +574,6 @@ test "system shell item round-trips the working directory" {
 }
 
 test "system open dialog accepts every option and fails cleanly before Show" {
-    // Methodology: configure a real `IFileOpenDialog` with every option and
-    // read its options back, without showing it. Asking for results before
-    // `Show` exercises the COM failure path.
     const apartment = comEnter();
     defer comLeave(apartment);
 
@@ -667,9 +608,8 @@ test "system save dialog accepts every option" {
     defer save.dialog().release();
 
     // Capacity test: the name and folder fill the wide buffer for exactly
-    // their bytes together (the name's emoji takes 4 bytes and 2 units, so
-    // the buffer is 2 units roomier than needed); a buffer short by more
-    // than that fails instead of truncating.
+    // their bytes together; a buffer short by more than that fails instead of
+    // truncating.
     const options: SavePromptOptions = .{
         .suggested_name = "untitled \u{1F389}.txt",
         .directory = "Z:\\gooey\\no such folder", // Unresolved: logged and ignored.

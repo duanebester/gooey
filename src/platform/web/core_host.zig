@@ -1,26 +1,18 @@
-//! Runs a 0.4.0 core app in the browser (contract decision 9).
-//!
-//! The browser gives the app one thread, so each `requestAnimationFrame`
-//! callback runs both sides of the tick in sequence: forward input from the
-//! JavaScript rings into the core's queue, then `core/tick.tick` drains,
-//! builds, lays out, emits, packs, draws, and swaps. The `built` and
-//! `presented` frames still swap at the end of a frame, so the core code is
-//! the same as on the native hosts; only this host has no render thread.
+//! Runs a core app in the browser. The browser gives the app one thread, so
+//! each `requestAnimationFrame` callback runs both sides of the tick in
+//! sequence: forward input from the JavaScript rings into the core's queue,
+//! then `core/tick.tick` drains, builds, lays out, emits, packs, draws, and
+//! swaps. The `built` and `presented` frames still swap at the end of a
+//! frame, so the core code is the same as on the native hosts.
 //!
 //! JavaScript calls three exports, generated per app by `Exports`: `init`
 //! once the WebGPU device exists, `frame` from each animation frame, and
 //! `resize`, which is a no-op because `frame` polls the canvas size.
 //!
-//! Resource sketch: everything is reserved in `init` from the app's guard,
-//! the renderer and platform window included; the guard panics on any later
-//! allocation. The key, mouse and scroll rings each hold
-//! `events.queue_count_max` events (rounded up to a power of two), the text
-//! buffer `events.text_bytes_max` bytes and the composition buffer
-//! `text.preedit_bytes_max` bytes, all reserved in `init`. Per frame each
-//! ring gives at most its capacity and the queue takes at most its free
-//! slots: a burst larger than the queue stays in its ring for the next frame,
-//! which bounds both storage and latency. The core then does at most one
-//! tick of bounded work.
+//! Everything is reserved in `init` from the app's guard, which panics on
+//! any later allocation. Each ring holds `events.queue_count_max` events
+//! (rounded up to a power of two): a burst larger than the queue stays in
+//! its ring for the next frame, which bounds both storage and latency.
 
 const std = @import("std");
 const imports = @import("imports.zig");
@@ -62,7 +54,7 @@ pub fn Exports(comptime App: type) type {
         }
 
         /// In place and `noinline`: `App` and the renderer are far larger
-        /// than the WASM stack can hold as temporaries (CLAUDE.md §14).
+        /// than the WASM stack can hold as temporaries.
         noinline fn initApp() !void {
             assert(app == null);
             const backing = std.heap.wasm_allocator;
@@ -195,8 +187,8 @@ pub const Host = struct {
         // Text fields follow the user's OS: Cmd in a browser on macOS or iOS,
         // Ctrl elsewhere, as a native text field there does.
         text_engine.uses_cmd = imports.isApplePlatform();
-        // Paste arrives as text input from the browser's paste event, as in
-        // 0.3.1, so the service only writes.
+        // Paste arrives as text input from the browser's paste event, so the
+        // service only writes.
         core.clipboard.service = .{
             .context = self,
             .read = clipboardRead,
@@ -205,8 +197,8 @@ pub const Host = struct {
         assert(core.file_dialog == null); // Web dialogs complete asynchronously.
     }
 
-    /// Before the tick: advance the clock, then queue a resize and the input
-    /// the rings hold, as far as the queue has room.
+    /// Advance the clock, then queue a resize and the input the rings hold,
+    /// as far as the queue has room.
     pub fn beginFrame(self: *Host, timestamp_ms: f64) u64 {
         assert(self.core.phase == .idle);
         const timestamp_ns = @max(0, timestamp_ms) * std.time.ns_per_ms;
@@ -216,8 +208,8 @@ pub const Host = struct {
         return self.now_ns;
     }
 
-    /// After the tick: place the browser's IME candidate window from the
-    /// rendered frame, then schedule the next animation frame.
+    /// Place the browser's IME candidate window from the rendered frame,
+    /// then schedule the next animation frame.
     pub fn endFrame(self: *Host) void {
         assert(self.core.phase == .idle);
         // Answered synchronously from the rendered frame; the browser needs
@@ -229,7 +221,6 @@ pub const Host = struct {
                 self.window.setImeCursorRect(caret.x, caret.y, caret.width, caret.height);
             }
         }
-        // Only a change reaches the canvas's CSS, not every frame.
         if (self.core.cursor != self.cursor) {
             self.window.setCursorShape(self.core.cursor);
             self.cursor = self.core.cursor;
@@ -300,7 +291,7 @@ pub const Host = struct {
         return viewport;
     }
 
-    /// Keys, text, composition, scrolls, then the mouse: 0.3.1's order.
+    /// Keys, text, composition, scrolls, then the mouse.
     fn forwardInput(self: *Host) void {
         const queue = &self.core.queue;
         forwardRing(queue, &key_events.g_key_ring, key_events.toInputEvent);
@@ -358,8 +349,7 @@ fn hasRoom(queue: *const core_events.EventQueue) bool {
     return queue.count < queue.events.len;
 }
 
-/// The core's presenter, inside `tick` on the browser's one thread: upload
-/// what the build placed in the atlases, then draw the packed frame.
+/// Upload what the build placed in the atlases, then draw the packed frame.
 fn draw(
     context: *anyopaque,
     packed_frame: *const core_window.PackedFrame,

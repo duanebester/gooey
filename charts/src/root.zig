@@ -1,51 +1,11 @@
-//! Gooey Charts — GPU-Accelerated Charting Library
-//!
 //! Charts draw into a core `ui.paint` element through its `Painter`, with
 //! zero dynamic allocation during render. Chart data lives in app state, so
 //! it outlives the paint function. Every chart type takes its capacities at
 //! comptime, checked against the framework ceilings (`point_count_ceiling` and
 //! friends), and exposes the series type those capacities size.
-//!
-//! ## Quick Start
-//!
-//! ```zig
-//! const gooey = @import("gooey");
-//! const charts = @import("gooey-charts");
-//! const ui = gooey.ui;
-//!
-//! const Sales = charts.BarChart(.{ .category_count_max = 4, .series_count_max = 1 });
-//!
-//! const State = struct { sales: [1]Sales.Series = undefined };
-//!
-//! fn paintSales(state: *const State, painter: *ui.Painter) void {
-//!     var chart = Sales.init(&state.sales);
-//!     chart.width = painter.bounds.width;
-//!     chart.height = painter.bounds.height;
-//!     chart.render(painter);
-//! }
-//!
-//! fn render(cx: *gooey.Cx) void {
-//!     const state = cx.state(State);
-//!     cx.render(ui.paint(State, state, paintSales, .{
-//!         .width = .{ .fixed = 400 },
-//!         .height = .{ .fixed = 300 },
-//!     }));
-//! }
-//! ```
-//!
-//! ## Module Organization
-//!
-//! - `primitives` — Low-level building blocks (Scale, Axis, Grid)
-//! - `charts` — High-level chart components (BarChart, LineChart, etc.)
-//! - `types` — Data structures (DataPoint, Series, etc.)
-//! - `util` — Utility functions (niceNumber, formatNumber, etc.)
 
 const std = @import("std");
 pub const gooey = @import("gooey");
-
-// =============================================================================
-// Sub-modules
-// =============================================================================
 
 pub const primitives = @import("primitives/mod.zig");
 pub const constants = @import("constants.zig");
@@ -55,128 +15,65 @@ pub const theme = @import("theme.zig");
 pub const accessibility = @import("accessibility.zig");
 pub const paint = @import("paint.zig");
 
-// =============================================================================
-// Primitives (Layer 2)
-// =============================================================================
-
-/// Maps continuous numeric data to pixel coordinates.
 pub const LinearScale = primitives.LinearScale;
 
-/// Maps categorical labels to equal-width pixel bands.
 pub const BandScale = primitives.BandScale;
 
-/// A scale that can be either linear or band.
 pub const Scale = primitives.Scale;
 
-/// Renders axis lines, tick marks, and labels.
 pub const Axis = primitives.Axis;
 
-/// Renders background grid lines.
 pub const Grid = primitives.Grid;
 
-/// Renders legend showing series names and colors.
 pub const Legend = primitives.Legend;
-
-// =============================================================================
-// Charts (Layer 3)
-// =============================================================================
 
 const bar_chart = @import("charts/bar_chart.zig");
 const line_chart = @import("charts/line_chart.zig");
 const pie_chart = @import("charts/pie_chart.zig");
 const scatter_chart = @import("charts/scatter_chart.zig");
 
-/// Renders categorical data as vertical or horizontal bars:
-/// `BarChart(.{ .category_count_max = 12, .series_count_max = 2 })`.
 pub const BarChart = bar_chart.BarChart;
 
-/// Renders continuous X/Y data as connected lines with optional markers:
-/// `LineChart(.{ .point_count_max = 512, .series_count_max = 4 })`.
 pub const LineChart = line_chart.LineChart;
 
-/// Renders categorical data as circular slices (pie) or ring segments (donut):
-/// `PieChart(.{ .slice_count_max = 8 })`.
 pub const PieChart = pie_chart.PieChart;
 
-/// Renders X/Y data as scattered points with optional size encoding (bubble chart):
-/// `ScatterChart(.{ .point_count_max = 512, .series_count_max = 4 })`.
 pub const ScatterChart = scatter_chart.ScatterChart;
 
-/// Point shapes available for scatter charts.
 pub const PointShape = scatter_chart.PointShape;
 
-// =============================================================================
-// Theming
-// =============================================================================
-
-/// Theme for chart components with colors optimized for data visualization.
 pub const ChartTheme = theme.ChartTheme;
 
-/// Maximum colors in the categorical palette.
 pub const MAX_PALETTE_COLORS = theme.MAX_PALETTE_COLORS;
 
-/// Default color palette for charts (Google-style, 12 colors).
-/// For theme-specific rendering, use google_light_palette or google_dark_palette.
 pub const default_palette = theme.default_palette;
 
-/// Google-style palette optimized for light backgrounds.
-/// Darker, more saturated colors for better contrast on light backgrounds.
 pub const google_light_palette = theme.google_light_palette;
 
-/// Google-style palette optimized for dark backgrounds.
-/// Brighter colors for better visibility on dark backgrounds.
 pub const google_dark_palette = theme.google_dark_palette;
 
-/// Standard Google-style color palette (balanced for general use).
 pub const google_palette = theme.google_palette;
 
-/// Colorblind-safe palette (deuteranopia/protanopia friendly).
 pub const colorblind_palette = theme.colorblind_palette;
 
-/// Monochrome blue palette (single hue, varying lightness).
 pub const monochrome_blue_palette = theme.monochrome_blue_palette;
 
-// =============================================================================
-// Data Types
-// =============================================================================
-
-/// A single data point with continuous X and Y values.
 pub const DataPoint = types.DataPoint;
 
-/// A data point with a categorical label and numeric value.
 pub const CategoryPoint = types.CategoryPoint;
 
-/// A named series of up to `point_count_max` data points with a color:
-/// `Series(point_count_max)`. Usually named through `LineChart(...).Series`.
 pub const Series = types.Series;
 
-/// A named series of up to `category_count_max` category points with a color:
-/// `CategorySeries(category_count_max)`. Usually named through `BarChart(...).Series`.
 pub const CategorySeries = types.CategorySeries;
 
-// =============================================================================
-// Capacities
-// =============================================================================
-
-/// Line and scatter chart capacities: `.{ .point_count_max, .series_count_max }`.
 pub const PointCapacity = types.PointCapacity;
 
-/// Bar chart capacities: `.{ .category_count_max, .series_count_max }`.
 pub const CategoryCapacity = types.CategoryCapacity;
 
-/// Pie and donut chart capacity: `.{ .slice_count_max }`.
 pub const SliceCapacity = types.SliceCapacity;
-
-// =============================================================================
-// Core Types (from Gooey)
-// =============================================================================
 
 pub const Color = paint.Color;
 pub const Painter = paint.Painter;
-
-// =============================================================================
-// Constants
-// =============================================================================
 
 /// Framework ceilings: no app capacity may exceed these.
 pub const point_count_ceiling = constants.point_count_ceiling;
@@ -188,53 +85,29 @@ pub const MAX_TICKS = constants.MAX_TICKS;
 pub const MAX_LEGEND_ITEMS = constants.MAX_LEGEND_ITEMS;
 pub const MAX_LABEL_LENGTH = constants.MAX_LABEL_LENGTH;
 
-// =============================================================================
-// Utility Functions
-// =============================================================================
-
-/// Calculate a "nice" number close to the given value.
 pub const niceNumber = util.niceNumber;
 
-/// Calculate a "nice" range for axis display.
 pub const niceRange = util.niceRange;
 
-/// Format a number into a fixed buffer.
 pub const formatNumber = util.formatNumber;
 
-/// Format a number with SI prefix (K, M, B, T).
 pub const formatCompact = util.formatCompact;
 
-// =============================================================================
-// Accessibility
-// =============================================================================
-
-/// Metadata about a chart for accessibility purposes.
 pub const ChartInfo = accessibility.ChartInfo;
 
-/// Chart type for accessibility descriptions.
 pub const ChartType = accessibility.ChartType;
 
-/// Focus position for keyboard navigation within charts.
 pub const FocusPosition = accessibility.FocusPosition;
 
-/// Generate a full accessible description for a chart.
 pub const describeChart = accessibility.describe;
 
-/// Generate a short summary for tooltips or live regions.
 pub const summarizeChart = accessibility.summarize;
 
-/// Build ChartInfo from CategorySeries (for bar charts).
 pub const infoFromCategorySeries = accessibility.infoFromCategorySeries;
 
-/// Build ChartInfo from Series (for line/scatter charts).
 pub const infoFromSeries = accessibility.infoFromSeries;
 
-/// Build ChartInfo from CategoryPoints (for pie charts).
 pub const infoFromCategoryPoints = accessibility.infoFromCategoryPoints;
-
-// =============================================================================
-// Tests
-// =============================================================================
 
 test {
     std.testing.refAllDecls(@This());

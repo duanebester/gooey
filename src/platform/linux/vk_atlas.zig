@@ -1,37 +1,20 @@
-//! Atlas texture management for Vulkan renderer.
-//!
 //! One generic implementation, parameterized by pixel format, serves all three
-//! atlases (text, SVG, image). Each atlas image is created once at init at its
-//! `AtlasLimits` size and never recreated (CLAUDE.md §2). The renderer keeps no
-//! CPU copy of atlas pixels: `uploadAtlas` copies each region into the frame's
-//! staging lane, and the frame's command buffer records one barrier, one
-//! batched copy, and one barrier per batch of regions of one atlas.
-//!
-//! Axes of variation across the three atlases:
-//!   1. Pixel format — R8 (glyph) vs RGBA8 (SVG, image)
-//!   2. Which AtlasResources instance to target
+//! atlases (text, SVG, image). Each atlas image is created once at init and
+//! never recreated. The renderer keeps no CPU copy of atlas pixels: `uploadAtlas`
+//! copies each region into the frame's staging lane, and the frame's command
+//! buffer records one barrier, one batched copy, and one barrier per batch of
+//! regions of one atlas.
 
 const std = @import("std");
 const vk = @import("vulkan.zig");
-
-// =============================================================================
-// Limits (CLAUDE.md Rule #4)
-// =============================================================================
 
 /// Regions recorded per `vkCmdCopyBufferToImage` call; larger batches split.
 /// The renderer holds one batch of this many per atlas (56 B a region), so 16
 /// keeps the three batches under 3 KiB of the window that embeds the renderer.
 pub const copy_region_count_max: u32 = 16;
 
-// =============================================================================
-// Public Types
-// =============================================================================
-
-/// Pixel format for atlas textures. Determines Vulkan format and byte stride.
 pub const AtlasFormat = enum {
-    /// Single-channel (text atlas): 1 byte per pixel, VK_FORMAT_R8_UNORM.
     r8,
-    /// Four-channel (SVG/image atlas): 4 bytes per pixel, VK_FORMAT_R8G8B8A8_UNORM.
     rgba8,
 
     pub fn vkFormat(self: AtlasFormat) vk.Format {
@@ -49,8 +32,6 @@ pub const AtlasFormat = enum {
     }
 };
 
-/// All Vulkan resources for a single atlas texture.
-/// Groups the 7 per-atlas fields, so three atlases are 3 structs, not 21 fields.
 pub const AtlasResources = struct {
     image: vk.Image = null,
     memory: vk.DeviceMemory = null,
@@ -61,7 +42,6 @@ pub const AtlasResources = struct {
     /// False until the first upload moves the image out of `UNDEFINED`.
     layout_ready: bool = false,
 
-    /// Destroy all Vulkan objects owned by this atlas. Safe with null handles.
     pub fn destroy(self: *AtlasResources, device: vk.Device) void {
         std.debug.assert(device != null);
         if (self.view) |v| vk.vkDestroyImageView(device, v, null);
@@ -77,14 +57,6 @@ pub const AtlasError = error{
     AtlasImageViewCreationFailed,
     NoSuitableMemoryType,
 };
-
-// =============================================================================
-// Public API
-// =============================================================================
-
-// =============================================================================
-// Public API — Atlas images and batched uploads
-// =============================================================================
 
 /// Create an atlas image at its budget size. Called once at init; the image is
 /// never recreated. Its contents start undefined: every uploaded item carries
@@ -108,9 +80,6 @@ pub fn createAtlas(
 /// copies in batches of `copy_region_count_max`, and a barrier back to shader
 /// reads. Regions never overlap: the atlas does not reuse a region until every
 /// renderer has uploaded the records written into it.
-///
-/// The first upload transitions from `UNDEFINED`, which discards nothing that
-/// was ever written; later uploads preserve the existing contents.
 pub fn recordAtlasCopies(
     cmd: vk.CommandBuffer,
     resources: *AtlasResources,
@@ -146,7 +115,6 @@ pub fn recordAtlasCopies(
     resources.layout_ready = true;
 }
 
-/// The copy region for one staged record at `staging_offset` in the buffer.
 pub fn copyRegion(
     staging_offset: vk.DeviceSize,
     x: u32,
@@ -208,11 +176,6 @@ const color_range = vk.ImageSubresourceRange{
     .layerCount = 1,
 };
 
-// =============================================================================
-// Internal — Image Creation
-// =============================================================================
-
-/// Create a Vulkan image + device memory + image view for an atlas.
 fn createAtlasImage(
     device: vk.Device,
     resources: *AtlasResources,
@@ -226,14 +189,12 @@ fn createAtlasImage(
 
     const vk_fmt = format.vkFormat();
 
-    // Create image
     resources.image = try createImage(device, width, height, vk_fmt);
     errdefer {
         vk.vkDestroyImage(device, resources.image, null);
         resources.image = null;
     }
 
-    // Allocate and bind memory
     resources.memory = try allocateImageMemory(device, resources.image, mem_properties);
     errdefer {
         vk.vkFreeMemory(device, resources.memory, null);
@@ -241,7 +202,6 @@ fn createAtlasImage(
     }
     _ = vk.vkBindImageMemory(device, resources.image, resources.memory, 0);
 
-    // Create image view
     resources.view = try createImageView(device, resources.image, vk_fmt);
     errdefer {
         vk.vkDestroyImageView(device, resources.view, null);

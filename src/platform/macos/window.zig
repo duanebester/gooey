@@ -1,8 +1,3 @@
-//! macOS window: the NSWindow, its input view and Metal layer, and the
-//! bridge that turns AppKit callbacks into core queue events (see
-//! `CoreBinding`). The core host (`core_host.zig`) draws on its own render
-//! thread.
-
 const std = @import("std");
 const assert = std.debug.assert;
 const objc = @import("objc");
@@ -21,10 +16,10 @@ const core_events = @import("../../core/events.zig");
 const core_router = @import("../../core/router.zig");
 const core_clipboard = @import("../../core/clipboard.zig");
 
-/// How a 0.4.0 core app drives this window (contract §9): the window pushes
-/// input and resizes into the core's queue and asks the host for a tick, and
-/// AppKit's synchronous questions (the IME rect, whether a key is claimed)
-/// go to the read-only query. The host's render thread draws.
+/// How a core app drives this window: the window pushes input and resizes
+/// into the core's queue and asks the host for a tick, and AppKit's
+/// synchronous questions (the IME rect, whether a key is claimed) go to the
+/// read-only query. The host's render thread draws.
 pub const CoreBinding = struct {
     queue: *core_events.EventQueue,
     query: *const core_router.Query,
@@ -35,10 +30,8 @@ pub const CoreBinding = struct {
 };
 
 /// Maximum window title length in bytes, excluding the NUL terminator.
-///
 /// Matches the Linux backend's bound so an application that fits one host
-/// fits the other. AppKit itself imposes no limit, but "put a limit on
-/// everything" applies to the owned storage backing the title.
+/// fits the other.
 pub const title_bytes_max: usize = 255;
 
 const NSRect = appkit.NSRect;
@@ -68,19 +61,14 @@ pub const Window = struct {
     /// `setContentMinSize:` and `setContentMaxSize:` take them.
     min_size: ?geometry.Size(f64),
     max_size: ?geometry.Size(f64),
-    /// The backing scale the content size limits were last applied for; 0
-    /// until `createNSWindow` applies them.
+    /// The scale `applySizeLimits` last ran for; 0 until `createNSWindow`
+    /// applies it.
     size_limits_scale: f64,
-    /// NUL-terminated window title storage.
-    ///
-    /// `-[NSString stringWithUTF8String:]` requires a NUL-terminated C string,
-    /// so handing it a borrowed slice's `.ptr` would read past the end of any
-    /// slice that is not incidentally terminated, and a caller passing a stack
-    /// buffer would leave a borrowed field dangling. Owning fixed storage rules
-    /// out both, and matches Linux.
+    /// NUL-terminated window title storage: `stringWithUTF8String:` needs a
+    /// NUL, so a borrowed slice would read past its end, and owning fixed
+    /// storage also matches Linux.
     title_buf: [title_bytes_max + 1]u8,
     title_len: u16,
-    /// `WindowOptions.title_bar`, fixed at creation.
     title_bar: TitleBar,
     /// The traffic-light area of a `.transparent` title bar, as last
     /// measured (`measureTitleBarInset`) and reported to the core. Its `top`
@@ -98,7 +86,6 @@ pub const Window = struct {
     /// didn't change.
     cursor_shape: ?interface_mod.CursorShape = null,
 
-    // IME (Input Method Editor) state
     marked_text: []const u8 = "",
     /// `text.preedit_bytes_max` bytes and a NUL terminator, allocated with
     /// the window; `marked_text` is always followed by a NUL.
@@ -111,17 +98,10 @@ pub const Window = struct {
     /// lags `setMarkedText:` by a frame. The core host sets it.
     rendered_marked_length_utf16: c_ulong = 0,
 
-    /// Called when window is about to close. Return false to prevent close.
     on_close: ?CloseCallback = null,
 
-    /// Set when a 0.4.0 core app drives this window; see `CoreBinding`.
     core: ?CoreBinding = null,
 
-    // =========================================================================
-    // Types
-    // =========================================================================
-
-    /// Close callback: called when window is about to close. Return false to prevent close.
     pub const CloseCallback = *const fn (*Window) bool;
 
     const Self = @This();
@@ -144,18 +124,18 @@ pub const Window = struct {
         errdefer allocator.free(self.marked_text_buffer);
         try self.createNSWindow(options);
 
-        // Set delegate AFTER ns_view is created to prevent crashes from early delegate callbacks
-        // (e.g., windowDidChangeBackingProperties can fire during center() and calls handleResize
-        // which needs ns_view)
+        // Set the delegate after `ns_view` exists: delegate callbacks such as
+        // `windowDidChangeBackingProperties` can fire during `center()` and
+        // call `handleResize`, which needs `ns_view`.
         const window_delegate = @import("window_delegate.zig");
         self.delegate = try window_delegate.create(self);
         self.ns_window.msgSend(void, "setDelegate:", .{self.delegate.?.value});
 
-        // Enable mouse tracking for mouseMoved events
         try self.setupTrackingArea();
 
         // `createNSWindow` read the backing scale and capped the size, so the
-        // Metal layer and the renderer are sized for the first frame's drawable.
+        // Metal layer and the renderer are sized for the first frame's
+        // drawable.
         assert(self.scale_factor > 0.0);
         assert(self.size_limits_scale == self.scale_factor);
 
@@ -180,10 +160,9 @@ pub const Window = struct {
     }
 
     /// Bring every field to a defined state before any AppKit object exists.
-    ///
-    /// `noinline` and out-pointer based per CLAUDE.md §13/§14: `Window` carries
-    /// the embedded renderer plus two 256-byte IME buffers, so it must never
-    /// be built in a caller's frame and copied.
+    /// `noinline` because `Window` carries the embedded renderer plus two
+    /// 256-byte IME buffers and must never be built in a caller's frame and
+    /// copied.
     noinline fn initFields(
         self: *Self,
         allocator: std.mem.Allocator,
@@ -218,16 +197,12 @@ pub const Window = struct {
             // `createNSWindow` measures it once the traffic lights exist.
             .title_bar_inset = .{},
         };
-
         assert(self.core == null);
         assert(self.on_close == null);
     }
 
-    /// Create and configure the `NSWindow` and its content view.
-    ///
-    /// Split out of `init` to keep that function inside the 70-line limit.
-    /// The ordering is load-bearing: the content view must exist before `init`
-    /// installs the delegate, because delegate callbacks dereference it.
+    /// The content view must exist before `init` installs the delegate:
+    /// delegate callbacks dereference it.
     fn createNSWindow(self: *Self, options: *const WindowOptions) !void {
         assert(options.width >= 1);
         assert(options.height >= 1);
@@ -297,24 +272,17 @@ pub const Window = struct {
             self.title_bar == .transparent);
     }
 
-    /// Set the close callback. Return false from callback to prevent window close.
+    /// Set the close callback. Return false to prevent close.
     pub fn setCloseCallback(self: *Self, callback: ?CloseCallback) void {
         assert(self.ns_window.value != null);
         self.on_close = callback;
         assert((self.on_close == null) == (callback == null));
     }
 
-    // =========================================================================
-    // IME Support
-    // =========================================================================
-
-    /// Set the marked (composing) text for IME. The window keeps it for the
-    /// input method to read back, as much as the text engines' preedit,
-    /// `text.preedit_bytes_max`, which shows no more. A longer composition is
-    /// external input, so it is cut at a codepoint boundary, never inside a
-    /// UTF-8 sequence, and the cut logged.
+    /// A longer composition is external input, so it is cut at a codepoint
+    /// boundary, never inside a UTF-8 sequence, and the cut logged.
     pub fn setMarkedText(self: *Self, text: []const u8) void {
-        const bytes_max = self.marked_text_buffer.len - 1; // The NUL's byte.
+        const bytes_max = self.marked_text_buffer.len - 1;
         assert(bytes_max > 0);
         const kept = core_clipboard.prefixFitting(text, bytes_max);
         if (kept < text.len) {
@@ -335,14 +303,9 @@ pub const Window = struct {
         self.marked_selection = .{ .location = 0, .length = 0 };
     }
 
-    /// Check if there's active IME composition
     pub fn hasMarkedText(self: *const Self) bool {
         return self.marked_text.len > 0;
     }
-
-    // =========================================================================
-    // Input Handling
-    // =========================================================================
 
     /// Events that arrive before the core host binds are dropped: `init`
     /// shows the window before `bindCore`, and nothing can consume them yet.
@@ -387,10 +350,6 @@ pub const Window = struct {
             binding.queue.push(.{ .window = .{ .title_bar = self.title_bar_inset } });
         }
     }
-
-    // =========================================================================
-    // Window Lifecycle
-    // =========================================================================
 
     /// Tear down the window. Runs once, on the main thread, after the core
     /// host's render thread has stopped: free GPU resources, then release the
@@ -442,7 +401,6 @@ pub const Window = struct {
         self.ns_view = nil;
     }
 
-    /// Called by delegate when window is resized
     pub fn handleResize(self: *Self) void {
         const new_scale = self.ns_window.msgSend(f64, "backingScaleFactor", .{});
         assert(new_scale > 0);
@@ -483,7 +441,7 @@ pub const Window = struct {
     /// Cap the content size at the largest the budget's framebuffer holds at
     /// `scale_factor`, within the app's `min_size` and `max_size`, and shrink a
     /// window already past it. The framebuffer a window can reach is then the
-    /// one the budget reserved (CLAUDE.md §2), never a reduced drawing scale.
+    /// one the budget reserved, never a reduced drawing scale.
     /// A `min_size` past the cap yields to it, as on Windows. AppKit holds
     /// live resizes and zoom to the cap. The shrink posts `windowDidResize:`,
     /// which re-enters `handleResize`; `size_limits_scale` is set first, so
@@ -527,7 +485,6 @@ pub const Window = struct {
         assert(capped.height <= content_max.height);
     }
 
-    /// The window's content size in points, from its frame.
     fn contentSize(self: *const Self) geometry.Size(f64) {
         assert(self.ns_window.value != null);
         const frame: NSRect = self.ns_window.msgSend(NSRect, "frame", .{});
@@ -556,16 +513,11 @@ pub const Window = struct {
         binding.schedule_tick(binding.context);
     }
 
-    /// Handle window close. Returns true if close should proceed, false to cancel.
     pub fn handleClose(self: *Self) bool {
         assert(self.ns_window.value != null);
         if (self.on_close) |callback| return callback(self);
         return true;
     }
-
-    // =========================================================================
-    // Transparent title bar
-    // =========================================================================
 
     /// Measure the traffic lights again and, when they moved, tell the core.
     fn updateTitleBarInset(self: *Self) void {
@@ -604,8 +556,6 @@ pub const Window = struct {
         });
     }
 
-    /// A standard window button's frame in window coordinates, or null when
-    /// the window has none of that kind.
     fn buttonRect(self: *const Self, kind: c_ulong) ?NSRect {
         assert(kind <= 2);
         const button = self.ns_window.msgSend(objc.c.id, "standardWindowButton:", .{kind});
@@ -682,17 +632,16 @@ pub const Window = struct {
         assert(self.ns_window.value != null);
         assert(self.title_buf.len == title_bytes_max + 1);
 
-        // Clamp rather than fail: an over-long title is a cosmetic problem, and
-        // AppKit truncates for display anyway. The assertion catches it in
-        // Debug; the clamp keeps the copy in bounds in release.
+        // Clamp rather than fail: AppKit truncates for display anyway, and
+        // the clamp keeps the copy in bounds in release.
         assert(new_title.len <= title_bytes_max);
         const len = @min(new_title.len, title_bytes_max);
 
         @memcpy(self.title_buf[0..len], new_title[0..len]);
 
         // Zero the whole tail, not just the terminator: the buffer is reused
-        // across `setTitle` calls, so a shorter title would otherwise leave the
-        // previous title's bytes readable past the NUL (CLAUDE.md §21).
+        // across `setTitle` calls, so a shorter title would otherwise leave
+        // the previous title's bytes readable past the NUL.
         @memset(self.title_buf[len..], 0);
         self.title_len = @intCast(len);
 
@@ -735,19 +684,14 @@ pub const Window = struct {
         self.cursor_shape = shape;
     }
 
-    // =========================================================================
-    // Calls from the 0.3.1 `context/window.zig`
-    // =========================================================================
-    //
-    // The core never makes these calls. They stay only while that file
-    // compiles, and go when phase 6 deletes it.
+    // The core never makes these calls. They stay only while the legacy
+    // `context/window.zig` compiles, and go when that file is deleted.
 
     pub fn getPlatform(self: *Self) *platform.MacPlatform {
         assert(@intFromPtr(self.plat) != 0);
         return self.plat;
     }
 
-    /// Nothing to request: the core host schedules its own ticks and frames.
     pub fn requestRender(self: *Self) void {
         assert(self.ns_window.value != null);
     }
@@ -757,15 +701,11 @@ pub const Window = struct {
         assert(delay_ms <= interface_mod.render_delay_ms_max);
     }
 
-    /// Set the window appearance (light or dark mode)
-    /// This affects the titlebar text color and other system UI elements
     pub fn setAppearance(self: *Self, dark: bool) void {
         assert(self.ns_window.value != null);
         const NSAppearance = objc.getClass("NSAppearance") orelse return;
         const NSString = objc.getClass("NSString") orelse return;
 
-        // NSAppearanceNameAqua for light, NSAppearanceNameDarkAqua for dark
-        // Create NSString from null-terminated C string literal
         const appearance_name: [*:0]const u8 =
             if (dark) "NSAppearanceNameDarkAqua" else "NSAppearanceNameAqua";
         const ns_name = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{appearance_name});
@@ -777,10 +717,6 @@ pub const Window = struct {
             self.ns_window.msgSend(void, "setAppearance:", .{appearance.value});
         }
     }
-
-    // =========================================================================
-    // Private Helpers
-    // =========================================================================
 
     fn setupTrackingArea(self: *Self) !void {
         const bounds: NSRect = self.ns_view.msgSend(NSRect, "bounds", .{});
@@ -810,14 +746,12 @@ pub const Window = struct {
         const CAMetalLayer = objc.getClass("CAMetalLayer") orelse return error.ClassNotFound;
         self.metal_layer = CAMetalLayer.msgSend(objc.Object, "layer", .{});
 
-        // Configure the layer
-        // 80 = MTLPixelFormatBGRA8Unorm.
+        // MTLPixelFormatBGRA8Unorm.
         self.metal_layer.msgSend(void, "setPixelFormat:", .{@as(u64, 80)});
         self.metal_layer.msgSend(void, "setContentsScale:", .{self.scale_factor});
         self.metal_layer.msgSend(void, "setDisplaySyncEnabled:", .{false});
         // `metal.Renderer.init` sets `maximumDrawableCount` (`drawable_count`).
 
-        // Allow transparency through the Metal layer
         self.metal_layer.msgSend(void, "setOpaque:", .{false});
 
         self.ns_view.msgSend(void, "setWantsLayer:", .{true});
@@ -857,10 +791,6 @@ fn titleBarInset(measured: struct {
 }
 
 test "titleBarInset puts the lights' inset on their side and none in full screen" {
-    // Goal: the inset follows the lights to whichever edge they sit on, keeps
-    // their outer margin on the inner side, and rounds partial points up so
-    // content never overlaps them. Inputs are asymmetric so a swapped edge
-    // or a dropped margin gives a different number.
     const ltr = titleBarInset(.{
         .width = 500,
         .strip_height = 27.5,
@@ -909,7 +839,7 @@ pub fn contentSizeMax(
 /// limits. `applySizeLimits` keeps resizes, zoom and display changes within
 /// them. Should full screen size a window past its `contentMaxSize`, it draws
 /// at the largest scale that fits, which the layer stretches to fill: sharper
-/// pixels would need drawables the budget did not provide for (CLAUDE.md §2).
+/// pixels would need drawables the budget did not provide for.
 pub fn framebufferViewport(
     logical: struct { width: f64, height: f64, scale_factor: f64 },
     window_limits: *const limits_mod.WindowLimits,
@@ -934,12 +864,6 @@ pub fn framebufferViewport(
 }
 
 test "a window opens with either title bar and only a transparent one has an inset" {
-    // Goal: `init` with the default `.standard` title bar (every app that
-    // does not set `Config.title_bar`), which 0.6.4 aborted on by measuring
-    // a transparent bar's inset unconditionally. Methodology: open a real
-    // window with each title bar on this host. The standard one must open
-    // with no inset; the transparent one must measure a strip under the
-    // lights (AppKit's title bar is never 0 pt tall in a window).
     const gpa = std.testing.allocator;
     const plat = try gpa.create(platform.MacPlatform);
     defer gpa.destroy(plat);
@@ -963,8 +887,6 @@ test "a window opens with either title bar and only a transparent one has an ins
 }
 
 test "contentSizeMax floors the budget's framebuffer to whole points at each scale" {
-    // Goal: the cap is the largest whole-point size whose framebuffer fits. At
-    // scale 1.75, 2560 px allows 1462.86 pt: 1463 pt would round to 2561 px.
     const window_limits = limits_mod.WindowLimits{
         .framebuffer_width_max = 2560,
         .framebuffer_height_max = 1600,
@@ -991,8 +913,6 @@ test "contentSizeMax floors the budget's framebuffer to whole points at each sca
 }
 
 test "framebufferViewport keeps the scale within the limits and clamps past them" {
-    // Goal: a window that fits keeps its backing scale exactly; one a pixel past
-    // either limit drops to the largest scale that fits, never past the limit.
     const window_limits = limits_mod.WindowLimits{
         .framebuffer_width_max = 2560,
         .framebuffer_height_max = 1600,

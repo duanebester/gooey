@@ -1,11 +1,6 @@
-//! Objective-C type-encoding generation. The runtime's `class_addMethod`
-//! wants a string describing a method's return and argument types (e.g.
-//! "v@:c" for `void method(id, SEL, char)`). This module derives that string
-//! from a Zig function type at comptime, so `Class.addMethod` can register Zig
-//! callbacks with the runtime.
-//!
-//! Reference:
-//! https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/ObjCRuntimeGuide/Articles/ocrtTypeEncodings.html
+//! Derives Objective-C method type-encoding strings (e.g. "v@:c" for
+//! `void method(id, SEL, char)`) from a Zig function type at comptime, so
+//! `Class.addMethod` can register Zig callbacks with the runtime.
 
 const std = @import("std");
 const objc = @import("main.zig");
@@ -13,22 +8,17 @@ const c = @import("c.zig").c;
 const assert = std.debug.assert;
 const testing = std.testing;
 
-/// How much space do we need to encode this type?
 fn comptimeN(comptime T: type) usize {
     comptime {
         const encoding = objc.Encoding.init(T);
-
-        // Figure out how much space we need
         return std.fmt.count("{f}", .{encoding});
     }
 }
 
-/// Encode a type into a comptime, null-terminated string.
 pub fn comptimeEncode(comptime T: type) [comptimeN(T):0]u8 {
     comptime {
         const encoding = objc.Encoding.init(T);
 
-        // Build our final signature
         var buf: [comptimeN(T) + 1]u8 = undefined;
         const result = std.fmt.bufPrint(buf[0 .. buf.len - 1], "{f}", .{encoding}) catch unreachable;
         buf[result.len] = 0;
@@ -37,8 +27,6 @@ pub fn comptimeEncode(comptime T: type) [comptimeN(T):0]u8 {
     }
 }
 
-/// Encoding union which parses type information and turns it into Obj-C
-/// runtime Type Encodings.
 pub const Encoding = union(enum) {
     char,
     int,
@@ -142,14 +130,10 @@ pub const Encoding = union(enum) {
                 const struct_info = @typeInfo(s.struct_type);
                 assert(struct_info.@"struct".layout == .@"extern");
 
-                // Strips the fully qualified type name to leave just the
-                // type name. Used in naming the Struct in an encoding.
                 var type_name_iter = std.mem.splitBackwardsScalar(u8, @typeName(s.struct_type), '.');
                 const type_name = type_name_iter.first();
                 try writer.print("{{{s}", .{type_name});
 
-                // if the encoding should show the internal type specification
-                // of the struct (determined by levels of pointer indirection)
                 if (s.show_type_spec) {
                     try writer.writeAll("=");
                     inline for (struct_info.@"struct".field_types) |field_type| {
@@ -164,14 +148,10 @@ pub const Encoding = union(enum) {
                 const union_info = @typeInfo(u.union_type);
                 assert(union_info.@"union".layout == .@"extern");
 
-                // Strips the fully qualified type name to leave just the
-                // type name. Used in naming the Union in an encoding
                 var type_name_iter = std.mem.splitBackwardsScalar(u8, @typeName(u.union_type), '.');
                 const type_name = type_name_iter.first();
                 try writer.print("({s}", .{type_name});
 
-                // if the encoding should show the internal type specification
-                // of the Union (determined by levels of pointer indirection)
                 if (u.show_type_spec) {
                     try writer.writeAll("=");
                     inline for (union_info.@"union".field_types) |field_type| {
@@ -182,24 +162,17 @@ pub const Encoding = union(enum) {
 
                 try writer.writeAll(")");
             },
-            .bitfield => |b| try writer.print("b{}", .{b}), // not sure if needed from Zig -> Obj-C
+            .bitfield => |b| try writer.print("b{}", .{b}),
             .pointer => |p| {
                 switch (p.size) {
                     .one => {
-                        // get the pointer info (count of levels of direction
-                        // and the underlying type)
                         const pointer_info = indirectionCountAndType(p.ptr_type);
                         for (0..pointer_info.indirection_levels) |_| {
                             try writer.writeAll("^");
                         }
 
-                        // create a new Encoding union from the pointers child
-                        // type, giving an encoding of the underlying pointer type
                         comptime var encoding = init(pointer_info.child);
 
-                        // if the indirection levels are greater than 1, for
-                        // certain types that means getting rid of it's
-                        // internal type specification
                         if (pointer_info.indirection_levels > 1) {
                             switch (encoding) {
                                 .structure => |*s| s.show_type_spec = false,
@@ -208,7 +181,6 @@ pub const Encoding = union(enum) {
                             }
                         }
 
-                        // call this format function again, this time with the child type encoding
                         try encoding.format(writer);
                     },
                     else => @compileError("Pointer size not supported for encoding"),
@@ -217,7 +189,7 @@ pub const Encoding = union(enum) {
             .function => |fn_info| {
                 assert(std.meta.eql(fn_info.attrs.@"callconv", std.builtin.CallingConvention.c));
 
-                // Return type is first in a method encoding
+                // Return type first, as a method encoding requires.
                 const ret_type_enc = init(fn_info.return_type.?);
                 try ret_type_enc.format(writer);
                 inline for (fn_info.param_types) |param_type| {
@@ -230,10 +202,6 @@ pub const Encoding = union(enum) {
     }
 };
 
-/// This comptime function gets the levels of indirection from a type. If the
-/// type is a pointer type it returns the underlying type from the pointer (the
-/// child) by walking the pointer to that child. Returns the type and 0 for
-/// count if the type isn't a pointer.
 fn indirectionCountAndType(comptime T: type) struct {
     child: type,
     indirection_levels: comptime_int,
@@ -246,10 +214,6 @@ fn indirectionCountAndType(comptime T: type) struct {
 
     return .{ .child = WalkType, .indirection_levels = count };
 }
-
-// --- Tests -----------------------------------------------------------------
-// These exercise the encoding machinery in isolation; they are pure (no live
-// runtime needed) and document the expected encoding for representative types.
 
 fn encodingMatchesType(comptime T: type, expected_encoding: []const u8) !void {
     var buf: [200]u8 = undefined;

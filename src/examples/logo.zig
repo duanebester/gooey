@@ -1,20 +1,3 @@
-//! Logo: Gooey's logo bouncing around the window, like a DVD screensaver.
-//!
-//! The smallest image app with motion: `Painter.image` draws Gooey's logo
-//! from `assets/gooey-logo-320.png` (a 320x200 copy of
-//! `gooey-logo-final.png`) at 160x100. Its position is a function of the
-//! frame clock alone: each axis moves at a constant speed and reflects off
-//! the window's edges, so the path is the same at any frame rate and no
-//! per-frame state drifts. Each bounce moves the tint one step through a
-//! small set of warm shades. It runs on every backend; on a board
-//! (`-Dlinux-backend=fbdev` or `eve`) it uses the `.embedded` budget, and on
-//! EVE the logo draws from the ARGB4 image mirror in `RAM_G`. Run it from
-//! the repository root, or anywhere with an `assets/` directory beside it.
-//!
-//! Resource sketch: one 320x200 image (250 KiB of RGBA, decoded once on the
-//! image worker) in the `.embedded` image atlas; each frame draws one image
-//! sprite over one quad and asks for the next frame.
-
 const std = @import("std");
 const gooey = @import("gooey");
 
@@ -37,7 +20,6 @@ pub const App = gooey.App(State, render, .{
     .theme = &gooey.Theme.catppuccin_macchiato,
 });
 
-/// The generated entry point (contract §7).
 pub const main = App.main;
 
 pub const logo_path = "assets/gooey-logo-320.png";
@@ -70,8 +52,6 @@ pub fn render(cx: *Cx) void {
     }));
 }
 
-/// One axis of the bounce: the offset along a span of `range` pixels after
-/// travelling `distance` pixels, and how many edges it has reflected off.
 const Axis = struct {
     offset: f32,
     bounces: u64,
@@ -92,7 +72,6 @@ fn paintLogo(s: *const State, painter: *ui.Painter) void {
     assert(bounds.height >= 0);
     const range_x: f64 = bounds.width - logo_width;
     const range_y: f64 = bounds.height - logo_height;
-    // A window smaller than the logo has nowhere to bounce.
     if (range_x <= 0 or range_y <= 0) return;
     const seconds = @as(f64, @floatFromInt(s.frame_ns)) / std.time.ns_per_s;
     const x = Axis.at(seconds * speed_x, range_x);

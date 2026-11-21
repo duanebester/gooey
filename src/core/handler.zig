@@ -1,4 +1,4 @@
-//! Handler and Effects (contract §4).
+//! Handler and Effects.
 //!
 //! A handler is a type-erased method call: `invoke` is generated per method
 //! by `bind`, `target` names the state it runs on (the app's root state or an
@@ -216,10 +216,10 @@ pub const Store = struct {
     }
 };
 
-/// File dialog requests a handler can make (contract §4, rule 5). The result
-/// arrives as a completion event with an explicit outcome. The options are
-/// GPUI's (decision 11): an open dialog selects files, directories, or both,
-/// one or several; a save dialog may start in a folder with a name.
+/// File dialog requests a handler can make. The result arrives as a
+/// completion event with an explicit outcome. An open dialog selects files,
+/// directories, or both, one or several; a save dialog may start in a folder
+/// with a name.
 pub const FileDialogRequest = struct {
     kind: union(enum) {
         open: PathPromptOptions,
@@ -245,8 +245,8 @@ pub const Effects = struct {
     theme_request: ?*const Theme,
     announcement: ?Announcement,
     click_request: ?ElementId,
-    /// The text engines' clipboard, set by the router. Not an app API
-    /// (decision 10): only `text_engine.zig` reads it.
+    /// The text engines' clipboard, set by the router. Not an app API:
+    /// only `text_engine.zig` reads it.
     clipboard: ?*Clipboard,
     /// The entity pools `create` and `remove` reach, set by the router and
     /// by `App` for `on_init`.
@@ -343,7 +343,6 @@ pub const Effects = struct {
         };
     }
 
-    /// The input event being delivered, for key and text handlers.
     pub fn inputEvent(self: *const Effects) ?*const input.InputEvent {
         return self.event;
     }
@@ -479,7 +478,6 @@ pub const Effects = struct {
         return done;
     }
 
-    /// The job whose result or end is being delivered.
     pub fn jobId(self: *const Effects) ?JobId {
         const delivery = self.job orelse return null;
         return delivery.id;
@@ -518,7 +516,6 @@ pub const Effects = struct {
         self.propagation_stopped = true;
     }
 
-    /// Focus a keyed element. Applied after the handler returns.
     pub fn focus(self: *Effects, id: ElementId) void {
         assert(id.isKeyed());
         self.focus_request = .{ .focus = id };
@@ -561,8 +558,8 @@ pub const Effects = struct {
         self.file_dialog = request;
     }
 
-    /// Replace the app family (`Config.font`) with `name` at `size` points
-    /// (decision 8). The tick reloads it after the drain, once no frame is in
+    /// Replace the app family (`Config.font`) with `name` at `size` points.
+    /// The tick reloads it after the drain, once no frame is in
     /// flight, into the same face slots, so it claims no storage. A family
     /// that fails to load is logged and the previous one stays.
     pub fn setFont(self: *Effects, name: []const u8, size: f32) void {
@@ -571,14 +568,14 @@ pub const Effects = struct {
         self.font_request = .{ .name = name, .size = size };
     }
 
-    /// Switch every element's theme tokens to `theme` (decision 10, C11).
-    /// The next build resolves against it; the clear colour follows `bg`.
+    /// Switch every element's theme tokens to `theme`. The next build
+    /// resolves against it; the clear colour follows `bg`.
     pub fn setTheme(self: *Effects, theme: *const Theme) void {
         self.theme_request = theme;
         assert(self.theme_request.? == theme);
     }
 
-    /// Ask the screen reader to speak `text` (decision 10, C9). The next
+    /// Ask the screen reader to speak `text`. The next
     /// frame carries it to the platform; at most one per handler.
     pub fn announce(self: *Effects, text: []const u8, politeness: Live) void {
         assert(text.len > 0);
@@ -587,7 +584,7 @@ pub const Effects = struct {
         self.announcement = .{ .text = text, .politeness = politeness };
     }
 
-    /// Create an entity of `T`, a type from `Config.entities` (decision 17).
+    /// Create an entity of `T`, a type from `Config.entities`.
     /// The slot is claimed at once, so the handler can keep the handle; a
     /// full pool panics with its name and capacity.
     pub fn create(self: *Effects, comptime T: type, value: T) Entity(T) {
@@ -623,7 +620,7 @@ pub const Effects = struct {
 
     /// A handler for `method` on the root state, for a request's completion
     /// (`.on_complete = effects.handler(State.onPicked)`), so completion
-    /// handlers need not be built during render (decision 7). The router
+    /// handlers need not be built during render. The router
     /// checks the state type when the request is applied.
     pub fn handler(_: *const Effects, comptime method: anytype) Handler {
         const built = bind(method, .{});
@@ -631,10 +628,6 @@ pub const Effects = struct {
         return built;
     }
 };
-
-// =============================================================================
-// Building handlers
-// =============================================================================
 
 /// What `bind` learned from a method's signature.
 pub const Shape = struct {
@@ -792,7 +785,7 @@ fn Invoker(comptime method: anytype, comptime shape: Shape) type {
 }
 
 /// Pack an argument of at most 8 bytes. Unused bytes stay zero, so equal
-/// arguments pack to equal values (CLAUDE.md §21).
+/// arguments pack to equal values.
 pub fn packArg(comptime Arg: type, arg: Arg) u64 {
     comptime assert(@sizeOf(Arg) <= @sizeOf(u64));
     var storage: u64 = 0;
@@ -808,8 +801,6 @@ pub fn unpackArg(comptime Arg: type, storage: u64) Arg {
 }
 
 test "bind detects every method shape and passes arg and effects" {
-    // Goal: the four shapes call the method with the right values, and
-    // every invocation requests a render. Method: a state that records calls.
     const State = struct {
         total: i64 = 0,
         effects_seen: u32 = 0,

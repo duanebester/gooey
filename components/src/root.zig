@@ -1,14 +1,5 @@
-//! Gooey Components: library controls (`Button`, `Checkbox`, `Select`,
-//! `RadioGroup`, `Tooltip`, `ContextMenu`, `Modal`, `List`, `TextInput`,
-//! `TextArea`, `CodeEditor`) and the Lucide icon set. Each control composes
-//! `ui.box`, `ui.text`, and `ui.paint` through the public API alone: `zig
-//! build import-ban` fails on any `gooey.internals` reference here, so a
-//! control can do only what an app can.
-//!
-//! Keyboard: `Button`, `Checkbox`, `Select`, and `RadioGroup` are focusable,
-//! so Tab reaches them, and the core turns Enter and Space into a click on
-//! the focused element. `Select`, `RadioGroup`, and `ContextMenu` add their
-//! own keys (see `SelectState`, `RadioKeys`, and `MenuState.onKey`).
+//! Controls compose only the public gooey API: `zig build import-ban` fails on
+//! any `gooey.internals` reference here.
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -27,23 +18,15 @@ const InputEngine = gooey.InputEngine;
 const AreaEngine = gooey.AreaEngine;
 const EditorEngine = gooey.EditorEngine;
 
-/// Lucide icon data for `Painter.svg`.
 pub const Lucide = @import("lucide.zig").Lucide;
-
-// =============================================================================
-// Button
-// =============================================================================
 
 pub const Button = struct {
     label: []const u8,
-    /// The button's key under its parent; defaults to the label, so sibling
-    /// buttons need distinct labels or explicit keys.
     key: ?[]const u8 = null,
     variant: Variant = .primary,
     size: Size = .medium,
     disabled: bool = false,
     on_click: ?Handler = null,
-    /// The screen-reader name; defaults to the label.
     accessible_name: ?[]const u8 = null,
 
     pub const Variant = enum { primary, secondary, danger };
@@ -113,18 +96,12 @@ pub const Button = struct {
     }
 };
 
-// =============================================================================
-// Checkbox
-// =============================================================================
-
 pub const Checkbox = struct {
     checked: bool,
     on_click: ?Handler = null,
     key: ?Key = null,
     size: f32 = 18,
-    /// Text beside the box, which clicks it too.
     label: ?[]const u8 = null,
-    /// The screen-reader name; defaults to the label.
     accessible_name: ?[]const u8 = null,
     accessible_description: ?[]const u8 = null,
 
@@ -168,46 +145,22 @@ pub const Checkbox = struct {
         path: []const u8,
 
         fn paint(self: *const Checkmark, painter: *ui.Painter) void {
-            // The box behind the mark is `primary` while checked.
             painter.svg(self.path, painter.bounds, .{ .fill = painter.theme().on_primary });
         }
     };
 
-    /// The Material "check" icon, as the 0.3.1 checkbox draws it.
     const checkmark = Checkmark{ .path = "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" };
 };
 
-// =============================================================================
-// Select
-// =============================================================================
-
-/// A dropdown of options, as the 0.3.1 `Select` draws it, with its menu on a
-/// `.popover` layer. The app owns the value, `selected`: option `i` calls
-/// `on_select[i]`, typically `cx.on(State.choose, .{ .arg = i })`. The Select
-/// owns whether its menu is open, as `ContextMenu` and `Tooltip` own theirs:
-/// the trigger opens and closes it, and a choice or a click outside closes
-/// it.
-///
-/// The combobox takes keyboard focus, and the focused option is the
-/// highlighted one, so a screen reader follows it. Enter, Space, Down, and
-/// Up open the menu on the selected option (or the first); Down, Up, Home,
-/// and End move between options; Enter and Space choose; Esc closes, back
-/// on the combobox; and Tab or Shift+Tab closes and moves on, since the
-/// options are not tab stops. Each opens or closes through the trigger and
-/// chooses through `on_select`, pressed with `effects.click`. A Select
-/// retains one 64 B slot for its open state and keys, and adds a key handler
-/// per option.
 pub const Select = struct {
     key: []const u8,
     options: []const []const u8,
-    /// One handler per option.
     on_select: []const Handler,
     selected: ?usize = null,
     placeholder: []const u8 = "Select...",
     disabled: bool = false,
     width: f32 = 200,
     padding: f32 = 10,
-    /// The combobox's screen-reader name; defaults to the placeholder.
     accessible_name: ?[]const u8 = null,
     accessible_description: ?[]const u8 = null,
 
@@ -241,10 +194,8 @@ pub const Select = struct {
                 .entity = handle,
                 .arg = self.keyArg(SelectState.on_combobox, open),
             }),
-            // A chosen option's click bubbles here, through the menu, after
-            // its `on_select` ran: the combobox, whose node is interactive,
-            // closes the menu. A click on the open trigger reaches it too,
-            // and closing twice changes nothing.
+            // A chosen option's click bubbles here after its `on_select`
+            // ran, and closes the menu; closing twice changes nothing.
             .on_click = if (open) cx.on(SelectState.close, .{ .entity = handle }) else null,
             .on_click_outside = if (open) cx.on(SelectState.close, .{ .entity = handle }) else null,
             .a11y = .{
@@ -276,7 +227,6 @@ pub const Select = struct {
         return self.options[index];
     }
 
-    /// What a key handler on the combobox or option `focused` acts on.
     fn keyArg(self: *const Select, focused: u16, open: bool) SelectState.Arg {
         assert(self.options.len <= select_option_count_max);
         const start = self.selected orelse 0;
@@ -290,13 +240,12 @@ pub const Select = struct {
 };
 
 /// The most options one `Select` lists: the key handlers pack indexes into
-/// 16 bits, and a menu past a thousand rows is not a dropdown.
+/// 16 bits.
 pub const select_option_count_max: u32 = 1024;
 
-/// A `Select`'s open state and keyboard handling, retained under its key so
-/// its handlers have state to run on. The key handlers' arguments come from
-/// the frame on screen, so a key that a drain routes after a choice closed
-/// the menu still acts on the menu that frame shows.
+/// A `Select`'s open state and keyboard handling, retained under its key. The
+/// key handlers' arguments come from the frame on screen, so a key a drain
+/// routes after a choice closed the menu still acts on the menu it shows.
 const SelectState = struct {
     root: ElementId,
     open: bool,
@@ -308,7 +257,6 @@ const SelectState = struct {
         /// The focused option, or `on_combobox`.
         focused: u16,
         count: u16,
-        /// The option the menu opens on: the selected one, or the first.
         start: u16,
         open: bool,
         padding: u15 = 0,
@@ -322,17 +270,14 @@ const SelectState = struct {
         self.* = .{ .root = .root, .open = false };
     }
 
-    /// The trigger of a closed menu, and the keys that open one.
     fn openMenu(self: *SelectState, effects: *Effects) void {
         assert(self.root.isKeyed());
         self.open = true;
         effects.requestRender();
     }
 
-    /// The trigger of an open menu, a click outside, and a choice: the
-    /// option's click bubbles to the combobox after `on_select` ran. Closing
-    /// a closed menu changes nothing, so a key routed against a frame that
-    /// still showed it cannot reopen it.
+    /// Closing a closed menu changes nothing, so a key routed against a frame
+    /// that still showed the menu cannot reopen it.
     fn close(self: *SelectState, effects: *Effects) void {
         self.open = false;
         effects.requestRender();
@@ -349,8 +294,6 @@ const SelectState = struct {
         return self.root.child(.{ .name = "menu" }).child(.{ .index = index });
     }
 
-    /// Keys without Cmd, Ctrl, or Alt. A key an option leaves alone bubbles
-    /// to the combobox's handler, which closes the menu on Esc and Tab.
     /// Shift+Tab takes the Tab arm too: `KeyCode` has no back-tab.
     fn onKey(self: *SelectState, arg: Arg, effects: *Effects) void {
         assert(self.root.isKeyed());
@@ -368,7 +311,6 @@ const SelectState = struct {
         }
     }
 
-    /// Opening focuses the start option, which the next frame renders.
     fn comboboxKey(self: *SelectState, arg: Arg, key: KeyCode, effects: *Effects) void {
         assert(arg.focused == on_combobox);
         assert(arg.start < @max(arg.count, 1));
@@ -388,7 +330,6 @@ const SelectState = struct {
                 effects.focus(self.root);
                 effects.stopPropagation();
             },
-            // Tab closes the menu and goes on: from the combobox, the core's
             // Tab moves to the next tab stop, which the closing menu's
             // options, still in the frame on screen, are not.
             .tab => if (arg.open) {
@@ -399,7 +340,6 @@ const SelectState = struct {
         }
     }
 
-    /// Movement stops at the first and last option, as a listbox's does.
     fn optionKey(self: *SelectState, arg: Arg, key: KeyCode, effects: *Effects) void {
         assert(arg.count > 0);
         assert(arg.focused < arg.count);
@@ -410,8 +350,8 @@ const SelectState = struct {
             .home => 0,
             .end => last,
             .@"return", .keypad_enter, .space => {
-                // `effects.click` runs the option's own handler only, so the
-                // menu's close does not follow it; close here.
+                // `effects.click` runs the option's own handler only, so
+                // close the menu here.
                 effects.click(self.option(arg.focused));
                 self.close(effects);
                 effects.focus(self.root);
@@ -443,10 +383,10 @@ const SelectTrigger = struct {
         const text_color = if (select.selected == null) theme.muted else theme.text;
         const chevron = &chevrons[@intFromBool(self.open)][@intFromBool(select.disabled)];
         // An open menu's trigger closes, it does not toggle. Every key a
-        // drain delivers after the one that chose an option routes against
-        // this frame, where the menu is still open, so a Tab or Esc that
-        // presses the trigger here must not reopen the menu the choice
-        // closed; closing a closed menu changes nothing.
+        // drain delivers after a choice routes against this frame, where the
+        // menu is still open, so a Tab or Esc that presses the trigger here
+        // must not reopen the menu the choice closed; closing a closed menu
+        // changes nothing.
         var on_click: ?Handler = null;
         if (!select.disabled) {
             on_click = if (self.open)
@@ -578,8 +518,7 @@ const SelectOptions = struct {
     }
 };
 
-/// A Material icon tinted by a theme colour at paint time, so one constant
-/// serves every theme.
+/// Tinted by a theme colour at paint time, so one constant serves every theme.
 const SelectIcon = struct {
     path: []const u8,
     color: enum { text, primary },
@@ -612,30 +551,12 @@ const chevrons = [2][2]SelectIcon{
 
 const select_check = SelectIcon{ .path = Checkbox.checkmark.path, .color = .primary, .opacity = 1 };
 
-// =============================================================================
-// RadioGroup
-// =============================================================================
-
-/// A column of mutually exclusive options that behaves as a native radio
-/// group. The app owns `selected`: option `i` calls `on_select[i]`, typically
-/// `cx.on(State.choose, .{ .arg = i })`.
-///
-/// Tab enters the group at the selected option, or the first when none is,
-/// and leaves it in one press, because only that option is a tab stop. Down
-/// and Right select the next option, Up and Left the previous, wrapping at
-/// the ends, with focus following; Enter and Space select the focused one.
-/// Each selection goes through `on_select`, pressed with `effects.click`. A
-/// RadioGroup retains one 64 B slot for its keys, and adds a key handler per
-/// option.
 pub const RadioGroup = struct {
     key: []const u8,
     options: []const []const u8,
-    /// One handler per option.
     on_select: []const Handler,
     selected: ?usize = null,
-    /// Text above the options; also the group's screen-reader name.
     label: ?[]const u8 = null,
-    /// The group's screen-reader name; defaults to the label.
     accessible_name: ?[]const u8 = null,
     accessible_description: ?[]const u8 = null,
 
@@ -678,12 +599,11 @@ pub const RadioGroup = struct {
 };
 
 /// The most options one `RadioGroup` lists: the key handlers pack indexes
-/// into 16 bits, and a group past a few dozen options wants a `Select`.
+/// into 16 bits.
 pub const radio_option_count_max: u32 = 256;
 
-/// A `RadioGroup`'s arrow keys, retained under its key so the options' key
-/// handlers have state to run on; only the group's id, which never changes,
-/// is kept.
+/// A `RadioGroup`'s arrow keys, retained under its key; only the group's id,
+/// which never changes, is kept.
 const RadioKeys = struct {
     root: ElementId,
 
@@ -706,8 +626,6 @@ const RadioKeys = struct {
         return self.root.child(.{ .name = "options" }).child(.{ .index = index });
     }
 
-    /// Keys without Cmd, Ctrl, or Alt select the next or previous option by
-    /// clicking it, and focus follows.
     fn onKey(self: *RadioKeys, arg: Arg, effects: *Effects) void {
         assert(arg.count > 0);
         assert(arg.index < arg.count);
@@ -812,20 +730,6 @@ const RadioOption = struct {
     }
 };
 
-// =============================================================================
-// Tooltip
-// =============================================================================
-
-/// A short text shown beside `child` on a `.tooltip` layer: after the
-/// pointer rests on it for `delay_ms`, or at once while keyboard focus with
-/// its ring is on it or inside it (`cx.focusVisibleWithin`). It hides when
-/// both leave, and Escape hides it until they do. It opens below the child,
-/// or above when it does not fit there, and never takes the pointer, so it
-/// cannot end the child's hover or block a click on what is under it.
-///
-/// The text is a `tooltip` node after the child's for the screen reader
-/// while it shows. A Tooltip retains one 64 B slot for its timing, so each
-/// one on screen counts against the app's retained budget.
 pub fn Tooltip(comptime Child: type) type {
     return struct {
         key: []const u8,
@@ -871,16 +775,10 @@ pub fn Tooltip(comptime Child: type) type {
 
 /// The rest before a hovered tooltip shows, as macOS and Windows wait.
 pub const tooltip_delay_ms_default: u32 = 500;
-/// The space between a tooltip and its child.
 const tooltip_gap: f32 = 4;
 
-/// A `Tooltip`'s timing, retained under its key: when the pointer came to
-/// rest on the child, and whether Escape dismissed it.
 const TooltipState = struct {
-    /// When the current hover began, or null while the pointer is away.
     hover_since_ns: ?u64,
-    /// How long until the hover reaches the delay, for `requestRenderAfter`;
-    /// null when no render is waiting.
     wait_ms: ?u32,
     /// Shown in the last build, so Escape claims the key only then.
     shown: bool,
@@ -893,8 +791,6 @@ const TooltipState = struct {
         self.* = .{ .hover_since_ns = null, .wait_ms = null, .shown = false, .dismissed = false };
     }
 
-    /// Whether the tooltip shows this build, from the child's hover and
-    /// focus and the tick's clock.
     fn update(self: *TooltipState, inputs: Inputs) bool {
         self.wait_ms = null;
         if (!inputs.hovered and !inputs.focused) {
@@ -923,14 +819,13 @@ const TooltipState = struct {
             }
         }
         self.shown = !self.dismissed and (inputs.focused or rested);
-        // Shown or dismissed, no render waits on the delay.
         if (self.shown or self.dismissed) self.wait_ms = null;
         if (self.shown) assert(!self.dismissed);
         return self.shown;
     }
 
-    /// Escape hides a shown tooltip; other keys, and Escape while it is
-    /// hidden, go on to the child's ancestors, such as a modal that closes.
+    /// Other keys, and Escape while it is hidden, go on to the child's
+    /// ancestors, such as a modal that closes.
     fn onKey(self: *TooltipState, effects: *Effects) void {
         const event = effects.inputEvent() orelse return;
         if (event.* != .key_down) return;
@@ -977,23 +872,13 @@ const TooltipBubble = struct {
     }
 };
 
-// =============================================================================
-// ContextMenu
-// =============================================================================
-
-/// One row of a `ContextMenu`: an action, or with `separator` a divider that
-/// ignores every other field. An action without `on_select`, or `disabled`,
-/// is drawn dimmed and skipped by the arrow keys.
 pub const MenuItem = struct {
     label: []const u8 = "",
-    /// Runs when the row is chosen; the menu then closes. It must not stop
-    /// propagation, since the menu closes on the click it bubbles.
+    /// Runs when the row is chosen; it must not stop propagation, since the
+    /// menu closes on the click it bubbles.
     on_select: ?Handler = null,
-    /// A shortcut hint drawn at the row's end, such as "Ctrl+C"; binding it
-    /// is the app's keymap's job.
     shortcut: ?[]const u8 = null,
     disabled: bool = false,
-    /// Draws the label in the theme's `danger`, for a destructive action.
     danger: bool = false,
     separator: bool = false,
 
@@ -1002,25 +887,12 @@ pub const MenuItem = struct {
     }
 };
 
-/// A right-click menu over `child`, on a `.popover` layer at the pointer.
-/// A right press on the child (a Ctrl+press on macOS) opens it there, and
-/// Shift+F10 while focus is in the child opens it below the focused element;
-/// either focuses its first action, drawn only for the key. Down, Up, Home,
-/// and End move between actions, wrapping; Enter or Space chooses; Escape or
-/// Tab closes, and a choice or a close from the keyboard returns focus where
-/// it was. A press outside closes it, and a right press elsewhere in the
-/// child moves it.
-///
-/// The menu owns whether it is open and where, in one retained 64 B slot,
-/// so the app supplies only the rows. Each row's `on_select` is an ordinary
-/// handler, such as `cx.on(State.copy, .{ .arg = row })`.
 pub fn ContextMenu(comptime Child: type) type {
     return struct {
         key: []const u8,
         items: []const MenuItem,
         child: Child,
         width_min: f32 = 180,
-        /// The menu's screen-reader name.
         accessible_name: []const u8 = "Context menu",
 
         const Self = @This();
@@ -1058,7 +930,7 @@ pub fn ContextMenu(comptime Child: type) type {
 }
 
 /// The most rows one `ContextMenu` holds: its key handler carries which rows
-/// are actions as a 64-bit mask, and a longer menu wants another design.
+/// are actions as a 64-bit mask.
 pub const menu_item_count_max: u32 = 64;
 
 /// Bit `i` set when row `i` is an action the keys reach.
@@ -1071,9 +943,6 @@ fn enabledMask(items: []const MenuItem) u64 {
     return mask;
 }
 
-/// A `ContextMenu`'s state, retained under its key: whether it is open,
-/// where, and the element focus returns to.
-///
 /// Every handler sits on a `menuitem` row, so each handled record belongs to
 /// an interactive accessibility node: the row's own handler closes the menu
 /// and takes the keys, and the app's `on_select` sits on a box inside it that
@@ -1100,9 +969,6 @@ const MenuState = struct {
         return self.row(index).child(.{ .name = "pick" });
     }
 
-    /// `Box.on_context_menu`: at the press, or below the focused element
-    /// for Shift+F10. Either focuses the first action, so the keys work at
-    /// once; only the key's focus draws a ring and lights the row.
     fn open(self: *MenuState, enabled: u64, effects: *Effects) void {
         assert(self.root.isKeyed());
         const event = effects.inputEvent() orelse return;
@@ -1133,14 +999,12 @@ const MenuState = struct {
         effects.requestRender();
     }
 
-    /// A row's click, after its `on_select` ran, and the keys that close.
     fn close(self: *MenuState, effects: *Effects) void {
         self.shown = false;
         if (self.restore == .root) effects.blur() else effects.focus(self.restore);
         effects.requestRender();
     }
 
-    /// A row's keys; the focused row is the one they act on.
     fn onKey(self: *MenuState, enabled: u64, effects: *Effects) void {
         assert(self.shown);
         const event = effects.inputEvent() orelse return;
@@ -1185,8 +1049,7 @@ const MenuState = struct {
 const MenuStep = enum { next, previous, first, last };
 
 /// The action row a key moves to among `enabled`'s set bits, wrapping, or
-/// null when there is none. From no row, `next` takes the first and
-/// `previous` the last.
+/// null when there is none.
 fn menuStep(enabled: u64, current: ?u32, step: MenuStep) ?u32 {
     if (enabled == 0) return null;
     const first: u32 = @ctz(enabled);
@@ -1329,15 +1192,6 @@ const MenuRow = struct {
     }
 };
 
-// =============================================================================
-// Modal
-// =============================================================================
-
-/// A dialog over a dimmed backdrop, as 0.3.1's `Modal`, on a `.modal` layer:
-/// nothing opened before it receives the pointer (contract §6), and layers
-/// its child opens, such as a `Select`'s menu, sit above it. The app owns
-/// `open`; with `close_on_backdrop`, a press outside the panel calls
-/// `on_close`. 0.3.1's fade and scale wait for the animation cluster.
 pub fn Modal(comptime Child: type) type {
     return struct {
         key: []const u8,
@@ -1348,16 +1202,13 @@ pub fn Modal(comptime Child: type) type {
         backdrop: Color = Color.rgba(0, 0, 0, 0.5),
         content_max_width: ?f32 = 500,
         content_padding: f32 = 24,
-        /// Defaults to the theme's surface.
         content_background: ?Color = null,
-        /// Defaults to the theme's `radius_lg`.
         content_corner_radius: ?f32 = null,
         content_shadow: ?ui.Shadow = .{
             .blur = 24,
             .offset_y = 8,
             .color = .{ .rgba = Color.rgba(0, 0, 0, 0.25) },
         },
-        /// The dialog's screen-reader name; defaults to the key.
         accessible_name: ?[]const u8 = null,
         accessible_description: ?[]const u8 = null,
 
@@ -1398,32 +1249,6 @@ pub fn Modal(comptime Child: type) type {
     };
 }
 
-// =============================================================================
-// List
-// =============================================================================
-
-/// A vertical list of `count` rows that builds only the rows in view
-/// (contract §1): a keyed scroll box whose retained offset and last measured
-/// viewport pick the rows, with spacers above and below standing in for the
-/// rest so the wheel and scrollbar see every row. `Row` has an `index: u32`
-/// field and a `render`, and declares its heights one of two ways:
-///
-/// - `row_height: f32`, one height for every row, as 0.3.1's uniform list.
-///   The rows in view follow from the offset in constant time.
-/// - `fn height(cx: *Cx, index: u32, width: f32) f32` and `count_max: u32`,
-///   a height per row, as 0.3.1's virtual list. `width` is the row's width,
-///   the viewport's less the list's padding (0 before the first emit), so a
-///   row can size from its content with `cx.measureText`. Each render sums
-///   every row's height, so `count_max` bounds that work; a longer list
-///   fails fast.
-///
-/// Each row sits in a box keyed by its index, so state a row keys survives
-/// scrolling. `gap` separates rows, and `style` dresses the scroll box
-/// (background, border, corners, padding). The list grows to fill its
-/// parent: a viewport sized by its rows would add one row per frame.
-/// `anchor = .end` keeps it at its last row while it is there, as
-/// `Scroll.anchor` does, and `scrollTo` brings a row into view from a
-/// handler; either builds the rows it lands on in the same frame.
 pub fn List(comptime Row: type) type {
     comptime {
         assert(@FieldType(Row, "index") == u32);
@@ -1440,10 +1265,9 @@ pub fn List(comptime Row: type) type {
 
         const Self = @This();
 
-        /// Bring row `index` of the list with id `list` into view, after
-        /// the handler returns: `list` is `cx.id(.{ .name = key })` taken in
-        /// the render that builds the list, under the same parent. An index
-        /// past the last row moves nothing.
+        /// Bring row `index` of the list with id `list` into view: `list` is
+        /// the list's id taken in the render that builds it, under the same
+        /// parent.
         pub fn scrollTo(
             effects: *gooey.Effects,
             list: gooey.ElementId,
@@ -1508,7 +1332,6 @@ pub fn List(comptime Row: type) type {
 
         /// Each row in view is at least one element (its keyed box), so
         /// the frame's element budget bounds the rows one build may emit.
-        /// A viewport that shows more fails here, naming the list.
         fn checkRowsVisible(self: Self, cx: *Cx, rows_visible: u32) void {
             const element_count_max = cx.limits().build.element_count_frame_max;
             if (rows_visible <= element_count_max) return;
@@ -1537,8 +1360,7 @@ pub fn List(comptime Row: type) type {
 
         /// The rows from the first one the offset reaches through the last
         /// one the viewport shows, partial rows included, and the heights
-        /// above and below them. An unmeasured viewport shows one row; the
-        /// emit that measures it requests the render that fills it.
+        /// above and below them.
         fn visibleRows(
             self: Self,
             cx: *Cx,
@@ -1574,9 +1396,7 @@ pub fn List(comptime Row: type) type {
         }
 
         /// Where the core's layout will put the offset this frame, so the
-        /// rows it shows are the ones built: a pending `scrollTo` resolved
-        /// as layout resolves it (`position_pass.resolveScrollTarget`), the
-        /// end while an `.end` anchor is pinned, else the retained offset.
+        /// rows it shows are the ones built.
         fn offsetFor(
             self: Self,
             cx: *Cx,
@@ -1612,7 +1432,6 @@ pub fn List(comptime Row: type) type {
         // rows. So the list adds row boxes one by one from the first row,
         // as layout does, unless `multiplies` proves the product exact.
 
-        /// Row `index`'s top within the rows: the boxes above it, summed.
         fn rowTop(self: Self, cx: *Cx, index: u32, width: f32) f32 {
             assert(index < self.count);
             if (uniform and self.multiplies()) {
@@ -1624,7 +1443,6 @@ pub fn List(comptime Row: type) type {
             return top;
         }
 
-        /// Every row box, summed.
         fn contentHeight(self: Self, cx: *Cx, width: f32) f32 {
             if (self.count == 0) return 0;
             const last = self.count - 1;
@@ -1665,7 +1483,6 @@ pub fn List(comptime Row: type) type {
             return pitch_steps * last + height_steps < 1 << 24;
         }
 
-        /// A row's width: the viewport's less the list's side padding.
         fn rowWidth(self: Self, state: *const Cx.ScrollPosition) f32 {
             const padding = self.style.padding;
             assert(state.viewport.width >= 0);
@@ -1691,10 +1508,7 @@ pub fn List(comptime Row: type) type {
             return .{ .start = start, .end = end, .above = above, .below = 0 };
         }
 
-        /// One scan from the first row: rows whose bottoms stay above the
-        /// view are skipped, then rows are taken until one starts at or past
-        /// the view's bottom, and always one. `below` carries the end row's
-        /// top for `visibleRows` to subtract.
+        /// `below` carries the end row's top for `visibleRows` to subtract.
         fn variableRows(self: Self, cx: *Cx, view: ListView) ListRange {
             const count = self.count;
             assert(count <= sum_count_max);
@@ -1766,8 +1580,6 @@ fn gridExponent(value: f32) i32 {
     return exponent + @as(i32, @ctz(mantissa));
 }
 
-/// The list's view in row coordinates: its top past the first row, its
-/// height, and the rows' width.
 const ListView = struct { top: f32, height: f32, width: f32 };
 
 /// The offset that shows a row box at `top`, `height` tall, in a view of
@@ -1809,7 +1621,6 @@ fn ListRows(comptime Row: type) type {
         end: u32,
         count: u32,
         gap: f32,
-        /// The rows' width, which `Row.height` measures against.
         width: f32,
 
         pub fn render(self: @This(), cx: *Cx) void {
@@ -1830,25 +1641,17 @@ fn ListRows(comptime Row: type) type {
     };
 }
 
-// =============================================================================
-// TextInput
-// =============================================================================
-
-/// A single-line input bound to an app field. The engine is retained under
-/// the input's key and lives while the input is rendered; `bind` points into
-/// the engine's buffer after an edit, so the app reads the text there and
-/// assigns `""` (or any other slice) to replace it.
+/// A single-line input bound to an app field. `bind` points into the
+/// engine's buffer after an edit, so the app reads the text there and
+/// assigns `""` to replace it.
 pub const TextInput = struct {
     key: []const u8,
     bind: *[]const u8,
     placeholder: []const u8 = "",
-    /// Null fills the parent's free width, as `CodeEditor.width` does.
     width: ?f32 = 200,
     padding: f32 = 8,
     border_width: f32 = 1,
-    /// The unfocused border, such as an error colour; defaults to the theme's.
     border_color: ?Color = null,
-    /// The screen-reader name; defaults to the placeholder.
     accessible_name: ?[]const u8 = null,
     accessible_description: ?[]const u8 = null,
 
@@ -1902,7 +1705,6 @@ pub const TextInput = struct {
         assert(engine.len == 0);
     }
 
-    /// The selection, under the text, while focused.
     fn paintSelection(engine: *const InputEngine, painter: *ui.Painter, size: u16) void {
         assert(engine.view.focused);
         if (!engine.hasSelection()) return;
@@ -1921,8 +1723,6 @@ pub const TextInput = struct {
         }, engine.view.selection_color);
     }
 
-    /// Placeholder, or the selection and text with the preedit at the caret;
-    /// then the caret in its blink phase.
     fn paintInput(engine: *const InputEngine, painter: *ui.Painter) void {
         const view = &engine.view;
         const bounds = painter.bounds;
@@ -1976,7 +1776,6 @@ pub const TextInput = struct {
     }
 };
 
-/// What both text components draw with, from the theme.
 fn setView(
     view: *InputEngine.View,
     theme: *const gooey.Theme,
@@ -1996,27 +1795,18 @@ fn setView(
     assert(view.placeholder.len == placeholder.len);
 }
 
-// =============================================================================
-// TextArea
-// =============================================================================
-
-/// A multi-line input bound to an app field, `rows` lines tall. Lines split
-/// on '\n' without soft wrap, and the lines scroll to keep the caret in view,
-/// as in 0.3.1. The app reserves areas with `limits.text.area`.
 pub const TextArea = struct {
     key: []const u8,
     bind: *[]const u8,
     placeholder: []const u8 = "",
-    /// Null fills the parent's free width, as `TextInput.width` does. The
-    /// text paints into the width laid out this frame, and nothing the
-    /// build computes (scroll, caret row, accessibility value) depends on
-    /// it, so a resize draws at the new width with no frame of lag.
+    /// Null fills the parent's free width. Nothing the build computes
+    /// depends on the laid-out width, so a resize draws at the new width
+    /// with no frame of lag.
     width: ?f32 = 300,
     rows: u16 = 4,
     padding: f32 = 8,
     border_width: f32 = 1,
 
-    /// The scrollbar's width at the right edge, as in 0.3.1.
     const scrollbar_width: f32 = 8;
 
     pub fn render(self: TextArea, cx: *Cx) void {
@@ -2072,15 +1862,13 @@ pub const TextArea = struct {
         assert(engine.len == 0);
     }
 
-    /// The visible lines with the selection under them and the preedit at
-    /// the caret, then the caret and the scrollbar. Lines above the viewport
-    /// are skipped and drawing stops below it, so paint work is bounded by
-    /// `rows` + 1 lines; finding them scans the text once.
+    /// Paint work is bounded by `rows` + 1 lines; finding them scans the
+    /// text once.
     fn paintArea(engine: *const AreaEngine, painter: *ui.Painter) void {
         paintText(engine, painter);
     }
 
-    /// `paintArea` for any multi-line engine; the editor draws its text so.
+    /// The editor draws its text so.
     fn paintText(engine: anytype, painter: *ui.Painter) void {
         const bounds = painter.bounds;
         const metrics = painter.fontMetrics();
@@ -2115,8 +1903,6 @@ pub const TextArea = struct {
         assert(line_count <= engine.len);
     }
 
-    /// One line: its part of the selection, then its text, with the
-    /// preedit underlined at the caret when the caret is on this line.
     fn paintLine(
         engine: anytype,
         painter: *ui.Painter,
@@ -2164,7 +1950,6 @@ pub const TextArea = struct {
         _ = painter.textOnBaseline(line[split..], pen, baseline, style);
     }
 
-    /// The caret in its blink phase, and the IME's answer at the caret.
     fn paintCaret(engine: anytype, painter: *ui.Painter, size: u16) void {
         assert(engine.view.focused);
         const line_height = painter.fontMetrics().line_height;
@@ -2216,22 +2001,13 @@ pub const TextArea = struct {
     }
 };
 
-// =============================================================================
-// CodeEditor
-// =============================================================================
-
-/// A TextArea with line numbers, a highlighted current line, Tab indenting,
-/// and a status bar, as 0.3.1's CodeEditor. Clicking a line number selects
-/// the line. The app reserves editors with `limits.text.editor`.
 pub const CodeEditor = struct {
     key: []const u8,
     bind: *[]const u8,
     placeholder: []const u8 = "",
-    /// Null fills the parent's width, as 0.3.1's editor did.
     width: ?f32 = 500,
     /// Null fills the parent's height: the rows are what fit in the height
-    /// the editor was laid out at last frame, so a resized window reflows on
-    /// the next frame. Its first frame, before any layout, shows one row.
+    /// the editor was laid out at last frame; before any layout, one row.
     rows: ?u16 = 10,
     padding: f32 = 8,
     border_width: f32 = 1,
@@ -2361,7 +2137,6 @@ pub const CodeEditor = struct {
         assert(engine.len == 0);
     }
 
-    /// The caret's line under the text while focused, then the text.
     fn paintEditorText(engine: *const EditorEngine, painter: *ui.Painter) void {
         if (engine.view.focused) {
             const line_height = painter.fontMetrics().line_height;
@@ -2378,7 +2153,6 @@ pub const CodeEditor = struct {
         TextArea.paintText(engine, painter);
     }
 
-    /// A one-pixel rule in the border colour.
     fn separatorBox(direction: enum { vertical, horizontal }) ui.Box.Element(@TypeOf(.{})) {
         const thickness = ui.Sizing{ .fixed = 1 };
         const span = ui.Sizing{ .grow = 1 };
@@ -2389,9 +2163,8 @@ pub const CodeEditor = struct {
         } }, .{});
     }
 
-    /// Line numbers for the visible lines, right-aligned 8 px from the
-    /// separator, the caret's line in the text colour. The gutter is inset
-    /// like the text beside it, so a number's row is the text line's row.
+    /// The gutter is inset like the text beside it, so a number's row is
+    /// the text line's row.
     fn paintGutter(engine: *const EditorEngine, painter: *ui.Painter) void {
         const bounds = painter.bounds;
         const metrics = painter.fontMetrics();
@@ -2418,8 +2191,6 @@ pub const CodeEditor = struct {
         }
     }
 
-    /// "Ln 3, Col 7" on the left; the indent, encoding, and language on the
-    /// right, as 0.3.1's status bar.
     const StatusBar = struct {
         editor: *const CodeEditor,
         engine: *const EditorEngine,

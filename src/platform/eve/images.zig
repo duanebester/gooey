@@ -1,44 +1,21 @@
-//! The image atlas, mirrored into `RAM_G` as one ARGB4 bitmap.
+//! The image atlas mirrored into `RAM_G` as one ARGB4 bitmap. Uploads
+//! convert into a host mirror of the atlas; `flush` writes the uploaded
+//! rectangles to the same texels of the chip's copy at
+//! `RamLayout.image_address`, and an image sprite draws straight from it,
+//! scaled by `BITMAP_TRANSFORM` (`display_list.image`).
 //!
-//! Gooey's image atlas holds decoded RGBA images at their decoded size and
-//! hands each upload over once (`uploadAtlas`). This file converts every
-//! upload into a host mirror of the atlas in the BT81x `ARGB4` format, then
-//! `flush` writes the uploaded rectangles to the same texels of the chip's
-//! copy at `RamLayout.image_address`. An image sprite then draws straight
-//! from the chip's copy: one bitmap handle whose source is the sprite's
-//! region, scaled by `BITMAP_TRANSFORM` (`display_list.image`).
-//!
-//! ## Why ARGB4
-//!
-//! The BT817 has no 32-bit bitmap format. Of its formats with alpha,
-//! `ARGB1555` keeps one alpha bit, so anti-aliased edges go jagged; the
-//! paletted formats need a palette per image and, for `PALETTED8`, several
-//! passes per draw; an L8 alpha plane under an `RGB565` image costs 3 B per
-//! texel and two draws through the alpha buffer. `ARGB4` is one draw at
-//! 2 B per texel with 16 alpha levels, which keeps logo and icon edges
-//! smooth. Its 16 levels per channel band smooth gradients, so photographs
-//! look posterized; flat-colour artwork, the embedded case, does not.
-//!
-//! ## Ownership and lifetime
+//! ARGB4 because the BT817 has no 32-bit bitmap format. Of its formats with
+//! alpha, `ARGB1555` keeps one alpha bit, so anti-aliased edges go jagged;
+//! the paletted formats need a palette per image and, for `PALETTED8`,
+//! several passes per draw; an L8 alpha plane under an `RGB565` image costs
+//! 3 B per texel and two draws through the alpha buffer. `ARGB4` is one draw
+//! at 2 B per texel with 16 alpha levels; its 16 levels per channel band
+//! smooth gradients, so photographs look posterized, but flat-colour
+//! artwork, the embedded case, does not.
 //!
 //! The atlas never rewrites texels a frame in flight draws, and the chip
 //! shows the last swapped list until the next swap, which `draw` waits for
-//! before it flushes. So rows are written in place without retirement.
-//!
-//! ## Memory (CLAUDE.md §2)
-//!
-//! The mirror is `image_size² × 2` bytes from fresh pages (288 KiB at
-//! `.embedded`), plus a queue of `pending_count_max` rectangles. Nothing
-//! allocates after initialization.
-//!
-//! ## Resource sketch (CLAUDE.md §7)
-//!
-//! - Per upload: one pass over its texels converting RGBA to ARGB4.
-//! - Per frame: the uploaded rectangles, `width × 2` bytes a row, each row
-//!   one `RAM_G` write; at most half the frame's RGBA upload bytes, so the
-//!   SPI budget (`EveLimits.spiBytesFrameMax`) covers them. Images land at
-//!   most one per frame (`core/images.zig`).
-//! - After a failed transfer every row an upload wrote is sent again, once.
+//! before it flushes, so rows are written in place without retirement.
 
 const std = @import("std");
 const chip_mod = @import("chip.zig");
@@ -52,7 +29,6 @@ const Region = cells_mod.Region;
 /// Upload rectangles one frame may queue. Each landed image is one, and
 /// images land at most one per frame; the rest is headroom.
 pub const pending_count_max: u32 = 16;
-/// Bytes per texel in the chip's copy.
 pub const texel_bytes: u32 = 2;
 
 pub const ImageMirror = struct {
@@ -90,7 +66,6 @@ pub const ImageMirror = struct {
         self.texels = &.{};
     }
 
-    /// Bytes from one row of the chip's copy to the next.
     pub fn stride(self: *const Self) u32 {
         assert(self.size > 0);
         return self.size * texel_bytes;
@@ -204,11 +179,6 @@ fn nibble(value: u8) u4 {
 const testing = std.testing;
 
 test "uploads convert to rounded ARGB4 and flush only their rectangle" {
-    // Goal: the channel order and rounding the BT81x reads, and that a flush
-    // writes the uploaded texels at the atlas address and nothing beside
-    // them. Methodology: a 2x1 upload at (1, 2) of a 4² atlas on the
-    // simulated chip; 0x80 rounds to level 8 (8 × 17 = 136, nearer 128 than
-    // level 7's 119), 0x08 to level 0, 0x09 to level 1.
     var chip: Chip = .{};
     try chip.openSimulated(null);
     defer chip.close();
@@ -224,15 +194,13 @@ test "uploads convert to rounded ARGB4 and flush only their rectangle" {
     try testing.expectEqual(@as(u16, 0x801F), std.mem.readInt(u16, row[4..6], .little));
     try testing.expectEqual(@as(u16, 0), std.mem.readInt(u16, row[6..8], .little));
     try testing.expectEqual(@as(u32, 0x1000 + 2 * 8 + 2), mirror.sourceOf(region));
-    // Nothing queued: the next flush writes nothing; after a failure, every used row.
     try testing.expectEqual(@as(u64, 0), try mirror.flush(&chip));
     mirror.forgetAll();
     try testing.expectEqual(@as(u64, 3 * 8), try mirror.flush(&chip));
 }
 
 test "the upload queue fills exactly, then the next upload fails fast" {
-    // Capacity is checked by the panic path, which a test cannot catch; this
-    // fills the queue to its last slot and checks the count, then flushes.
+    // The panic path cannot be caught; this fills the queue to its last slot.
     var chip: Chip = .{};
     try chip.openSimulated(null);
     defer chip.close();

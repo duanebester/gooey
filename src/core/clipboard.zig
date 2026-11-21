@@ -1,14 +1,5 @@
-//! The text engines' clipboard (contract decision 10): copy, cut, and paste
-//! with no public API, as in 0.3.1.
-//!
-//! One buffer, reserved at init and sized to the largest text engine kind's
-//! `bytes_max`, serves both directions. A copy or cut stores the text and
-//! marks it pending; the tick hands it to the platform after the drain, on
-//! the main thread. A paste reads the platform clipboard into the same
-//! buffer, unless a write is still pending, in which case it returns that
-//! text: copy then paste in one drain pastes what was copied. Text longer
-//! than the buffer is cut at a codepoint boundary, an operating limit the
-//! app declared through `limits.text`.
+//! One buffer reserved at init serves copy and paste; a pending write is what
+//! a paste in the same drain reads until the flush hands it to the platform.
 
 const std = @import("std");
 
@@ -121,8 +112,6 @@ const TestPlatform = struct {
 };
 
 test "a pending copy is what a paste in the same drain reads" {
-    // Goal: copy then paste before the flush pastes the copy, and the flush
-    // reaches the platform once. Methodology: a fake platform records writes.
     var platform = TestPlatform{ .text = "old" };
     var buffer: [8]u8 = undefined;
     var clipboard = Clipboard.init(&buffer);
@@ -138,8 +127,6 @@ test "a pending copy is what a paste in the same drain reads" {
 }
 
 test "text past the buffer is cut at a codepoint boundary" {
-    // Goal: an 8-byte buffer drops an "é" (2 bytes) that would end at byte
-    // 9 rather than keep half of it, for both a long paste and a long copy.
     var platform = TestPlatform{ .text = "abcdefg\u{e9}" };
     var buffer: [8]u8 = undefined;
     var clipboard = Clipboard.init(&buffer);

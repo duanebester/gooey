@@ -1,35 +1,25 @@
-//! UI Automation providers for the Windows accessibility bridge.
-//!
-//! A `Provider` is the COM object UI Automation holds for one element. It
-//! names its element by fingerprint, never by snapshot index, so a reference a
-//! client kept across frames keeps meaning the same element, and reports
+//! UI Automation providers for the Windows accessibility bridge. A `Provider`
+//! is the COM object UI Automation holds for one element; it names its element
+//! by fingerprint, never by snapshot index, so a reference a client kept
+//! across frames keeps meaning the same element, and reports
 //! `UIA_E_ELEMENTNOTAVAILABLE` once that element is gone. Every query reads
 //! the bridge's `Snapshot` under the server's lock.
 //!
-//! ## Threading
-//!
 //! Providers report `ProviderOptions_UseComThreading`, and the bridge enters a
 //! single-threaded apartment on the window's thread, so UI Automation calls
-//! arrive through that thread's message loop. If the thread was already a
+//! arrive through that thread's message loop; if the thread was already a
 //! multithreaded apartment, calls arrive on COM threads instead. The lock
-//! makes both cases correct: every provider method holds it while reading the
-//! snapshot, and the bridge holds it while rebuilding. Nothing calls into UI
-//! Automation while holding it, because an event raise may call straight back
-//! into a provider on the same thread and the lock is not reentrant.
+//! makes both cases correct. Nothing calls into UI Automation while holding
+//! it, because an event raise may call straight back into a provider on the
+//! same thread and the lock is not reentrant.
 //!
-//! ## Provider pool (CLAUDE.md §2, §7)
-//!
-//! `providerCountMax` (twice `a11y.element_count_max`) objects of 96 B, 384 KiB
-//! at `standard`, reserved at init and resident only up to the high-water
-//! mark. A provider is claimed with one reference whenever a method hands
-//! one out and returns to the free list when its last reference is released.
-//! UI Automation identifies elements by runtime id, not by object, so one
-//! element may have several live providers.
-//!
-//! Actions are not exposed: the accessibility tree has no path back to the
-//! widgets, so `Invoke`, `SetValue`, `Toggle`, `SetFocus`, and similar return
-//! `UIA_E_NOTSUPPORTED`. Screen readers fall back to keyboard and pointer
-//! input, which the widgets handle.
+//! `providerCountMax` is twice `a11y.element_count_max`: room for a client to
+//! cache every element of a full tree while it navigates to fresh ones. UI
+//! Automation identifies elements by runtime id, not by object, so one element
+//! may have several live providers. Actions are not exposed: the accessibility
+//! tree has no path back to the widgets, so `Invoke`, `SetValue`, `Toggle`,
+//! `SetFocus`, and similar return `UIA_E_NOTSUPPORTED`; screen readers fall
+//! back to keyboard and pointer input, which the widgets handle.
 
 const std = @import("std");
 const types = @import("types.zig");
@@ -52,8 +42,6 @@ const Simple = uia.IRawElementProviderSimple;
 const Fragment = uia.IRawElementProviderFragment;
 const FragmentRoot = uia.IRawElementProviderFragmentRoot;
 
-/// Two providers per element (`a11y.element_count_max`): room for a client to
-/// cache every element of a full tree while it navigates to fresh ones.
 pub fn providerCountMax(element_count_max: u16) u16 {
     assert(element_count_max > 0);
     assert(element_count_max <= limits.a11y_element_count_ceiling);
@@ -65,10 +53,6 @@ pub fn providerCountMax(element_count_max: u16) u16 {
 pub const bstr_bytes_max: u16 = 1024;
 
 const framework_id = "Gooey";
-
-// =============================================================================
-// Server
-// =============================================================================
 
 /// Everything a provider method may touch: the lock, the snapshot, and the
 /// pool. Reserved by the bridge at init; providers point here.
@@ -227,12 +211,10 @@ pub const Server = struct {
     }
 
     /// Exhaustion is the one capacity error here that does not stop the
-    /// process, against CLAUDE.md §2's fail-fast rule. Demand comes from
-    /// another process: a screen reader decides how many element references
-    /// it holds, and it must not be able to crash the application. The call
-    /// that needed a provider returns `E_OUTOFMEMORY` to that client instead.
-    /// Logged once per window, at the level the backend uses for other
-    /// requests it refuses.
+    /// process: demand comes from another process, a screen reader decides
+    /// how many element references it holds, and it must not be able to crash
+    /// the application. The call that needed a provider returns
+    /// `E_OUTOFMEMORY` to that client instead. Logged once per window.
     fn reportExhaustion(self: *Self) void {
         assert(self.locked);
         assert(self.free_head == index_none);
@@ -245,10 +227,6 @@ pub const Server = struct {
         );
     }
 };
-
-// =============================================================================
-// Provider
-// =============================================================================
 
 pub const Provider = struct {
     // One vtable pointer per interface. An interface pointer is the address
@@ -447,10 +425,6 @@ fn claimInto(server: *Server, index: u16, target: *?*Fragment) HRESULT {
     return uia.S_OK;
 }
 
-// =============================================================================
-// IUnknown
-// =============================================================================
-
 fn Unknown(comptime field: []const u8, comptime Interface: type) type {
     return struct {
         fn queryInterface(
@@ -478,10 +452,6 @@ fn NotSupported(comptime Interface: type) type {
         }
     };
 }
-
-// =============================================================================
-// IRawElementProviderSimple
-// =============================================================================
 
 fn simpleProviderOptions(this: *Simple, out: ?*i32) callconv(.winapi) HRESULT {
     const target = out orelse return uia.E_POINTER;
@@ -546,10 +516,6 @@ const simple_vtable: Simple.VTable = .{
     .GetPropertyValue = simplePropertyValue,
     .get_HostRawElementProvider = simpleHostProvider,
 };
-
-// =============================================================================
-// IRawElementProviderFragment
-// =============================================================================
 
 fn fragmentNavigate(this: *Fragment, direction: i32, out: ?*?*Fragment) callconv(.winapi) HRESULT {
     const target = out orelse return uia.E_POINTER;
@@ -677,10 +643,6 @@ const fragment_vtable: Fragment.VTable = .{
     .get_FragmentRoot = fragmentRoot,
 };
 
-// =============================================================================
-// IRawElementProviderFragmentRoot
-// =============================================================================
-
 fn rootElementFromPoint(
     this: *FragmentRoot,
     x: f64,
@@ -719,10 +681,6 @@ const fragment_root_vtable: FragmentRoot.VTable = .{
     .ElementProviderFromPoint = rootElementFromPoint,
     .GetFocus = rootFocus,
 };
-
-// =============================================================================
-// Patterns
-// =============================================================================
 
 /// A pattern property getter: reads one value from the element's entry.
 fn Getter(
@@ -883,10 +841,6 @@ const selection_item_vtable: SelectionItem.VTable = .{
     .get_SelectionContainer = selectionContainer,
 };
 
-// =============================================================================
-// Properties
-// =============================================================================
-
 /// The value of `property_id` for an element, or `VT_EMPTY` to let UI
 /// Automation apply its default. A `BSTR` result is owned by the caller.
 pub fn elementProperty(
@@ -1041,10 +995,6 @@ fn runtimeIdArray(ids: *const [3]i32) ?*uia.SAFEARRAY {
     return array;
 }
 
-// =============================================================================
-// Values and coordinates
-// =============================================================================
-
 fn toBool(value: bool) win32.BOOL {
     return if (value) win32.TRUE else win32.FALSE;
 }
@@ -1158,10 +1108,6 @@ comptime {
     assert(snapshot_mod.value_bytes_max <= bstr_bytes_max);
 }
 
-// =============================================================================
-// Tests
-// =============================================================================
-//
 // Methodology: drive the providers through their vtables exactly as UI
 // Automation would, against a real hidden window (for DPI and screen
 // coordinates) and a real `Tree`, then check every reference came back.
@@ -1358,11 +1304,10 @@ test "a removed element reports itself unavailable, and its provider is reclaime
 }
 
 test "an element outliving shutdown reports its fragment root unavailable" {
-    // Goal: `shutdown` drops the bridge's root reference while a client may
-    // still hold an element, so `get_FragmentRoot` must not resurrect the
-    // root. Methodology: hold one element across a real shutdown, ask for its
-    // root before and after, then release it and free the storage by hand,
-    // because the fixture's `destroy` would release the root a second time.
+    // `shutdown` drops the bridge's root reference while a client may still
+    // hold an element, so `get_FragmentRoot` must not resurrect the root.
+    // The fixture's `destroy` would release the root a second time, so the
+    // storage is freed by hand here.
     var fixture = try TestFixture.create();
     fixture.buildForm();
     const group = (try navigate(fixture.rootFragment(), uia.NavigateDirection_FirstChild)).?;

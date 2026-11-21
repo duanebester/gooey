@@ -1,12 +1,5 @@
-//! Element fingerprinting for cross-frame identity.
-//!
-//! Problem: Immediate mode rebuilds the tree every frame, but platform
-//! accessibility APIs expect stable object identity. VoiceOver tracks
-//! focus by object pointer; AT-SPI2 uses stable D-Bus paths.
-//!
-//! Solution: Compute a fingerprint from semantic content. Elements with
-//! matching fingerprints across frames are considered "the same element"
-//! for platform sync purposes.
+//! Fingerprint identity across frames, since platform accessibility APIs
+//! expect stable object identity.
 
 const std = @import("std");
 const limits = @import("../core/limits.zig");
@@ -14,13 +7,6 @@ const types = @import("types.zig");
 
 const assert = std.debug.assert;
 
-/// 64-bit fingerprint uniquely identifying an element's semantic identity.
-///
-/// Composed of:
-/// - Role (8 bits)
-/// - Parent fingerprint contribution (16 bits)
-/// - Position in parent (8 bits)
-/// - Name hash (32 bits)
 pub const Fingerprint = packed struct(u64) {
     role: u8,
     parent_contrib: u16,
@@ -46,12 +32,10 @@ pub const Fingerprint = packed struct(u64) {
         return @bitCast(value);
     }
 
-    /// Check if this is the invalid/sentinel fingerprint
     pub fn isValid(self: Fingerprint) bool {
         return !self.eql(INVALID);
     }
 
-    /// Format for debug output
     pub fn format(
         self: Fingerprint,
         comptime _: []const u8,
@@ -71,11 +55,9 @@ pub const Fingerprint = packed struct(u64) {
 /// is an element of the tree, and the largest tree holds the ceiling's.
 pub const position_count_max: u16 = limits.a11y_element_count_ceiling;
 
-/// Compute fingerprint for an element.
-///
-/// Design: Fingerprint is intentionally NOT based on layout bounds or
-/// visual properties. Two elements are "the same" if they have the same
-/// role, name, and structural position - even if they moved on screen.
+/// Intentionally not derived from layout bounds or visual properties: two
+/// elements are "the same" across frames if role, name, and structural
+/// position match, even when they moved on screen.
 pub fn compute(
     role: types.Role,
     name: ?[]const u8,
@@ -83,9 +65,8 @@ pub fn compute(
     position_in_parent: u16,
 ) Fingerprint {
     assert(position_in_parent < position_count_max);
-    // Hash the name (or use 0 for unnamed elements)
     const name_hash: u32 = if (name) |n| blk: {
-        assert(n.len <= 65535); // Reasonable name length limit
+        assert(n.len <= 65535); // Arbitrary cap; fits u16 name length.
         var h = std.hash.Wyhash.init(0);
         h.update(n);
         break :blk @truncate(h.final());
@@ -93,8 +74,7 @@ pub fn compute(
     return computeWithHash(role, name_hash, parent_fingerprint, position_in_parent);
 }
 
-/// Compute fingerprint with a pre-computed name hash.
-/// Use when the name hash is already available (e.g., from layout ID).
+/// Variant taking a pre-computed name hash.
 ///
 /// Siblings share their role, name, and parent, so their positions alone
 /// must keep them apart. The position's low byte is the `position` field;
@@ -110,9 +90,8 @@ pub fn computeWithHash(
 ) Fingerprint {
     assert(position_in_parent < position_count_max);
 
-    // Derive parent contribution (prevents collisions across subtrees)
+    // Prevents collisions across subtrees.
     const parent_contrib: u16 = if (parent_fingerprint) |pf| blk: {
-        // XOR high and low bits of parent fingerprint for contribution
         const pf_u64 = pf.toU64();
         break :blk @truncate(pf_u64 ^ (pf_u64 >> 16));
     } else 0;
@@ -125,7 +104,7 @@ pub fn computeWithHash(
         .name_hash = name_hash,
     };
 
-    // Post-condition: result should not be INVALID unless inputs are pathological
+    // Not INVALID unless inputs are pathological.
     assert(result.role != 0xFF or @backingInt(role) == 0xFF);
     return result;
 }
@@ -138,7 +117,6 @@ comptime {
     assert(position_count_max <= std.math.maxInt(u16));
 }
 
-// Compile-time assertions per CLAUDE.md
 comptime {
     std.debug.assert(@sizeOf(Fingerprint) == 8);
     std.debug.assert(@bitSizeOf(Fingerprint) == 64);
@@ -149,15 +127,12 @@ test "fingerprint stability" {
     const fp2 = compute(.button, "Submit", null, 0);
     try std.testing.expect(fp1.eql(fp2));
 
-    // Different name = different fingerprint
     const fp3 = compute(.button, "Cancel", null, 0);
     try std.testing.expect(!fp1.eql(fp3));
 
-    // Different position = different fingerprint
     const fp4 = compute(.button, "Submit", null, 1);
     try std.testing.expect(!fp1.eql(fp4));
 
-    // Different role = different fingerprint
     const fp5 = compute(.checkbox, "Submit", null, 0);
     try std.testing.expect(!fp1.eql(fp5));
 }
@@ -169,10 +144,10 @@ test "fingerprint with parent" {
     const child2 = compute(.button, "OK", parent_fp, 1);
     const child3 = compute(.button, "OK", null, 0);
 
-    // Same name, different position
+    // Same name, different position.
     try std.testing.expect(!child1.eql(child2));
 
-    // Same name and position, but different parent
+    // Same name and position, but different parent.
     try std.testing.expect(!child1.eql(child3));
 }
 
@@ -181,10 +156,9 @@ test "fingerprint null name" {
     const fp2 = compute(.group, null, null, 0);
     const fp3 = compute(.group, "", null, 0);
 
-    // Null names should produce consistent fingerprints
     try std.testing.expect(fp1.eql(fp2));
 
-    // Null vs empty string should differ (empty string has hash, null has 0)
+    // Null hashes as 0; the empty string hashes, so they differ.
     try std.testing.expect(!fp1.eql(fp3));
 }
 
@@ -207,14 +181,12 @@ test "fingerprint u64 roundtrip" {
 }
 
 test "fingerprint determinism across frames" {
-    // Simulate multiple frames building the same structure
     var frame_fingerprints: [10]Fingerprint = undefined;
 
     for (0..10) |frame| {
         frame_fingerprints[frame] = compute(.dialog, "Settings", null, 0);
     }
 
-    // All frames should produce identical fingerprints
     const expected = frame_fingerprints[0];
     for (frame_fingerprints[1..]) |fp| {
         try std.testing.expect(fp.eql(expected));
@@ -222,11 +194,8 @@ test "fingerprint determinism across frames" {
 }
 
 test "siblings past position 255 keep distinct fingerprints" {
-    // Goal: same-role, same-name siblings never share a fingerprint at any
-    // position a tree can hold. Methodology: compute every position under
-    // `position_count_max` for one parent and check none repeats, including
-    // the pairs 255 and 256, and 0 and 256, that share a low byte or overflow
-    // the 8-bit field.
+    // Covers the pairs 255/256 and 0/256, which share a low byte or
+    // overflow the 8-bit position field.
     const parent = compute(.list, "Items", null, 0);
     var seen = std.AutoHashMap(u64, void).init(std.testing.allocator);
     defer seen.deinit();

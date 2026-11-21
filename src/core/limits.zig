@@ -2,31 +2,6 @@
 //!
 //! All buffers and pools have fixed upper bounds to eliminate allocation
 //! during rendering. If you hit a limit, increase it here and rebuild.
-//!
-//! ## Design Philosophy (per CLAUDE.md)
-//!
-//! - Zero dynamic allocation after initialization
-//! - Pre-allocate pools for glyphs, render commands, widgets at startup
-//! - Use fixed-capacity arrays instead of growing ArrayLists during rendering
-//! - Put a limit on EVERYTHING to prevent infinite loops and tail latency spikes
-//!
-//! ## Limit Hierarchy
-//!
-//! ```
-//! ┌─────────────────────────────────────────────────────────────────────────┐
-//! │ Per-Path Geometry Limits (triangulator.zig)                             │
-//! │ - MAX_PATH_VERTICES: Maximum vertices in a single path                  │
-//! │ - MAX_PATH_INDICES: Maximum indices after triangulation                 │
-//! │ Purpose: Bound one path's triangulation scratch, prevent stack overflow │
-//! └─────────────────────────────────────────────────────────────────────────┘
-//!                                    │
-//!                                    ▼
-//! ┌─────────────────────────────────────────────────────────────────────────┐
-//! │ Per-Frame Limits (PaintLimits, packed_frame.zig)                        │
-//! │ - quad_count_frame_max, glyph_count_frame_max, ...: Records per frame   │
-//! │ Purpose: Size the packed frame once, fail fast on runaway rendering     │
-//! └─────────────────────────────────────────────────────────────────────────┘
-//! ```
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -38,10 +13,6 @@ const packed_frame = @import("packed_frame.zig");
 const FontVariant = @import("../text/types.zig").FontVariant;
 const ShapedGlyph = @import("../text/types.zig").ShapedGlyph;
 
-// =============================================================================
-// Rendering Limits (absolute framework ceilings)
-// =============================================================================
-//
 // These are the ceilings an application budget (`ResourceLimits`) may not
 // exceed. They are not the capacities a window allocates: `ResourceLimits`
 // selects those, and `PaintLimits.check` enforces `budget <= ceiling`.
@@ -137,12 +108,12 @@ pub const MAX_IMAGE_PATH_BYTES: u32 = 4_096;
 /// must hold this many frames of icons and images, and each atlas this many
 /// frames of shelves. Build and draw overlap would make it 2 (one frame
 /// building, one drawing); GPU frames in flight do not extend it, because
-/// uploads are ordered after earlier draws (contract §9). The EVE host also
+/// uploads are ordered after earlier draws. The EVE host also
 /// protects the frame on screen (`AtlasUploads.protectShownFrame`), so its
 /// `EveLimits.check` asks the caches for two frames.
 pub const atlas_open_frame_count_max: u32 = 1;
 
-/// Windows one app opens: one (contract decision 14). The platform window
+/// Windows one app opens: one. The platform window
 /// registry and the atlas upload journal's consumers are sized from it; a
 /// multi-window core would make it a `WindowLimits` field.
 pub const window_count_max: u32 = 1;
@@ -164,12 +135,8 @@ comptime {
     assert(MAX_ATLAS_UPLOAD_BYTES_PER_FRAME * 3 == MAX_ATLAS_SIZE * MAX_ATLAS_SIZE * 9);
 }
 
-// =============================================================================
-// Application Resource Budget
-// =============================================================================
-
 /// The complete resource budget an application declares at `gooey.App(...)`
-/// (`.limits = ...`), per CLAUDE.md §2. Every per-window subsystem sizes its
+/// (`.limits = ...`). Every per-window subsystem sizes its
 /// storage from this value during initialization and never grows afterwards.
 ///
 /// Each subsystem owns one nested struct so later budgets (layout, a11y, text,
@@ -179,7 +146,7 @@ comptime {
 /// capacity hides in a leaf default.
 ///
 /// The rungs, smallest first, and the example class each was sized from
-/// (docs/v0.4.0-memory-budget.md §4, measured peaks with their headroom):
+/// (measured peaks with their headroom):
 /// `nano` (counter, actions, animation), `small` (todo, layout, accessible-form),
 /// `standard` (showcase, data-table, spaceship, dashboard), `large` (lucide-demo,
 /// images, mesh stress) and `ceiling` (every framework maximum). Beside the
@@ -290,8 +257,8 @@ pub const ResourceLimits = struct {
 
     /// Every capacity at its framework ceiling. For stress tests and benchmarks,
     /// not an app profile: `gooey.App` rejects it at compile time, since an app
-    /// budget must leave the debugger overlay's headroom below every ceiling
-    /// (contract decision 16). The aggregate mesh geometry ceilings are
+    /// budget must leave the debugger overlay's headroom below every ceiling.
+    /// The aggregate mesh geometry ceilings are
     /// validation bounds, not a renderable reservation: the window's mesh points
     /// alone are about 4.5 GiB of virtual memory, and GPU renderers reserve
     /// geometry per frame in flight (Metal about 62 GiB per frame here), so a
@@ -588,10 +555,10 @@ pub const PaintLimits = struct {
     /// data-table, spaceship, dashboard) while scrolling, hovering and switching
     /// tabs: quads 102 (spaceship), shadows 3, glyphs 1,370 (showcase), SVGs 26,
     /// images 1, paths 256, polylines 5, clip depth 2.
-    /// Quads and glyphs keep 40x and 6x headroom (decision 10 of the memory
-    /// budget review); lucide-demo's 780 quads and 480 SVGs are on `large`.
+    /// Quads and glyphs keep 40x and 6x headroom; lucide-demo's 780 quads and 480
+    /// SVGs are on `large`.
     /// Geometry: dashboard needs 780 path vertices and 24 line points, so the
-    /// 4x cut (decision 3) still leaves at least 20x; the 0.3.1 mesh stress
+    /// 4x cut still leaves at least 20x; the mesh stress
     /// test (an 8,192-point line, 4,096 points of each kind) ran on `large`.
     /// About 2.8 MiB per window.
     pub const standard: PaintLimits = .{
@@ -612,7 +579,7 @@ pub const PaintLimits = struct {
     /// Heavy apps: lucide-demo (780 quads, 480 SVGs), the images example, and the
     /// mesh stress fixtures. 16x `standard` for geometry and, for full-screen
     /// text, the glyph ceiling less the 300 glyphs a safe build reserves for the
-    /// debugger overlay (contract decision 16), which an app budget must leave
+    /// debugger overlay, which an app budget must leave
     /// below every ceiling. About 33.7 MiB per window, half of it mesh points.
     pub const large: PaintLimits = .{
         .quad_count_frame_max = 32_768,
@@ -712,7 +679,7 @@ pub const PaintLimits = struct {
 ///
 /// The CPU renderer backends (`-Dlinux-backend=wayland_cpu` and `fbdev`) reserve
 /// their framebuffers and raster scratch for this size while the window
-/// initializes and never resize them (CLAUDE.md §2). A Wayland window the
+/// initializes and never resize them. A Wayland window the
 /// compositor makes larger renders at a reduced device scale, which the
 /// compositor scales up; an fbdev panel larger than the budget fails
 /// initialization. The GPU backends size their swapchains from the driver and
@@ -744,7 +711,7 @@ pub const WindowLimits = struct {
     };
 
     /// Full screen at full scale on a 4K UHD display (3,840 wide) and on a 16"
-    /// MacBook Pro (3,456 x 2,234), memory budget decision 2. Two `wl_shm` frames
+    /// MacBook Pro (3,456 x 2,234). Two `wl_shm` frames
     /// map 70.3 MiB per window; pages are touched, and so resident, only for the
     /// window's actual size.
     pub const standard: WindowLimits = .{
@@ -819,7 +786,7 @@ pub const WindowLimits = struct {
 /// the minimum here and do not change with the budget.
 ///
 /// Two frames halve the bound rings at `nano` and `small`, whose apps are not
-/// GPU-bound, at the cost of less CPU/GPU overlap (memory budget decision 4).
+/// GPU-bound, at the cost of less CPU/GPU overlap.
 /// `standard` and above keep three.
 pub const FrameLimits = struct {
     in_flight_count: u32,
@@ -865,8 +832,8 @@ pub const FrameLimits = struct {
 };
 
 /// Per-application atlas budgets: the glyph, SVG, and image atlases are square
-/// textures of a fixed side, reserved once at initialization and never grown
-/// (CLAUDE.md §2). When one is full it evicts its least recently used shelf;
+/// textures of a fixed side, reserved once at initialization and never grown.
+/// When one is full it evicts its least recently used shelf;
 /// items used in the current frame are never evicted, and a frame whose live
 /// set does not fit fails fast with the atlas name.
 ///
@@ -874,7 +841,7 @@ pub const FrameLimits = struct {
 /// the texture through one bounded staging journal of `upload_bytes_frame_max`
 /// bytes shared by the three atlases; work past it waits for the next frame.
 /// The CPU renderer keeps its atlases in CPU memory, because they are its
-/// textures. Values come from `docs/v0.4.0-memory-budget.md` §4.
+/// textures.
 pub const AtlasLimits = struct {
     /// Rasterized bytes all three atlases may stage for upload in one frame.
     /// GPU backends reserve this much staging per frame in flight.
@@ -922,7 +889,7 @@ pub const AtlasLimits = struct {
     /// reserves this many bytes. A longer path fails fast naming this field.
     image_path_bytes_max: u32,
 
-    /// Cache peaks measured over every example (0.6 plan, "Method"): lucide-demo
+    /// Cache peaks measured over every example: lucide-demo
     /// keeps 1,668 SVG icons at `large` and the images example 18 images. The
     /// entry counts sit at or above each profile's per-frame icon and image
     /// budgets, which they must hold. Four rasterizations a frame keep a
@@ -1179,15 +1146,10 @@ pub const AtlasLimits = struct {
     }
 };
 
-// =============================================================================
-// Core budgets (0.4.0 contract, "ResourceLimits")
-// =============================================================================
-//
-// Per-window capacities of the 0.4.0 core. Every pool is reserved from these
-// at initialization (contract rule 4); exhausting one panics with the pool's
-// name, capacity, requested count, and frame. The `standard` row matches the
-// contract's performance sketch; the other rungs scale it to their example
-// class. `ceiling` holds the framework maxima `check` enforces.
+// Per-window capacities. Every pool is reserved from these
+// at initialization; exhausting one panics with the pool's
+// name, capacity, requested count, and frame. `ceiling` holds the framework
+// maxima `check` enforces.
 
 /// Most elements an app's render may build per frame. The window adds its root,
 /// so a layout engine holds at most 65,536 elements, an index range that stays
@@ -1211,7 +1173,7 @@ comptime {
 
 /// The most codepoints one shaped run may hold, on every backend. CoreText
 /// shapes at most 2048 UTF-16 units and 1024 glyphs per CTRun, DirectWrite
-/// 2048 UTF-16 units, and the 0.4.0 core's per-tick text scratch holds the
+/// 2048 UTF-16 units, and the core's per-tick text scratch holds the
 /// shaped glyphs of one such run with room for the shaper's growth
 /// (`textScratchBytes`). A codepoint is at most two UTF-16 units and, in the
 /// scripts Gooey shapes, at most one glyph. A longer run fails shaping with
@@ -1242,7 +1204,7 @@ pub fn textScratchBytes(events: *const EventLimits) u32 {
 /// Most handlers one element can register (click, click-outside, key).
 pub const handler_count_element_max: u32 = 3;
 
-/// Approved decision 1: component recursion is bounded, default 64, ceiling 128.
+/// Component recursion is bounded, default 64, ceiling 128.
 pub const MAX_COMPONENT_DEPTH: u32 = 128;
 
 /// Build-phase capacities: the element tree one frame may describe.
@@ -1252,13 +1214,13 @@ pub const layer_count_ceiling: u32 = std.math.maxInt(u8);
 pub const BuildLimits = struct {
     /// Elements (`box`, `text`, `paint`) per frame.
     element_count_frame_max: u32,
-    /// Nested `cx.render` calls (approved decision 1).
+    /// Nested `cx.render` calls.
     component_depth_max: u32,
     /// Keyed elements per frame, for duplicate-key detection.
     key_count_frame_max: u32,
-    /// Bytes of text and accessibility strings copied per frame (rule 6).
+    /// Bytes of text and accessibility strings copied per frame.
     text_bytes_frame_max: u32,
-    /// Boxes with a `layer` per frame; each opens one fragment (contract §6)
+    /// Boxes with a `layer` per frame; each opens one fragment
     /// and is one layout floating root.
     layer_count_frame_max: u32,
     /// Deepest box nesting, the window root included, so an app nests
@@ -1344,7 +1306,7 @@ pub const RecordLimits = struct {
     };
 };
 
-/// Retained-store slabs, one per size class (contract §3).
+/// Retained-store slabs, one per size class.
 pub const RetainedLimits = struct {
     slot_count_64: u32,
     slot_count_256: u32,
@@ -1398,19 +1360,19 @@ pub const RetainedLimits = struct {
 /// (one message, plus the resize the next tick pushes).
 pub const input_burst_count_max: u32 = 256;
 
-/// Event queue and completion ring (contract §5).
+/// Event queue and completion ring.
 pub const EventLimits = struct {
     queue_count_max: u32,
     completion_count_max: u32,
     /// Bytes of event text (IME and typed text, dialog paths) in flight.
     text_bytes_max: u32,
-    /// Paths one file dialog may select (decision 11); more fails fast.
+    /// Paths one file dialog may select; more fails fast.
     dialog_path_count_max: u32,
     /// Bytes of one dialog's paths, joined (`events.Paths`), and of a save
     /// request's folder and suggested name together. At most
     /// `text_bytes_max`, since the queue copies the paths.
     dialog_path_bytes_max: u32,
-    /// File dialogs awaiting their completion at once (async requests, §2).
+    /// File dialogs awaiting their completion at once.
     /// Each completes into the completion ring beside the image worker's one
     /// outstanding decode and the jobs' deliveries, so the ring holds
     /// `dialog_count_max + 1 + job_result_count_max + job_count_max`.
@@ -1489,7 +1451,7 @@ pub const EventLimits = struct {
     };
 };
 
-/// One text-engine pool (contract §3, approved decision 6). A count of 0
+/// One text-engine pool. A count of 0
 /// reserves nothing; bytes and undo depth are then unused but still bounded.
 pub const TextKindLimits = struct {
     count_max: u32,
@@ -1503,7 +1465,7 @@ pub const TextKindLimits = struct {
 /// sets it (the code-editor example sets 1). An area or editor reserves
 /// `bytes_max` twice (text and history), so the small profiles keep only a few.
 ///
-/// Cache peaks measured over every example (0.6 plan, "Method"): glyphs 117 at
+/// Cache peaks measured over every example: glyphs 117 at
 /// `nano`, 283 at `small` (accessible-form), 222 at `standard`; shaped runs 18
 /// / 32 / 256 (data-table and code-editor fill 256); measured widths 19 / 403
 /// / 620.
@@ -1719,10 +1681,10 @@ pub const EntityLimits = struct {
 
 /// Screen-reader capacities: the accessibility nodes each frame records, the
 /// tree the platform bridges diff, and the announcements a frame carries.
-/// Peaks measured over every example (0.6 plan, "Method"): 24 nodes
+/// Peaks measured over every example: 24 nodes
 /// (accessible-form, `small`), 7 at `nano`, and one announcement per frame.
 /// The announcement slots (`polite_pending_max + 1` of `message_bytes_max`)
-/// keep 0.6's per-frame byte budgets: 512 B to 16 KiB.
+/// keep per-frame byte budgets: 512 B to 16 KiB.
 pub const A11yLimits = struct {
     /// Accessibility nodes per frame (boxes with `a11y`), which sizes both
     /// frames' node pools, the accessibility tree, and each platform bridge's
@@ -1730,8 +1692,8 @@ pub const A11yLimits = struct {
     /// `build.element_count_frame_max`; tree indexes are `u16`.
     element_count_max: u32,
     /// Polite announcements (`Effects.announce`) pending for the next build.
-    /// Pending announcements behave as two live regions (contract §4,
-    /// "Announcements"): one assertive slot, which a newer assertive
+    /// Pending announcements behave as two live regions:
+    /// one assertive slot, which a newer assertive
     /// announcement replaces, and a FIFO of this many polite ones, in which
     /// a newer one past this count replaces the oldest. Replacement is the
     /// defined policy, as a screen reader's own queue behaves, so input that
@@ -1928,14 +1890,10 @@ pub const Violation = struct {
     }
 };
 
-// =============================================================================
-// Text Limits
-// =============================================================================
-
 /// Maximum glyphs in a single shaped run
 pub const MAX_GLYPHS_PER_RUN: u32 = 1024;
 
-/// The font faces a text system loads during initialization (CLAUDE.md §2): one
+/// The font faces a text system loads during initialization: one
 /// face per entry in `variants`, so `variants.len` is the face count. Nothing is
 /// loaded on first use. Text that requests a variant outside the set panics
 /// with the variant's name, the loaded set, and this type's name.
@@ -1955,8 +1913,8 @@ pub const MAX_GLYPHS_PER_RUN: u32 = 1024;
 pub const FontLimits = struct {
     /// Distinct variants; must include `.regular`, which supplies line metrics.
     variants: []const FontVariant,
-    /// Variants of the optional second family (`font_mono`, contract decision
-    /// 8). Empty in every profile, so an app that loads no second family
+    /// Variants of the optional second family (`font_mono`).
+    /// Empty in every profile, so an app that loads no second family
     /// reserves no faces; when set, it follows the rules of `variants`.
     mono_variants: []const FontVariant = &.{},
 
@@ -2048,10 +2006,6 @@ pub const FontLimits = struct {
     }
 };
 
-// =============================================================================
-// Per-Path Geometry Limits
-// =============================================================================
-
 /// Maximum vertices per individual path. Bounds one path's triangulation
 /// scratch so it stays on the stack. Source: triangulator.zig
 pub const MAX_PATH_VERTICES: u32 = 512;
@@ -2061,10 +2015,6 @@ pub const MAX_PATH_TRIANGLES: u32 = MAX_PATH_VERTICES - 2;
 
 /// Maximum indices per path = triangles × 3
 pub const MAX_PATH_INDICES: u32 = MAX_PATH_TRIANGLES * 3;
-
-// =============================================================================
-// Stroke Limits
-// =============================================================================
 
 /// Maximum input points for stroke expansion
 pub const MAX_STROKE_INPUT: u32 = 512;
@@ -2083,9 +2033,6 @@ pub const MAX_STROKE_TRIANGLES: u32 = MAX_STROKE_OUTPUT;
 /// Maximum indices for stroke triangulation (3 per triangle)
 pub const MAX_STROKE_INDICES: u32 = MAX_STROKE_TRIANGLES * 3;
 
-// =============================================================================
-// Per-Draw Sanity Bounds
-// =============================================================================
 //
 // A draw's point count is bounded only by its kind's frame budget
 // (`PaintLimits.polyline_point_count_frame_max`, `point_count_frame_max`).
@@ -2096,44 +2043,27 @@ pub const MAX_LINE_WIDTH: f32 = 1000.0;
 /// Largest point radius, in logical pixels; a sanity bound.
 pub const MAX_POINT_RADIUS: f32 = 1000.0;
 
-// =============================================================================
-// Compile-time Validation
-// =============================================================================
-
 comptime {
-    // Sanity checks - fail compilation if limits are unreasonable
     std.debug.assert(MAX_GLYPHS_PER_FRAME >= MAX_GLYPHS_PER_RUN);
     std.debug.assert(MAX_CLIP_STACK_DEPTH <= 64); // Reasonable nesting
 
-    // Ensure per-frame instance limit is reasonable
     std.debug.assert(MAX_PATHS_PER_FRAME >= 1024);
 
-    // Indices are derived from vertices correctly
     std.debug.assert(MAX_PATH_TRIANGLES == MAX_PATH_VERTICES - 2);
     std.debug.assert(MAX_PATH_INDICES == MAX_PATH_TRIANGLES * 3);
 
-    // Stroke limits are self-consistent
     std.debug.assert(MAX_STROKE_OUTPUT >= MAX_STROKE_INPUT);
     std.debug.assert(MAX_STROKE_TRIANGLES == MAX_STROKE_OUTPUT);
     std.debug.assert(MAX_STROKE_INDICES == MAX_STROKE_TRIANGLES * 3);
     std.debug.assert(ROUND_SEGMENTS >= 4); // Minimum for visual smoothness
 }
 
-// =============================================================================
-// Tests
-// =============================================================================
-
 test "limit relationships" {
-    // Indices are derived from vertices correctly
     try std.testing.expectEqual(MAX_PATH_TRIANGLES, MAX_PATH_VERTICES - 2);
     try std.testing.expectEqual(MAX_PATH_INDICES, MAX_PATH_TRIANGLES * 3);
 }
 
 test "named profiles are valid and ordered" {
-    // Goal: every shipped rung passes the same rules `validate` applies, every
-    // budget has a profile of each name, and no rung offers less than the rung
-    // below it for any capacity. Walking the rungs in pairs checks every field
-    // of every budget against its neighbour, ending at the ceiling.
     inline for (ResourceLimits.profile_names) |name| {
         try std.testing.expect(@field(ResourceLimits, name).check() == null);
         try std.testing.expect(@field(FontLimits, name).check() == null);
@@ -2153,7 +2083,7 @@ test "named profiles are valid and ordered" {
         const lower_faces = @field(FontLimits, lower_name).variants.len;
         try std.testing.expect(lower_faces <= @field(FontLimits, upper_name).variants.len);
     }
-    // Two frames in flight below `standard`, three from it up (decision 4).
+    // Two frames in flight below `standard`, three from it up.
     try std.testing.expectEqual(@as(u32, 2), ResourceLimits.small.frame.in_flight_count);
     try std.testing.expectEqual(@as(u32, 3), ResourceLimits.standard.frame.in_flight_count);
     try std.testing.expectEqual(@as(usize, 1), FontLimits.nano.variants.len);
@@ -2161,10 +2091,6 @@ test "named profiles are valid and ordered" {
 }
 
 test "the embedded profile fits board panels and stages its largest image in one frame" {
-    // Goal: pin what `embedded` promises boards. A 1024x600 panel fits the
-    // window at scale 1 and a 1920x1080 one does not; one image as wide as
-    // the image atlas stages within one frame's upload budget, and one pixel
-    // more of side would not; and it keeps two faces, regular first.
     const embedded = ResourceLimits.embedded;
     try std.testing.expect(embedded.check() == null);
     try std.testing.expect(embedded.window.framebuffer_width_max >= 1024);
@@ -2176,15 +2102,12 @@ test "the embedded profile fits board panels and stages its largest image in one
     try std.testing.expect(side * side * 4 <= embedded.atlas.image_decode_bytes_max);
     try std.testing.expectEqual(@as(usize, 2), embedded.text.fonts.variants.len);
     try std.testing.expectEqual(FontVariant.regular, embedded.text.fonts.variants[0]);
-    // Not a rung: a smaller window than `nano`, a larger image atlas.
     try std.testing.expect(embedded.window.framebuffer_width_max <
         ResourceLimits.nano.window.framebuffer_width_max);
     try std.testing.expect(embedded.atlas.image_size > ResourceLimits.nano.atlas.image_size);
 }
 
 test "check holds every queue to the largest input burst" {
-    // Boundary test: a queue of exactly `input_burst_count_max` is valid; one
-    // slot less names the queue with the burst as its bound.
     var limits = ResourceLimits.nano;
     limits.events.queue_count_max = input_burst_count_max;
     try std.testing.expectEqual(@as(?Violation, null), limits.check());
@@ -2198,8 +2121,6 @@ test "check holds every queue to the largest input burst" {
 }
 
 test "check reports each negative case precisely" {
-    // Goal: cover the rules `validate` turns into compile errors. Each case
-    // starts from a valid profile and breaks exactly one rule at its boundary.
     var limits = ResourceLimits.standard;
     limits.paint.svg_count_frame_max = 0;
     const zero = limits.check().?;
@@ -2212,7 +2133,6 @@ test "check reports each negative case precisely" {
     try std.testing.expectEqual(Violation.Rule.above_ceiling, above.rule);
     try std.testing.expectEqual(MAX_QUADS_PER_FRAME, above.bound);
 
-    // Exactly at the ceiling is valid.
     limits.paint.quad_count_frame_max = MAX_QUADS_PER_FRAME;
     try std.testing.expect(limits.check() == null);
 
@@ -2226,7 +2146,6 @@ test "check reports each negative case precisely" {
     limits = ResourceLimits.standard;
     limits.paint.clip_depth_max = MAX_CLIP_STACK_DEPTH + 1;
     try std.testing.expectEqualStrings("clip_depth_max", limits.check().?.field);
-
     inline for (.{
         "path_vertex_count_frame_max",
         "polyline_point_count_frame_max",
@@ -2243,7 +2162,6 @@ test "check reports each negative case precisely" {
         try std.testing.expectEqualStrings(field, limits.check().?.field);
     }
 
-    // The frame budget reports under its own name at both ends of its range.
     limits = ResourceLimits.standard;
     limits.frame.in_flight_count = MIN_FRAMES_IN_FLIGHT - 1;
     try std.testing.expectEqual(Violation.Budget.frame, limits.check().?.budget);
@@ -2256,7 +2174,6 @@ test "check reports each negative case precisely" {
     try std.testing.expectEqual(Violation.Rule.above_ceiling, limits.check().?.rule);
     try std.testing.expectEqualStrings("in_flight_count", limits.check().?.field);
 
-    // The window budget reports under its own name, at both ends of each range.
     inline for (.{ "framebuffer_width_max", "framebuffer_height_max" }) |field| {
         limits = ResourceLimits.standard;
         @field(limits.window, field) = 0;
@@ -2270,9 +2187,8 @@ test "check reports each negative case precisely" {
         try std.testing.expectEqualStrings(field, limits.check().?.field);
     }
 
-    // The atlas upload budget must stage the largest glyph or icon in one frame
-    // and stay under its ceiling; both ends are checked one past the boundary.
-    // At `standard` the largest item is a 256² RGBA icon plus its border.
+    // The atlas upload budget must stage the largest glyph or icon in one frame;
+    // at `standard` the largest item is a 256² RGBA icon plus its border.
     limits = ResourceLimits.standard;
     const item_bytes_max = limits.atlas.itemUploadBytesMax();
     try std.testing.expectEqual(@as(u32, 258 * 258 * 4), item_bytes_max);
@@ -2287,8 +2203,7 @@ test "check reports each negative case precisely" {
     try std.testing.expectEqual(Violation.Rule.above_ceiling, limits.check().?.rule);
 
     // A budget may mix rungs: `.large` with the ceiling quad count and `.standard`
-    // mesh geometry, the shape the removed disktree example declared for a tile
-    // map above `.large`. The quad count is exact at the ceiling and one past fails.
+    // mesh geometry. The quad count is exact at the ceiling and one past fails.
     limits = ResourceLimits.large;
     limits.paint.quad_count_frame_max = PaintLimits.ceiling.quad_count_frame_max;
     inline for (.{
@@ -2305,10 +2220,6 @@ test "check reports each negative case precisely" {
 }
 
 test "check bounds each a11y field by its ceiling and its relationships" {
-    // Goal: every `ResourceLimits.a11y` field fails at 0 and one past its
-    // ceiling and passes at the ceiling; nodes never outnumber elements, and
-    // a value fits the frame's text bytes. Method: start from `ceiling` (every field
-    // at its ceiling) and move one field at a time.
     inline for (.{
         "element_count_max",
         "announcement_polite_pending_max",
@@ -2349,11 +2260,6 @@ test "check bounds each a11y field by its ceiling and its relationships" {
 }
 
 test "check bounds each text cache field by its ceiling and its relationships" {
-    // Goal: every text cache field fails at 0 and one past its ceiling and
-    // passes at the ceiling; measure slots must exceed the probe window and be
-    // a power of two; the preedit never outgrows the event queue's text bytes.
-    // Method: start from `ceiling` and move one field at a time, then sit each
-    // relationship exactly on its bound and step one past it.
     inline for (.{
         "glyph_cache_count_max",
         "shaped_run_count_max",
@@ -2407,11 +2313,6 @@ test "check bounds each text cache field by its ceiling and its relationships" {
 }
 
 test "check bounds each atlas cache field by its ceiling and its relationships" {
-    // Goal: each new atlas cache field fails at 0 and one past its ceiling and
-    // passes at the ceiling; the caches hold an open frame's icons and images
-    // and every image request; a frame rasterizes no more icons than the
-    // cache holds. Method: move one field at a time from a valid budget, onto
-    // each relationship's bound (valid) and one past it.
     inline for (.{
         "svg_entry_count_max",
         "svg_rasterization_count_frame_max",
@@ -2476,9 +2377,6 @@ test "check bounds each atlas cache field by its ceiling and its relationships" 
 }
 
 test "check bounds dialog_count_max by its ceiling and the completion ring" {
-    // Goal: `events.dialog_count_max` fails at 0 and one past its ceiling,
-    // passes at the ceiling, and leaves one completion slot for the image
-    // worker's decode. Method: move it onto each bound (valid), then one past.
     var limits = ResourceLimits.ceiling;
     limits.events.dialog_count_max = 0;
     try std.testing.expectEqual(Violation.Rule.zero, limits.check().?.rule);
@@ -2504,10 +2402,6 @@ test "check bounds dialog_count_max by its ceiling and the completion ring" {
 }
 
 test "check bounds the job fields by their ceilings and the completion ring" {
-    // Goal: each job field fails at 0 and one past its ceiling, and a job
-    // delivery past the ring's room names the ring. Method: move each field
-    // onto its bound, then one past; then grow `nano`'s held results until
-    // the ring holds exactly every outstanding completion, then one more.
     inline for (.{
         "job_count_max",
         "job_input_bytes_max",
@@ -2536,8 +2430,6 @@ test "check bounds the job fields by their ceilings and the completion ring" {
 }
 
 test "check bounds box depth and layers by their ceilings and the element count" {
-    // Goal: `build.box_depth_max` and `build.layer_count_frame_max` each sit
-    // exactly on every bound (valid), then one past it (the named violation).
     // The ceilings come from `Node.depth` (`u8`, at most 128 levels) and the
     // `u8` fragment index (255 layers); the relationships hold because every
     // level of nesting and every layer is an element. A 100-element budget
@@ -2576,8 +2468,7 @@ test "check bounds box depth and layers by their ceilings and the element count"
     try std.testing.expectEqual(Violation.Rule.above_relationship, layers.rule);
     try std.testing.expectEqual(@as(u32, 100), layers.bound);
 
-    // The element ceiling rose to 65,535 once layout stopped reserving a
-    // fixed 16,384: exact is valid, one more is not.
+    // Exact is valid, one more is not.
     limits = ResourceLimits.ceiling;
     try std.testing.expect(limits.check() == null);
     try std.testing.expectEqual(element_count_frame_ceiling, limits.build.element_count_frame_max);
@@ -2587,8 +2478,6 @@ test "check bounds box depth and layers by their ceilings and the element count"
 }
 
 test "derived budget quantities" {
-    // Goal: pin the relationships other subsystems size from, and keep the
-    // per-window sizes documented on each rung honest.
     // Shadows are packed as quads, so the quad pool holds both budgets.
     const paint = PaintLimits.standard;
     try std.testing.expectEqual(@as(u32, 4_608), packed_frame.quadCapacity(&paint));
@@ -2619,11 +2508,6 @@ test "derived budget quantities" {
 }
 
 test "text.fonts reports each broken face set under its own field" {
-    // Goal: the font rules, now part of `ResourceLimits.check`. Methodology:
-    // start from `nano` and break one rule of one set at a time. An empty mono
-    // set is valid (every profile has one); a set at the 14-face ceiling is
-    // valid, and every broken set names `fonts.variants` or
-    // `fonts.mono_variants` with the rule that failed.
     var limits = ResourceLimits.nano;
     limits.text.fonts = .{ .variants = &.{.regular}, .mono_variants = &.{ .regular, .bold } };
     try std.testing.expect(limits.check() == null);

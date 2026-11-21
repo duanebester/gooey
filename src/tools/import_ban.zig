@@ -1,27 +1,12 @@
-//! `zig build import-ban`: fails when code reaches a 0.3.1 path that phase 6
-//! or the 0.4 close-out deleted (plan §26, phase 6 exit).
-//!
-//! The old middle is gone, so an import of one of its paths only compiles if
-//! someone recreates the file. This check catches both halves of that: a
-//! `.zig` file that exists at a banned path, and an `@import` whose path
-//! resolves to one. It runs from the repository root over `src`,
-//! `components`, and `charts`, and the `test` step depends on it, so CI fails
-//! on the first reintroduced path with its file and line.
-//!
-//! It also seals the public boundary: library code under `components` and
-//! `charts` may use only what an app can, so any `internals` reference there
-//! (`gooey.internals`, or an alias of `gooey` followed by `.internals`) fails
-//! with its file and line. Comments are not code and are not checked.
-//!
-//! Bounds: at most `file_count_max` source files, each smaller than
-//! `file_bytes_max` bytes; a tree past either fails fast and names the limit.
+//! Fails when a deleted path is recreated or imported, and when library code
+//! under `components/` or `charts/` reaches `gooey.internals`.
 
 const std = @import("std");
 const Dir = std.Io.Dir;
 
 const assert = std.debug.assert;
 
-/// The deleted 0.3.1 middle. An entry ending in `/` bans the directory.
+/// An entry ending in `/` bans the directory.
 pub const banned_paths = [_][]const u8{
     "src/app.zig",
     "src/cx.zig",
@@ -56,7 +41,7 @@ pub const banned_paths = [_][]const u8{
 
 const roots = [_][]const u8{ "src", "components", "charts" };
 
-/// The library trees that build on the public API alone.
+/// Trees that may use only the public API (no `gooey.internals`).
 pub const sealed_roots = [_][]const u8{ "components/", "charts/" };
 
 const file_count_max: u32 = 4_096;
@@ -116,7 +101,6 @@ fn fileTooBig(path: []const u8) noreturn {
     });
 }
 
-/// Reports each banned reference in one file and returns how many it found.
 fn checkFile(path: []const u8, bytes: []const u8) u32 {
     assert(path.len > 0);
     assert(bytes.len <= file_bytes_max);
@@ -197,7 +181,6 @@ pub fn resolveImport(
     return buffer[0..length];
 }
 
-/// Whether `path` is library code that may use only the public API.
 pub fn sealedPath(path: []const u8) bool {
     assert(path.len > 0);
     for (sealed_roots) |root| {
@@ -207,13 +190,11 @@ pub fn sealedPath(path: []const u8) bool {
     return false;
 }
 
-/// Whether the code on `line`, before any `//` comment, names `.internals`.
 pub fn reachesInternals(line: []const u8) bool {
     const code_end = std.mem.indexOf(u8, line, "//") orelse line.len;
     return std.mem.indexOf(u8, line[0..code_end], ".internals") != null;
 }
 
-/// The banned entry `path` falls under, or null.
 pub fn bannedPath(path: []const u8) ?[]const u8 {
     assert(path.len > 0);
     for (banned_paths) |banned| {
@@ -228,8 +209,6 @@ pub fn bannedPath(path: []const u8) ?[]const u8 {
 }
 
 test "bannedPath matches deleted files and directories, not their neighbours" {
-    // Goal: each banned shape matches, and a name that only shares a prefix
-    // with a banned directory or file does not. Method: one case per side.
     try std.testing.expectEqualStrings("src/ui/", bannedPath("src/ui/mod.zig").?);
     try std.testing.expectEqualStrings("src/cx.zig", bannedPath("src/cx.zig").?);
     try std.testing.expectEqualStrings(
@@ -240,7 +219,6 @@ test "bannedPath matches deleted files and directories, not their neighbours" {
     try std.testing.expect(bannedPath("src/core/cx.zig") == null);
     try std.testing.expect(bannedPath("src/cx.zig.bak") == null);
     try std.testing.expect(bannedPath("src/core/root.zig") == null);
-    // Phase 6: the scene directory and the old unified GPU structs.
     try std.testing.expectEqualStrings("src/scene/", bannedPath("src/scene/scene.zig").?);
     try std.testing.expectEqualStrings(
         "src/platform/unified.zig",
@@ -250,9 +228,6 @@ test "bannedPath matches deleted files and directories, not their neighbours" {
 }
 
 test "resolveImport follows relative paths from the importer" {
-    // Goal: imports resolve to the repository path the compiler would open,
-    // so `../context/x.zig` from `src/core/` is caught. Method: resolve
-    // relative, sibling, and module imports and compare.
     var buffer: [path_bytes_max]u8 = undefined;
     const up = resolveImport(&buffer, "src/core/window.zig", "../context/a11y.zig").?;
     try std.testing.expectEqualStrings("src/context/a11y.zig", up);
@@ -263,8 +238,6 @@ test "resolveImport follows relative paths from the importer" {
 }
 
 test "checkFile counts banned imports only" {
-    // Goal: a file with one banned and one allowed import counts one
-    // violation. Method: check a two-line source in memory.
     // Split so this file's own scan does not report the fixture.
     const source = "const theme = @import(\"theme.zig\");\n" ++
         "const cx = @" ++ "import(\"../cx.zig\");\n";
@@ -273,10 +246,7 @@ test "checkFile counts banned imports only" {
 }
 
 test "library code may not reach gooey.internals" {
-    // Goal: components and charts fail on an internals reference in code,
-    // through `gooey` or an alias, while comments and src may name it.
-    // Method: check one-line sources under each root. The fixtures are split
-    // so this file's own scan, which is under src, stays clean either way.
+    // Fixtures are split so this file's own scan stays clean.
     const reference = "const S = gooey" ++ ".internals.window.ScrollState;";
     const aliased = "const limits = g" ++ ".internals.limits;";
     const comment = "// Never use gooey" ++ ".internals here.";

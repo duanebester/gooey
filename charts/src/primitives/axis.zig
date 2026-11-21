@@ -1,9 +1,3 @@
-//! Axis Primitive for Gooey Charts
-//!
-//! Renders axis lines, tick marks, and labels for chart scales.
-//! Supports all four orientations (top, bottom, left, right) and
-//! works with both LinearScale and BandScale.
-
 const std = @import("std");
 const constants = @import("../constants.zig");
 const util = @import("../util.zig");
@@ -22,12 +16,7 @@ pub const Painter = paint.Painter;
 const MAX_TICKS = constants.MAX_TICKS;
 const MAX_LABEL_LENGTH = constants.MAX_LABEL_LENGTH;
 
-// =============================================================================
-// Axis
-// =============================================================================
-
 pub const Axis = struct {
-    /// Axis orientation relative to the chart area.
     pub const Orientation = enum {
         top,
         bottom,
@@ -35,7 +24,6 @@ pub const Axis = struct {
         right,
     };
 
-    /// Configuration options for axis rendering.
     pub const Options = struct {
         orientation: Orientation = .bottom,
         label: ?[]const u8 = null,
@@ -51,8 +39,7 @@ pub const Axis = struct {
         font_size: f32 = 12.0,
     };
 
-    /// `opts` facing `orientation`, in the theme's axis and tick colours
-    /// when a chart theme is set.
+    /// `opts` faces `orientation`, themed when a chart theme is set.
     pub fn themed(
         opts: Options,
         orientation: Orientation,
@@ -67,7 +54,6 @@ pub const Axis = struct {
         return result;
     }
 
-    /// Draw an axis for a linear scale.
     pub fn drawLinear(
         painter: *Painter,
         s: LinearScale,
@@ -75,16 +61,13 @@ pub const Axis = struct {
         y: f32,
         opts: Options,
     ) void {
-        // Assertions at API boundary
         std.debug.assert(!std.math.isNan(x) and !std.math.isNan(y));
         std.debug.assert(opts.tick_count > 0 and opts.tick_count <= MAX_TICKS);
 
-        // Draw axis line
         if (opts.show_line) {
             drawAxisLine(painter, s.range_min, s.range_max, x, y, opts);
         }
 
-        // Generate and draw ticks
         if (opts.show_ticks or opts.show_labels) {
             var tick_values: [MAX_TICKS]f32 = undefined;
             const tick_count = s.ticks(opts.tick_count, &tick_values);
@@ -95,13 +78,11 @@ pub const Axis = struct {
             }
         }
 
-        // Draw axis title if provided
         if (opts.label) |label| {
             drawAxisTitle(painter, label, s.range_min, s.range_max, x, y, opts);
         }
     }
 
-    /// Draw an axis for a band scale.
     pub fn drawBand(
         painter: *Painter,
         s: BandScale,
@@ -109,16 +90,13 @@ pub const Axis = struct {
         y: f32,
         opts: Options,
     ) void {
-        // Assertions at API boundary
         std.debug.assert(!std.math.isNan(x) and !std.math.isNan(y));
         std.debug.assert(s.label_count > 0);
 
-        // Draw axis line
         if (opts.show_line) {
             drawAxisLine(painter, s.range_min, s.range_max, x, y, opts);
         }
 
-        // Draw tick for each category
         if (opts.show_ticks or opts.show_labels) {
             var i: u32 = 0;
             while (i < s.label_count) : (i += 1) {
@@ -128,13 +106,11 @@ pub const Axis = struct {
             }
         }
 
-        // Draw axis title if provided
         if (opts.label) |label| {
             drawAxisTitle(painter, label, s.range_min, s.range_max, x, y, opts);
         }
     }
 
-    /// Draw axis for a Scale union type.
     pub fn draw(painter: *Painter, s: Scale, x: f32, y: f32, opts: Options) void {
         switch (s) {
             .linear => |ls| drawLinear(painter, ls, x, y, opts),
@@ -143,11 +119,6 @@ pub const Axis = struct {
     }
 };
 
-// =============================================================================
-// Helper Functions (kept under 70 lines each per CLAUDE.md)
-// =============================================================================
-
-/// Draw the main axis line.
 fn drawAxisLine(
     painter: *Painter,
     range_start: f32,
@@ -171,7 +142,6 @@ fn drawAxisLine(
     }
 }
 
-/// Draw a tick mark and numeric label for linear scales.
 fn drawTickWithLabel(
     painter: *Painter,
     pos: f32,
@@ -182,12 +152,10 @@ fn drawTickWithLabel(
 ) void {
     std.debug.assert(!std.math.isNan(pos) and !std.math.isNan(value));
 
-    // Draw tick mark
     if (opts.show_ticks) {
         drawTickMark(painter, pos, x, y, opts);
     }
 
-    // Draw label
     if (opts.show_labels) {
         var buf: [MAX_LABEL_LENGTH]u8 = undefined;
         const label_text = util.formatNumber(value, &buf);
@@ -195,7 +163,6 @@ fn drawTickWithLabel(
     }
 }
 
-/// Draw a tick mark and text label for band scales.
 fn drawTickWithBandLabel(
     painter: *Painter,
     pos: f32,
@@ -206,18 +173,15 @@ fn drawTickWithBandLabel(
 ) void {
     std.debug.assert(!std.math.isNan(pos));
 
-    // Draw tick mark
     if (opts.show_ticks) {
         drawTickMark(painter, pos, x, y, opts);
     }
 
-    // Draw label
     if (opts.show_labels) {
         drawLabelText(painter, label, pos, x, y, opts);
     }
 }
 
-/// Draw a single tick mark.
 fn drawTickMark(
     painter: *Painter,
     pos: f32,
@@ -243,7 +207,6 @@ fn drawTickMark(
     }
 }
 
-/// Draw label text at the appropriate position.
 fn drawLabelText(
     painter: *Painter,
     text: []const u8,
@@ -252,12 +215,11 @@ fn drawLabelText(
     y: f32,
     opts: Axis.Options,
 ) void {
-    // Approximate text width (rough estimate)
+    // Rough estimate.
     const char_width: f32 = opts.font_size * 0.6;
     const text_width = char_width * @as(f32, @floatFromInt(text.len));
     const text_height = opts.font_size;
 
-    // Calculate label position based on orientation
     const label_offset = opts.tick_size + opts.tick_padding;
 
     var label_x: f32 = 0;
@@ -285,7 +247,6 @@ fn drawLabelText(
     _ = paint.text(painter, text, label_x, label_y, opts.label_color, opts.font_size);
 }
 
-/// Draw axis title.
 fn drawAxisTitle(
     painter: *Painter,
     title: []const u8,
@@ -327,10 +288,6 @@ fn drawAxisTitle(
 
     _ = paint.text(painter, title, title_x, title_y, opts.label_color, opts.font_size);
 }
-
-// =============================================================================
-// Tests
-// =============================================================================
 
 test "Axis.Options defaults" {
     const opts = Axis.Options{};

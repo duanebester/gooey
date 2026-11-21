@@ -1,39 +1,6 @@
-//! Gooey: the public surface (contract "Shape").
-//!
-//! Every public name lives here, one spelling each: the app entry point
-//! (`App`), the render context (`Cx`), element constructors (`ui`), handlers
-//! (`Handler`, `Effects`), identity (`ElementId`, `Key`), retained state
-//! (`Lifetime`, `Handle`), and the resource budget (`ResourceLimits`). The
-//! `input`, `text`, and `accessibility` namespaces hold the types handlers,
-//! text styles, and accessibility fields name, and nothing else.
-//! `src/api_check.zig` pins every public name here.
-//!
-//! `internals` is the framework's own machinery (records, the window, the
-//! platform layer and its `Query`, the text and accessibility systems, the
-//! packed frame). Tests, the goldens, and benchmarks reach into it; it is not
-//! part of the API and may change in any release. Components and charts may
-//! not (`zig build import-ban`).
-//!
-//! ## Quick start
-//!
-//! ```zig
-//! const gooey = @import("gooey");
-//!
-//! const State = struct { count: i32 = 0 };
-//!
-//! pub const App = gooey.App(State, render, .{
-//!     .title = "Counter",
-//!     .width = 400,
-//!     .height = 300,
-//!     .limits = .nano, // Resource and font budget; see `ResourceLimits`.
-//! });
-//!
-//! pub const main = App.main;
-//!
-//! fn render(cx: *gooey.Cx) void {
-//!     cx.render(gooey.ui.text("Hello", .{}));
-//! }
-//! ```
+//! Gooey's public surface: every public name, one spelling each, pinned by
+//! `src/api_check.zig`. `internals` is the framework's machinery, not API:
+//! anything there may change in any release (components and charts may not).
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -42,18 +9,10 @@ const core = @import("core/root.zig");
 const text_mod = @import("text/mod.zig");
 const accessibility_mod = @import("accessibility/mod.zig");
 
-// =============================================================================
-// Public surface
-// =============================================================================
-
 pub const App = core.App;
 pub const Config = core.Config;
-/// What `Config.on_init` receives from the process: `io` and `environ`.
 pub const Init = core.Init;
-/// A background job's handle to the framework, passed to its `run`:
-/// `post` a result, check `cancelled`, reach `io` (`Effects.spawn`).
 pub const Job = core.Job;
-/// A spawned job, for `Effects.cancelJob` and to tell deliveries apart.
 pub const JobId = core.JobId;
 pub const Cx = core.Cx;
 pub const ui = core.ui;
@@ -76,37 +35,23 @@ pub const InputEngine = core.InputEngine;
 pub const AreaEngine = core.AreaEngine;
 pub const EditorEngine = core.EditorEngine;
 
-/// The application's resource budget, declared once at `App` (`.limits = ...`)
-/// and validated at comptime. There is no default; pick one of five rungs,
-/// smallest first: `nano` (counter-class), `small` (single-screen forms),
-/// `standard` (multi-panel apps), `large` (dense content, many icons or
-/// images), `ceiling` (framework maxima, for stress tests). To raise one budget
-/// or field without moving the whole app up a rung, pass a modified copy, for
-/// example `ResourceLimits.standard` with `atlas.image_size = 2_048`, or
-/// `ResourceLimits.small` with `text.fonts = FontLimits.standard`.
+/// The application's resource budget, declared once at `App` and validated at
+/// comptime. There is no default; profiles, smallest first: `nano`, `small`,
+/// `standard`, `large`, `ceiling`.
 pub const ResourceLimits = core.ResourceLimits;
 
-/// The font faces every text system loads at init: `ResourceLimits.text.fonts`.
-/// Each `ResourceLimits` profile carries the `FontLimits` profile of the same
-/// name. Profiles: `nano` (regular only), `small` (regular, medium,
-/// semibold, bold), `standard` and `large` (those plus italic and bold italic),
-/// `ceiling` (all 14).
+/// The font faces loaded at init (`ResourceLimits.text.fonts`); each profile
+/// carries the `FontLimits` profile of the same name.
 pub const FontLimits = core.FontLimits;
 pub const FontSource = core.FontSource;
 
-/// A colour value (`Color.rgb(...)`); the same type as `ui.Color`.
+/// A colour value; the same type as `ui.Color`.
 pub const Color = core.ui.Color;
 
-/// Animation helpers: easing, interpolation, and timing as module functions
-/// (contract decision 14).
 pub const animation = core.animation;
 
-/// Input events: keycodes, mouse buttons, modifiers, and keystrokes.
 pub const input = @import("input/mod.zig");
 
-/// The font types text styles name (`ui.Text`, `ui.PaintText`), the metrics
-/// `cx.fontMetrics` and `painter.fontMetrics` return, and the longest line a
-/// text engine holds (`run_codepoint_count_max`) with the count that checks it.
 pub const text = struct {
     pub const Metrics = text_mod.Metrics;
     pub const FontWeight = text_mod.FontWeight;
@@ -116,8 +61,6 @@ pub const text = struct {
     pub const run_codepoint_count_max = text_mod.run_codepoint_count_max;
 };
 
-/// Accessibility roles, states, live-region politeness, heading levels, and
-/// orientations for `ui.A11y`.
 pub const accessibility = struct {
     pub const Role = accessibility_mod.Role;
     pub const State = accessibility_mod.State;
@@ -126,44 +69,24 @@ pub const accessibility = struct {
     pub const Orientation = accessibility_mod.Orientation;
 };
 
-/// Platform-aware logger. Works on native and WASM without
-/// `std_options`. Pair with the `gooey.std_options` one-liner if you
-/// want `std.log` to route through here too.
-///
-/// ```zig
-/// const log = gooey.log.scoped(.myapp);
-/// log.info("connected to {s}", .{host});
-/// ```
 pub const log = @import("log.zig");
 
-/// Pre-configured `std.Options` that routes `std.log` through the
-/// browser console on WASM and falls back to the default `logFn` on
-/// native. Zig looks it up by name on the root source file, so this
-/// declaration must keep its exact name and stay at the top level.
-///
-/// ```zig
-/// pub const std_options = gooey.std_options;
-/// ```
+/// `std.Options` routing `std.log` through the browser console on WASM. Zig
+/// looks it up by name on the root source file, so this declaration must keep
+/// its exact name and stay at the top level.
 pub const std_options: std.Options = if (builtin.os.tag == .freestanding)
     .{ .logFn = wasmLogFn }
 else
     .{};
 
-/// Testing utilities and mock implementations. Compiled for tests and for the
-/// synthetic-text build the goldens tools use, so production builds carry none.
+/// Testing utilities, compiled only for tests and the synthetic-text build.
 pub const testing = if (builtin.is_test or text_mod.is_synthetic)
     @import("testing/mod.zig")
 else
     struct {};
 
-// =============================================================================
-// Internals
-// =============================================================================
-
-/// The framework's own machinery, for tests, goldens, and library
-/// components. Not API: anything here may change in any release.
+/// The framework's own machinery. Not API: anything here may change in any release.
 pub const internals = struct {
-    // The core's modules.
     pub const id = core.id;
     pub const records = core.records;
     pub const handler = core.handler;
@@ -187,11 +110,9 @@ pub const internals = struct {
     pub const backend = @import("core/backend.zig");
     pub const fixed_array = @import("core/fixed_array.zig");
     pub const interface_verify = @import("core/interface_verify.zig");
-    /// The platform host's read-only view of the rendered frame (IME rects,
-    /// accessibility, hit tests); only hosts and tests get one.
+    /// The platform host's read-only view of the rendered frame; only hosts and tests get one.
     pub const Query = core.router.Query;
 
-    // The layers beneath the core.
     pub const geometry = @import("geometry/mod.zig");
     pub const layout = @import("layout/layout.zig");
     pub const platform = @import("platform/mod.zig");
@@ -201,13 +122,7 @@ pub const internals = struct {
     pub const accessibility = accessibility_mod;
 };
 
-// =============================================================================
-// Internal helpers
-// =============================================================================
-
-/// WASM-compatible log function used by `std_options`. Not part of the
-/// public API \u2014 callers should reach for `gooey.log` (zero-config) or
-/// the `gooey.std_options` one-liner instead.
+/// WASM-compatible log function used by `std_options`. Not public API.
 fn wasmLogFn(
     comptime level: std.log.Level,
     comptime scope: @EnumLiteral(),
@@ -231,24 +146,15 @@ fn wasmLogFn(
     }
 }
 
-// =============================================================================
-// Tests
-// =============================================================================
-
 test {
     std.testing.refAllDecls(@This());
     std.testing.refAllDecls(core);
     std.testing.refAllDecls(internals);
-    // `refAllDecls` reaches only the public names and the namespace
-    // exports. Those reach mod.zig files (which have their own
-    // `refAllDecls`), but type-level analysis of every leaf struct is
-    // lazy, so `test {}` blocks inside a leaf struct's body are not
-    // discovered on their own. Most leaf structs' tests are discovered
-    // via their own file's top-level `test {}` blocks; a handful of files
-    // keep their tests *inside* struct bodies and need an explicit
-    // comptime touch here to stay in the discovery set. If any of these
-    // move into a mod.zig with its own `refAllDecls`, drop the
-    // corresponding line here.
+    // `refAllDecls` reaches only public names and namespace exports; leaf
+    // structs' type-level analysis is lazy, so `test {}` blocks inside leaf
+    // struct bodies are not discovered on their own. These comptime touches
+    // keep them in the discovery set; drop a line here if its file moves into
+    // a mod.zig with its own `refAllDecls`.
     comptime {
         // Borrow the namespace aliases without shadowing them.
         const lay = internals.layout;
@@ -257,72 +163,51 @@ test {
         const inp = input;
         const img = internals.image;
 
-        // Layout.
         _ = lay.LayoutEngine;
         _ = lay.LayoutConfig;
 
-        // Platform / runtime / text.
         _ = plat.Platform;
         _ = plat.PlatformWindow;
         _ = txt.TextSystem;
         _ = txt.FontFace;
 
-        // Input / image / core leaves.
         _ = inp.InputEvent;
         _ = inp.KeyEvent;
         _ = img.ImageAtlas;
     }
-    // Leaf files with file-level `test {}` blocks that no namespace
-    // export makes reachable, so we anchor the leaves here to keep
-    // them in the test binary. `inline for` lets us list paths in
-    // bulk; `std.testing.refAllDecls(@This())` only touches a file's
-    // top-level decls, but the file's own `test {}` blocks become
-    // part of the test binary once the file is reachable, which the
-    // `@import` call below guarantees.
+    // Leaf files whose file-level `test {}` blocks no namespace export makes
+    // reachable: anchoring the import keeps them in the test binary.
     inline for (.{
-        // Vulkan frame-buffer budget math. Pure Zig (no Vulkan calls), so its
-        // tests run on every OS, not only where the renderer builds.
+        // Vulkan frame-buffer budget math; pure Zig (no Vulkan calls), so it tests on every OS.
         @import("platform/linux/vk_types.zig"),
-        // Path edge classification for the Vulkan and Metal mesh shaders'
-        // analytic anti-aliasing. Pure Zig, tested on every OS.
+        // Mesh-shader analytic anti-aliasing edge classification; pure Zig.
         @import("platform/mesh_edges.zig"),
         // The clip-to-scissor rule of the Vulkan and WebGPU renderers.
         @import("platform/scissor.zig"),
 
-        // Platform-independent CPU rasterizer used by the Wayland shm and
-        // fbdev backends. Tested on every host, not only CPU-backend builds.
+        // CPU rasterizer for the Wayland shm and fbdev backends; pure, tested on every host.
         @import("platform/cpu/raster.zig"),
         @import("platform/cpu/mesh.zig"),
         @import("platform/cpu/renderer.zig"),
 
-        // Layout leaves.
         @import("layout/layout.zig"),
         @import("layout/engine.zig"),
         @import("layout/arena.zig"),
 
-        // SVG leaves.
         @import("svg/path.zig"),
         @import("svg/atlas.zig"),
         @import("svg/rasterizer.zig"),
 
-        // Image leaves.
         @import("image/atlas.zig"),
         @import("image/loader.zig"),
 
-        // Accessibility leaves.
         @import("accessibility/integration_test.zig"),
         @import("accessibility/tree.zig"),
 
-        // Geometry leaves.
         @import("geometry/triangulator.zig"),
 
-        // Tier-1 public-API pin list. Lives in the
-        // test-only discovery set (not on the public `gooey.*`
-        // surface) so it can't accidentally become a name it is
-        // itself meant to guard. The single `test "tier 1 public
-        // API surface compiles"` block inside this file runs
-        // every Tier-1 reference at comptime and fails the build
-        // with a precise line on accidental rename/deletion.
+        // Tier-1 public-API pin list, kept out of the public `gooey.*` surface
+        // so it cannot accidentally become a name it is meant to guard.
         @import("api_check.zig"),
     }) |leaf| {
         std.testing.refAllDecls(leaf);

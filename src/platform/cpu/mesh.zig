@@ -1,45 +1,17 @@
 //! Mesh rasterization for the CPU renderer: path triangles, polyline strips,
-//! and point clouds.
-//!
-//! These draw the packed frame's three mesh pipelines (`triangles`,
-//! `strip_expanded`, and `point_instanced`), each in one solid colour:
-//!
-//! - Triangles and strip segments are convex polygons. The Vulkan renderer
-//!   draws them with 4x MSAA, so coverage here is the share of the four
-//!   standard Vulkan sample locations inside the shape, and color is
-//!   evaluated once per pixel at its center, as a fragment shader is. A
-//!   sample exactly on an edge follows Vulkan's top-left rule: it is inside
-//!   on a top or left edge and outside on a bottom or right edge, so draws
-//!   that share an edge cover each sample on it exactly once.
-//! - All polygons of one draw (one path or one polyline) accumulate into one
-//!   per-row sample mask before the row is shaded. Two triangles sharing an
-//!   edge therefore add up to full coverage instead of blending twice, which
-//!   is what MSAA's per-sample resolve gives on the GPU.
-//! - Points are quads whose fragment shader fades alpha across the circle's
-//!   edge (`pointFalloff`, the same falloff as `mesh.frag` and Metal's point
-//!   shaders), so they need no sample coverage: the shader alone decides
-//!   every pixel.
+//! and point clouds, matching the GPU pipelines they mirror. Triangles and
+//! strip segments are convex polygons rasterized with coverage over Vulkan's
+//! four standard sample locations, color evaluated once per pixel center,
+//! samples on an edge under the top-left rule. All polygons of one draw
+//! accumulate into one per-row sample mask before shading, so shared edges
+//! add to full coverage instead of blending twice — what MSAA's per-sample
+//! resolve gives on the GPU. Points fade alpha across the circle edge
+//! (`pointFalloff`, the falloff `mesh.frag` and Metal's point shaders share),
+//! so they need no sample coverage.
 //!
 //! Every coordinate here is in device pixels; `renderer.zig` converts from
 //! logical pixels. Nothing allocates: polygons, bucket chains, and the row
 //! mask live in a `Scratch` the renderer reserves at initialization.
-//!
-//! ## Resource sketch (CLAUDE.md §7)
-//!
-//! - Memory: `Scratch` holds `polygon_count_max` polygons (40 B each) plus two
-//!   `u32` indices per polygon, one `u32` bucket head per framebuffer row, and
-//!   one mask byte per framebuffer column. At `.standard` limits that is
-//!   8,191 polygons (the longest polyline) and a 3840x2160 framebuffer: about
-//!   400 KiB per window.
-//! - CPU per draw: one pass over the polygons to bucket them by first row,
-//!   then per covered row one interval evaluation per active polygon per
-//!   sample row (four), one mask write per covered sample, and one shade per
-//!   covered pixel. Work is O(polygons + rows + covered samples); a polygon is
-//!   visited only on the rows it spans (an active edge table).
-//! - Points: one shade per pixel inside each point's square.
-//! - The paint budget's mesh point limits (`PaintLimits.path_vertex_count_frame_max`
-//!   and friends, enforced when the frame is built) bound the polygons and
-//!   points per frame, and the framebuffer bounds the pixels per polygon.
 
 const std = @import("std");
 const raster = @import("raster.zig");
@@ -58,10 +30,9 @@ const sample_count: u8 = 4;
 /// `round(covered * 255 / 4)`, indexed by the number of covered samples.
 const coverage_bytes = [sample_count + 1]u8{ 0, 64, 128, 191, 255 };
 
-/// Sentinel ending a bucket chain.
 const chain_end: u32 = std.math.maxInt(u32);
 
-/// A convex polygon in device pixels: a triangle or a strip segment's quad.
+// A convex polygon in device pixels: a triangle or a strip segment's quad.
 pub const Polygon = struct {
     x: [4]f32,
     y: [4]f32,
@@ -245,7 +216,6 @@ fn bucketPolygons(scratch: *const Scratch, polygon_count: u32, rows: Span) void 
     }
 }
 
-/// Append row `y`'s bucket to the active list. Returns the new active count.
 fn activateRow(scratch: *const Scratch, y: u32, active_count: u32, polygon_count: u32) u32 {
     assert(active_count <= polygon_count);
     assert(y < scratch.heads.len);
@@ -261,8 +231,8 @@ fn activateRow(scratch: *const Scratch, y: u32, active_count: u32, polygon_count
     return count;
 }
 
-/// Set the covered-sample bits of row `y` for every active polygon, retiring
-/// polygons that end above the row. Returns the columns that gained bits.
+// Set the covered-sample bits of row `y` for every active polygon, retiring
+// polygons that end above the row. Returns the columns that gained bits.
 fn coverRow(scratch: *const Scratch, y: u32, active_count: *u32, columns: Span) Span {
     assert(active_count.* <= scratch.active.len);
     assert(!columns.isEmpty());
@@ -389,10 +359,6 @@ fn pointFalloffEnd(radius: f32) f32 {
     return end;
 }
 
-// =============================================================================
-// Tests
-// =============================================================================
-
 const testing = std.testing;
 
 const TestScratch = struct {
@@ -424,10 +390,6 @@ fn testTarget(pixels: []u32, width: u32, height: u32) Target {
 }
 
 test "two triangles sharing a diagonal fill their square with no seam" {
-    // Goal: the per-draw sample mask must make the shared diagonal of a
-    // square split into two triangles fully covered. Blending each triangle
-    // separately would leave diagonal pixels near 75% red; a crack in the
-    // edge test would leave some below 100%.
     var storage = TestScratch{};
     const scratch = storage.view();
     scratch.polygons[0] = Polygon.triangle(.{ 1, 7, 7 }, .{ 1, 1, 7 });
@@ -446,9 +408,8 @@ test "two triangles sharing a diagonal fill their square with no seam" {
 }
 
 test "a half-pixel edge covers the samples on its side only" {
-    // Goal: pin the sample pattern. A rectangle whose left edge is x = 1.5
-    // covers pixel 1's samples at x offsets 0.875 and 0.625 (two of four):
-    // red byte 128. Pixel 0 gets none and pixel 2 all four.
+    // Pixel 1's samples sit at x offsets 0.875 and 0.625 inside the rect's
+    // left edge at 1.5, so two of four samples: red byte 128.
     var storage = TestScratch{};
     const scratch = storage.view();
     scratch.polygons[0] = Polygon.quad(.{ 1.5, 4, 4, 1.5 }, .{ 0, 0, 1, 1 });
@@ -463,9 +424,6 @@ test "a half-pixel edge covers the samples on its side only" {
 }
 
 test "clip discards pixels by center, and polygons outside the clip are skipped" {
-    // Goal: a mesh fragment is discarded when its center leaves the clip, so
-    // a clip ending at x = 2.5 keeps pixel 2 and drops pixel 3, whatever the
-    // coverage. A second polygon entirely below the clip must not draw.
     var storage = TestScratch{};
     const scratch = storage.view();
     scratch.polygons[0] = Polygon.quad(.{ 0, 5, 5, 0 }, .{ 0, 0, 2, 2 });
@@ -480,14 +438,10 @@ test "clip discards pixels by center, and polygons outside the clip are skipped"
 }
 
 test "samples exactly on an edge follow the top-left rule" {
-    // Goal: Vulkan covers a sample on a top or left edge and not on a bottom
-    // or right edge. Pixel 0's samples sit at y 0.125, 0.375, 0.625, 0.875
-    // and x 0.375, 0.875, 0.125, 0.625. A rectangle from y = 0.375 to 0.875
-    // has its top edge on sample 1 and its bottom edge on sample 3, so it
-    // covers samples 1 and 2: red byte 128. One spanning x = 0.375 to 0.875
-    // over the full row has its left edge on sample 0 and its right edge on
-    // sample 1, so it covers samples 0 and 3: again 128, where a closed test
-    // would give 191 for both.
+    // Pixel 0's samples sit at y 0.125..0.875 and x 0.375, 0.875, 0.125,
+    // 0.625. A rectangle from y = 0.375 to 0.875 has its top edge on sample
+    // 1 and bottom edge on sample 3, so it covers samples 1 and 2: byte 128,
+    // where a closed edge test would give 191.
     var storage = TestScratch{};
     const scratch = storage.view();
     var pixels: [2 * 1]u32 = undefined;
@@ -502,9 +456,6 @@ test "samples exactly on an edge follow the top-left rule" {
 }
 
 test "rows reuse the mask without leaking coverage downward" {
-    // Goal: the row mask is shared by every row of a draw. A triangle that
-    // narrows downward must not leave its wider upper coverage behind in the
-    // rows beneath, and a second draw must start from a clean mask.
     var storage = TestScratch{};
     const scratch = storage.view();
     scratch.polygons[0] = Polygon.triangle(.{ 0, 8, 4 }, .{ 0, 0, 4 });
@@ -521,10 +472,9 @@ test "rows reuse the mask without leaking coverage downward" {
 }
 
 test "degenerate polygons draw nothing" {
-    // Goal: the GPU emits no fragments for a zero-area polygon, even where
-    // samples lie exactly on it. A zero-length strip segment collapses to a
-    // vertical line at x = 1.375, pixel 1's first sample column, and a flat
-    // triangle lies on the sample row y = 0.125.
+    // The inputs put samples exactly on the degenerate shapes: the collapsed
+    // strip is the vertical line at x = 1.375 (pixel 1's first sample
+    // column) and the flat triangle lies on the sample row y = 0.125.
     var storage = TestScratch{};
     const scratch = storage.view();
     scratch.polygons[0] = Polygon.quad(.{ 1.375, 1.375, 1.375, 1.375 }, .{ 0, 0, 2, 2 });
@@ -536,28 +486,22 @@ test "degenerate polygons draw nothing" {
 }
 
 test "large point alpha keeps the historical falloff" {
-    // Goal: from a 6.7 px radius up a point is unchanged: full alpha inside
-    // 85% of the radius and none outside the circle. Radius 8 at (10, 10.5):
-    // the center pixel is opaque and the square's corner pixel (3, 3), at
-    // |uv| = 1.19, is untouched.
     var pixels: [24 * 24]u32 = undefined;
     const target = testTarget(&pixels, 24, 24);
     const white = Premul{ .r = 255, .g = 255, .b = 255, .a = 255 };
     drawPoint(target, .{ 10, 10.5 }, 8, open_clip, white);
     try testing.expectEqual(@as(u32, 0xFFFF_FFFF), target.row(10)[10]);
     try testing.expectEqual(test_background, target.row(3)[3]);
-    // Pixel (17, 10) has |uv| = 7.5 / 8 = 0.9375. smoothstep(0.85, 1, 0.9375)
+    // Pixel (17, 10) has |uv| = 7.5 / 8 = 0.9375: smoothstep(0.85, 1, 0.9375)
     // = 0.6238, so coverage 0.3762 rounds to byte 96.
     try testing.expectEqual(@as(u32, 0xFF60_6060), target.row(10)[17]);
 }
 
 test "sub-pixel point keeps its area with a one-pixel falloff" {
-    // Goal: a radius-0.7 point centered on a pixel corner draws its four
-    // pixels at about its true area (pi * 0.49 / 4 = 0.385 each). The old
-    // falloff left it invisible: every pixel center, at 0.707 px, lies past
-    // the radius. The band ends at 0.7 + 0.5 * (1 - 0.105) = 1.1475 px, so
-    // t = 0.7071 - 0.1475 = 0.5596, smoothstep = 0.5890 and alpha 0.4110,
-    // byte 105. The next pixel out, at 1.58 px, is untouched.
+    // A radius-0.7 point centered on a pixel corner draws its four pixels at
+    // about its true area (pi * 0.49 / 4 = 0.385 each). The band ends at
+    // 0.7 + 0.5 * (1 - 0.105) = 1.1475 px, so a pixel center at 0.7071 px
+    // gives smoothstep 0.5890, alpha 0.4110, byte 105.
     var pixels: [8 * 8]u32 = undefined;
     const target = testTarget(&pixels, 8, 8);
     const white = Premul{ .r = 255, .g = 255, .b = 255, .a = 255 };

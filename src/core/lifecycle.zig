@@ -1,4 +1,4 @@
-//! The lifecycle allocation guard (contract rule 2, CLAUDE.md §2).
+//! The lifecycle allocation guard.
 //!
 //! Every allocation the core makes goes through `LifecycleGuard.allocator()`.
 //! While the lifecycle is `initializing` or `deinitializing`, calls pass
@@ -116,9 +116,6 @@ pub const LifecycleGuard = struct {
 };
 
 test "the guard passes allocations through only outside running" {
-    // Goal: initializing and deinitializing allocate normally and running is
-    // closed. Method: allocate in each phase that permits it; the running
-    // phase's panic is exercised by the core's tick tests, which would abort.
     var guard = LifecycleGuard.init(std.testing.allocator);
     const gpa = guard.allocator();
     const bytes = try gpa.alloc(u8, 32);

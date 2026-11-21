@@ -1,20 +1,12 @@
 //! The flip-model swapchain the DirectX 11 renderer presents a window through.
 //!
 //! `DXGI_SWAP_EFFECT_FLIP_DISCARD` hands each back buffer to DWM without a
-//! copy, which is what lets a windowed app present at the display's rate with
-//! the latency of an exclusive one. The swapchain holds one back buffer per
-//! frame in flight (`ResourceLimits.frame.in_flight_count`), and its frame
-//! latency waitable limits the frames queued ahead of the display to one fewer
-//! than that, so the render thread blocks before building a frame the display
-//! cannot take yet instead of inside `Present`.
-//!
-//! Memory (CLAUDE.md §2 and §7): the back buffers are driver memory, sized to
-//! the client area, which `Window` keeps within `ResourceLimits.window`
-//! (`WM_GETMINMAXINFO`). At `.standard` the worst case is 3 × 3840 × 2400 × 4 B
-//! = 105 MiB of video memory at full size; the extent follows the window.
-//! `resize` replaces them through `ResizeBuffers`, as the Vulkan renderer
-//! replaces its swapchain, and Gooey holds no storage for them besides one
-//! render target view.
+//! copy. The swapchain holds one back buffer per frame in flight
+//! (`ResourceLimits.frame.in_flight_count`), and its frame latency waitable
+//! limits the frames queued ahead of the display to one fewer than that, so
+//! the render thread blocks before building a frame the display cannot take
+//! yet instead of inside `Present`. `resize` replaces the back buffers
+//! through `ResizeBuffers`, as the Vulkan renderer replaces its swapchain.
 
 const std = @import("std");
 const d3d11 = @import("d3d11.zig");
@@ -37,8 +29,8 @@ const frame_wait_ms_max: u32 = 1_000;
 
 /// The swapchain's format: 8-bit BGRA, which every flip-model swapchain and
 /// every WARP and hardware device accept. UNORM, not sRGB: packed colours are
-/// sRGB-encoded and blended in gamma space (contract §9), like the Vulkan
-/// renderer's `B8G8R8A8_UNORM`, so the hardware must not encode them again.
+/// sRGB-encoded and blended in gamma space, like the Vulkan renderer's
+/// `B8G8R8A8_UNORM`, so the hardware must not encode them again.
 pub const format: u32 = d3d11.DXGI_FORMAT_B8G8R8A8_UNORM;
 
 /// The latency waitable must be requested at creation and again on every
@@ -127,8 +119,6 @@ pub const Swapchain = struct {
         self.* = undefined;
     }
 
-    /// Whether the swapchain holds a render target; a failed `resize` leaves
-    /// none until a later one succeeds.
     pub fn usable(self: *const Swapchain) bool {
         assert(self.width_px > 0);
         return self.target_view != null;
@@ -189,7 +179,6 @@ pub const Swapchain = struct {
         });
     }
 
-    /// Queue the frame for the next vertical blank.
     pub fn present(self: *const Swapchain) PresentResult {
         assert(self.target_view != null);
         const result = self.swapchain.vtable.Present(self.swapchain, 1, 0);

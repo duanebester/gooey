@@ -1,22 +1,10 @@
-//! The Metal shader library for the packed frame (contract §9): one source,
-//! compiled once at init, with one vertex and one fragment function per
-//! `packed_frame.Pipeline`.
+//! One Metal source, compiled once at init, with one vertex and one fragment
+//! function per `packed_frame.Pipeline`.
 //!
 //! The structs mirror `packed_frame.zig` field for field, so `Renderer.draw`
 //! copies each instance array into its buffer unchanged. Colours arrive as
 //! straight RGBA. Every fragment function discards pixels whose centre lies
 //! outside its draw's clip rectangle (fragment `buffer(0)`), edges inclusive.
-//!
-//! The coverage, SDF, edge, and falloff math is the 0.3.1 Metal shaders'
-//! unchanged, so frames match `main` within rounding; only colour conversion
-//! (HSLA is gone) and the clip source moved. Shadows now take their draw's
-//! clip like every other instance.
-//!
-//! Bindings, shared by every pipeline so `draw` binds each buffer once per frame:
-//! vertex buffers 0 quads, 1 sprites, 2 mesh points, 3 triangle edge modes,
-//! 4 the current mesh (32 B inline), 5 the viewport in logical pixels;
-//! fragment buffer 0 the clip rectangle; fragment textures 0 glyph, 1 SVG,
-//! 2 image atlas.
 
 const std = @import("std");
 const packed_frame = @import("../../../core/packed_frame.zig");

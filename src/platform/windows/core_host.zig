@@ -1,44 +1,25 @@
-//! Runs a 0.4.0 core app in a Win32 window (phase 4).
+//! Runs a core app in a Win32 window.
 //!
-//! Two threads, one owner each (contract rule 1), as on macOS and Linux:
+//! Two threads, one owner each, as on macOS and Linux:
 //! - The main thread created the window, so it receives the window's
-//!   messages, and runs the host's message loop (`runLoop`). The window
-//!   pushes input into the core's queue and schedules a tick. The loop runs
+//!   messages, and runs the host's message loop (`runLoop`). The loop runs
 //!   at most one tick (drain, build, layout, emit) per turn, between message
 //!   batches, so no tick nests inside a window procedure and a handler's file
 //!   dialog opens on the main thread between handlers. A move or resize holds
 //!   the thread in `DefWindowProcW`'s modal loop; the window's modal timer
 //!   runs the same turn from there (`modalTurn`).
-//! - The render thread presents the frame in flight (pack, then draw on
-//!   Vulkan), paced by the display: after each present it waits for the first
-//!   vertical blank at least half a refresh away, read from DWM's composition
-//!   timing, so it presents at most once per refresh at the display's own
-//!   rate (60, 120, or 144 Hz). It then schedules a main tick, which makes
-//!   the frame `rendered` and builds the next one if a render is pending.
+//! - The render thread presents the frame in flight, paced by the display:
+//!   after each present it waits for the first vertical blank at least half a
+//!   refresh away, read from DWM's composition timing, so it presents at most
+//!   once per refresh at the display's own rate. It then schedules a main
+//!   tick, which makes the frame `rendered` and builds the next one if a
+//!   render is pending.
 //!
-//! They meet only at `frame_in_flight` (see `core/tick.zig`), at
-//! `presentable`, which the main thread sets from the window's minimized
-//! state and client area before each tick, and at two auto-reset events that
-//! wake each thread. The renderer belongs to the render thread once the
-//! window is bound: the main thread never resizes or draws.
-//!
-//! IME: the main loop compares the rendered frame's IME record each turn
-//! (`syncIme`), attaching the window's input context only while a text field
-//! is focused and placing the candidate list at the caret the core's `Query`
-//! answers.
-//!
-//! Services: file dialogs open on the main thread after the drain, and run
-//! their own modal loop there. UI Automation is served from the window's
-//! `uia_host`; the core publishes each rendered frame's nodes to it on the
-//! main thread, where clients' calls also arrive.
-//!
-//! Resource sketch: one thread whose stack the OS maps at init, three events,
-//! one waitable timer (the main loop borrows the platform's), and one frame
-//! in flight. Per turn the main thread runs at most one tick and dispatches
-//! at most `message_batch_max` messages; per refresh the render thread does
-//! at most one pack, one draw, and one DWM timing query. Every allocation
-//! happens before `finishInit`; the core's lifecycle guard panics on any
-//! later one, including the Vulkan renderer's, which shares the guard.
+//! They meet only at `frame_in_flight`, at `presentable`, which the main
+//! thread sets from the window's minimized state and client area before each
+//! tick, and at two auto-reset events that wake each thread. The renderer
+//! belongs to the render thread once the window is bound: the main thread
+//! never resizes or draws.
 
 const std = @import("std");
 const win32 = @import("win32.zig");
@@ -64,7 +45,7 @@ const WindowsPlatform = platform_mod.WindowsPlatform;
 const PlatformWindow = window_mod.Window;
 const Outcome = core_events.Completion.Outcome;
 
-/// The pacing period when DWM reports no usable timing: 0.3.1's 60 Hz cap.
+/// The pacing period when DWM reports no usable timing: a 60 Hz cap.
 const refresh_period_ns_fallback: u64 = platform_mod.frame_period_ns_min;
 /// A reported refresh outside 24 to 500 Hz is treated as no timing at all.
 const refresh_period_ns_min: u64 = std.time.ns_per_s / 500;
@@ -137,7 +118,6 @@ pub fn run(comptime App: type, app: *App, backing: std.mem.Allocator, io: std.Io
     host.runLoop();
 }
 
-/// A logical size and scale, as the core's resize event carries them.
 const Viewport = struct {
     width: f32,
     height: f32,
@@ -164,7 +144,6 @@ pub const Host = struct {
     /// Ends the render thread's wait when the next present is due.
     render_timer: win32.HANDLE,
     thread: ?std.Thread,
-    /// A main tick is scheduled and has not started.
     tick_scheduled: std.atomic.Value(bool),
     stopping: std.atomic.Value(bool),
     /// The window can show a frame: open, not minimized, with a client area.
@@ -179,7 +158,6 @@ pub const Host = struct {
     ime_owner: ?core_window.ElementId,
     /// The cursor last set on the window.
     cursor: core_element.CursorShape,
-    /// The viewport last pushed to the core; zero before the first push.
     viewport_sent: Viewport,
     /// A UI Automation client asked for the root since the last tick.
     screen_reader_requested: bool,
@@ -188,12 +166,10 @@ pub const Host = struct {
     dialog_wide: []u16,
 
     // Render thread only.
-    /// When the next present may start, on `nowNs`.
     present_due_ns: u64,
     /// The framebuffer the swapchain was last built for: the frame's
     /// viewport, fitted to `ResourceLimits.window`.
     viewport: backend.Viewport,
-    /// Set while the swapchain cannot be rebuilt, so that is logged once.
     swapchain_failure_logged: bool,
 
     pub const Options = struct {
@@ -389,10 +365,6 @@ pub const Host = struct {
         return @intCast(ns);
     }
 
-    // =========================================================================
-    // Main thread
-    // =========================================================================
-
     /// The message loop. Each turn runs at most one tick, syncs the IME,
     /// waits, and dispatches one bounded batch of messages, so every turn is
     /// bounded; the loop ends when the window closes or the app quits.
@@ -548,13 +520,12 @@ pub const Host = struct {
     }
 
     /// One input context serves every text field, so the IME never sees
-    /// Gooey's focus move, and a click does not end its composition. When the
-    /// focused field changes, cancel it, as an edit control ends its own on
-    /// losing focus, so the IME does not compose into the next field (or, once
-    /// the context is detached, bring the composition back later). The core
-    /// has already committed it into the old field (`Engine.commitPreedit`),
-    /// so it is cancelled here, not completed: this runs after the tick that
-    /// moved focus, so `CPS_COMPLETE`'s result would reach the field that has
+    /// Gooey's focus move, and a click does not end its composition. When
+    /// the focused field changes, cancel it, as an edit control ends its own
+    /// on losing focus, so the IME does not compose into the next field.
+    /// The core has already committed it into the old field, so it is
+    /// cancelled here, not completed: this runs after the tick that moved
+    /// focus, so `CPS_COMPLETE`'s result would reach the field that has
     /// focus now, a second time.
     fn endStaleComposition(self: *Host) void {
         const owner = self.query.imeOwner();
@@ -565,11 +536,6 @@ pub const Host = struct {
         if (self.ime_enabled) self.window.cancelImeComposition();
     }
 
-    // =========================================================================
-    // Render thread
-    // =========================================================================
-
-    /// A frame is in flight and the display is ready for it.
     fn presentDue(self: *const Host) bool {
         if (!self.core.frame_in_flight.load(.acquire)) return false;
         return self.nowNs() >= self.present_due_ns;
@@ -705,10 +671,10 @@ fn draw(
     }
 }
 
-/// Draw a frame the window cannot show at a zero-size viewport (contract §9):
-/// the renderer presents nothing but lands the frame's atlas uploads and
-/// closes its atlas frame. Returning early instead would leave the records in
-/// the journal and the consumer's frame open, so the atlases could neither
+/// Draw a frame the window cannot show at a zero-size viewport: the
+/// renderer presents nothing but lands the frame's atlas uploads and closes
+/// its atlas frame. Returning early instead would leave the records in the
+/// journal and the consumer's frame open, so the atlases could neither
 /// evict nor stage while the window stays minimized.
 fn drawHidden(
     host: *Host,
@@ -742,10 +708,6 @@ fn onClose(window: *PlatformWindow) bool {
     return true;
 }
 
-// =============================================================================
-// File dialogs
-// =============================================================================
-
 /// The core's file dialog service, on the main thread after the drain. The
 /// Common Item Dialog runs its own modal loop with the window disabled. A
 /// cancel arrives as `cancelled`; a failure, logged by `file_dialog`, as
@@ -778,12 +740,7 @@ fn openDialog(
     return .{ .file_selected = joined };
 }
 
-// =============================================================================
-// Pacing
-// =============================================================================
-
-/// The clock `vblankWaitTicks` reads, in `QueryPerformanceCounter` ticks;
-/// named because every field shares a type.
+/// The clock `vblankWaitTicks` reads, in `QueryPerformanceCounter` ticks.
 const VblankClock = struct {
     now_ticks: u64,
     /// A recent vertical blank, from `DWM_TIMING_INFO.qpcVBlank`.
@@ -829,10 +786,6 @@ fn qpcFrequency() u64 {
     assert(frequency > 0);
     return @intCast(frequency);
 }
-
-// =============================================================================
-// Events and timers
-// =============================================================================
 
 fn createEvent(options: struct { manual_reset: bool }) !win32.HANDLE {
     const manual_reset: win32.BOOL = if (options.manual_reset) win32.TRUE else win32.FALSE;
@@ -888,10 +841,6 @@ fn waitFailed(waiter: []const u8) noreturn {
     });
 }
 
-// =============================================================================
-// Clipboard
-// =============================================================================
-
 /// The text engines' clipboard, main thread. `readText` decodes straight
 /// into the core's reserved paste buffer.
 fn clipboardRead(_: *anyopaque, out: []u8) u32 {
@@ -910,9 +859,6 @@ comptime {
 }
 
 test "the next present waits for a vertical blank at least half a refresh away" {
-    // Goal: at most one present per refresh, on the display's grid.
-    // Methodology: a 1,000-tick period with now on either side of the half
-    // period, exactly on a vertical blank, and before a reported blank.
     const period: u64 = 1_000;
     const blank: u64 = 50_000;
     try std.testing.expectEqual(@as(u64, 501), vblankWaitTicks(.{

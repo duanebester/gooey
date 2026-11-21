@@ -1,11 +1,3 @@
-//! Analytics dashboard on the 0.4.0 core: gooey-charts drawn into
-//! `ui.paint` elements in a scrolling column.
-//!
-//! The line, bar, pie, and scatter charts, the legends, and the KPI cards
-//! draw through each paint element's `Painter`; `T` toggles the dark and
-//! light chart themes and the app theme. All chart data lives in `State` and
-//! is filled by `on_init`, so nothing is built or allocated while rendering.
-
 const std = @import("std");
 const gooey = @import("gooey");
 const charts = @import("gooey-charts");
@@ -17,7 +9,6 @@ const Painter = ui.Painter;
 
 const assert = std.debug.assert;
 
-/// The chart colours, in series order.
 const Palette = struct {
     const primary = Color.hex(0x06b6d4);
     const secondary = Color.hex(0x8b5cf6);
@@ -92,10 +83,8 @@ pub const App = gooey.App(State, render, .{
     .on_init = fillData,
 });
 
-/// The generated entry point (contract §7).
 pub const main = App.main;
 
-/// Revenue against target, monthly; then spend against visits per segment.
 const revenue_points = [_]f32{ 89, 94, 102, 98, 112, 118, 108, 125, 132, 128, 142, 156 };
 const target_points = [_]f32{ 85, 90, 95, 100, 105, 110, 115, 120, 125, 130, 135, 140 };
 const premium_points = [_][2]f32{
@@ -267,7 +256,6 @@ fn paintAccentDot(_: *const State, painter: *Painter) void {
     painter.circle(.{ bounds.x + 4, bounds.y + 4 }, 4, Palette.primary);
 }
 
-/// A card under a chart: a soft offset shadow, then the card.
 fn paintCard(state: *const State, painter: *Painter) void {
     const b = painter.bounds;
     const shadow: ui.Rect = .{
@@ -280,10 +268,8 @@ fn paintCard(state: *const State, painter: *Painter) void {
     charts.paint.rect(painter, b, 12, state.card());
 }
 
-/// One rectangle of a KPI card, relative to the card's top left.
 const KpiPart = struct { x: f32, y: f32, width: f32, height: f32, radius: f32, color: Color };
 
-/// Four KPI cards with placeholder bars for label, value, and change.
 fn paintKpiRow(state: *const State, painter: *Painter) void {
     const accents = [_]Color{
         Palette.primary, Palette.secondary, Palette.warning, Palette.success,
@@ -435,9 +421,6 @@ fn drawLegend(
     }, items, options);
 }
 
-/// A progress ring of the conversion rate out of 10%, with a marker at its
-/// centre. 0.3.1 placed the marker at the card's centre, 20 px low, but never
-/// showed it: the ring's triangles used up its 256 frame meshes first.
 fn paintConversion(state: *const State, painter: *Painter) void {
     paintCard(state, painter);
     const conversion_percent: f32 = 3.24;

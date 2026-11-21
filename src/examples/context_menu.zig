@@ -1,15 +1,3 @@
-//! Context menu: `components.ContextMenu` on `Box.on_context_menu`.
-//!
-//! Three task cards, each with its own menu: a right press on a card (a
-//! Ctrl+press on macOS) opens it at the pointer, and Shift+F10 on a focused
-//! card opens it below the card with its first action focused. The menu has
-//! an action whose label follows the card's state, a disabled action, a
-//! separator, and a destructive action with a shortcut hint. The status
-//! line names the last action, so a choice from the pointer or the keyboard
-//! shows it ran.
-//!
-//! Run with: zig build run-context-menu
-
 const std = @import("std");
 const gooey = @import("gooey");
 const components = @import("gooey-components");
@@ -26,7 +14,6 @@ pub const task_count: u32 = 3;
 pub const State = struct {
     done: [task_count]bool = .{ false, true, false },
     removed: [task_count]bool = .{ false, false, false },
-    /// What the status line reports; a constant, so it needs no storage.
     last_action: []const u8 = "Right-click a card, or focus one and press Shift+F10.",
 
     pub const titles = [task_count][]const u8{
@@ -57,7 +44,6 @@ pub const App = gooey.App(State, render, .{
     .limits = .small,
 });
 
-/// The generated entry point (contract §7).
 pub const main = App.main;
 
 pub fn render(cx: *Cx) void {

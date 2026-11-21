@@ -1,8 +1,3 @@
-//! Web text shaper implementation
-//!
-//! Uses JavaScript Canvas2D APIs for text measurement with kerning support.
-//! Falls back gracefully when advanced metrics aren't available.
-
 const std = @import("std");
 const types = @import("../../types.zig");
 const WebFontFace = @import("face.zig").WebFontFace;
@@ -10,7 +5,6 @@ const WebFontFace = @import("face.zig").WebFontFace;
 const ShapedGlyph = types.ShapedGlyph;
 const ShapedRun = types.ShapedRun;
 
-// JS imports for text measurement
 extern "env" fn measureText(
     font_ptr: [*]const u8,
     font_len: u32,
@@ -19,7 +13,6 @@ extern "env" fn measureText(
     text_len: u32,
 ) f32;
 
-/// Web-backed text shaper using Canvas2D for kerning detection
 pub const WebShaper = struct {
     allocator: std.mem.Allocator,
 
@@ -33,7 +26,6 @@ pub const WebShaper = struct {
         self.* = undefined;
     }
 
-    /// Shape text using Canvas2D measurements for kerning
     pub fn shape(self: *Self, face: *const WebFontFace, text: []const u8, allocator: std.mem.Allocator) !ShapedRun {
         _ = self;
         if (text.len == 0) {
@@ -43,7 +35,6 @@ pub const WebShaper = struct {
         const font_name = face.font_name_buf[0..face.font_name_len];
         const font_size = face.metrics.point_size;
 
-        // Collect codepoints and byte positions
         var codepoints: std.ArrayList(u21) = .empty;
         defer codepoints.deinit(allocator);
         var byte_positions: std.ArrayList(u32) = .empty;
@@ -82,8 +73,8 @@ pub const WebShaper = struct {
                 @intCast(char_len),
             );
 
-            // Detect kerning by comparing pair width vs sum of individuals
-            // Apply kerning to previous glyph's advance (like CoreText does)
+            // Kerning: pair width minus the sum of the individual widths,
+            // applied to the previous glyph's advance.
             if (i > 0) {
                 const prev_cp = codepoints.items[i - 1];
                 const prev_len = std.unicode.utf8Encode(prev_cp, &pair_buf) catch 0;
@@ -99,7 +90,6 @@ pub const WebShaper = struct {
                     );
                     const kerning = pair_width - (prev_width + char_width);
                     if (@abs(kerning) > 0.1) {
-                        // Adjust previous glyph's advance to include kerning
                         glyph_buffer.items[i - 1].x_advance += kerning;
                     }
                 }

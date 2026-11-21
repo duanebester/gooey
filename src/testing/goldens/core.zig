@@ -1,6 +1,4 @@
-//! Trace driver for the 0.4.0 core (`gooey`), the port's side of the
-//! goldens.
-//!
+//! Trace driver for the core (`gooey`), the port's side of the goldens.
 //! Input goes through the window's event queue, exactly as a platform pushes
 //! it; each frame is one `tick`, which packs the frame and hands it to a
 //! `NullRenderer` through the window's presenter. Hits and the accessibility
@@ -104,7 +102,7 @@ fn present(
     renderer.draw(packed_frame, viewport, clear);
 }
 
-/// Interactive hit records in tree order, in the 0.3.1 dump's format. Keyed
+/// Interactive hit records in tree order, in the dump's format. Keyed
 /// boxes without handlers or focus exist only for hover and are left out.
 pub fn writeHits(frame: *const records.Frame, out: *TextBuffer) void {
     for (frame.hits[0..frame.hit_count]) |*record| {
@@ -127,7 +125,6 @@ pub fn writeA11y(frame: *const records.Frame, out: *TextBuffer) void {
     }
 }
 
-/// One accessibility node, indented by its depth.
 fn writeA11yNode(frame: *const records.Frame, node: *const records.A11yNode, out: *TextBuffer) void {
     assert(node.depth < 64);
     var indent: u32 = 0;

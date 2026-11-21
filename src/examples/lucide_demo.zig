@@ -1,9 +1,3 @@
-//! Lucide icons on the 0.4.0 core: every icon in a scrollable grid.
-//!
-//! A `List` builds only the rows in view; each row holds 16 icons, each 24 px
-//! icon in a 32 px cell that lights up under the pointer. This is the measured
-//! reference for the `large` profile (780 quads, 480 SVGs), kept to phase 5.
-
 const std = @import("std");
 const gooey = @import("gooey");
 const components = @import("gooey-components");
@@ -16,36 +10,22 @@ const Lucide = components.Lucide;
 
 const assert = std.debug.assert;
 
-// =============================================================================
-// Grid Layout Constants
-// =============================================================================
-
-/// Icons per row in the grid.
 const COLS: u32 = 16;
 
-/// Cell dimensions (pixels). Icons are centered within cells.
 const CELL_SIZE: f32 = 32;
 
-/// Lucide canonical icon size (pixels).
+/// Lucide's canonical icon size.
 const ICON_SIZE: f32 = 24;
 
-/// Vertical gap between rows (pixels).
 const ROW_GAP: f32 = 4;
 
-/// Horizontal gap between cells (pixels).
 const COL_GAP: f32 = 4;
-
-// =============================================================================
-// Comptime Icon Lookup Table
-// =============================================================================
 
 pub const IconEntry = struct {
     name: []const u8,
     path: []const u8,
 };
 
-/// All Lucide icon entries, generated at comptime from struct declarations.
-/// Enables runtime indexing into comptime icon data for virtualized rendering.
 pub const icon_entries = blk: {
     @setEvalBranchQuota(20000);
     const decl_names = @typeInfo(Lucide).@"struct".decl_names;
@@ -78,7 +58,6 @@ pub const App = gooey.App(State, render, .{
     .limits = .large,
 });
 
-/// The generated entry point (contract §7).
 pub const main = App.main;
 
 const background = Color.hex(0x0f172a);
@@ -112,7 +91,6 @@ pub fn render(cx: *Cx) void {
     }));
 }
 
-/// One row of up to `COLS` icons.
 pub const IconRow = struct {
     index: u32,
 
@@ -165,10 +143,6 @@ fn paintIcon(entry: *const IconEntry, painter: *ui.Painter) void {
         .stroke_width = 1.5,
     });
 }
-
-// =============================================================================
-// Tests
-// =============================================================================
 
 test "icon_entries populated" {
     try std.testing.expect(icon_entries.len > 1600);

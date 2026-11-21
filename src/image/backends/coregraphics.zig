@@ -1,19 +1,12 @@
-//! Image Loader - macOS CoreGraphics Backend
-//!
-//! Uses ImageIO and CoreGraphics to decode images. Supports PNG, JPEG, GIF,
-//! WebP, BMP, and other formats supported by the system.
-
 const std = @import("std");
 const interface_verify = @import("../../core/interface_verify.zig");
 const atlas = @import("../atlas.zig");
 const ImageData = atlas.ImageData;
 
-// Compile-time interface verification
 comptime {
     interface_verify.verifyImageLoaderModule(@This());
 }
 
-/// Result of image decoding
 pub const DecodedImage = struct {
     width: u32,
     height: u32,
@@ -36,7 +29,6 @@ pub const DecodedImage = struct {
     }
 };
 
-/// Load error types
 pub const LoadError = error{
     FileNotFound,
     InvalidFormat,
@@ -46,7 +38,6 @@ pub const LoadError = error{
     IoError,
 };
 
-/// Supported image formats
 pub const ImageFormat = enum {
     png,
     jpeg,
@@ -54,10 +45,6 @@ pub const ImageFormat = enum {
     webp,
     bmp,
 };
-
-// =============================================================================
-// CoreFoundation/CoreGraphics External Declarations
-// =============================================================================
 
 const cf = struct {
     extern "c" fn CFDataCreate(allocator: ?*anyopaque, bytes: [*]const u8, length: isize) ?*anyopaque;
@@ -83,39 +70,28 @@ const cf = struct {
     extern "c" fn CGContextRelease(context: *anyopaque) void;
 };
 
-// =============================================================================
-// Public API
-// =============================================================================
-
-/// Load image from raw bytes (PNG, JPEG, etc.) using CoreGraphics
 pub fn loadFromMemory(allocator: std.mem.Allocator, data: []const u8) LoadError!DecodedImage {
-    // Create CFData from bytes
     const cf_data = cf.CFDataCreate(null, data.ptr, @intCast(data.len)) orelse
         return LoadError.OutOfMemory;
     defer cf.CFRelease(cf_data);
 
-    // Create image source
     const image_source = cf.CGImageSourceCreateWithData(cf_data, null) orelse
         return LoadError.InvalidFormat;
     defer cf.CFRelease(image_source);
 
-    // Get CGImage
     const cg_image = cf.CGImageSourceCreateImageAtIndex(image_source, 0, null) orelse
         return LoadError.DecodeFailed;
     defer cf.CGImageRelease(cg_image);
 
-    // Get dimensions
     const width = cf.CGImageGetWidth(cg_image);
     const height = cf.CGImageGetHeight(cg_image);
 
     if (width == 0 or height == 0) return LoadError.DecodeFailed;
 
-    // Allocate output buffer
     const pixels = allocator.alloc(u8, width * height * 4) catch
         return LoadError.OutOfMemory;
     errdefer allocator.free(pixels);
 
-    // Create color space
     const colorspace = cf.CGColorSpaceCreateDeviceRGB() orelse
         return LoadError.DecodeFailed;
     defer cf.CGColorSpaceRelease(colorspace);
@@ -136,7 +112,7 @@ pub fn loadFromMemory(allocator: std.mem.Allocator, data: []const u8) LoadError!
     ) orelse return LoadError.DecodeFailed;
     defer cf.CGContextRelease(context);
 
-    // Clear context to transparent before drawing (prevents default grey/white background)
+    // Clear to transparent first: the default bitmap background is opaque.
     cf.CGContextClearRect(context, .{
         .x = 0,
         .y = 0,
@@ -144,7 +120,6 @@ pub fn loadFromMemory(allocator: std.mem.Allocator, data: []const u8) LoadError!
         .h = @floatFromInt(height),
     });
 
-    // Draw image into context
     cf.CGContextDrawImage(context, .{
         .x = 0,
         .y = 0,
@@ -152,7 +127,6 @@ pub fn loadFromMemory(allocator: std.mem.Allocator, data: []const u8) LoadError!
         .h = @floatFromInt(height),
     }, cg_image);
 
-    // Unpremultiply alpha
     unpremultiplyAlpha(pixels, width, height);
 
     return DecodedImage{
@@ -162,10 +136,6 @@ pub fn loadFromMemory(allocator: std.mem.Allocator, data: []const u8) LoadError!
         .allocator = allocator,
     };
 }
-
-// =============================================================================
-// Internal Helpers
-// =============================================================================
 
 /// Convert premultiplied alpha to straight alpha
 fn unpremultiplyAlpha(pixels: []u8, width: usize, height: usize) void {

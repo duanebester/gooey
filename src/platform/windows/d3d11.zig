@@ -1,32 +1,19 @@
 //! Hand-written Direct3D 11 and DXGI bindings for the DirectX 11 renderer.
 //!
-//! Only the subset of `d3d11.dll` and `dxgi.dll` the renderer calls, declared
-//! by hand for the same reasons as the WIC, DirectWrite, and UI Automation
-//! bindings: Gooey takes no package dependencies (CLAUDE.md §12), and the tree
-//! type-checks from any host. The import libraries come from the MinGW
-//! definitions Zig bundles, so no Windows SDK is needed to link.
-//!
 //! Both APIs are COM. A method is found by its slot index alone, so each
 //! vtable the renderer calls through lists every slot of its interface up to
 //! the last one, in the order of `d3d11.h`, `dxgi.h`, `dxgi1_2.h`, and
-//! `dxgi1_3.h`; slots the renderer never calls are typed `Slot`. The comptime
-//! block at the end pins the slot of every called method and the size of
-//! every complete vtable, so a missing or extra slot fails to compile.
-//! Interfaces the renderer only creates, binds, and releases (views, shaders,
-//! and state objects) declare only the three `IUnknown` slots, which every
-//! COM vtable begins with; their pointers are never dereferenced past them.
+//! `dxgi1_3.h`; slots the renderer never calls are typed `Slot`. Interfaces
+//! the renderer only creates, binds, and releases (views, shaders, and state
+//! objects) declare only the three `IUnknown` slots, which every COM vtable
+//! begins with; their pointers are never dereferenced past them.
 //!
 //! Released COM vtables and structures never change, so the declarations stay
-//! correct once they match the headers. Names follow the SDK so each one can
-//! be checked against Microsoft's documentation by name.
+//! correct once they match the headers.
 
 const std = @import("std");
 const win32 = @import("win32.zig");
 const assert = std.debug.assert;
-
-// =============================================================================
-// Scalar types and results
-// =============================================================================
 
 pub const HRESULT = i32;
 pub const BOOL = win32.BOOL;
@@ -63,10 +50,6 @@ pub const GUID = extern struct {
     data4: [8]u8,
 };
 
-// =============================================================================
-// Interface identifiers
-// =============================================================================
-
 pub const IID_IDXGIDevice: GUID = .{
     .data1 = 0x54EC_77FA,
     .data2 = 0x1377,
@@ -94,10 +77,6 @@ pub const IID_ID3D11Texture2D: GUID = .{
     .data3 = 0x4E89,
     .data4 = .{ 0x9A, 0xB4, 0x48, 0x95, 0x35, 0xD3, 0x4F, 0x9C },
 };
-
-// =============================================================================
-// Enumerations and flags (C enums: 32 bits)
-// =============================================================================
 
 pub const D3D11_SDK_VERSION: u32 = 7;
 
@@ -169,10 +148,6 @@ pub const D3D11_COMPARISON_NEVER: u32 = 1;
 /// Simultaneous render targets the output merger accepts; fixes the length
 /// of `D3D11_BLEND_DESC.RenderTarget`.
 pub const D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT: u32 = 8;
-
-// =============================================================================
-// Structures
-// =============================================================================
 
 pub const DXGI_SAMPLE_DESC = extern struct {
     Count: u32,
@@ -324,10 +299,6 @@ pub const D3D11_SAMPLER_DESC = extern struct {
     MaxLOD: f32,
 };
 
-// =============================================================================
-// Release-only interfaces
-// =============================================================================
-
 /// An interface the renderer creates, binds, and releases but calls nothing
 /// else on. `tag` makes each one a distinct type, so a pixel shader cannot be
 /// bound where a vertex shader belongs.
@@ -393,10 +364,6 @@ pub const ID3D11Texture2D = extern struct {
         self.resource().release();
     }
 };
-
-// =============================================================================
-// ID3D11Device
-// =============================================================================
 
 pub const ID3D11Device = extern struct {
     vtable: *const VTable,
@@ -504,10 +471,6 @@ pub const ID3D11Device = extern struct {
         _ = self.vtable.Release(self);
     }
 };
-
-// =============================================================================
-// ID3D11DeviceContext
-// =============================================================================
 
 pub const ID3D11DeviceContext = extern struct {
     vtable: *const VTable,
@@ -667,10 +630,6 @@ pub const ID3D11DeviceContext = extern struct {
     }
 };
 
-// =============================================================================
-// DXGI
-// =============================================================================
-
 pub const IDXGIDevice = extern struct {
     vtable: *const VTable,
 
@@ -829,10 +788,6 @@ pub const IDXGISwapChain2 = extern struct {
     }
 };
 
-// =============================================================================
-// Functions
-// =============================================================================
-
 pub extern "d3d11" fn D3D11CreateDevice(
     pAdapter: ?*IDXGIAdapter,
     DriverType: u32,
@@ -846,10 +801,6 @@ pub extern "d3d11" fn D3D11CreateDevice(
     ppImmediateContext: *?*ID3D11DeviceContext,
 ) callconv(.winapi) HRESULT;
 
-// =============================================================================
-// Layout pins
-// =============================================================================
-
 fn assertSlot(comptime VTable: type, comptime name: []const u8, comptime slot: u32) void {
     assert(@offsetOf(VTable, name) == slot * @sizeOf(usize));
 }
@@ -859,7 +810,7 @@ fn assertSlotCount(comptime VTable: type, comptime count: u32) void {
 }
 
 comptime {
-    // `x86_64-windows` only; see `docs/windows-port.md`.
+    // `x86_64-windows` only.
     assert(@sizeOf(usize) == 8);
 
     // Sizes measured against the SDK headers on 64-bit targets.

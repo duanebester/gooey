@@ -1,10 +1,3 @@
-//! Image Atlas - Texture cache for loaded images
-//!
-//! Caches decoded images in a texture atlas, keyed by source hash and size.
-//! Supports PNG, JPEG, and raw pixel data sources.
-//! Thread-safe for multi-window scenarios where multiple DisplayLink threads
-//! may access the atlas concurrently.
-
 const std = @import("std");
 const atlas_mod = @import("../text/atlas.zig");
 const Atlas = atlas_mod.Atlas;
@@ -15,33 +8,21 @@ const limits = @import("../core/limits.zig");
 
 const assert = std.debug.assert;
 
-/// How the image should fit within its container
 pub const ObjectFit = enum {
-    /// Scale to fit, maintaining aspect ratio (may letterbox)
     contain,
-    /// Scale to fill, maintaining aspect ratio (may crop)
     cover,
-    /// Stretch to fill exactly (may distort)
     fill,
-    /// No scaling, center the image
     none,
-    /// Scale down only if larger than container
     scale_down,
 };
 
-/// Source of image data
 pub const ImageSource = union(enum) {
-    /// Embedded asset (compile-time path)
     embedded: []const u8,
-    /// File system path
     path: []const u8,
-    /// URL for network loading (future)
     url: []const u8,
-    /// Pre-decoded pixel data
     data: ImageData,
 };
 
-/// Raw pixel data for direct upload
 pub const ImageData = struct {
     width: u32,
     height: u32,
@@ -63,7 +44,6 @@ pub const ImageData = struct {
         }
     };
 
-    /// Convert to RGBA format (the atlas format)
     pub fn toRgba(self: ImageData, allocator: std.mem.Allocator) ![]u8 {
         const pixel_count = self.width * self.height;
         const output = try allocator.alloc(u8, pixel_count * 4);
@@ -78,10 +58,10 @@ pub const ImageData = struct {
                 while (i < pixel_count) : (i += 1) {
                     const src_offset = i * 4;
                     const dst_offset = i * 4;
-                    output[dst_offset + 0] = self.pixels[src_offset + 2]; // R <- B
-                    output[dst_offset + 1] = self.pixels[src_offset + 1]; // G <- G
-                    output[dst_offset + 2] = self.pixels[src_offset + 0]; // B <- R
-                    output[dst_offset + 3] = self.pixels[src_offset + 3]; // A <- A
+                    output[dst_offset + 0] = self.pixels[src_offset + 2];
+                    output[dst_offset + 1] = self.pixels[src_offset + 1];
+                    output[dst_offset + 2] = self.pixels[src_offset + 0];
+                    output[dst_offset + 3] = self.pixels[src_offset + 3];
                 }
             },
             .rgb => {
@@ -92,7 +72,7 @@ pub const ImageData = struct {
                     output[dst_offset + 0] = self.pixels[src_offset + 0];
                     output[dst_offset + 1] = self.pixels[src_offset + 1];
                     output[dst_offset + 2] = self.pixels[src_offset + 2];
-                    output[dst_offset + 3] = 255; // Full opacity
+                    output[dst_offset + 3] = 255;
                 }
             },
             .grayscale => {
@@ -112,9 +92,7 @@ pub const ImageData = struct {
     }
 };
 
-/// Cache key for image lookup
 pub const ImageKey = struct {
-    /// Hash of image source (path, URL, or data pointer)
     source_hash: u64,
     /// Target width in device pixels (0 = intrinsic)
     target_width: u16,
@@ -144,9 +122,7 @@ pub const ImageKey = struct {
     }
 };
 
-/// Cached image entry
 pub const CachedImage = struct {
-    /// Region in atlas texture
     region: Region,
     /// Original image dimensions (device pixels)
     source_width: u16,
@@ -160,13 +136,11 @@ pub const CachedImage = struct {
     shelf: u16 = atlas_mod.shelf_none,
     generation: u32 = 0,
 
-    /// UV coordinates of the region.
     pub fn uv(self: CachedImage) UVCoords {
         return self.region.uv(self.atlas_size);
     }
 };
 
-/// Image texture atlas with caching
 pub const ImageAtlas = struct {
     allocator: std.mem.Allocator,
     /// IO instance for mutex operations. Stored on the struct because lock
@@ -181,7 +155,6 @@ pub const ImageAtlas = struct {
     cache: std.AutoHashMap(ImageKey, CachedImage),
     /// `AtlasLimits.image_entry_count_max`: images the map holds.
     entry_count_max: u32,
-    /// Current scale factor
     scale_factor: f64,
     /// Mutex for thread-safe access in multi-window scenarios.
     /// Multiple DisplayLink threads may access the atlas concurrently.
@@ -241,7 +214,6 @@ pub const ImageAtlas = struct {
         }
     }
 
-    /// Check if an image is cached with live pixels
     pub fn contains(self: *Self, key: ImageKey) bool {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
@@ -250,7 +222,6 @@ pub const ImageAtlas = struct {
     }
 
     /// Get cached image if its pixels are live, marking it used this frame.
-    /// Thread-safe: protected by mutex for multi-window scenarios.
     pub fn get(self: *Self, key: ImageKey) ?CachedImage {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
@@ -265,7 +236,6 @@ pub const ImageAtlas = struct {
     /// frame's upload staging is full; the frame renders again. The image
     /// must fit the atlas with its 1 px border: the core's loader checks that
     /// first and names `atlas.image_size`, so the atlas never clips or copies.
-    /// Thread-safe: protected by mutex for multi-window scenarios.
     pub fn cacheRgba(
         self: *Self,
         key: ImageKey,
@@ -358,7 +328,6 @@ pub const ImageAtlas = struct {
         return &self.atlas;
     }
 
-    /// Result of fit calculation including UV adjustments for cropping modes
     pub const FitResult = struct {
         /// Output quad width (clamped to container for cover/none)
         width: f32,
@@ -390,7 +359,6 @@ pub const ImageAtlas = struct {
         return switch (fit) {
             .contain => {
                 if (src_aspect > container_aspect) {
-                    // Image is wider - fit to width
                     const h = container_width / src_aspect;
                     return .{
                         .width = container_width,
@@ -399,7 +367,6 @@ pub const ImageAtlas = struct {
                         .offset_y = (container_height - h) / 2,
                     };
                 } else {
-                    // Image is taller - fit to height
                     const w = container_height * src_aspect;
                     return .{
                         .width = w,
@@ -410,9 +377,7 @@ pub const ImageAtlas = struct {
                 }
             },
             .cover => {
-                // For cover: fill container, crop the excess by adjusting UVs
                 if (src_aspect > container_aspect) {
-                    // Image is wider - fit to height, crop width via UVs
                     const visible_width_ratio = container_aspect / src_aspect;
                     const uv_inset = (1.0 - visible_width_ratio) / 2.0;
                     return .{
@@ -426,7 +391,6 @@ pub const ImageAtlas = struct {
                         .uv_bottom = 1,
                     };
                 } else {
-                    // Image is taller - fit to width, crop height via UVs
                     const visible_height_ratio = src_aspect / container_aspect;
                     const uv_inset = (1.0 - visible_height_ratio) / 2.0;
                     return .{
@@ -448,9 +412,7 @@ pub const ImageAtlas = struct {
                 .offset_y = 0,
             },
             .none => {
-                // No scaling - show at original size, crop if larger than container
                 if (src_width <= container_width and src_height <= container_height) {
-                    // Image fits entirely - center it
                     return .{
                         .width = src_width,
                         .height = src_height,
@@ -458,7 +420,6 @@ pub const ImageAtlas = struct {
                         .offset_y = (container_height - src_height) / 2,
                     };
                 } else {
-                    // Image is larger - clamp quad to container and adjust UVs
                     const out_w = @min(src_width, container_width);
                     const out_h = @min(src_height, container_height);
                     const uv_w = out_w / src_width;
@@ -479,7 +440,6 @@ pub const ImageAtlas = struct {
             },
             .scale_down => {
                 if (src_width <= container_width and src_height <= container_height) {
-                    // Image fits - no scaling
                     return .{
                         .width = src_width,
                         .height = src_height,
@@ -487,7 +447,6 @@ pub const ImageAtlas = struct {
                         .offset_y = (container_height - src_height) / 2,
                     };
                 }
-                // Image too large - use contain
                 return calculateFitResult(src_width, src_height, container_width, container_height, .contain);
             },
         };
@@ -504,12 +463,10 @@ test "ImageKey hash consistency" {
 }
 
 test "ObjectFit calculations" {
-    // Test contain - wide image in square container
     const contain_wide = ImageAtlas.calculateFitResult(200, 100, 100, 100, .contain);
     try std.testing.expectEqual(@as(f32, 100), contain_wide.width);
     try std.testing.expectEqual(@as(f32, 50), contain_wide.height);
 
-    // Test fill
     const fill = ImageAtlas.calculateFitResult(200, 100, 100, 100, .fill);
     try std.testing.expectEqual(@as(f32, 100), fill.width);
     try std.testing.expectEqual(@as(f32, 100), fill.height);

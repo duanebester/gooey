@@ -1,15 +1,8 @@
-//! Descriptor layout, pool, set creation and updates.
-//!
-//! Free functions with targeted parameters — each takes only what it needs,
-//! not the entire VulkanRenderer. Every pipeline reads one descriptor set per
-//! frame in flight, with the bindings `shaders/packed.glsl` declares:
-//!
-//!   - 0 to 4: the packed frame's storage buffers (`vk_types.FrameBuffer`)
-//!   - 5: the viewport uniform
-//!   - 6 to 8: the glyph, SVG, and image atlases
-//!   - 9: the atlas sampler
-//!
-//! So a frame binds its set once, whichever pipelines its draws use.
+//! Every pipeline reads one descriptor set per frame in flight, with the
+//! bindings `shaders/packed.glsl` declares: 0 to 4 the packed frame's storage
+//! buffers (`vk_types.FrameBuffer`), 5 the viewport uniform, 6 to 8 the glyph,
+//! SVG, and image atlases, 9 the atlas sampler. So a frame binds its set once,
+//! whichever pipelines its draws use.
 
 const std = @import("std");
 const vk = @import("vulkan.zig");
@@ -17,12 +10,6 @@ const vk_types = @import("vk_types.zig");
 
 const assert = std.debug.assert;
 
-// =============================================================================
-// Limits (CLAUDE.md Rule #4 — put a limit on everything)
-// =============================================================================
-
-/// Descriptor sets each frame in flight allocates. The pool holds this many
-/// per frame of the window budget, at most three.
 const descriptor_set_count_frame: u32 = 1;
 
 /// Atlases the shaders sample, in binding order: glyph, SVG, image.
@@ -41,10 +28,6 @@ comptime {
     assert(sampler_binding == 9);
 }
 
-// =============================================================================
-// Error Types
-// =============================================================================
-
 pub const LayoutError = error{
     DescriptorSetLayoutCreationFailed,
 };
@@ -61,13 +44,6 @@ pub const SamplerError = error{
     SamplerCreationFailed,
 };
 
-// =============================================================================
-// Public API — Layout
-// =============================================================================
-
-/// Create the frame's descriptor set layout (see the file comment). Storage
-/// buffers and the uniform are read by vertex shaders, atlases by fragment
-/// shaders.
 pub fn createFrameLayout(device: vk.Device) LayoutError!vk.DescriptorSetLayout {
     assert(device != null);
     var bindings: [binding_count]vk.DescriptorSetLayoutBinding = undefined;
@@ -106,12 +82,6 @@ pub fn createFrameLayout(device: vk.Device) LayoutError!vk.DescriptorSetLayout {
     return layout;
 }
 
-// =============================================================================
-// Public API — Pool
-// =============================================================================
-
-/// Create a descriptor pool holding one frame set for each of `frame_count`
-/// frames in flight (the window budget's `ResourceLimits.frame.in_flight_count`).
 pub fn createDescriptorPool(device: vk.Device, frame_count: u32) PoolError!vk.DescriptorPool {
     assert(device != null);
     assert(frame_count >= 1);
@@ -148,12 +118,8 @@ pub fn createDescriptorPool(device: vk.Device, frame_count: u32) PoolError!vk.De
     return pool;
 }
 
-// =============================================================================
-// Public API — Set Allocation
-// =============================================================================
-
-/// Allocate a single descriptor set from the pool for the given layout.
-/// The pool owns the memory; sets are freed implicitly when the pool is destroyed.
+/// The pool owns the set's memory; sets are freed implicitly when the pool is
+/// destroyed.
 pub fn allocateDescriptorSet(
     device: vk.Device,
     pool: vk.DescriptorPool,
@@ -180,10 +146,6 @@ pub fn allocateDescriptorSet(
     return descriptor_set;
 }
 
-// =============================================================================
-// Public API — Descriptor Updates
-// =============================================================================
-
 /// Everything one frame's descriptor set points at. Written once at init:
 /// the buffers and atlas images are never recreated.
 pub const FrameBindings = struct {
@@ -195,7 +157,6 @@ pub const FrameBindings = struct {
     sampler: vk.Sampler,
 };
 
-/// Write every binding of a frame's descriptor set in one call.
 pub fn updateFrameDescriptorSet(
     device: vk.Device,
     descriptor_set: vk.DescriptorSet,
@@ -258,14 +219,6 @@ pub fn updateFrameDescriptorSet(
     vk.vkUpdateDescriptorSets(device, binding_count, &writes, 0, null);
 }
 
-// =============================================================================
-// Public API — Sampler
-// =============================================================================
-
-/// Create a linear-filtering, clamp-to-edge sampler for atlas textures.
-///
-/// Shared across all atlas pipelines (text, SVG, image). A single sampler
-/// handle is sufficient since all atlases use the same filtering mode.
 pub fn createAtlasSampler(device: vk.Device) SamplerError!vk.Sampler {
     assert(device != null);
 

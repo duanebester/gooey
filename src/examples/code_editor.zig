@@ -1,16 +1,3 @@
-//! Code editor on the 0.4.0 core: a `CodeEditor` beside the files of a
-//! folder chosen with the native folder dialog (decision 13).
-//!
-//! The sidebar lists the folder's files in a `List`, which builds only the
-//! rows in view; a click opens the file in the editor, or says why it cannot
-//! show it. 0.3.1's file tree, glass, and CRT shader are not part of the port.
-//!
-//! Every byte is reserved before the event loop: the file list, the folder
-//! path, and the read buffer live in `State`, and the editor's engine comes
-//! from the one editor slot this app's limits reserve. Reading a folder or a
-//! file runs on the main thread inside its handler, bounded by
-//! `file_count_max` entries and `file_bytes_max` bytes.
-
 const std = @import("std");
 const gooey = @import("gooey");
 const components = @import("gooey-components");
@@ -28,9 +15,9 @@ const assert = std.debug.assert;
 
 /// Largest file the editor opens: the editor slot's bytes.
 pub const file_bytes_max = 256 * 1024;
-/// Files the sidebar lists; a folder's further files are not listed.
 pub const file_count_max = 256;
-/// Directory entries one folder load reads, hidden files and folders included.
+/// Directory entries one folder load reads; includes hidden
+/// files and directories.
 const entry_scan_max = 4 * file_count_max;
 /// Longest folder path kept; a longer chosen path is not opened.
 const folder_bytes_max = 512;
@@ -55,9 +42,8 @@ comptime {
 pub const limits = blk: {
     var value = gooey.ResourceLimits.small;
     value.text.editor = .{ .count_max = 1, .bytes_max = file_bytes_max, .undo_depth_max = 128 };
-    // Each visible line is its own shaped run, and the editor redraws every
-    // line each frame: it filled the old fixed 256 runs (0.6 plan, "Method"),
-    // so it takes `large`'s 512 to keep a tall window cached.
+    // The editor redraws every visible line as its own shaped run each
+    // frame; 512 keeps a tall window cached.
     value.text.shaped_run_count_max = 512;
     break :blk value;
 };
@@ -116,7 +102,7 @@ pub const State = struct {
         });
     }
 
-    /// A cancelled or failed dialog leaves the current folder, as in 0.3.1.
+    /// A cancelled or failed dialog leaves the current folder.
     pub fn folderChosen(self: *State, effects: *Effects) void {
         const completion = effects.completionEvent().?;
         switch (completion.outcome) {
@@ -125,8 +111,7 @@ pub const State = struct {
         }
     }
 
-    /// List the folder's visible files, sorted. A folder that cannot be
-    /// read lists none.
+    /// A folder that cannot be read lists none.
     pub fn loadFolder(self: *State, folder_io: std.Io, path: []const u8) void {
         assert(path.len > 0);
         if (path.len > folder_bytes_max) return;
@@ -154,8 +139,7 @@ pub const State = struct {
         assert(self.file_count <= file_count_max);
     }
 
-    /// Show file `index` in the editor, or why it cannot be shown. A file
-    /// that cannot be read leaves the editor as it was, as in 0.3.1.
+    /// A file that cannot be read leaves the editor as it was.
     pub fn openFile(self: *State, index: u32) void {
         if (index >= self.file_count) return;
         self.selected = index;
@@ -263,7 +247,6 @@ fn isImageExtension(extension: []const u8) bool {
     return matchesAny(extension, &image_extensions);
 }
 
-/// The codepoints in `content`'s longest line.
 fn longestLine(content: []const u8) u32 {
     var longest: u32 = 0;
     var lines = std.mem.splitScalar(u8, content, '\n');
@@ -282,10 +265,6 @@ fn isBinaryExtension(extension: []const u8) bool {
     }));
 }
 
-// =============================================================================
-// Rendering
-// =============================================================================
-
 const text_color = Color.rgba(1, 1, 1, 0.95);
 const text_muted = Color.rgba(1, 1, 1, 0.6);
 const selected_background = Color.rgba(0.3, 0.5, 1.0, 0.4);
@@ -299,7 +278,6 @@ pub const App = gooey.App(State, render, .{
     .theme = &gooey.Theme.dark,
 });
 
-/// The generated entry point (contract §7).
 pub const main = App.main;
 
 pub fn render(cx: *Cx) void {
@@ -391,7 +369,6 @@ const FileRow = struct {
     }
 };
 
-/// A Lucide outline icon in the muted colour, or the text colour when lit.
 const Icon = struct {
     path: []const u8,
     lit_color: bool = false,
@@ -432,8 +409,7 @@ const EditorPanel = struct {
         }));
     }
 
-    /// The editor fills the panel at any window size: its rows are the
-    /// whole lines that fit above the status bar.
+    /// Its rows are the whole lines that fit above the status bar.
     fn editorView(cx: *Cx) void {
         const s = cx.state(State);
         cx.render(CodeEditor{

@@ -1,65 +1,22 @@
 //! The VOPR's model of the text_area example: the field's text, caret,
-//! selection, remembered column, and composition after every drain, and
-//! the platform clipboard after every copy and cut. It catches what the
+//! selection, remembered column, and composition after every drain, and the
+//! platform clipboard after every copy and cut. It catches what the
 //! model-free invariants cannot: a caret one byte off, a vertical move that
 //! forgets its column, a join past the line bound that goes through, a paste
-//! that drops a line. Each new frame is also checked structurally (`checkBuild`).
+//! that drops a line. Each new frame is also checked structurally
+//! (`checkBuild`). The rules come from the text engine's documented
+//! behaviour, not from its code.
 //!
-//! The rules come from the text engine's documented behaviour (text_engine,
-//! the area kind; contract §3 and decision 10), not from its code:
-//! - Committed text replaces the selection and ends a composition. An edit
-//!   keeps the longest prefix that fits the field's bytes on a codepoint
-//!   boundary, then the longest of that which leaves no line over 1,024
-//!   codepoints (`line_codepoint_count_max`): every line the edit closes
-//!   must fit, and the last also carries the text after the edit. A newline
-//!   always fits, so it can split a line. When even an empty insert would
-//!   join lines past the bound (deleting a newline between two long lines),
-//!   the edit is refused whole, unless the joined line is no longer than
-//!   the longer of the two lines it joins (a line the app set past the bound
-//!   never grows). A refused edit changes nothing, not even the caret.
-//! - Return inserts a newline with any modifiers. Tab is not the field's:
-//!   it moves focus. Backspace and Delete remove the selection, or the
-//!   codepoint before or after the caret; at the text's ends they do
-//!   nothing. Left and Right move by codepoint; without Shift they first
-//!   collapse a selection to its side; Ctrl goes to the line's start or end,
-//!   Alt to the previous word start or next word start (words split at
-//!   space, tab, and newline). Home and End go to the line's start and end,
-//!   Ctrl+Home, Ctrl+End, Ctrl+Up, and Ctrl+Down to the text's.
-//! - Up and Down move to the line above or below at the remembered byte
-//!   column, clamped to that line and moved back to a codepoint start, and
-//!   remember the column they started from until any other move or edit. On
-//!   the first or last line they do nothing, the selection included.
-//!   Shift extends with every move.
-//! - Ctrl+A selects all; Ctrl+C copies a selection; Ctrl+X cuts it, unless
-//!   the deletion would be refused, when nothing is copied either; Ctrl+V
-//!   pastes the clipboard as one edit. A copy in a drain is what a paste
-//!   later in that drain reads; the platform holds it after the drain.
-//! - While a composition shows, keys go to the IME: the field takes none,
-//!   so Tab still moves focus and nothing else happens. A composition
-//!   changes no text; an empty one ends it. Focus leaving mid-composition
-//!   commits it as typed text at the field's next build.
-//! - A left click in the field moves the caret at the next build, to a
-//!   point the model does not compute; a key, text, composition, or wheel
-//!   the field takes before that build cancels it. The caret is adopted
-//!   from the engine at the next drain. Page Up, Page Down, Escape, and
-//!   Space change nothing.
-//! - Sample and Clear assign the bound value; the field adopts it at the
-//!   next event it handles or its next build, whichever comes first: the
-//!   text becomes the value, the composition is dropped, the undo history
-//!   starts over, and the caret keeps its offsets, clamped and moved back to
-//!   a codepoint start. The remembered column is kept.
+//! An edit keeps the longest prefix that fits the field's bytes on a
+//! codepoint boundary, then the longest of that which leaves no line over
+//! `line_codepoint_count_max`; when even an empty insert would join lines
+//! past the bound, the edit is refused whole, unless the joined line is no
+//! longer than the longer of the two lines it joins. A refused edit changes
+//! nothing, not even the caret.
 //!
-//! Undo and redo are not modelled step by step: coalescing typed runs is
-//! the history's own policy. After one, the text and caret are adopted from
-//! the engine at the next drain, and the text must be one the field held
-//! since its history last started over (while every state since then is
-//! known to the model).
-//!
-//! Current behaviour, kept as the rules for now (reviewed 2026-11-20):
-//! Return inserts a newline with any modifiers, Ctrl+Return included, as
-//! the engine ignores modifiers on Return; Up on the first line and Down on
-//! the last change nothing, the selection included; Page Up and Page Down
-//! change nothing, as the engine does not handle them.
+//! Undo and redo are not modelled step by step: after one, the text and
+//! caret are adopted from the engine at the next drain, and the text must be
+//! one the field held since its history last started over.
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -1088,7 +1045,7 @@ fn prefixFitting(value: []const u8, room: u32) u32 {
 }
 
 /// The bytes of `value` an edit replacing `text[start..end]` keeps under
-/// the line bound, or null when it is refused (see the file comment).
+/// the line bound, or null when it is refused.
 pub fn lineFit(text: []const u8, start: u32, end: u32, value: []const u8) ?u32 {
     const line_max = line_codepoint_count_max;
     const head = codepointCount(text[lineStart(text, start)..start]);

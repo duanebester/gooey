@@ -1,27 +1,6 @@
-//! The debugger: a UI inspector and a profiler overlay on the core, toggled
-//! with Cmd/Ctrl+Shift+I (contract decision 16). It ports 0.3.1's
-//! `debug/debugger.zig` with the same modes, panels, and colours.
-//!
-//! - **Inspector:** outlines the element under the pointer and its ancestors;
-//!   a press selects the element under it (the press still reaches the app),
-//!   and the panel describes the selection, including the `Style.source`
-//!   the element was built with.
-//! - **Profiler:** FPS, the stage times of the last frame (build, layout,
-//!   emit on the main thread; pack and draw on the render side), its quads,
-//!   glyphs, and shaping, and a graph of the last 60 frames. While it is open
-//!   every frame requests the next, so it stays live; closed, the app idles.
-//!
-//! The overlay is a final paint-only fragment: emit appends it after every
-//! layer's paint, and it writes no hit records, so it never takes input.
-//!
-//! Compiled out of ReleaseFast and ReleaseSmall: `State` and `NodeSource`
-//! are `void` there, every entry point returns at comptime, and the shortcut
-//! reaches the app's keymap like any other key.
-//!
-//! Budget: the overlay never spends the app's budget. A safe build reserves
-//! the overlay's worst case on top of the app's limits (`reservedLimits`),
-//! and still holds the app to the limits it declared: past them, the frame
-//! fails fast naming the pool exactly as a release build would.
+//! Inspector and profiler overlay toggled with Cmd/Ctrl+Shift+I. Compiled out
+//! of ReleaseFast and ReleaseSmall: `State` and `NodeSource` are `void` there.
+//! A safe build reserves the overlay's worst case on top of the app's limits.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -43,7 +22,7 @@ const Color = records.Color;
 const Painter = emit_mod.Painter;
 const ResourceLimits = limits_mod.ResourceLimits;
 
-/// The one switch for the whole debugger (contract decision 16).
+/// The one switch for the whole debugger.
 pub const enabled = switch (builtin.mode) {
     .Debug, .ReleaseSafe => true,
     .ReleaseFast, .ReleaseSmall => false,
@@ -260,8 +239,8 @@ pub fn routeKey(window: *Window, event: *const input.InputEvent) bool {
     return true;
 }
 
-/// A press selects the element under it, or clears a repeated selection,
-/// as 0.3.1's `handleClick`. The router still routes the press.
+/// A press selects the element under it, or clears a repeated selection.
+/// The router still routes the press.
 pub fn press(window: *Window, x: f32, y: f32) void {
     if (comptime !enabled) return;
     const state = &window.debugger;
@@ -379,13 +358,6 @@ fn countPaint(frame: *const records.Frame, state: *Debugger) void {
     state.glyph_count = glyphs;
 }
 
-// =============================================================================
-// Selection
-// =============================================================================
-
-/// The element under a point in the last build: the latest in pre-order
-/// whose bounds contain it, preferring elements inside more layers, since a
-/// layer paints over the content it was opened from.
 fn nodeAt(window: *const Window, x: f32, y: f32) ?u32 {
     if (window.node_count == 0) return null;
     const elements = window.layout.elements.items();
@@ -439,12 +411,7 @@ fn elementInfo(window: *const Window, index: u32) ElementInfo {
     };
 }
 
-// =============================================================================
-// Overlay
-// =============================================================================
-
-/// Wide enough for a 64-bit id at the app's font size; 0.3.1's ids were
-/// 32-bit and its panel 280 px.
+/// Wide enough for a 64-bit id at the app's font size.
 const panel_width: f32 = 320;
 const panel_padding: f32 = 12;
 const panel_margin: f32 = 16;
@@ -506,7 +473,7 @@ fn paintOverlay(window: *Window, state: *Debugger) void {
 }
 
 /// Ancestors of the hovered element faintly, the hovered element, then the
-/// selection on top, as 0.3.1 drew them.
+/// selection on top.
 fn paintOutlines(window: *Window, painter: *Painter, hovered: ?u32, selected: ?u32) void {
     const elements = window.layout.elements.items();
     if (hovered) |hovered_index| {
@@ -604,7 +571,7 @@ fn paintInspector(text: Text, window_width: f32, info: ?ElementInfo) void {
 
 const Row = struct { label: []const u8, value: []const u8, color: Color };
 
-/// The eight rows under the title, as 0.3.1's inspector listed them.
+/// The eight rows under the title.
 fn inspectorRows(info: *const ElementInfo, scratch: *InspectorText) [8]Row {
     const id: u64 = @backingInt(info.id);
     const id_text = std.fmt.bufPrint(&scratch.id, "0x{X:0>16}", .{id}) catch
@@ -697,12 +664,6 @@ fn sourceText(buffer: *[64]u8, source: ?Source) []const u8 {
         unreachable; // The name leaves 11 bytes for ':' and a u32.
 }
 
-// =============================================================================
-// Profiler
-// =============================================================================
-
-/// One number formatted as milliseconds with one decimal: a frame time
-/// clamped to 1e6 ms is at most 9 bytes.
 fn msText(buffer: *[16]u8, ns: u64) []const u8 {
     const ms = @min(@as(f32, @floatFromInt(ns)) / std.time.ns_per_ms, 1e6);
     return std.fmt.bufPrint(buffer, "{d:.1}", .{ms}) catch unreachable;
@@ -814,10 +775,6 @@ fn paintGraph(painter: *Painter, left: f32, top: f32, state: *const Debugger) vo
 const profiler_stage_labels = [6][]const u8{
     "Frame:", "Build:", "Layout:", "Emit:", "Pack:", "Draw:",
 };
-
-// =============================================================================
-// Overlay worst case
-// =============================================================================
 
 /// Outlines: the hovered element's non-root ancestors, it, and the selection.
 const outline_count_max: u32 = window_mod.box_depth_ceiling + 2;

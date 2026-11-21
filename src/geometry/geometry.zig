@@ -1,27 +1,5 @@
-//! Core geometry types for the UI framework
-//!
-//! This module provides generic, reusable geometry primitives for application logic.
-//! These types use comptime type parameters for flexibility.
-//!
-//! For GPU buffers, the `Gpu*` extern structs below have fixed layouts; the
-//! packed frame's mesh points are `GpuPoint`. Use the `toGpu*()` methods to
-//! convert.
-//!
-//! Type Hierarchy:
-//! ==============
-//! - Generic types for app logic (Point(T), Size(T), etc.)
-//! - `Gpu*`: extern structs with fixed layouts (GpuPoint, GpuSize, GpuCorners, etc.)
-//!
-//! Example:
-//! ```zig
-//! const geo = @import("geometry.zig");
-//! const app_point = geo.PointF{ .x = 10, .y = 20 };
-//! const gpu_point = app_point.toGpuPoint(); // Convert for rendering
-//! ```
-
 const std = @import("std");
 
-// GPU types: extern structs with fixed layouts.
 pub const GpuPoint = extern struct {
     x: f32 = 0,
     y: f32 = 0,
@@ -89,18 +67,9 @@ pub const GpuEdges = extern struct {
     pub const zero = GpuEdges{};
 };
 
-// =============================================================================
-// Unit Type Aliases
-// =============================================================================
-
 /// Logical pixels (before scaling)
 pub const Pixels = f32;
 
-// =============================================================================
-// Point
-// =============================================================================
-
-/// A 2D point with x and y coordinates
 pub fn Point(comptime T: type) type {
     return struct {
         x: T = 0,
@@ -124,7 +93,6 @@ pub fn Point(comptime T: type) type {
             return .{ .x = self.x - other.x, .y = self.y - other.y };
         }
 
-        /// Convert to GPU-compatible point
         pub fn toGpuPoint(self: Self) GpuPoint {
             return .{
                 .x = toF32(T, self.x),
@@ -136,11 +104,6 @@ pub fn Point(comptime T: type) type {
     };
 }
 
-// =============================================================================
-// Size
-// =============================================================================
-
-/// A 2D size with width and height
 pub fn Size(comptime T: type) type {
     return struct {
         width: T = 0,
@@ -160,7 +123,6 @@ pub fn Size(comptime T: type) type {
             return self.width * self.height;
         }
 
-        /// Convert to GPU-compatible size
         pub fn toGpuSize(self: Self) GpuSize {
             return .{
                 .width = toF32(T, self.width),
@@ -172,11 +134,6 @@ pub fn Size(comptime T: type) type {
     };
 }
 
-// =============================================================================
-// Rect / Bounds
-// =============================================================================
-
-/// A rectangle with origin point and size.
 pub fn Rect(comptime T: type) type {
     return struct {
         origin: Point(T) = .{},
@@ -248,7 +205,6 @@ pub fn Rect(comptime T: type) type {
             return self.size.height;
         }
 
-        /// Convert to GPU-compatible bounds
         pub fn toGpuBounds(self: Self) GpuBounds {
             return .{
                 .origin = self.origin.toGpuPoint(),
@@ -260,14 +216,9 @@ pub fn Rect(comptime T: type) type {
     };
 }
 
-/// Alias for Rect
 pub fn Bounds(comptime T: type) type {
     return Rect(T);
 }
-
-// =============================================================================
-// Edges (for padding, margins, border widths)
-// =============================================================================
 
 pub fn Edges(comptime T: type) type {
     return struct {
@@ -293,7 +244,6 @@ pub fn Edges(comptime T: type) type {
             return self.top + self.bottom;
         }
 
-        /// Convert to GPU-compatible edges
         pub fn toGpuEdges(self: Self) GpuEdges {
             return .{
                 .top = toF32(T, self.top),
@@ -306,10 +256,6 @@ pub fn Edges(comptime T: type) type {
         pub const zero = Self{};
     };
 }
-
-// =============================================================================
-// Corners (for border radii)
-// =============================================================================
 
 pub fn Corners(comptime T: type) type {
     return struct {
@@ -324,7 +270,6 @@ pub fn Corners(comptime T: type) type {
             return .{ .top_left = radius, .top_right = radius, .bottom_right = radius, .bottom_left = radius };
         }
 
-        /// Convert to GPU-compatible corners
         pub fn toGpuCorners(self: Self) GpuCorners {
             return .{
                 .top_left = toF32(T, self.top_left),
@@ -337,10 +282,6 @@ pub fn Corners(comptime T: type) type {
         pub const zero = Self{};
     };
 }
-
-// =============================================================================
-// Color
-// =============================================================================
 
 pub const Color = struct {
     r: f32 = 0,
@@ -390,13 +331,11 @@ pub const Color = struct {
         }
     }
 
-    /// From hue, saturation, lightness and alpha, each in 0..1 (hue wraps
-    /// once: 1 is red again).
+    /// Hue wraps once: 1 is red again.
     pub fn hsla(h: f32, s: f32, l: f32, a: f32) Color {
         std.debug.assert(s >= 0.0 and s <= 1.0);
         std.debug.assert(l >= 0.0 and l <= 1.0);
         if (s == 0) {
-            // Achromatic: grey at the lightness.
             return rgba(l, l, l, a);
         }
         const q = if (l < 0.5) l * (1 + s) else l + s - l * s;
@@ -409,7 +348,6 @@ pub const Color = struct {
         );
     }
 
-    /// One RGB channel of `hsla` at hue offset `t_in`.
     fn hueChannel(p: f32, q: f32, t_in: f32) f32 {
         var t = t_in;
         if (t < 0) t += 1;
@@ -420,14 +358,12 @@ pub const Color = struct {
         return p;
     }
 
-    /// Parse a hex color string like "#1a1a2e", "#RGB", "#RGBA", "#RRGGBB", or "#RRGGBBAA"
     pub fn fromHex(str: []const u8) Color {
         if (str.len == 0) return black;
 
         const s = if (str[0] == '#') str[1..] else str;
 
         return switch (s.len) {
-            // #RGB -> #RRGGBB
             3 => blk: {
                 const r = parseHexDigit(s[0]);
                 const g = parseHexDigit(s[1]);
@@ -439,7 +375,6 @@ pub const Color = struct {
                     .a = 1.0,
                 };
             },
-            // #RGBA -> #RRGGBBAA
             4 => blk: {
                 const r = parseHexDigit(s[0]);
                 const g = parseHexDigit(s[1]);
@@ -452,7 +387,6 @@ pub const Color = struct {
                     .a = @as(f32, @floatFromInt(a * 17)) / 255.0,
                 };
             },
-            // #RRGGBB
             6 => blk: {
                 const r = parseHexByte(s[0..2]);
                 const g = parseHexByte(s[2..4]);
@@ -464,7 +398,6 @@ pub const Color = struct {
                     .a = 1.0,
                 };
             },
-            // #RRGGBBAA
             8 => blk: {
                 const r = parseHexByte(s[0..2]);
                 const g = parseHexByte(s[2..4]);
@@ -499,7 +432,6 @@ pub const Color = struct {
         return .{ .r = self.r, .g = self.g, .b = self.b, .a = a };
     }
 
-    /// Return color components as an array [r, g, b, a]
     pub fn toRgba(self: Color) [4]f32 {
         return .{ self.r, self.g, self.b, self.a };
     }
@@ -521,10 +453,6 @@ pub const Color = struct {
     pub const gray = Color{ .r = 0.5, .g = 0.5, .b = 0.5, .a = 1 };
 };
 
-// =============================================================================
-// Concrete type aliases
-// =============================================================================
-
 pub const PointF = Point(Pixels);
 pub const PointI = Point(i32);
 pub const SizeF = Size(Pixels);
@@ -538,11 +466,6 @@ pub const EdgesI = Edges(i32);
 pub const CornersF = Corners(Pixels);
 pub const CornersI = Corners(i32);
 
-// =============================================================================
-// Helper Functions
-// =============================================================================
-
-/// Convert any numeric type to f32
 fn toF32(comptime T: type, value: T) f32 {
     return switch (@typeInfo(T)) {
         .float => @floatCast(value),
@@ -552,10 +475,6 @@ fn toF32(comptime T: type, value: T) f32 {
         else => @compileError("Cannot convert " ++ @typeName(T) ++ " to f32"),
     };
 }
-
-// =============================================================================
-// Tests
-// =============================================================================
 
 test "point gpu conversion" {
     const p = PointF{ .x = 10.5, .y = 20.5 };
@@ -579,16 +498,14 @@ test "corners gpu conversion" {
 }
 
 test "Color.hsla converts each hue sector and grey" {
-    // Goal: pin the HSL formula with an input whose three channels each take a
-    // different branch. Expected values worked by hand: at l 0.5 and s 0.8,
-    // q = 0.9 and p = 0.1; red's hue offset 0.633 falls in the falling sector,
-    // green's 0.3 on the plateau, and blue's -0.033 wraps past 2/3 to p.
+    // Expected values worked by hand so each hue branch is hit: q = 0.9,
+    // p = 0.1; red falls in the falling sector, green on the plateau, and
+    // blue wraps past 2/3.
     const color = Color.hsla(0.3, 0.8, 0.5, 0.4);
     try std.testing.expectApproxEqAbs(@as(f32, 0.26), color.r, 1e-5);
     try std.testing.expectApproxEqAbs(@as(f32, 0.9), color.g, 1e-5);
     try std.testing.expectApproxEqAbs(@as(f32, 0.1), color.b, 1e-5);
     try std.testing.expectEqual(@as(f32, 0.4), color.a);
-    // Zero saturation ignores the hue.
     const grey = Color.hsla(0.7, 0, 0.25, 1);
     try std.testing.expectEqual(Color{ .r = 0.25, .g = 0.25, .b = 0.25, .a = 1 }, grey);
 }

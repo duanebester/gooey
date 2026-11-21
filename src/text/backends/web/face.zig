@@ -1,8 +1,3 @@
-//! WebFontFace - Font implementation using JavaScript Canvas 2D API
-//!
-//! Rasterizes glyphs via JS imports and provides metrics.
-//! API matches CoreTextFace for cross-platform compatibility.
-
 const std = @import("std");
 const types = @import("../../types.zig");
 const font_face_mod = @import("../../font_face.zig");
@@ -14,7 +9,6 @@ const SystemFont = types.SystemFont;
 const FontVariant = types.FontVariant;
 const FontFace = font_face_mod.FontFace;
 
-// JS imports
 extern "env" fn getFontMetrics(
     font_ptr: [*]const u8,
     font_len: u32,
@@ -62,7 +56,6 @@ extern "env" fn rasterizeGlyphSubpixel(
     out_advance: *f32,
 ) void;
 
-/// Web-backed font face (matches CoreTextFace API)
 pub const WebFontFace = struct {
     /// Font spec stored inline (no allocation needed): `"<style> <weight>
     /// <family>"`, such as `"italic 700 Inter"`. The JS `getFont` inserts the
@@ -70,13 +63,10 @@ pub const WebFontFace = struct {
     /// requires. Style and weight never contain spaces, so the split is exact.
     font_name_buf: [128]u8,
     font_name_len: u8,
-    /// Cached metrics
     metrics: Metrics,
 
-    /// Glyph advance cache - avoids repeated JS calls for common characters
     /// Direct-mapped cache for codepoints 0-255 (ASCII + Latin-1)
     advance_cache: [256]f32,
-    /// Tracks which entries are valid (0 = not cached, 1 = cached)
     advance_cache_valid: [256]u8,
 
     const Self = @This();
@@ -107,14 +97,12 @@ pub const WebFontFace = struct {
         self.font_name_len = @intCast(spec.len);
         std.debug.assert(self.font_name_len == spec.len);
 
-        // Get font metrics from JS
         var ascent: f32 = 0;
         var descent: f32 = 0;
         var line_height: f32 = 0;
 
         getFontMetrics(spec.ptr, @intCast(spec.len), size, &ascent, &descent, &line_height);
 
-        // Measure cell width (for monospace detection)
         const m_width = measureText(spec.ptr, @intCast(spec.len), size, "M", 1);
         const i_width = measureText(spec.ptr, @intCast(spec.len), size, "i", 1);
         const is_monospace = @abs(m_width - i_width) < 0.1;
@@ -152,7 +140,6 @@ pub const WebFontFace = struct {
         self.* = undefined;
     }
 
-    /// Get as the generic FontFace interface
     pub fn asFontFace(self: *Self) FontFace {
         return font_face_mod.createFontFace(Self, self);
     }
@@ -161,27 +148,22 @@ pub const WebFontFace = struct {
         return self.font_name_buf[0..self.font_name_len];
     }
 
-    /// Get glyph ID for a Unicode codepoint (on web we use codepoint directly)
+    /// On web the glyph id is the codepoint.
     pub fn glyphIndex(_: *const Self, codepoint: u21) u16 {
         return @truncate(codepoint);
     }
 
-    /// Get advance width for a glyph (fast path for text measurement)
-    /// Uses cached value if available, otherwise measures via JS
     pub fn glyphAdvance(self: *Self, glyph_id: u16) f32 {
-        // Check cache first for common characters (avoids JS call)
         if (glyph_id < 256 and self.advance_cache_valid[glyph_id] != 0) {
             return self.advance_cache[glyph_id];
         }
 
-        // Cache miss - measure single character via JS
         var char_buf: [4]u8 = undefined;
         const len = std.unicode.utf8Encode(@intCast(glyph_id), &char_buf) catch return 0;
 
         const name = self.fontName();
         const advance = measureText(name.ptr, @intCast(name.len), self.metrics.point_size, &char_buf, @intCast(len));
 
-        // Cache for future lookups
         if (glyph_id < 256) {
             self.advance_cache[glyph_id] = advance;
             self.advance_cache_valid[glyph_id] = 1;
@@ -190,9 +172,7 @@ pub const WebFontFace = struct {
         return advance;
     }
 
-    /// Get metrics for a specific glyph
     pub fn glyphMetrics(self: *Self, glyph_id: u16) GlyphMetrics {
-        // Check advance cache first for common characters (avoids JS call)
         if (glyph_id < 256 and self.advance_cache_valid[glyph_id] != 0) {
             return .{
                 .glyph_id = glyph_id,
@@ -215,7 +195,6 @@ pub const WebFontFace = struct {
         const name = self.fontName();
         rasterizeGlyph(name.ptr, @intCast(name.len), self.metrics.point_size, glyph_id, &buffer, 0, &width, &height, &bearing_x, &bearing_y, &advance);
 
-        // Cache the advance for future lookups
         if (glyph_id < 256) {
             self.advance_cache[glyph_id] = advance;
             self.advance_cache_valid[glyph_id] = 1;
@@ -232,12 +211,10 @@ pub const WebFontFace = struct {
         };
     }
 
-    /// Render a glyph to a bitmap buffer
     pub inline fn renderGlyph(self: *const Self, glyph_id: u16, font_size: f32, scale: f32, buffer: []u8, buffer_size: u32) !RasterizedGlyph {
         return self.renderGlyphSubpixel(glyph_id, font_size, scale, 0.0, 0.0, buffer, buffer_size);
     }
 
-    /// Render a glyph with subpixel positioning
     pub fn renderGlyphSubpixel(self: *const Self, glyph_id: u16, font_size: f32, scale: f32, subpixel_x: f32, subpixel_y: f32, buffer: []u8, buffer_size: u32) !RasterizedGlyph {
         var width: u32 = 0;
         var height: u32 = 0;
@@ -248,7 +225,6 @@ pub const WebFontFace = struct {
         const size = font_size * scale;
         const name = self.fontName();
 
-        // Use subpixel-aware rasterization
         rasterizeGlyphSubpixel(
             name.ptr,
             @intCast(name.len),

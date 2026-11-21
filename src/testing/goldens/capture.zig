@@ -1,8 +1,7 @@
-//! `zig build goldens`: rewrite every golden file from a fresh run.
-//!
-//! Run it after an intended change, then review the diff like code. The
-//! binary is built with the synthetic text backend, so a capture on any host
-//! produces the same bytes.
+//! `zig build goldens`: rewrite every golden file from a fresh run, to
+//! review the diff like code after an intended change. The binary is built
+//! with the synthetic text backend, so a capture on any host produces the
+//! same bytes.
 
 const std = @import("std");
 const gooey = @import("gooey");

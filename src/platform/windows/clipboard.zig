@@ -1,9 +1,5 @@
 //! Windows clipboard: text through `CF_UNICODETEXT`.
 //!
-//! The API matches `linux/clipboard.zig`: `readText(out)` decodes into the
-//! core text engines' reserved paste buffer, and `setText` returns whether
-//! the system clipboard now holds the text.
-//!
 //! ## Line endings
 //!
 //! Windows text uses CR LF. Copy expands every LF not already preceded by CR
@@ -20,30 +16,12 @@
 //! destroys it, so copying does not depend on any application window staying
 //! open.
 //!
-//! ## Allocation (CLAUDE.md section 2)
-//!
-//! The system clipboard takes ownership of a movable global block that the
-//! copying process allocates and hands over; Win32 has no way to publish
-//! storage reserved at init. Copy therefore makes one `GlobalAlloc` of at most
+//! The system clipboard takes ownership of a movable global block the copying
+//! process allocates and hands over; Win32 has no way to publish storage
+//! reserved at init. Copy therefore makes one `GlobalAlloc` of at most
 //! `copy_block_bytes_max` per call, owned by the system once
 //! `SetClipboardData` succeeds and freed here on every failure path. Paste
 //! decodes into the caller's buffer and allocates nothing.
-//!
-//! ## Bounds
-//!
-//! - Text: the core copies at most its clipboard, sized from the app's
-//!   `ResourceLimits.text` (the largest `bytes_max` of a text kind with
-//!   engines), so a copy is whole up to `text_bytes_max`, that size at the
-//!   text ceiling (16 MiB). A paste is cut at a codepoint boundary to the
-//!   caller's buffer.
-//! - Copy block: four bytes per text byte plus two, at most
-//!   `copy_block_bytes_max` (64 MiB + 2 B), reached when every byte is a lone
-//!   LF. The block is sized from the text, so a short copy allocates little.
-//! - Paste scan: at most `2 * out.len + 1` units are examined, so a huge or
-//!   unterminated clipboard block costs bounded work.
-//! - Contention: another process holding the clipboard makes `OpenClipboard`
-//!   fail. At most `open_attempt_count_max` attempts, `open_retry_delay_ms`
-//!   apart, so a busy clipboard stalls the UI thread for at most 20 ms.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -64,7 +42,6 @@ pub const text_bytes_max: u32 = @max(
 /// more UTF-16 units than it has bytes (1→1, 2→1, 3→1, 4→2).
 const copy_unit_count_max: u32 = 2 * text_bytes_max;
 
-/// Copy block size: the units plus the terminating zero.
 const copy_block_bytes_max: u32 = (copy_unit_count_max + 1) * @sizeOf(u16);
 
 const open_attempt_count_max: u32 = 5;
@@ -86,7 +63,6 @@ comptime {
     assert(text_bytes_max == 16 * 1024 * 1024); // The editor ceiling.
 }
 
-/// Create the owner window. Part of `WindowsPlatform` initialization.
 pub fn init(hinstance: win32.HINSTANCE) !void {
     assert(owner_hwnd == null);
 
@@ -179,7 +155,7 @@ pub fn setText(text: []const u8) bool {
 
 /// Allocate a movable block and encode `text` into it as terminated UTF-16.
 /// The block is zero-initialized because `GlobalSize` may round it up and
-/// readers may scan to its end (CLAUDE.md section 21).
+/// readers may scan to its end.
 fn copyBlockCreate(text: []const u8) ?win32.HGLOBAL {
     assert(text.len <= text_bytes_max);
     const unit_count = copyUnitCount(text);
@@ -265,10 +241,6 @@ fn globalFree(block: win32.HGLOBAL) void {
     }
 }
 
-// =============================================================================
-// Copy: UTF-8 with LF into UTF-16 with CR LF
-// =============================================================================
-
 /// UTF-16 units `copyEncode` writes for `text`, excluding the terminator.
 fn copyUnitCount(text: []const u8) u32 {
     assert(text.len <= text_bytes_max);
@@ -327,10 +299,6 @@ fn utf16Length(code_point: u21) u32 {
     assert(code_point <= 0x10_FFFF);
     return if (code_point < 0x1_0000) 1 else 2;
 }
-
-// =============================================================================
-// Paste: UTF-16 with CR LF into UTF-8 with LF
-// =============================================================================
 
 /// Decode the longest prefix of `units` whose UTF-8 fits in `target`, so a
 /// cut never splits a codepoint. Returns the bytes written.
@@ -396,10 +364,6 @@ fn isLowSurrogate(unit: u16) bool {
     return unit >= 0xDC00 and unit <= 0xDFFF;
 }
 
-// =============================================================================
-// Tests
-// =============================================================================
-
 const testing = std.testing;
 
 /// Encode `text` the way `setText` does, into a test-owned buffer.
@@ -428,8 +392,6 @@ test "copy expands lone LF to CR LF and keeps existing CR LF and lone CR" {
 }
 
 test "copy encodes every UTF-8 sequence length" {
-    // Methodology: one scalar of each UTF-8 length, the last outside the
-    // BMP, checked against the standard library's UTF-16 conversion.
     var buffer: [16]u16 = undefined;
     const text = "a\u{E9}\u{65E5}\u{1F389}";
     const expected = std.unicode.utf8ToUtf16LeStringLiteral(text);
@@ -456,9 +418,6 @@ test "paste collapses CR LF, keeps lone CR, and replaces unpaired surrogates" {
 }
 
 test "a paste into a short buffer keeps whole codepoints and collapses CR LF" {
-    // Goal: `readText` fills the core's paste buffer with a prefix that never
-    // ends inside a codepoint. Methodology: buffers one byte short of each
-    // multi-byte sequence, an exact fit, and a CR LF that costs one byte.
     var buffer: [8]u8 = undefined;
     const accented = std.unicode.utf8ToUtf16LeStringLiteral("a\u{E9}\u{E9}");
     try testing.expectEqual(@as(u32, 3), pasteDecodePrefix(accented, buffer[0..4]));
@@ -496,10 +455,6 @@ test "system clipboard round-trips text and line endings" {
 }
 
 test "system clipboard copies text_bytes_max whole and keeps it on a refused copy" {
-    // Capacity test: the largest copy the core can make, in the worst case
-    // for block size (every byte a lone LF), succeeds and round-trips. A
-    // longer copy cannot reach here (the core clips to its clipboard, and
-    // `setText` asserts it); a refused copy leaves the previous text in place.
     try testOwnerInit();
     defer deinit();
 

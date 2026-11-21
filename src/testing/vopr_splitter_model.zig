@@ -1,30 +1,9 @@
-//! The VOPR's model of the splitter example: the sidebar's width and the
-//! top pane's share, which must follow every drag and key exactly. It
-//! catches what the model-free invariants cannot: a capture that leaks to
-//! another button, a move delivered after its gesture ended, a cancel that
-//! does not restore, or a key that reaches the wrong splitter.
-//!
-//! The model is written from the contract (§5, pointer capture), not from
-//! the router:
-//! - A press of any button with no capture on lands on the innermost record
-//!   under it; when that record or an ancestor has `on_pointer_drag` (a
-//!   splitter), the pointer is captured for that button and the handler
-//!   gets `begin`. A press while a capture is on captures nothing.
-//! - Every pointer move while captured is a `move` at the pointer, and the
-//!   release of the captured button is an `end` there; other buttons'
-//!   releases do not end it.
-//! - Escape, `pointer_cancelled`, and a focus loss that cancelled the
-//!   gesture are a `cancel`, which restores the value at the press.
-//! - Any press focuses the innermost focusable record under it, or nothing;
-//!   Tab and Shift+Tab move through tab stops in tree order.
-//! - The splitters answer only the left button. The sidebar's width is the
-//!   width at the press plus the pointer's x distance from it, clamped; the
-//!   top share is the share at the press plus the y distance over the
-//!   content pane's height less the splitter, clamped. A focused splitter
-//!   moves by its arrow keys (Shift for more), Home, and End.
-//!
-//! It reads hit records from the frame each drain routes against (the
-//! rendered one) and the focus a drain starts with from the window.
+//! The VOPR's model of the splitter example: the sidebar's width and the top
+//! pane's share, which must follow every drag and key exactly. It catches
+//! what the model-free invariants cannot: a capture that leaks to another
+//! button, a move delivered after its gesture ended, a cancel that does not
+//! restore, or a key that reaches the wrong splitter. Written from the
+//! contract's pointer-capture rules, not from the router.
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -152,7 +131,6 @@ pub const SplitterModel = struct {
         self.focus = window.focus;
     }
 
-    /// Route the drained actions' events in order against the rendered frame.
     pub fn endDrain(self: *SplitterModel, window: *Window, published: bool) void {
         _ = published;
         const frame = window.rendered();
@@ -239,7 +217,6 @@ pub const SplitterModel = struct {
         if (starts) self.deliver(frame, .begin, point);
     }
 
-    /// The splitter's `on_pointer_drag` for one step of the capture.
     fn deliver(self: *SplitterModel, frame: *const records.Frame, phase: Phase, point: Point) void {
         const capture = self.capture.?;
         // Only the left button moves a splitter.
@@ -285,8 +262,6 @@ pub const SplitterModel = struct {
         }
     }
 
-    /// A key to the focused record: a splitter's own keys, else Tab moves
-    /// focus.
     fn key(self: *SplitterModel, frame: *const records.Frame, chord: Action.Chord) void {
         if (vopr_frame.findHit(frame, self.focus) != null) {
             if (self.splitterKey(chord)) {

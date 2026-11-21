@@ -1,43 +1,5 @@
-//! Text rendering system for gooey
-//!
-//! Provides high-level text rendering with:
-//! - Font loading and metrics
-//! - Text shaping (ligatures, kerning)
-//! - Glyph caching and atlas management
-//! - GPU-ready glyph data
-//!
-//! ## Architecture
-//!
-//! The text system is designed with platform abstraction in mind:
-//! - `types.zig` - Platform-agnostic data types
-//! - `font_face.zig` - FontFace interface (trait)
-//! - `atlas.zig` - Fixed-size texture atlas with LRU shelf eviction
-//! - `atlas_uploads.zig` - Upload journal and frame clock shared by the atlases
-//! - `cache.zig` - Glyph cache using FontFace interface
-//! - `text_system.zig` - High-level unified API
-//! - `backends/` - Platform-specific implementations
-//!
-//! ## Usage
-//!
-//! ```zig
-//! const text = try allocator.create(TextSystem);
-//! try text.initInPlace(allocator, 1.0, io, &ResourceLimits.standard.text, .{
-//!     .size = AtlasLimits.standard.text_size,
-//!     .uploads = uploads, // shared `AtlasUploads`
-//! });
-//! defer text.deinit();
-//!
-//! try text.loadSystemFont(.monospace, 14.0);
-//! const width = try text.measureText(.app, "Hello, World!", .bold);
-//! ```
-//!
-//! The `io` parameter is stored on the struct so lock sites on render
-//! threads (which do not carry a `*Cx`) can still acquire the internal
-//! mutexes via `std.Io.Mutex`.
-
 const std = @import("std");
 
-// Core types (platform-agnostic)
 pub const types = @import("types.zig");
 pub const Metrics = types.Metrics;
 pub const GlyphMetrics = types.GlyphMetrics;
@@ -54,12 +16,10 @@ pub const TextLimits = @import("../core/limits.zig").TextLimits;
 pub const TextDecoration = types.TextDecoration;
 pub const RasterizedGlyph = types.RasterizedGlyph;
 
-// Interfaces
 pub const font_face = @import("font_face.zig");
 pub const font_match = @import("font_match.zig");
 pub const FontFace = font_face.FontFace;
 
-// Infrastructure
 pub const Atlas = @import("atlas.zig").Atlas;
 pub const Region = @import("atlas.zig").Region;
 pub const AtlasUploads = @import("atlas_uploads.zig").AtlasUploads;
@@ -69,13 +29,11 @@ pub const AtlasUpload = @import("atlas_uploads.zig").Upload;
 pub const AtlasOptions = @import("cache.zig").AtlasOptions;
 pub const cache = @import("cache.zig");
 
-// Glyph placement for emit
 pub const render = @import("render.zig");
 
 pub const GlyphCache = cache.GlyphCache;
 pub const CachedGlyph = cache.CachedGlyph;
 
-// High-level API
 const text_system = @import("text_system.zig");
 pub const TextSystem = text_system.TextSystem;
 pub const TextSizeKey = text_system.TextSizeKey;
@@ -86,15 +44,14 @@ pub const run_codepoint_count_max = text_system.run_codepoint_count_max;
 pub const codepointCount = text_system.codepointCount;
 pub const SUBPIXEL_VARIANTS_X = text_system.SUBPIXEL_VARIANTS_X;
 
-// Platform backends
 const platform = @import("../platform/mod.zig");
 const is_wasm = platform.is_wasm;
 
 const is_linux = platform.is_linux;
 const is_windows = platform.is_windows;
 
-/// Deterministic headless backend. Always compiled so its tests run on every
-/// host; `text_backend = .synthetic` makes `TextSystem` use it.
+/// Always compiled so its tests run on every host; `text_backend =
+/// .synthetic` makes `TextSystem` use it.
 pub const synthetic_backend = @import("backends/synthetic/mod.zig");
 
 pub const backends = if (is_wasm)

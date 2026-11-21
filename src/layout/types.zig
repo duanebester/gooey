@@ -1,15 +1,5 @@
-//! Layout system types inspired by Clay.h
-//!
-//! These types define the declarative layout configuration
-//! used to describe UI element sizing, positioning, and behavior.
-
 const std = @import("std");
 
-// ============================================================================
-// Shared Types
-// ============================================================================
-
-/// Shared 2D offset type for scroll offsets, floating offsets, etc.
 pub const Offset2D = struct {
     x: f32 = 0,
     y: f32 = 0,
@@ -23,11 +13,6 @@ pub const Offset2D = struct {
     }
 };
 
-// ============================================================================
-// Sizing Types
-// ============================================================================
-
-/// Percent sizing with min/max constraints
 pub const PercentSizing = struct {
     value: f32,
     min: f32 = 0,
@@ -46,19 +31,13 @@ pub const PercentSizing = struct {
     }
 };
 
-/// How an element determines its size along an axis
 pub const SizingType = enum {
-    /// Size to fit content (text, children)
     fit,
-    /// Expand to fill available space (flex grow)
     grow,
-    /// Fixed pixel size
     fixed,
-    /// Percentage of parent's content area
     percent,
 };
 
-/// Min/max constraints for sizing
 pub const SizingMinMax = struct {
     min: f32 = 0,
     max: f32 = std.math.floatMax(f32),
@@ -89,7 +68,6 @@ pub const GrowSizing = struct {
     weight: f32 = 1,
 };
 
-/// Sizing configuration for a single axis
 pub const SizingAxis = struct {
     value: SizingValue = .{ .fit = .{} },
 
@@ -100,7 +78,6 @@ pub const SizingAxis = struct {
         percent: PercentSizing,
     };
 
-    /// Fit to content with optional min/max constraints
     pub fn fit() SizingAxis {
         return .{ .value = .{ .fit = .{} } };
     }
@@ -117,7 +94,6 @@ pub const SizingAxis = struct {
         return .{ .value = .{ .fit = .{ .min = min_val, .max = max_val } } };
     }
 
-    /// Grow to fill available space with optional min/max
     pub fn grow() SizingAxis {
         return .{ .value = .{ .grow = .{} } };
     }
@@ -134,24 +110,20 @@ pub const SizingAxis = struct {
         return .{ .value = .{ .grow = .{ .min = min_val, .max = max_val } } };
     }
 
-    /// Grow with a share of free space proportional to `weight`.
     pub fn growWeighted(weight: f32, min_val: f32, max_val: f32) SizingAxis {
         std.debug.assert(weight > 0);
         std.debug.assert(std.math.isFinite(weight));
         return .{ .value = .{ .grow = .{ .min = min_val, .max = max_val, .weight = weight } } };
     }
 
-    /// Fixed pixel size
     pub fn fixed(size: f32) SizingAxis {
         return .{ .value = .{ .fixed = SizingMinMax.fixed(size) } };
     }
 
-    /// Get the sizing type
     pub fn getType(self: SizingAxis) SizingType {
         return self.value;
     }
 
-    /// Get min constraint
     pub fn getMin(self: SizingAxis) f32 {
         return switch (self.value) {
             .percent => |p| p.min,
@@ -159,7 +131,6 @@ pub const SizingAxis = struct {
         };
     }
 
-    /// Get max constraint
     pub fn getMax(self: SizingAxis) f32 {
         return switch (self.value) {
             .percent => |p| p.max,
@@ -180,22 +151,18 @@ pub const SizingAxis = struct {
     }
 };
 
-/// Complete sizing configuration (width + height)
 pub const Sizing = struct {
     width: SizingAxis = .{},
     height: SizingAxis = .{},
 
-    /// Both dimensions fit content
     pub fn fitContent() Sizing {
         return .{ .width = SizingAxis.fit(), .height = SizingAxis.fit() };
     }
 
-    /// Both dimensions grow to fill
     pub fn fill() Sizing {
         return .{ .width = SizingAxis.grow(), .height = SizingAxis.grow() };
     }
 
-    /// Fixed size in both dimensions
     pub fn fixed(width: f32, height: f32) Sizing {
         return .{
             .width = SizingAxis.fixed(width),
@@ -203,26 +170,17 @@ pub const Sizing = struct {
         };
     }
 
-    /// Width grows, height fits content
     pub fn horizontalFill() Sizing {
         return .{ .width = SizingAxis.grow(), .height = SizingAxis.fit() };
     }
 
-    /// Width fits, height grows
     pub fn verticalFill() Sizing {
         return .{ .width = SizingAxis.fit(), .height = SizingAxis.grow() };
     }
 };
 
-// ============================================================================
-// Layout Direction & Alignment
-// ============================================================================
-
-/// Direction children are laid out
 pub const LayoutDirection = enum {
-    /// Horizontal: left to right
     left_to_right,
-    /// Vertical: top to bottom
     top_to_bottom,
 
     pub fn isHorizontal(self: LayoutDirection) bool {
@@ -234,27 +192,21 @@ pub const LayoutDirection = enum {
     }
 };
 
-/// Horizontal alignment within container
 pub const AlignmentX = enum {
     left,
     center,
     right,
 };
 
-/// Vertical alignment within container
 pub const AlignmentY = enum {
     top,
     center,
     bottom,
 };
 
-/// Main axis distribution mode for children
 pub const MainAxisDistribution = enum {
-    /// Children packed at start (default)
     start,
-    /// Children centered
     center,
-    /// Children packed at end
     end,
     /// Equal space between children, no space at edges
     space_between,
@@ -264,7 +216,6 @@ pub const MainAxisDistribution = enum {
     space_evenly,
 };
 
-/// Child alignment configuration
 pub const ChildAlignment = struct {
     x: AlignmentX = .left,
     y: AlignmentY = .top,
@@ -306,10 +257,6 @@ pub const ChildAlignment = struct {
     }
 };
 
-// ============================================================================
-// Padding
-// ============================================================================
-
 /// Padding/margin on each side (u16 for compact storage)
 pub const Padding = struct {
     left: u16 = 0,
@@ -333,22 +280,15 @@ pub const Padding = struct {
         return .{ .left = 0, .right = 0, .top = v, .bottom = v };
     }
 
-    /// Total horizontal padding
     pub fn totalX(self: Padding) f32 {
         return @as(f32, @floatFromInt(self.left)) + @as(f32, @floatFromInt(self.right));
     }
 
-    /// Total vertical padding
     pub fn totalY(self: Padding) f32 {
         return @as(f32, @floatFromInt(self.top)) + @as(f32, @floatFromInt(self.bottom));
     }
 };
 
-// ============================================================================
-// Corner Radius
-// ============================================================================
-
-/// Corner radii for rounded rectangles
 pub const CornerRadius = struct {
     top_left: f32 = 0,
     top_right: f32 = 0,
@@ -368,11 +308,6 @@ pub const CornerRadius = struct {
     }
 };
 
-// ============================================================================
-// Border Configuration
-// ============================================================================
-
-/// Border width on each side
 pub const BorderWidth = struct {
     left: f32 = 0,
     right: f32 = 0,
@@ -384,7 +319,6 @@ pub const BorderWidth = struct {
     }
 };
 
-/// Border configuration
 pub const BorderConfig = struct {
     color: Color = Color.black,
     width: BorderWidth = .{},
@@ -394,30 +328,20 @@ pub const BorderConfig = struct {
     }
 };
 
-// ============================================================================
-// Shadow Configuration
-// ============================================================================
-
-/// Shadow configuration for drop shadows
 pub const ShadowConfig = struct {
-    /// Shadow blur radius (0 = no shadow)
     blur_radius: f32 = 0,
-    /// Shadow color (RGBA)
     color: Color = Color{ .r = 0, .g = 0, .b = 0, .a = 0.15 },
-    /// Horizontal offset
     offset_x: f32 = 0,
-    /// Vertical offset (positive = down)
     offset_y: f32 = 4,
 
-    /// Create a simple drop shadow with default color
     pub fn drop(blur: f32) ShadowConfig {
+        // 0.4: offset y scales with blur radius; aesthetic constant.
         return .{
             .blur_radius = blur,
             .offset_y = blur * 0.4,
         };
     }
 
-    /// Create a shadow with custom blur and offset
     pub fn offset(blur: f32, x: f32, y: f32) ShadowConfig {
         return .{
             .blur_radius = blur,
@@ -426,8 +350,8 @@ pub const ShadowConfig = struct {
         };
     }
 
-    /// Create a shadow with custom color
     pub fn colored(blur: f32, color: Color) ShadowConfig {
+        // Same 0.4 blur-to-offset ratio as `drop`.
         return .{
             .blur_radius = blur,
             .color = color,
@@ -435,30 +359,19 @@ pub const ShadowConfig = struct {
         };
     }
 
-    /// Check if shadow is visible
     pub fn isVisible(self: ShadowConfig) bool {
         return self.blur_radius > 0 and self.color.a > 0;
     }
 };
 
-// ============================================================================
-// Color
-// ============================================================================
-
 pub const Color = @import("../geometry/geometry.zig").Color;
 
-// ============================================================================
-// Layout Config
-// ============================================================================
-
-/// Complete layout configuration for an element
 pub const LayoutConfig = struct {
     sizing: Sizing = .{},
     padding: Padding = .{},
     child_gap: u16 = 0,
     child_alignment: ChildAlignment = .{},
     layout_direction: LayoutDirection = .left_to_right,
-    /// Main axis distribution mode for children
     main_axis_distribution: MainAxisDistribution = .start,
     /// Aspect ratio (width / height). When set, height is derived from width.
     aspect_ratio: ?f32 = null,
@@ -486,10 +399,6 @@ pub const LayoutConfig = struct {
         return result;
     }
 };
-
-// ============================================================================
-// Floating Config
-// ============================================================================
 
 pub const AttachPoint = enum {
     left_top,
@@ -526,7 +435,6 @@ pub const FloatingConfig = struct {
     attach_to_parent: bool = true,
     element_attach: AttachPoint = .left_top,
     parent_attach: AttachPoint = .left_top,
-    /// Whether to expand to match parent dimensions
     expand: struct {
         width: bool = false,
         height: bool = false,
@@ -544,10 +452,6 @@ pub const FloatingConfig = struct {
         return .{ .attach_to_parent = false, .element_attach = .center_center, .parent_attach = .center_center };
     }
 };
-
-// ============================================================================
-// Scroll Config
-// ============================================================================
 
 pub const ScrollConfig = struct {
     horizontal: bool = false,
@@ -578,10 +482,6 @@ pub const ScrollChild = struct {
 
 pub const ScrollAlignment = enum { start, center, end, nearest };
 
-// ============================================================================
-// Text Config
-// ============================================================================
-/// A single line of wrapped text
 pub const WrappedLine = struct {
     start_offset: u32,
     length: u32,
@@ -607,17 +507,12 @@ pub const TextConfig = struct {
         _padding: u6 = 0,
     };
 
-    /// Calculate line height in pixels
     pub fn lineHeightPx(self: TextConfig) f32 {
         const font_size_f: f32 = @floatFromInt(self.font_size);
         const line_height_pct: f32 = @as(f32, @floatFromInt(self.line_height)) / 100.0;
         return font_size_f * line_height_pct;
     }
 };
-
-// ============================================================================
-// Bounding Box (layout output)
-// ============================================================================
 
 pub const BoundingBox = struct {
     x: f32 = 0,

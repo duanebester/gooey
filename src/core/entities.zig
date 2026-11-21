@@ -1,21 +1,11 @@
-//! Entity pools: the app's typed fixed pools (contract §7, decision 17).
+//! Entity pools: one fixed pool per entity type, reserved at init.
 //!
-//! Every type in `Config.entities` gets one pool of
-//! `limits.entities.count_per_type_max` slots, reserved at init. A slot is
-//! free, live, or removed. `Effects.create` claims a free slot at once, so a
-//! handler can store the handle it returns. `Effects.remove` only marks the
-//! slot: handlers later in the same drain were built from a frame that still
-//! names it, so they still reach the value. The tick frees removed slots after
-//! the drain and before the build, bumping each slot's generation and zeroing
-//! its bytes (CLAUDE.md §21), so a handle kept past removal is stale.
-//!
-//! The pool is not generic: values are `stride` bytes apart and the typed
-//! side (`Effects`, `Cx.get`) casts. Removal releases nothing else; the app
-//! releases `.owned` handles kept in the entity before removing it.
-//!
-//! Resource sketch at `.nano` (16 slots) for a 24-byte type: 384 bytes of
-//! values plus 13 bytes of bookkeeping per slot. `create`, `remove`, and
-//! `get` are O(1); `freeRemoved` visits only the slots removed this drain.
+//! `Effects.remove` only marks the slot: handlers later in the same drain
+//! were built from a frame that still names it, so they still reach the
+//! value. `freeRemoved` runs after the drain and before the build, bumping
+//! each slot's generation and zeroing its bytes, so a handle kept past
+//! removal is stale. The pool is not generic: values are `stride` bytes
+//! apart and the typed side (`Effects`, `Cx.get`) casts.
 
 const std = @import("std");
 
@@ -27,7 +17,6 @@ pub const value_alignment = 16;
 
 pub const SlotState = enum(u8) { free, live, removed };
 
-/// Why a handle does not name a live or removed value.
 pub const HandleProblem = enum { out_of_range, stale, never_created };
 
 pub const Pool = struct {
@@ -65,8 +54,8 @@ pub const Pool = struct {
 
         self.name = name;
         self.stride = stride;
-        // Values are not zeroed here (CLAUDE.md §21): `create` writes each
-        // one whole, and `freeRemoved` zeroes what it releases.
+        // Values are not zeroed here: `create` writes each one whole, and
+        // `freeRemoved` zeroes what it releases.
         @memset(self.generations, 0);
         @memset(self.states, .free);
         // Slot 0 on top, so slots are claimed in order.
@@ -89,7 +78,6 @@ pub const Pool = struct {
         return @intCast(self.generations.len);
     }
 
-    /// Claim a free slot, or null when every slot is live or removed.
     pub fn claim(self: *Pool) ?u32 {
         assert(self.free_count <= self.capacity());
         if (self.free_count == 0) return null;
@@ -101,8 +89,7 @@ pub const Pool = struct {
         return slot;
     }
 
-    /// Whether `slot` at `generation` names a value: live, or removed this
-    /// drain and not yet freed.
+    /// A removed-but-not-freed slot still resolves.
     pub fn check(self: *const Pool, slot: u32, generation: u32) ?HandleProblem {
         if (slot >= self.capacity()) return .out_of_range;
         if (self.generations[slot] != generation) return .stale;
@@ -110,8 +97,7 @@ pub const Pool = struct {
         return null;
     }
 
-    /// Mark a live slot for `freeRemoved`. Returns false when it is already
-    /// marked: removing twice in one drain.
+    /// Returns false when the slot is already removed this drain.
     pub fn markRemoved(self: *Pool, slot: u32) bool {
         assert(slot < self.capacity());
         assert(self.states[slot] != .free);
@@ -123,9 +109,9 @@ pub const Pool = struct {
         return true;
     }
 
-    /// Free every slot marked since the last call: zero it, bump its
-    /// generation, and return it to the free stack. Runs between the drain
-    /// and the build, when no handler or build reads entity values.
+    /// Zero each marked slot, bump its generation, and return it to the
+    /// free stack. Runs between the drain and the build, when no handler
+    /// or build reads entity values.
     pub fn freeRemoved(self: *Pool) void {
         assert(self.removed_count <= self.capacity());
         for (self.removed[0..self.removed_count]) |slot| {
@@ -156,10 +142,6 @@ pub const Pool = struct {
 };
 
 test "a pool fills exactly, refuses one more, and reuses a freed slot one generation on" {
-    // Goal: the capacity, staleness, and reuse rules. Method: fill a
-    // three-slot pool, claim a fourth, remove the middle slot, check that
-    // its old handle still resolves until the free, then not after; reclaim
-    // it and check that it is zeroed with the next generation.
     var pool: Pool = undefined;
     try pool.initInPlace(std.testing.allocator, "Test", 16, 3);
     defer pool.deinit(std.testing.allocator);

@@ -1,22 +1,4 @@
-//! The part of a long accessibility value a frame keeps.
-//!
-//! A node's value is copied into the frame's text bytes
-//! (`build.text_bytes_frame_max`), so an editor's whole document would
-//! exhaust them. Native text views expose the text near the caret rather
-//! than the document, and so does Gooey: a value longer than
-//! `ResourceLimits.a11y.value_bytes_max` is cut to the whole lines around its
-//! selection, or to its start without one.
-//!
-//! The cut is stable while the caret moves: its raw start is the selection's
-//! start rounded down to a multiple of half the budget, less a quarter of
-//! it, so it changes only when the caret crosses such a multiple. A screen
-//! reader therefore sees one value while the caret moves within a few
-//! lines, and a selection changed notification rather than a value changed
-//! one for each caret step. The caret keeps at least a quarter of the budget
-//! of context on each side, short of the value's ends.
-//!
-//! Performance sketch: two scans of at most `value_bytes_max` bytes (32 KiB
-//! at the ceiling) per text field with a long value, per build.
+//! Long values are cut to whole lines around their selection, stable while the caret moves.
 
 const std = @import("std");
 const TextSelection = @import("../accessibility/element.zig").TextSelection;
@@ -62,7 +44,6 @@ pub fn window(value: []const u8, selection: ?TextSelection, bytes_max: u32) Wind
     return .{ .start = start, .end = end };
 }
 
-/// `selection` relative to `kept`, clipped to it.
 pub fn relative(selection: TextSelection, kept: Window) TextSelection {
     assert(kept.start <= kept.end);
     assert(selection.start <= selection.end);
@@ -74,9 +55,9 @@ pub fn relative(selection: TextSelection, kept: Window) TextSelection {
 }
 
 /// The window's start before snapping to a line: stable while the caret
-/// moves within half the budget (see the file comment), or centred on a
-/// selection longer than a quarter of the budget. Never past `len - bytes_max`,
-/// so the window ends inside the value.
+/// moves within half the budget, or centred on a selection longer than a
+/// quarter of the budget. Never past `len - bytes_max`, so the window ends
+/// inside the value.
 fn rawStart(len: u32, focus: TextSelection, bytes_max: u32) u32 {
     assert(len > bytes_max);
     assert(focus.end <= len);
@@ -135,7 +116,6 @@ fn lineEndBefore(value: []const u8, limit: u32, end: u32) u32 {
     return boundaryAtOrBefore(value, end, limit);
 }
 
-/// Whether byte `index` of `value` starts a code point or ends the value.
 fn isBoundary(value: []const u8, index: u32) bool {
     assert(index <= value.len);
     if (index == value.len) return true;
@@ -143,21 +123,14 @@ fn isBoundary(value: []const u8, index: u32) bool {
 }
 
 test "a value within the budget is kept whole, one byte past it is cut" {
-    // Goal: the boundary at `bytes_max`. Method: values of exactly the budget
-    // and one byte more, with and without a selection.
     const exact = "abcd\nefgh";
     const whole = window(exact, .{ .start = 2, .end = 2 }, exact.len);
     try std.testing.expectEqual(Window{ .start = 0, .end = exact.len }, whole);
     try std.testing.expectEqual(Window{ .start = 0, .end = 9 }, window(exact, null, 9));
-    // One past: no selection keeps whole lines from the start.
     try std.testing.expectEqual(Window{ .start = 0, .end = 5 }, window(exact, null, 8));
 }
 
 test "the cut keeps whole lines around the caret and moves the selection with it" {
-    // Goal: lines around the caret, the caret inside, the selection
-    // relative. Method: 100 numbered ten-byte lines and a 64-byte budget,
-    // with the caret inside line 50; the wrong answers are a window that
-    // splits a line, misses the caret, or ignores it (starts at 0).
     var text: [1000]u8 = undefined;
     for (0..100) |line| {
         _ = std.fmt.bufPrint(text[line * 10 ..][0..10], "line {d:0>4}\n", .{line}) catch
@@ -170,24 +143,18 @@ test "the cut keeps whole lines around the caret and moves the selection with it
     try std.testing.expect(caret <= kept.end);
     try std.testing.expectEqual(@as(u32, 0), kept.start % 10);
     try std.testing.expectEqual(@as(u32, 0), kept.end % 10);
-    // A quarter of the budget of context on each side, in whole lines.
     try std.testing.expect(caret - kept.start >= 10);
     try std.testing.expect(kept.end - caret >= 10);
     const moved = relative(.{ .start = caret, .end = caret + 4 }, kept);
     try std.testing.expectEqual(caret - kept.start, moved.start);
     try std.testing.expectEqualStrings("e 00", text[kept.start..][moved.start..moved.end]);
-    // The cut is stable while the caret moves a few bytes.
     try std.testing.expectEqual(kept, window(&text, .{ .start = caret + 1, .end = caret + 1 }, 64));
-    // A caret at the very end keeps the last lines and the end.
     const last = window(&text, .{ .start = 1000, .end = 1000 }, 64);
     try std.testing.expectEqual(@as(u32, 1000), last.end);
     try std.testing.expectEqual(@as(u32, 940), last.start);
 }
 
 test "a long selection keeps its start and a long line is cut at code points" {
-    // Goal: the fallbacks when no line boundary or the whole selection fits.
-    // Method: one line of three-byte code points with no newline, a budget
-    // that is not a multiple of three, and a selection longer than it.
     var bytes: [360]u8 = undefined;
     for (0..40) |index| @memcpy(bytes[index * 9 ..][0..9], "日本語");
     const text: []const u8 = &bytes;
@@ -199,7 +166,6 @@ test "a long selection keeps its start and a long line is cut at code points" {
     const moved = relative(selection, kept);
     try std.testing.expectEqual(@as(u32, 0), moved.start);
     try std.testing.expectEqual(kept.end - kept.start, moved.end);
-    // A caret mid-line cuts both ends at code point boundaries.
     const caret = window(text, .{ .start = 180, .end = 180 }, 100);
     try std.testing.expect(caret.start <= 180);
     try std.testing.expect(caret.end >= 180);

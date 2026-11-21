@@ -1,64 +1,22 @@
-//! EveRenderer - the EVE backend's contract `Renderer` (contract §9).
-//!
-//! Translates each packed frame into one BT81x display list, so the chip
-//! draws every primitive itself at scan-out time. The list is written over
-//! SPI and swapped in at vertical blank; its cost does not depend on panel
-//! resolution or on how much of the screen changed.
-//!
-//! ## Primitive mapping
-//!
-//! | Packed draw | EVE commands |
-//! | --- | --- |
-//! | Quad | `RECTS`, `LINE_WIDTH` as the corner radius; borders as below |
-//! | Shadow (quad with blur) | Three expanding translucent `RECTS`, an approximation of the blur |
-//! | Glyph sprite | One `VERTEX2II` naming an L8 cell in `RAM_G` (`cells.zig`), tinted |
-//! | SVG sprite | Stroke and fill coverage as two cells, stroke under fill |
-//! | Polyline (`strip_expanded`) | `LINE_STRIP`; EVE rounds joins and caps the GPUs leave butt |
-//! | Point cloud | `POINTS` |
-//! | Image sprite | `VERTEX2II` of the ARGB4 mirror (`images.zig`), scaled by `BITMAP_TRANSFORM` |
-//! | Triangle mesh (paths), colour glyph | Not drawn: fails fast (CLAUDE.md §2) |
+//! The EVE backend's `Renderer`: translates each packed frame into one
+//! BT81x display list, so the chip draws every primitive itself at scan-out
+//! time. The list is written over SPI and swapped in at vertical blank; its
+//! cost does not depend on panel resolution or on how much of the screen
+//! changed.
 //!
 //! A quad's border draws as an outer rect in the border colour and an inner
 //! rect in the fill. Under a translucent fill the inner rect is first marked
 //! in the stencil buffer, so the border never shows through the fill. EVE
 //! rects have one radius: mixed corner radii draw with the largest, and an
-//! opaque fill redraws its smaller corners.
-//!
-//! Each draw's clip becomes the scissor, taken over the pixels whose centres
-//! lie inside it (contract §9). Cells draw 1:1 at whole pixels (`NEAREST`),
-//! so the window's scale is 1 and sprite bounds match their atlas regions.
-//! Images draw at whole pixels at any size: 1:1 with `NEAREST`, scaled with
-//! `BILINEAR`. Rounded image corners clip through the stencil buffer with
-//! the largest radius; a grayscale image fails fast.
-//!
-//! ## Budgets (CLAUDE.md §2 and §4)
-//!
-//! - Display list: 1536 of the 2048 commands of the chip's `RAM_DL`, so the
-//!   chip renders every line in time (`EveLimits.display_list_words_frame_max`).
-//!   A frame that needs more fails fast, naming the frame, the draw, and its
-//!   counts; the EVE host refuses, at compile time, paint limits whose
-//!   fullest frame cannot fit.
-//! - `RAM_G` (`limits.zig`): the image mirror (`image_size² × 2`), and glyph
-//!   cell pages in the rest below the 64 KiB snapshot scratch; cell
-//!   exhaustion fails fast. The EVE host refuses, at compile time, a profile
-//!   that leaves too few pages. The host mirrors of the atlases come from the
-//!   window's `AtlasLimits`.
-//! - SPI per frame: the list, the swap request, new cells, and new image
-//!   rows, at most `RAM_DL` plus `AtlasLimits.upload_bytes_frame_max`; more
-//!   fails fast. Resending the image mirror after a failed transfer is
-//!   exempt, once.
-//!
-//! ## Resource sketch (CLAUDE.md §7)
-//!
-//! - Memory: the renderer (about 150 KiB: list 8 KiB, cell table 64 KiB,
-//!   staging 64 KiB) lives in the window; the atlas mirrors are reserved at
-//!   init (`text_size² + 2 × svg_size² + 2 × image_size²`: 512 KiB at
-//!   `.nano`, 672 KiB at `.embedded`).
-//! - CPU per frame: one pass over the draws, one hash probe per sprite, a
-//!   few words per primitive; no pixel work besides copying new cells.
-//! - SPI per frame: at most 8 KiB of list, plus cells on first use. At 30 MHz
-//!   a full list takes about 2.2 ms; the swap wait paces frames to the
-//!   panel's refresh.
+//! opaque fill redraws its smaller corners. A shadow (quad with blur) draws
+//! as three expanding translucent rects. Each draw's clip becomes the
+//! scissor, taken over the pixels whose centres lie inside it. Cells draw
+//! 1:1 at whole pixels (`NEAREST`), so the window's scale is 1 and sprite
+//! bounds match their atlas regions. Images draw at whole pixels at any
+//! size: 1:1 with `NEAREST`, scaled with `BILINEAR`. Rounded image corners
+//! clip through the stencil buffer with the largest radius; a grayscale
+//! image fails fast. Triangle meshes (paths) and colour glyphs are not
+//! drawn: they fail fast.
 
 const std = @import("std");
 const backend = @import("../../core/backend.zig");
@@ -113,8 +71,8 @@ pub const EveRenderer = struct {
         backend.verifyRenderer(Self);
     }
 
-    /// `surface.native` is the platform's `Chip`, whose panel `size_px` is.
-    /// Field by field: the renderer is about 150 KiB (CLAUDE.md §13).
+    /// Field by field: the renderer is about 150 KiB, too large for a
+    /// struct literal's stack temporary.
     pub fn initInPlace(
         self: *Self,
         surface: *const backend.Surface,
@@ -182,7 +140,6 @@ pub const EveRenderer = struct {
         }
     }
 
-    /// The panel never changes size; a resize restates it.
     pub fn resize(self: *Self, size_px: backend.SizePx) void {
         assert(self.chip != null);
         assert(std.meta.eql(size_px, self.size_px));
@@ -264,10 +221,6 @@ pub const EveRenderer = struct {
             self.spi_bytes_frame_max,
         });
     }
-
-    // =========================================================================
-    // Draws
-    // =========================================================================
 
     fn encodeDraw(
         self: *Self,
@@ -490,7 +443,6 @@ pub const EveRenderer = struct {
         }
     }
 
-    /// `LINE_WIDTH` is the half-width in 1/16 px; at least 1/2 px.
     fn encodeStrip(self: *Self, mesh: *const packed_mod.Mesh, context: *const Context) void {
         assert(mesh.width > 0);
         const points = context.frame.meshPoints(mesh);
@@ -538,7 +490,6 @@ pub const EveRenderer = struct {
         self.list.image(&draw_image);
     }
 
-    /// `POINT_SIZE` is the radius in 1/16 px.
     fn encodePoints(self: *Self, mesh: *const packed_mod.Mesh, context: *const Context) void {
         assert(mesh.width > 0);
         const points = context.frame.meshPoints(mesh);
@@ -571,13 +522,9 @@ const Context = struct {
     pipeline: packed_mod.Pipeline,
 };
 
-// =============================================================================
-// Conversions
-// =============================================================================
-
 /// The scissor covering the pixels whose centres lie in `clip` (edges
 /// included), or null when none do. The unbounded clip is clamped in float
-/// first (contract §9).
+/// first.
 fn scissorOf(clip: packed_mod.Rect, panel: backend.SizePx) ?display_list.Scissor {
     assert(!std.math.isNan(clip[0]));
     assert(panel.width > 0);
@@ -672,10 +619,6 @@ fn opaqueRgb(color: backend.Color) u32 {
     return listColor(.{ color.r * alpha, color.g * alpha, color.b * alpha, 1 }).rgb;
 }
 
-// =============================================================================
-// Performance log
-// =============================================================================
-
 const Timings = struct {
     wait_ns: u64,
     encode_ns: u64,
@@ -748,10 +691,6 @@ fn msPerFrame(total_ns: u64, frames: f64) f64 {
     assert(frames > 0);
     return @as(f64, @floatFromInt(total_ns)) / frames / std.time.ns_per_ms;
 }
-
-// =============================================================================
-// Tests
-// =============================================================================
 
 const testing = std.testing;
 const limits_mod = @import("../../core/limits.zig");
@@ -826,11 +765,6 @@ fn testVertex(x: f32, y: f32) u32 {
 }
 
 test "a clipped polyline is one LINE_STRIP inside the clip's pixel-centre scissor" {
-    // Goal: the ECG path. One vertex per point, in order and at 1/8 px, after
-    // a scissor taken over the pixels whose centres lie in the clip (contract
-    // §9). The clip's edges sit inside pixels, so a scissor grown outward to
-    // whole pixels differs: x 10.6..40.4 holds the centres of columns 11 to
-    // 39 (29 columns, not 31 from 10), y 20.6..29.4 rows 21 to 28 (8, not 10).
     const points = [_]packed_mod.MeshPoint{
         .{ .x = 12, .y = 22 }, .{ .x = 20.5, .y = 25.125 }, .{ .x = 38, .y = 28 },
     };
@@ -865,15 +799,11 @@ test "a clipped polyline is one LINE_STRIP inside the clip's pixel-centre scisso
         testVertex(38, 28),
     };
     try testing.expect(containsSequence(words, &strip));
-    // LINE_WIDTH is the half width in 1/16 px: 1.5 px.
     try testing.expect(std.mem.indexOfScalar(u32, words, (14 << 24) | 24) != null);
     try testing.expectEqual(@as(u32, 0), words[words.len - 1]); // DISPLAY
 }
 
 test "a translucent fill under a border marks, draws outside, and unmarks the stencil" {
-    // Goal: the border never shows through a translucent fill, and the
-    // stencil is clean for the next quad. Methodology: find the stencil and
-    // colour-mask commands in order; an opaque fill must use none of them.
     var frame: PackedFrame = undefined;
     try testFrame(&frame, &.{});
     defer frame.deinit();
@@ -912,20 +842,12 @@ test "a translucent fill under a border marks, draws outside, and unmarks the st
     try testing.expect(marked < drawn);
     try testing.expectEqual(@as(usize, 2), std.mem.count(u32, words, &.{mask_off}));
 
-    // The opaque quad alone: border rect, then fill rect, no stencil.
     frame.quads[0] = frame.quads[1];
     renderer.draw(&frame, test_viewport, .{ .r = 1, .g = 1, .b = 1, .a = 1 });
     try testing.expectEqual(@as(usize, 0), std.mem.count(u32, testWords(&renderer), &.{mask_off}));
 }
 
 test "an image draws from the image mirror, scaled by the transform" {
-    // Goal: the image path end to end on the simulated chip. A 4x2 upload at
-    // (8, 4) of the 256² nano image atlas reaches RAM_G as ARGB4 at the
-    // mirror's address; a sprite drawing it 8x2 (twice as wide) names handle
-    // 14, the ARGB4 format and the region's source, filters bilinearly, and
-    // sets BITMAP_TRANSFORM_A to 128 (half a texel per pixel) and leaves _E
-    // at 1:1. Methodology: compare against words built from the BT81x guide,
-    // independently of the encoder's helpers.
     var frame: PackedFrame = undefined;
     try testFrame(&frame, &.{});
     defer frame.deinit();
@@ -975,12 +897,6 @@ test "an image draws from the image mirror, scaled by the transform" {
 }
 
 test "a 1:1 image samples the nearest texel; a rounded, faded one draws inside a stencil mark" {
-    // Goal: the two other image paths. A sprite drawn at its region's size
-    // must not filter (a bilinear 1:1 draw blurs by half a texel) or emit a
-    // transform; one with corners and opacity 0.5 must draw at COLOR_A 128
-    // between STENCIL_FUNC(EQUAL, 1) and the unmark. Methodology: two image
-    // draws of a 4x2 region, the first 4x2 at (10, 10), the second 4x2 at
-    // (40, 10) with radius 1 and opacity 0.5; words built from the guide.
     var frame: PackedFrame = undefined;
     try testFrame(&frame, &.{});
     defer frame.deinit();
@@ -1022,7 +938,6 @@ test "a 1:1 image samples the nearest texel; a rounded, faded one draws inside a
         (32 << 24) | 0xF, // COLOR_MASK(1, 1, 1, 1)
         (10 << 24) | (5 << 16) | (1 << 8) | 0xFF, // STENCIL_FUNC(EQUAL, 1, 255)
     };
-    // The faded alpha is set with the mask rect and stays for the image.
     const faded = std.mem.indexOfScalar(u32, words, (16 << 24) | 128).?;
     const masked = std.mem.indexOfPos(u32, words, faded, &inside).?;
     const second = (2 << 30) | (40 << 21) | (10 << 12) | (14 << 7); // VERTEX2II(40, 10, 14, 0)

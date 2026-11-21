@@ -1,13 +1,7 @@
-//! Image Loader Stub - For unsupported platforms
-//!
-//! Provides API compatibility for platforms without native image loading support.
-//! All load operations return an error.
-
 const std = @import("std");
 const atlas = @import("../atlas.zig");
 const ImageData = atlas.ImageData;
 
-/// Result of image decoding
 pub const DecodedImage = struct {
     width: u32,
     height: u32,
@@ -30,7 +24,6 @@ pub const DecodedImage = struct {
     }
 };
 
-/// Load error types
 pub const LoadError = error{
     FileNotFound,
     InvalidFormat,
@@ -40,9 +33,6 @@ pub const LoadError = error{
     IoError,
 };
 
-/// Load image from raw bytes
-///
-/// Returns UnsupportedSource on unsupported platforms.
 pub fn loadFromMemory(allocator: std.mem.Allocator, data: []const u8) LoadError!DecodedImage {
     _ = allocator;
     _ = data;

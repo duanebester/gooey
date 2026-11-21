@@ -1,5 +1,5 @@
 //! ElementId: one `u64` identity for layout, hit testing, focus, retained
-//! state, and accessibility (contract §2).
+//! state, and accessibility.
 //!
 //! An id is derived from its parent's id, so the same key under two parents
 //! names two elements. Keyed ids set the top bit; auto ids, which number
@@ -15,8 +15,7 @@ pub const Key = union(enum) {
     name: []const u8,
     index: u64,
 
-    /// The key's hash. Names hash their bytes, so the string is not stored
-    /// (contract rule 6).
+    /// Names hash their bytes, so the string is not stored.
     pub fn hash(self: Key) u64 {
         return switch (self) {
             .name => |name| blk: {
@@ -71,8 +70,6 @@ fn mix(parent: u64, value: u64) u64 {
 }
 
 test "keyed and auto ids differ by parent, key, and index" {
-    // Goal: identity is scoped to the parent and keyed ids never collide
-    // with auto ids. Methodology: derive ids that differ in one input each.
     const a = ElementId.root.child(.{ .name = "a" });
     const b = ElementId.root.child(.{ .name = "b" });
     try std.testing.expect(a != b);

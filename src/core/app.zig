@@ -1,14 +1,3 @@
-//! The app store and its entry points (contract §7).
-//!
-//! `App(State, config)` owns the root state, the store handlers resolve
-//! against, the shared atlases and text system, and the window. The root
-//! render function is `App`'s second argument, passed positionally as in
-//! 0.3.1's `gooey.App` (contract §7, decision 7); nothing is found by name.
-//!
-//! Initialization runs through the lifecycle guard. Everything the app will
-//! ever use is reserved before `on_init` returns; the guard then enters
-//! `running` and any later allocation panics (contract rule 2).
-
 const std = @import("std");
 const builtin = @import("builtin");
 const limits_mod = @import("limits.zig");
@@ -39,27 +28,22 @@ pub const Effects = handler_mod.Effects;
 pub const Window = window_mod.Window;
 pub const Cx = cx_mod.Cx;
 
-/// What `Config.on_init` receives from the process: its io (files, sockets,
-/// clocks, the io jobs run on) and its environment variables. Headless apps
-/// and the web get their io and an empty environment.
+/// What `Config.on_init` receives from the process.
 pub const Init = struct {
     io: std.Io,
     environ: *const std.process.Environ.Map,
 };
 
-/// The environment of an app without a process environment: headless and
-/// the web. Never written, so its allocator is never called.
+/// The environment of an app without a process environment: headless and the
+/// web. Never written, so its allocator is never called.
 const environ_empty: std.process.Environ.Map = .{
     .array_hash_map = .empty,
     .allocator = std.mem.Allocator.failing,
 };
 
-/// A keymap entry (contract §7): `.{ .keys = "cmd-z", .action = ui.action(Undo) }`.
 pub const Binding = keymap_mod.Binding;
 
-/// The app's comptime configuration (contract §7, decision 10). Only `title`,
-/// `width`, `height`, and `limits` are required; every default below is the
-/// reviewed policy (CLAUDE.md §19).
+/// Only `title`, `width`, `height`, and `limits` are required.
 pub fn Config(comptime State: type) type {
     return struct {
         title: []const u8,
@@ -70,22 +54,20 @@ pub fn Config(comptime State: type) type {
         keymap: []const Binding = &.{},
         entities: []const type = &.{},
         fonts: Fonts = .{},
-        /// macOS: `.transparent` draws the title bar over full-size content
-        /// (`TitleBar`, `cx.titleBarInset`). Other platforms ignore it.
+        /// macOS: `.transparent` draws the title bar over full-size content;
+        /// other platforms ignore it.
         title_bar: TitleBar = .standard,
         /// The smallest content size the user can resize the window to, in
-        /// logical pixels like `width` and `height`; 0 sets no minimum on
-        /// that axis. macOS, Linux (Wayland), and Windows enforce it; the
-        /// web and fbdev, whose size the page or the screen decides, ignore
-        /// it. A minimum past the budget's framebuffer at the display's
-        /// scale yields to that cap, as the window size itself does.
+        /// logical pixels; 0 sets no minimum on that axis. macOS, Linux
+        /// (Wayland), and Windows enforce it; the web and fbdev ignore it.
+        /// A minimum past the budget's framebuffer at the display's scale
+        /// yields to that cap.
         min_width: u32 = 0,
         min_height: u32 = 0,
-        /// Background job types `Effects.spawn` may start (`gooey.Job`);
-        /// non-empty starts `limits.events.job_count_max` workers at init.
+        /// Background job types `Effects.spawn` may start; non-empty starts
+        /// `limits.events.job_count_max` workers at init.
         jobs: []const type = &.{},
-        /// The last initialization work, with the process's io and
-        /// environment; an app keeps what it needs from `init` in `State`.
+        /// The last initialization work, with the process's io and environment.
         on_init: ?*const fn (state: *State, init: Init, effects: *Effects) void = null,
         /// Runs once at shutdown, after every job worker has returned and
         /// before anything is freed, so no job can reach `State` afterwards.
@@ -93,27 +75,25 @@ pub fn Config(comptime State: type) type {
     };
 }
 
-/// The app's font families (decisions 8 and 10). The defaults load the
-/// platform's sans-serif at the theme's `font_size_base` and no second family.
-/// The faces each family reserves are part of the budget:
+/// The defaults load the platform's sans-serif at the theme's
+/// `font_size_base`. The faces each family reserves are part of the budget:
 /// `limits.text.fonts`.
 pub const Fonts = struct {
     /// Family name; null loads the platform's sans-serif.
     name: ?[]const u8 = null,
     /// Points, for both families; null takes the theme's `font_size_base`.
     size: ?f32 = null,
-    /// The second family (decision 8); null reserves no faces. Its faces are
+    /// The second family; null reserves no faces. Its faces are
     /// `limits.text.fonts.mono_variants`.
     mono: ?FontSource = null,
 };
 
-/// The point size the app loads its families at.
 fn fontSize(comptime State: type, comptime config: Config(State)) f32 {
     return config.fonts.size orelse @floatFromInt(config.theme.font_size_base);
 }
 
-/// Reject font settings that cannot work, naming the field (decision 8): a
-/// second family needs mono faces to load into, and mono faces need a family.
+/// Reject font settings that cannot work, naming the field: a second family
+/// needs mono faces to load into, and mono faces need a family.
 fn checkFonts(comptime State: type, comptime config: Config(State)) void {
     comptime {
         const size = fontSize(State, config);
@@ -141,9 +121,6 @@ fn checkFonts(comptime State: type, comptime config: Config(State)) void {
     }
 }
 
-/// Reject a minimum window size that cannot work, naming the field: one
-/// larger than the size the window opens at, or than the budget's
-/// framebuffer holds even at scale 1, where a logical pixel is one pixel.
 fn checkMinSize(comptime State: type, comptime config: Config(State)) void {
     comptime {
         const window = config.limits.window;
@@ -172,8 +149,6 @@ fn checkMinSize(comptime State: type, comptime config: Config(State)) void {
     }
 }
 
-/// Reject a job list that cannot work (`Config.jobs`), naming the type and
-/// the `ResourceLimits.events` field it exceeds.
 fn checkJobs(comptime types: []const type, comptime limits: *const ResourceLimits) void {
     comptime {
         for (types, 0..) |T, index| {
@@ -208,7 +183,7 @@ fn checkJobs(comptime types: []const type, comptime limits: *const ResourceLimit
 /// editor engines.
 const engine_pool_count_max: u32 = 3;
 
-/// Reject an entity list that cannot work (decision 17), naming the type.
+/// Reject an entity list that cannot work, naming the type.
 fn checkEntities(comptime State: type, comptime types: []const type) void {
     comptime {
         if (types.len + engine_pool_count_max > handler_mod.entity_pool_count_max) {
@@ -268,14 +243,13 @@ pub fn App(
         guard: lifecycle.LifecycleGuard,
         state: State,
         store: handler_mod.Store,
-        /// The store's pool table: the app's entity pools, then the window's
-        /// text-engine pools, sized exactly at comptime.
+        /// The app's entity pools, then the window's text-engine pools, sized
+        /// exactly at comptime.
         store_pools: [config.entities.len + engine_pool_count_max]handler_mod.EntityPool,
         /// One pool per `config.entities` type, in list order.
         entity_pools: [config.entities.len]entities_mod.Pool,
         resources: app_resources.AppResources,
         window: Window,
-        /// What `on_init` receives: set before initialization starts.
         process: Init,
         /// `Config.jobs` as the ids the job pool checks spawns against.
         /// Type ids are addresses, known only at run time.
@@ -283,8 +257,7 @@ pub fn App(
 
         const Self = @This();
 
-        // The browser exports (`init`, `frame`, `resize`): the other half of
-        // the generated entry point (contract §7, decision 9).
+        // The other half of the generated web entry point.
         comptime {
             if (builtin.cpu.arch.isWasm()) _ = web_host.Exports(Self);
         }
@@ -303,7 +276,6 @@ pub fn App(
         pub const font_limits = config.limits.text.fonts;
         pub const keymap = keymap_mod.compile(config.keymap);
 
-        /// The root render function.
         pub fn render(cx: *Cx) void {
             render_fn(cx);
         }
@@ -312,8 +284,7 @@ pub fn App(
             scale_factor: f32,
         };
 
-        /// Initialize without a platform window: the TestBackend path. The
-        /// app must stay at this address (handlers and `Cx` point into it).
+        /// The app must stay at this address: handlers and `Cx` point into it.
         pub noinline fn initHeadless(
             self: *Self,
             backing: std.mem.Allocator,
@@ -327,10 +298,8 @@ pub fn App(
             self.finishInit();
         }
 
-        /// The generated entry point (contract §7): `pub const main =
-        /// App.main;` in the root file. Runs on macOS, Linux (every
-        /// `-Dlinux-backend`), and Windows. On WASM, JavaScript drives the app through the exports
-        /// below instead, so `main` does nothing there.
+        /// `pub const main = App.main;` in the root file. On WASM, JavaScript
+        /// drives the app through the exports below, so `main` does nothing there.
         pub fn main(init: std.process.Init) !void {
             if (comptime builtin.cpu.arch.isWasm()) return;
             const host = switch (comptime builtin.os.tag) {
@@ -350,8 +319,8 @@ pub fn App(
             try host.run(Self, self, init.gpa, init.io);
         }
 
-        /// Start initialization: every allocation from here to `finishInit`
-        /// goes through the guard, including a platform window's.
+        /// Every allocation from here to `finishInit` goes through the guard,
+        /// including a platform window's.
         pub fn beginInit(self: *Self, backing: std.mem.Allocator) void {
             self.guard = lifecycle.LifecycleGuard.init(backing);
             assert(self.guard.lifecycle == .initializing);
@@ -390,7 +359,6 @@ pub fn App(
             });
         }
 
-        /// The web host's `process`: the browser io and no environment.
         pub fn setBrowserProcess(self: *Self, io: std.Io) void {
             assert(comptime builtin.cpu.arch.isWasm());
             self.process = .{ .io = io, .environ = &environ_empty };
@@ -413,18 +381,17 @@ pub fn App(
             assert(self.guard.lifecycle == .running);
         }
 
-        /// Stop and free an app made by `initHeadless`: the TestBackend
-        /// path has no host to stop it.
+        /// Stop and free an app made by `initHeadless`, which has no host to stop it.
         pub fn deinitHeadless(self: *Self) void {
             self.stop();
             self.deinit();
             assert(self.guard.lifecycle == .deinitializing);
         }
 
-        /// Leave `running`, the only way out of it: no tick runs afterwards,
-        /// and frees through the guard are expected. A host defers it right
-        /// after `finishInit`, so it runs before any deferred teardown frees
-        /// the host, the platform window, or the core. Every job worker is
+        /// The only way out of `running`: no tick runs afterwards, and frees
+        /// through the guard are expected. A host defers it right after
+        /// `finishInit`, so it runs before any deferred teardown frees the
+        /// host, the platform window, or the core. Every job worker is
         /// cancelled and has returned before `on_deinit` sees the state.
         pub fn stop(self: *Self) void {
             assert(self.guard.lifecycle == .running);
@@ -449,7 +416,7 @@ pub fn App(
         }
 
         /// Reserve and register one pool per `config.entities` type,
-        /// `limits.entities.count_per_type_max` slots each (decision 17).
+        /// `limits.entities.count_per_type_max` slots each.
         fn initEntityPools(self: *Self, gpa: std.mem.Allocator) !void {
             const count = config.limits.entities.count_per_type_max;
             comptime assert(count > 0);
@@ -479,8 +446,8 @@ pub fn App(
             tick_mod.tick(self, &self.window, now_ns);
         }
 
-        /// The main-thread side of a tick, for a host with a render thread.
-        /// Type-erased so the host is not generic over the app.
+        /// The main-thread side of a tick for a host with a render thread;
+        /// type-erased so the host is not generic over the app.
         pub fn tickMainErased(context: *anyopaque, now_ns: u64) void {
             const self: *Self = @ptrCast(@alignCast(context));
             assert(self.guard.lifecycle == .running);

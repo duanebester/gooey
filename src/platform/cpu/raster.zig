@@ -1,32 +1,15 @@
-//! Pixel-level rasterization for Gooey's CPU renderer.
-//!
-//! Every function writes into a caller-owned `Target` and nothing allocates.
-//! Coordinates arriving here are already physical (device) pixels; the scene
-//! walk in `renderer.zig` owns the logical-to-device conversion.
-//!
-//! ## Pixel format
-//!
-//! One `u32` per pixel holding `0xAARRGGBB` in native byte order. On the
-//! little-endian hosts Gooey targets, the bytes in memory are B, G, R, A, which
-//! is Wayland's `WL_SHM_FORMAT_XRGB8888` and the common 32 bpp fbdev layout.
-//! Alpha is always written as 0xFF because the surface is opaque.
-//!
-//! ## Blending
-//!
-//! The Vulkan backend renders into a UNORM swapchain, so its fixed-function
-//! blend runs on sRGB-encoded values without linearization. This file does
-//! the same. Sources are converted to premultiplied 8-bit color first, so one
-//! source-over blend serves both the straight-alpha pipelines (`SRC_ALPHA`)
-//! and the premultiplied SVG pipeline (`ONE`).
-//!
-//! ## Coverage
-//!
-//! Shapes reproduce the Vulkan fragment shaders: rounded rectangles use the
-//! same signed distance function and `smoothstep(-0.5, 0.5, d)` edge ramp,
-//! shadows use the same falloff, and textured quads sample their atlas with
-//! bilinear filtering at pixel centers. Interior spans that the distance
-//! function would shade at full coverage are filled directly instead, which
-//! is where nearly all pixels of a typical UI frame are written.
+//! CPU rasterization mirroring the GPU backends' pixel format, blending, and
+//! shader math. Pixels are native-endian `0xAARRGGBB`: on little-endian hosts
+//! the bytes in memory are B, G, R, A, which is Wayland's
+//! `WL_SHM_FORMAT_XRGB8888` and the common 32 bpp fbdev layout; alpha is
+//! always 0xFF because the surface is opaque. Blending matches the Vulkan
+//! UNORM swapchain's fixed-function blend, which runs on sRGB-encoded values
+//! without linearization; sources are premultiplied so one source-over blend
+//! serves both the straight-alpha (`SRC_ALPHA`) and premultiplied SVG (`ONE`)
+//! pipelines. Shapes reproduce the fragment shaders' signed distance
+//! functions and `smoothstep(-0.5, 0.5, d)` edge ramp, with interior spans
+//! shaded at full coverage filled directly. Coordinates are device pixels;
+//! `renderer.zig` owns the logical-to-device conversion. Nothing allocates.
 
 const std = @import("std");
 const geometry = @import("../../geometry/geometry.zig");
@@ -34,15 +17,13 @@ const geometry = @import("../../geometry/geometry.zig");
 const assert = std.debug.assert;
 const Color = geometry.Color;
 
-/// Caller-owned pixel storage, one `u32` per pixel (see the file comment).
 pub const Target = struct {
     pixels: []u32,
     width: u32,
     height: u32,
-    /// Distance between row starts, in pixels. At least `width`.
+    /// Row stride in pixels; at least `width`.
     stride: u32,
 
-    /// The visible pixels of row `y`.
     pub fn row(self: Target, y: u32) []u32 {
         assert(y < self.height);
         assert(self.width <= self.stride);
@@ -52,7 +33,7 @@ pub const Target = struct {
     }
 };
 
-/// Premultiplied 8-bit color. Every color channel is at most `a`.
+/// Premultiplied 8-bit color: every channel is at most `a`.
 pub const Premul = struct {
     r: u8,
     g: u8,
@@ -62,7 +43,6 @@ pub const Premul = struct {
     pub const transparent = Premul{ .r = 0, .g = 0, .b = 0, .a = 0 };
 };
 
-/// Rectangle in device pixels.
 pub const DeviceRect = struct {
     x: f32,
     y: f32,
@@ -70,7 +50,6 @@ pub const DeviceRect = struct {
     height: f32,
 };
 
-/// Corner radii in device pixels.
 pub const Radii = struct {
     top_left: f32 = 0,
     top_right: f32 = 0,
@@ -86,7 +65,6 @@ pub const Radii = struct {
     }
 };
 
-/// Border widths in device pixels.
 pub const Borders = struct {
     top: f32 = 0,
     right: f32 = 0,
@@ -94,7 +72,7 @@ pub const Borders = struct {
     left: f32 = 0,
 };
 
-/// Half-open range of pixel indices.
+/// Half-open range of pixel indices: `end` is exclusive.
 pub const Span = struct {
     start: u32,
     end: u32,
@@ -113,7 +91,6 @@ pub const Span = struct {
     }
 };
 
-/// A rounded rectangle quad with optional per-side borders.
 pub const QuadShape = struct {
     bounds: DeviceRect,
     clip: DeviceRect,
@@ -123,11 +100,9 @@ pub const QuadShape = struct {
     border_color: Color,
 };
 
-/// A blurred rounded rectangle drawn behind content.
 pub const ShadowShape = struct {
     content: DeviceRect,
-    /// Pixels whose centres lie outside are left alone (contract §9: shadows
-    /// are clipped like every other draw).
+    /// Pixels whose centres lie outside the clip are left alone.
     clip: DeviceRect,
     offset_x: f32,
     offset_y: f32,
@@ -136,7 +111,6 @@ pub const ShadowShape = struct {
     color: Color,
 };
 
-/// Read-only view of a square texture atlas.
 pub const AtlasView = struct {
     data: []const u8,
     /// Width and height in texels.
@@ -145,7 +119,6 @@ pub const AtlasView = struct {
     bytes_per_pixel: u8,
 };
 
-/// Destination rectangle and atlas sub-rectangle of a textured quad.
 pub const TexturedRect = struct {
     bounds: DeviceRect,
     clip: DeviceRect,
@@ -155,17 +128,13 @@ pub const TexturedRect = struct {
     uv_bottom: f32,
 };
 
-/// Per-image effects applied after sampling, mirroring `image.frag`.
+/// Mirrors `image.frag`.
 pub const ImageEffects = struct {
     tint: Color,
     radii: Radii,
     grayscale: f32,
     opacity: f32,
 };
-
-// =============================================================================
-// Color and blending
-// =============================================================================
 
 /// Round a unit-interval value to a byte, clamping out-of-range input.
 pub fn unitToByte(value: f32) u8 {
@@ -177,7 +146,6 @@ pub fn unitToByte(value: f32) u8 {
     return @intFromFloat(scaled);
 }
 
-/// Convert a straight-alpha color to premultiplied 8-bit color.
 pub fn premulFromStraight(color: Color) Premul {
     assert(!std.math.isNan(color.a));
     const alpha = std.math.clamp(color.a, 0.0, 1.0);
@@ -195,7 +163,7 @@ pub fn premulFromStraight(color: Color) Premul {
     return result;
 }
 
-/// `round(a * b / 255)` for byte operands, without a division.
+/// `round(a * b / 255)` for byte operands.
 pub fn mul255(a: u32, b: u32) u32 {
     assert(a <= 255);
     assert(b <= 255);
@@ -205,7 +173,6 @@ pub fn mul255(a: u32, b: u32) u32 {
     return result;
 }
 
-/// Scale a premultiplied color by a coverage byte.
 pub fn premulScale(color: Premul, coverage: u8) Premul {
     assert(color.r <= color.a);
     assert(color.b <= color.a);
@@ -218,7 +185,6 @@ pub fn premulScale(color: Premul, coverage: u8) Premul {
     };
 }
 
-/// Pack an opaque color into the target pixel format.
 pub fn packOpaque(color: Premul) u32 {
     assert(color.a == 255);
     const packed_color = 0xFF00_0000 | (@as(u32, color.r) << 16) |
@@ -243,7 +209,6 @@ pub fn blendPixel(target_pixel: u32, source: Premul) u32 {
     return 0xFF00_0000 | (r << 16) | (g << 8) | b;
 }
 
-/// Fill every pixel of `pixels` with one source color.
 pub fn fillSpan(pixels: []u32, source: Premul) void {
     assert(source.r <= source.a);
     assert(pixels.len <= std.math.maxInt(u32));
@@ -257,8 +222,6 @@ pub fn fillSpan(pixels: []u32, source: Premul) void {
     }
 }
 
-/// Fill the visible area of the whole target with an opaque color.
-///
 /// A translucent clear color is composited over black, because the surface
 /// has no alpha channel to carry it to the compositor.
 pub fn clear(target: Target, color: Color) void {
@@ -272,11 +235,6 @@ pub fn clear(target: Target, color: Color) void {
     }
 }
 
-// =============================================================================
-// Pixel ranges
-// =============================================================================
-
-/// Clamp an integral float to `[0, limit]` and convert it.
 pub fn clampIndex(value: f32, limit: u32) u32 {
     assert(!std.math.isNan(value));
     assert(@floor(value) == value or std.math.isInf(value));
@@ -286,10 +244,8 @@ pub fn clampIndex(value: f32, limit: u32) u32 {
     return @intFromFloat(value);
 }
 
-/// Pixels whose centers lie in the closed interval `[low, high]`.
-///
-/// Matches the fragment shaders' clip test, which discards only centers
-/// strictly outside the clip rectangle.
+/// Pixels whose centers lie in the closed interval `[low, high]`, matching
+/// the shaders' clip test, which keeps centers on the clip edge.
 pub fn centerSpanClosed(low: f32, high: f32, limit: u32) Span {
     assert(!std.math.isNan(low));
     assert(!std.math.isNan(high));
@@ -300,8 +256,6 @@ pub fn centerSpanClosed(low: f32, high: f32, limit: u32) Span {
 }
 
 /// Pixels whose centers lie in the half-open interval `[low, high)`.
-///
-/// This is the rasterization rule the GPU applies to a primitive's geometry.
 pub fn centerSpanHalfOpen(low: f32, high: f32, limit: u32) Span {
     assert(!std.math.isNan(low));
     assert(!std.math.isNan(high));
@@ -312,8 +266,6 @@ pub fn centerSpanHalfOpen(low: f32, high: f32, limit: u32) Span {
 }
 
 /// Pixels that `[low, high)` touches at all.
-///
-/// Anti-aliased shapes use this so partially covered edge pixels are shaded.
 pub fn touchedSpan(low: f32, high: f32, limit: u32) Span {
     assert(!std.math.isNan(low));
     assert(!std.math.isNan(high));
@@ -334,10 +286,6 @@ fn clipColumns(clip: DeviceRect, limit: u32) Span {
     assert(limit > 0);
     return centerSpanClosed(clip.x, clip.x + clip.width, limit);
 }
-
-// =============================================================================
-// Distance functions
-// =============================================================================
 
 pub fn smoothstep(edge0: f32, edge1: f32, x: f32) f32 {
     assert(edge0 < edge1);
@@ -393,10 +341,6 @@ fn mixColor(a: Color, b: Color, t: f32) Color {
     };
 }
 
-// =============================================================================
-// Quads
-// =============================================================================
-
 /// Values `quad.frag` derives per fragment that are constant per quad.
 const QuadGeometry = struct {
     center_x: f32,
@@ -435,7 +379,7 @@ const QuadGeometry = struct {
         const borders = shape.borders;
         const half_width = bounds.width * 0.5;
         const half_height = bounds.height * 0.5;
-        // Inner rectangle in quad-centered coordinates, inset per side.
+        // Inner rectangle in quad-centered coordinates.
         const inner_min_x = -half_width + borders.left;
         const inner_min_y = -half_height + borders.top;
         const inner_max_x = half_width - borders.right;
@@ -475,7 +419,7 @@ const QuadGeometry = struct {
         };
     }
 
-    /// Shade one pixel center exactly as `quad.frag` does.
+    /// Shades one pixel center exactly as `quad.frag` does.
     fn shade(self: *const QuadGeometry, pixel_x: f32, pixel_y: f32) Premul {
         assert(self.half_width >= 0);
         assert(self.half_height >= 0);
@@ -531,7 +475,6 @@ fn shadeQuadRange(row: []u32, columns: Span, pixel_y: f32, quad: *const QuadGeom
     }
 }
 
-/// Draw a rounded, optionally bordered quad.
 pub fn drawQuad(target: Target, shape: *const QuadShape) void {
     assert(shape.bounds.width >= 0);
     assert(shape.bounds.height >= 0);
@@ -567,20 +510,12 @@ pub fn drawQuad(target: Target, shape: *const QuadShape) void {
     }
 }
 
-// =============================================================================
-// Shadows
-// =============================================================================
-
-/// Draw a drop shadow.
-///
 /// Both GPU backends place the distance function's center at the content
 /// center plus *twice* the offset while bounding the geometry by one offset
 /// (`local = unit * size - size / 2 - offset`). The CPU path reproduces that
 /// exactly so a shadow looks the same on every renderer.
 ///
-/// `profile` is caller-owned scratch of at least `target.width` colors. Rows
-/// that meet no rounded corner share one per-column color profile, computed
-/// once into it.
+/// `profile` is caller-owned scratch of at least `target.width` colors.
 pub fn drawShadow(target: Target, shape: *const ShadowShape, profile: []Premul) void {
     assert(shape.content.width >= 0);
     assert(shape.content.height >= 0);
@@ -627,7 +562,6 @@ pub fn drawShadow(target: Target, shape: *const ShadowShape, profile: []Premul) 
     }
 }
 
-/// Blend a row of per-pixel source colors, skipping transparent ones.
 fn blendColors(pixels: []u32, colors: []const Premul) void {
     assert(pixels.len == colors.len);
     assert(pixels.len <= std.math.maxInt(u32));
@@ -676,7 +610,6 @@ const ShadowFalloff = struct {
         return @abs(local_y) - self.half_height <= self.edge0;
     }
 
-    /// Source colors of a straight row, one per column of `columns`.
     fn straightRowProfile(
         self: *const ShadowFalloff,
         storage: []Premul,
@@ -742,13 +675,9 @@ fn shadeShadowRange(
     }
 }
 
-// =============================================================================
-// Textured quads
-// =============================================================================
-
 /// Bilinear sample of `channels` bytes per texel at texel-space coordinates,
-/// where integer coordinates address texel centers. Coordinates are clamped
-/// to the atlas edge, matching `CLAMP_TO_EDGE`.
+/// where integer coordinates address texel centers, clamped to the atlas
+/// edge as `CLAMP_TO_EDGE`.
 fn sampleBilinear(comptime channels: u8, atlas: AtlasView, tx: f32, ty: f32) [channels]f32 {
     assert(atlas.bytes_per_pixel == channels);
     assert(atlas.data.len >= @as(usize, atlas.size) * atlas.size * channels);
@@ -896,7 +825,7 @@ const TexelOffset = struct {
     y: i64,
 };
 
-/// Draw a glyph from a coverage (R8) atlas in a straight-alpha color.
+/// Draws a glyph from a coverage (R8) atlas in a straight-alpha color.
 pub fn drawGlyph(target: Target, rect: *const TexturedRect, atlas: AtlasView, color: Color) void {
     assert(atlas.bytes_per_pixel == 1);
     assert(!std.math.isNan(color.a));
@@ -916,7 +845,7 @@ pub fn drawGlyph(target: Target, rect: *const TexturedRect, atlas: AtlasView, co
     }
 }
 
-/// Draw an SVG icon from an RGBA atlas: red holds fill coverage and green
+/// Draws an SVG icon from an RGBA atlas: red holds fill coverage, green
 /// holds stroke coverage, composited as in `svg.frag`.
 pub fn drawSvg(
     target: Target,
@@ -971,7 +900,6 @@ fn shadeSvg(fill_sample: f32, stroke_sample: f32, fill: Color, stroke: Color) Pr
     };
 }
 
-/// Draw a raster image from a straight-alpha RGBA atlas.
 pub fn drawImage(
     target: Target,
     rect: *const TexturedRect,
@@ -1033,10 +961,6 @@ fn shadeImage(sample: [4]f32, effects: *const ImageEffects, corner: f32) Premul 
     return premulFromStraight(color);
 }
 
-// =============================================================================
-// Tests
-// =============================================================================
-
 const testing = std.testing;
 
 const test_background: u32 = 0xFF00_0000;
@@ -1069,9 +993,6 @@ const green = Color{ .r = 0, .g = 1, .b = 0, .a = 1 };
 const white = Color{ .r = 1, .g = 1, .b = 1, .a = 1 };
 
 test "mul255 equals round(a * b / 255) for every byte pair" {
-    // Goal: the shift trick replaces a division in every blended pixel, so
-    // prove it exhaustively against an independent integer reference rather
-    // than spot-checking easy values.
     var a: u32 = 0;
     while (a <= 255) : (a += 1) {
         var b: u32 = 0;
@@ -1083,10 +1004,8 @@ test "mul255 equals round(a * b / 255) for every byte pair" {
 }
 
 test "translucent source blends over the target pixel" {
-    // Goal: pin source-over arithmetic with distinct channels so a swapped
-    // channel or a missing inverse-alpha term changes the result. Expected
-    // values are worked by hand: alpha 0.5 rounds to 128, so each channel is
-    // 128 + round(target * 127 / 255).
+    // Expected values are worked by hand: alpha 0.5 rounds to 128, so each
+    // channel is 128 + round(target * 127 / 255).
     const source = premulFromStraight(.{ .r = 1, .g = 1, .b = 1, .a = 0.5 });
     try testing.expectEqual(@as(u8, 128), source.a);
     try testing.expectEqual(@as(u32, 0xFFA0_C0E0), blendPixel(0xFF40_80C0, source));
@@ -1094,8 +1013,6 @@ test "translucent source blends over the target pixel" {
 }
 
 test "opaque quad covers exactly the pixels inside its edges" {
-    // Goal: integer-aligned edges must neither bleed into the neighboring
-    // pixel nor lose the last covered pixel; check both sides of each edge.
     var pixels: [6 * 6]u32 = undefined;
     const target = testTarget(&pixels, 6, 6);
     drawQuad(target, &testQuad(.{ .x = 1, .y = 1, .width = 4, .height = 4 }, red));
@@ -1108,10 +1025,9 @@ test "opaque quad covers exactly the pixels inside its edges" {
 }
 
 test "fractional quad edges follow the shader's smoothstep ramp" {
-    // Goal: edge pixels use `1 - smoothstep(-0.5, 0.5, d)`, not a linear or
-    // binary coverage. Edges at 1.25 and 3.25 put the pixel centers 0.25
-    // inside and 0.25 outside: coverage 0.84375 and 0.15625, i.e. red bytes
-    // 215 and 40 over black.
+    // Edges at 1.25 and 3.25 put the pixel centers 0.25 inside and 0.25
+    // outside: coverage 0.84375 and 0.15625, i.e. red bytes 215 and 40 over
+    // black.
     var pixels: [5 * 1]u32 = undefined;
     const target = testTarget(&pixels, 5, 1);
     drawQuad(target, &testQuad(.{ .x = 1.25, .y = 0, .width = 2, .height = 1 }, red));
@@ -1123,8 +1039,8 @@ test "fractional quad edges follow the shader's smoothstep ramp" {
 }
 
 test "clip keeps pixel centers that lie exactly on its edge" {
-    // Goal: the shaders discard only centers strictly outside the clip, so a
-    // clip ending at 2.5 keeps pixel 2 (center 2.5) and drops pixel 3.
+    // The shaders keep centers on the clip edge: a clip ending at 2.5 keeps
+    // pixel 2 (center 2.5) and drops pixel 3.
     var pixels: [5 * 1]u32 = undefined;
     const target = testTarget(&pixels, 5, 1);
     var shape = testQuad(.{ .x = 0, .y = 0, .width = 5, .height = 1 }, red);
@@ -1136,8 +1052,6 @@ test "clip keeps pixel centers that lie exactly on its edge" {
 }
 
 test "corner radius applies only to the corners that set it" {
-    // Goal: a top-left-only radius must round that corner and leave the
-    // other three square, catching a swapped or uniform radius lookup.
     var pixels: [10 * 10]u32 = undefined;
     const target = testTarget(&pixels, 10, 10);
     var shape = testQuad(.{ .x = 0, .y = 0, .width = 10, .height = 10 }, red);
@@ -1151,8 +1065,6 @@ test "corner radius applies only to the corners that set it" {
 }
 
 test "a bottom-only border paints only the bottom edge" {
-    // Goal: per-side borders must map top/right/bottom/left correctly and the
-    // interior fast path must not overwrite the border rows.
     var pixels: [6 * 6]u32 = undefined;
     const target = testTarget(&pixels, 6, 6);
     var shape = testQuad(.{ .x = 0, .y = 0, .width = 6, .height = 6 }, red);
@@ -1166,10 +1078,10 @@ test "a bottom-only border paints only the bottom edge" {
 }
 
 test "shadow distance center sits at twice the offset, inside one-offset geometry" {
-    // Goal: pin parity with both GPU shaders. Content spans x [2, 6) with a
-    // one-pixel x offset and no blur, so the geometry spans [3, 7) while the
-    // shaded box spans [4, 8): pixel 3 is inside the geometry but outside the
-    // box, pixels 4-6 are fully shaded, and pixel 7 is outside the geometry.
+    // Content spans x [2, 6) with a one-pixel x offset and no blur, so the
+    // geometry spans [3, 7) while the shaded box spans [4, 8): pixel 3 is
+    // inside the geometry but outside the box, pixels 4-6 are fully shaded,
+    // and pixel 7 is outside the geometry.
     var pixels: [9 * 6]u32 = undefined;
     const target = testTarget(&pixels, 9, 6);
     @memset(&pixels, 0xFFFF_FFFF);
@@ -1190,9 +1102,8 @@ test "shadow distance center sits at twice the offset, inside one-offset geometr
 }
 
 test "shadow keeps to its clip, edges included" {
-    // Goal: shadows are clipped like every other draw (contract §9). The same
-    // shaded box as above, pixels 4-6, clipped to x [0, 5.5]: pixel 5's centre
-    // lies on the clip edge and is drawn, pixel 6's lies past it and is not.
+    // Clipped to x [0, 5.5]: pixel 5's centre lies on the clip edge and is
+    // drawn, pixel 6's lies past it and is not.
     var pixels: [9 * 6]u32 = undefined;
     const target = testTarget(&pixels, 9, 6);
     @memset(&pixels, 0xFFFF_FFFF);
@@ -1212,8 +1123,6 @@ test "shadow keeps to its clip, edges included" {
 }
 
 test "glyph samples its atlas texels one-to-one when aligned" {
-    // Goal: an aligned glyph must reproduce atlas texels exactly. A half-texel
-    // mapping error would blend neighbors and change every value below.
     var atlas_data: [16]u8 = @splat(0);
     atlas_data[1 * 4 + 1] = 255;
     atlas_data[1 * 4 + 2] = 128;
@@ -1237,8 +1146,6 @@ test "glyph samples its atlas texels one-to-one when aligned" {
 }
 
 test "svg fill covers stroke and stroke shows where fill is absent" {
-    // Goal: red carries fill coverage and green carries stroke coverage; the
-    // stroke must be hidden under full fill and visible without it.
     const atlas_data = [_]u8{ 255, 255, 0, 255, 0, 255, 0, 255 };
     const atlas = AtlasView{ .data = &atlas_data, .size = 1, .bytes_per_pixel = 4 };
     var pixels: [1 * 1]u32 = undefined;
@@ -1261,8 +1168,8 @@ test "svg fill covers stroke and stroke shows where fill is absent" {
 }
 
 test "image tint and opacity multiply the sampled texel" {
-    // Goal: tint multiplies color and opacity scales alpha, so a white texel
-    // tinted red at half opacity lands as red byte 128 over black.
+    // A white texel tinted red at half opacity lands as red byte 128 over
+    // black.
     const atlas_data = [_]u8{ 255, 255, 255, 255 };
     const atlas = AtlasView{ .data = &atlas_data, .size = 1, .bytes_per_pixel = 4 };
     var pixels: [1 * 1]u32 = undefined;
@@ -1279,8 +1186,6 @@ test "image tint and opacity multiply the sampled texel" {
 }
 
 test "clear writes visible pixels only and leaves row padding untouched" {
-    // Goal: a target whose stride exceeds its width (a presenter's padded
-    // rows) must keep the padding bytes as they were.
     var pixels: [3 * 2]u32 = @splat(0x1234_5678);
     const target = Target{ .pixels = &pixels, .width = 2, .height = 2, .stride = 3 };
     clear(target, .{ .r = 0, .g = 0, .b = 1, .a = 1 });
@@ -1291,12 +1196,6 @@ test "clear writes visible pixels only and leaves row padding untouched" {
 }
 
 test "span fast paths match per-pixel shading exactly" {
-    // Goal: quads fill interior and corner-row spans, and shadows reuse a
-    // straight-row profile, on the strength of an invariance argument rather
-    // than by evaluating each pixel. Render many random shapes both ways —
-    // fast path versus shading every touched pixel through the same distance
-    // functions — and require identical pixels. Asymmetric radii, borders,
-    // fractional edges, blur, and offsets exercise each boundary.
     var prng = std.Random.DefaultPrng.init(0x6007_E7);
     const random = prng.random();
     var fast_pixels: [64 * 48]u32 = undefined;

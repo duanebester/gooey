@@ -1,19 +1,14 @@
-//! The per-window frame driver (contract §5).
+//! The per-window frame driver: drain → build → layout → emit → pack → draw →
+//! swap, with every phase transition asserted.
 //!
-//! drain → build → layout → emit → pack → draw → swap, with every phase
-//! transition asserted. Drain routes every queued event against the rendered
-//! frame and then opens at most one requested file dialog, on the main
-//! thread, outside any handler. Build through draw run only when something
-//! requested a render.
-//!
-//! Two sides, one owner each (contract rule 1). `tickMain` runs on the main
-//! thread: drain, build, layout, emit, then it publishes the built frame by
-//! setting `frame_in_flight`. `presentBuilt` runs on the render side: pack,
-//! draw, then it clears the flag. While a frame is in flight the main thread
-//! still drains (handlers read only the rendered frame) but neither builds
-//! nor flips, so the frame, the atlases, and their upload journal each have
-//! one writer at a time. The main thread makes a drawn frame `rendered` at
-//! its next tick. TestBackend runs both sides in order on one thread.
+//! Two sides, one owner each. `tickMain` runs on the main thread: drain,
+//! build, layout, emit, then it publishes the built frame by setting
+//! `frame_in_flight`. `presentBuilt` runs on the render side: pack, draw, then
+//! it clears the flag. While a frame is in flight the main thread still drains
+//! (handlers read only the rendered frame) but neither builds nor flips, so
+//! the frame, the atlases, and their upload journal each have one writer at a
+//! time. The main thread makes a drawn frame `rendered` at its next tick.
+//! TestBackend runs both sides in order on one thread.
 
 const std = @import("std");
 const records = @import("records.zig");
@@ -287,7 +282,6 @@ fn openDialog(window: *Window, request: @import("handler.zig").FileDialogRequest
     return true;
 }
 
-/// Whether `request` may select more than one path.
 pub fn selectsMany(request: @import("handler.zig").FileDialogRequest) bool {
     return switch (request.kind) {
         .open => |options| options.multiple,
@@ -295,10 +289,8 @@ pub fn selectsMany(request: @import("handler.zig").FileDialogRequest) bool {
     };
 }
 
-/// A selection past `ResourceLimits.events` fails fast (decision 11); one
-/// the request could not produce is the platform's bug. Public for a backend
-/// that completes a dialog later: it checks its selection's totals here
-/// before it queues the completion, even when they exceed its buffer.
+// Public so a backend that completes a dialog later checks its selection's
+// totals here before it queues the completion.
 pub fn checkSelection(window: *const Window, many: bool, count: u32, bytes_len: u64) void {
     assert(count > 0);
     if (!many) assert(count == 1);
@@ -321,8 +313,8 @@ pub fn checkSelection(window: *const Window, many: bool, count: u32, bytes_len: 
     }
 }
 
-/// The lowest free request id. Every slot holds a dialog still awaiting its
-/// completion, so a full table is a capacity-planning error (§2).
+// The lowest free request id. Every slot holds a dialog still awaiting its
+// completion, so a full table is a capacity-planning error.
 fn freeDialogSlot(window: *Window) u32 {
     assert(window.dialog_handlers.len == window.limits.events.dialog_count_max);
     for (window.dialog_handlers, 0..) |slot, index| {

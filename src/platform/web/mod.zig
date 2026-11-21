@@ -1,11 +1,3 @@
-//! Web platform module
-//!
-//! Exports for WebAssembly/browser target.
-//!
-//! `Platform` and `PlatformWindow` are the declarations `platform/mod.zig`
-//! binds to; the `Web*` names below are kept because the web-only modules
-//! (renderer, event bridges) refer to them.
-
 pub const imports = @import("imports.zig");
 pub const io = @import("io.zig");
 pub const window = @import("window.zig");

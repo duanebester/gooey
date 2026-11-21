@@ -1,37 +1,11 @@
-//! Hand-written Vulkan bindings for Linux GPU rendering.
-//!
-//! These declarations cover only the subset of the Vulkan C API that Gooey's
-//! 2D renderer uses on native Linux with Wayland. They stand in for an
-//! `@cImport` of `vulkan/vulkan.h`, which Zig 0.17 does not support.
-//!
-//! Why hand-written rather than generated at build time: every other native
-//! backend (Wayland, D-Bus, FreeType, libpng, CoreText, Metal) is declared the
-//! same way, CLAUDE.md section 12 forbids package dependencies, and with no C
-//! headers involved the Linux tree builds and type-checks from any host.
-//!
-//! Why this is safe: Khronos never changes the layout of a released struct or
-//! the value of a released enumerant, so a binding that matches `vulkan.h`
-//! once matches it forever. The struct, union, handle, constant, and function
-//! declarations were derived mechanically from the Khronos registry (`vk.xml`)
-//! and verified field by field against translate-c output of `vulkan.h`
-//! (size, alignment, and every field offset). The comptime block at the end of
-//! this file pins those measured layouts so a future edit cannot drift.
-//!
-//! Conventions:
-//! - Handles are distinct nullable opaque pointers, so `null` means
-//!   `VK_NULL_HANDLE` and passing a `Buffer` where an `Image` is expected is a
-//!   compile error.
-//! - Enumerations and flag types are `u32` aliases (`Result` is `i32`), the
-//!   exact C ABI on every supported target.
-//! - Struct pointer fields are always optional because the C ABI cannot express
-//!   count-dependent validity. Array pointers are `[*]`, single objects are
-//!   `*`, and null-terminated strings are `[*:0]`.
-//! - Function parameters follow the registry's `optional` attribute.
-//!
-//! Only 64-bit targets are supported: on 32-bit targets Vulkan non-dispatchable
-//! handles are `uint64_t`, not pointers.
-//!
-//! Reference: https://registry.khronos.org/vulkan/specs/1.3/html/
+//! Hand-written Vulkan bindings standing in for an `@cImport` of
+//! `vulkan/vulkan.h`, which Zig 0.17 does not support. Khronos never changes
+//! the layout of a released struct or the value of a released enumerant, so a
+//! binding that matches `vulkan.h` once matches it forever; the comptime
+//! block at the end pins the measured layouts. Handles are distinct nullable
+//! opaque pointers, so `null` is `VK_NULL_HANDLE`; enums and flags are `u32`
+//! aliases (`Result` is `i32`). Only 64-bit targets: 32-bit Vulkan
+//! non-dispatchable handles are `uint64_t`, not pointers.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -40,10 +14,6 @@ comptime {
     // Non-dispatchable handles are pointers only on 64-bit targets.
     assert(@sizeOf(usize) == 8);
 }
-
-// =============================================================================
-// Basic Types
-// =============================================================================
 
 pub const Bool32 = u32;
 pub const DeviceSize = u64;
@@ -64,10 +34,6 @@ pub const API_VERSION_1_0: u32 = (1 << 22) | (0 << 12) | 0;
 /// renderer can read `maxMemoryAllocationSize` through
 /// `vkGetPhysicalDeviceProperties2` (core in 1.1).
 pub const API_VERSION_1_1: u32 = (1 << 22) | (1 << 12) | 0;
-
-// =============================================================================
-// Enumeration and Flag Types
-// =============================================================================
 
 pub const AccessFlagBits = u32;
 pub const AccessFlags = Flags;
@@ -178,10 +144,6 @@ pub const SwapchainCreateFlagsKHR = Flags;
 pub const VertexInputRate = u32;
 pub const WaylandSurfaceCreateFlagsKHR = Flags;
 
-// =============================================================================
-// Handle Types (distinct nullable opaque pointers)
-// =============================================================================
-
 pub const Instance = ?*opaque {};
 pub const PhysicalDevice = ?*opaque {};
 pub const Device = ?*opaque {};
@@ -212,10 +174,6 @@ pub const BufferView = ?*opaque {};
 /// Wayland objects, owned by `wayland.zig`; Vulkan only stores the pointers.
 pub const WlDisplay = opaque {};
 pub const WlSurface = opaque {};
-
-// =============================================================================
-// Result
-// =============================================================================
 
 pub const Result = i32;
 
@@ -248,10 +206,6 @@ pub fn resultName(result: Result) []const u8 {
         else => "an unlisted VkResult",
     };
 }
-
-// =============================================================================
-// Constants
-// =============================================================================
 
 pub const VK_STRUCTURE_TYPE_APPLICATION_INFO: StructureType = 0;
 pub const VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO: StructureType = 1;
@@ -295,7 +249,6 @@ pub const VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT: StructureType
 pub const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2: StructureType = 1000059001;
 pub const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_3_PROPERTIES: StructureType = 1000168000;
 
-// Format constants
 pub const VK_FORMAT_UNDEFINED: Format = 0;
 pub const VK_FORMAT_R8_UNORM: Format = 9;
 pub const VK_FORMAT_R8G8B8A8_UNORM: Format = 37;
@@ -307,16 +260,13 @@ pub const VK_FORMAT_R32G32_SFLOAT: Format = 103;
 pub const VK_FORMAT_R32G32B32_SFLOAT: Format = 106;
 pub const VK_FORMAT_R32G32B32A32_SFLOAT: Format = 109;
 
-// Color space
 pub const VK_COLOR_SPACE_SRGB_NONLINEAR_KHR: ColorSpaceKHR = 0;
 
-// Present mode
 pub const VK_PRESENT_MODE_IMMEDIATE_KHR: PresentModeKHR = 0;
 pub const VK_PRESENT_MODE_MAILBOX_KHR: PresentModeKHR = 1;
 pub const VK_PRESENT_MODE_FIFO_KHR: PresentModeKHR = 2;
 pub const VK_PRESENT_MODE_FIFO_RELAXED_KHR: PresentModeKHR = 3;
 
-// Image layout
 pub const VK_IMAGE_LAYOUT_UNDEFINED: ImageLayout = 0;
 pub const VK_IMAGE_LAYOUT_GENERAL: ImageLayout = 1;
 pub const VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL: ImageLayout = 2;
@@ -325,43 +275,33 @@ pub const VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL: ImageLayout = 6;
 pub const VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL: ImageLayout = 7;
 pub const VK_IMAGE_LAYOUT_PRESENT_SRC_KHR: ImageLayout = 1000001002;
 
-// Attachment load/store ops
 pub const VK_ATTACHMENT_LOAD_OP_LOAD: AttachmentLoadOp = 0;
 pub const VK_ATTACHMENT_LOAD_OP_CLEAR: AttachmentLoadOp = 1;
 pub const VK_ATTACHMENT_LOAD_OP_DONT_CARE: AttachmentLoadOp = 2;
 pub const VK_ATTACHMENT_STORE_OP_STORE: AttachmentStoreOp = 0;
 pub const VK_ATTACHMENT_STORE_OP_DONT_CARE: AttachmentStoreOp = 1;
 
-// Image type/view type
 pub const VK_IMAGE_TYPE_2D: ImageType = 1;
 pub const VK_IMAGE_VIEW_TYPE_2D: ImageViewType = 1;
 
-// Image tiling
 pub const VK_IMAGE_TILING_OPTIMAL: ImageTiling = 0;
 pub const VK_IMAGE_TILING_LINEAR: ImageTiling = 1;
 
-// Sharing mode
 pub const VK_SHARING_MODE_EXCLUSIVE: SharingMode = 0;
 
-// Pipeline bind point
 pub const VK_PIPELINE_BIND_POINT_GRAPHICS: PipelineBindPoint = 0;
 
-// Primitive topology
 pub const VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST: PrimitiveTopology = 3;
 pub const VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP: PrimitiveTopology = 4;
 
-// Polygon mode
 pub const VK_POLYGON_MODE_FILL: PolygonMode = 0;
 
-// Cull mode
 pub const VK_CULL_MODE_NONE: CullModeFlagBits = 0;
 pub const VK_CULL_MODE_BACK_BIT: CullModeFlagBits = 2;
 
-// Front face
 pub const VK_FRONT_FACE_COUNTER_CLOCKWISE: FrontFace = 0;
 pub const VK_FRONT_FACE_CLOCKWISE: FrontFace = 1;
 
-// Blend factor
 pub const VK_BLEND_FACTOR_ZERO: BlendFactor = 0;
 pub const VK_BLEND_FACTOR_ONE: BlendFactor = 1;
 pub const VK_BLEND_FACTOR_SRC_ALPHA: BlendFactor = 6;
@@ -369,19 +309,15 @@ pub const VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA: BlendFactor = 7;
 pub const VK_BLEND_FACTOR_DST_ALPHA: BlendFactor = 8;
 pub const VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA: BlendFactor = 9;
 
-// Blend op
 pub const VK_BLEND_OP_ADD: BlendOp = 0;
 
-// Dynamic state
 pub const VK_DYNAMIC_STATE_VIEWPORT: DynamicState = 0;
 pub const VK_DYNAMIC_STATE_SCISSOR: DynamicState = 1;
 
-// Shader stage
 pub const VK_SHADER_STAGE_VERTEX_BIT: ShaderStageFlagBits = 1;
 pub const VK_SHADER_STAGE_FRAGMENT_BIT: ShaderStageFlagBits = 16;
 pub const VK_SHADER_STAGE_ALL_GRAPHICS: ShaderStageFlagBits = 31;
 
-// Descriptor type
 pub const VK_DESCRIPTOR_TYPE_SAMPLER: DescriptorType = 0;
 pub const VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER: DescriptorType = 1;
 pub const VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE: DescriptorType = 2;
@@ -389,54 +325,42 @@ pub const VK_DESCRIPTOR_TYPE_STORAGE_IMAGE: DescriptorType = 3;
 pub const VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER: DescriptorType = 6;
 pub const VK_DESCRIPTOR_TYPE_STORAGE_BUFFER: DescriptorType = 7;
 
-// Vertex input rate
 pub const VK_VERTEX_INPUT_RATE_VERTEX: VertexInputRate = 0;
 pub const VK_VERTEX_INPUT_RATE_INSTANCE: VertexInputRate = 1;
 
-// Filter
 pub const VK_FILTER_NEAREST: Filter = 0;
 pub const VK_FILTER_LINEAR: Filter = 1;
 
-// Sampler mipmap mode
 pub const VK_SAMPLER_MIPMAP_MODE_NEAREST: SamplerMipmapMode = 0;
 pub const VK_SAMPLER_MIPMAP_MODE_LINEAR: SamplerMipmapMode = 1;
 
-// Sampler address mode
 pub const VK_SAMPLER_ADDRESS_MODE_REPEAT: SamplerAddressMode = 0;
 pub const VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE: SamplerAddressMode = 2;
 pub const VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER: SamplerAddressMode = 3;
 
-// Border color
 pub const VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK: BorderColor = 0;
 pub const VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK: BorderColor = 2;
 pub const VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE: BorderColor = 4;
 
-// Index type
 pub const VK_INDEX_TYPE_UINT16: IndexType = 0;
 pub const VK_INDEX_TYPE_UINT32: IndexType = 1;
 
-// Command buffer level
 pub const VK_COMMAND_BUFFER_LEVEL_PRIMARY: CommandBufferLevel = 0;
 pub const VK_COMMAND_BUFFER_LEVEL_SECONDARY: CommandBufferLevel = 1;
 
-// Command buffer usage flags
 pub const VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT: CommandBufferUsageFlagBits = 1;
 
-// Subpass contents
 pub const VK_SUBPASS_CONTENTS_INLINE: SubpassContents = 0;
 
-// Sample count
 pub const VK_SAMPLE_COUNT_1_BIT: SampleCountFlagBits = 1;
 pub const VK_SAMPLE_COUNT_2_BIT: SampleCountFlagBits = 2;
 pub const VK_SAMPLE_COUNT_4_BIT: SampleCountFlagBits = 4;
 pub const VK_SAMPLE_COUNT_8_BIT: SampleCountFlagBits = 8;
 
-// Queue flags
 pub const VK_QUEUE_GRAPHICS_BIT: QueueFlagBits = 1;
 pub const VK_QUEUE_COMPUTE_BIT: QueueFlagBits = 2;
 pub const VK_QUEUE_TRANSFER_BIT: QueueFlagBits = 4;
 
-// Buffer usage flags
 pub const VK_BUFFER_USAGE_TRANSFER_SRC_BIT: BufferUsageFlagBits = 1;
 pub const VK_BUFFER_USAGE_TRANSFER_DST_BIT: BufferUsageFlagBits = 2;
 pub const VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT: BufferUsageFlagBits = 16;
@@ -444,19 +368,16 @@ pub const VK_BUFFER_USAGE_STORAGE_BUFFER_BIT: BufferUsageFlagBits = 32;
 pub const VK_BUFFER_USAGE_INDEX_BUFFER_BIT: BufferUsageFlagBits = 64;
 pub const VK_BUFFER_USAGE_VERTEX_BUFFER_BIT: BufferUsageFlagBits = 128;
 
-// Image usage flags
 pub const VK_IMAGE_USAGE_TRANSFER_SRC_BIT: ImageUsageFlagBits = 1;
 pub const VK_IMAGE_USAGE_TRANSFER_DST_BIT: ImageUsageFlagBits = 2;
 pub const VK_IMAGE_USAGE_SAMPLED_BIT: ImageUsageFlagBits = 4;
 pub const VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT: ImageUsageFlagBits = 16;
 pub const VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT: ImageUsageFlagBits = 64;
 
-// Memory property flags
 pub const VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT: MemoryPropertyFlagBits = 1;
 pub const VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT: MemoryPropertyFlagBits = 2;
 pub const VK_MEMORY_PROPERTY_HOST_COHERENT_BIT: MemoryPropertyFlagBits = 4;
 
-// Color component flags
 pub const VK_COLOR_COMPONENT_R_BIT: ColorComponentFlagBits = 1;
 pub const VK_COLOR_COMPONENT_G_BIT: ColorComponentFlagBits = 2;
 pub const VK_COLOR_COMPONENT_B_BIT: ColorComponentFlagBits = 4;
@@ -464,17 +385,14 @@ pub const VK_COLOR_COMPONENT_A_BIT: ColorComponentFlagBits = 8;
 pub const VK_COLOR_COMPONENT_ALL: ColorComponentFlags = VK_COLOR_COMPONENT_R_BIT |
     VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
 
-// Image aspect flags
 pub const VK_IMAGE_ASPECT_COLOR_BIT: ImageAspectFlagBits = 1;
 
-// Pipeline stage flags
 pub const VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT: PipelineStageFlagBits = 1;
 pub const VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT: PipelineStageFlagBits = 8192;
 pub const VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT: PipelineStageFlagBits = 1024;
 pub const VK_PIPELINE_STAGE_TRANSFER_BIT: PipelineStageFlagBits = 4096;
 pub const VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT: PipelineStageFlagBits = 128;
 
-// Access flags
 pub const VK_ACCESS_COLOR_ATTACHMENT_READ_BIT: AccessFlagBits = 128;
 pub const VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT: AccessFlagBits = 256;
 pub const VK_ACCESS_TRANSFER_READ_BIT: AccessFlagBits = 2048;
@@ -482,28 +400,21 @@ pub const VK_ACCESS_TRANSFER_WRITE_BIT: AccessFlagBits = 4096;
 pub const VK_ACCESS_SHADER_READ_BIT: AccessFlagBits = 32;
 pub const VK_ACCESS_MEMORY_READ_BIT: AccessFlagBits = 32768;
 
-// Composite alpha
 pub const VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR: CompositeAlphaFlagBitsKHR = 1;
 pub const VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR: CompositeAlphaFlagBitsKHR = 2;
 pub const VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR: CompositeAlphaFlagBitsKHR = 4;
 pub const VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR: CompositeAlphaFlagBitsKHR = 8;
 
-// Command pool flags
 pub const VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT: CommandPoolCreateFlagBits = 2;
 
-// Fence flags
 pub const VK_FENCE_CREATE_SIGNALED_BIT: FenceCreateFlagBits = 1;
 
-// Dependency flags
 pub const VK_DEPENDENCY_BY_REGION_BIT: DependencyFlagBits = 1;
 
-// Component swizzle
 pub const VK_COMPONENT_SWIZZLE_IDENTITY: ComponentSwizzle = 0;
 
-// Compare op
 pub const VK_COMPARE_OP_NEVER: CompareOp = 0;
 
-// Debug message severity flags
 pub const VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT: DebugUtilsMessageSeverityFlagBitsEXT = 1;
 pub const VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT: DebugUtilsMessageSeverityFlagBitsEXT = 16;
 pub const VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT: DebugUtilsMessageSeverityFlagBitsEXT =
@@ -511,14 +422,9 @@ pub const VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT: DebugUtilsMessageSeve
 pub const VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT: DebugUtilsMessageSeverityFlagBitsEXT =
     4096;
 
-// Debug message type flags
 pub const VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT: DebugUtilsMessageTypeFlagBitsEXT = 1;
 pub const VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT: DebugUtilsMessageTypeFlagBitsEXT = 2;
 pub const VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT: DebugUtilsMessageTypeFlagBitsEXT = 4;
-
-// =============================================================================
-// Structs and Unions (layouts pinned at the end of this file)
-// =============================================================================
 
 pub const ApplicationInfo = extern struct {
     sType: StructureType,
@@ -996,7 +902,6 @@ pub const DebugUtilsMessengerCallbackDataEXT = extern struct {
     pObjects: ?[*]const DebugUtilsObjectNameInfoEXT,
 };
 
-/// Debug messenger callback function type
 pub const PFN_vkDebugUtilsMessengerCallbackEXT = ?*const fn (
     messageSeverity: DebugUtilsMessageSeverityFlagBitsEXT,
     messageTypes: DebugUtilsMessageTypeFlagsEXT,
@@ -1004,7 +909,6 @@ pub const PFN_vkDebugUtilsMessengerCallbackEXT = ?*const fn (
     pUserData: ?*anyopaque,
 ) callconv(.c) Bool32;
 
-/// Generic function pointer returned by `vkGetInstanceProcAddr`.
 pub const PFN_vkVoidFunction = ?*const fn () callconv(.c) void;
 
 pub const Extent2D = extern struct {
@@ -1430,10 +1334,6 @@ pub const CopyDescriptorSet = extern struct {
     descriptorCount: u32,
 };
 
-// =============================================================================
-// Vulkan Functions - Instance
-// =============================================================================
-
 pub extern fn vkCreateInstance(
     pCreateInfo: *const InstanceCreateInfo,
     pAllocator: ?*const AllocationCallbacks,
@@ -1492,10 +1392,6 @@ pub const PFN_vkDestroyDebugUtilsMessengerEXT = *const fn (
     pAllocator: ?*const AllocationCallbacks,
 ) callconv(.c) void;
 
-// =============================================================================
-// Vulkan Functions - Device
-// =============================================================================
-
 pub extern fn vkCreateDevice(
     physicalDevice: PhysicalDevice,
     pCreateInfo: *const DeviceCreateInfo,
@@ -1513,10 +1409,6 @@ pub extern fn vkGetDeviceQueue(
     pQueue: *Queue,
 ) callconv(.c) void;
 pub extern fn vkDeviceWaitIdle(device: Device) callconv(.c) Result;
-
-// =============================================================================
-// Vulkan Functions - Surface/Swapchain (KHR extensions)
-// =============================================================================
 
 pub extern fn vkCreateWaylandSurfaceKHR(
     instance: Instance,
@@ -1583,10 +1475,6 @@ pub extern fn vkQueuePresentKHR(
     pPresentInfo: *const PresentInfoKHR,
 ) callconv(.c) Result;
 
-// =============================================================================
-// Vulkan Functions - Image/Buffer
-// =============================================================================
-
 pub extern fn vkCreateImage(
     device: Device,
     pCreateInfo: *const ImageCreateInfo,
@@ -1644,10 +1532,6 @@ pub extern fn vkBindBufferMemory(
     memoryOffset: DeviceSize,
 ) callconv(.c) Result;
 
-// =============================================================================
-// Vulkan Functions - Memory
-// =============================================================================
-
 pub extern fn vkAllocateMemory(
     device: Device,
     pAllocateInfo: *const MemoryAllocateInfo,
@@ -1673,10 +1557,6 @@ pub extern fn vkFlushMappedMemoryRanges(
     memoryRangeCount: u32,
     pMemoryRanges: ?[*]const MappedMemoryRange,
 ) callconv(.c) Result;
-
-// =============================================================================
-// Vulkan Functions - Pipeline
-// =============================================================================
 
 pub extern fn vkCreateShaderModule(
     device: Device,
@@ -1742,10 +1622,6 @@ pub extern fn vkGetPipelineCacheData(
     pData: ?*anyopaque,
 ) callconv(.c) Result;
 
-// =============================================================================
-// Vulkan Functions - Framebuffer
-// =============================================================================
-
 pub extern fn vkCreateFramebuffer(
     device: Device,
     pCreateInfo: *const FramebufferCreateInfo,
@@ -1757,10 +1633,6 @@ pub extern fn vkDestroyFramebuffer(
     framebuffer: Framebuffer,
     pAllocator: ?*const AllocationCallbacks,
 ) callconv(.c) void;
-
-// =============================================================================
-// Vulkan Functions - Command Buffer
-// =============================================================================
 
 pub extern fn vkCreateCommandPool(
     device: Device,
@@ -1892,10 +1764,6 @@ pub extern fn vkCmdPipelineBarrier(
     pImageMemoryBarriers: ?[*]const ImageMemoryBarrier,
 ) callconv(.c) void;
 
-// =============================================================================
-// Vulkan Functions - Synchronization
-// =============================================================================
-
 pub extern fn vkCreateSemaphore(
     device: Device,
     pCreateInfo: *const SemaphoreCreateInfo,
@@ -1938,10 +1806,6 @@ pub extern fn vkQueueSubmit(
 ) callconv(.c) Result;
 pub extern fn vkQueueWaitIdle(queue: Queue) callconv(.c) Result;
 
-// =============================================================================
-// Vulkan Functions - Descriptor
-// =============================================================================
-
 pub extern fn vkCreateDescriptorSetLayout(
     device: Device,
     pCreateInfo: *const DescriptorSetLayoutCreateInfo,
@@ -1977,10 +1841,6 @@ pub extern fn vkUpdateDescriptorSets(
     pDescriptorCopies: ?[*]const CopyDescriptorSet,
 ) callconv(.c) void;
 
-// =============================================================================
-// Vulkan Functions - Sampler
-// =============================================================================
-
 pub extern fn vkCreateSampler(
     device: Device,
     pCreateInfo: *const SamplerCreateInfo,
@@ -1993,20 +1853,13 @@ pub extern fn vkDestroySampler(
     pAllocator: ?*const AllocationCallbacks,
 ) callconv(.c) void;
 
-// =============================================================================
-// Validation Layer Support
-// =============================================================================
-
-/// Validation layer name for Khronos validation
 pub const VALIDATION_LAYER_NAME: [*:0]const u8 = "VK_LAYER_KHRONOS_validation";
 
-/// Check if the Khronos validation layer is available
 pub fn isValidationLayerAvailable() bool {
     var layer_count: u32 = 0;
     _ = vkEnumerateInstanceLayerProperties(&layer_count, null);
     if (layer_count == 0) return false;
 
-    // Use stack-allocated array with reasonable limit
     var layers: [64]LayerProperties = undefined;
     var count: u32 = @min(layer_count, 64);
     _ = vkEnumerateInstanceLayerProperties(&count, &layers);
@@ -2020,11 +1873,6 @@ pub fn isValidationLayerAvailable() bool {
     return false;
 }
 
-// =============================================================================
-// Helper Functions
-// =============================================================================
-
-/// Find a memory type index that satisfies the requirements
 pub fn findMemoryType(
     mem_properties: *const PhysicalDeviceMemoryProperties,
     type_filter: u32,
@@ -2042,7 +1890,6 @@ pub fn findMemoryType(
     return null;
 }
 
-/// Create a simple clear color value
 pub fn clearColor(r: f32, g: f32, b: f32, a: f32) ClearValue {
     return .{ .color = .{ .float32 = .{ r, g, b, a } } };
 }
@@ -2073,17 +1920,12 @@ comptime {
     assert(viewport.height == 800);
 }
 
-/// Make a simple scissor rect
 pub fn makeScissor(width: u32, height: u32) Rect2D {
     return .{
         .offset = .{ .x = 0, .y = 0 },
         .extent = .{ .width = width, .height = height },
     };
 }
-
-// =============================================================================
-// Layout Pins
-// =============================================================================
 
 // Sizes and offsets below were measured once against translate-c output of
 // `vulkan.h` (Vulkan headers 1.3.239) on x86_64-linux and aarch64-linux, where

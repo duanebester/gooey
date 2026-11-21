@@ -1,30 +1,20 @@
-//! Swapchain lifecycle, render pass, and framebuffers.
-//!
-//! Free functions with targeted parameters — each takes only what it needs.
 //! The swapchain, its framebuffers, and the renderer's per-image present
 //! semaphores are the only objects re-created on resize: the WSI requires a
 //! new swapchain per extent, and its images belong to the driver. Gooey
 //! bounds them instead: the extent never exceeds `ResourceLimits.window` (the
-//! caller fits it) and the image count follows the frames in flight. There is no multisampled target: the renderer draws at one
-//! sample per pixel and every pipeline anti-aliases analytically, so nothing
-//! Gooey allocates depends on the window size.
+//! caller fits it) and the image count follows the frames in flight. There is
+//! no multisampled target: the renderer draws at one sample per pixel and
+//! every pipeline anti-aliases analytically, so nothing Gooey allocates
+//! depends on the window size.
 
 const std = @import("std");
 const limits_mod = @import("../../core/limits.zig");
 const vk = @import("vulkan.zig");
 const vk_types = @import("vk_types.zig");
 
-// =============================================================================
-// Limits (CLAUDE.md Rule #4 — put a limit on everything)
-// =============================================================================
-
 pub const MAX_SWAPCHAIN_IMAGES: u32 = 8;
 const MAX_SURFACE_FORMATS: u32 = vk_types.MAX_SURFACE_FORMATS;
 const MAX_PRESENT_MODES: u32 = vk_types.MAX_PRESENT_MODES;
-
-// =============================================================================
-// Result Types
-// =============================================================================
 
 pub const SwapchainResult = struct {
     swapchain: vk.Swapchain,
@@ -34,10 +24,6 @@ pub const SwapchainResult = struct {
     image_views: [MAX_SWAPCHAIN_IMAGES]vk.ImageView,
     image_count: u32,
 };
-
-// =============================================================================
-// Error Types
-// =============================================================================
 
 pub const SwapchainError = error{
     SwapchainCreationFailed,
@@ -54,17 +40,11 @@ pub const FramebufferError = error{
     FramebufferCreationFailed,
 };
 
-// =============================================================================
-// Public API
-// =============================================================================
-
-/// Create a swapchain, retrieve its images, and create image views.
-///
-/// `width` and `height` are physical pixels already fitted to the window budget.
-/// `image_count_min` is the frames-in-flight count; the driver's own minimum
-/// wins when it is higher. On initial creation, pass `null` for
-/// `old_swapchain`. On resize, pass the previous swapchain handle — Vulkan can
-/// recycle internal resources.
+/// `width` and `height` are physical pixels already fitted to the window
+/// budget. The driver's own minimum image count wins when it is higher than
+/// `frame_count`. On initial creation, pass `null` for `old_swapchain`; on
+/// resize, pass the previous swapchain handle — Vulkan can recycle internal
+/// resources.
 pub fn createSwapchain(
     device: vk.Device,
     physical_device: vk.PhysicalDevice,
@@ -165,7 +145,6 @@ pub fn createRenderPass(device: vk.Device, format: vk.Format) RenderPassError!vk
     return render_pass;
 }
 
-/// Create one single-attachment framebuffer per swapchain image.
 pub fn createFramebuffers(
     device: vk.Device,
     render_pass: vk.RenderPass,
@@ -189,7 +168,6 @@ pub fn createFramebuffers(
     }
 }
 
-/// Destroy swapchain image views. Safe to call with null entries.
 pub fn destroyImageViews(
     device: vk.Device,
     views: *[MAX_SWAPCHAIN_IMAGES]vk.ImageView,
@@ -201,7 +179,6 @@ pub fn destroyImageViews(
     }
 }
 
-/// Destroy framebuffers. Safe to call with null entries.
 pub fn destroyFramebuffers(
     device: vk.Device,
     framebuffers: *[MAX_SWAPCHAIN_IMAGES]vk.Framebuffer,
@@ -212,10 +189,6 @@ pub fn destroyFramebuffers(
         fb.* = null;
     }
 }
-
-// =============================================================================
-// Internal — Swapchain Configuration
-// =============================================================================
 
 const SwapchainConfig = struct {
     format: vk.Format,
@@ -260,9 +233,9 @@ fn querySwapchainConfig(
 const FormatChoice = struct { format: vk.Format, color_space: vk.ColorSpaceKHR };
 
 /// An 8-bit UNORM format, preferring BGRA. Colours are sRGB-encoded and
-/// blended in gamma space (contract §9), so the framebuffer must store them
-/// as written: an `_SRGB` format would encode them a second time on write
-/// and blend in linear space. Null when the surface offers none.
+/// blended in gamma space, so the framebuffer must store them as written: an
+/// `_SRGB` format would encode them a second time on write and blend in
+/// linear space. Null when the surface offers none.
 fn chooseFormat(physical_device: vk.PhysicalDevice, surface: vk.Surface) ?FormatChoice {
     var format_count: u32 = 0;
     _ = vk.vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device, surface, &format_count, null);
@@ -352,10 +325,6 @@ fn chooseImageCount(capabilities: vk.SurfaceCapabilitiesKHR, frame_count: u32) u
     std.debug.assert(count <= MAX_SWAPCHAIN_IMAGES);
     return count;
 }
-
-// =============================================================================
-// Internal — Object Creation
-// =============================================================================
 
 fn createSwapchainHandle(
     device: vk.Device,
@@ -456,12 +425,6 @@ fn createImageViews(
     return views;
 }
 
-// =============================================================================
-// Internal — Render Pass Helper
-// =============================================================================
-
-/// The incoming and outgoing external dependencies documented on
-/// `createRenderPass`.
 fn renderPassDependencies() [2]vk.SubpassDependency {
     const color_output = vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     const color_write = vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
@@ -489,10 +452,6 @@ fn renderPassDependencies() [2]vk.SubpassDependency {
     std.debug.assert(dependencies[1].dstSubpass == vk.SUBPASS_EXTERNAL);
     return dependencies;
 }
-
-// =============================================================================
-// Internal — Framebuffer Helper
-// =============================================================================
 
 fn createSingleFramebuffer(
     device: vk.Device,

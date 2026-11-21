@@ -1,9 +1,3 @@
-//! Reads of a rendered frame that every VOPR reference model shares: what a
-//! point hits, where Tab goes, and an element's record and accessibility
-//! node. They state the contract's routing rules (§5, §6) over the frame's
-//! hit records, so a model can say where an input lands without asking the
-//! router it checks.
-
 const std = @import("std");
 const gooey = @import("gooey");
 
@@ -14,8 +8,8 @@ const records = internals.records;
 const Window = internals.window.Window;
 const ElementId = records.ElementId;
 
-/// The deepest record containing the point: the last in tree order, as the
-/// contract defines a hit (§5), among the records a modal leaves reachable.
+/// The deepest record containing the point: the last in tree order among
+/// the records a modal leaves reachable.
 pub fn hitIndex(frame: *const records.Frame, x: f32, y: f32) ?u32 {
     assert(frame.hit_count <= frame.hits.len);
     assert(frame.modal_hit_start <= frame.hit_count);
@@ -67,8 +61,6 @@ fn drainFrame(window: *Window) *const records.Frame {
     return frame;
 }
 
-/// Tab focuses the next tab stop in tree order, wrapping; Shift+Tab the
-/// previous. From no focus, Tab takes the first and Shift+Tab the last.
 pub fn nextTabStop(frame: *const records.Frame, focus: ElementId, backward: bool) ElementId {
     assert(frame.modal_hit_start <= frame.hit_count);
     const start = frame.modal_hit_start;
@@ -84,8 +76,6 @@ pub fn nextTabStop(frame: *const records.Frame, focus: ElementId, backward: bool
     return focus;
 }
 
-/// The index of `id`'s record in the frame, or null for the root or an
-/// element the frame did not render.
 pub fn findHit(frame: *const records.Frame, id: ElementId) ?u32 {
     assert(frame.hit_count <= frame.hits.len);
     if (id == .root) return null;
@@ -95,7 +85,6 @@ pub fn findHit(frame: *const records.Frame, id: ElementId) ?u32 {
     return null;
 }
 
-/// `id`'s accessibility node in the frame, or null.
 pub fn findA11y(frame: *const records.Frame, id: ElementId) ?*const records.A11yNode {
     assert(frame.a11y_count <= frame.a11y.len);
     if (id == .root) return null;

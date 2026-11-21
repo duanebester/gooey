@@ -1,7 +1,4 @@
-//! Accessible element - the a11y parallel to LayoutElement.
-//!
-//! Stored in a fixed-size pool. Contains semantic information
-//! that maps to platform accessibility APIs.
+//! Accessible element, the a11y parallel to LayoutElement.
 
 const std = @import("std");
 const types = @import("types.zig");
@@ -13,45 +10,25 @@ const layout = @import("../layout/layout.zig");
 pub const TextSelection = struct { start: u32, end: u32 };
 
 pub const Element = struct {
-    // =========================================================================
-    // Identity
-    // =========================================================================
-
-    /// Stable identity across frames
     fingerprint: fingerprint_mod.Fingerprint,
 
-    // =========================================================================
-    // Semantics
-    // =========================================================================
-
-    /// What is this element?
     role: types.Role,
 
-    /// Primary label (e.g., button text, input label)
-    /// Slice into component's string - zero-copy within frame
+    /// Slice into the component's string; zero-copy within a frame.
     name: ?[]const u8 = null,
 
-    /// Additional description/help text
     description: ?[]const u8 = null,
 
-    /// Current value (e.g., slider "50%", textbox content)
     value: ?[]const u8 = null,
 
     /// The selection in `value`, while this is the focused text field.
     selection: ?TextSelection = null,
 
-    /// Current state flags
     state: types.State = .{},
 
-    /// Live region behavior
     live: types.Live = .off,
 
-    /// Heading level (1-6, .none = not a heading)
     heading_level: types.HeadingLevel = .none,
-
-    // =========================================================================
-    // Range values (for sliders, progress bars)
-    // =========================================================================
 
     value_min: ?f32 = null,
     value_max: ?f32 = null,
@@ -60,19 +37,11 @@ pub const Element = struct {
     /// the platform's default for the role.
     orientation: ?types.Orientation = null,
 
-    // =========================================================================
-    // Collection info (for lists, tabs, etc.)
-    // =========================================================================
-
-    /// 1-based position in set
+    /// 1-based position in set.
     pos_in_set: ?u16 = null,
 
-    /// Total items in set
+    /// Total items in set.
     set_size: ?u16 = null,
-
-    // =========================================================================
-    // Tree structure (indices into element pool)
-    // =========================================================================
 
     parent: ?u16 = null,
     first_child: ?u16 = null,
@@ -80,36 +49,18 @@ pub const Element = struct {
     next_sibling: ?u16 = null,
     child_count: u16 = 0,
 
-    // =========================================================================
-    // Relationships (indices into element pool)
-    // =========================================================================
-
-    /// Element that labels this one
     labelled_by: ?u16 = null,
 
-    /// Element that describes this one
     described_by: ?u16 = null,
 
-    /// Element this one controls
     controls: ?u16 = null,
-
-    // =========================================================================
-    // Bounds (copied from layout for platform queries)
-    // =========================================================================
 
     bounds: layout.BoundingBox = .{},
 
-    // =========================================================================
-    // Methods
-    // =========================================================================
-
     const Self = @This();
 
-    /// Check if element should be exposed to assistive technology
     pub fn isAccessible(self: *const Self) bool {
-        // Assertion: fingerprint must be valid for accessible elements
         std.debug.assert(self.fingerprint.isValid() or self.role == .presentation or self.role == .none);
-        // Assertion: role is within valid enum range
         std.debug.assert(@backingInt(self.role) <= @backingInt(types.Role.none));
 
         return self.role != .presentation and
@@ -117,34 +68,25 @@ pub const Element = struct {
             !self.state.hidden;
     }
 
-    /// Check if element accepts keyboard focus
     pub fn isFocusable(self: *const Self) bool {
-        // Assertion: can't check focusability of hidden elements meaningfully
         std.debug.assert(self.fingerprint.isValid() or !self.isAccessible());
-        // Assertion: disabled state should be explicitly set, not garbage
         std.debug.assert(@as(u16, @bitCast(self.state)) <= 0x0FFF); // Only 12 bits used
 
         if (self.state.disabled or self.state.hidden) return false;
         return self.role.isFocusableByDefault();
     }
 
-    /// Compute content hash for dirty detection.
-    /// Excludes bounds (position changes don't need re-announcement).
+    /// Excludes bounds: position changes don't need re-announcement.
     pub fn contentHash(self: *const Self) u32 {
-        // Assertion: fingerprint must be initialized before hashing
         std.debug.assert(self.fingerprint.isValid() or self.role == .presentation);
-        // Assertion: state bits are valid (12 bools in bits 0-11, reserved u4 in bits 12-15 must be 0)
         std.debug.assert(@as(u16, @bitCast(self.state)) <= 0x0FFF);
 
         var h = std.hash.Wyhash.init(0);
 
-        // Hash identity
         h.update(std.mem.asBytes(&self.fingerprint));
 
-        // Hash state
         h.update(std.mem.asBytes(&self.state));
 
-        // Hash text content
         if (self.name) |n| h.update(n);
         if (self.value) |v| h.update(v);
         if (self.description) |d| h.update(d);
@@ -153,30 +95,25 @@ pub const Element = struct {
         // report it.
         if (self.selection) |s| h.update(std.mem.asBytes(&s));
 
-        // Hash numeric values
         if (self.value_now) |vn| h.update(std.mem.asBytes(&vn));
         if (self.value_min) |vm| h.update(std.mem.asBytes(&vm));
         if (self.value_max) |vx| h.update(std.mem.asBytes(&vx));
         if (self.orientation) |o| h.update(std.mem.asBytes(&o));
 
-        // Hash collection info
         if (self.pos_in_set) |p| h.update(std.mem.asBytes(&p));
         if (self.set_size) |s| h.update(std.mem.asBytes(&s));
 
-        // Hash heading level
         h.update(std.mem.asBytes(&self.heading_level));
 
         return @truncate(h.final());
     }
 
-    /// Check if this element has any children
     pub fn hasChildren(self: *const Self) bool {
         std.debug.assert(self.child_count == 0 or self.first_child != null);
         std.debug.assert(self.child_count == 0 or self.last_child != null);
         return self.child_count > 0;
     }
 
-    /// Check if this element is a container (group, region, dialog, etc.)
     pub fn isContainer(self: *const Self) bool {
         std.debug.assert(@backingInt(self.role) <= @backingInt(types.Role.none));
         return switch (self.role) {
@@ -197,13 +134,11 @@ pub const Element = struct {
         };
     }
 
-    /// Check if this element is a live region
     pub fn isLiveRegion(self: *const Self) bool {
         std.debug.assert(@backingInt(self.live) <= @backingInt(types.Live.assertive));
         return self.live != .off or self.role == .alert or self.role == .status;
     }
 
-    /// Get effective live politeness (accounts for role-based defaults)
     pub fn effectiveLive(self: *const Self) types.Live {
         std.debug.assert(@backingInt(self.live) <= @backingInt(types.Live.assertive));
         if (self.live != .off) return self.live;
@@ -214,7 +149,6 @@ pub const Element = struct {
         };
     }
 
-    /// Create element with minimal required fields
     pub fn init(fp: fingerprint_mod.Fingerprint, role: types.Role) Self {
         std.debug.assert(fp.isValid() or role == .presentation or role == .none);
         std.debug.assert(@backingInt(role) <= @backingInt(types.Role.none));
@@ -226,13 +160,10 @@ pub const Element = struct {
     }
 };
 
-// Compile-time size check per CLAUDE.md
 comptime {
-    // Element should fit in ~160 bytes for cache efficiency
-    // Actual size depends on slice representation and alignment
+    // ~160-byte target for cache efficiency; bound is loose for alignment.
     std.debug.assert(@sizeOf(Element) <= 192);
 
-    // Alignment should be reasonable
     std.debug.assert(@alignOf(Element) <= 8);
 }
 
@@ -242,11 +173,9 @@ test "element accessibility check" {
     var elem = Element.init(fp, .button);
     try std.testing.expect(elem.isAccessible());
 
-    // Presentation role is not accessible
     elem.role = .presentation;
     try std.testing.expect(!elem.isAccessible());
 
-    // Hidden state makes element inaccessible
     elem.role = .button;
     elem.state.hidden = true;
     try std.testing.expect(!elem.isAccessible());
@@ -258,16 +187,13 @@ test "element focusability" {
     var elem = Element.init(fp, .button);
     try std.testing.expect(elem.isFocusable());
 
-    // Disabled elements are not focusable
     elem.state.disabled = true;
     try std.testing.expect(!elem.isFocusable());
 
-    // Groups are not focusable by default
     elem.state.disabled = false;
     elem.role = .group;
     try std.testing.expect(!elem.isFocusable());
 
-    // Text inputs are focusable
     elem.role = .textbox;
     try std.testing.expect(elem.isFocusable());
 }
@@ -289,10 +215,8 @@ test "element content hash stability" {
         .state = .{ .focused = true },
     };
 
-    // Same content should produce same hash
     try std.testing.expectEqual(elem1.contentHash(), elem2.contentHash());
 
-    // Different state should produce different hash
     var elem3 = elem1;
     elem3.state.focused = false;
     try std.testing.expect(elem1.contentHash() != elem3.contentHash());
@@ -320,7 +244,6 @@ test "element content hash ignores bounds" {
     elem2.name = "Test";
     elem2.bounds = .{ .x = 200, .y = 300, .width = 100, .height = 50 };
 
-    // Bounds changes should not affect content hash
     try std.testing.expectEqual(elem1.contentHash(), elem2.contentHash());
 }
 

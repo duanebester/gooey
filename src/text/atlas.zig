@@ -1,46 +1,4 @@
-//! Fixed-size texture atlas with shelf packing and LRU shelf eviction.
-//!
-//! An atlas is a square texture of a side fixed by `AtlasLimits` and reserved at
-//! initialization (CLAUDE.md §2). It never grows. Items are packed left to right
-//! into full-width horizontal shelves whose heights are multiples of
-//! `shelf_height_quantum`. When no shelf has room and no free space remains, the
-//! atlas evicts whole shelves, least recently used first, until the item fits.
-//!
-//! Eviction policy, deterministic and bounded by the shelf count:
-//! 1. Only active shelves are candidates. A shelf is protected while an item
-//!    in it was used at or after `AtlasUploads.frameProtectedLocked` (the
-//!    current frame, or an older frame a window has not uploaded yet), or while
-//!    a renderer has not yet uploaded a record written into it.
-//! 2. Dead shelves (condemned by `clear`) go first, then the smallest
-//!    `frame_used`, then the lowest `y`.
-//! 3. An evicted shelf becomes free space and merges with free neighbours.
-//!
-//! Placement prefers a shelf of the item's own height, then a shelf already
-//! protected this frame (at most twice as tall), then new free space, then a
-//! protected shelf grown into the free rows below it, and only then evicts.
-//! A small item is never parked in an old, taller shelf while
-//! eviction can still make room, because that would protect the whole shelf.
-//!
-//! Each shelf carries a generation that increases whenever the shelf stops
-//! being active or is condemned. Caches store `(shelf, generation)` with every
-//! entry and treat an entry whose shelf generation changed as a miss, so a
-//! cached glyph, icon, or image never points at evicted pixels.
-//!
-//! An item larger than the atlas, or a frame whose protected items leave no
-//! room, panics with the atlas name, capacity, request, and frame.
-//!
-//! Every item is written with a zeroed 1 px border on all four sides, inside
-//! its own reservation. Bilinear sampling one texel past an item therefore
-//! always reads zero, without zeroing the texture at init or after eviction.
-//!
-//! Pixels: `.cpu_texture` atlases own `data`, the CPU renderer's texture.
-//! `.gpu_upload` atlases own no pixels; each item is staged in `AtlasUploads`.
-//!
-//! Resource sketch (CLAUDE.md §7): shelf slots are `size / 4` × 32 B (32 KiB at
-//! 4096). A placement scans at most every slot once per eviction, and evicts
-//! at most every shelf, so worst-case work is O(slots²) = 1M steps at 4096,
-//! paid only when an atlas is full. Typical placements append to a matching
-//! shelf after one O(slots) scan.
+//! Fixed-size shelf-packed texture atlas with LRU shelf eviction.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -51,7 +9,6 @@ pub const AtlasUploads = uploads_mod.AtlasUploads;
 pub const AtlasKind = uploads_mod.AtlasKind;
 pub const AtlasStorage = uploads_mod.AtlasStorage;
 
-/// UV coordinates for texture sampling
 pub const UVCoords = struct {
     u0: f32,
     v0: f32,
@@ -59,7 +16,6 @@ pub const UVCoords = struct {
     v1: f32,
 };
 
-/// A region within the atlas
 pub const Region = struct {
     x: u16,
     y: u16,
@@ -77,11 +33,8 @@ pub const Region = struct {
     }
 };
 
-/// Texture atlas format
 pub const Format = enum {
-    /// Single channel (grayscale text)
     grayscale,
-    /// RGBA (color emoji, subpixel rendering)
     rgba,
 
     pub fn bytesPerPixel(self: Format) u8 {
@@ -92,7 +45,7 @@ pub const Format = enum {
     }
 };
 
-/// Where an item landed. Caches keep `shelf` and `generation` to validate it.
+/// Caches keep `shelf` and `generation` to validate a placement.
 pub const Placement = struct {
     region: Region,
     shelf: u16,
@@ -105,7 +58,8 @@ pub const shelf_none: u16 = std.math.maxInt(u16);
 /// Shelf heights are rounded up to this many rows so similar items share shelves.
 pub const shelf_height_quantum: u32 = 4;
 
-/// Zero border written around every item, in pixels per side.
+/// Zero border written around every item so sampling one texel past it reads
+/// zero.
 pub const item_border: u32 = 1;
 
 pub const Atlas = struct {
@@ -120,7 +74,7 @@ pub const Atlas = struct {
     /// item is written; only item rectangles and their borders are read.
     data: []u8,
     /// One past the lowest pixel row ever written to `data`: the reservation's
-    /// high-water mark, zeroed on release (CLAUDE.md §21).
+    /// high-water mark, zeroed on release.
     data_rows_written_end: u32,
     /// Shelf slots; a slot index is a stable shelf identity.
     shelves: []Shelf,
@@ -151,12 +105,10 @@ pub const Atlas = struct {
 
     pub const Options = struct {
         kind: AtlasKind,
-        /// Side in pixels, from `AtlasLimits`.
         size: u32,
         uploads: *AtlasUploads,
     };
 
-    /// Reserve the shelf table and, for the CPU renderer, the pixel store.
     pub fn init(self: *Self, allocator: std.mem.Allocator, options: Options) !void {
         assert(options.size >= 64);
         assert(options.size <= std.math.maxInt(u16));
@@ -194,7 +146,6 @@ pub const Atlas = struct {
         self.* = undefined;
     }
 
-    /// One free shelf spanning the atlas; every other slot unused.
     fn resetShelves(self: *Self) void {
         for (self.shelves) |*shelf| {
             shelf.* = .{
@@ -230,11 +181,10 @@ pub const Atlas = struct {
     }
 
     /// Mark a live placement's shelf as used in `frame`, which the caller read
-    /// from `uploads.frameCurrent()`. A batch reads it once rather than per
-    /// item; any frame at or after the caller's own open frame keeps the shelf
-    /// protected for that frame. Most hits land on a shelf already stamped
-    /// this frame, so the store is skipped. No assertion re-reads the clock:
-    /// an atomic load survives ReleaseFast even when only an assert uses it.
+    /// from `uploads.frameCurrent()`; any frame at or after the caller's own
+    /// open frame keeps the shelf protected for that frame. No assertion
+    /// re-reads the clock: an atomic load survives ReleaseFast even when only
+    /// an assert uses it.
     pub inline fn touch(self: *Self, shelf: u16, frame: u64) void {
         if (shelf == shelf_none) return;
         assert(shelf < self.shelves.len);
@@ -295,10 +245,6 @@ pub const Atlas = struct {
         assert(self.data.len == @as(usize, self.size) * self.size * self.format.bytesPerPixel());
         return self.data;
     }
-
-    // =========================================================================
-    // Placement
-    // =========================================================================
 
     /// Find room for a `width × height` item and its border, evicting as
     /// needed. Caller holds the uploads mutex.
@@ -384,7 +330,6 @@ pub const Atlas = struct {
     const ShelfQuery = struct {
         height_min: u32,
         height_max: u32,
-        /// Only shelves last used at or after this frame qualify.
         frame_used_min: u64 = 0,
     };
 
@@ -540,10 +485,6 @@ pub const Atlas = struct {
         unreachable;
     }
 
-    // =========================================================================
-    // Pixels
-    // =========================================================================
-
     /// Write the item and its zero border into the pixel store or the journal.
     fn writeItem(self: *Self, placement: Placement, pixels: []const u8) void {
         const region = placement.region;
@@ -602,10 +543,6 @@ pub const Atlas = struct {
         @memset(target[(item.height + 1) * stride ..][0..outer_row], 0);
     }
 
-    // =========================================================================
-    // Fail fast
-    // =========================================================================
-
     fn panicItemTooLarge(self: *const Self, outer_width: u32, outer_height: u32) noreturn {
         std.debug.panic("Atlas pool '{t}' cannot hold one item: capacity {d}x{d} px, " ++
             "requested {d}x{d} px (1 px border included), frame {d}.", .{
@@ -634,10 +571,6 @@ fn roundUpQuantum(value: u32) u32 {
     assert(value > 0);
     return std.mem.alignForward(u32, value, shelf_height_quantum);
 }
-
-// =============================================================================
-// Tests
-// =============================================================================
 
 const testing = std.testing;
 
@@ -680,7 +613,6 @@ const TestAtlas = struct {
         self.uploads.consumeEnd(consumer);
     }
 
-    /// Insert one test item filled with `value`.
     fn item(self: *TestAtlas, value: u8) Placement {
         var pixels: [item_width * item_height * 4]u8 = undefined;
         @memset(&pixels, value);
@@ -699,8 +631,8 @@ const TestAtlas = struct {
 
 test "atlas evicts the least recently used shelf, lowest y on ties" {
     // Four shelves filled in frames 2-5 hold a, b, c, d. Touching a in frame 6
-    // makes b the oldest, then c, then d. Once a and e share frame 6, the tie
-    // goes to a, the lower shelf. A FIFO or lowest-y policy fails at e or f.
+    // makes b the oldest; once a and e share frame 6, the tie goes to a, the
+    // lower shelf. A FIFO or lowest-y policy would fail at e or f.
     var t: TestAtlas = undefined;
     try t.init(.text, .cpu_texture);
     defer t.deinit();
@@ -742,12 +674,6 @@ test "atlas evicts the least recently used shelf, lowest y on ties" {
 }
 
 test "atlas keeps a lagging consumer's shown frame until its next frame uploads" {
-    // Goal: an EVE-style consumer draws frame N from its own atlas copy while
-    // frame N+1 builds and writes new items into that copy, so shelves used in
-    // frame N must survive frame N+1's eviction. Methodology: fill the four
-    // shelves while frame N is open and upload it; while frame N+1 is open
-    // nothing may be evicted (an immediate consumer could evict all four);
-    // once frame N+1 has uploaded, frame N's shelves are evictable again.
     var t: TestAtlas = undefined;
     try t.init(.text, .cpu_texture);
     defer t.deinit();
@@ -773,9 +699,8 @@ test "atlas keeps a lagging consumer's shown frame until its next frame uploads"
 }
 
 test "atlas never evicts an item used this frame or awaiting upload" {
-    // Items placed in frame 2 and touched in frame 3 are all protected in
-    // frame 3; in frame 4 they are not. In a GPU atlas, items whose records no
-    // renderer has uploaded stay protected however many frames pass.
+    // In a GPU atlas, items whose records no renderer has uploaded stay
+    // protected however many frames pass.
     var t: TestAtlas = undefined;
     try t.init(.text, .cpu_texture);
     defer t.deinit();
@@ -810,8 +735,6 @@ test "atlas never evicts an item used this frame or awaiting upload" {
 }
 
 test "atlas clear condemns every item and reuses its space" {
-    // After `clear`, no placement validates, yet four more items still fit:
-    // the condemned shelves are evicted to make room instead of panicking.
     var t: TestAtlas = undefined;
     try t.init(.text, .cpu_texture);
     defer t.deinit();
@@ -827,9 +750,6 @@ test "atlas clear condemns every item and reuses its space" {
 }
 
 test "atlas grows a shelf into the free rows below it" {
-    // Three full 16-row shelves and a 12-row shelf leave 4 free rows at the
-    // bottom. A 14-row item fits no shelf and no free region, but the 12-row
-    // shelf can take the 4 rows below it, so the item lands beside the first.
     var t: TestAtlas = undefined;
     try t.init(.text, .cpu_texture);
     defer t.deinit();

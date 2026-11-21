@@ -1,7 +1,5 @@
-//! Synthetic shaper: one glyph per codepoint at the synthetic face's advance.
-//!
-//! No kerning, ligatures, or fallback fonts, so a run's width is exactly the
-//! sum of its advances and goldens can be checked by hand.
+//! One glyph per codepoint at the synthetic face's advance; no kerning,
+//! ligatures, or fallback, so a run's width is the sum of its advances.
 
 const std = @import("std");
 const types = @import("../../types.zig");

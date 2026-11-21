@@ -1,15 +1,11 @@
-//! The headless renderer the core draws with in tests.
+//! The headless renderer the core draws with in tests: `NullRenderer`
+//! satisfies the core's `Renderer` contract without a GPU, so a headless app
+//! runs its pack and draw stages end to end and goldens compare the dump of
+//! what it was asked to draw.
 //!
-//! `NullRenderer` satisfies the core's `Renderer` contract (`core/backend.zig`)
-//! without a GPU, so a headless app (`App.initHeadless`, "TestBackend" in the
-//! core's docs) runs its pack and draw stages end to end and goldens compare
-//! the dump of what it was asked to draw.
-//!
-//! ## Target neutrality
-//!
-//! `src/testing/mod.zig` is reachable from the root module on every target, so
-//! this file imports only target-neutral modules. Importing a concrete backend
-//! here would break the wasm build.
+//! `src/testing/mod.zig` is reachable from the root module on every target,
+//! so this file imports only target-neutral modules: importing a concrete
+//! backend here would break the wasm build.
 
 const std = @import("std");
 
@@ -27,22 +23,15 @@ const Lifecycle = enum(u8) {
     deinitialized,
 };
 
-// =============================================================================
-// NullRenderer
-// =============================================================================
-
 /// Bytes of packed-frame dump the null renderer keeps: the most recent frame
 /// only. A todo frame dumps to about 8 KiB, so 64 KiB leaves headroom for the
 /// kept examples without making the renderer large on the stack.
 pub const null_renderer_dump_bytes_max: u32 = 64 * 1024;
 
-/// A renderer that draws nothing and records what it was asked to draw.
-///
-/// It satisfies the contract §9 `Renderer` signatures, so the core's pack and
-/// draw stages run end to end on `TestBackend`. `draw` writes the packed frame
-/// as text (`record_dump.writePacked`), which is what goldens compare. Every
-/// buffer is inline: `initInPlace` takes no allocator by contract, so the
-/// renderer cannot allocate at all.
+/// A renderer that draws nothing and records what it was asked to draw: the
+/// core's pack and draw stages run end to end, and `draw` writes the packed
+/// frame as text, which goldens compare. Every buffer is inline:
+/// `initInPlace` takes no allocator, so the renderer cannot allocate at all.
 pub const NullRenderer = struct {
     lifecycle: Lifecycle,
     size_px: core_backend.SizePx,
@@ -93,7 +82,6 @@ pub const NullRenderer = struct {
         assert(self.draw_count == 0);
     }
 
-    /// Lend the dump a view of the glyph atlas; see `glyph_atlas`.
     pub fn observeGlyphAtlas(self: *Self, view: record_dump.GlyphAtlasView) void {
         assert(self.lifecycle == .running);
         assert(view.pixels.len >= @as(u64, view.size) * view.size);
@@ -112,7 +100,6 @@ pub const NullRenderer = struct {
         self.upload_bytes += pixels.len;
     }
 
-    /// Record `frame` as text, replacing the previous frame's dump.
     pub fn draw(
         self: *Self,
         frame: *const core_backend.PackedFrame,
@@ -138,7 +125,6 @@ pub const NullRenderer = struct {
         assert(self.dump_len <= self.dump_bytes.len);
     }
 
-    /// The most recent frame's dump.
     pub fn frameDump(self: *const Self) []const u8 {
         assert(self.draw_count > 0);
         assert(self.dump_len <= self.dump_bytes.len);
@@ -163,16 +149,9 @@ pub const NullRenderer = struct {
     }
 };
 
-// =============================================================================
-// Tests
-// =============================================================================
-
 const testing = std.testing;
 
 test "NullRenderer records the packed frame it is asked to draw" {
-    // Goal: draw writes a dump of exactly the submitted frame, and resize past
-    // the window budget is rejected at init. Methodology: draw a one-quad
-    // frame and read the dump back.
     const render_limits = core_backend.RenderLimits.fromResourceLimits(&.nano);
     const renderer = try testing.allocator.create(NullRenderer);
     defer testing.allocator.destroy(renderer);

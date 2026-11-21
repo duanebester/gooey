@@ -1,16 +1,3 @@
-//! Animation: tweens, spring motion, and a staggered list on the core.
-//!
-//! - `animation.tween` fades the window in and staggers the list rows.
-//! - `animation.tweenOn` pulses the counter each time its value changes.
-//! - `animation.motion` springs the panel and the list in and out, keeping
-//!   the spring's velocity when a toggle interrupts it.
-//! - `animation.loop` pulses a dot for as long as the pulse is on.
-//!
-//! The layout, colours, and timings match the 0.3.1 demo. Each helper asks
-//! for the next frame only while it moves, and the loop only while it is
-//! built, so the window goes idle once everything settles and the pulse is
-//! off.
-
 const std = @import("std");
 const gooey = @import("gooey");
 const components = @import("gooey-components");
@@ -57,7 +44,6 @@ pub const App = gooey.App(State, render, .{
     .limits = .nano,
 });
 
-/// The generated entry point (contract §7).
 pub const main = App.main;
 
 const ListItem = struct {
@@ -74,11 +60,9 @@ const list_items = [_]ListItem{
     .{ .name = "Figs", .color = Color.rgb(0.50, 0.35, 0.55) },
 };
 
-/// 0.3.1's `StaggerConfig.list`: each row starts 50 ms after the one above.
 const stagger_ms: u32 = 50;
 const row_tween: animation.Tween = .{ .duration_ms = 200, .easing = animation.Easing.easeOutCubic };
 
-/// One breath of the pulsing dot.
 const pulse_period_ms: u32 = 1_200;
 const pulse_dot_size_max: f32 = 20;
 
@@ -135,7 +119,6 @@ const ControlButtons = struct {
     }
 };
 
-/// The count, pulsing larger for 200 ms each time it changes.
 const CounterDisplay = struct {
     count: i32,
 
@@ -161,14 +144,12 @@ const CounterDisplay = struct {
     }
 };
 
-/// A dot that breathes while it is built: built only while the pulse is on,
-/// so turning the pulse off stops its frames.
+/// Built only while the pulse is on, so turning it off stops its frames.
 const PulseDot = struct {
     pub fn render(_: PulseDot, cx: *Cx) void {
         const phase = animation.loop(cx, .{ .name = "pulse-dot" }, pulse_period_ms);
         assert(phase >= 0);
         assert(phase < 1);
-        // A cosine wave from 0 at the start of each period up to 1 and back.
         const wave = 0.5 - 0.5 * @cos(phase * 2 * std.math.pi);
         const size = pulse_dot_size_max * (0.5 + 0.5 * wave);
         // A fixed frame, so the breathing dot does not move its neighbours.
@@ -185,8 +166,6 @@ const PulseDot = struct {
     }
 };
 
-/// A panel that springs open and closed; a toggle mid-flight reverses it
-/// without a snap.
 const PanelSection = struct {
     show: bool,
 
@@ -258,7 +237,6 @@ const ListRow = struct {
         const enter = animation.tween(cx, .{ .index = self.index }, options);
         assert(enter >= 0);
         assert(enter <= 1);
-        // Rows cascade in, capped by the container, and fade out in reverse.
         const alpha = if (self.exiting)
             exitAlpha(self.index, self.container_progress)
         else
@@ -278,8 +256,6 @@ const ListRow = struct {
     }
 };
 
-/// A row's alpha while the list exits: the last row fades first and the
-/// first last, staggered over half the exit.
 fn exitAlpha(index: u32, container_progress: f32) f32 {
     const last: u32 = list_items.len - 1;
     assert(index <= last);

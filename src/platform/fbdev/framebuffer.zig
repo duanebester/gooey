@@ -1,16 +1,13 @@
-//! Linux framebuffer device output (`/dev/fb0`) for the fbdev backend.
-//!
-//! The device is opened and mapped once during initialization. Frames are
-//! rendered into a RAM back buffer and copied here row by row, because
-//! framebuffer memory is often uncached or write-combined and the renderer's
-//! read-modify-write blending would be slow on it. The copy also converts to
-//! the panel's pixel format: 32 bpp XRGB/ARGB is a plain copy, and any other
-//! 16 or 32 bpp layout with channels of at most 8 bits (RGB565, BGR, and so
-//! on) is converted per pixel.
-//!
-//! When the driver supports `FBIO_WAITFORVSYNC`, each copy starts at vertical
-//! blank to reduce tearing. There is no page flipping: a full copy of an
-//! 800x480 frame is about 1.5 MB and finishes well within one refresh.
+//! Linux framebuffer device output (`/dev/fb0`) for the fbdev backend,
+//! opened and mapped once during initialization. Frames render into a RAM
+//! back buffer and copy here row by row: framebuffer memory is often
+//! uncached or write-combined and the renderer's read-modify-write blending
+//! would be slow on it. The copy converts to the panel's pixel format (32 bpp
+//! XRGB/ARGB is a plain copy; other 16/32 bpp layouts with channels of at
+//! most 8 bits convert per pixel). When the driver supports
+//! `FBIO_WAITFORVSYNC`, each copy starts at vertical blank to reduce tearing;
+//! there is no page flipping, since a full 800x480 copy (~1.5 MB) finishes
+//! well within one refresh.
 
 const std = @import("std");
 const posix = std.posix;
@@ -26,8 +23,8 @@ const FBIOGET_FSCREENINFO: u32 = 0x4602;
 /// `_IOW('F', 0x20, __u32)`.
 const FBIO_WAITFORVSYNC: u32 = 0x4004_4620;
 
-/// Largest panel the backend accepts: the framework's framebuffer ceiling.
-/// The window then checks the panel against the app's own budget.
+// The framework's framebuffer ceiling; the window checks the panel against
+// the app's own budget.
 const width_max = limits.MAX_FRAMEBUFFER_WIDTH;
 const height_max = limits.MAX_FRAMEBUFFER_HEIGHT;
 
@@ -96,14 +93,11 @@ comptime {
     assert(@sizeOf(FixScreenInfo) == if (@sizeOf(c_ulong) == 8) 80 else 68);
 }
 
-/// One color channel's position within a device pixel.
 pub const Channel = struct {
     offset: u5,
-    /// Bits in the channel, 1 through 8.
     length: u4,
 };
 
-/// How a device pixel is laid out.
 pub const PixelLayout = struct {
     bytes_per_pixel: u8,
     red: Channel,
@@ -176,7 +170,6 @@ fn placeChannel(value: u32, field: Channel) u32 {
     return (value >> shift) << field.offset;
 }
 
-/// Write one row of renderer pixels into device memory.
 pub fn convertRow(source: []const u32, target: []u8, layout: PixelLayout) void {
     assert(target.len == source.len * layout.bytes_per_pixel);
     assert(layout.bytes_per_pixel == 2 or layout.bytes_per_pixel == 4);
@@ -200,15 +193,12 @@ pub const Framebuffer = struct {
     /// Visible resolution in pixels.
     width: u32 = 0,
     height: u32 = 0,
-    /// Bytes between the starts of consecutive device rows.
     line_length: u32 = 0,
     /// Byte offset of the visible area's first pixel within `memory`.
     visible_offset: usize = 0,
     layout: PixelLayout = undefined,
-    /// Cleared after the first `FBIO_WAITFORVSYNC` failure.
     vsync_supported: bool = true,
 
-    /// Open and map the device at `path`.
     pub fn open(self: *Framebuffer, path: [*:0]const u8) !void {
         assert(self.fd < 0);
         assert(self.memory.len == 0);
@@ -261,7 +251,6 @@ pub const Framebuffer = struct {
             @as(usize, self.width) * self.layout.bytes_per_pixel;
     }
 
-    /// Copy a full frame to the device, converting its pixel format.
     pub fn present(self: *Framebuffer, frame: raster.Target) void {
         assert(frame.width == self.width);
         assert(frame.height == self.height);
@@ -310,10 +299,6 @@ fn validateGeometry(
     if (offset + visible > fixed.smem_len) return bad;
 }
 
-// =============================================================================
-// Tests
-// =============================================================================
-
 const testing = std.testing;
 
 fn testScreenInfo(bits: u32, red: Bitfield, green: Bitfield, blue: Bitfield) VarScreenInfo {
@@ -328,9 +313,6 @@ fn testScreenInfo(bits: u32, red: Bitfield, green: Bitfield, blue: Bitfield) Var
 }
 
 test "RGB565 conversion keeps each channel's high bits in its own field" {
-    // Goal: a 16 bpp panel must receive red in bits 11-15, green in 5-10, and
-    // blue in 0-4. Distinct channel values catch a swapped or mis-shifted field:
-    // 0xFF8040 truncates to red 31, green 32, blue 8.
     const info = testScreenInfo(
         16,
         .{ .offset = 11, .length = 5, .msb_right = 0 },
@@ -348,8 +330,6 @@ test "RGB565 conversion keeps each channel's high bits in its own field" {
 }
 
 test "BGR 32 bpp panels swap red and blue; XRGB panels copy unchanged" {
-    // Goal: only the renderer's own layout may take the copy fast path; a BGR
-    // panel must be converted or every red would show as blue.
     const bgr = try PixelLayout.fromScreenInfo(&testScreenInfo(
         32,
         .{ .offset = 0, .length = 8, .msb_right = 0 },
@@ -369,8 +349,6 @@ test "BGR 32 bpp panels swap red and blue; XRGB panels copy unchanged" {
 }
 
 test "unsupported pixel formats are rejected at initialization" {
-    // Goal: 24 bpp and wider-than-8-bit channels are refused up front instead
-    // of being drawn incorrectly.
     const packed24 = testScreenInfo(
         24,
         .{ .offset = 16, .length = 8, .msb_right = 0 },

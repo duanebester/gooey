@@ -1,10 +1,3 @@
-//! Images on the 0.4.0 core: sizing, fit modes, rounding, and effects.
-//!
-//! Every image is a `ui.paint` element whose paint function calls
-//! `Painter.image`. The first frame queues the logo's decode on the image
-//! worker and draws only the panels; the decoded logo lands a few frames
-//! later and every cell draws it from the one atlas entry.
-
 const std = @import("std");
 const gooey = @import("gooey");
 
@@ -23,7 +16,6 @@ pub const App = gooey.App(State, render, .{
     .limits = .large,
 });
 
-/// The generated entry point (contract §7).
 pub const main = App.main;
 
 pub const logo_path = "assets/ziglang_logo.png";
@@ -33,7 +25,6 @@ const panel = Color.hex(0x16213e);
 const heading_color = Color.hex(0x888888);
 const label_color = Color.hex(0x666666);
 
-/// One image cell: the image box and the label under it.
 pub const Item = struct {
     label: []const u8,
     width: f32,
@@ -45,7 +36,6 @@ pub const Item = struct {
     }
 };
 
-/// 0.3.1's `Image` default: fit inside the box.
 const plain: ui.PaintImage = .{ .fit = .contain };
 
 fn rounded(radius: f32) ui.PaintImage {
@@ -70,13 +60,11 @@ pub const corner_radius = [_]Item{
     .square("none", 80, plain),
     .square("8px", 80, rounded(8)),
     .square("20px", 80, rounded(20)),
-    // `rounded = true` in 0.3.1: half the side.
     .square("circle", 80, rounded(40)),
 };
 
 pub const effects = [_]Item{
     .square("normal", 80, rounded(8)),
-    // Tint multiplies each pixel, so blue over the orange logo reads olive.
     .square("tint (multiply)", 80, .{
         .fit = .contain,
         .corners = .all(8),

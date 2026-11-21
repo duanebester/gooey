@@ -1,9 +1,8 @@
 //! The BT81x chip's fixed budgets, and how an app's `ResourceLimits` lays
-//! out the chip's `RAM_G` (CLAUDE.md §2).
-//!
-//! The chip facts do not change per app: a 2048-command display list, 1 MiB
-//! of `RAM_G`, and 15 bitmap handles left free of ROM fonts and the
-//! coprocessor. What changes is how the app's `AtlasLimits` divides `RAM_G`:
+//! out the chip's `RAM_G`. The chip facts do not change per app: a
+//! 2048-command display list, 1 MiB of `RAM_G`, and 15 bitmap handles left
+//! free of ROM fonts and the coprocessor. What changes is how the app's
+//! `AtlasLimits` divides `RAM_G`:
 //!
 //! | `RAM_G` range | Holds | Size |
 //! | --- | --- | --- |
@@ -35,23 +34,22 @@ pub const EveLimits = struct {
     /// `RAM_DL` in 32-bit commands.
     display_list_words_max: u32,
     /// Commands a frame's list may use, well below `RAM_DL`: the chip walks
-    /// the whole list for every line within a budget of about 2048 clocks
-    /// (BRT_AN_033 §2.11), and a line it cannot finish is dropped
-    /// (`REG_UNDERRUN` counts them; on screen, torn and garbled lines).
-    /// Measured on a BT817 driving the RVT70 (1024x600, 51 MHz pixel clock,
-    /// 1344-pixel lines, so 1897 system clocks a line at 72 MHz), each list
-    /// held 60 frames and gated on `REG_UNDERRUN`, not on what eyes catch:
-    /// full-width bars, text rows, and a 960x576 BILINEAR image under text
-    /// rows read 0 through 2048 commands, 16 translucent full-screen layers
-    /// under glyphs through 1792; 16 px glyphs spread over every line read 0
-    /// through 1888 and underran 150 to 180 lines a frame from 1920 (750 at
-    /// 2048, where the tearing is visible; at 1920 it was not); 1x1 rects
-    /// and points read 0 through 1951 and 1952; a list of `NOP`s, the bare
-    /// walk of the list, read 0 through 1824 and underran every line from
-    /// 1828.
-    /// The cap is 288 commands (16 %) below that floor, so a line keeps room
-    /// for pixel work the measured lists did not combine with their length.
-    /// The renderer logs `REG_UNDERRUN` every 5 s and warns when it moves.
+    /// the whole list for every line within a budget of about 2048 clocks,
+    /// and a line it cannot finish is dropped (`REG_UNDERRUN` counts them;
+    /// on screen, torn and garbled lines). Measured on a BT817 driving the
+    /// RVT70 (1024x600, 51 MHz pixel clock, 1344-pixel lines, so 1897 system
+    /// clocks a line at 72 MHz), each list held 60 frames and gated on
+    /// `REG_UNDERRUN`, not on what eyes catch: full-width bars, text rows,
+    /// and a 960x576 BILINEAR image under text rows read 0 through 2048
+    /// commands, 16 translucent full-screen layers under glyphs through
+    /// 1792; 16 px glyphs spread over every line read 0 through 1888 and
+    /// underran 150 to 180 lines a frame from 1920 (750 at 2048, where the
+    /// tearing is visible; at 1920 it was not); 1x1 rects and points read 0
+    /// through 1951 and 1952; a list of `NOP`s, the bare walk of the list,
+    /// read 0 through 1824 and underran every line from 1828. The cap is
+    /// 288 commands (16 %) below that floor, so a line keeps room for pixel
+    /// work the measured lists did not combine with their length. The
+    /// renderer logs `REG_UNDERRUN` every 5 s and warns when it moves.
     display_list_words_frame_max: u32,
     /// Commands every list spends outside its primitives: the preamble
     /// (`display_list.preamble_words`) and `DISPLAY`.
@@ -62,7 +60,6 @@ pub const EveLimits = struct {
     ram_g_bytes: u32,
     /// `RAM_G` at the top left for `CMD_SNAPSHOT2` strips (1024x32 RGB565).
     snapshot_scratch_bytes: u32,
-    /// One cell page, one bitmap handle.
     cell_page_bytes: u32,
     /// Bitmap handles for cell pages (0..13); handle 14 draws images.
     cell_page_count_max: u32,
@@ -75,7 +72,6 @@ pub const EveLimits = struct {
     image_texel_bytes: u32,
     /// Largest atlas side a cell key can address (13 bits).
     atlas_size_max: u32,
-    /// Largest SVG icon side a cell holds.
     svg_icon_size_max: u32,
 
     /// The BT815, BT816, BT817, and BT818.
@@ -124,7 +120,6 @@ pub const EveLimits = struct {
         return result;
     }
 
-    /// The image atlas mirror's bytes in `RAM_G`.
     pub fn imageBytes(self: *const EveLimits, atlas: *const AtlasLimits) u32 {
         assert(atlas.image_size > 0);
         assert(atlas.image_size <= limits_mod.MAX_ATLAS_SIZE);
@@ -215,7 +210,7 @@ pub const EveLimits = struct {
     }
 };
 
-/// One app's division of `RAM_G` (see the file comment).
+/// One app's division of `RAM_G`.
 pub const RamLayout = struct {
     cell_page_count: u32,
     image_address: u32,
@@ -226,11 +221,6 @@ pub const RamLayout = struct {
 const testing = std.testing;
 
 test "profiles divide RAM_G between cell pages and the image mirror, or fail the check" {
-    // Goal: the image atlas and the cell pages never overlap, the scratch
-    // stays free, and a profile that leaves too few pages is refused. The
-    // embedded image atlas (384²) takes 288 KiB, leaving 10 pages; nano's
-    // (256²) 128 KiB, 13 pages; small's (512²) 512 KiB, 7 pages; standard's
-    // (1024²) 2 MiB does not fit at all.
     const chip = EveLimits.bt81x;
     const embedded = chip.layout(&ResourceLimits.embedded.atlas);
     try testing.expectEqual(@as(u32, 10), embedded.cell_page_count);
@@ -251,10 +241,8 @@ test "profiles divide RAM_G between cell pages and the image mirror, or fail the
 }
 
 test "a profile fits the chip only if its paint limits fit the display list" {
-    // Goal: `.embedded` is the EVE profile, and a budget whose fullest frame
-    // cannot fit the list cap is refused, at the boundary. `.embedded` needs
-    // 8 + 128 × 2 + 8 × 6 + 1024 + 16 + 8 + (4 + 64) + (4 + 64) = 1496
-    // commands; `.nano` (3,716) and `.small` do not fit at all.
+    // .embedded needs 8 + 128 × 2 + 8 × 6 + 1024 + 16 + 8 + (4 + 64) +
+    // (4 + 64) = 1496 commands; `.nano` (3,716) and `.small` do not fit.
     const chip = EveLimits.bt81x;
     const embedded = ResourceLimits.embedded;
     try testing.expectEqual(@as(u64, 1496), chip.paintWordsMin(&embedded.paint));
@@ -273,10 +261,9 @@ test "a profile fits the chip only if its paint limits fit the display list" {
 }
 
 test "a profile fits the chip only if its caches hold two frames and fit the cells" {
-    // Goal: the atlases protect two frames on EVE, so the icon and image
-    // caches must hold two frames of them; and the glyph and icon caches must
-    // not name more regions than the pages hold cells. `.embedded`: 512 +
-    // 2 × 64 = 640 regions against 10 pages × 128 = 1280 cells.
+    // The atlases protect two frames on EVE, and the glyph and icon caches
+    // must not name more regions than the pages hold cells: .embedded needs
+    // 512 + 2 × 64 = 640 regions against 10 pages × 128 = 1280 cells.
     const chip = EveLimits.bt81x;
     var limits = ResourceLimits.embedded;
     limits.atlas.image_entry_count_max = 2 * limits.paint.image_count_frame_max - 1;

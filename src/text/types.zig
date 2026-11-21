@@ -1,24 +1,16 @@
-//! Shared types for the text system
-//!
-//! These types are platform-agnostic and used by all text backends.
-
 const std = @import("std");
 const builtin = @import("builtin");
 const platform = @import("../platform/mod.zig");
 const is_wasm = platform.is_wasm;
 const is_macos = builtin.os.tag == .macos;
 
-/// Subpixel variants for sharper text rendering at fractional pixel positions.
-/// Each glyph can be cached at up to VARIANTS_X * VARIANTS_Y different sub-pixel offsets.
 pub const SUBPIXEL_VARIANTS_X: u8 = 4;
-pub const SUBPIXEL_VARIANTS_Y: u8 = 1; // Only horizontal variants needed for text
+pub const SUBPIXEL_VARIANTS_Y: u8 = 1; // Only horizontal subpixel variants are used.
 
-/// Maximum unique fallback fonts tracked during ShapedRun cleanup.
-/// This is sufficient for typical text runs - exceeding this is extremely rare
-/// and would only occur with text containing many different scripts/emoji.
+/// Maximum unique fallback fonts tracked during `ShapedRun` cleanup;
+/// exceeding it means an unusually complex run with many scripts or emoji.
 pub const MAX_FALLBACK_FONTS_PER_RUN: usize = 16;
 
-/// System font styles
 pub const SystemFont = enum {
     monospace,
     sans_serif,
@@ -26,7 +18,7 @@ pub const SystemFont = enum {
     system,
 };
 
-/// Font weight, ordered from lightest to heaviest. `TextStyle.weight` uses this type.
+/// Ordered from lightest to heaviest.
 pub const FontWeight = enum(u8) {
     thin,
     light,
@@ -53,11 +45,9 @@ pub const FontWeight = enum(u8) {
     }
 };
 
-/// One loadable face of a font family: a weight, upright or italic. Each text
-/// system loads one face per variant in its `FontLimits.variants` during init.
-///
-/// The tag value is the layout `font_id`. `regular` is 0 so the layout default
-/// (`TextConfig.font_id = 0`) selects the regular upright face.
+/// One loadable face of a font family. The tag value is the layout
+/// `font_id`; `regular` is 0 so the layout default (`TextConfig.font_id = 0`)
+/// selects the regular upright face.
 pub const FontVariant = enum(u8) {
     regular,
     italic,
@@ -98,8 +88,6 @@ pub const FontVariant = enum(u8) {
         return result;
     }
 
-    /// The variant a layout `font_id` names. An id outside the enum is a
-    /// programmer error: only `FontVariant.fontId` produces font ids.
     pub fn fromFontId(font_id: u16) FontVariant {
         if (font_id < count) {
             return @fromBackingInt(@intCast(font_id));
@@ -126,29 +114,24 @@ pub const FontVariant = enum(u8) {
     }
 };
 
-/// Which loaded family a run draws with (contract decision 8). `app` is the
-/// app's font (`Config.font`); `mono` is the optional second family
+/// Which loaded family a run draws with: `app` is the app's font
+/// (`Config.font`); `mono` is the optional second family
 /// (`Config.fonts.mono`), with its own faces from `FontLimits.mono_variants`.
 pub const FontFamily = enum(u1) {
     app,
     mono,
 
-    /// The layout `font_id` of `variant` in this family. App ids equal
-    /// `FontVariant.fontId`, so 0.3.1 layout ids keep their meaning; mono ids
-    /// follow them.
     pub fn fontId(family: FontFamily, variant: FontVariant) u16 {
         const result: u16 = @as(u16, @backingInt(family)) * FontVariant.count + variant.fontId();
         std.debug.assert(result < font_id_count);
         return result;
     }
 
-    /// The family a layout `font_id` names. Ids come only from `fontId`.
     pub fn fromFontId(font_id: u16) FontFamily {
         std.debug.assert(font_id < font_id_count);
         return @fromBackingInt(@intCast(font_id / FontVariant.count));
     }
 
-    /// The variant a layout `font_id` names, in either family.
     pub fn variantFromFontId(font_id: u16) FontVariant {
         std.debug.assert(font_id < font_id_count);
         return FontVariant.fromFontId(font_id % FontVariant.count);
@@ -158,7 +141,6 @@ pub const FontFamily = enum(u1) {
     pub const font_id_count: u16 = @as(u16, count) * FontVariant.count;
 };
 
-/// Text decoration style
 pub const TextDecoration = packed struct {
     underline: bool = false,
     strikethrough: bool = false,
@@ -175,33 +157,23 @@ pub const TextDecoration = packed struct {
 
 /// Font metrics computed once at load time
 pub const Metrics = struct {
-    /// Design units per em
     units_per_em: u32,
-    /// Ascent in points (positive, above baseline)
+    /// Points, positive above the baseline.
     ascender: f32,
-    /// Descent in points (positive, below baseline)
+    /// Points, positive below the baseline.
     descender: f32,
-    /// Line gap / leading
     line_gap: f32,
-    /// Height of capital letters
     cap_height: f32,
-    /// Height of lowercase 'x'
     x_height: f32,
-    /// Underline position (negative = below baseline)
+    /// Negative below the baseline.
     underline_position: f32,
-    /// Underline thickness
     underline_thickness: f32,
-    /// Total line height (ascender + descender + line_gap)
     line_height: f32,
-    /// Font size in points
     point_size: f32,
-    /// Is this a monospace font?
     is_monospace: bool,
-    /// Cell width for monospace fonts (advance of 'M')
+    /// Advance of 'M'.
     cell_width: f32,
 
-    /// Calculate baseline Y for vertically centering text in a box.
-    /// Returns the Y coordinate of the baseline in logical pixels.
     pub inline fn calcBaseline(self: Metrics, box_y: f32, box_height: f32) f32 {
         const text_height = self.ascender + self.descender;
         const padding_top = (box_height - text_height) * 0.5;
@@ -211,52 +183,38 @@ pub const Metrics = struct {
 
 /// Glyph metrics for a single glyph
 pub const GlyphMetrics = struct {
-    /// Glyph ID (0 = missing glyph)
+    /// 0 = missing glyph.
     glyph_id: u16,
-    /// Horizontal advance
     advance_x: f32,
-    /// Vertical advance (usually 0 for horizontal text)
     advance_y: f32,
-    /// Bounding box origin X (left bearing)
     bearing_x: f32,
-    /// Bounding box origin Y (top bearing from baseline)
     bearing_y: f32,
-    /// Bounding box width
     width: f32,
-    /// Bounding box height
     height: f32,
 };
 
 /// A shaped glyph with positioning information
 pub const ShapedGlyph = struct {
-    /// Glyph ID in the font
     glyph_id: u16,
-    /// Horizontal offset from pen position
     x_offset: f32,
-    /// Vertical offset from baseline
     y_offset: f32,
-    /// Horizontal advance for next glyph
     x_advance: f32,
-    /// Vertical advance (usually 0)
     y_advance: f32,
-    /// Index into original text (byte offset)
+    /// Byte offset into the original text.
     cluster: u32,
-    /// Font reference for this glyph (for fallback fonts)
-    /// If null, use the primary font. Retained by shaper, released in ShapedRun.deinit
+    /// Fallback font reference retained by the shaper and released in
+    /// `ShapedRun.deinit`; null means the primary font.
     font_ref: ?*anyopaque = null,
-    /// Whether this glyph uses a color font (emoji)
     is_color: bool = false,
 };
 
-/// Result of shaping a text run
 pub const ShapedRun = struct {
     glyphs: []ShapedGlyph,
-    /// Total advance width
     width: f32,
-    /// Whether this run owns its memory (false for cache hits)
+    /// False for cache hits, which do not own their memory.
     owned: bool = true,
 
-    // CoreFoundation release function (for fallback fonts) - macOS only
+    // CFRelease for fallback fonts; macOS only.
     const CFRelease = if (is_macos)
         struct {
             extern "c" fn CFRelease(cf: *anyopaque) void;
@@ -267,15 +225,13 @@ pub const ShapedRun = struct {
         }.f;
 
     pub fn deinit(self: *ShapedRun, allocator: std.mem.Allocator) void {
-        // Skip cleanup for cache hits (they don't own their memory)
         if (!self.owned) {
             self.* = undefined;
             return;
         }
 
         if (self.glyphs.len > 0) {
-            // Release any retained fallback fonts (avoid double-release)
-            // Only needed on macOS where we use CoreFoundation
+            // Release each retained fallback font once.
             if (is_macos) {
                 var released: [MAX_FALLBACK_FONTS_PER_RUN]usize = @splat(0);
                 var released_count: usize = 0;
@@ -291,15 +247,13 @@ pub const ShapedRun = struct {
                             }
                         }
                         if (!already_released) {
-                            // Assert we haven't exceeded the limit - this would indicate
-                            // an unusually complex text run with many different fallback fonts
                             std.debug.assert(released_count < MAX_FALLBACK_FONTS_PER_RUN);
                             if (released_count < released.len) {
                                 CFRelease(font_ptr);
                                 released[released_count] = ptr_val;
                                 released_count += 1;
                             }
-                            // In release builds, skip releasing if at capacity (leak is better than crash)
+                            // At capacity in release builds: leak instead of crash.
                         }
                     }
                 }
@@ -312,45 +266,29 @@ pub const ShapedRun = struct {
 
 /// Result of rasterizing a glyph
 pub const RasterizedGlyph = struct {
-    /// Width of the rasterized bitmap in physical pixels
     width: u32,
-    /// Height of the rasterized bitmap in physical pixels
     height: u32,
-    /// Horizontal offset from pen position to glyph left edge (physical pixels)
+    /// From the pen position to the glyph's left edge, physical pixels.
     offset_x: i32,
-    /// Vertical offset from baseline to glyph top edge (physical pixels)
-    /// Positive means the glyph top is above the baseline.
+    /// From the baseline to the glyph's top edge, physical pixels;
+    /// positive above the baseline.
     offset_y: i32,
-    /// Horizontal advance to next glyph (logical pixels)
+    /// Logical pixels.
     advance_x: f32,
-    /// Whether this is a color glyph (emoji)
     is_color: bool,
 };
 
-/// Text measurement result
 pub const TextMeasurement = struct {
-    /// Total width of the text
     width: f32,
-    /// Height (based on font metrics)
     height: f32,
-    /// Number of lines (for wrapped text)
     line_count: u32 = 1,
 };
 
-/// Options for the platform text shaper's measurement pass.
-/// A `null` field selects the shaper's natural default rather than a
-/// magic numeric sentinel, so callers do not have to encode "unset"
-/// as a zero (which would otherwise be ambiguous with a real width of
-/// zero or a degenerate font size):
-/// - `max_width == null` means measure on a single line with no
-///   wrapping, so the returned width is the full unwrapped advance.
-/// - `font_size == null` means measure at the currently loaded font's
-///   size, so the caller does not have to restate it.
-///
-/// `weight` and `italic` select the face exactly as `TextStyle` does for
-/// rendering, with the same defaults, so a measured width matches the drawn
-/// text. A combination outside the text system's `FontLimits.variants`
-/// panics, as it does when rendered.
+/// `null` selects the shaper's default instead of a numeric sentinel:
+/// `max_width == null` measures a single unwrapped line and `font_size ==
+/// null` measures at the currently loaded font's size. `weight` and `italic`
+/// select the face exactly as `TextStyle` does, so a measured width matches
+/// the drawn text; a combination outside `FontLimits.variants` panics.
 pub const MeasureTextOptions = struct {
     max_width: ?f32 = null,
     font_size: ?f32 = null,

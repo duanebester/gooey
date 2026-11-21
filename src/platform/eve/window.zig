@@ -1,19 +1,11 @@
-//! EveWindow - the single full-screen window of the EVE backend.
+//! The EVE backend's single full-screen window: the whole panel at scale 1,
+//! drawn by the chip from display lists in its `EveRenderer`; a touch panel
+//! shows no cursor. The core host (`core_host.zig`) routes touch through
+//! `handleInput` and presents each packed frame with `presentFrame`.
 //!
-//! The window covers the whole panel at scale 1: `WindowOptions.width` and
-//! `height` are ignored, and the size never changes after initialization.
-//! Frames become display lists in the window's `EveRenderer`, which the chip
-//! draws itself. A touch panel shows no cursor.
-//!
-//! The core host (`core_host.zig`) owns the loop: it routes touch through
-//! `handleInput` and presents each frame it packs with `presentFrame`.
-//!
-//! ## Memory (CLAUDE.md §2)
-//!
-//! The panel's size is read from the chip before the window opens. `init`
-//! checks it against the app's `ResourceLimits.window` and fails when it does
-//! not fit, then reserves the renderer (`renderer.zig`). Nothing is allocated
-//! afterwards.
+//! The panel size is read from the chip before the window opens; `init`
+//! checks it against `ResourceLimits.window`, reserves the renderer, and
+//! nothing allocates afterwards.
 
 const std = @import("std");
 const interface_mod = @import("../interface.zig");
@@ -85,7 +77,7 @@ pub const Window = struct {
         errdefer allocator.destroy(self);
 
         // Field by field: the renderer makes the window about 150 KiB, too
-        // large for a struct literal's stack temporary (CLAUDE.md §13).
+        // large for a struct literal's stack temporary.
         self.allocator = allocator;
         self.platform = plat;
         self.window_id = .invalid;
@@ -154,7 +146,6 @@ pub const Window = struct {
         self.renderer.draw(frame, self.viewport(), clear);
     }
 
-    /// Route one input event to the application.
     pub fn handleInput(self: *Self, event: input.InputEvent) bool {
         assert(!self.closed);
         switch (event) {
@@ -179,12 +170,8 @@ pub const Window = struct {
         return self.closed;
     }
 
-    // =========================================================================
-    // Calls from the 0.3.1 `context/window.zig` and `cx.zig`
-    // =========================================================================
-    //
-    // The core never makes these calls. They stay only while those files
-    // compile, and go when phase 6 deletes them.
+    // Kept only while 0.3.1 `context/window.zig` and `cx.zig` compile; the
+    // core never calls these, and they go when phase 6 deletes those files.
 
     /// Stored only: the panel has no title bar.
     pub fn setTitle(self: *Self, title: []const u8) void {
@@ -224,10 +211,6 @@ pub const Window = struct {
         self.render_deadline_ms = deadline_ms;
         assert(self.render_deadline_ms.? <= deadline_ms);
     }
-
-    // =========================================================================
-    // Core host binding
-    // =========================================================================
 
     pub fn setInputCallback(self: *Self, callback: ?InputCallback) void {
         self.on_input = callback;

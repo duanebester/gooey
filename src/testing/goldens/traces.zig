@@ -1,5 +1,3 @@
-//! The scripted traces behind the counter and todo goldens.
-//!
 //! Coordinates are logical pixels at the centre of each control, read off the
 //! golden's hit records; a layout change must move them with it.
 
@@ -39,8 +37,8 @@ pub const todo = trace.Trace{
         .{ .label = "compose \"ca\"", .step = .{ .compose = "ca" } },
         .{ .label = "compose \"caf\"", .step = .{ .compose = "caf" } },
         // End the preedit before committing, as Wayland's text-input-v3 and
-        // AppKit's `unmarkText` do. Committing straight over a preedit trips
-        // a 0.3.1 assertion (`preedit_cursor` outlives the cleared preedit in
+        // AppKit's `unmarkText` do: committing straight over a preedit trips an
+        // assertion (`preedit_cursor` outlives the cleared preedit in
         // `TextInputState.insertText`), so the shared trace avoids it.
         .{ .label = "end the composition", .step = .{ .compose = "" } },
         .{ .label = "commit \"caf\u{e9}\"", .step = .{ .text = "caf\u{e9}" } },

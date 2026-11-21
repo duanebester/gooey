@@ -1,21 +1,13 @@
-//! DirectWrite text shaper implementation.
-//!
 //! Shapes with `IDWriteTextAnalyzer`: `AnalyzeScript` splits the text into
 //! script runs, then `GetGlyphs` and `GetGlyphPlacements` shape each run with
 //! the face's OpenType features (ligatures, kerning, complex scripts).
 //!
-//! `AnalyzeScript` reads the text through an `IDWriteTextAnalysisSource` and
-//! reports runs to an `IDWriteTextAnalysisSink`. Both are COM objects the
-//! shaper implements over its own fixed buffers; they live inside the shaper,
-//! so DirectWrite's reference counting never owns their lifetime.
-//!
-//! Resource sketch: all scratch storage is inline and fixed, 86,368 B per
-//! shaper (one per text system). A call shapes at most
-//! `text_utf16_count_max` UTF-16 code units into at most `glyph_count_max`
-//! glyphs across at most `script_run_count_max` runs; longer text fails with
-//! `TextTooLong` or `TooManyScriptRuns` instead of growing. The only heap use
-//! is the returned glyph slice, which the `shape` contract shared with the
-//! other backends requires.
+//! The analysis source and sink are COM objects implemented over the shaper's
+//! fixed buffers and live inside it, so DirectWrite's reference counting never
+//! owns their lifetime. All scratch storage is inline and fixed: longer text
+//! fails with `TextTooLong` or `TooManyScriptRuns` instead of growing, and the
+//! only heap use is the returned glyph slice, which the `shape` contract
+//! shared with the other backends requires.
 //!
 //! Not yet implemented: font fallback (characters the face lacks shape to
 //! .notdef, as on the FreeType backend), bidi reordering (runs shape left to
@@ -31,9 +23,8 @@ const limits = @import("../../../core/limits.zig");
 const ShapedGlyph = types.ShapedGlyph;
 const ShapedRun = types.ShapedRun;
 
-/// Capacity failures are returned as errors and logged as warnings with the
-/// limit; the caller decides how severe they are. DirectWrite failures,
-/// which no input should cause, are logged as errors.
+/// Capacity failures log warnings with the limit; DirectWrite failures no
+/// input should cause log errors.
 const log = std.log.scoped(.directwrite);
 
 /// Longest text one call shapes, in UTF-16 code units: the CoreText
@@ -61,9 +52,7 @@ const ScriptRun = struct {
     analysis: dw.DWRITE_SCRIPT_ANALYSIS,
 };
 
-/// DirectWrite-backed text shaper.
 pub const DirectWriteShaper = struct {
-    /// The text of the current call.
     text_utf16: [text_utf16_count_max]u16,
     /// UTF-8 byte offset of the codepoint each UTF-16 unit belongs to.
     byte_offsets: [text_utf16_count_max]u32,
@@ -378,7 +367,6 @@ fn computeGlyphClusters(
     @memset(glyph_clusters[glyph_cursor..], cluster_byte_offset);
 }
 
-/// Hot loop: copy shaped glyph data into the output and total the advance.
 fn writeShapedGlyphs(
     glyph_indices: []const u16,
     glyph_advances: []const f32,
@@ -422,10 +410,6 @@ fn logFailure(operation: []const u8, result: dw.HRESULT) void {
         @as(u32, @bitCast(result)),
     });
 }
-
-// =============================================================================
-// IDWriteTextAnalysisSource and IDWriteTextAnalysisSink
-// =============================================================================
 
 const source_vtable: dw.IDWriteTextAnalysisSource.VTable = .{
     .QueryInterface = sourceQueryInterface,
@@ -668,14 +652,7 @@ fn sinkSetNumberSubstitution(
     return dw.S_OK;
 }
 
-// =============================================================================
-// Tests
-// =============================================================================
-
 test "computeGlyphClusters maps ligatures, multi-glyph clusters, and surrogates" {
-    // Goal: the cluster rules a renderer relies on to map glyphs back to
-    // UTF-8 byte offsets. Methodology: hand-written cluster maps in the shape
-    // DirectWrite reports them, checked against offsets computed by hand.
     const testing = std.testing;
 
     // "ffi" as one ligature glyph, then "x": units 0..2 share glyph 0.

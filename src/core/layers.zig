@@ -1,4 +1,4 @@
-//! Layers: fragments and their order (contract §6).
+//! Layers: fragments and their order.
 //!
 //! Content is fragment zero. A box with a `layer` opens a fragment; fragments
 //! paint in `order` and hit-test in reverse, so what is on top receives input.

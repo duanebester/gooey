@@ -1,13 +1,5 @@
-//! Core layout engine — Clay-style flexbox layout algorithm.
-//!
-//! Engine facade: owns the `LayoutEngine` struct, its element/arena
-//! storage, the immediate-mode builder API (`openElement`/`closeElement`/
-//! `text`/`svg`/`image`), and the `endFrame` orchestrator. The layout phases
-//! live in sibling files:
-//!
-//!   - `sizing_pass.zig`   — min sizes, final sizes, text wrapping.
-//!   - `position_pass.zig` — positions, floating positioning.
-//!   - `fuzz.zig`          — fuzz targets for the above.
+// Facade: element building and `endFrame`; the layout passes live in
+// sibling files.
 
 const std = @import("std");
 
@@ -35,10 +27,6 @@ const TextConfig = types.TextConfig;
 
 const LayoutArena = arena_mod.LayoutArena;
 const limits_mod = @import("../core/limits.zig");
-
-// ============================================================================
-// Capacity
-// ============================================================================
 
 /// Every capacity one layout engine reserves at initialization. All of them
 /// come from the app's `ResourceLimits` (`fromLimits`); tests, fuzzers and
@@ -99,7 +87,7 @@ pub const LayoutCapacity = struct {
 
     /// The arena holds the frame's text copies (at most the text budget,
     /// doubled for alignment gaps between them and the line slices) and its
-    /// wrapped lines (contract decision 9), capped at the glyph budget by
+    /// wrapped lines, capped at the glyph budget by
     /// `wrapped_line_count_frame_max`.
     fn arenaBytes(limits: *const limits_mod.ResourceLimits) u32 {
         const text_bytes: u64 = limits.build.text_bytes_frame_max;
@@ -128,10 +116,6 @@ pub const WordInfo = struct {
     space_width: f32, // advance of its whitespace, every space and tab counted
     has_newline: bool, // a newline at `space_end` ends the unit's line
 };
-
-// ============================================================================
-// Bounded list
-// ============================================================================
 
 /// A list over storage the engine reserved at initialization: it never
 /// allocates, and a full list reports `error.Overflow` for its owner to fail
@@ -174,11 +158,6 @@ pub fn BoundedList(comptime T: type) type {
     };
 }
 
-// ============================================================================
-// Element Types (defined inline)
-// ============================================================================
-
-/// Scroll offset for positioning children
 pub const ScrollOffset = struct {
     x: f32 = 0,
     y: f32 = 0,
@@ -315,17 +294,11 @@ pub const ElementList = struct {
     }
 };
 
-// ============================================================================
-// Text Measurement
-// ============================================================================
-
-/// Result of text measurement
 pub const TextMeasurement = struct {
     width: f32,
     height: f32,
 };
 
-/// Text measurement function type
 pub const MeasureTextFn = *const fn (
     text: []const u8,
     font_id: u16,
@@ -333,10 +306,6 @@ pub const MeasureTextFn = *const fn (
     max_width: ?f32,
     user_data: ?*anyopaque,
 ) TextMeasurement;
-
-// ============================================================================
-// Layout Engine
-// ============================================================================
 
 pub const LayoutEngine = struct {
     capacity: LayoutCapacity,
@@ -473,11 +442,10 @@ pub const LayoutEngine = struct {
     }
 
     pub fn closeElement(self: *Self) void {
-        std.debug.assert(self.open_element_stack.len > 0); // Underflow: more closeElement() calls than openElement()
+        std.debug.assert(self.open_element_stack.len > 0);
         _ = self.open_element_stack.pop();
     }
 
-    /// Add a text element (leaf node)
     pub fn text(self: *Self, content: []const u8, config: types.TextConfig) !void {
         std.debug.assert(self.open_element_stack.len > 0);
 
@@ -492,7 +460,6 @@ pub const LayoutEngine = struct {
             .config = config,
         };
 
-        // Measure text if callback available
         if (self.measure_text_fn) |measure_fn| {
             const measured = measure_fn(
                 content,
@@ -504,15 +471,16 @@ pub const LayoutEngine = struct {
             elem.text_data.?.measured_width = measured.width;
             elem.text_data.?.measured_height = measured.height;
         } else {
-            // Fallback: estimate based on font size
+            // Fallback estimate: 0.6 is an average glyph advance ratio, 1.2 a
+            // typical line-height ratio.
             const font_size_f: f32 = @floatFromInt(config.font_size);
             elem.text_data.?.measured_width = @as(f32, @floatFromInt(content.len)) * font_size_f * 0.6;
             elem.text_data.?.measured_height = font_size_f * 1.2;
         }
     }
 
-    /// Create an element and link it into the tree: append it, track it as a
-    /// floating root when it floats, and link it to its parent.
+    /// Appends the element, tracks it as a floating root when it floats, and
+    /// links it to its parent.
     fn createElement(self: *Self, decl: ElementDeclaration, elem_type: ElementType) !u32 {
         if (elem_type == .container) self.checkOpenDepth();
         const parent_index = self.open_element_stack.last();
@@ -528,7 +496,6 @@ pub const LayoutEngine = struct {
             self.floating_roots.append(index) catch self.floatingRootsFailed();
         }
 
-        // Link to parent (or set root) and bump the parent's child_count.
         self.linkToParent(index, parent_index);
 
         return index;
@@ -558,9 +525,9 @@ pub const LayoutEngine = struct {
         });
     }
 
-    /// Link a newly-created element into its parent's child list. Uses
-    /// `last_child_index` for O(1) append, avoiding the O(n) sibling walk.
-    /// Promotes the element to root when no parent is open.
+    /// Links the element into its parent's child list; `last_child_index`
+    /// keeps the append O(1). Promotes the element to root when no parent is
+    /// open.
     fn linkToParent(self: *Self, index: u32, parent_index: ?u32) void {
         if (parent_index) |pi| {
             const parent = self.elements.get(pi);
@@ -583,19 +550,14 @@ pub const LayoutEngine = struct {
         std.debug.assert(root < self.elements.len());
         std.debug.assert(self.open_element_stack.len == 0);
 
-        // Phase 1: Compute minimum sizes (bottom-up).
         sizing_pass.computeMinSizes(self, root);
 
-        // Phase 2: Compute final sizes (top-down).
         sizing_pass.computeFinalSizes(self, root, self.viewport_width, self.viewport_height);
 
-        // Phase 2b: Wrap text now that we know container widths.
         try sizing_pass.computeTextWrapping(self, root);
 
-        // Phase 3: Compute positions (top-down).
         position_pass.computePositions(self, root, 0, 0);
 
-        // Phase 3b: Position floating elements (includes text wrapping for floats).
         try position_pass.computeFloatingPositions(self);
     }
 };

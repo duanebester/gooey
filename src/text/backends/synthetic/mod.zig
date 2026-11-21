@@ -1,8 +1,5 @@
-//! Deterministic text backend for headless tests and goldens.
-//!
-//! Selected with the `text_backend = .synthetic` build option; see
-//! `src/text/text_system.zig`. It needs no fonts, so it runs identically on
-//! every host.
+//! Deterministic text backend for headless tests and goldens; selected with
+//! the `text_backend = .synthetic` build option.
 
 pub const SyntheticFace = @import("face.zig").SyntheticFace;
 pub const SyntheticShaper = @import("shaper.zig").SyntheticShaper;

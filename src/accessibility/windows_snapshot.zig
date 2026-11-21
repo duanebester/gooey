@@ -1,24 +1,9 @@
-//! The Windows bridge's own copy of the accessibility tree.
-//!
-//! UI Automation is pull-based: clients query providers between frames, after
-//! the frame that built `Tree` has ended and the strings it borrowed may be
-//! gone. So each synced frame copies everything a provider can be asked about
-//! (structure, roles, states, bounds, and text) into storage the bridge owns,
-//! and providers read only this snapshot. The snapshot is pure data with no
-//! Win32 calls, so it is tested directly.
-//!
-//! ## Resource sketch (CLAUDE.md §7)
-//!
-//! - Entries: `a11y.element_count_max` (2,048 at `standard`) of 96 B, 192 KiB,
-//!   reserved at init.
-//! - Text: at most `text_bytes_element_max` (1 KiB) per element, 2 MiB at
-//!   `standard`, reserved at init. Pages become resident only where a frame
-//!   writes, so a typical UI touches a few KiB.
-//! - Per synced frame: one pass over at most the tree's elements, at most
-//!   their text copied, and one insert each into a map of twice as many
-//!   buckets. No allocation.
-//! - Text longer than its cap is truncated at a UTF-8 boundary. That is the
-//!   overload behaviour: a screen reader reads the first 256 bytes of a name.
+//! The Windows bridge's own copy of the accessibility tree. UI Automation is
+//! pull-based: clients query providers between frames, after the frame that
+//! built `Tree` has ended and the strings it borrowed may be gone, so each
+//! synced frame copies everything a provider can be asked about into storage
+//! the bridge owns and providers read only this snapshot. It is pure data
+//! with no Win32 calls, so it is tested directly.
 
 const std = @import("std");
 const types = @import("types.zig");
@@ -80,7 +65,6 @@ pub const Entry = struct {
     /// A separator's or slider's axis; null leaves UIA's `None`.
     orientation: ?types.Orientation,
 
-    /// Whether an assistive technology should see this element as a control.
     pub fn isExposed(self: *const Entry) bool {
         assert(self.fingerprint.isValid());
         assert(self.parent == index_none or self.parent < limits.a11y_element_count_ceiling);
@@ -95,7 +79,6 @@ pub const Entry = struct {
     }
 };
 
-/// A property whose change the bridge raises as a UI Automation event.
 pub const Property = enum(u8) {
     name,
     help_text,
@@ -177,7 +160,7 @@ pub const Snapshot = struct {
         assert(self.text.len == text_bytes);
     }
 
-    /// Zero what any frame wrote and return the storage (CLAUDE.md §21).
+    /// Zero what any frame wrote and return the storage.
     pub fn deinit(self: *Self) void {
         assert(self.entry_count <= self.entry_count_high_water);
         assert(self.text_used <= self.text_used_high_water);
@@ -394,10 +377,6 @@ fn textHash(text: ?[]const u8) u32 {
     return @truncate(std.hash.Wyhash.hash(0, bytes));
 }
 
-// =============================================================================
-// Patterns by role
-// =============================================================================
-//
 // Support is fixed per role, and the role is part of the fingerprint, so a
 // provider's interfaces never change during its lifetime as COM requires.
 
@@ -453,10 +432,6 @@ comptime {
     assert(name_bytes_max <= value_bytes_max);
 }
 
-// =============================================================================
-// Tests
-// =============================================================================
-
 const testing = std.testing;
 
 const test_capacity = tree_mod.Capacity.standard;
@@ -486,8 +461,8 @@ fn destroySnapshot(snapshot: *Snapshot) void {
 }
 
 test "rebuild links children and top-level siblings" {
-    // Goal: navigation works from the snapshot alone, including between
-    // top-level elements, which `Tree` itself does not link.
+    // `Tree` links only children of a parent; top-level elements are linked
+    // in the snapshot so navigation works between them too.
     const tree = try createTree();
     defer destroyTree(tree);
     const snapshot = try createSnapshot();
@@ -543,7 +518,6 @@ test "same-role, same-name top-level siblings stay distinct and navigation ends"
     try testing.expectEqual(@as(?u16, 0), snapshot.find(first));
     try testing.expectEqual(@as(?u16, 1), snapshot.find(second));
 
-    // Navigate as a provider does: by fingerprint, then to the next sibling.
     var visited: u16 = 0;
     var current = snapshot.root_first_child;
     while (current != index_none) : (visited += 1) {
@@ -573,8 +547,6 @@ test "text is copied, so it outlives the frame's strings" {
 }
 
 test "text is truncated at its cap on a code point boundary" {
-    // Boundaries: exactly the cap, one past it in ASCII, and a two-byte code
-    // point straddling the cap, which must be dropped whole.
     const exact: [name_bytes_max]u8 = @splat('a');
     try testing.expectEqual(name_bytes_max, utf8PrefixLength(&exact, name_bytes_max));
 
@@ -590,8 +562,6 @@ test "text is truncated at its cap on a code point boundary" {
 }
 
 test "a full tree with maximal text fits the text reservation exactly" {
-    // Capacity test (CLAUDE.md §24): fill every element with text at every
-    // cap, check the last element, then check the tree refuses one more.
     const tree = try createTree();
     defer destroyTree(tree);
     const snapshot = try createSnapshot();
@@ -635,7 +605,6 @@ test "collectChanges reports property, structure, and overflow changes" {
     tree.endFrame();
     snapshot.rebuild(tree);
 
-    // Same element, now checked and disabled; plus a new element.
     tree.beginFrame();
     _ = tree.pushElement(.{
         .role = .checkbox,
@@ -655,7 +624,6 @@ test "collectChanges reports property, structure, and overflow changes" {
     try testing.expectEqual(Property.toggle_state, list.items()[0].property);
     try testing.expectEqual(Property.is_enabled, list.items()[1].property);
 
-    // One past the queue's capacity reports overflow instead of growing.
     var full: ChangeList = .{};
     const change: Change = .{ .fingerprint = list.items()[0].fingerprint, .property = .name };
     var count: u16 = 0;

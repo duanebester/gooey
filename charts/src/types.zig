@@ -1,9 +1,5 @@
-//! Core Data Types for Gooey Charts
-//!
-//! These types use fixed-capacity arrays to ensure zero dynamic allocation
-//! during chart rendering (per CLAUDE.md guidelines). Series capacities are
-//! comptime parameters the app declares, each checked against its framework
-//! ceiling in `constants.zig`.
+//! Series capacities are comptime parameters the app declares, each checked
+//! against its framework ceiling in `constants.zig`.
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -17,12 +13,6 @@ const category_count_ceiling = constants.category_count_ceiling;
 const slice_count_ceiling = constants.slice_count_ceiling;
 const MAX_LABEL_LENGTH = constants.MAX_LABEL_LENGTH;
 
-// =============================================================================
-// DataPoint - For continuous X/Y data (line, scatter charts)
-// =============================================================================
-
-/// A single data point with continuous X and Y values.
-/// Used for line charts, scatter charts, and other continuous data.
 pub const DataPoint = struct {
     x: f32,
     y: f32,
@@ -51,12 +41,6 @@ pub const DataPoint = struct {
     }
 };
 
-// =============================================================================
-// CategoryPoint - For categorical data (bar, pie charts)
-// =============================================================================
-
-/// A data point with a categorical label and numeric value.
-/// Used for bar charts, pie charts, and other categorical data.
 pub const CategoryPoint = struct {
     label: [MAX_LABEL_LENGTH]u8 = @splat(0),
     label_len: u8 = 0,
@@ -85,12 +69,6 @@ pub const CategoryPoint = struct {
     }
 };
 
-// =============================================================================
-// Capacities - declared by the app, checked against the framework ceilings
-// =============================================================================
-
-/// Capacities of a line or scatter chart: the points each series holds and the
-/// series one chart draws. Example: `.{ .point_count_max = 512, .series_count_max = 4 }`.
 pub const PointCapacity = struct {
     point_count_max: u32,
     series_count_max: u32,
@@ -102,8 +80,6 @@ pub const PointCapacity = struct {
     }
 };
 
-/// Capacities of a bar chart: the categories each series holds and the series
-/// one chart draws. Example: `.{ .category_count_max = 12, .series_count_max = 2 }`.
 pub const CategoryCapacity = struct {
     category_count_max: u32,
     series_count_max: u32,
@@ -115,8 +91,6 @@ pub const CategoryCapacity = struct {
     }
 };
 
-/// Capacity of a pie or donut chart: the slices one chart draws.
-/// Example: `.{ .slice_count_max = 8 }`.
 pub const SliceCapacity = struct {
     slice_count_max: u32,
 
@@ -157,7 +131,6 @@ fn panicSeriesFull(
         ", {d} requested. Raise the chart's " ++ field ++ ".", .{ name, capacity, requested });
 }
 
-/// Copy `name` into a fixed label buffer; returns its length.
 fn copyName(target: *[MAX_LABEL_LENGTH]u8, name: []const u8) u8 {
     std.debug.assert(name.len <= MAX_LABEL_LENGTH);
     const len: u8 = @intCast(name.len);
@@ -166,13 +139,6 @@ fn copyName(target: *[MAX_LABEL_LENGTH]u8, name: []const u8) u8 {
     return len;
 }
 
-// =============================================================================
-// Series - Collection of DataPoints for continuous data
-// =============================================================================
-
-/// A named series of up to `point_count_max` data points with a color, for
-/// multi-series line and scatter charts. Charts expose the matching type as
-/// `LineChart(...).Series`, so apps rarely name this directly.
 pub fn Series(comptime point_count_max: u32) type {
     checkCapacity("point_count_max", point_count_max, point_count_ceiling);
     return struct {
@@ -184,11 +150,10 @@ pub fn Series(comptime point_count_max: u32) type {
 
         const Self = @This();
 
-        /// The points this series holds: its chart's `point_count_max`.
         pub const capacity: u32 = point_count_max;
 
-        /// Initialize a Series by value: the whole series is copied on return,
-        /// so prefer initInPlace() when `@sizeOf(Self)` is large.
+        /// The whole series is copied on return; prefer initInPlace() when
+        /// `@sizeOf(Self)` is large.
         pub fn init(name: []const u8, color: ?Color) Self {
             std.debug.assert(name.len <= MAX_LABEL_LENGTH);
             var series = Self{ .color = color };
@@ -197,8 +162,6 @@ pub fn Series(comptime point_count_max: u32) type {
             return series;
         }
 
-        /// Initialize a Series in place, without a stack temporary of the data.
-        /// Use this when initializing into static/global memory or heap.
         pub noinline fn initInPlace(self: *Self, name: []const u8, color: ?Color) void {
             std.debug.assert(name.len <= MAX_LABEL_LENGTH);
 
@@ -211,8 +174,6 @@ pub fn Series(comptime point_count_max: u32) type {
             std.debug.assert(self.name_len == name.len);
         }
 
-        /// Create a series from a slice of x/y tuples; more points than
-        /// `capacity` is a capacity-planning error and panics.
         pub fn fromSlice(
             name: []const u8,
             points: []const struct { x: f32, y: f32 },
@@ -240,7 +201,6 @@ pub fn Series(comptime point_count_max: u32) type {
             return self.data[0..self.data_len];
         }
 
-        /// Append a point; a full series is a capacity-planning error and panics.
         pub fn addPoint(self: *Self, point: DataPoint) void {
             std.debug.assert(self.data_len <= capacity);
             if (self.data_len < capacity) {
@@ -251,7 +211,6 @@ pub fn Series(comptime point_count_max: u32) type {
             }
         }
 
-        /// Find the min/max X values in this series.
         pub fn xExtent(self: *const Self) struct { min: f32, max: f32 } {
             std.debug.assert(self.data_len <= capacity);
             if (self.data_len == 0) return .{ .min = 0, .max = 0 };
@@ -267,7 +226,6 @@ pub fn Series(comptime point_count_max: u32) type {
             return .{ .min = min, .max = max };
         }
 
-        /// Find the min/max Y values in this series.
         pub fn yExtent(self: *const Self) struct { min: f32, max: f32 } {
             std.debug.assert(self.data_len <= capacity);
             if (self.data_len == 0) return .{ .min = 0, .max = 0 };
@@ -285,13 +243,6 @@ pub fn Series(comptime point_count_max: u32) type {
     };
 }
 
-// =============================================================================
-// CategorySeries - Collection of CategoryPoints
-// =============================================================================
-
-/// A named series of up to `category_count_max` category points with a color,
-/// for bar charts with one or more series (grouped bars). Charts expose the
-/// matching type as `BarChart(...).Series`.
 pub fn CategorySeries(comptime category_count_max: u32) type {
     checkCapacity("category_count_max", category_count_max, category_count_ceiling);
     return struct {
@@ -303,11 +254,10 @@ pub fn CategorySeries(comptime category_count_max: u32) type {
 
         const Self = @This();
 
-        /// The categories this series holds: its chart's `category_count_max`.
         pub const capacity: u32 = category_count_max;
 
-        /// Initialize a CategorySeries by value: the whole series is copied on
-        /// return, so prefer initInPlace() when `@sizeOf(Self)` is large.
+        /// The whole series is copied on return; prefer initInPlace() when
+        /// `@sizeOf(Self)` is large.
         pub fn init(name: []const u8, color: ?Color) Self {
             std.debug.assert(name.len <= MAX_LABEL_LENGTH);
             var series = Self{ .color = color };
@@ -316,8 +266,6 @@ pub fn CategorySeries(comptime category_count_max: u32) type {
             return series;
         }
 
-        /// Initialize a CategorySeries in place, without a stack temporary.
-        /// Use this when initializing into static/global memory or heap.
         pub noinline fn initInPlace(self: *Self, name: []const u8, color: ?Color) void {
             std.debug.assert(name.len <= MAX_LABEL_LENGTH);
 
@@ -330,8 +278,6 @@ pub fn CategorySeries(comptime category_count_max: u32) type {
             std.debug.assert(self.name_len == name.len);
         }
 
-        /// Create a series from a slice of label/value tuples; more categories
-        /// than `capacity` is a capacity-planning error and panics.
         pub fn fromSlice(
             name: []const u8,
             points: []const struct { label: []const u8, value: f32 },
@@ -359,7 +305,6 @@ pub fn CategorySeries(comptime category_count_max: u32) type {
             return self.data[0..self.data_len];
         }
 
-        /// Append a category; a full series is a capacity-planning error and panics.
         pub fn addPoint(self: *Self, point: CategoryPoint) void {
             std.debug.assert(self.data_len <= capacity);
             if (self.data_len < capacity) {
@@ -370,7 +315,6 @@ pub fn CategorySeries(comptime category_count_max: u32) type {
             }
         }
 
-        /// Find the max value in this series (for Y-axis domain).
         pub fn maxValue(self: *const Self) f32 {
             std.debug.assert(self.data_len <= capacity);
             if (self.data_len == 0) return 0;
@@ -383,7 +327,6 @@ pub fn CategorySeries(comptime category_count_max: u32) type {
             return max;
         }
 
-        /// Find the min value in this series.
         pub fn minValue(self: *const Self) f32 {
             std.debug.assert(self.data_len <= capacity);
             if (self.data_len == 0) return 0;
@@ -397,10 +340,6 @@ pub fn CategorySeries(comptime category_count_max: u32) type {
         }
     };
 }
-
-// =============================================================================
-// Tests
-// =============================================================================
 
 test "DataPoint init" {
     const p = DataPoint.init(10.0, 20.0);
@@ -423,7 +362,6 @@ test "CategoryPoint init" {
 }
 
 test "Series addPoint" {
-    // Heap-allocate the ceiling-sized Series (~304KB - too large for stack per CLAUDE.md).
     const series = try std.testing.allocator.create(Series(point_count_ceiling));
     defer std.testing.allocator.destroy(series);
 
@@ -460,7 +398,6 @@ test "Series fills exactly its capacity" {
 }
 
 test "CategorySeries addPoint" {
-    // Heap-allocate the ceiling-sized CategorySeries (~23KB) like an app would.
     const series = try std.testing.allocator.create(CategorySeries(category_count_ceiling));
     defer std.testing.allocator.destroy(series);
 

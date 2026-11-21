@@ -1,14 +1,5 @@
-//! Image decoder - platform dispatcher
-//!
-//! Routes to platform-specific image decoding backends:
-//! - CoreGraphics (macOS) - ImageIO/CoreGraphics
-//! - libpng (Linux) - PNG decoding via libpng
-//! - WIC (Windows) - Windows Imaging Component
-//! - null (other platforms) - Returns UnsupportedSource
-//!
-//! Only the decode is here: `core/images.zig` reads files on its worker and
-//! decodes the bytes into staging reserved at init. WASM has no decoder; the
-//! web keeps the browser's image path.
+//! Platform image-decode dispatcher; `core/images.zig` reads files on its
+//! worker and decodes into staging reserved at init. WASM keeps `null.zig`.
 
 const builtin = @import("builtin");
 const interface_verify = @import("../core/interface_verify.zig");
@@ -24,14 +15,9 @@ else switch (builtin.os.tag) {
     else => @import("backends/null.zig"),
 };
 
-// Compile-time interface verification
 comptime {
     interface_verify.verifyImageLoaderModule(@This());
 }
-
-// =============================================================================
-// Re-export types from backend
-// =============================================================================
 
 pub const DecodedImage = backend.DecodedImage;
 pub const LoadError = backend.LoadError;

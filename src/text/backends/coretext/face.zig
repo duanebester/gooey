@@ -1,7 +1,3 @@
-//! CoreText font face implementation
-//!
-//! Implements the FontFace interface using Apple's CoreText framework.
-
 const std = @import("std");
 const ct = @import("bindings.zig");
 const types = @import("../../types.zig");
@@ -15,23 +11,16 @@ const SystemFont = types.SystemFont;
 const FontVariant = types.FontVariant;
 const FontFace = font_face_mod.FontFace;
 
-/// CoreText-backed font face
 pub const CoreTextFace = struct {
-    /// CoreText font reference
     ct_font: ct.CTFontRef,
-    /// Cached metrics
     metrics: Metrics,
 
     const Self = @This();
 
-    /// Load one variant of a font by name (e.g., "SF Mono", "SF Pro", "Helvetica Neue").
-    ///
-    /// Selection: the name resolves to a family, the family's faces are
-    /// listed, and `font_match.select` picks one by the CSS font matching rule,
-    /// the same rule Fontconfig selection and the browser use. Fallback policy:
-    /// nothing is synthesized. A family without the requested weight or slant
-    /// renders with the face CSS matching picks, and init logs a warning when
-    /// its weight class or slant differs. See `createVariantFont`.
+    /// The name resolves to a family; `font_match.select` picks one of its
+    /// faces by the CSS matching rule. Nothing is synthesized: a family
+    /// without the requested weight or slant renders with the face matching
+    /// picks, and `warnInexactFace` logs the difference.
     pub fn init(name: []const u8, size: f32, variant: FontVariant) !Self {
         std.debug.assert(size > 0);
         std.debug.assert(name.len > 0);
@@ -338,12 +327,10 @@ pub const CoreTextFace = struct {
         }
     }
 
-    /// Get as the generic FontFace interface
     pub fn asFontFace(self: *Self) FontFace {
         return font_face_mod.createFontFace(Self, self);
     }
 
-    /// Get glyph ID for a Unicode codepoint
     pub fn glyphIndex(self: *const Self, codepoint: u21) u16 {
         var utf16_buf: [2]ct.UniChar = undefined;
         var count: usize = 1;
@@ -368,8 +355,6 @@ pub const CoreTextFace = struct {
         return if (success) glyph else 0;
     }
 
-    /// Get advance width for a glyph (fast path for text measurement)
-    /// Uses CTFontGetAdvancesForGlyphs which is optimized for this use case
     pub fn glyphAdvance(self: *const Self, glyph_id: u16) f32 {
         var glyph = glyph_id;
         var advance: ct.CGSize = undefined;
@@ -383,13 +368,10 @@ pub const CoreTextFace = struct {
         return @floatCast(advance.width);
     }
 
-    /// Get metrics for a specific glyph
     pub fn glyphMetrics(self: *const Self, glyph_id: u16) GlyphMetrics {
         return getGlyphMetricsFromFont(self.ct_font, glyph_id);
     }
 
-    /// Render a glyph with subpixel positioning
-    /// subpixel_x and subpixel_y are in range [0.0, 1.0)
     pub fn renderGlyphSubpixel(
         self: *const Self,
         glyph_id: u16,
@@ -417,8 +399,7 @@ pub const CoreTextFace = struct {
         );
     }
 
-    /// Render a glyph from any CTFontRef (for fallback fonts)
-    /// This is a static method that can render glyphs from fonts not owned by this face
+    /// Renders from a font not owned by this face (fallback path).
     pub fn renderGlyphFromFont(
         ct_font: ct.CTFontRef,
         glyph_id: u16,
@@ -479,11 +460,6 @@ pub const CoreTextFace = struct {
     }
 };
 
-// =============================================================================
-// Shared Internal Functions
-// =============================================================================
-
-/// Get glyph metrics from any CTFontRef
 fn getGlyphMetricsFromFont(ct_font: ct.CTFontRef, glyph_id: u16) GlyphMetrics {
     var glyph = glyph_id;
     var advance: ct.CGSize = undefined;
@@ -516,8 +492,6 @@ fn getGlyphMetricsFromFont(ct_font: ct.CTFontRef, glyph_id: u16) GlyphMetrics {
     };
 }
 
-/// Internal glyph rendering implementation shared by both public methods
-/// Renders a glyph from any CTFontRef with subpixel positioning
 fn renderGlyphInternal(
     ct_font: ct.CTFontRef,
     glyph_id: u16,
@@ -528,7 +502,6 @@ fn renderGlyphInternal(
     buffer: []u8,
     buffer_size: u32,
 ) !RasterizedGlyph {
-    // Assertions for input validation
     std.debug.assert(scale > 0);
     std.debug.assert(font_size > 0);
     std.debug.assert(buffer.len >= buffer_size);
@@ -542,7 +515,6 @@ fn renderGlyphInternal(
     ) orelse return error.FontError;
     defer ct.release(scaled_font);
 
-    // Get metrics from the scaled font so bounds are correct for the target size
     const glyph_metrics = getGlyphMetricsFromFont(scaled_font, glyph_id);
     const padding: u32 = 2;
     const padding_f: f32 = @floatFromInt(padding);
@@ -581,7 +553,6 @@ fn renderGlyphInternal(
     std.debug.assert(clamped_w > 0);
     std.debug.assert(clamped_h > 0);
 
-    // Create CoreGraphics context
     const color_space = ct.CGColorSpaceCreateDeviceGray() orelse return error.GraphicsError;
     defer ct.CGColorSpaceRelease(color_space);
 
@@ -596,7 +567,6 @@ fn renderGlyphInternal(
     ) orelse return error.GraphicsError;
     defer ct.CGContextRelease(context);
 
-    // Configure rendering for quality
     ct.CGContextSetAllowsAntialiasing(context, true);
     ct.CGContextSetShouldAntialias(context, true);
     ct.CGContextSetAllowsFontSmoothing(context, true);
@@ -607,7 +577,6 @@ fn renderGlyphInternal(
     ct.CGContextSetAllowsFontSubpixelQuantization(context, false);
     ct.CGContextSetShouldSubpixelQuantizeFonts(context, false);
 
-    // Move origin to account for glyph bounds (like GPUI does)
     // The context origin is bottom-left, Y increases upward
     ct.CGContextTranslateCTM(
         context,
@@ -616,12 +585,10 @@ fn renderGlyphInternal(
     );
     ct.CGContextSetTextMatrix(context, ct.CGAffineTransform.identity);
 
-    // Draw glyph at origin - the context translation positions it correctly
     var glyph = glyph_id;
     const position = ct.CGPoint{ .x = 0, .y = 0 };
     ct.CTFontDrawGlyphs(scaled_font, @ptrCast(&glyph), @ptrCast(&position), 1, context);
 
-    // Return offsets directly from font metrics - no bitmap scanning needed
     // offset_x: where to place bitmap left edge relative to pen (physical pixels)
     // offset_y: where to place bitmap top edge relative to baseline (physical pixels, positive = above)
     // advance_x is returned in logical units (at font_size), not physical pixels
@@ -634,10 +601,6 @@ fn renderGlyphInternal(
         .is_color = false,
     };
 }
-
-// =============================================================================
-// Tests
-// =============================================================================
 
 test "load system font" {
     var face = try CoreTextFace.initSystem(.monospace, 14.0, .regular);

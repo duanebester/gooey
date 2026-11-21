@@ -1,34 +1,8 @@
-//! Atlas upload journal and frame clock, shared by the glyph, SVG, and image atlases.
-//!
-//! The app keeps no copy of atlas pixels (memory-budget decision 8); each renderer
-//! holds them in its own textures, the CPU renderer included.
-//! When an atlas places a rasterized item, it writes the item's pixels, with a
-//! zeroed 1 px border, into this journal. Every renderer that draws from the
-//! atlases is a registered consumer: each frame it copies the records it has not
-//! yet seen into its own staging and uploads them before it draws. A record is
-//! retired once every consumer has consumed it.
-//!
-//! The journal also owns the atlas frame clock. A consumer's frame is open from
-//! `beginFrame` until its `consumeEnd`, while its scene still references atlas
-//! regions the GPU has not received. Atlases never evict a shelf used at or
-//! after the oldest open frame, nor one whose records a consumer still has to
-//! upload, so no region is overwritten while a pending scene or upload needs it.
-//!
-//! A consumer whose output lags (`protectShownFrame`) also keeps its last
-//! uploaded frame protected until it uploads the next one. The EVE chip draws
-//! frame N's images from its own copy of the image atlas while the host builds
-//! frame N+1 and writes that frame's new texels into the copy, so a shelf
-//! frame N used must not be reused until frame N+1 has replaced it on screen.
-//! Atlases then hold two frames of items for that consumer.
-//!
-//! Resource sketch (CLAUDE.md §7), `.standard`: `bytes` is
-//! `upload_bytes_frame_max` (1 MiB) and `records` 16,384 × 16 B (256 KiB). Both
-//! are reserved at init and touched only up to the peak per-frame upload. A
-//! frame that would stage more defers the remaining items to the next frame.
-//! Synthetic-text builds, whose atlases are their own textures, reserve neither.
-//!
-//! Locking: an atlas holds its cache's mutex and then this journal's mutex.
-//! Consumers and `beginFrame` take only this mutex, so the order is acyclic.
+//! Atlas upload journal and frame clock shared by the glyph, SVG, and image
+//! atlases. The app keeps no copy of atlas pixels; each renderer holds them in
+//! its own textures and copies staged records it has not yet seen before it
+//! draws. Atlases never evict a shelf whose pixels a pending scene or upload
+//! still needs: see `frameProtectedLocked` and `protectShownFrame`.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -47,10 +21,8 @@ pub const AtlasKind = enum(u8) {
     }
 };
 
-/// Where atlas pixels live.
 pub const AtlasStorage = enum {
-    /// The atlas pixels are the texture, in CPU memory (the `NullRenderer`
-    /// of synthetic-text builds).
+    /// The atlas pixels are the texture, in CPU memory.
     cpu_texture,
     /// A GPU texture holds the only full copy; pixels travel through the journal.
     gpu_upload,
@@ -140,7 +112,6 @@ pub const AtlasUploads = struct {
 
     pub const Options = struct {
         storage: AtlasStorage,
-        /// `AtlasLimits.upload_bytes_frame_max`.
         upload_bytes_frame_max: u32,
         /// Renderers consuming the journal at once: one per window, so
         /// `limits.window_count_max` in an app.
@@ -201,10 +172,6 @@ pub const AtlasUploads = struct {
         self.* = undefined;
     }
 
-    // =========================================================================
-    // Consumers (renderers)
-    // =========================================================================
-
     /// Register a renderer. Its texture starts empty, so the caller must
     /// condemn every live atlas item afterwards (`AppResources` does).
     pub fn registerConsumer(self: *Self, key: usize) void {
@@ -247,7 +214,7 @@ pub const AtlasUploads = struct {
 
     /// Keep `key`'s last uploaded frame protected until its next upload, for a
     /// renderer that still draws that frame from its copy of the atlases while
-    /// the next frame builds and uploads (EVE; see the file comment).
+    /// the next frame builds and uploads (EVE).
     pub fn protectShownFrame(self: *Self, key: usize) void {
         assert(key != 0);
         self.mutex.lockUncancelable(self.io);
@@ -257,8 +224,7 @@ pub const AtlasUploads = struct {
         consumer.shown_protected = true;
     }
 
-    /// Advance the frame clock and open `key`'s frame. Returns the new frame,
-    /// which the caller passes to `deferredSince` when the frame ends.
+    /// Advance the frame clock and open `key`'s frame.
     pub fn beginFrame(self: *Self, key: usize) u64 {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
@@ -282,7 +248,6 @@ pub const AtlasUploads = struct {
         return self.frame_deferred >= frame;
     }
 
-    /// True when `key` has records it has not uploaded.
     pub fn hasPending(self: *Self, key: usize) bool {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
@@ -321,10 +286,8 @@ pub const AtlasUploads = struct {
         assert(consumer.sequence_next >= self.sequence_base);
     }
 
-    // =========================================================================
-    // Atlas side (caller holds the mutex via `lock`)
-    // =========================================================================
-
+    /// An atlas holds its cache's mutex and then this journal's; consumers
+    /// and `beginFrame` take only this one, so the lock order is acyclic.
     pub fn lock(self: *Self) void {
         self.mutex.lockUncancelable(self.io);
     }
@@ -418,10 +381,6 @@ pub const AtlasUploads = struct {
         return self.bytes[staged.offset..][0..byte_count];
     }
 
-    // =========================================================================
-    // Internals
-    // =========================================================================
-
     fn findConsumer(self: *Self, key: usize) ?*Consumer {
         assert(key != 0);
         for (self.consumers) |*consumer| {
@@ -460,10 +419,6 @@ pub const AtlasUploads = struct {
     }
 };
 
-// =============================================================================
-// Tests
-// =============================================================================
-
 const testing = std.testing;
 
 fn testUploads(storage: AtlasStorage, upload_bytes: u32) !*AtlasUploads {
@@ -480,9 +435,6 @@ fn testUploads(storage: AtlasStorage, upload_bytes: u32) !*AtlasUploads {
 }
 
 test "journal retires a record only after every consumer uploaded it" {
-    // Two consumers at different points: the record survives the first
-    // consume, moves to the front when the second catches up partially, and
-    // the journal empties once both have uploaded everything.
     const uploads = try testUploads(.gpu_upload, 4096);
     defer testing.allocator.destroy(uploads);
     defer uploads.deinit();
@@ -526,7 +478,6 @@ test "journal retires a record only after every consumer uploaded it" {
     );
     uploads.unlock();
 
-    // Consumer 1 sees only the new record; consumer 2 sees both.
     const one = uploads.consumeBegin(1);
     try testing.expectEqual(@as(usize, 1), one.records.len);
     try testing.expectEqual(AtlasKind.svg, one.records[0].kind);
@@ -545,8 +496,6 @@ test "journal retires a record only after every consumer uploaded it" {
 }
 
 test "journal refuses a stage past its byte budget and records the frame" {
-    // 256 bytes hold one 16x16 R8 item exactly; one more byte is refused,
-    // which marks the frame deferred, and a consume frees the space again.
     const uploads = try testUploads(.gpu_upload, 256);
     defer testing.allocator.destroy(uploads);
     defer uploads.deinit();
@@ -572,8 +521,6 @@ test "journal refuses a stage past its byte budget and records the frame" {
 }
 
 test "frame protection follows the oldest open consumer frame" {
-    // Consumer 1 opens frame 2 and consumer 2 opens frame 3: frame 2 stays
-    // protected until consumer 1 uploads its scene.
     const uploads = try testUploads(.gpu_upload, 1024);
     defer testing.allocator.destroy(uploads);
     defer uploads.deinit();

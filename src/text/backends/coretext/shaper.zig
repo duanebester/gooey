@@ -1,8 +1,3 @@
-//! CoreText text shaper implementation
-//!
-//! Provides full Unicode text shaping using Apple's CoreText framework,
-//! including support for ligatures, kerning, and complex scripts.
-
 const std = @import("std");
 const ct = @import("bindings.zig");
 const types = @import("../../types.zig");
@@ -12,29 +7,23 @@ const limits = @import("../../../core/limits.zig");
 const ShapedGlyph = types.ShapedGlyph;
 const ShapedRun = types.ShapedRun;
 
-/// CoreText-backed text shaper
 pub const CoreTextShaper = struct {
     allocator: std.mem.Allocator,
-    /// UTF-16 units of the text being shaped. Fixed, like the buffers below:
-    /// shaping runs every frame, after initialization, and must not allocate
-    /// (CLAUDE.md §2). Each unit has one cluster entry, so `MAX_CLUSTER_MAP`
-    /// bounds both.
+    /// UTF-16 units of the text being shaped. Fixed: shaping runs every frame
+    /// after initialization and must not allocate. One cluster entry per unit,
+    /// so `MAX_CLUSTER_MAP` bounds both.
     utf16_buf: [MAX_CLUSTER_MAP]ct.UniChar,
 
-    /// Pre-allocated buffers for glyph data (eliminates per-shape allocations)
     glyph_buf: [MAX_GLYPHS_PER_RUN]ct.CGGlyph,
     position_buf: [MAX_GLYPHS_PER_RUN]ct.CGPoint,
     advance_buf: [MAX_GLYPHS_PER_RUN]ct.CGSize,
     index_buf: [MAX_GLYPHS_PER_RUN]ct.CFIndex,
 
-    /// Pre-allocated cluster map buffer
     cluster_buf: [MAX_CLUSTER_MAP]u32,
 
     const Self = @This();
 
-    /// Maximum glyphs per CTRun (covers most text scenarios)
     const MAX_GLYPHS_PER_RUN: usize = 1024;
-    /// Maximum UTF-16 units for cluster mapping (~2KB UTF-8 text)
     const MAX_CLUSTER_MAP: usize = 2048;
 
     // The core stops a run past `text.run_codepoint_count_max` before it is
@@ -61,13 +50,11 @@ pub const CoreTextShaper = struct {
         self.* = undefined;
     }
 
-    /// Full text shaping using CoreText
     pub fn shape(self: *Self, face: *const CoreTextFace, text: []const u8, allocator: std.mem.Allocator) !ShapedRun {
         if (text.len == 0) {
             return ShapedRun{ .glyphs = &[_]ShapedGlyph{}, .width = 0 };
         }
 
-        // Convert UTF-8 to UTF-16 into the fixed buffers.
         var cluster_count: usize = 0;
 
         var byte_idx: u32 = 0;
@@ -100,7 +87,6 @@ pub const CoreTextShaper = struct {
             return ShapedRun{ .glyphs = &[_]ShapedGlyph{}, .width = 0 };
         }
 
-        // Create CFString from UTF-16
         const cf_string = blk: {
             const objc = @import("objc");
             const NSString = objc.getClass("NSString") orelse return error.ClassNotFound;
@@ -117,7 +103,6 @@ pub const CoreTextShaper = struct {
         };
         defer ct.release(cf_string);
 
-        // Create attributed string with font
         const attrs = ct.CFDictionaryCreateMutable(null, 1, &ct.kCFTypeDictionaryKeyCallBacks, &ct.kCFTypeDictionaryValueCallBacks) orelse
             return error.AllocationFailed;
         defer ct.release(attrs);
@@ -128,12 +113,10 @@ pub const CoreTextShaper = struct {
             return error.AllocationFailed;
         defer ct.release(attr_string);
 
-        // Create CTLine for shaping
         const line = ct.CTLineCreateWithAttributedString(attr_string) orelse
             return error.ShapingFailed;
         defer ct.release(line);
 
-        // Get glyph runs
         const runs = ct.CTLineGetGlyphRuns(line);
         const run_count = ct.CFArrayGetCount(runs);
 
@@ -149,26 +132,22 @@ pub const CoreTextShaper = struct {
 
             if (glyph_count == 0) continue;
 
-            // Check against pre-allocated buffer limits
             if (glyph_count > MAX_GLYPHS_PER_RUN) return error.RunTooLong;
 
-            // Get the font actually used for this run (may be a fallback font)
+            // The run's font may be a fallback rather than `face.ct_font`.
             const run_attrs = ct.CTRunGetAttributes(run);
             const run_font: ?ct.CTFontRef = if (ct.CFDictionaryGetValue(run_attrs, @ptrCast(ct.kCTFontAttributeName))) |f|
                 @ptrCast(@constCast(f))
             else
                 null;
 
-            // Check if this run uses a fallback font
             const is_fallback = if (run_font) |rf| @intFromPtr(rf) != @intFromPtr(face.ct_font) else false;
 
-            // Check if this is a color font (emoji)
             const is_color = if (run_font) |rf| blk: {
                 const traits = ct.CTFontGetSymbolicTraits(rf);
                 break :blk (traits & ct.kCTFontTraitColorGlyphs) != 0;
             } else false;
 
-            // Use pre-allocated buffers instead of per-call allocation
             const glyph_count_usize: usize = @intCast(glyph_count);
             const glyphs = self.glyph_buf[0..glyph_count_usize];
             const positions = self.position_buf[0..glyph_count_usize];
@@ -187,7 +166,6 @@ pub const CoreTextShaper = struct {
                 else
                     0;
 
-                // Calculate relative offset within the run
                 // positions[i] is absolute from line start, so we need relative offset
                 const x_offset: f32 = if (i == 0)
                     0 // First glyph of run: no offset, advances handle positioning
@@ -201,8 +179,7 @@ pub const CoreTextShaper = struct {
                     .x_advance = @floatCast(advances[i].width),
                     .y_advance = @floatCast(advances[i].height),
                     .cluster = cluster,
-                    // Store font reference if this is a fallback font
-                    // We must retain it since CTLine will be released
+                    // Retained: the CTLine is released while the glyph still references the font.
                     .font_ref = if (is_fallback and run_font != null) blk: {
                         _ = ct.CFRetain(@ptrCast(run_font.?));
                         break :blk run_font;

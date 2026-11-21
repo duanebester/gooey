@@ -1,9 +1,4 @@
-//! Autorelease pool wrapper. Gooey creates a pool around work that vends
-//! autoreleased Objective-C objects (e.g. per-frame Foundation temporaries) so
-//! they are drained deterministically instead of accumulating.
-
 pub const AutoreleasePool = opaque {
-    /// Create a new autorelease pool. To clean it up, call deinit.
     pub inline fn init() *AutoreleasePool {
         return @ptrCast(objc_autoreleasePoolPush().?);
     }

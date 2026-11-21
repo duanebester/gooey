@@ -1,17 +1,3 @@
-//! Tests for engine internal data structures and low-level helpers.
-//!
-//! Covers:
-//!   - `BoundedList` over reserved storage
-//!   - `LayoutCapacity` derived from the budget, each pool filled exactly
-//!   - UTF-8 text wrapping
-//!   - `beginFrame` reset behavior
-//!   - Word-boundary helper (`sizing_pass.findWordBoundaries`)
-//!   - Floating `expand` behavior
-//!   - `Offset2D` / `WordInfo` shared types
-//!   - Grow, shrink and fast-path distribution coverage
-//!
-//! All tests route through public `LayoutEngine` methods unless noted.
-
 const std = @import("std");
 
 const assert = std.debug.assert;
@@ -51,14 +37,7 @@ fn boundingBox(engine: *const LayoutEngine, index: u32) types.BoundingBox {
     return bounds;
 }
 
-// =============================================================================
-// Fixed Capacity Arrays, UTF-8, Capacity Limits
-// =============================================================================
-
 test "BoundedList fills its storage exactly and reports one more" {
-    // Goal: the list holds exactly its buffer's length, a further append
-    // reports `error.Overflow` without writing, and pop and clear reuse the
-    // storage from its start.
     var buffer: [3]u32 = undefined;
     var list: BoundedList(u32) = .{ .buffer = &buffer };
     try std.testing.expectEqual(@as(?u32, null), list.pop());
@@ -78,16 +57,14 @@ test "BoundedList fills its storage exactly and reports one more" {
 }
 
 test "LayoutCapacity follows each profile's budget" {
-    // Goal: every capacity comes from the budget field the plan names, so a
-    // profile change moves the engine with it. Values are written out rather
-    // than recomputed with the same expressions as `fromLimits`.
+    // Values are written out rather than recomputed with the same
+    // expressions as `fromLimits`, so a budget change moves the test.
     const nano = LayoutCapacity.fromLimits(&ResourceLimits.nano);
     try std.testing.expectEqual(@as(u32, 513), nano.element_count_max);
     try std.testing.expectEqual(@as(u32, 64), nano.box_depth_max);
     try std.testing.expectEqual(@as(u32, 8), nano.floating_count_max);
     try std.testing.expectEqual(@as(u32, 1024), nano.word_count_text_max);
     try std.testing.expectEqual(@as(u32, 1024), nano.wrapped_line_count_frame_max);
-    // 16 KiB of text doubled, plus 1,024 lines of 12 B.
     try std.testing.expectEqual(@as(u32, 32 * 1024 + 1024 * 12), nano.arena_bytes);
     const large = LayoutCapacity.fromLimits(&ResourceLimits.large);
     try std.testing.expectEqual(@as(u32, 16_384), large.element_count_max);
@@ -99,11 +76,9 @@ test "LayoutCapacity follows each profile's budget" {
 }
 
 test "nano engine holds exactly its elements, depth and floating roots" {
-    // Goal: each reserved pool of a `nano` engine takes exactly its capacity
-    // with nothing dropped: 64 nested containers, then 8 floating children of
-    // the innermost, then leaves up to the 513th element. One more of any of
-    // them panics naming its budget field, which a test cannot catch; the core
-    // fails first at the same budgets (`core-box-depth`, `core-layer-count`,
+    // Fills each `nano` pool exactly. One more of any of them panics naming
+    // its budget field, which a test cannot catch; the core fails first at
+    // the same budgets (`core-box-depth`, `core-layer-count`,
     // `core-layout-elements` in `testing/fail_fast_check.zig`).
     const nano = LayoutCapacity.fromLimits(&ResourceLimits.nano);
     var engine = try LayoutEngine.init(&nano);
@@ -132,17 +107,14 @@ test "open_element_stack uses fixed capacity" {
 
     engine.beginFrame(800, 600);
 
-    // Open several nested elements
     for (0..10) |_| {
         try engine.openElement(.{
             .layout = .{ .sizing = Sizing.fixed(100, 100) },
         });
     }
 
-    // Verify stack has correct depth
     try std.testing.expectEqual(@as(usize, 10), engine.open_element_stack.len);
 
-    // Close all
     for (0..10) |_| {
         engine.closeElement();
     }
@@ -156,12 +128,10 @@ test "floating_roots uses fixed capacity" {
 
     engine.beginFrame(800, 600);
 
-    // Create a parent element
     try engine.openElement(.{
         .layout = .{ .sizing = Sizing.fixed(400, 300) },
     });
 
-    // Add several floating elements (no IDs needed for this test)
     try engine.openElement(.{
         .layout = .{ .sizing = Sizing.fixed(50, 50) },
         .floating = .{},
@@ -194,7 +164,6 @@ test "floating_roots uses fixed capacity" {
 
     engine.closeElement();
 
-    // Verify floating roots tracked
     try std.testing.expectEqual(@as(usize, 5), engine.floating_roots.len);
 }
 
@@ -202,7 +171,6 @@ test "UTF-8 text wrapping handles multi-byte characters" {
     var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
 
-    // Mock text measurement: each codepoint is 10px wide
     const mockMeasure = struct {
         fn measure(
             text: []const u8,
@@ -211,7 +179,6 @@ test "UTF-8 text wrapping handles multi-byte characters" {
             _: ?f32,
             _: ?*anyopaque,
         ) TextMeasurement {
-            // Count UTF-8 codepoints, not bytes
             var codepoint_count: usize = 0;
             const view = std.unicode.Utf8View.initUnchecked(text);
             var iter = view.iterator();
@@ -228,13 +195,10 @@ test "UTF-8 text wrapping handles multi-byte characters" {
     engine.setMeasureTextFn(mockMeasure, null);
     engine.beginFrame(800, 600);
 
-    // Container that forces wrapping
     try engine.openElement(.{
-        .layout = .{ .sizing = Sizing.fixed(100, 200) }, // 100px wide = 10 codepoints max
+        .layout = .{ .sizing = Sizing.fixed(100, 200) },
     });
 
-    // Text with UTF-8 characters (each emoji is multi-byte but should be 1 codepoint = 10px)
-    // "Hello 世界" = 8 codepoints (H,e,l,l,o, ,世,界) = 80px, fits in 100px
     try engine.text("Hello 世界", .{
         .font_size = 16,
         .wrap_mode = .words,
@@ -244,7 +208,6 @@ test "UTF-8 text wrapping handles multi-byte characters" {
 
     try engine.endFrame();
 
-    // Should render without crashing - UTF-8 handling works
     const text_elem = engine.elements.getConst(1);
     try std.testing.expect(text_elem.text_data != null);
 }
@@ -278,10 +241,9 @@ test "UTF-8 text wrapping with emoji" {
     engine.beginFrame(800, 600);
 
     try engine.openElement(.{
-        .layout = .{ .sizing = Sizing.fixed(50, 200) }, // Very narrow - 5 codepoints
+        .layout = .{ .sizing = Sizing.fixed(50, 200) },
     });
 
-    // Emoji characters (4 bytes each in UTF-8, but 1 codepoint each)
     try engine.text("🎉🎊🎁", .{
         .font_size = 16,
         .wrap_mode = .words,
@@ -291,7 +253,6 @@ test "UTF-8 text wrapping with emoji" {
 
     try engine.endFrame();
 
-    // Should complete without panic
     const text_elem = engine.elements.getConst(1);
     try std.testing.expect(text_elem.text_data != null);
 }
@@ -300,7 +261,6 @@ test "beginFrame clears fixed capacity arrays" {
     var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
 
-    // First frame
     engine.beginFrame(800, 600);
     try engine.openElement(.{
         .layout = .{ .sizing = Sizing.fill() },
@@ -309,25 +269,17 @@ test "beginFrame clears fixed capacity arrays" {
     engine.closeElement();
     try engine.endFrame();
 
-    // Verify state after first frame
     try std.testing.expect(engine.floating_roots.len > 0 or engine.open_element_stack.len == 0);
 
-    // Second frame should start clean
     engine.beginFrame(800, 600);
     try std.testing.expectEqual(@as(usize, 0), engine.open_element_stack.len);
     try std.testing.expectEqual(@as(usize, 0), engine.floating_roots.len);
 }
 
-// ============================================================================
-// Word Measurement and Floating Elements
-// ============================================================================
-
 test "word-level measurement measures words not characters" {
-    // This test verifies that findWordBoundaries correctly identifies word boundaries
     var word_buffer: [16]WordInfo = undefined;
     var words: BoundedList(WordInfo) = .{ .buffer = &word_buffer };
 
-    // Mock measure function that returns width = length * 10
     const measure = struct {
         fn measure(text: []const u8, _: u16, _: u16, _: ?f32, _: ?*anyopaque) TextMeasurement {
             return .{ .width = @floatFromInt(text.len * 10), .height = 20 };
@@ -339,22 +291,18 @@ test "word-level measurement measures words not characters" {
 
     const word_count = sizing_pass.findWordBoundaries(text, measure, config, null, &words);
 
-    // Should find 3 words: "hello", "world", "test"
     try std.testing.expectEqual(@as(u32, 3), word_count);
     try std.testing.expectEqual(@as(usize, 3), words.len);
 
-    // First word: "hello" (5 chars * 10 = 50)
     try std.testing.expectEqual(@as(u32, 0), words.buffer[0].start);
     try std.testing.expectEqual(@as(u32, 5), words.buffer[0].end);
     try std.testing.expectEqual(@as(f32, 50), words.buffer[0].width);
     try std.testing.expect(!words.buffer[0].has_newline);
 
-    // Second word: "world" (5 chars * 10 = 50)
     try std.testing.expectEqual(@as(u32, 6), words.buffer[1].start);
     try std.testing.expectEqual(@as(u32, 11), words.buffer[1].end);
     try std.testing.expectEqual(@as(f32, 50), words.buffer[1].width);
 
-    // Third word: "test" (4 chars * 10 = 40)
     try std.testing.expectEqual(@as(u32, 12), words.buffer[2].start);
     try std.testing.expectEqual(@as(u32, 16), words.buffer[2].end);
     try std.testing.expectEqual(@as(f32, 40), words.buffer[2].width);
@@ -375,7 +323,6 @@ test "word-level measurement handles newlines" {
 
     const word_count = sizing_pass.findWordBoundaries(text, measure, config, null, &words);
 
-    // Should find 2 words with newline marker on first
     try std.testing.expectEqual(@as(u32, 2), word_count);
     try std.testing.expect(words.buffer[0].has_newline);
     try std.testing.expect(!words.buffer[1].has_newline);
@@ -412,13 +359,9 @@ fn dropdownY(parent_y: u16, float_height: f32) !f32 {
 }
 
 test "a parent-attached float opens above its parent when only that side fits" {
-    // Goal: a dropdown near the viewport's bottom opens upward instead of
-    // being clamped over its trigger, and only then. Methodology: a 150 px
-    // menu below a 40 px trigger stays below while it fits, exactly at the
-    // bottom edge too, and one pixel further down flips to end at the
-    // trigger's top. A 450 px menu flips when it fits above exactly, and
-    // one pixel short of that fits on neither side, so the clamp keeps it on
-    // screen over the trigger as before.
+    // Expected values sit one pixel either side of each flip boundary: a
+    // 150 px menu flips once it no longer fits below, a 450 px menu once it
+    // no longer fits above, and on neither side the clamp keeps it on screen.
     try std.testing.expectEqual(@as(f32, 440), try dropdownY(400, 150));
     try std.testing.expectEqual(@as(f32, 450), try dropdownY(410, 150));
     try std.testing.expectEqual(@as(f32, 261), try dropdownY(411, 150));
@@ -433,15 +376,13 @@ test "floating expand.width makes element match parent width" {
 
     engine.beginFrame(800, 600);
 
-    // Create parent container
     try engine.openElement(.{
         .layout = .{ .sizing = Sizing.fixed(300, 200) },
         .background_color = Color.white,
     });
 
-    // Create floating child with expand.width = true
     try engine.openElement(.{
-        .layout = .{ .sizing = Sizing.fitContent() }, // Would normally fit content
+        .layout = .{ .sizing = Sizing.fitContent() },
         .floating = .{
             .attach_to_parent = true,
             .expand = .{ .width = true, .height = false },
@@ -454,7 +395,6 @@ test "floating expand.width makes element match parent width" {
 
     try engine.endFrame();
 
-    // The floating element should have expanded to parent width
     const float_bbox = boundingBox(&engine, 1);
     try std.testing.expectEqual(@as(f32, 300), float_bbox.width);
 }
@@ -465,13 +405,11 @@ test "floating expand.height makes element match parent height" {
 
     engine.beginFrame(800, 600);
 
-    // Create parent container
     try engine.openElement(.{
         .layout = .{ .sizing = Sizing.fixed(300, 250) },
         .background_color = Color.white,
     });
 
-    // Create floating child with expand.height = true
     try engine.openElement(.{
         .layout = .{ .sizing = Sizing.fitContent() },
         .floating = .{
@@ -486,7 +424,6 @@ test "floating expand.height makes element match parent height" {
 
     try engine.endFrame();
 
-    // The floating element should have expanded to parent height
     const float_bbox = boundingBox(&engine, 1);
     try std.testing.expectEqual(@as(f32, 250), float_bbox.height);
 }
@@ -497,13 +434,11 @@ test "floating expand both dimensions" {
 
     engine.beginFrame(800, 600);
 
-    // Create parent container
     try engine.openElement(.{
         .layout = .{ .sizing = Sizing.fixed(400, 300) },
         .background_color = Color.white,
     });
 
-    // Create floating child with both expand flags
     try engine.openElement(.{
         .layout = .{ .sizing = Sizing.fitContent() },
         .floating = .{
@@ -518,15 +453,10 @@ test "floating expand both dimensions" {
 
     try engine.endFrame();
 
-    // The floating element should match parent in both dimensions
     const modal_bbox = boundingBox(&engine, 1);
     try std.testing.expectEqual(@as(f32, 400), modal_bbox.width);
     try std.testing.expectEqual(@as(f32, 300), modal_bbox.height);
 }
-
-// ============================================================================
-// Shared Types and Size Distribution
-// ============================================================================
 
 test "Offset2D shared type works in FloatingConfig" {
     const float_config = types.FloatingConfig{
@@ -582,7 +512,6 @@ test "grow distribution gives equal space to grow elements" {
         .layout = .{ .sizing = Sizing.fill(), .layout_direction = .left_to_right },
     });
     {
-        // Three grow elements should each get 100px (300/3)
         try engine.openElement(.{
             .layout = .{ .sizing = .{ .width = SizingAxis.grow(), .height = SizingAxis.fixed(50) } },
             .background_color = Color.red,
@@ -618,17 +547,16 @@ test "shrink distribution respects minimum constraints" {
     var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
 
-    engine.beginFrame(100, 100); // Very small viewport
+    engine.beginFrame(100, 100);
 
     try engine.openElement(.{
         .layout = .{ .sizing = Sizing.fill(), .layout_direction = .left_to_right },
     });
     {
-        // Child with min constraint of 60 should not shrink below that
         try engine.openElement(.{
             .layout = .{
                 .sizing = .{
-                    .width = SizingAxis.fitMinMax(60, 200), // min=60, max=200
+                    .width = SizingAxis.fitMinMax(60, 200),
                     .height = SizingAxis.fixed(50),
                 },
             },
@@ -639,7 +567,7 @@ test "shrink distribution respects minimum constraints" {
         try engine.openElement(.{
             .layout = .{
                 .sizing = .{
-                    .width = SizingAxis.fitMax(200), // min=0, can shrink fully
+                    .width = SizingAxis.fitMax(200),
                     .height = SizingAxis.fixed(50),
                 },
             },
@@ -653,13 +581,8 @@ test "shrink distribution respects minimum constraints" {
 
     const minchild = boundingBox(&engine, 1);
 
-    // minchild should not shrink below its minimum of 60
     try std.testing.expect(minchild.width >= 60);
 }
-
-// =============================================================================
-// Fast Path Edge Case Tests (tryUniformGrowFastPath)
-// =============================================================================
 
 test "fast path: single grow child gets full available space" {
     var engine = try LayoutEngine.init(&test_capacity);
@@ -671,7 +594,6 @@ test "fast path: single grow child gets full available space" {
         .layout = .{ .sizing = Sizing.fixed(400, 300), .layout_direction = .left_to_right },
     });
     {
-        // Single grow child should get full width (fast path with total_children == 1)
         try engine.openElement(.{
             .layout = .{ .sizing = Sizing.fill() },
             .background_color = Color.red,
@@ -684,7 +606,6 @@ test "fast path: single grow child gets full available space" {
 
     const child = boundingBox(&engine, 1);
 
-    // Single grow child should fill entire container
     try std.testing.expectEqual(@as(f32, 400), child.width);
     try std.testing.expectEqual(@as(f32, 300), child.height);
 }
@@ -702,7 +623,6 @@ test "fast path: all floating children falls back to slow path" {
         },
     });
     {
-        // All children are floating - fast path should return false (actual_children == 0)
         try engine.openElement(.{
             .layout = .{ .sizing = Sizing.fixed(100, 100) },
             .floating = types.FloatingConfig.dropdown(),
@@ -721,7 +641,6 @@ test "fast path: all floating children falls back to slow path" {
 
     try engine.endFrame();
 
-    // Both floating elements should be positioned (not crash)
     const f1 = boundingBox(&engine, 1);
     const f2 = boundingBox(&engine, 2);
 
@@ -739,7 +658,6 @@ test "fast path: mixed sizing children falls back to slow path" {
         .layout = .{ .sizing = Sizing.fixed(400, 100), .layout_direction = .left_to_right },
     });
     {
-        // Mixed sizing: fixed + grow + fit - should use slow path
         try engine.openElement(.{
             .layout = .{ .sizing = Sizing.fixed(100, 50) },
             .background_color = Color.red,
@@ -772,13 +690,10 @@ test "fast path: mixed sizing children falls back to slow path" {
     const grow = boundingBox(&engine, 2);
     const fit = boundingBox(&engine, 3);
 
-    // Fixed child keeps its size
     try std.testing.expectEqual(@as(f32, 100), fixed.width);
 
-    // Fit child wraps its content
     try std.testing.expectEqual(@as(f32, 50), fit.width);
 
-    // Grow child gets remaining space: 400 - 100 - 50 = 250
     try std.testing.expectEqual(@as(f32, 250), grow.width);
 }
 
@@ -792,7 +707,6 @@ test "fast path: grow with min constraint falls back to slow path" {
         .layout = .{ .sizing = Sizing.fixed(300, 100), .layout_direction = .left_to_right },
     });
     {
-        // Grow with min constraint - fast path should bail (mm.min != 0)
         try engine.openElement(.{
             .layout = .{
                 .sizing = .{
@@ -817,8 +731,7 @@ test "fast path: grow with min constraint falls back to slow path" {
     const constrained = boundingBox(&engine, 1);
     const normal = boundingBox(&engine, 2);
 
-    // Both should share space equally (150 each) since slow path handles this
-    // The min constraint of 80 is satisfied by the equal split
+    // The slow path shares equally, which satisfies the min constraint of 80.
     try std.testing.expectEqual(@as(f32, 150), constrained.width);
     try std.testing.expectEqual(@as(f32, 150), normal.width);
 }

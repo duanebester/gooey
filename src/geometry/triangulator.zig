@@ -1,39 +1,18 @@
-//! Polygon triangulation using ear-clipping algorithm
-//!
-//! Converts flattened path polygons to triangle indices for GPU rendering.
-//! Uses O(n²) ear-clipping - sufficient for UI paths (typically <1000 vertices).
-//!
-//! Handles both CCW and CW winding via signed area detection.
-
 const std = @import("std");
 const builtin = @import("builtin");
 const limits = @import("../core/limits.zig");
 const vec2_mod = @import("vec2.zig");
 const fixed_array_mod = @import("../core/fixed_array.zig");
 
-// =============================================================================
-// Re-exports — canonical definitions live in dedicated modules
-// =============================================================================
-
 pub const FixedArray = fixed_array_mod.FixedArray;
 pub const Vec2 = vec2_mod.Vec2;
 pub const IndexSlice = vec2_mod.IndexSlice;
-
-// =============================================================================
-// Constants — re-exported from limits.zig (single source of truth)
-// =============================================================================
 
 pub const MAX_PATH_VERTICES = limits.MAX_PATH_VERTICES;
 pub const MAX_PATH_TRIANGLES = limits.MAX_PATH_TRIANGLES;
 pub const MAX_PATH_INDICES = limits.MAX_PATH_INDICES;
 
-/// Bitset for tracking vertex membership — O(1) lookup, 64 bytes for 512 vertices.
-/// Used for both reflex-vertex tracking and active-vertex tracking.
 pub const ReflexSet = std.bit_set.Integer(limits.MAX_PATH_VERTICES);
-
-// =============================================================================
-// Errors
-// =============================================================================
 
 pub const TriangulationError = error{
     TooManyVertices,
@@ -41,16 +20,9 @@ pub const TriangulationError = error{
     EarClippingFailed,
 };
 
-// =============================================================================
-// Triangulator
-// =============================================================================
-
 pub const Triangulator = struct {
-    /// Output indices buffer (static allocation)
     indices: FixedArray(u32, MAX_PATH_INDICES),
-    /// Detected winding direction (true = CCW)
     is_ccw: bool,
-    /// Tracks reflex (concave) vertices for O(n×r) triangulation instead of O(n²)
     reflex_vertices: ReflexSet,
 
     const Self = @This();
@@ -63,15 +35,15 @@ pub const Triangulator = struct {
         };
     }
 
-    /// Reset for reuse (call between paths)
     pub fn reset(self: *Self) void {
         self.indices.len = 0;
         self.is_ccw = true;
         self.reflex_vertices = ReflexSet.empty;
     }
 
-    /// Triangulate a single polygon (points[polygon.start..polygon.end])
-    /// Returns slice into internal indices buffer
+    /// Triangulates one polygon; the returned slice points into this
+    /// triangulator's internal buffer and is invalidated by the next
+    /// `triangulate` or `reset`.
     pub fn triangulate(
         self: *Self,
         points: []const Vec2,
@@ -79,17 +51,14 @@ pub const Triangulator = struct {
     ) TriangulationError![]const u32 {
         const n = polygon.len();
 
-        // Bounds checking at API boundary
         std.debug.assert(polygon.end <= points.len);
         if (n > MAX_PATH_VERTICES) return error.TooManyVertices;
         if (n < 3) return error.DegeneratePolygon;
 
-        // Detect winding direction via signed area
         const poly_points = points[polygon.start..polygon.end];
         const area = signedArea(poly_points);
         self.is_ccw = area > 0;
 
-        // Degenerate polygon check (zero area)
         if (@abs(area) < 1e-10) return error.DegeneratePolygon;
 
         const start_idx = self.indices.len;
@@ -97,15 +66,9 @@ pub const Triangulator = struct {
         return self.indices.slice()[start_idx..];
     }
 
-    /// Core ear-clipping algorithm.
-    ///
-    /// Uses an intrusive circular doubly-linked list for O(1) vertex removal
-    /// instead of shifting a dense array (O(n) per removal). After clipping
-    /// an ear the scan resumes from the previous neighbor — the vertex most
-    /// likely to be the next ear — rather than restarting from vertex 0.
-    ///
-    /// Total memory-write savings: O(n) vs O(n²) for the removal step alone,
-    /// which dominates for polygons approaching MAX_PATH_VERTICES (512).
+    /// Ear clipping over an intrusive circular doubly-linked list: O(1)
+    /// vertex removal, and scanning resumes from the clipped ear's previous
+    /// neighbor instead of restarting at vertex 0.
     fn earClipPolygon(
         self: *Self,
         points: []const Vec2,
@@ -114,17 +77,13 @@ pub const Triangulator = struct {
         const poly_points = points[polygon.start..polygon.end];
         const n: u32 = @intCast(poly_points.len);
 
-        // Internal assertions (already validated at API boundary).
         std.debug.assert(n >= 3);
         std.debug.assert(n <= MAX_PATH_VERTICES);
 
-        // Intrusive circular doubly-linked list — O(1) removal vs O(n) array shift.
-        // Each entry stores the *vertex index* of the next/prev active vertex in the
-        // polygon ring.  Two u32 arrays × 512 entries = 4 KB on the stack.
+        // Two u32 arrays × 512 entries = 4 KiB of stack.
         var next_v: [MAX_PATH_VERTICES]u32 = undefined;
         var prev_v: [MAX_PATH_VERTICES]u32 = undefined;
 
-        // Active vertex bitset for O(1) membership checks in hasPointInsideReflex.
         var active_set = ReflexSet.empty;
 
         for (0..n) |i| {
@@ -133,7 +92,6 @@ pub const Triangulator = struct {
             active_set.set(i);
         }
 
-        // Pre-compute reflex vertices (O(n)) — only these can block an ear.
         self.reflex_vertices = ReflexSet.empty;
         for (0..n) |i| {
             const p0 = poly_points[prev_v[i]];
@@ -149,7 +107,6 @@ pub const Triangulator = struct {
         var safety_counter: u32 = 0;
         const max_iterations: u32 = n * n; // O(n²) worst case.
 
-        // Start scanning from vertex 0.
         var scan_start: u32 = 0;
 
         while (remaining > 3) {
@@ -177,16 +134,13 @@ pub const Triangulator = struct {
                 const p1 = poly_points[curr];
                 const p2 = poly_points[nv];
 
-                // Convex vertex with no reflex point inside → ear.
                 if (isConvex(p0, p1, p2, self.is_ccw) and
                     !hasPointInsideReflex(poly_points, &self.reflex_vertices, &active_set, pv, curr, nv, p0, p1, p2))
                 {
-                    // Emit triangle.
                     self.indices.appendAssumeCapacity(polygon.start + pv);
                     self.indices.appendAssumeCapacity(polygon.start + curr);
                     self.indices.appendAssumeCapacity(polygon.start + nv);
 
-                    // Unlink curr from the ring — O(1) pointer update.
                     next_v[pv] = nv;
                     prev_v[nv] = pv;
                     self.reflex_vertices.unset(curr);
@@ -199,7 +153,6 @@ pub const Triangulator = struct {
                         self.updateReflexLinked(nv, &next_v, &prev_v, poly_points);
                     }
 
-                    // Resume from the previous neighbor — most likely next ear.
                     scan_start = pv;
                     found_ear = true;
                     break;
@@ -216,7 +169,6 @@ pub const Triangulator = struct {
             }
         }
 
-        // Emit final triangle from the three remaining vertices.
         if (remaining == 3) {
             const v0 = scan_start;
             const v1 = next_v[v0];
@@ -228,7 +180,6 @@ pub const Triangulator = struct {
         }
     }
 
-    /// Update reflex status for a vertex using linked-list neighbors.
     fn updateReflexLinked(
         self: *Self,
         vertex: u32,
@@ -248,23 +199,15 @@ pub const Triangulator = struct {
     }
 };
 
-// =============================================================================
-// Geometry Helpers
-// =============================================================================
-
-/// Calculate signed area of polygon (positive = CCW, negative = CW)
-/// Uses the shoelace formula: area = 0.5 * Σ (x_i * y_{i+1} - x_{i+1} * y_i)
+/// Positive result means CCW winding.
 pub fn signedArea(points: []const Vec2) f32 {
     std.debug.assert(points.len >= 3);
 
-    // Shoelace formula without modulo: iterate consecutive pairs directly,
-    // then handle the wrap-around edge (last→first) separately.
     var area: f32 = 0;
     const n = points.len;
     for (0..n - 1) |i| {
         area += points[i].x * points[i + 1].y - points[i + 1].x * points[i].y;
     }
-    // Closing edge: last vertex back to first vertex.
     area += points[n - 1].x * points[0].y - points[0].x * points[n - 1].y;
     return area / 2;
 }
@@ -280,9 +223,8 @@ fn isConvex(p0: Vec2, p1: Vec2, p2: Vec2, is_ccw: bool) bool {
     return if (is_ccw) cross_product > 0 else cross_product < 0;
 }
 
-/// Check if any reflex vertex (other than the triangle's own) lies inside the triangle
-/// Only reflex (concave) vertices can be inside an ear - convex vertices are geometrically excluded.
-/// This reduces complexity from O(n) to O(r) where r = reflex vertex count.
+/// Only reflex (concave) vertices can lie inside an ear, so only they
+/// are checked.
 fn hasPointInsideReflex(
     poly_points: []const Vec2,
     reflex_set: *const ReflexSet,
@@ -296,13 +238,10 @@ fn hasPointInsideReflex(
 ) bool {
     std.debug.assert(active_set.count() > 0);
 
-    // Only iterate over reflex vertices — O(r) where r = reflex count.
     var iter = reflex_set.iterator(.{});
     while (iter.next()) |reflex_idx| {
-        // Skip triangle vertices
         if (reflex_idx == idx_prev or reflex_idx == idx_curr or reflex_idx == idx_next) continue;
 
-        // O(1) check: is this reflex vertex still in the active polygon?
         if (!active_set.isSet(reflex_idx)) continue;
 
         const pt = poly_points[reflex_idx];
@@ -311,7 +250,6 @@ fn hasPointInsideReflex(
     return false;
 }
 
-/// Test if point p is inside triangle (a, b, c)
 fn pointInTriangle(p: Vec2, a: Vec2, b: Vec2, c: Vec2) bool {
     std.debug.assert(!std.math.isNan(p.x) and !std.math.isNan(p.y));
 
@@ -325,14 +263,10 @@ fn pointInTriangle(p: Vec2, a: Vec2, b: Vec2, c: Vec2) bool {
     return !(has_neg and has_pos);
 }
 
-/// Sign of area of triangle formed by three points
+/// Twice the signed area of the triangle (p1, p2, p3).
 fn sign(p1: Vec2, p2: Vec2, p3: Vec2) f32 {
     return (p1.x - p3.x) * (p2.y - p3.y) - (p2.x - p3.x) * (p1.y - p3.y);
 }
-
-// =============================================================================
-// Tests
-// =============================================================================
 
 test "triangulate square produces 2 triangles" {
     var tri = Triangulator.init();
@@ -367,13 +301,11 @@ test "triangulate convex pentagon produces 3 triangles" {
         .{ .x = 0, .y = 0.4 },
     };
     const indices = try tri.triangulate(&pentagon, .{ .start = 0, .end = 5 });
-    // Pentagon = 5 - 2 = 3 triangles = 9 indices
     try std.testing.expectEqual(@as(usize, 9), indices.len);
 }
 
 test "triangulate CW winding works" {
     var tri = Triangulator.init();
-    // CW square (reversed winding)
     const square_cw = [_]Vec2{
         .{ .x = 0, .y = 0 },
         .{ .x = 0, .y = 1 },
@@ -433,7 +365,6 @@ test "reset clears state" {
 
 test "triangulate L-shape (concave)" {
     var tri = Triangulator.init();
-    // L-shaped polygon (concave)
     const l_shape = [_]Vec2{
         .{ .x = 0, .y = 0 },
         .{ .x = 2, .y = 0 },
@@ -443,14 +374,12 @@ test "triangulate L-shape (concave)" {
         .{ .x = 0, .y = 2 },
     };
     const indices = try tri.triangulate(&l_shape, .{ .start = 0, .end = 6 });
-    // 6-gon = 4 triangles = 12 indices
     try std.testing.expectEqual(@as(usize, 12), indices.len);
 }
 
 test "triangulate 5-pointed star (concave)" {
     var tri = Triangulator.init();
 
-    // 5-pointed star: 10 vertices alternating outer/inner
     const cx: f32 = 100;
     const cy: f32 = 150;
     const radius: f32 = 60;
@@ -467,17 +396,11 @@ test "triangulate 5-pointed star (concave)" {
     }
 
     const indices = try tri.triangulate(&points, .{ .start = 0, .end = 10 });
-    // 10-gon = 8 triangles = 24 indices
     try std.testing.expectEqual(@as(usize, 24), indices.len);
 }
 
-// =============================================================================
-// Reflex Vertex Tracking Tests (P1)
-// =============================================================================
-
 test "convex polygon has no reflex vertices" {
     var tri = Triangulator.init();
-    // Regular convex hexagon
     var hexagon: [6]Vec2 = undefined;
     for (0..6) |i| {
         const angle = @as(f32, @floatFromInt(i)) * std.math.pi / 3.0;
@@ -487,30 +410,26 @@ test "convex polygon has no reflex vertices" {
         };
     }
     _ = try tri.triangulate(&hexagon, .{ .start = 0, .end = 6 });
-    // After triangulation, reflex set should be empty (all vertices convex)
     try std.testing.expectEqual(@as(usize, 0), tri.reflex_vertices.count());
 }
 
 test "L-shape has correct reflex vertex" {
     var tri = Triangulator.init();
-    // L-shaped polygon has exactly one reflex vertex at index 3
     const l_shape = [_]Vec2{
         .{ .x = 0, .y = 0 },
         .{ .x = 2, .y = 0 },
         .{ .x = 2, .y = 1 },
-        .{ .x = 1, .y = 1 }, // This is the reflex (concave) vertex
+        .{ .x = 1, .y = 1 },
         .{ .x = 1, .y = 2 },
         .{ .x = 0, .y = 2 },
     };
     const indices = try tri.triangulate(&l_shape, .{ .start = 0, .end = 6 });
-    // Should still produce correct triangulation
     try std.testing.expectEqual(@as(usize, 12), indices.len);
 }
 
 test "star shape has multiple reflex vertices" {
     var tri = Triangulator.init();
 
-    // 5-pointed star: inner vertices (odd indices) are reflex
     const cx: f32 = 0;
     const cy: f32 = 0;
     const radius: f32 = 1.0;
@@ -533,7 +452,6 @@ test "star shape has multiple reflex vertices" {
 test "reflex tracking handles reuse correctly" {
     var tri = Triangulator.init();
 
-    // First: triangulate a concave shape
     const l_shape = [_]Vec2{
         .{ .x = 0, .y = 0 },
         .{ .x = 2, .y = 0 },
@@ -544,7 +462,6 @@ test "reflex tracking handles reuse correctly" {
     };
     _ = try tri.triangulate(&l_shape, .{ .start = 0, .end = 6 });
 
-    // Reset and triangulate a convex shape
     tri.reset();
     const square = [_]Vec2{
         .{ .x = 0, .y = 0 },
@@ -554,6 +471,5 @@ test "reflex tracking handles reuse correctly" {
     };
     _ = try tri.triangulate(&square, .{ .start = 0, .end = 4 });
 
-    // Reflex set should be empty after convex polygon
     try std.testing.expectEqual(@as(usize, 0), tri.reflex_vertices.count());
 }

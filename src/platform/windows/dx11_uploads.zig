@@ -1,32 +1,20 @@
 //! Atlas uploads for the Direct3D 11 renderer, on the GPU timeline.
 //!
-//! The contract (§9) has `uploadAtlas` copy a record before it returns, and
-//! has the region reach its texture after every draw submitted earlier and
-//! before the next draw samples it, never by a CPU write into a texture an
-//! in-flight frame may sample. Direct3D 11 has no buffer-to-texture copy, and
-//! a staging texture would need a 2D packer with no tight bound for the
-//! journal's mixed record sizes. So each frame in flight owns a fixed staging
-//! buffer:
-//!
-//! 1. `stage` writes the record's descriptor and pixels into the frame's
-//!    staging buffer, mapped from the first record of the frame until the
-//!    flush.
-//! 2. `flush`, at the start of the next `draw`, copies the used ranges into
-//!    one default buffer with `CopySubresourceRegion` in the immediate context,
-//!    then draws one pixel-exact quad per record into its atlas, bound as the
-//!    render target (`shaders/upload.hlsl`). Both are ordered after earlier
-//!    frames' draws and before this frame's.
+//! `uploadAtlas` must copy a record before it returns, and the region must
+//! reach its texture after every draw submitted earlier and before the next
+//! draw samples it. Direct3D 11 has no buffer-to-texture copy, and a staging
+//! texture would need a 2D packer with no tight bound for the journal's mixed
+//! record sizes. So each frame in flight owns a fixed staging buffer:
+//! `stage` writes the record's descriptor and pixels into it, mapped from the
+//! first record of the frame until the flush; `flush`, at the start of the
+//! next `draw`, copies the used ranges into one default buffer with
+//! `CopySubresourceRegion`, then draws one pixel-exact quad per record into
+//! its atlas, bound as the render target (`shaders/upload.hlsl`). Both are
+//! ordered after earlier frames' draws and before this frame's.
 //!
 //! Staging set `n mod frame_count` was last copied from `frame_count` flushes
 //! ago, which the swapchain's latency waitable has retired; were it not,
 //! `Map(WRITE)` would wait for the copy rather than race it.
-//!
-//! Resource sketch (CLAUDE.md §7), `.standard`: `upload_bytes_frame_max` is
-//! 1 MiB, so the journal holds at most 16,384 records (one per 64 B). Each
-//! staging buffer and the default buffer hold 16,384 × 16 B of descriptors
-//! and 1 MiB of pixels: 1.25 MiB each, 5 MiB with 3 frames in flight. A frame
-//! with uploads costs one map, two copies, and one draw per atlas written; a
-//! frame without them costs nothing.
 
 const std = @import("std");
 const d3d11 = @import("d3d11.zig");
@@ -51,7 +39,6 @@ const pixel_alignment: u32 = 4;
 pub const Slot = enum(u32) { glyph, svg, image };
 pub const atlas_count: u32 = @typeInfo(Slot).@"enum".field_names.len;
 
-/// An atlas as `flush` draws into it.
 pub const Target = struct {
     view: *d3d11.ID3D11RenderTargetView,
     side_px: u32,
@@ -282,7 +269,6 @@ pub const Uploads = struct {
         assert(self.mapped == null);
     }
 
-    /// Copy the used descriptors and pixels from `staging` into `words`.
     fn copyStaged(
         self: *const Self,
         context: *d3d11.ID3D11DeviceContext,

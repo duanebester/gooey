@@ -1,32 +1,20 @@
-//! The image decode worker behind `Painter.image` (contract §9 `ImageDecoder`).
+//! The image decode worker behind `Painter.image`.
 //!
 //! A file read has no time bound and a PNG or JPEG decode takes milliseconds,
-//! so neither runs on the main thread (CLAUDE.md §1, §8). One worker, started
-//! at init, reads and decodes into staging reserved at init:
-//!
-//! 1. Emit misses the atlas and calls `request`: the path is copied into a
-//!    free entry and the entry's index goes onto the bounded request ring.
-//! 2. The worker takes the oldest request once the staging is free, reads
-//!    the file into the staging's front and decodes the RGBA pixels behind
-//!    it, then pushes an `ImageDecoded` onto the window's completion ring
-//!    and wakes the host.
-//! 3. The drain moves it into `landed` and requests a render; the next emit
-//!    uploads it into the image atlas on the main thread (`land`), frees the
-//!    entry, and hands the staging back to the worker. Until then the image
-//!    paints nothing, so its box's own background shows.
+//! so neither runs on the main thread. One worker, started at init, reads and
+//! decodes into staging reserved at init: emit misses the atlas and calls
+//! `request`; the worker takes the oldest request once the staging is free,
+//! reads the file into the staging's front and decodes the RGBA pixels behind
+//! it, then pushes an `ImageDecoded` onto the completion ring; the next emit
+//! uploads it into the atlas (`land`), frees the entry, and hands the staging
+//! back to the worker. Until then the image paints nothing, so its box's own
+//! background shows.
 //!
 //! Capacity: `AtlasLimits.image_request_count_max` entries hold images that
 //! wait for the worker and images whose decode failed, which stay failed for
 //! the session so a missing file is not re-read every frame. One more fails
 //! fast. Each entry reserves `image_path_bytes_max` path bytes; a longer path
 //! fails fast. `image_decode_bytes_max` bounds one image's file and pixels.
-//!
-//! Performance sketch at `.large`: 64 entries of 1 KiB of path (64 KiB) and 24 MiB
-//! of staging from fresh pages; a decode makes resident only its file and
-//! pixels (the images example's 512² logo: ~1.1 MiB). The main thread's
-//! work per tick is one hash and an entry scan (≤ 64) per missing image,
-//! plus at most one upload per emit, which the atlas already bounds by
-//! `upload_bytes_frame_max`. Images land at most one per frame.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -100,7 +88,7 @@ pub const Loader = struct {
     /// One permit while the staging is free for the next decode.
     staging_free: std.Io.Semaphore,
     staging: []u8,
-    /// The staging's high-water mark, zeroed on release (CLAUDE.md §21).
+    /// The staging's high-water mark, zeroed on release.
     /// Written by the worker; read after it is joined.
     staging_used_max: usize,
     completions: *events.CompletionRing,

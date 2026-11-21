@@ -4,7 +4,6 @@ const geometry = @import("../geometry/geometry.zig");
 
 /// Virtual key codes (based on macOS keycodes, used cross-platform)
 pub const KeyCode = enum(u16) {
-    // Letters
     a = 0x00,
     s = 0x01,
     d = 0x02,
@@ -32,7 +31,6 @@ pub const KeyCode = enum(u16) {
     n = 0x2D,
     m = 0x2E,
 
-    // Numbers
     @"1" = 0x12,
     @"2" = 0x13,
     @"3" = 0x14,
@@ -44,8 +42,8 @@ pub const KeyCode = enum(u16) {
     @"9" = 0x19,
     @"0" = 0x1D,
 
-    // Punctuation. Keycodes are positional (US ANSI layout); on other layouts
-    // the physical key at this position may produce a different character, so
+    // Keycodes are positional (US ANSI layout); on other layouts the
+    // physical key at this position may produce a different character, so
     // consumers that care about the typed character must use the event's
     // `characters_ignoring_modifiers` instead of these names.
     minus = 0x1B,
@@ -60,7 +58,6 @@ pub const KeyCode = enum(u16) {
     slash = 0x2C,
     grave = 0x32,
 
-    // Special
     @"return" = 0x24,
     tab = 0x30,
     space = 0x31,
@@ -68,8 +65,8 @@ pub const KeyCode = enum(u16) {
     escape = 0x35,
     forward_delete = 0x75,
 
-    // Keypad (kVK_ANSI_Keypad*). Distinct from the number row so terminal
-    // emulators and games can honor application keypad mode (DECKPAM).
+    // Keypad. Distinct from the number row so terminal emulators and games
+    // can honor application keypad mode (DECKPAM).
     keypad_0 = 0x52,
     keypad_1 = 0x53,
     keypad_2 = 0x54,
@@ -89,7 +86,6 @@ pub const KeyCode = enum(u16) {
     keypad_minus = 0x4E,
     keypad_equals = 0x51,
 
-    // Modifiers
     command = 0x37,
     shift = 0x38,
     caps_lock = 0x39,
@@ -100,13 +96,11 @@ pub const KeyCode = enum(u16) {
     right_option = 0x3D,
     right_control = 0x3E,
 
-    // Arrows
     left = 0x7B,
     right = 0x7C,
     down = 0x7D,
     up = 0x7E,
 
-    // Function keys
     f1 = 0x7A,
     f2 = 0x78,
     f3 = 0x63,
@@ -128,7 +122,6 @@ pub const KeyCode = enum(u16) {
     f19 = 0x50,
     f20 = 0x5A,
 
-    // Navigation
     home = 0x73,
     end = 0x77,
     page_up = 0x74,
@@ -174,32 +167,27 @@ pub const ScrollEvent = struct {
 pub const KeyEvent = struct {
     key: KeyCode,
     modifiers: Modifiers,
-    /// The characters produced by this key event (UTF-8)
-    /// May be empty for non-printable keys
+    /// UTF-8 text; may be empty for non-printable keys.
     characters: ?[]const u8,
-    /// Characters ignoring modifiers (for shortcuts)
     characters_ignoring_modifiers: ?[]const u8,
-    /// Key repeat
     is_repeat: bool,
 };
 
-/// Text inserted via IME (Input Method Editor)
-/// This includes emoji picker, dead keys, CJK input, dictation, etc.
+/// Text inserted via IME; includes emoji picker, dead keys, CJK input,
+/// dictation.
 pub const TextInputEvent = struct {
-    /// The inserted text (UTF-8 encoded)
     text: []const u8,
 };
 
-/// IME composition (preedit) state changed
+/// IME composition (preedit) state changed.
 pub const CompositionEvent = struct {
-    /// The composing text (UTF-8 encoded), empty if composition ended
+    /// UTF-8; empty if composition ended.
     text: []const u8,
 };
 
-/// A single touch point on a touch screen or trackpad
 pub const TouchEvent = struct {
     position: geometry.Point(f64),
-    /// Touch point identifier, unique per active touch within a gesture sequence.
+    /// Unique per active touch within a gesture sequence.
     id: i32,
 };
 
@@ -239,14 +227,11 @@ pub const InputEvent = union(enum) {
     key_down: KeyEvent,
     key_up: KeyEvent,
     modifiers_changed: Modifiers,
-    /// Text inserted via IME (final, committed text)
     text_input: TextInputEvent,
-    /// IME composition state changed (preedit text)
     composition: CompositionEvent,
     touch_down: TouchEvent,
     touch_up: TouchEvent,
     touch_moved: TouchEvent,
-    /// All active touch points on the surface were cancelled by the compositor.
     touch_cancelled,
     /// The platform took the pointer gesture away (lost capture, a broken
     /// grab, or the window losing focus with a button held). A pointer drag
@@ -258,35 +243,27 @@ pub const InputEvent = union(enum) {
     focus_lost: FocusLostEvent,
 };
 
-// Goal: `KeyCode.from` must resolve every named virtual keycode to its tag and
-// collapse only genuinely unnamed codes to `.unknown`. Keypad, punctuation,
-// and extended function keys are named tags, so they must survive this
-// mapping rather than be destroyed before any consumer can see them.
 test "KeyCode.from resolves named codes and collapses unnamed ones" {
     const testing = std.testing;
 
-    // Writing keys, one per group.
     try testing.expectEqual(KeyCode.a, KeyCode.from(0x00));
     try testing.expectEqual(KeyCode.@"5", KeyCode.from(0x17));
     try testing.expectEqual(KeyCode.@"return", KeyCode.from(0x24));
 
-    // Punctuation (kVK_ANSI_*).
     try testing.expectEqual(KeyCode.minus, KeyCode.from(0x1B));
     try testing.expectEqual(KeyCode.left_bracket, KeyCode.from(0x21));
     try testing.expectEqual(KeyCode.grave, KeyCode.from(0x32));
 
-    // Keypad. KeypadEnter (0x4C) is the key regression case: it produces no
-    // printable text, so collapsing it to `.unknown` drops the keystroke.
+    // KeypadEnter (0x4C) is the key regression case: it produces no printable
+    // text, so collapsing it to `.unknown` drops the keystroke.
     try testing.expectEqual(KeyCode.keypad_enter, KeyCode.from(0x4C));
     try testing.expectEqual(KeyCode.keypad_0, KeyCode.from(0x52));
     try testing.expectEqual(KeyCode.keypad_9, KeyCode.from(0x5C));
     try testing.expectEqual(KeyCode.keypad_clear, KeyCode.from(0x47));
 
-    // Extended function keys.
     try testing.expectEqual(KeyCode.f13, KeyCode.from(0x69));
     try testing.expectEqual(KeyCode.f20, KeyCode.from(0x5A));
 
-    // Negative space: codes with no name still collapse to `.unknown`.
     try testing.expectEqual(KeyCode.unknown, KeyCode.from(0x42)); // gap in kVK table
     try testing.expectEqual(KeyCode.unknown, KeyCode.from(0xFFFF));
     try testing.expectEqual(KeyCode.unknown, KeyCode.from(0x1234));

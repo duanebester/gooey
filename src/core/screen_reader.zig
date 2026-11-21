@@ -1,18 +1,11 @@
 //! Screen-reader publishing: the rendered frame's accessibility nodes and
-//! announcements, handed to the platform bridge (VoiceOver, AT-SPI2, ARIA)
-//! through the 0.3.1 accessibility tree, which diffs frames and keeps the
-//! bridges' identities stable.
-//!
-//! Runs on the main thread each time a frame becomes `rendered`, so the
-//! nodes' strings, which live in that frame, outlive the sync. Whether a
-//! screen reader runs is asked at most once per `poll_interval_ns` of the
-//! window's clock, and on the first frame: the core renders only on change,
-//! so a poll counted in frames could wait arbitrarily long. When none runs,
-//! that poll is the whole cost.
-//!
-//! Performance sketch: one pass over at most `a11y.element_count_max` nodes
-//! (512 at `small`, 2,048 at `standard`) into a tree reserved at the same
-//! count, then the bridge's diff, only while a screen reader is running.
+//! announcements, handed to the platform bridge, which diffs frames and keeps
+//! identities stable. Runs on the main thread each time a frame becomes
+//! `rendered`, so the nodes' strings, which live in that frame, outlive the
+//! sync. Whether a screen reader runs is asked at most once per
+//! `poll_interval_ns` of the window's clock, and on the first frame: the core
+//! renders only on change, so a poll counted in frames could wait arbitrarily
+//! long.
 
 const std = @import("std");
 const records = @import("records.zig");
@@ -21,17 +14,16 @@ const a11y = @import("../accessibility/accessibility.zig");
 
 const assert = std.debug.assert;
 
-/// How often a rendered frame re-asks the bridge whether a screen reader
-/// runs: 0.3.1's 60 frames at 60 Hz.
+// How often a rendered frame re-asks the bridge whether a screen reader runs.
 pub const poll_interval_ns: u64 = std.time.ns_per_s;
 
-/// When the bridge was last polled, on the window's clock; null before the
-/// first frame.
+// When the bridge was last polled, on the window's clock; null before the
+// first frame.
 pub const Poll = struct { last_ns: ?u64 = null };
 
-/// Publish `frame` to `system`'s bridge. The frame's node pool and the tree
-/// are both sized by `ResourceLimits.a11y.element_count_max`, and node depth
-/// by `build.box_depth_max`, so every node fits; emit fails fast before.
+// Publish `frame` to `system`'s bridge. The frame's node pool and the tree
+// are both sized by `ResourceLimits.a11y.element_count_max`, and node depth
+// by `build.box_depth_max`, so every node fits; emit fails fast before.
 pub fn publish(system: *A11ySystem, poll: *Poll, frame: *const records.Frame, now_ns: u64) void {
     assert(frame.a11y_count <= frame.a11y.len);
     assert(frame.a11y.len <= system.tree.elements.len);
@@ -92,9 +84,6 @@ fn push(tree: *a11y.Tree, frame: *const records.Frame, node: *const records.A11y
 }
 
 test "the bridge is polled on the first frame and then once per interval" {
-    // Goal: an app that renders rarely still notices a screen reader on its
-    // next frame. Methodology: publish at clock times around the interval
-    // and read when the poll last ran; frames in between do not poll.
     const system = try std.testing.allocator.create(A11ySystem);
     defer std.testing.allocator.destroy(system);
     try system.initInPlace(&a11y.TreeCapacity.standard);
@@ -121,11 +110,6 @@ test "the bridge is polled on the first frame and then once per interval" {
 }
 
 test "a full nano frame publishes every node and announcement into a nano tree" {
-    // Goal: the frame's pools and the tree share `ResourceLimits.a11y`, so a
-    // frame filled exactly fits the tree exactly. Methodology: fill a frame
-    // sized from `nano` with 128 sibling nodes and 4 announcements, publish
-    // it to a tree sized from `nano`, and count both sides. One more node or
-    // announcement fails fast in the frame (`core-a11y-*` fail-fast checks).
     const limits_mod = @import("limits.zig");
     const nano = limits_mod.ResourceLimits.nano;
     const gpa = std.testing.allocator;

@@ -1,10 +1,3 @@
-//! WebWindow — canvas-backed `PlatformWindow` for WebAssembly/browser.
-//!
-//! The browser is the window manager: there is exactly one canvas, it cannot be
-//! closed from script, and frames arrive via `requestAnimationFrame`. The core
-//! host (`core_host.zig`) creates the window, polls its size every frame, and
-//! forwards the cursor and the IME caret through it.
-
 const std = @import("std");
 const imports = @import("imports.zig");
 const geometry = @import("../../geometry/geometry.zig");
@@ -15,35 +8,26 @@ const WindowId = interface.WindowId;
 const WebPlatform = platform_mod.WebPlatform;
 
 pub const WebWindow = struct {
-    /// Owning platform, which registered `window_id`.
     platform: *WebPlatform,
 
-    /// Logical canvas size in CSS pixels, refreshed by `updateSize`.
+    /// Canvas size in CSS pixels.
     size: geometry.Size(f64),
 
-    /// `devicePixelRatio`, in the host's own width: a JS `Number` is an
-    /// IEEE-754 double, and the contract speaks `f64`, so no conversion
-    /// happens anywhere along this path.
+    /// `devicePixelRatio`; `f64` because a JS `Number` is an IEEE-754 double,
+    /// so no conversion happens anywhere along this path.
     scale_factor: f64,
 
     /// The cursor last sent to the canvas, so only a change crosses into JS.
     cursor_shape: interface.CursorShape,
 
-    /// Whether the app asked for a dark appearance. Web has no host-level
-    /// appearance switch to push this into; see `setAppearance`.
+    /// Web has no host-level appearance switch to push this into; see
+    /// `setAppearance`.
     dark_appearance: bool,
 
-    /// Unique identifier for this window in the platform's `WindowRegistry`.
     window_id: WindowId = .invalid,
 
     const Self = @This();
 
-    // =========================================================================
-    // Lifecycle
-    // =========================================================================
-
-    /// Create the window and register it with `plat`.
-    ///
     /// `options` crosses by const pointer: the struct is far over the 16-byte
     /// by-value threshold and WASM has a 1 MiB stack to protect.
     pub fn init(
@@ -74,11 +58,9 @@ pub const WebWindow = struct {
         // field must already hold its final value.
         self.window_id = try plat.registerWindow(self);
 
-        // The single canvas is always the focused surface, but publish it
-        // explicitly anyway: every backend states this policy in one visible
-        // line rather than inheriting an implicit "first window wins" from
-        // `WindowRegistry`, so the backends agree about which window
-        // `getActiveWindowId` names.
+        // Every backend states this policy in one visible line rather than
+        // inheriting an implicit "first window wins" from `WindowRegistry`, so
+        // the backends agree about which window `getActiveWindowId` names.
         plat.setActiveWindowId(self.window_id);
 
         std.debug.assert(self.window_id.isValid());
@@ -86,12 +68,6 @@ pub const WebWindow = struct {
         return self;
     }
 
-    // =========================================================================
-    // Geometry
-    // =========================================================================
-
-    /// Re-read canvas size and DPI from the host.
-    ///
     /// Web-only: the native backends learn about resizes through host events,
     /// while the browser expects a poll each frame.
     pub fn updateSize(self: *Self) void {
@@ -112,8 +88,8 @@ pub const WebWindow = struct {
         std.debug.assert(self.scale_factor > 0.0);
     }
 
-    /// Set the canvas's CSS cursor. Only a change crosses into JS, so a
-    /// caller that sets the same shape every frame restyles nothing.
+    /// Only a change crosses into JS, so a caller that sets the same shape
+    /// every frame restyles nothing.
     pub fn setCursorShape(self: *Self, shape: interface.CursorShape) void {
         std.debug.assert(self.window_id.isValid());
         std.debug.assert(@backingInt(shape) <= @backingInt(interface.CursorShape.resize_up_down));
@@ -133,12 +109,8 @@ pub const WebWindow = struct {
         imports.setImeCursorPosition(x, y, w, h);
     }
 
-    // =========================================================================
-    // Calls from the 0.3.1 `context/window.zig`
-    // =========================================================================
-    //
-    // The core never makes these calls. They stay only while that file
-    // compiles, and go when phase 6 deletes it.
+    // Kept only while 0.3.1 `context/window.zig` compiles; the core never
+    // calls these, and they go when phase 6 deletes that file.
 
     pub fn getPlatform(self: *Self) *WebPlatform {
         std.debug.assert(@intFromPtr(self.platform) != 0);
@@ -164,10 +136,6 @@ pub const WebWindow = struct {
         std.debug.assert(self.window_id.isValid());
         std.debug.assert(delay_ms <= interface.render_delay_ms_max);
     }
-
-    // =========================================================================
-    // Limits
-    // =========================================================================
 
     /// Largest canvas edge we accept, in CSS pixels. Browsers cap backing
     /// stores well below this; the bound exists so a bogus host value trips an

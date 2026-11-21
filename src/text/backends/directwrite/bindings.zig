@@ -1,27 +1,15 @@
-//! Hand-written DirectWrite bindings for the Windows text backend.
+//! Hand-written subset of `dwrite.dll`, so the tree type-checks from any host.
 //!
-//! Only the subset of `dwrite.dll` the backend calls. Declared by hand for the
-//! same reasons as `platform/windows/win32.zig`: Gooey takes no package
-//! dependencies (CLAUDE.md §12) and the tree type-checks from any host.
-//!
-//! DirectWrite is COM. An interface pointer points at an object whose first
+//! DirectWrite is COM: an interface pointer points at an object whose first
 //! field is its vtable pointer, and every method takes the object as its first
-//! argument. Each vtable below lists every slot of the interface, in the order
-//! of the SDK headers (`dwrite.h`, `dwrite_1.h`, `dwrite_2.h`), because a
-//! method is found by its slot index alone. Slots the backend never calls are
-//! typed `Slot`. The comptime block at the end pins the slot index of every
-//! method the backend does call, and the 64-bit layout of every structure.
-//!
-//! Released COM vtables and structures never change, so the declarations stay
-//! correct once they match the headers. Naming follows the SDK so each
-//! declaration can be checked against Microsoft's documentation by name.
+//! argument. Each vtable below lists every slot of the interface in SDK-header
+//! order, because a method is found by its slot index alone; uncalled slots
+//! are typed `Slot`, and the comptime block at the end pins the slot index of
+//! every called method and the 64-bit layout of every structure. Released COM
+//! vtables and structures never change, and naming follows the SDK.
 
 const std = @import("std");
 const assert = std.debug.assert;
-
-// =============================================================================
-// Scalar types
-// =============================================================================
 
 pub const BOOL = i32;
 pub const HRESULT = i32;
@@ -35,7 +23,6 @@ pub const E_NOINTERFACE: HRESULT = @bitCast(@as(u32, 0x8000_4002));
 /// `HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER)`.
 pub const E_NOT_SUFFICIENT_BUFFER: HRESULT = @bitCast(@as(u32, 0x8007_007A));
 
-/// `SUCCEEDED`: every non-negative `HRESULT` reports success.
 pub fn succeeded(result: HRESULT) bool {
     return result >= 0;
 }
@@ -60,10 +47,6 @@ pub const RECT = extern struct {
     right: i32,
     bottom: i32,
 };
-
-// =============================================================================
-// Interface identifiers
-// =============================================================================
 
 pub const IID_IUnknown: GUID = .{
     .data1 = 0x0000_0000,
@@ -100,10 +83,6 @@ pub const IID_IDWriteTextAnalysisSink: GUID = .{
     .data4 = .{ 0xB3, 0xFA, 0xBE, 0xC5, 0x18, 0x2A, 0xE4, 0xF6 },
 };
 
-// =============================================================================
-// Enumerations (C enums: 32 bits)
-// =============================================================================
-
 pub const DWRITE_FACTORY_TYPE_SHARED: u32 = 0;
 
 pub const DWRITE_FONT_STYLE_NORMAL: u32 = 0;
@@ -125,10 +104,6 @@ pub const DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE: u32 = 1;
 /// With `DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE`, this texture type holds one
 /// 8-bit coverage value per pixel, not the binary coverage its name suggests.
 pub const DWRITE_TEXTURE_ALIASED_1x1: u32 = 0;
-
-// =============================================================================
-// Structures
-// =============================================================================
 
 pub const DWRITE_FONT_METRICS = extern struct {
     designUnitsPerEm: u16,
@@ -186,10 +161,6 @@ pub const DWRITE_SCRIPT_ANALYSIS = extern struct {
 /// Bit fields in the headers; the shaper only passes these between calls.
 pub const DWRITE_SHAPING_TEXT_PROPERTIES = extern struct { bits: u16 };
 pub const DWRITE_SHAPING_GLYPH_PROPERTIES = extern struct { bits: u16 };
-
-// =============================================================================
-// Interfaces called by the backend
-// =============================================================================
 
 pub const IDWriteFactory2 = extern struct {
     vtable: *const VTable,
@@ -490,10 +461,6 @@ pub const IDWriteGlyphRunAnalysis = extern struct {
     }
 };
 
-// =============================================================================
-// Interfaces implemented by the backend
-// =============================================================================
-
 /// The text source `AnalyzeScript` reads from. The shaper implements it.
 pub const IDWriteTextAnalysisSource = extern struct {
     vtable: *const VTable,
@@ -576,19 +543,11 @@ pub const IDWriteTextAnalysisSink = extern struct {
     };
 };
 
-// =============================================================================
-// Functions
-// =============================================================================
-
 pub extern "dwrite" fn DWriteCreateFactory(
     factoryType: u32,
     iid: *const GUID,
     factory: *?*anyopaque,
 ) callconv(.winapi) HRESULT;
-
-// =============================================================================
-// Layout pins
-// =============================================================================
 
 fn assertSlot(comptime VTable: type, comptime name: []const u8, comptime slot: u32) void {
     assert(@offsetOf(VTable, name) == slot * @sizeOf(usize));

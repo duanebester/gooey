@@ -1,18 +1,3 @@
-//! Text area: a multi-line `TextArea` above a preview that wraps its text.
-//!
-//! The field edits lines split on '\n', as 0.3.1's did: no soft wrap, up
-//! and down keep the column they started from, and the lines scroll to keep
-//! the caret in view. The preview below draws the same text wrapped at word
-//! boundaries to the window's width, in a card whose height fits it, so a
-//! typed newline, a long word, or a resize changes how many lines the card
-//! takes. "Sample" loads notes whose lines differ in length, with a tab, an
-//! accented letter, a word no line can break, and a line 4 characters short
-//! of the field's bound of 1,024 per line; "Clear" empties them.
-//!
-//! Every byte is reserved before the event loop: the notes live in the one
-//! area slot this app's limits reserve, and `State.notes` only points at
-//! them (or at a constant, until the field adopts it at the next build).
-
 const std = @import("std");
 const gooey = @import("gooey");
 const components = @import("gooey-components");
@@ -27,13 +12,10 @@ const assert = std.debug.assert;
 /// The field's bytes, and the clipboard's: enough for two lines near the
 /// per-line bound with room to spare.
 pub const notes_bytes_max = 4 * 1024;
-/// Lines the field shows; the rest scroll.
 pub const rows = 5;
 /// The preview's text size, which the VOPR measures its lines at.
 pub const preview_size = 14;
-/// What the preview shows for empty notes.
 pub const preview_placeholder = "Nothing to preview";
-/// The preview card's padding, and the gap under its label.
 pub const card_padding: f32 = 12;
 pub const card_gap: f32 = 6;
 pub const label_size = 12;
@@ -119,7 +101,6 @@ pub const App = gooey.App(State, render, .{
     .limits = limits,
 });
 
-/// The generated entry point (contract §7).
 pub const main = App.main;
 
 pub fn render(cx: *Cx) void {
@@ -150,8 +131,8 @@ pub fn render(cx: *Cx) void {
     }));
 }
 
-/// The notes wrapped at words. The card fits its content's height, inside a
-/// scroll box that keeps a long preview from compressing the field.
+/// Inside a scroll box that keeps a long preview from
+/// compressing the field.
 const Preview = struct {
     pub fn render(_: Preview, cx: *Cx) void {
         const s = cx.state(State);

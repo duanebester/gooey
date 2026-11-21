@@ -1,26 +1,10 @@
-//! Structural checks of every frame the text_area example builds, beside
-//! its model (`vopr_text_area_model.zig`). They read the built frame, the
-//! field's engine, and the layout the frame came from, and state what the
-//! frame must show whatever the edits were:
-//! - Caret: with the field focused, the frame's IME caret is the field's,
-//!   over its selection; after the caret or text moved since the last build,
-//!   the caret's line lies inside the field's rows (`follow`). Unfocused,
-//!   the frame has no IME caret.
-//! - Wrap, as GPUI's `LineWrapper` packs lines (`sizing_pass.LinePacker`):
-//!   the preview's lines cover its text in order, every byte but the
-//!   newlines between them, so the lines are the text's newline-separated
-//!   lines plus the wraps; no line holds a newline. A line is as wide as
-//!   every codepoint on it measured together, whitespace included, and its
-//!   width says so. It fits the wrap width unless it cannot break further:
-//!   one word with no whitespace, or one space or tab, alone on its line
-//!   and wider than the width. A wrap (a break with no newline) is needed:
-//!   the next line's first word and the whitespace after it in the text do
-//!   not fit after the line, or, when the next line starts inside
-//!   whitespace, its first space or tab does not, after a line holding at
-//!   most one word.
-//! - Height: the preview text is its lines times the line height tall, and
-//!   the card that fits it (`propagateHeightChange`) is its padding, the
-//!   label, the gap, and the text tall.
+//! Structural checks of every frame the text_area example builds, beside its
+//! model (`vopr_text_area_model.zig`): the IME caret over the field's
+//! selection and in view after a move, the preview's wrapping as GPUI's
+//! `LineWrapper` packs lines (`sizing_pass.LinePacker`) - lines cover the
+//! text in order, no line holds a newline, a line is as wide as its
+//! codepoints measured together and fits the wrap width unless it cannot
+//! break further - and the preview's and card's heights.
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -43,12 +27,9 @@ const epsilon: f32 = 0.01;
 
 pub const Counts = struct {
     frames: u32,
-    /// Builds after a caret move whose caret line was checked in view.
     carets_in_view: u32,
     wrapped_lines_max: u32,
-    /// Breaks with no newline, checked to be needed.
     wraps: u32,
-    /// Lines of one word, or one space or tab, wider than the wrap width.
     long_words: u32,
     card_heights: u32,
 

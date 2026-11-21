@@ -1,12 +1,3 @@
-//! Paint and hit records: what `emit` writes and `pack` and the router read
-//! (contract §8 and §6).
-//!
-//! A `Frame` holds one tick's records in storage reserved at init. The window
-//! keeps two: `emit` fills the built frame, and a completed tick swaps it with
-//! the rendered frame, which the router and `Query` read until the next swap.
-//! Nothing here grows; every append checks its capacity and fails fast with
-//! the pool's name, capacity, and the frame number (contract rule 4).
-
 const std = @import("std");
 const id_mod = @import("id.zig");
 const geometry = @import("../geometry/geometry.zig");
@@ -35,8 +26,7 @@ pub const Rect = struct {
         return x < self.x + self.width and y < self.y + self.height;
     }
 
-    /// Whether the two rects share any area. Touching edges share none, so a
-    /// rect that only touches a clip draws no pixel inside it.
+    // Touching edges share no area.
     pub fn overlaps(self: Rect, other: Rect) bool {
         assert(self.width >= 0);
         assert(other.width >= 0);
@@ -44,7 +34,7 @@ pub const Rect = struct {
         return self.y + self.height > other.y and other.y + other.height > self.y;
     }
 
-    /// The overlap of two rects; zero-sized at `self`'s origin when none.
+    // Zero-sized at `self`'s origin when there is no overlap.
     pub fn intersect(self: Rect, other: Rect) Rect {
         assert(self.width >= 0);
         assert(other.width >= 0);
@@ -78,7 +68,6 @@ pub const Corners = struct {
     }
 };
 
-/// A resolved border: one width on every edge, in one colour.
 pub const Border = struct {
     width: f32 = 0,
     color: Color = Color.transparent,
@@ -115,7 +104,6 @@ pub const Sprite = struct {
     tint: Color,
     /// SVG stroke colour.
     secondary: Color,
-    /// Image rounding.
     corners: Corners,
     grayscale: f32,
     opacity: f32,
@@ -125,18 +113,14 @@ pub const Sprite = struct {
 pub const MeshRange = struct { first: u32, count: u32 };
 
 /// A mesh's points in window coordinates, laid out for the GPU so `pack`
-/// hands polyline and point ranges to the renderer without copying.
+/// hands ranges to the renderer without copying.
 pub const MeshPoint = geometry.GpuPoint;
 
-/// Points the frame's mesh pool holds: drawn triangles, polylines, and
-/// point clouds together. Painting checks each kind against its paint limit.
 pub const Mesh = struct {
     range: MeshRange,
     /// `triangles`: a triangle list, three points each. `strip_expanded`: a
     /// polyline the GPU widens. `point_instanced`: circle centres.
     topology: Topology,
-    /// Solid fills only: the contract's gradient fills have no user among the
-    /// kept examples (decision 10).
     fill: Color,
     /// The polyline's width or the points' radius; unused for triangles.
     width: f32,
@@ -144,10 +128,9 @@ pub const Mesh = struct {
     pub const Topology = enum { triangles, strip_expanded, point_instanced };
 };
 
-/// `record` with its alpha multiplied by `opacity`, as 0.3.1 folded subtree
-/// opacity into each command. Glyph and SVG sprites carry their colour in
-/// `tint` and `secondary`; image sprites carry it in `opacity`, since their
-/// tint multiplies the texel and fading both would square the opacity.
+// `record` with its alpha multiplied by `opacity`. Image sprites fade through
+// `opacity`, since their tint multiplies the texel and fading both would
+// square the opacity.
 pub fn fade(record: Record, opacity: f32) Record {
     assert(opacity >= 0);
     assert(opacity <= 1);
@@ -177,11 +160,11 @@ pub fn fadeColor(color: Color, opacity: f32) Color {
     return .{ .r = color.r, .g = color.g, .b = color.b, .a = color.a * opacity };
 }
 
-/// Sentinel for "no handler" and "no parent" indexes.
+// Sentinel for "no handler" and "no parent" indexes.
 pub const index_none: u32 = std.math.maxInt(u32);
 
-/// One interactive or keyed box, in tree order. `parent` is the index of the
-/// nearest ancestor hit record, so the router can bubble without the tree.
+// `parent` is the index of the nearest ancestor hit record, so the router can
+// bubble without the tree.
 pub const HitRecord = struct {
     id: ElementId,
     bounds: Rect,
@@ -203,8 +186,8 @@ pub const HitRecord = struct {
     /// Shift+F10 bubbles to the nearest record with one.
     on_context_menu: u32,
     on_key: u32,
-    /// `Box.on_pointer_drag`: a press here or on a child without one
-    /// captures the pointer for this record (contract §5).
+    /// A press here or on a child without one captures the pointer for this
+    /// record.
     on_pointer_drag: u32,
     /// `Box.draggable`: the payload's `typeId` (0 for none) and the payload.
     drag_type: usize,
@@ -249,29 +232,13 @@ pub const A11yNode = struct {
     };
 };
 
-/// Screen-reader announcements (`Effects.announce`) pending for the next
-/// build, in their own bytes, so a handler's slice need not outlive it. The
-/// window collects them between builds and each frame carries the ones that
-/// survived since the previous build, which the screen reader gets at that
-/// frame's flip.
-///
-/// The pending set behaves as a pair of live regions, as the platforms'
-/// queues do (UIA's `ImportantMostRecent`, ARIA's assertive and polite
-/// regions, VoiceOver's priorities): at most one assertive announcement,
-/// which a newer one replaces, and a FIFO of at most `polite_pending_max`
-/// polite ones, in which a newer one past the count replaces the oldest.
-/// Survivors keep the order they were announced in, and a replacement is a
-/// new announcement, so it follows every survivor. Input arriving while a
-/// frame is in flight therefore never exhausts the set (contract §4,
-/// "Announcements").
-///
-/// Storage is `polite_pending_max + 1` fixed slots of `message_bytes_max`
-/// bytes, item `i`'s text in slot `i`, so a replacement never fragments the
-/// bytes: removing an item shifts the later items and their slots down one,
-/// and the slot it frees is zeroed (CLAUDE.md §21). A write fills its whole
-/// slot, the text and then zeros, so no slot holds an earlier owner's bytes.
-/// Resource sketch: at most 64 slots of 256 B at `ceiling` (16 KiB); one
-/// announce moves at most every later slot, 16 KiB, and happens per handler.
+// Pending screen-reader announcements, in fixed slots: `polite_pending_max + 1`
+// slots of `message_bytes_max` bytes, item i's text in slot i, so a
+// replacement never fragments the bytes. Removing an item shifts the later
+// items and slots down one and zeroes the slot it frees; a write fills its
+// whole slot, text then zeros, so no slot holds an earlier owner's bytes.
+// Assertive: at most one, replaced by a newer one. Polite: a FIFO of at most
+// `polite_pending_max`, a newer one past the count replacing the oldest.
 pub const Announcements = struct {
     bytes: []u8,
     items: []Item,
@@ -328,10 +295,9 @@ pub const Announcements = struct {
         self.count = 0;
     }
 
-    /// Add `message` under the live-region rules: an assertive one replaces
-    /// the pending assertive one, and a polite one past `polite_pending_max`
-    /// replaces the oldest polite one. Only a message longer than its slot
-    /// fails fast, naming its budget field.
+    // Assertive replaces the pending assertive one; a polite one past
+    // `polite_pending_max` replaces the oldest. Only a message longer than
+    // its slot fails fast.
     pub fn push(
         self: *Announcements,
         message: []const u8,
@@ -370,8 +336,8 @@ pub const Announcements = struct {
         self.assertInvariants();
     }
 
-    /// Move the window's pending announcements into a frame: both come from
-    /// the same budget. The frame was cleared, so its unused slots are zero.
+    // Both come from the same budget, so a straight copy is safe. The frame
+    // was cleared, so its unused slots are zero.
     pub fn copyFrom(self: *Announcements, source: *const Announcements) void {
         assert(self.count == 0);
         assert(self.items.len == source.items.len);
@@ -397,8 +363,6 @@ pub const Announcements = struct {
         return self.bytes[item.text.offset..][0..item.text.len];
     }
 
-    /// Remove item `index`, keeping the others' order: the later items and
-    /// their slots move down one, and the slot freed at the end is zeroed.
     fn remove(self: *Announcements, index: u32) void {
         assert(index < self.count);
         assert(self.count <= self.items.len);
@@ -420,7 +384,6 @@ pub const Announcements = struct {
         assert(moved == self.count);
     }
 
-    /// The first pending item of `live` at or after `start`, or null.
     fn find(self: *const Announcements, live: a11y_types.Live, start: u32) ?u32 {
         assert(start <= self.count);
         var index = start;
@@ -499,22 +462,20 @@ pub const Frame = struct {
     text_len: u32,
     mesh_points: []MeshPoint,
     mesh_point_count: u32,
-    /// Points claimed per `Mesh.Topology`, checked against each kind's limit.
+    /// Points claimed per `Mesh.Topology`, against each kind's paint limit.
     mesh_point_counts: [3]u32,
-    /// Triangle mesh records, each one 0.3.1 frame path mesh when packed.
     triangle_mesh_count: u32,
     ime: ?Ime,
     /// `Style.opacity` of the element emit is drawing, folded into the alpha
     /// of every paint record appended (`fade`); 1 outside an element.
     paint_opacity: f32,
     /// The first hit record of the last modal fragment, or 0 with none open.
-    /// A modal blocks hit testing of earlier fragments (contract §6), and
-    /// fragments emit in order, so hit tests never look below this index.
+    /// A modal blocks hit testing of earlier fragments, and fragments emit in
+    /// order, so hit tests never look below this index.
     modal_hit_start: u32,
     /// Where the debugger's overlay starts in `paint`: nothing in release
     /// builds. Pack holds the app to its declared limits up to here.
     overlay_start: debugger.PaintMark,
-    /// The tick number that built this frame.
     frame_number: u64,
     viewport_width: f32,
     viewport_height: f32,
@@ -647,7 +608,7 @@ pub const Frame = struct {
         self.a11y_count += 1;
     }
 
-    /// Copy `bytes` into the frame (contract rule 6) and return their range.
+    /// Copies `bytes` into the frame's own storage and returns their range.
     pub fn copyText(self: *Frame, bytes: []const u8) TextRange {
         assert(self.text_len <= self.text_bytes.len);
         if (bytes.len == 0) return .empty;
@@ -666,7 +627,6 @@ pub const Frame = struct {
         return range;
     }
 
-    /// Claim `count` points of the mesh pool for one mesh record to fill.
     pub fn claimMeshPoints(self: *Frame, count: u32) MeshRange {
         assert(count > 0);
         assert(self.mesh_point_count <= self.mesh_points.len);
@@ -715,8 +675,6 @@ pub const Frame = struct {
 };
 
 test "Frame copies text and bounds every pool" {
-    // Goal: text survives the caller's buffer and each pool counts. Method:
-    // copy from a stack buffer, overwrite it, and read the copy back.
     var frame: Frame = undefined;
     try frame.initInPlace(std.testing.allocator, &.{
         .paint_record_count_max = 2,
@@ -742,10 +700,6 @@ test "Frame copies text and bounds every pool" {
 }
 
 test "fade halves an image sprite's opacity and a glyph or SVG sprite's colours" {
-    // Goal: each sprite kind fades through the field its pipeline reads.
-    // Method: fade an image and an SVG sprite to 0.5. The image must keep
-    // its tint, since its shader multiplies tint and opacity, and fading
-    // both would draw it at 0.25; the SVG must halve fill and stroke.
     const sprite = Sprite{
         .bounds = .{ .x = 0, .y = 0, .width = 4, .height = 4 },
         .atlas = .image,
@@ -768,7 +722,6 @@ test "fade halves an image sprite's opacity and a glyph or SVG sprite's colours"
     try std.testing.expectEqual(@as(f32, 0.4), faded.secondary.a);
 }
 
-/// The pending texts in delivery order, joined by "|", for the tests below.
 fn pendingTexts(pending: *const Announcements, buffer: []u8) []const u8 {
     var len: usize = 0;
     for (pending.slice(), 0..) |item, index| {
@@ -784,9 +737,6 @@ fn pendingTexts(pending: *const Announcements, buffer: []u8) []const u8 {
 }
 
 test "polite announcements fill to their count, then the newest replaces the oldest" {
-    // Goal: the polite FIFO (contract §4). Method: fill 3 slots exactly, check
-    // all three in order, add a fourth and a fifth, and check that each time
-    // the oldest went and the rest kept their order.
     var pending: Announcements = undefined;
     try pending.initInPlace(std.testing.allocator, .{
         .polite_pending_max = 3,
@@ -806,10 +756,6 @@ test "polite announcements fill to their count, then the newest replaces the old
 }
 
 test "a newer assertive announcement replaces the pending one and goes after the survivors" {
-    // Goal: the assertive slot and the order rule: survivors keep the order
-    // they were announced in, and a replacement is new, so it goes last.
-    // Method: interleave polite and assertive announcements past both
-    // limits and check the delivered order after each step that changes it.
     var pending: Announcements = undefined;
     try pending.initInPlace(std.testing.allocator, .{
         .polite_pending_max = 2,
@@ -831,8 +777,6 @@ test "a newer assertive announcement replaces the pending one and goes after the
         .live = .assertive,
     }, pending.slice()[1]);
 
-    // A frame takes the survivors in the same order, and the window's set
-    // starts empty again.
     var frame_pending: Announcements = undefined;
     try frame_pending.initInPlace(std.testing.allocator, .{
         .polite_pending_max = 2,
@@ -846,11 +790,6 @@ test "a newer assertive announcement replaces the pending one and goes after the
 }
 
 test "replaced announcements reuse their slots and leave no stale bytes" {
-    // Goal: bounded bytes under any number of replacements, with released
-    // bytes zeroed (CLAUDE.md §21). Method: 1,000 announcements of varying
-    // length into 2 polite slots and the assertive one, longest first, so a
-    // shorter text lands in a slot a longer one used; after each, every slot
-    // past its text must be zero, and the last texts must be intact.
     var pending: Announcements = undefined;
     try pending.initInPlace(std.testing.allocator, .{
         .polite_pending_max = 2,
@@ -870,8 +809,8 @@ test "replaced announcements reuse their slots and leave no stale bytes" {
             try std.testing.expectEqualStrings(source[0..item.text.len], slot[0..item.text.len]);
             try std.testing.expect(std.mem.allEqual(u8, slot[item.text.len..], 0));
         }
-        // Slots are not zeroed at init (§21: zero on release), so an unused
-        // slot is zero once every slot has been written and released.
+        // Slots are not zeroed at init (zero on release), so an unused slot is
+        // zero once every slot has been written and released.
         if (round >= 3) {
             const unused = pending.bytes[pending.count * 16 ..];
             try std.testing.expect(std.mem.allEqual(u8, unused, 0));

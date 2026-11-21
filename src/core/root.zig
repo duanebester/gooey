@@ -1,8 +1,4 @@
-//! The 0.4.0 core's public surface (contract "Shape"): `App`, `Cx`, `ui`,
-//! `Handler`, `ElementId`, and `ResourceLimits`.
-//!
-//! `src/root.zig` re-exports these names as the `gooey` root, and the
-//! modules as `gooey.internals`.
+//! The core's public surface, re-exported as the `gooey` root.
 
 const std = @import("std");
 
@@ -60,19 +56,15 @@ pub const ui = struct {
     pub const box = element.box;
     pub const text = element.text;
     pub const paint = element.paint;
-    /// The type `ui.paint` returns for a state type, for helpers that build one.
     pub const Paint = element.Paint;
     pub const when = element.when;
     pub const action = element.action;
     pub const Box = element.Box;
     pub const Style = element.Style;
-    // The types `Box` and `Style` fields name, for helpers that take or
-    // return one (`fn row(direction: ui.Direction) ui.Style`).
     pub const Direction = element.Direction;
     pub const Layer = element.Layer;
     pub const Anchor = element.Anchor;
     pub const Scroll = element.Scroll;
-    // `Effects.scrollTo` targets and `Scroll.anchor`.
     pub const ScrollAnchor = element.ScrollAnchor;
     pub const ScrollTarget = element.ScrollTarget;
     pub const ScrollOffset = element.ScrollOffset;
@@ -97,7 +89,6 @@ pub const ui = struct {
     pub const A11y = element.A11y;
     pub const Role = element.Role;
     pub const Orientation = element.Orientation;
-    /// The type of `A11y.heading_level`, for components that take a level.
     pub const HeadingLevel = element.HeadingLevel;
     pub const Painter = emit.Painter;
     pub const PaintText = emit.TextStyle;

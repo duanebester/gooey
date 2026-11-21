@@ -1,14 +1,5 @@
-//! Pie/Donut Chart Component for Gooey Charts
-//!
-//! Renders categorical data as circular slices where each slice's angle
-//! is proportional to its value relative to the total.
-//!
-//! Set inner_radius > 0 to create a donut chart with a center hole.
-//!
-//! NOTE: PieChart stores a *slice* to externally-owned category point data.
-//! The caller is responsible for ensuring the data outlives the chart.
-//! This avoids embedding large arrays on the stack (per CLAUDE.md).
-//!
+//! PieChart stores a slice to externally-owned category point data; the
+//! caller must keep the data alive while the chart renders.
 //! The slice capacity is the app's, fixed at comptime:
 //! `const Traffic = PieChart(.{ .slice_count_max = 8 });` draws up to 8 slices.
 //! A pie keeps no per-slice scratch, so the capacity bounds work, not storage.
@@ -28,76 +19,50 @@ pub const Painter = paint.Painter;
 
 const ARC_SEGMENTS_PER_FULL_CIRCLE = 64; // Segments for smooth arcs
 
-// =============================================================================
-// Default Color Palette (imported from theme.zig - single source of truth)
-// =============================================================================
-
 pub const default_palette = theme_mod.google_palette;
-
-// =============================================================================
-// PieChart
-// =============================================================================
 
 /// A pie or donut chart drawing up to `capacity.slice_count_max` slices.
 pub fn PieChart(comptime capacity: types.SliceCapacity) type {
     capacity.check();
     return struct {
-        // Type declarations must come before fields
         pub const LabelPosition = enum {
             inside,
             outside,
             none,
         };
 
-        /// Data - stored as a slice to avoid large stack allocation.
-        /// The caller owns the underlying data; chart just references it.
         data: []const CategoryPoint,
 
-        // Dimensions
         width: f32 = 300,
         height: f32 = 300,
 
-        // Donut configuration
-        /// Inner radius ratio (0 = full pie, 0.5 = half-size hole, etc.)
-        /// This is a ratio of the outer radius, not absolute pixels.
+        /// A ratio of the outer radius, not absolute pixels.
         inner_radius_ratio: f32 = 0,
 
-        // Styling
-        /// Gap between slices in pixels. Recommended: 2-4 pixels.
-        /// - For donuts: creates parallel edges for consistent visual spacing.
-        /// - For full pies: creates an "exploded" effect where slices are offset outward.
-        /// When set, takes precedence over pad_angle.
+        /// For donuts: parallel edges; for full pies: an exploded effect.
+        /// Takes precedence over `pad_angle`.
         gap_pixels: ?f32 = null,
-        /// Gap between slices in radians (0.02 ≈ 1 degree). Only used if gap_pixels is null.
-        /// Note: Angular gaps appear narrower near center and wider at edge.
+        /// Only used when `gap_pixels` is null; angular gaps appear narrower
+        /// near the centre and wider at the edge.
         pad_angle: f32 = 0.02,
-        /// Starting angle in radians (0 = 3 o'clock, -π/2 = 12 o'clock)
+        /// Radians; 0 = 3 o'clock, -π/2 = 12 o'clock.
         start_angle: f32 = -std.math.pi / 2.0,
 
-        // Labels
         show_labels: bool = false,
         label_position: LabelPosition = .outside,
 
-        // Theme (optional - uses default colors if null)
         chart_theme: ?*const ChartTheme = null,
 
-        // Accessibility
         accessible_title: ?[]const u8 = null,
         accessible_description: ?[]const u8 = null,
 
         const Self = @This();
 
-        /// Most slices one chart draws.
         pub const slice_count_max: u32 = capacity.slice_count_max;
 
-        // ==========================================================================
-        // Initialization
-        // ==========================================================================
-
-        /// Create a pie chart from a slice of category points.
-        /// The slice must outlive the chart - data is NOT copied. More slices than
-        /// `slice_count_max` is a capacity-planning error: fail fast and name the
-        /// field to raise rather than silently draw a subset.
+        /// The slice must outlive the chart; the data is not copied. More slices
+        /// than `slice_count_max` is a capacity-planning error: fail fast and
+        /// name the field to raise rather than silently draw a subset.
         pub fn init(data: []const CategoryPoint) Self {
             std.debug.assert(data.len > 0);
             if (data.len > slice_count_max) {
@@ -109,25 +74,14 @@ pub fn PieChart(comptime capacity: types.SliceCapacity) type {
             return chart;
         }
 
-        // ==========================================================================
-        // Accessors
-        // ==========================================================================
-
         pub fn sliceCount(self: *const Self) u32 {
             return @intCast(self.data.len);
         }
 
-        /// Returns true if this is a donut chart (has inner hole).
         pub fn isDonut(self: *const Self) bool {
             return self.inner_radius_ratio > 0;
         }
 
-        // ==========================================================================
-        // Accessibility
-        // ==========================================================================
-
-        /// Get accessibility information for this chart.
-        /// Use with `charts.describeChart()` to generate screen reader descriptions.
         pub fn getAccessibilityInfo(self: *const Self) a11y.ChartInfo {
             var info = a11y.infoFromCategoryPoints(self.data, self.isDonut());
             info.title = self.accessible_title;
@@ -135,31 +89,23 @@ pub fn PieChart(comptime capacity: types.SliceCapacity) type {
             return info;
         }
 
-        /// Generate a full accessible description for this chart.
-        /// Returns a slice into the provided buffer.
+        /// Writes into `buf` and returns a slice of it.
         pub fn describe(self: *const Self, buf: []u8) []const u8 {
             const info = self.getAccessibilityInfo();
             return a11y.describe(&info, buf);
         }
 
-        /// Generate a short summary for tooltips or live regions.
         pub fn summarize(self: *const Self, buf: []u8) []const u8 {
             const info = self.getAccessibilityInfo();
             return a11y.summarize(&info, buf);
         }
 
-        // ==========================================================================
-        // Rendering
-        // ==========================================================================
-
         /// Render the pie chart, offset by the paint element's bounds.
         pub fn render(self: *const Self, painter: *Painter) void {
-            // Assertions at API boundary (per CLAUDE.md: minimum 2 per function)
             std.debug.assert(self.data.len > 0);
             std.debug.assert(self.width > 0 and self.height > 0);
             std.debug.assert(self.inner_radius_ratio >= 0 and self.inner_radius_ratio < 1);
 
-            // Calculate center and radius
             const half_width = self.width / 2.0;
             const half_height = self.height / 2.0;
             const cx = painter.bounds.x + half_width;
@@ -169,24 +115,16 @@ pub fn PieChart(comptime capacity: types.SliceCapacity) type {
 
             std.debug.assert(outer_radius > 0);
 
-            // Calculate total value for angle proportions
             const total = self.calculateTotal();
             if (total <= 0) return; // Nothing to draw
 
-            // Draw slices
             self.drawSlices(painter, cx, cy, outer_radius, inner_radius, total);
 
-            // Draw labels if enabled
             if (self.show_labels and self.label_position != .none) {
                 self.drawLabels(painter, cx, cy, outer_radius, inner_radius, total);
             }
         }
 
-        // ==========================================================================
-        // Private Helpers
-        // ==========================================================================
-
-        /// Calculate the total of all values.
         fn calculateTotal(self: *const Self) f32 {
             var total: f32 = 0;
             for (self.data) |point| {
@@ -197,7 +135,6 @@ pub fn PieChart(comptime capacity: types.SliceCapacity) type {
             return total;
         }
 
-        /// Draw all pie slices.
         fn drawSlices(
             self: *const Self,
             painter: *Painter,
@@ -213,8 +150,8 @@ pub fn PieChart(comptime capacity: types.SliceCapacity) type {
             var current_angle = self.start_angle;
             const is_donut = inner_radius > 0.5;
 
-            // For donuts: use parallel edge gaps (different angular offset at inner vs outer)
-            // For full pies: use exploded effect (offset slice center along bisector)
+            // Donuts: parallel edge gaps (different angular offset at inner vs
+            // outer); full pies: exploded effect (offset along the bisector).
             const half_pad_outer: f32 = if (self.gap_pixels) |gap|
                 gap / (2.0 * outer_radius)
             else
@@ -224,34 +161,30 @@ pub fn PieChart(comptime capacity: types.SliceCapacity) type {
             else
                 half_pad_outer; // Not used for full pies
 
-            // Explode offset for full pies (half the gap on each side = full gap between slices)
+            // Half the gap on each side = a full gap between slices.
             const explode_offset: f32 = if (is_donut) 0 else self.gap_pixels orelse 0;
 
             for (self.data, 0..) |point, idx| {
                 if (point.value <= 0) continue;
 
-                // Calculate slice angle
                 const slice_angle = (point.value / total) * 2.0 * std.math.pi;
 
-                // Skip tiny slices
                 if (slice_angle < 0.01) {
                     current_angle += slice_angle;
                     continue;
                 }
 
-                // Get color for this slice: point color > theme palette > default palette
+                // Color priority: point color > theme palette > default palette.
                 const color = point.color orelse
                     (if (self.chart_theme) |t|
                         t.paletteColor(idx)
                     else
                         default_palette[idx % default_palette.len]);
 
-                // Calculate exploded center for full pies
                 const bisector = current_angle + slice_angle / 2.0;
                 const slice_cx = cx + explode_offset * @cos(bisector);
                 const slice_cy = cy + explode_offset * @sin(bisector);
 
-                // Draw the slice
                 self.drawSlice(
                     painter,
                     slice_cx,
@@ -291,23 +224,19 @@ pub fn PieChart(comptime capacity: types.SliceCapacity) type {
             std.debug.assert(outer_r >= inner_r);
             std.debug.assert(slice_angle > 0);
 
-            // Effective angles at outer edge (with outer padding)
             const outer_start = base_angle + half_pad_outer;
             const outer_end = base_angle + slice_angle - half_pad_outer;
 
-            // Calculate arc span at outer edge for segment count
             var angle_span = outer_end - outer_start;
             if (angle_span < 0) angle_span += 2.0 * std.math.pi;
             if (angle_span <= 0) return; // Slice too small after padding
 
-            // Number of segments proportional to arc span
             const segments: u32 = @max(2, @as(u32, @intFromFloat(
                 @ceil(angle_span / (2.0 * std.math.pi) * @as(f32, ARC_SEGMENTS_PER_FULL_CIRCLE)),
             )));
 
             if (inner_r > 0.5) {
-                // Donut slice: draw as quad strip with parallel edges
-                // Inner and outer arcs use different angle ranges for uniform gap width
+                // Different inner/outer angle ranges keep the gap width uniform.
                 const inner_start = base_angle + half_pad_inner;
                 const inner_end = base_angle + slice_angle - half_pad_inner;
 
@@ -326,8 +255,7 @@ pub fn PieChart(comptime capacity: types.SliceCapacity) type {
                     painter.triangles(&.{ inner1, outer1, outer2, inner1, outer2, inner2 }, color);
                 }
             } else {
-                // Full pie slice: triangle fan from center
-                // Note: For exploded pies, cx/cy are already offset by caller
+                // For exploded pies, cx/cy are already offset by the caller.
                 const outer_step = (outer_end - outer_start) / @as(f32, @floatFromInt(segments));
 
                 var i: u32 = 0;
@@ -341,14 +269,12 @@ pub fn PieChart(comptime capacity: types.SliceCapacity) type {
             }
         }
 
-        /// The point at `angle` on the circle of `radius` around (cx, cy).
         fn arcPoint(cx: f32, cy: f32, radius: f32, angle: f32) [2]f32 {
             std.debug.assert(radius >= 0);
             std.debug.assert(!std.math.isNan(angle));
             return .{ cx + radius * @cos(angle), cy + radius * @sin(angle) };
         }
 
-        /// Draw labels for pie slices.
         fn drawLabels(
             self: *const Self,
             painter: *Painter,
@@ -362,7 +288,6 @@ pub fn PieChart(comptime capacity: types.SliceCapacity) type {
 
             var current_angle = self.start_angle;
 
-            // Label radius depends on position
             const label_radius = switch (self.label_position) {
                 .inside => (outer_radius + inner_radius) / 2.0,
                 .outside => outer_radius * 1.15,
@@ -374,18 +299,16 @@ pub fn PieChart(comptime capacity: types.SliceCapacity) type {
 
                 const slice_angle = (point.value / total) * 2.0 * std.math.pi;
 
-                // Skip labels for tiny slices
                 if (slice_angle < 0.15) {
                     current_angle += slice_angle;
                     continue;
                 }
 
-                // Calculate label position at slice midpoint
                 const mid_angle = current_angle + slice_angle / 2.0;
                 const label_x = cx + label_radius * @cos(mid_angle);
                 const label_y = cy + label_radius * @sin(mid_angle);
 
-                // Draw a small circle as label marker (actual text would need text rendering)
+                // A marker only: labels do not render text yet.
                 const marker_color = switch (self.label_position) {
                     .inside => Color.white,
                     .outside => Color.hex(0x666666),
@@ -397,32 +320,26 @@ pub fn PieChart(comptime capacity: types.SliceCapacity) type {
             }
         }
 
-        /// Get the slice index at a given point (for hit testing / tooltips).
-        /// Returns null if the point is not within any slice.
+        /// Hit testing; null outside every slice.
         pub fn hitTest(self: *const Self, x: f32, y: f32) ?usize {
             const cx = self.width / 2.0;
             const cy = self.height / 2.0;
             const outer_radius = @min(cx, cy) * 0.85;
             const inner_radius = outer_radius * self.inner_radius_ratio;
 
-            // Calculate distance from center
             const dx = x - cx;
             const dy = y - cy;
             const distance = @sqrt(dx * dx + dy * dy);
 
-            // Check if within pie/donut ring
             if (distance < inner_radius or distance > outer_radius) {
                 return null;
             }
 
-            // Calculate angle
             var angle = std.math.atan2(dy, dx);
-            // Normalize angle relative to start_angle
             angle -= self.start_angle;
             while (angle < 0) angle += 2.0 * std.math.pi;
             while (angle >= 2.0 * std.math.pi) angle -= 2.0 * std.math.pi;
 
-            // Find which slice this angle falls into
             const total = self.calculateTotal();
             if (total <= 0) return null;
 
@@ -441,10 +358,6 @@ pub fn PieChart(comptime capacity: types.SliceCapacity) type {
         }
     };
 }
-
-// =============================================================================
-// Tests
-// =============================================================================
 
 /// A chart with room for 8 slices, enough for every test below.
 const TestChart = PieChart(.{ .slice_count_max = 8 });
@@ -483,14 +396,11 @@ test "PieChart hitTest center hole" {
     var chart = TestChart.init(&data);
     chart.inner_radius_ratio = 0.5;
 
-    // Center should not hit anything (hole)
     const hit = chart.hitTest(150, 150);
     try std.testing.expect(hit == null);
 }
 
 test "PieChart struct size is small" {
-    // PieChart should be small - just a slice pointer + options + theme ptr
-    // Should be < 120 bytes, not embedding large arrays
     const size = @sizeOf(TestChart);
     try std.testing.expect(size < 120);
 }
@@ -503,7 +413,6 @@ test "PieChart donut configuration" {
     var chart = TestChart.init(&data);
     chart.inner_radius_ratio = 0.6; // 60% hole
 
-    // Verify donut settings
     try std.testing.expectEqual(@as(f32, 0.6), chart.inner_radius_ratio);
 }
 

@@ -1,8 +1,3 @@
-//! FreeType font face implementation
-//!
-//! Implements the FontFace interface using FreeType for glyph rasterization
-//! and Fontconfig for font discovery on Linux.
-
 const std = @import("std");
 const ft = @import("bindings.zig");
 const types = @import("../../types.zig");
@@ -16,11 +11,9 @@ const SystemFont = types.SystemFont;
 const FontVariant = types.FontVariant;
 const FontFace = font_face_mod.FontFace;
 
-/// Global FreeType library instance (initialized once)
 var global_ft_library: ?ft.FT_Library = null;
 var library_init_error: ?ft.FT_Error = null;
 
-/// Initialize the global FreeType library
 fn ensureLibraryInit() !ft.FT_Library {
     if (global_ft_library) |lib| return lib;
     if (library_init_error) |err| {
@@ -42,18 +35,12 @@ fn ensureLibraryInit() !ft.FT_Library {
 
 /// Maximum glyph ID for advance cache (covers most fonts)
 const ADVANCE_CACHE_SIZE: usize = 4096;
-/// Sentinel value for uncached advances
 const ADVANCE_UNCACHED: f32 = -1.0;
 
-/// FreeType-backed font face
 pub const FreeTypeFace = struct {
-    /// FreeType face handle
     ft_face: ft.FT_Face,
-    /// HarfBuzz font (paired with FT_Face for shaping)
     hb_font: *ft.hb_font_t,
-    /// Cached metrics
     metrics: Metrics,
-    /// Font size in points
     point_size: f32,
     /// Font file path (for debugging)
     font_path_buf: [512]u8,
@@ -64,13 +51,10 @@ pub const FreeTypeFace = struct {
 
     const Self = @This();
 
-    /// Load one variant of a family by name using Fontconfig.
-    ///
-    /// Selection: Fontconfig resolves `name` to an installed family, then the
-    /// family's real faces are listed and `font_match.select` picks one by the
-    /// CSS font matching rule. Fallback policy: nothing is synthesized. A
-    /// family without the requested weight or slant renders with the face CSS
-    /// matching picks, and init logs a warning naming the request and the face.
+    /// Fontconfig resolves `name` to an installed family; `font_match.select`
+    /// picks one of the family's faces by the CSS matching rule. Nothing is
+    /// synthesized; a family without the requested weight or slant renders
+    /// with the face matching picks, and `warnInexactFace` logs.
     pub fn init(name: []const u8, size: f32, variant: FontVariant) !Self {
         const library = try ensureLibraryInit();
 
@@ -85,7 +69,6 @@ pub const FreeTypeFace = struct {
     pub fn initSystem(style: SystemFont, size: f32, variant: FontVariant) !Self {
         const library = try ensureLibraryInit();
 
-        // Map system font style to Fontconfig pattern
         const family = switch (style) {
             .monospace => "monospace",
             .sans_serif => "sans-serif",
@@ -366,13 +349,11 @@ pub const FreeTypeFace = struct {
             return error.FontSizeError;
         }
 
-        // Create HarfBuzz font from FreeType face
         const hb_font = ft.hb_ft_font_create_referenced(ft_face) orelse {
             return error.HarfBuzzError;
         };
         errdefer ft.hb_font_destroy(hb_font);
 
-        // Set up HarfBuzz to use FreeType functions
         ft.hb_ft_font_set_funcs(hb_font);
 
         var self = Self{
@@ -385,11 +366,9 @@ pub const FreeTypeFace = struct {
             .advance_cache = @as([ADVANCE_CACHE_SIZE]f32, @splat(ADVANCE_UNCACHED)),
         };
 
-        // Store path for debugging
         @memcpy(self.font_path_buf[0..self.font_path_len], path[0..self.font_path_len]);
         self.font_path_buf[self.font_path_len] = 0;
 
-        // Compute metrics
         self.metrics = computeMetrics(ft_face, size);
 
         return self;
@@ -401,21 +380,16 @@ pub const FreeTypeFace = struct {
         self.* = undefined;
     }
 
-    /// Get as the generic FontFace interface
     pub fn asFontFace(self: *Self) FontFace {
         return font_face_mod.createFontFace(Self, self);
     }
 
-    /// Get glyph ID for a Unicode codepoint
     pub fn glyphIndex(self: *const Self, codepoint: u21) u16 {
         const glyph_idx = ft.FT_Get_Char_Index(self.ft_face, @intCast(codepoint));
         return @intCast(glyph_idx);
     }
 
-    /// Get advance width for a glyph (fast path for text measurement)
-    /// Uses cached value if available, otherwise loads and caches
     pub fn glyphAdvance(self: *Self, glyph_id: u16) f32 {
-        // Check cache first (fast path)
         if (glyph_id < ADVANCE_CACHE_SIZE) {
             const cached = self.advance_cache[glyph_id];
             if (cached != ADVANCE_UNCACHED) {
@@ -423,7 +397,7 @@ pub const FreeTypeFace = struct {
             }
         }
 
-        // Cache miss - load glyph with minimal work (no hinting, no bitmap)
+        // Minimal load: no hinting, no bitmap.
         const err = ft.FT_Load_Glyph(self.ft_face, glyph_id, ft.FT_LOAD_NO_HINTING | ft.FT_LOAD_NO_BITMAP);
         if (err != 0) {
             return 0;
@@ -431,7 +405,6 @@ pub const FreeTypeFace = struct {
 
         const advance = ft.f26dot6ToFloat(self.ft_face.glyph.metrics.horiAdvance);
 
-        // Cache for future lookups
         if (glyph_id < ADVANCE_CACHE_SIZE) {
             // Cast away const for caching (cache is logically mutable even on const self)
             const mutable_self = @constCast(self);
@@ -441,9 +414,7 @@ pub const FreeTypeFace = struct {
         return advance;
     }
 
-    /// Get metrics for a specific glyph (full metrics, slower path)
     pub fn glyphMetrics(self: *const Self, glyph_id: u16) GlyphMetrics {
-        // Load glyph without rendering (just get metrics)
         const err = ft.FT_Load_Glyph(self.ft_face, glyph_id, ft.FT_LOAD_DEFAULT);
         if (err != 0) {
             return .{
@@ -461,13 +432,11 @@ pub const FreeTypeFace = struct {
         const m = slot.metrics;
         const advance_x = ft.f26dot6ToFloat(m.horiAdvance);
 
-        // Update advance cache while we have it
         if (glyph_id < ADVANCE_CACHE_SIZE) {
             const mutable_self = @constCast(self);
             mutable_self.advance_cache[glyph_id] = advance_x;
         }
 
-        // Convert from 26.6 fixed-point to float
         return .{
             .glyph_id = glyph_id,
             .advance_x = advance_x,
@@ -479,9 +448,6 @@ pub const FreeTypeFace = struct {
         };
     }
 
-    /// Render a glyph with subpixel positioning
-    /// subpixel_x and subpixel_y are in range [0.0, 1.0)
-    ///
     /// Uses FreeType's native bitmap output with its positioning values.
     /// offset_x = bitmap_left (horizontal offset from pen to left edge)
     /// offset_y = bitmap_top (vertical offset from baseline to top edge, positive = above)
@@ -512,8 +478,7 @@ pub const FreeTypeFace = struct {
         );
     }
 
-    /// Render a glyph from any FT_Face (for fallback fonts)
-    /// This is a static method that can render glyphs from fonts not owned by this face
+    /// Renders from a font not owned by this face (fallback path).
     pub fn renderGlyphFromFont(
         ft_face: ft.FT_Face,
         glyph_id: u16,
@@ -544,18 +509,15 @@ pub const FreeTypeFace = struct {
     fn computeMetrics(face: ft.FT_Face, size: f32) Metrics {
         const size_metrics = face.size.metrics;
 
-        // Convert from 26.6 fixed-point
         const ascender = ft.f26dot6ToFloat(size_metrics.ascender);
         const descender = -ft.f26dot6ToFloat(size_metrics.descender); // FreeType descender is negative
         const height = ft.f26dot6ToFloat(size_metrics.height);
         const line_gap = height - ascender - descender;
 
-        // Get x-height and cap-height from OS/2 table if available
-        // Fall back to estimates based on ascender
+        // Estimates; refined below when the 'x' and 'H' glyphs exist.
         var x_height = ascender * 0.5;
         var cap_height = ascender * 0.7;
 
-        // Try to get 'x' and 'H' metrics for better estimates
         const x_glyph = ft.FT_Get_Char_Index(face, 'x');
         if (x_glyph != 0) {
             if (ft.FT_Load_Glyph(face, x_glyph, ft.FT_LOAD_DEFAULT) == 0) {
@@ -570,12 +532,10 @@ pub const FreeTypeFace = struct {
             }
         }
 
-        // Underline metrics (from face, need scaling)
         const scale_factor = size / @as(f32, @floatFromInt(face.units_per_EM));
         const underline_position = @as(f32, @floatFromInt(face.underline_position)) * scale_factor;
         const underline_thickness = @max(1.0, @as(f32, @floatFromInt(face.underline_thickness)) * scale_factor);
 
-        // Cell width for monospace (check 'M' and '0')
         var cell_width: f32 = 0;
         const m_glyph = ft.FT_Get_Char_Index(face, 'M');
         if (m_glyph != 0) {
@@ -609,11 +569,6 @@ pub const FreeTypeFace = struct {
     }
 };
 
-// =============================================================================
-// Shared Internal Functions
-// =============================================================================
-
-/// Internal glyph rendering implementation shared by both public methods
 fn renderGlyphInternal(
     ft_face: ft.FT_Face,
     glyph_id: u16,
@@ -626,11 +581,9 @@ fn renderGlyphInternal(
 ) !RasterizedGlyph {
     _ = buffer_size;
 
-    // Assertions for input validation
     std.debug.assert(scale > 0);
     std.debug.assert(point_size > 0);
 
-    // Apply subpixel offset via FT_Set_Transform
     const subpixel_offset_x = ft.floatToF26dot6(subpixel_x * scale);
     const subpixel_offset_y = ft.floatToF26dot6(subpixel_y * scale);
 
@@ -681,7 +634,6 @@ fn renderGlyphInternal(
         };
     }
 
-    // Render to bitmap if not already
     if (slot.format != .FT_GLYPH_FORMAT_BITMAP) {
         const render_err = ft.FT_Render_Glyph(slot, .FT_RENDER_MODE_NORMAL);
         if (render_err != 0) {
@@ -691,7 +643,6 @@ fn renderGlyphInternal(
         }
     }
 
-    // Reset transform for future operations
     ft.FT_Set_Transform(ft_face, null, null);
     _ = ft.FT_Set_Char_Size(ft_face, 0, ft.floatToF26dot6(point_size), 96, 96);
 
@@ -700,10 +651,9 @@ fn renderGlyphInternal(
     const height = bitmap.rows;
     const is_color = bitmap.pixel_mode == .FT_PIXEL_MODE_BGRA;
 
-    std.debug.assert(width <= 256); // Reasonable glyph size limit
+    std.debug.assert(width <= 256);
     std.debug.assert(height <= 256);
 
-    // Copy bitmap to output buffer
     if (width > 0 and height > 0) {
         const src_pitch: usize = if (bitmap.pitch < 0)
             @intCast(-bitmap.pitch)
@@ -726,9 +676,7 @@ fn renderGlyphInternal(
         }
     }
 
-    // Use FreeType's native bitmap positioning
-    // bitmap_left: horizontal offset from pen position to left edge of bitmap
-    // bitmap_top: vertical offset from baseline to top edge of bitmap (positive = above)
+    // Use FreeType's native bitmap positioning (see renderGlyphSubpixel).
     return RasterizedGlyph{
         .width = width,
         .height = height,
@@ -738,10 +686,6 @@ fn renderGlyphInternal(
         .is_color = is_color,
     };
 }
-
-// =============================================================================
-// Tests
-// =============================================================================
 
 test "load system font" {
     var face = try FreeTypeFace.initSystem(.monospace, 14.0, .regular);

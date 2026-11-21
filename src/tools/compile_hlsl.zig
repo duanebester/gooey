@@ -1,21 +1,4 @@
-//! `zig build compile-hlsl`: compiles one HLSL entry point to DXBC with the
-//! system `D3DCompiler_47.dll`.
-//!
-//! The DirectX 11 renderer embeds precompiled DXBC, checked in beside its
-//! HLSL like the Vulkan renderer's `.spv` files, so no build and no running
-//! app needs a shader compiler. This program regenerates one `.dxbc` after an
-//! HLSL edit:
-//!
-//!     compile_hlsl <source.hlsl> <entry point> <profile> <output.dxbc>
-//!
-//! `D3DCompiler_47.dll` ships with Windows 10 and later, so regenerating needs
-//! no Windows SDK, and Gooey takes no dependency (CLAUDE.md §12). Warnings
-//! are errors, and strictness is on, so a shader that only compiles with
-//! legacy syntax fails here rather than on a user's machine. The output is
-//! the signed container `ID3D11Device::Create*Shader` validates.
-//!
-//! Bounds: a source smaller than `source_bytes_max`; failures print the
-//! compiler's messages and exit with status 1.
+//! Regenerates a checked-in `.dxbc` from HLSL with the system `D3DCompiler_47.dll`.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -124,7 +107,6 @@ pub fn main(init: std.process.Init) !void {
     defer _ = code.?.vtable.Release(code.?);
 
     const dxbc = code.?.bytes();
-    // Every DXBC container begins with its four-byte magic.
     assert(std.mem.eql(u8, dxbc[0..4], "DXBC"));
     try Dir.cwd().writeFile(io, .{ .sub_path = output_path, .data = dxbc });
 }

@@ -129,7 +129,6 @@ fn decodePng(options: PngOptions, pixels: []const u8) !decoder.DecodedImage {
     return decoder.loadFromMemory(testing.allocator, png);
 }
 
-/// A uniform RGBA frame for the size tests.
 fn decodeUniform(allocator: std.mem.Allocator, width: u32, height: u32) !decoder.DecodedImage {
     const options: PngOptions = .{ .width = width, .height = height, .color_type = .rgba };
     const pixels = try testing.allocator.alloc(u8, @as(usize, width) * height * 4);

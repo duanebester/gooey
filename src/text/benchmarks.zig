@@ -1,38 +1,11 @@
-//! Text Module Benchmarks
-//!
-//! Benchmark suite for atlas packing, text shaping, measurement, and glyph
-//! rasterization hot paths.  Measures the performance-critical operations
-//! that run during text rendering every frame.
-//!
-//! Run as executable: zig build bench-text
-//! Quick tests only:  zig build test (validates outputs, doesn't time)
-//!
-//! Categories:
-//!   - Atlas insert        — shelf placement throughput at various glyph sizes
-//!   - Atlas insert+pixels — placement plus the CPU renderer's bordered pixel write
-//!   - Atlas evict         — insert into a full atlas (LRU scan + shelf eviction)
-//!   - Insert scaling      — ns/op vs glyph count to detect shelf-table degradation
-//!   - Atlas utilization   — glyph area against the shelf area holding it
-//!   - Text shaping        — CoreText/HarfBuzz shaping cold + warm cache paths
-//!   - Text shaping arena  — warm cache with arena allocator (eliminates GPA overhead)
-//!   - Text measurement    — measureText / measureTextEx with wrapping
-//!   - Glyph rasterize     — rasterize + atlas pack + cache insert (cold + warm)
-//!   - Glyph subpixel      — warm lookup across subpixel offset variants
-//!   - Shaping scaling     — shaping cost vs text length (linear vs super-linear)
+//! Benchmarks for text atlas packing, shaping, measurement, and glyph rasterization.
 
 const std = @import("std");
 const gooey = @import("gooey");
 const bench = @import("bench");
 
-/// Minimal `Instant.now()` / `.since()` shim over `std.Io.Clock.awake`, kept
-/// local to the benchmark module so every sample site reads as a two-line
-/// capture-then-diff instead of threading `io` through every benchmark
-/// helper signature. `.awake` is the monotonic clock — deltas here can
-/// never go negative regardless of NTP or sysadmin clock edits.
-///
-/// `std.Io` is a pair of pointers into a process-lifetime vtable, so the
-/// per-call `global_single_threaded.io()` lookup compiles down to a pair
-/// of constant pointer loads — effectively free.
+/// Minimal `Instant.now()`/`.since()` shim over `std.Io.Clock.awake`, the monotonic
+/// clock, so deltas can never go negative.
 const time = struct {
     inline fn benchIo() std.Io {
         return std.Io.Threaded.global_single_threaded.io();
@@ -71,11 +44,6 @@ const ShapedRunCache = text.ShapedRunCache;
 const ShapedGlyph = text.ShapedGlyph;
 const CachedGlyph = text.CachedGlyph;
 
-// =============================================================================
-// Benchmark Configuration
-// =============================================================================
-
-/// Adaptive warmup iterations based on operation count.
 fn getWarmupIterations(operation_count: u32) u32 {
     std.debug.assert(operation_count > 0);
     if (operation_count >= 10000) return 2;
@@ -83,7 +51,6 @@ fn getWarmupIterations(operation_count: u32) u32 {
     return 5;
 }
 
-/// Adaptive minimum sample iterations based on operation count.
 fn getMinSampleIterations(operation_count: u32) u32 {
     std.debug.assert(operation_count > 0);
     if (operation_count >= 10000) return 5;
@@ -95,24 +62,14 @@ fn getMinSampleIterations(operation_count: u32) u32 {
 /// the Cachegrind gate's fixed-iteration build (see `bench.sample_time_ns_min`).
 const MIN_SAMPLE_TIME_NS: u64 = bench.sample_time_ns_min;
 
-/// Maximum per-iteration samples collected for percentile computation.
-/// 4096 samples * 8 bytes = 32 KB — fits comfortably on the stack.
+/// 4096 samples * 8 bytes = 32 KB, which fits comfortably on the stack.
 const MAX_SAMPLE_COUNT: u32 = 4096;
 
-/// Table width for benchmark output formatting (characters per row).
 const TABLE_WIDTH = 125;
 
-/// Horizontal subpixel variants to exercise in glyph cache benchmarks.
-/// Derived from text.SUBPIXEL_VARIANTS_X (the authoritative source).
-/// SUBPIXEL_VARIANTS_Y is 1, so only X variants create cache diversity.
+/// Mirrors text.SUBPIXEL_VARIANTS_X, the authoritative source.
 const BENCH_SUBPIXEL_VARIANTS: u32 = text.SUBPIXEL_VARIANTS_X;
 
-// =============================================================================
-// Iteration Sample Collection and Percentile Computation
-// =============================================================================
-
-/// Per-iteration timing data for percentile analysis.
-/// Fixed capacity avoids dynamic allocation during benchmark runs.
 const IterationSamples = struct {
     times_ns: [MAX_SAMPLE_COUNT]u64,
     count: u32,
@@ -121,8 +78,7 @@ const IterationSamples = struct {
         return .{ .times_ns = undefined, .count = 0 };
     }
 
-    /// Record one iteration's elapsed time.  Drops samples beyond capacity
-    /// (the first MAX_SAMPLE_COUNT samples are sufficient for percentiles).
+    /// Drops samples beyond capacity; the first MAX_SAMPLE_COUNT suffice for percentiles.
     fn record(self: *IterationSamples, elapsed_ns: u64) void {
         if (self.count < MAX_SAMPLE_COUNT) {
             self.times_ns[self.count] = elapsed_ns;
@@ -130,8 +86,6 @@ const IterationSamples = struct {
         }
     }
 
-    /// Sort collected samples and extract p50/p99 percentiles as ns/op.
-    /// Mutates the internal array (sort is idempotent on subsequent calls).
     fn computePercentiles(self: *IterationSamples, operation_count: u32) PercentileResult {
         std.debug.assert(self.count > 0);
         std.debug.assert(operation_count > 0);
@@ -158,16 +112,11 @@ const IterationSamples = struct {
     }
 };
 
-/// Percentile statistics computed from iteration samples.
 const PercentileResult = struct {
     min_per_op_ns: f64,
     p50_per_op_ns: f64,
     p99_per_op_ns: f64,
 };
-
-// =============================================================================
-// Benchmark Results
-// =============================================================================
 
 const BenchmarkResult = struct {
     name: []const u8,
@@ -208,29 +157,18 @@ const BenchmarkResult = struct {
     }
 };
 
-// =============================================================================
-// Text Benchmark Constants
-// =============================================================================
-
-/// Font size used for all text pipeline benchmarks.
 const BENCH_FONT_SIZE: f32 = 14.0;
 
-/// Maximum unique glyph IDs we track for rasterization benchmarks.
 const MAX_UNIQUE_GLYPHS: u32 = 128;
 
-/// Short text for shaping/measurement benchmarks (13 characters).
 const TEXT_SHORT: []const u8 = "Hello, World!";
 
-/// Medium text for shaping/measurement benchmarks (50 characters).
 const TEXT_MEDIUM: []const u8 = "The quick brown fox jumps over the lazy dog nearby";
 
-/// Long text for shaping/measurement benchmarks (104 characters).
 const TEXT_LONG: []const u8 =
     "Pack my box with five dozen liquor jugs. " ++
     "How vexingly quick daft zebras jump over the lazy sleeping dog.";
 
-/// Base text for scaling analysis — sliced at 10, 25, 50, 100, 200 characters.
-/// Contains varied letter frequencies and punctuation to exercise shaping.
 const SCALING_TEXT_BASE: []const u8 =
     "Pack my box with five dozen liquor jugs. " ++
     "The quick brown fox jumps over the lazy dog. " ++
@@ -245,13 +183,7 @@ comptime {
     std.debug.assert(SCALING_TEXT_BASE.len >= 200);
 }
 
-// =============================================================================
-// Synthetic Data Generators
-// =============================================================================
-
-/// Generate synthetic glyph pixel data at compile time.
-/// Produces a repeating gradient pattern that approximates anti-aliased glyph
-/// bitmaps without requiring a real font or rasterizer.
+/// Repeating gradient pattern approximating anti-aliased glyph bitmaps; no real font needed.
 fn generatePixelData(comptime width: u32, comptime height: u32) [width * height]u8 {
     comptime {
         std.debug.assert(width > 0);
@@ -259,14 +191,11 @@ fn generatePixelData(comptime width: u32, comptime height: u32) [width * height]
     }
     var data: [width * height]u8 = undefined;
     for (0..width * height) |i| {
-        // Modular arithmetic gives a repeating gradient 0–255.
         data[i] = @intCast((i * 7 + 128) % 256);
     }
     return data;
 }
 
-/// Generate all printable ASCII characters (0x20–0x7E, 95 characters).
-/// Used to exercise glyph rasterization across the full basic character set.
 fn generatePrintableAscii() [95]u8 {
     var buffer: [95]u8 = undefined;
     for (0..95) |i| {
@@ -277,20 +206,12 @@ fn generatePrintableAscii() [95]u8 {
     return buffer;
 }
 
-// =============================================================================
-// Unique Glyph ID Extraction
-// =============================================================================
-
-/// Set of unique glyph IDs extracted from a shaped run.
-/// Fixed capacity avoids dynamic allocation during benchmark setup.
 const UniqueGlyphIds = struct {
     ids: [MAX_UNIQUE_GLYPHS]u16,
     count: u32,
 };
 
-/// Extract unique glyph IDs from a shaped run.  Uses O(n^2) linear scan for
-/// dedup — acceptable since n <= 95 for printable ASCII (<= 1024 by assertion).
-/// Extracted as a standalone function with no struct indirection (rule #20).
+/// O(n^2) linear-scan dedup; acceptable since n <= 95 (asserted <= 1024).
 fn extractUniqueGlyphIds(shaped_glyphs: []const text.ShapedGlyph) UniqueGlyphIds {
     std.debug.assert(shaped_glyphs.len > 0);
     std.debug.assert(shaped_glyphs.len <= 1024);
@@ -321,11 +242,6 @@ fn extractUniqueGlyphIds(shaped_glyphs: []const text.ShapedGlyph) UniqueGlyphIds
     return result;
 }
 
-// =============================================================================
-// Benchmark Runners — Atlas Insert
-// =============================================================================
-
-/// Side of the benchmark atlas: the `.standard` glyph atlas.
 const bench_atlas_size: u32 = 1024;
 
 /// A fixed glyph atlas over its own journal. `.cpu_texture` writes pixels into
@@ -361,7 +277,6 @@ const BenchAtlas = struct {
         std.debug.assert(self.uploads.frameCurrent() > 1);
     }
 
-    /// Condemn every item and evict them all, leaving an empty atlas.
     fn reset(self: *BenchAtlas) void {
         self.atlas.clear();
         self.nextFrame();
@@ -372,7 +287,6 @@ const BenchAtlas = struct {
     }
 };
 
-/// Insert `count` glyphs of one size into an empty atlas per iteration.
 fn benchAtlasInsert(
     allocator: std.mem.Allocator,
     comptime name: []const u8,
@@ -409,8 +323,7 @@ fn benchAtlasInsert(
     return atlasResult(name, count, total_time_ns, iterations, samples.computePercentiles(count));
 }
 
-/// Insert `count` same-size glyphs. Standalone so the hot loop has no `self`
-/// indirection (CLAUDE.md rule #20).
+/// Standalone so the hot loop has no `self` indirection.
 fn insertUniformBatch(atlas: *Atlas, width: u32, height: u32, pixels: []const u8, count: u32) void {
     var index: u32 = 0;
     while (index < count) : (index += 1) {
@@ -419,7 +332,6 @@ fn insertUniformBatch(atlas: *Atlas, width: u32, height: u32, pixels: []const u8
     std.debug.assert(atlas.rows_active <= atlas.size);
 }
 
-/// Insert a mix of small (8x12), medium (16x20), and large (24x28) glyphs.
 fn benchAtlasInsertMixed(
     allocator: std.mem.Allocator,
     comptime name: []const u8,
@@ -451,25 +363,20 @@ fn benchAtlasInsertMixed(
     return atlasResult(name, count, total_time_ns, iterations, samples.computePercentiles(count));
 }
 
-/// Insert a batch of mixed-size glyphs; returns the pixel area inserted.
 fn insertMixedBatch(atlas: *Atlas, count: u32) u64 {
     const pixels = comptime generatePixelData(24, 28);
     var area: u64 = 0;
     var index: u32 = 0;
     while (index < count) : (index += 1) {
         const variant: u32 = index % 3;
-        const glyph_width: u32 = 8 + variant * 8; // 8, 16, 24
-        const glyph_height: u32 = 12 + variant * 8; // 12, 20, 28
+        const glyph_width: u32 = 8 + variant * 8;
+        const glyph_height: u32 = 12 + variant * 8;
         _ = atlas.insert(glyph_width, glyph_height, &pixels) orelse unreachable;
         area += glyph_width * glyph_height;
     }
     std.debug.assert(atlas.rows_active > 0);
     return area;
 }
-
-// =============================================================================
-// Benchmark Runners — Atlas Evict
-// =============================================================================
 
 /// Insert into a full atlas: every insert first evicts the least recently used
 /// shelf. Each iteration refills the atlas in one frame and times `count`
@@ -545,40 +452,31 @@ fn atlasResult(
     };
 }
 
-// =============================================================================
-// Benchmark Runners — Text Shaping
-// =============================================================================
-
-/// Benchmark cold text shaping: shape cache invalidated before every timed
-/// call, forcing a full FFI round-trip into CoreText (macOS) or HarfBuzz
-/// (Linux).  Operation count = 1 per iteration; many iterations for stability.
+/// Shape cache invalidated before every timed call, forcing a full FFI round-trip.
 fn benchShapeCold(
     text_sys: *TextSystem,
     comptime name: []const u8,
     bench_text: []const u8,
 ) BenchmarkResult {
     std.debug.assert(bench_text.len > 0);
-    std.debug.assert(bench_text.len <= 512); // Shape cache max text length.
+    std.debug.assert(bench_text.len <= 512);
 
     const warmup_iters = getWarmupIterations(1);
     const min_iters = getMinSampleIterations(1);
     const allocator = text_sys.run_allocator;
 
-    // Warmup: verify shaping works, populate platform shaper internals.
     for (0..warmup_iters) |_| {
         text_sys.shape_cache.clear();
         var run = text_sys.shapeText(.app, bench_text, .regular, null) catch unreachable;
         run.deinit(allocator);
     }
 
-    // Timed sampling: one cold shape per iteration.
     var total_time_ns: u64 = 0;
     var iterations: u32 = 0;
     var samples = IterationSamples.init();
     var last_width: f32 = 0;
 
     while (total_time_ns < MIN_SAMPLE_TIME_NS or iterations < min_iters) {
-        // Invalidate shape cache so the next shapeText call always misses.
         text_sys.shape_cache.clear();
 
         const start = time.Instant.now();
@@ -609,9 +507,7 @@ fn benchShapeCold(
     };
 }
 
-/// Benchmark warm text shaping: same text shaped `count` times per iteration.
-/// After the first call populates the shape cache, every subsequent call is a
-/// pure cache hit (hash lookup -> memcpy of glyph array -> return).
+/// Same text `count` times per iteration; every call after the first is a pure cache hit.
 fn benchShapeWarm(
     text_sys: *TextSystem,
     comptime name: []const u8,
@@ -625,13 +521,11 @@ fn benchShapeWarm(
     const min_iters = getMinSampleIterations(count);
     const allocator = text_sys.run_allocator;
 
-    // Prime the shape cache with this text.
     {
         var run = text_sys.shapeText(.app, bench_text, .regular, null) catch unreachable;
         run.deinit(allocator);
     }
 
-    // Warmup.
     for (0..warmup_iters) |_| {
         for (0..count) |_| {
             var run = text_sys.shapeText(.app, bench_text, .regular, null) catch unreachable;
@@ -639,7 +533,6 @@ fn benchShapeWarm(
         }
     }
 
-    // Timed sampling: all calls should hit the shape cache.
     var total_time_ns: u64 = 0;
     var iterations: u32 = 0;
     var samples = IterationSamples.init();
@@ -675,11 +568,8 @@ fn benchShapeWarm(
     };
 }
 
-/// Benchmark warm text shaping with an arena allocator instead of GPA.
-/// On a shape cache hit, shapeText allocates only the glyph array copy
-/// from self.run_allocator.  Swapping it to an arena makes alloc a
-/// pointer bump and free a no-op — isolating the true cache lookup cost from
-/// the GPA alloc/free overhead that dominates the warm GPA path.
+/// Arena `run_allocator` turns alloc into a pointer bump and free into a no-op,
+/// isolating the true cache lookup cost from GPA alloc/free overhead.
 fn benchShapeWarmArena(
     text_sys: *TextSystem,
     comptime name: []const u8,
@@ -693,7 +583,6 @@ fn benchShapeWarmArena(
     const warmup_iters = getWarmupIterations(count);
     const min_iters = getMinSampleIterations(count);
 
-    // Prime the shape cache so every call in the timed section is a hit.
     {
         var run = text_sys.shapeText(.app, bench_text, .regular, null) catch unreachable;
         run.deinit(gpa);
@@ -703,7 +592,6 @@ fn benchShapeWarmArena(
     defer arena.deinit();
     const arena_alloc = arena.allocator();
 
-    // Warmup.
     for (0..warmup_iters) |_| {
         text_sys.run_allocator = arena_alloc;
         for (0..count) |_| {
@@ -714,7 +602,6 @@ fn benchShapeWarmArena(
         _ = arena.reset(.retain_capacity);
     }
 
-    // Timed sampling: arena alloc = pointer bump, free = no-op.
     var total_time_ns: u64 = 0;
     var iterations: u32 = 0;
     var samples = IterationSamples.init();
@@ -752,10 +639,8 @@ fn benchShapeWarmArena(
     };
 }
 
-/// Benchmark warm text shaping with shapeTextInto and a stack-allocated glyph
-/// buffer.  On a cache hit, shapeTextInto copies glyphs into the caller's
-/// buffer (owned=false) — no heap allocation or free at all.  This is the
-/// pattern placeText uses after the zero-alloc optimization.
+/// On a cache hit, shapeTextInto copies glyphs into the caller's stack buffer
+/// (owned=false): no heap allocation or free.
 fn benchShapeWarmInto(
     text_sys: *TextSystem,
     comptime name: []const u8,
@@ -769,13 +654,11 @@ fn benchShapeWarmInto(
     const warmup_iters = getWarmupIterations(count);
     const min_iters = getMinSampleIterations(count);
 
-    // Prime the shape cache so every call in the timed section is a hit.
     {
         var run = text_sys.shapeText(.app, bench_text, .regular, null) catch unreachable;
         run.deinit(allocator);
     }
 
-    // Warmup.
     for (0..warmup_iters) |_| {
         for (0..count) |_| {
             var buf: [ShapedRunCache.MAX_GLYPHS_PER_ENTRY]ShapedGlyph = undefined;
@@ -785,7 +668,6 @@ fn benchShapeWarmInto(
         }
     }
 
-    // Timed sampling: stack buffer means alloc is free, no deinit on warm hit.
     var total_time_ns: u64 = 0;
     var iterations: u32 = 0;
     var samples = IterationSamples.init();
@@ -822,13 +704,6 @@ fn benchShapeWarmInto(
     };
 }
 
-// =============================================================================
-// Benchmark Runners — Text Measurement
-// =============================================================================
-
-/// Benchmark simple text width measurement.  Calls measureText() which
-/// internally invokes shapeText() (shape cache warm after first call).
-/// Measures the combined cost of cache lookup + width extraction.
 fn benchMeasureText(
     text_sys: *TextSystem,
     comptime name: []const u8,
@@ -841,14 +716,12 @@ fn benchMeasureText(
     const warmup_iters = getWarmupIterations(count);
     const min_iters = getMinSampleIterations(count);
 
-    // Warmup.
     for (0..warmup_iters) |_| {
         for (0..count) |_| {
             _ = text_sys.measureText(.app, bench_text, .regular) catch unreachable;
         }
     }
 
-    // Timed sampling.
     var total_time_ns: u64 = 0;
     var iterations: u32 = 0;
     var samples = IterationSamples.init();
@@ -882,9 +755,6 @@ fn benchMeasureText(
     };
 }
 
-/// Benchmark text measurement with wrapping.  Calls measureTextEx() with a
-/// max_width constraint that forces line-breaking logic.  Exercises the word-
-/// wrap path in addition to shaping.
 fn benchMeasureTextWrapped(
     text_sys: *TextSystem,
     comptime name: []const u8,
@@ -899,14 +769,12 @@ fn benchMeasureTextWrapped(
     const warmup_iters = getWarmupIterations(count);
     const min_iters = getMinSampleIterations(count);
 
-    // Warmup.
     for (0..warmup_iters) |_| {
         for (0..count) |_| {
             _ = text_sys.measureTextEx(.app, bench_text, .regular, max_width) catch unreachable;
         }
     }
 
-    // Timed sampling.
     var total_time_ns: u64 = 0;
     var iterations: u32 = 0;
     var samples = IterationSamples.init();
@@ -942,18 +810,12 @@ fn benchMeasureTextWrapped(
     };
 }
 
-// =============================================================================
-// Benchmark Runners — Glyph Rasterization
-// =============================================================================
-
 /// Key the cold benchmark advances the atlas frame clock with. No renderer
 /// registers it, and 0 is never a key (`AtlasUploads.findConsumer` asserts
 /// it, so passing 0 is undefined behaviour in ReleaseFast).
 const bench_frame_key: usize = 1;
 
-/// Benchmark cold glyph rasterization: glyph cache cleared before each timed
-/// iteration, forcing full rasterize -> atlas pack -> cache insert for every
-/// glyph.  Operation count = number of unique glyphs per iteration.
+/// Glyph cache cleared before each timed iteration; full rasterize + pack + insert per glyph.
 fn benchGlyphRasterCold(
     text_sys: *TextSystem,
     comptime name: []const u8,
@@ -966,7 +828,6 @@ fn benchGlyphRasterCold(
     const glyph_count: u32 = @intCast(glyph_ids.len);
     const min_iters = getMinSampleIterations(glyph_count);
 
-    // Warmup: exercises the rasterizer and platform font backend.
     for (0..3) |_| {
         // A new frame: a cleared atlas reclaims space only from past frames.
         _ = text_sys.cache.grayscale_atlas.uploads.beginFrame(bench_frame_key);
@@ -976,7 +837,6 @@ fn benchGlyphRasterCold(
         }
     }
 
-    // Timed sampling: clear cache, then rasterize all glyphs.
     var total_time_ns: u64 = 0;
     var iterations: u32 = 0;
     var samples = IterationSamples.init();
@@ -1017,9 +877,7 @@ fn benchGlyphRasterCold(
     };
 }
 
-/// Benchmark warm glyph lookup: all glyphs pre-cached, every call is a pure
-/// hash table hit returning cached atlas coordinates.  Repeats `repetitions`
-/// passes over the glyph set per iteration for stable timing.
+/// All glyphs pre-cached; `repetitions` passes per iteration for stable timing.
 fn benchGlyphRasterWarm(
     text_sys: *TextSystem,
     comptime name: []const u8,
@@ -1035,12 +893,10 @@ fn benchGlyphRasterWarm(
     const operation_count = glyph_count * repetitions;
     const min_iters = getMinSampleIterations(operation_count);
 
-    // Prime the glyph cache so every lookup is a hit.
     for (glyph_ids) |glyph_id| {
         _ = text_sys.getGlyphSubpixel(glyph_id, font_size, 0, 0) catch unreachable;
     }
 
-    // Warmup.
     for (0..3) |_| {
         for (0..repetitions) |_| {
             for (glyph_ids) |glyph_id| {
@@ -1049,7 +905,6 @@ fn benchGlyphRasterWarm(
         }
     }
 
-    // Timed sampling: all calls should hit the glyph cache.
     var total_time_ns: u64 = 0;
     var iterations: u32 = 0;
     var samples = IterationSamples.init();
@@ -1087,11 +942,8 @@ fn benchGlyphRasterWarm(
     };
 }
 
-/// Benchmark warm glyph lookup across all horizontal subpixel variants.
-/// Exercises the full cache working set that real rendering produces:
-/// each glyph cached at BENCH_SUBPIXEL_VARIANTS X offsets (Y is always 0).
-/// This reveals whether subpixel variant diversity causes capacity pressure
-/// or degrades hit rates compared to the single-offset benchmark.
+/// Each glyph cached at BENCH_SUBPIXEL_VARIANTS X offsets (Y is always 0),
+/// revealing whether subpixel diversity causes capacity pressure.
 fn benchGlyphRasterWarmSubpixel(
     text_sys: *TextSystem,
     comptime name: []const u8,
@@ -1107,14 +959,12 @@ fn benchGlyphRasterWarmSubpixel(
     const operation_count = glyph_count * BENCH_SUBPIXEL_VARIANTS * repetitions;
     const min_iters = getMinSampleIterations(operation_count);
 
-    // Prime the glyph cache for all subpixel X variants (Y is always 0).
     for (0..BENCH_SUBPIXEL_VARIANTS) |sx| {
         for (glyph_ids) |glyph_id| {
             _ = text_sys.getGlyphSubpixel(glyph_id, font_size, @intCast(sx), 0) catch unreachable;
         }
     }
 
-    // Warmup.
     for (0..3) |_| {
         for (0..repetitions) |_| {
             for (0..BENCH_SUBPIXEL_VARIANTS) |sx| {
@@ -1125,7 +975,6 @@ fn benchGlyphRasterWarmSubpixel(
         }
     }
 
-    // Timed sampling: all subpixel variants should hit the glyph cache.
     var total_time_ns: u64 = 0;
     var iterations: u32 = 0;
     var samples = IterationSamples.init();
@@ -1164,10 +1013,8 @@ fn benchGlyphRasterWarmSubpixel(
     };
 }
 
-/// Benchmark warm glyph lookup iterating ShapedGlyph structs with per-glyph locking.
-/// Same data layout as benchGlyphRasterWarmBatch (ShapedGlyph array, not u16 array)
-/// but calls getGlyphSubpixel() per glyph.  Paired with the batch variant below
-/// for an apples-to-apples comparison of per-glyph lock vs batch lock.
+/// Same ShapedGlyph-array layout as the batch variant, but with per-glyph
+/// getGlyphSubpixel calls: compares per-glyph locking against batch locking.
 fn benchGlyphRasterWarmPerGlyph(
     text_sys: *TextSystem,
     comptime name: []const u8,
@@ -1184,7 +1031,6 @@ fn benchGlyphRasterWarmPerGlyph(
     const operation_count = glyph_count * repetitions;
     const min_iters = getMinSampleIterations(operation_count);
 
-    // Build ShapedGlyph array — same data layout as the batch benchmark.
     var shaped_glyphs: [MAX_UNIQUE_GLYPHS]ShapedGlyph = undefined;
     for (glyph_ids, 0..) |glyph_id, i| {
         shaped_glyphs[i] = .{
@@ -1199,12 +1045,10 @@ fn benchGlyphRasterWarmPerGlyph(
         };
     }
 
-    // Prime the glyph cache so every lookup is a hit.
     for (glyph_ids) |glyph_id| {
         _ = text_sys.getGlyphSubpixel(glyph_id, font_size, 0, 0) catch unreachable;
     }
 
-    // Warmup with per-glyph lock path over ShapedGlyph array.
     for (0..3) |_| {
         for (0..repetitions) |_| {
             for (shaped_glyphs[0..glyph_count]) |glyph| {
@@ -1213,7 +1057,6 @@ fn benchGlyphRasterWarmPerGlyph(
         }
     }
 
-    // Timed sampling: per-glyph lock/unlock, iterating ShapedGlyph structs.
     var total_time_ns: u64 = 0;
     var iterations: u32 = 0;
     var samples = IterationSamples.init();
@@ -1251,10 +1094,8 @@ fn benchGlyphRasterWarmPerGlyph(
     };
 }
 
-/// Benchmark warm glyph lookup using batch resolution under a single mutex lock.
-/// Same data layout as benchGlyphRasterWarmPerGlyph, but calls resolveGlyphBatch()
-/// instead of N individual getGlyphSubpixel() calls.  The difference isolates
-/// the cost of N-1 redundant lock/unlock pairs (Enhancement #1).
+/// Same data layout as the per-glyph variant, but one mutex lock per batch via
+/// resolveGlyphBatch; the difference isolates the cost of N-1 redundant lock/unlock pairs.
 fn benchGlyphRasterWarmBatch(
     text_sys: *TextSystem,
     comptime name: []const u8,
@@ -1271,7 +1112,6 @@ fn benchGlyphRasterWarmBatch(
     const operation_count = glyph_count * repetitions;
     const min_iters = getMinSampleIterations(operation_count);
 
-    // Build ShapedGlyph and subpixel arrays for batch resolution.
     // Only glyph_id and font_ref are read by resolveGlyphBatch.
     var shaped_glyphs: [MAX_UNIQUE_GLYPHS]ShapedGlyph = undefined;
     var subpixel_xs: [MAX_UNIQUE_GLYPHS]u8 = undefined;
@@ -1291,12 +1131,10 @@ fn benchGlyphRasterWarmBatch(
         subpixel_xs[i] = 0;
     }
 
-    // Prime the glyph cache so every lookup is a hit.
     for (glyph_ids) |glyph_id| {
         _ = text_sys.getGlyphSubpixel(glyph_id, font_size, 0, 0) catch unreachable;
     }
 
-    // Warmup with batch path.
     for (0..3) |_| {
         for (0..repetitions) |_| {
             text_sys.resolveGlyphBatch(
@@ -1310,7 +1148,6 @@ fn benchGlyphRasterWarmBatch(
         }
     }
 
-    // Timed sampling: all calls should hit the glyph cache, one lock per batch.
     var total_time_ns: u64 = 0;
     var iterations: u32 = 0;
     var samples = IterationSamples.init();
@@ -1352,10 +1189,6 @@ fn benchGlyphRasterWarmBatch(
     };
 }
 
-// =============================================================================
-// Validation Tests — Atlas
-// =============================================================================
-
 test "validate: atlas insert fills shelves without eviction" {
     const allocator = std.testing.allocator;
     const bench_atlas = try allocator.create(BenchAtlas);
@@ -1385,7 +1218,6 @@ test "validate: atlas mixed insert and reset round-trip" {
 
 test "validate: generatePixelData produces non-zero output" {
     const data = comptime generatePixelData(8, 12);
-    // Verify data is not all zeros (the pattern starts at offset 128).
     var nonzero_count: u32 = 0;
     for (data) |byte| {
         if (byte > 0) nonzero_count += 1;
@@ -1393,14 +1225,7 @@ test "validate: generatePixelData produces non-zero output" {
     try std.testing.expect(nonzero_count > 0);
 }
 
-// =============================================================================
-// Validation Tests — Percentile Computation
-// =============================================================================
-
 test "validate: IterationSamples computes correct percentiles" {
-    // Goal: verify that p50 and p99 indices land on the expected sorted values
-    // when given a known ascending sequence.  Methodology: insert 100 samples
-    // with values 1000, 2000, ..., 100000, then check p50 ~ 50000 and p99 ~ 99000.
     var samples = IterationSamples.init();
     for (0..100) |i| {
         samples.record((@as(u64, i) + 1) * 1000);
@@ -1416,7 +1241,6 @@ test "validate: IterationSamples computes correct percentiles" {
 }
 
 test "validate: IterationSamples single sample returns same for p50 and p99" {
-    // Goal: edge case — a single sample should be returned for both percentiles.
     var samples = IterationSamples.init();
     samples.record(42000);
     try std.testing.expectEqual(@as(u32, 1), samples.count);
@@ -1427,7 +1251,6 @@ test "validate: IterationSamples single sample returns same for p50 and p99" {
 }
 
 test "validate: IterationSamples divides by operation count" {
-    // Goal: verify that operation_count divisor is applied to percentile values.
     var samples = IterationSamples.init();
     samples.record(10000);
     samples.record(20000);
@@ -1441,13 +1264,7 @@ test "validate: IterationSamples divides by operation count" {
     try std.testing.expectApproxEqAbs(@as(f64, 2000.0), p.p99_per_op_ns, 1.0);
 }
 
-// =============================================================================
-// Validation Tests — Text Pipeline
-// =============================================================================
-
-/// Heap-allocate and initialize a TextSystem with a monospace font for testing.
-/// Returns null if any step fails (platform fonts unavailable, OOM, etc.),
-/// allowing tests to skip gracefully on unsupported environments.
+/// Returns null when setup fails, so tests skip gracefully on unsupported environments.
 fn createTestTextSystem(allocator: std.mem.Allocator) ?*TextSystem {
     const ts = allocator.create(TextSystem) catch return null;
     // Freed by `destroyTestTextSystem`, which reaches it through the atlas.
@@ -1482,7 +1299,6 @@ fn createTestTextSystem(allocator: std.mem.Allocator) ?*TextSystem {
     return ts;
 }
 
-/// Clean up a TextSystem created by createTestTextSystem.
 fn destroyTestTextSystem(allocator: std.mem.Allocator, ts: *TextSystem) void {
     std.debug.assert(ts.scale_factor > 0);
     std.debug.assert(ts.scale_factor <= 4.0);
@@ -1510,12 +1326,10 @@ test "validate: text shaping warm path returns consistent width" {
     const ts = createTestTextSystem(allocator) orelse return;
     defer destroyTestTextSystem(allocator, ts);
 
-    // First call populates the shape cache.
     var run_first = ts.shapeText(.app, TEXT_SHORT, .regular, null) catch return;
     const first_width = run_first.width;
     run_first.deinit(allocator);
 
-    // Second call should hit the cache and return the same width.
     var run_second = ts.shapeText(.app, TEXT_SHORT, .regular, null) catch return;
     defer run_second.deinit(allocator);
 
@@ -1528,13 +1342,11 @@ test "validate: shapeTextInto warm path returns owned=false with correct glyphs"
     const ts = createTestTextSystem(allocator) orelse return;
     defer destroyTestTextSystem(allocator, ts);
 
-    // Prime the shape cache.
     var prime = ts.shapeText(.app, TEXT_SHORT, .regular, null) catch return;
     const expected_width = prime.width;
     const expected_count = prime.glyphs.len;
     prime.deinit(allocator);
 
-    // Warm hit via shapeTextInto — should copy into our buffer, owned=false.
     var buf: [ShapedRunCache.MAX_GLYPHS_PER_ENTRY]ShapedGlyph = undefined;
     var into_run = ts.shapeTextInto(.app, TEXT_SHORT, .regular, null, &buf) catch return;
     defer if (into_run.owned) into_run.deinit(allocator);
@@ -1558,7 +1370,7 @@ test "validate: text measurement returns positive width" {
 
     const width = ts.measureText(.app, TEXT_SHORT, .regular) catch return;
     try std.testing.expect(width > 0);
-    try std.testing.expect(width < 10000); // Sanity bound.
+    try std.testing.expect(width < 10000);
 }
 
 test "validate: text measurement with wrapping produces multiple lines" {
@@ -1566,7 +1378,6 @@ test "validate: text measurement with wrapping produces multiple lines" {
     const ts = createTestTextSystem(allocator) orelse return;
     defer destroyTestTextSystem(allocator, ts);
 
-    // Use a narrow max_width to force wrapping on medium text.
     const measurement = ts.measureTextEx(.app, TEXT_MEDIUM, .regular, 50.0) catch return;
     try std.testing.expect(measurement.line_count >= 1);
     try std.testing.expect(measurement.width > 0);
@@ -1577,7 +1388,6 @@ test "validate: glyph rasterization produces cached glyph" {
     const ts = createTestTextSystem(allocator) orelse return;
     defer destroyTestTextSystem(allocator, ts);
 
-    // Shape a short string to get a valid glyph ID.
     var run = ts.shapeText(.app, "A", .regular, null) catch return;
     defer run.deinit(allocator);
 
@@ -1595,7 +1405,6 @@ test "validate: resolveGlyphBatch matches per-glyph lookups" {
     const ts = createTestTextSystem(allocator) orelse return;
     defer destroyTestTextSystem(allocator, ts);
 
-    // Shape a short string to get valid glyph IDs.
     var run = ts.shapeText(.app, "Hello", .regular, null) catch return;
     defer run.deinit(allocator);
 
@@ -1604,13 +1413,11 @@ test "validate: resolveGlyphBatch matches per-glyph lookups" {
 
     const glyph_count = run.glyphs.len;
 
-    // Collect per-glyph results using the individual lock path.
     var per_glyph: [MAX_UNIQUE_GLYPHS]CachedGlyph = undefined;
     for (run.glyphs, 0..) |glyph, i| {
         per_glyph[i] = ts.getGlyphSubpixel(glyph.glyph_id, BENCH_FONT_SIZE, 0, 0) catch return;
     }
 
-    // Collect batch results using the single-lock path.
     var subpixel_xs: [MAX_UNIQUE_GLYPHS]u8 = @splat(0);
     var batch: [MAX_UNIQUE_GLYPHS]CachedGlyph = undefined;
     ts.resolveGlyphBatch(
@@ -1622,7 +1429,6 @@ test "validate: resolveGlyphBatch matches per-glyph lookups" {
         batch[0..glyph_count],
     ) catch return;
 
-    // Every glyph must produce identical CachedGlyph metadata.
     for (0..glyph_count) |i| {
         try std.testing.expectEqual(per_glyph[i].region.x, batch[i].region.x);
         try std.testing.expectEqual(per_glyph[i].region.y, batch[i].region.y);
@@ -1636,7 +1442,6 @@ test "validate: resolveGlyphBatch matches per-glyph lookups" {
 }
 
 test "validate: extractUniqueGlyphIds deduplicates correctly" {
-    // Fabricate a small array of ShapedGlyphs with known glyph IDs.
     const glyphs = [_]text.ShapedGlyph{
         .{ .glyph_id = 10, .x_offset = 0, .y_offset = 0, .x_advance = 8, .y_advance = 0, .cluster = 0 },
         .{ .glyph_id = 20, .x_offset = 0, .y_offset = 0, .x_advance = 8, .y_advance = 0, .cluster = 1 },
@@ -1658,19 +1463,11 @@ test "validate: generatePrintableAscii covers full range" {
     try std.testing.expectEqual(@as(usize, 95), ascii.len);
     try std.testing.expectEqual(@as(u8, ' '), ascii[0]);
     try std.testing.expectEqual(@as(u8, '~'), ascii[94]);
-    // Verify monotonically increasing.
     for (1..ascii.len) |i| {
         try std.testing.expect(ascii[i] == ascii[i - 1] + 1);
     }
 }
 
-// =============================================================================
-// Section Printers
-// =============================================================================
-
-/// Print a section header with title, column labels, and separator line.
-/// Print a text benchmark result and record it in the JSON reporter.
-/// Text benchmarks include p50/p99 percentile data.
 fn collect(reporter: *bench.Reporter, result: BenchmarkResult) void {
     reporter.addEntry(bench.entryWithPercentiles(
         result.name,
@@ -1708,7 +1505,6 @@ fn printHeader() void {
     });
 }
 
-/// Print all atlas benchmarks (no platform dependencies, pure data structures).
 fn runAtlasBenchmarks(gpa: std.mem.Allocator, reporter: *bench.Reporter) void {
     comptime std.debug.assert(bench_atlas_size == 1024);
 
@@ -1737,8 +1533,6 @@ fn runAtlasBenchmarks(gpa: std.mem.Allocator, reporter: *bench.Reporter) void {
     printAtlasNotes();
 }
 
-/// Print shelf occupancy for the mixed workload: rows held by active shelves
-/// against the pixel area the glyphs need.
 fn printAtlasUtilization(gpa: std.mem.Allocator) void {
     const bench_atlas = gpa.create(BenchAtlas) catch unreachable;
     defer gpa.destroy(bench_atlas);
@@ -1772,7 +1566,6 @@ fn printAtlasNotes() void {
     , .{});
 }
 
-/// Print text shaping benchmarks (cold = cache miss FFI, warm = cache hit).
 fn printShapingBenchmarks(text_sys: *TextSystem, reporter: *bench.Reporter) void {
     std.debug.assert(text_sys.getMetrics() != null);
     std.debug.assert(text_sys.scale_factor > 0);
@@ -1795,7 +1588,6 @@ fn printShapingBenchmarks(text_sys: *TextSystem, reporter: *bench.Reporter) void
     std.debug.print(&@as([TABLE_WIDTH]u8, @splat('=')) ++ "\n", .{});
 }
 
-/// Print text measurement benchmarks (simple width + wrapped with max_width).
 fn printMeasurementBenchmarks(text_sys: *TextSystem, reporter: *bench.Reporter) void {
     std.debug.assert(text_sys.getMetrics() != null);
     std.debug.assert(text_sys.scale_factor > 0);
@@ -1826,7 +1618,6 @@ fn printMeasurementBenchmarks(text_sys: *TextSystem, reporter: *bench.Reporter) 
     std.debug.print(&@as([TABLE_WIDTH]u8, @splat('=')) ++ "\n", .{});
 }
 
-/// Print glyph rasterization benchmarks (cold = rasterize, warm = cache hit).
 fn printGlyphBenchmarks(text_sys: *TextSystem, glyph_ids: []const u16, reporter: *bench.Reporter) void {
     std.debug.assert(glyph_ids.len > 0);
     std.debug.assert(text_sys.getMetrics() != null);
@@ -1842,7 +1633,6 @@ fn printGlyphBenchmarks(text_sys: *TextSystem, glyph_ids: []const u16, reporter:
     std.debug.print(&@as([TABLE_WIDTH]u8, @splat('=')) ++ "\n", .{});
 }
 
-/// Print shaping scaling analysis (cold shaping at increasing text lengths).
 fn printScalingBenchmarks(text_sys: *TextSystem, reporter: *bench.Reporter) void {
     std.debug.assert(text_sys.getMetrics() != null);
     std.debug.assert(SCALING_TEXT_BASE.len >= 200);
@@ -1890,18 +1680,10 @@ fn printTextPipelineNotes() void {
     , .{});
 }
 
-// =============================================================================
-// Text Pipeline Benchmark Runner
-// =============================================================================
-
-/// Run all text pipeline benchmarks that require a loaded font.
-/// Heap-allocates TextSystem (~1.7 MB) to avoid stack overflow on constrained
-/// platforms.  Errors propagate to main() for graceful skip messaging.
+/// Heap-allocates TextSystem (~1.7 MB) to avoid stack overflow on constrained platforms.
 fn runTextPipelineBenchmarks(gpa: std.mem.Allocator, reporter: *bench.Reporter) !void {
     // Font loading is setup, not part of the first shaping benchmark.
     reporter.pauseBenchmark();
-
-    // Heap-allocate TextSystem to avoid blowing the stack (CLAUDE.md rule #14).
 
     const text_sys = try gpa.create(TextSystem);
     defer gpa.destroy(text_sys);
@@ -1922,14 +1704,10 @@ fn runTextPipelineBenchmarks(gpa: std.mem.Allocator, reporter: *bench.Reporter) 
     try text_sys.loadSystemFont(.monospace, BENCH_FONT_SIZE);
     reporter.beginBenchmark();
 
-    // --- Shaping benchmarks ---
     printShapingBenchmarks(text_sys, reporter);
 
-    // --- Measurement benchmarks ---
     printMeasurementBenchmarks(text_sys, reporter);
 
-    // --- Glyph rasterization benchmarks ---
-    // Shape printable ASCII to extract glyph IDs for the rasterization benchmarks.
     reporter.pauseBenchmark();
     const printable_ascii = comptime generatePrintableAscii();
     var ascii_run = try text_sys.shapeText(.app, &printable_ascii, .regular, null);
@@ -1945,15 +1723,10 @@ fn runTextPipelineBenchmarks(gpa: std.mem.Allocator, reporter: *bench.Reporter) 
     reporter.beginBenchmark();
     printGlyphBenchmarks(text_sys, unique_glyphs.ids[0..unique_glyphs.count], reporter);
 
-    // --- Scaling analysis ---
     printScalingBenchmarks(text_sys, reporter);
 
     printTextPipelineNotes();
 }
-
-// =============================================================================
-// Main
-// =============================================================================
 
 pub fn main(init: std.process.Init) !void {
     var gpa_instance: std.heap.DebugAllocator(.{}) = .init;

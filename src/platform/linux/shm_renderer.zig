@@ -1,38 +1,13 @@
-//! ShmRenderer - CPU rendering presented through Wayland shared memory.
-//!
-//! Selected with `-Dlinux-backend=wayland_cpu`. The Wayland window, input,
-//! clipboard, and IME paths are the same as the Vulkan build; only the
-//! renderer differs. Frames are rasterized by `platform/cpu/renderer.zig`
-//! straight into a `wl_shm` buffer, so there is no extra copy and no GPU,
-//! Vulkan loader, or driver involved. This is the path for machines without a
-//! usable Vulkan driver: virtual machines, servers, and low-end hardware.
-//!
-//! ## Memory (CLAUDE.md §2)
+//! CPU rendering presented through Wayland shared memory
+//! (`-Dlinux-backend=wayland_cpu`), for machines without a usable Vulkan
+//! driver. The CPU renderer rasterizes straight into a `wl_shm` buffer, so
+//! there is no extra copy and no GPU, Vulkan loader, or driver involved.
 //!
 //! Everything is reserved while the window initializes, from the app's
-//! `ResourceLimits`, and never resized:
-//!
-//! - One `memfd` holding `buffer_count` frames of
-//!   `window.framebuffer_width_max` x `window.framebuffer_height_max` pixels,
-//!   mapped once. A frame touches only the first `width * height * 4` bytes
-//!   of its slot, so resident memory follows the window size although the
-//!   mapping is sized for the budget (63.3 MiB of mapping at `.standard`).
-//! - The CPU renderer's raster scratch and atlases (`cpu.Renderer.initInPlace`).
-//!
-//! `ShmRenderer` is a contract `Renderer` (`backend.verifyRenderer`): the host
-//! feeds atlas records through `uploadAtlas`, sizes it with `resize`, and
-//! draws with `draw`. A window larger than the budget renders at a reduced
-//! device scale the host chooses (`backend.Viewport.fitLogical`), and the
-//! compositor scales the buffer to the window's logical size. `wl_buffer`
-//! protocol objects are recreated when a slot is next drawn at a new size;
-//! they describe a region of the existing pool and own no Gooey memory.
-//!
-//! ## Pacing
-//!
-//! Each slot is busy from `attach` until the compositor's `release`. With two
-//! slots, the window's frame callback pacing leaves one free in steady state,
-//! and the host draws only once one is free (`hasFreeSlot`). If both are busy
-//! anyway the frame is skipped and logged once.
+//! `ResourceLimits`, and never resized. The renderer is a contract `Renderer`
+//! (`backend.verifyRenderer`). Pacing: each slot is busy from `attach` until
+//! the compositor's `release`; the host draws only once a slot is free, and a
+//! frame is skipped and logged once if both are busy anyway.
 
 const std = @import("std");
 const posix = std.posix;
@@ -101,7 +76,6 @@ pub const ShmRenderer = struct {
 
     /// Primitive counts of the last presented frame.
     last_stats: cpu.RenderStats = .{},
-    /// Frames skipped because the compositor still held every slot.
     frames_deferred: u64 = 0,
     /// A skipped frame was logged and no frame has been drawn since.
     skip_logged: bool = false,
@@ -112,9 +86,7 @@ pub const ShmRenderer = struct {
         backend.verifyRenderer(Self);
     }
 
-    /// Reserve the raster scratch, the atlases, and the shared-memory pool for
-    /// the budget's largest frame, and size the first frame. `surface.native`
-    /// points at a `NativeSurface`.
+    /// `surface.native` points at a `NativeSurface`.
     pub fn initInPlace(
         self: *Self,
         surface: *const backend.Surface,
@@ -183,8 +155,7 @@ pub const ShmRenderer = struct {
         assert(self.pool == null);
     }
 
-    /// Copy an atlas region into the CPU renderer's atlas. Drawing is
-    /// synchronous, so no earlier frame still reads it.
+    /// Drawing is synchronous, so no earlier frame still reads it.
     pub fn uploadAtlas(
         self: *Self,
         kind: backend.AtlasKind,
@@ -196,7 +167,6 @@ pub const ShmRenderer = struct {
         self.renderer.uploadAtlas(kind, dirty, pixels);
     }
 
-    /// Size the next frames at `size_px` device pixels, within the budget.
     /// Slot buffers follow when each slot is next drawn.
     pub fn resize(self: *Self, size_px: backend.SizePx) void {
         assert(self.pool != null);
@@ -224,14 +194,13 @@ pub const ShmRenderer = struct {
         assert(self.slots.len == buffer_count);
     }
 
-    /// A slot the compositor has released, so `draw` will present.
     pub fn hasFreeSlot(self: *const Self) bool {
         return self.freeSlotIndex() != null;
     }
 
-    /// Draw `frame` into a free slot and commit it. A zero-size viewport
-    /// presents nothing; uploads already landed in `uploadAtlas`. When the
-    /// compositor holds every slot the frame is skipped and logged once.
+    /// A zero-size viewport presents nothing; uploads already landed in
+    /// `uploadAtlas`. When the compositor holds every slot the frame is
+    /// skipped and logged once.
     pub fn draw(
         self: *Self,
         frame: *const PackedFrame,

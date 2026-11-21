@@ -1,25 +1,3 @@
-//! Accessibility Debug & Inspection Tools
-//!
-//! Provides utilities for debugging and testing accessibility implementations:
-//! - Tree dumping for visual inspection
-//! - Element validation
-//! - Statistics and metrics
-//! - Test helpers
-//!
-//! Usage:
-//! ```zig
-//! const debug = @import("accessibility/debug.zig");
-//!
-//! // Dump tree to debug output
-//! debug.dumpTree(&a11y_tree);
-//!
-//! // Get tree statistics
-//! const stats = debug.getStats(&a11y_tree);
-//!
-//! // Validate tree structure
-//! const issues = debug.validate(&a11y_tree);
-//! ```
-
 const std = @import("std");
 const builtin = @import("builtin");
 
@@ -34,21 +12,13 @@ pub const Role = types.Role;
 pub const State = types.State;
 pub const Fingerprint = fingerprint_mod.Fingerprint;
 
-/// Statistics about the accessibility tree
 pub const TreeStats = struct {
-    /// Total number of elements
     element_count: usize,
-    /// Number of dirty (changed) elements this frame
     dirty_count: usize,
-    /// Number of removed elements this frame
     removed_count: usize,
-    /// Number of pending announcements
     announcement_count: usize,
-    /// Maximum depth reached
     max_depth: usize,
-    /// Number of focusable elements
     focusable_count: usize,
-    /// Number of elements by role
     role_counts: [256]usize,
 
     pub fn init() TreeStats {
@@ -64,7 +34,6 @@ pub const TreeStats = struct {
     }
 };
 
-/// Validation issue found in the tree
 pub const ValidationIssue = struct {
     element_index: usize,
     issue_type: IssueType,
@@ -81,10 +50,8 @@ pub const ValidationIssue = struct {
     };
 };
 
-/// Maximum issues to track
 pub const MAX_ISSUES = 64;
 
-/// Validation results
 pub const ValidationResult = struct {
     issues: [MAX_ISSUES]ValidationIssue,
     issue_count: usize,
@@ -115,7 +82,6 @@ pub const ValidationResult = struct {
     }
 };
 
-/// Collect statistics about the accessibility tree
 pub fn getStats(tree: *const Tree) TreeStats {
     var stats = TreeStats.init();
 
@@ -124,19 +90,15 @@ pub fn getStats(tree: *const Tree) TreeStats {
     stats.removed_count = tree.removed_count;
     stats.announcement_count = tree.announcement_count;
 
-    // Analyze elements
     for (tree.elements[0..tree.element_count]) |elem| {
-        // Count by role
         const role_idx = @backingInt(elem.role);
         stats.role_counts[role_idx] += 1;
 
-        // Count focusable
         if (elem.isFocusable()) {
             stats.focusable_count += 1;
         }
     }
 
-    // Calculate max depth (simple approximation from parent chain)
     for (tree.elements[0..tree.element_count]) |elem| {
         var depth: usize = 0;
         var current_parent = elem.parent;
@@ -154,30 +116,24 @@ pub fn getStats(tree: *const Tree) TreeStats {
     return stats;
 }
 
-/// Validate the accessibility tree structure
 pub fn validate(tree: *const Tree) ValidationResult {
     var result = ValidationResult.init();
 
-    // Check each element
     for (tree.elements[0..tree.element_count], 0..) |elem, i| {
-        // Check for missing names on interactive elements
         if (elem.role.isFocusableByDefault() and elem.name == null) {
             result.addIssue(i, .missing_name, "Interactive element missing accessible name");
         }
 
-        // Check parent validity
         if (elem.parent) |p_idx| {
             if (p_idx >= tree.element_count) {
                 result.addIssue(i, .invalid_parent, "Element has invalid parent index");
             }
         }
 
-        // Check heading level
         if (elem.role == .heading and elem.heading_level == .none) {
             result.addIssue(i, .invalid_heading_level, "Heading element missing heading_level");
         }
 
-        // Check set info for relevant roles
         if (elem.role == .tab or elem.role == .option or elem.role == .treeitem) {
             if (elem.pos_in_set == null or elem.set_size == null) {
                 result.addIssue(i, .missing_set_info, "Collection item missing pos_in_set/set_size");
@@ -185,7 +141,6 @@ pub fn validate(tree: *const Tree) ValidationResult {
         }
     }
 
-    // Check for duplicate fingerprints
     for (tree.elements[0..tree.element_count], 0..) |elem, i| {
         for (tree.elements[i + 1 .. tree.element_count], i + 1..) |other, j| {
             if (elem.fingerprint.eql(other.fingerprint)) {
@@ -195,7 +150,6 @@ pub fn validate(tree: *const Tree) ValidationResult {
         }
     }
 
-    // Check depth
     if (tree.stack_depth > tree.parent_stack.len) {
         result.addIssue(0, .excessive_depth, "Tree depth exceeds maximum");
     }
@@ -203,13 +157,11 @@ pub fn validate(tree: *const Tree) ValidationResult {
     return result;
 }
 
-/// Dump the accessibility tree to debug output
 pub fn dumpTree(tree: *const Tree) void {
     const writer = std.io.getStdErr().writer();
     dumpTreeTo(tree, writer) catch {};
 }
 
-/// Dump the accessibility tree to a specific writer
 pub fn dumpTreeTo(tree: *const Tree, writer: anytype) !void {
     try writer.print("\n=== Accessibility Tree Dump ===\n", .{});
     try writer.print("Elements: {d}/{d}, Dirty: {d}, Removed: {d}\n", .{
@@ -246,9 +198,7 @@ pub fn dumpTreeTo(tree: *const Tree, writer: anytype) !void {
     try writer.print("\n=== End Tree Dump ===\n\n", .{});
 }
 
-/// Dump a single element
 fn dumpElementTo(elem: Element, index: usize, tree: *const Tree, writer: anytype) !void {
-    // Calculate indent based on depth
     var depth: usize = 0;
     var current_parent = elem.parent;
     while (current_parent) |p_idx| {
@@ -258,20 +208,16 @@ fn dumpElementTo(elem: Element, index: usize, tree: *const Tree, writer: anytype
         current_parent = tree.elements[p_idx].parent;
     }
 
-    // Indent
     for (0..depth) |_| {
         try writer.print("  ", .{});
     }
 
-    // Role
     try writer.print("[{d}] {s}", .{ index, @tagName(elem.role) });
 
-    // Name
     if (elem.name) |name| {
         try writer.print(": \"{s}\"", .{name});
     }
 
-    // State flags
     var state_parts: [16][]const u8 = undefined;
     var state_count: usize = 0;
 
@@ -313,12 +259,10 @@ fn dumpElementTo(elem: Element, index: usize, tree: *const Tree, writer: anytype
         try writer.print("]", .{});
     }
 
-    // Value
     if (elem.value) |value| {
         try writer.print(" value=\"{s}\"", .{value});
     }
 
-    // Range values
     if (elem.value_now) |now| {
         try writer.print(" now={d:.1}", .{now});
         if (elem.value_min) |min| {
@@ -329,30 +273,25 @@ fn dumpElementTo(elem: Element, index: usize, tree: *const Tree, writer: anytype
         }
     }
 
-    // Set position
     if (elem.pos_in_set) |pos| {
         if (elem.set_size) |size| {
             try writer.print(" ({d}/{d})", .{ pos, size });
         }
     }
 
-    // Heading level
     if (elem.heading_level > 0) {
         try writer.print(" h{d}", .{elem.heading_level});
     }
 
-    // Live region
     if (elem.live != .off) {
         try writer.print(" live={s}", .{@tagName(elem.live)});
     }
 
-    // Fingerprint (abbreviated)
     try writer.print(" fp=0x{x:0>8}", .{@as(u32, @truncate(elem.fingerprint.toU64()))});
 
     try writer.print("\n", .{});
 }
 
-/// Format an element as a single-line summary string
 pub fn formatElement(elem: *const Element, buf: []u8) []const u8 {
     var writer = std.Io.Writer.fixed(buf);
 
@@ -369,7 +308,6 @@ pub fn formatElement(elem: *const Element, buf: []u8) []const u8 {
     return writer.buffered();
 }
 
-/// Get a human-readable state description
 pub fn formatState(state: State, buf: []u8) []const u8 {
     var writer = std.Io.Writer.fixed(buf);
 
@@ -393,7 +331,6 @@ pub fn formatState(state: State, buf: []u8) []const u8 {
     return writer.buffered();
 }
 
-/// Count elements with a specific role
 pub fn countByRole(tree: *const Tree, role: Role) usize {
     var count: usize = 0;
     for (tree.elements[0..tree.element_count]) |elem| {
@@ -404,7 +341,7 @@ pub fn countByRole(tree: *const Tree, role: Role) usize {
     return count;
 }
 
-/// Find element by name (first match)
+/// First match.
 pub fn findByName(tree: *const Tree, name: []const u8) ?*const Element {
     for (tree.elements[0..tree.element_count]) |*elem| {
         if (elem.name) |elem_name| {
@@ -416,7 +353,6 @@ pub fn findByName(tree: *const Tree, name: []const u8) ?*const Element {
     return null;
 }
 
-/// Find element by fingerprint
 pub fn findByFingerprint(tree: *const Tree, fp: Fingerprint) ?*const Element {
     for (tree.elements[0..tree.element_count]) |*elem| {
         if (elem.fingerprint.eql(fp)) {
@@ -426,30 +362,21 @@ pub fn findByFingerprint(tree: *const Tree, fp: Fingerprint) ?*const Element {
     return null;
 }
 
-/// Assert tree invariants (for testing)
 pub fn assertInvariants(tree: *const Tree) void {
-    // Element count within bounds
     std.debug.assert(tree.element_count <= tree.elements.len);
 
-    // Stack depth within bounds
     std.debug.assert(tree.stack_depth <= tree.parent_stack.len);
 
-    // All parent references valid
     for (tree.elements[0..tree.element_count]) |elem| {
         if (elem.parent) |p_idx| {
             std.debug.assert(p_idx < tree.element_count);
         }
     }
 
-    // Dirty indices valid
     for (tree.dirty_indices[0..tree.dirty_count]) |idx| {
         std.debug.assert(idx < tree.element_count);
     }
 }
-
-// =============================================================================
-// Tests
-// =============================================================================
 
 /// A tree at the tests' capacity, on the heap like a window's.
 fn createTestTree() !*Tree {
@@ -491,7 +418,6 @@ test "validation detects missing name" {
     defer destroyTestTree(tree);
     tree.beginFrame();
 
-    // Interactive element without name
     _ = tree.pushElement(.{ .role = .button });
     tree.popElement();
 
@@ -620,6 +546,5 @@ test "assert invariants" {
 
     tree.endFrame();
 
-    // Should not panic
     assertInvariants(tree);
 }

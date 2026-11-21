@@ -1,25 +1,21 @@
 //! Runs a core app full-screen on an EVE panel: the EVE backend's app path,
-//! modelled on the fbdev host (`../fbdev/core_host.zig`).
-//!
-//! One thread. The chip draws, so the render side runs on the main thread
-//! right after the main side: the presenter encodes the packed frame into a
-//! display list and swaps it in. `EveRenderer.draw` first waits for the
-//! previous list to reach the screen, so continuous animation runs at the
-//! panel's refresh with no timer; nothing else paces frames.
+//! modelled on the fbdev host (`../fbdev/core_host.zig`). One thread: the
+//! chip draws, so the render side runs on the main thread right after the
+//! main side; `EveRenderer.draw` first waits for the previous list to reach
+//! the screen, so continuous animation runs at the panel's refresh with no
+//! timer.
 //!
 //! Each loop turn reads the touch engine once (when the queue has room for a
 //! touch's events), ticks when work is pending, and otherwise waits in
-//! `poll` on a wake eventfd for at most `touch_poll_ns`, the render deadline,
-//! or the image worker's wake.
+//! `poll` on a wake eventfd for at most `touch_poll_ns`, the render
+//! deadline, or the image worker's wake.
 //!
 //! There is no keyboard, input method, or file dialog (a request completes
 //! as `error.FileDialogUnsupported`); the clipboard is in-process
 //! (`../fbdev/clipboard.zig`, which has no fbdev dependency).
 //!
-//! Resource sketch: one eventfd and the window's renderer (reserved by the
-//! window at init); no thread. Per turn: one touch read (an 8-byte SPI
-//! read), at most one tick, and at most one display list. Every allocation
-//! happens before `finishInit`; the core's guard panics on any later one.
+//! Every allocation happens before `finishInit`; the core's guard panics on
+//! any later one.
 
 const std = @import("std");
 const linux = std.os.linux;
@@ -153,7 +149,6 @@ pub const Host = struct {
         assert(self.window.on_input != null);
     }
 
-    /// Unbind what `bindWindow` bound, after the loop has stopped.
     pub fn deinit(self: *Host) void {
         assert(self.core.phase == .idle);
         assert(self.core.atlas_consumer_key == @intFromPtr(self.window));
@@ -175,9 +170,8 @@ pub const Host = struct {
         signal(self.wake_fd);
     }
 
-    /// The loop. Each turn reads touch once, runs at most one tick (whose
-    /// draw waits at most one refresh for the previous swap), then waits,
-    /// so every turn is bounded; it ends when the window closes or the app
+    /// Each turn reads touch once, runs at most one tick, then waits, so
+    /// every turn is bounded; it ends when the window closes or the app
     /// quits.
     fn runLoop(self: *Host, comptime App: type, app: *App) void {
         assert(&app.window == self.core);
@@ -197,8 +191,6 @@ pub const Host = struct {
         assert(self.core.phase == .idle);
     }
 
-    /// Work is pending: queued events, a scheduled tick, a render request,
-    /// or a passed render deadline.
     fn tickDue(self: *const Host, now_ns: u64) bool {
         if (self.core.render_requested) return true;
         if (self.core.renderDeadlineNs()) |deadline| {
@@ -207,8 +199,6 @@ pub const Host = struct {
         return self.core.queue.count > 0 or self.tick_scheduled.load(.acquire);
     }
 
-    /// Wait for the wake fd, the next touch read, or the render deadline.
-    /// Returns false when polling failed.
     fn wait(self: *Host) bool {
         assert(self.wake_fd >= 0);
         var pollfds = [_]posix.pollfd{
@@ -224,7 +214,6 @@ pub const Host = struct {
         return true;
     }
 
-    /// The time to the next touch read, or to the render deadline if sooner.
     fn timeoutMs(self: *const Host) i32 {
         const now_ns = chip_mod.nowNanoseconds();
         var wake_ns = now_ns + platform_mod.touch_poll_ns;
@@ -247,7 +236,6 @@ fn onInput(window: *EveWindow, event: input.InputEvent) bool {
     return false;
 }
 
-/// The core's presenter, inside the tick's draw phase on this thread.
 fn draw(
     context: *anyopaque,
     packed_frame: *const core_window.PackedFrame,

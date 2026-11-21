@@ -1,8 +1,5 @@
-//! Win32 implementation of the Vulkan presentation surface (`vk_surface`).
-//!
-//! `VkWin32SurfaceCreateInfoKHR` and `vkCreateWin32SurfaceKHR` are declared
-//! here rather than in the shared `linux/vulkan.zig`, so the Windows backend
-//! does not edit the shared bindings (`docs/windows-port.md`).
+//! Win32 implementation of the Vulkan presentation surface. The Win32
+//! declarations here keep the shared `linux/vulkan.zig` bindings untouched.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -27,9 +24,8 @@ extern fn vkCreateWin32SurfaceKHR(
     pSurface: *vk.Surface,
 ) callconv(.c) vk.Result;
 
-/// Borrowed Win32 handles a `VkSurfaceKHR` is created from. The platform owns
-/// the instance handle and the window owns the `HWND`; both outlive the
-/// renderer that holds this.
+/// Borrowed Win32 handles. The platform owns the instance, the window owns
+/// the `HWND`; both outlive the renderer that holds this.
 pub const Win32Surface = struct {
     hinstance: win32.HINSTANCE,
     hwnd: win32.HWND,
@@ -63,8 +59,8 @@ pub const Win32Surface = struct {
         return surface;
     }
 
-    /// Win32 presentation has no connection to flush: the driver owns the
-    /// swapchain images outright, so destruction needs no synchronization.
+    /// The driver owns the swapchain images outright, so destruction needs no
+    /// synchronization.
     pub fn swapchainDestroyBegin(self: *const Win32Surface) void {
         assert(@intFromPtr(self.hwnd) != 0);
     }
@@ -75,7 +71,6 @@ pub const Win32Surface = struct {
 };
 
 comptime {
-    // Two borrowed pointers: small enough to pass by value (CLAUDE.md §13).
     assert(@sizeOf(Win32Surface) == 2 * @sizeOf(usize));
     // Measured against `vulkan_win32.h` on 64-bit targets.
     assert(@sizeOf(Win32SurfaceCreateInfoKHR) == 40);

@@ -1,32 +1,22 @@
 //! Hand-written UI Automation bindings for the Windows accessibility bridge
 //! (`accessibility/windows_bridge.zig`).
 //!
-//! Only the provider side of `uiautomationcore.dll`, the `oleaut32.dll` string
-//! and array helpers its out-parameters use, and the slim reader-writer lock
-//! that guards the bridge's snapshot. Declared by hand for the same reasons as
-//! the Shell, WIC, and DirectWrite bindings: Gooey takes no package
-//! dependencies (CLAUDE.md §12) and the tree type-checks from any host.
-//!
-//! Gooey implements these interfaces rather than calling them, so every vtable
-//! slot is typed: UI Automation calls a method by its slot index alone, in the
-//! order of `uiautomationcore.h`. The comptime block at the end pins each slot
-//! and each vtable size, and the IIDs match the header's `DEFINE_GUID` lines.
+//! Gooey implements these COM interfaces rather than calling them, so every
+//! vtable slot is typed: UI Automation calls a method by its slot index alone,
+//! in the order of `uiautomationcore.h`. The comptime block at the end pins
+//! each slot and each vtable size, and the IIDs match the header's
+//! `DEFINE_GUID` lines.
 //!
 //! Out-parameters are nullable pointers because a COM caller may pass null;
-//! implementations return `E_POINTER` rather than writing through it.
-//!
-//! Naming follows the SDK so each declaration can be checked against
-//! Microsoft's documentation by name.
+//! implementations return `E_POINTER` rather than writing through it. Names
+//! follow the SDK so each declaration can be checked against Microsoft's
+//! documentation by name.
 
 const std = @import("std");
 const win32 = @import("win32.zig");
 const shell = @import("shell.zig");
 
 const assert = std.debug.assert;
-
-// =============================================================================
-// Scalar types and results
-// =============================================================================
 
 pub const GUID = shell.GUID;
 pub const HRESULT = shell.HRESULT;
@@ -50,7 +40,6 @@ pub const VARIANT_BOOL = i16;
 pub const VARIANT_TRUE: VARIANT_BOOL = -1;
 pub const VARIANT_FALSE: VARIANT_BOOL = 0;
 
-// `VARTYPE` tags.
 pub const VT_EMPTY: u16 = 0;
 pub const VT_I4: u16 = 3;
 pub const VT_R8: u16 = 5;
@@ -94,10 +83,6 @@ pub const SRWLOCK = extern struct {
     ptr: ?*anyopaque = null,
 };
 
-// =============================================================================
-// Identifiers (`uiautomationclient.h`, `uiautomationcore.h`)
-// =============================================================================
-
 /// `WM_GETOBJECT`'s object id for a UI Automation root request. The message
 /// carries it in the low 32 bits of `lParam`.
 pub const UiaRootObjectId: i32 = -25;
@@ -105,35 +90,28 @@ pub const UiaRootObjectId: i32 = -25;
 /// window's id, making the rest unique only within this window.
 pub const UiaAppendRuntimeId: i32 = 3;
 
-// `ProviderOptions`.
 pub const ProviderOptions_ServerSideProvider: i32 = 0x2;
 pub const ProviderOptions_UseComThreading: i32 = 0x20;
 
-// `NavigateDirection`.
 pub const NavigateDirection_Parent: i32 = 0;
 pub const NavigateDirection_NextSibling: i32 = 1;
 pub const NavigateDirection_PreviousSibling: i32 = 2;
 pub const NavigateDirection_FirstChild: i32 = 3;
 pub const NavigateDirection_LastChild: i32 = 4;
 
-// `StructureChangeType`.
 pub const StructureChangeType_ChildrenInvalidated: i32 = 2;
 
-// `NotificationKind` and `NotificationProcessing`.
 pub const NotificationKind_Other: i32 = 4;
 pub const NotificationProcessing_ImportantAll: i32 = 0;
 pub const NotificationProcessing_All: i32 = 2;
 
-// `ToggleState`.
 pub const ToggleState_Off: i32 = 0;
 pub const ToggleState_On: i32 = 1;
 
-// `ExpandCollapseState`.
 pub const ExpandCollapseState_Collapsed: i32 = 0;
 pub const ExpandCollapseState_Expanded: i32 = 1;
 pub const ExpandCollapseState_LeafNode: i32 = 3;
 
-// `LiveSetting`.
 pub const LiveSetting_Off: i32 = 0;
 pub const LiveSetting_Polite: i32 = 1;
 pub const LiveSetting_Assertive: i32 = 2;
@@ -142,17 +120,14 @@ pub const LiveSetting_Assertive: i32 = 2;
 pub const HeadingLevel_None: i32 = 80050;
 pub const HeadingLevel1: i32 = 80051;
 
-// Pattern ids.
 pub const UIA_ValuePatternId: i32 = 10002;
 pub const UIA_RangeValuePatternId: i32 = 10003;
 pub const UIA_ExpandCollapsePatternId: i32 = 10005;
 pub const UIA_SelectionItemPatternId: i32 = 10010;
 pub const UIA_TogglePatternId: i32 = 10015;
 
-// Event ids.
 pub const UIA_AutomationFocusChangedEventId: i32 = 20005;
 
-// Property ids.
 pub const UIA_ControlTypePropertyId: i32 = 30003;
 pub const UIA_NamePropertyId: i32 = 30005;
 pub const UIA_HasKeyboardFocusPropertyId: i32 = 30008;
@@ -177,7 +152,6 @@ pub const UIA_SizeOfSetPropertyId: i32 = 30153;
 pub const UIA_HeadingLevelPropertyId: i32 = 30173;
 pub const UIA_IsDialogPropertyId: i32 = 30174;
 
-// Control type ids.
 pub const UIA_ButtonControlTypeId: i32 = 50000;
 pub const UIA_CheckBoxControlTypeId: i32 = 50002;
 pub const UIA_ComboBoxControlTypeId: i32 = 50003;
@@ -272,10 +246,6 @@ pub const IID_ISelectionItemProvider: GUID = .{
 pub fn guidEql(a: *const GUID, b: *const GUID) bool {
     return std.mem.eql(u8, std.mem.asBytes(a), std.mem.asBytes(b));
 }
-
-// =============================================================================
-// Interfaces
-// =============================================================================
 
 fn QueryInterfaceFn(comptime Interface: type) type {
     return *const fn (*Interface, ?*const GUID, ?*?*anyopaque) callconv(.winapi) HRESULT;
@@ -423,10 +393,6 @@ pub const ISelectionItemProvider = extern struct {
     };
 };
 
-// =============================================================================
-// Window host
-// =============================================================================
-
 /// The window half of the bridge, embedded in each platform window. The bridge
 /// publishes its root provider here; the window procedure answers
 /// `WM_GETOBJECT` with it and records that a client asked, which the bridge's
@@ -438,10 +404,6 @@ pub const Host = struct {
     /// snapshot current for the window's lifetime.
     client_requested: bool = false,
 };
-
-// =============================================================================
-// Functions
-// =============================================================================
 
 pub extern "uiautomationcore" fn UiaReturnRawElementProvider(
     hwnd: win32.HWND,
@@ -513,10 +475,6 @@ pub extern "oleaut32" fn SafeArrayDestroy(psa: *SAFEARRAY) callconv(.winapi) HRE
 pub extern "kernel32" fn AcquireSRWLockExclusive(SRWLock: *SRWLOCK) callconv(.winapi) void;
 pub extern "kernel32" fn ReleaseSRWLockExclusive(SRWLock: *SRWLOCK) callconv(.winapi) void;
 
-// =============================================================================
-// Layout pins
-// =============================================================================
-
 fn assertSlot(comptime VTable: type, comptime name: []const u8, comptime slot: u32) void {
     assert(@offsetOf(VTable, name) == slot * @sizeOf(usize));
 }
@@ -526,7 +484,7 @@ fn assertSlotCount(comptime VTable: type, comptime count: u32) void {
 }
 
 comptime {
-    // `x86_64-windows` only; see `docs/windows-port.md`.
+    // x86_64-windows only.
     assert(@sizeOf(usize) == 8);
 
     assert(@sizeOf(VARIANT) == 24);

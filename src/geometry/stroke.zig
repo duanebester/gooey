@@ -1,21 +1,3 @@
-//! Stroke Expansion — Convert stroked paths to filled polygons
-//!
-//! Converts a path's stroke into a thick polygon that can be triangulated
-//! and rendered as a fill. Supports line caps, line joins, and miter limits.
-//!
-//! ## Usage
-//! ```zig
-//! const stroke = @import("stroke.zig");
-//! const expanded = try stroke.expandStroke(
-//!     points,
-//!     2.0,      // stroke width
-//!     .round,   // line cap
-//!     .miter,   // line join
-//!     4.0,      // miter limit
-//! );
-//! // expanded.points can be triangulated as a fill
-//! ```
-
 const std = @import("std");
 const builtin = @import("builtin");
 const limits = @import("../core/limits.zig");
@@ -25,73 +7,42 @@ const fixed_array_mod = @import("../core/fixed_array.zig");
 const Vec2 = vec2_mod.Vec2;
 const FixedArray = fixed_array_mod.FixedArray;
 
-// =============================================================================
-// Constants — re-exported from limits.zig (single source of truth)
-// =============================================================================
-
 pub const MAX_STROKE_INPUT = limits.MAX_STROKE_INPUT;
 pub const MAX_STROKE_OUTPUT = limits.MAX_STROKE_OUTPUT;
 pub const ROUND_SEGMENTS = limits.ROUND_SEGMENTS;
 
-// =============================================================================
-// Types
-// =============================================================================
-
-/// Line cap style — how stroke endpoints are rendered
 pub const LineCap = enum(u8) {
-    /// Square end exactly at path endpoint
     butt,
-    /// Semicircle at path endpoint
     round,
-    /// Square end extended by half stroke width
     square,
 };
 
-/// Line join style — how corners between segments are rendered
 pub const LineJoin = enum(u8) {
-    /// Sharp corner (limited by miter limit)
     miter,
-    /// Circular arc at corner
     round,
-    /// Flat cut at corner
     bevel,
 };
 
-/// Stroke style configuration
 pub const StrokeStyle = struct {
-    /// Stroke thickness in pixels
     width: f32 = 1.0,
-    /// How line endpoints are rendered
     cap: LineCap = .butt,
-    /// How corners are rendered
     join: LineJoin = .miter,
-    /// Maximum miter length ratio (miter length / stroke width)
-    /// When exceeded, falls back to bevel join
     miter_limit: f32 = 4.0,
 };
 
-/// Result of stroke expansion
 pub const ExpandedStroke = struct {
-    /// Points forming the stroke outline polygon (CCW winding)
+    /// Outline polygon of the stroke, CCW winding.
     points: FixedArray(Vec2, MAX_STROKE_OUTPUT),
-    /// Whether the stroke forms a closed loop
     closed: bool,
 };
 
 pub const MAX_STROKE_TRIANGLES = limits.MAX_STROKE_TRIANGLES;
 pub const MAX_STROKE_INDICES = limits.MAX_STROKE_INDICES;
 
-/// Result of direct stroke triangulation (bypasses ear-clipper)
 pub const StrokeTriangles = struct {
-    /// Vertex positions
     vertices: FixedArray(Vec2, MAX_STROKE_OUTPUT),
-    /// Triangle indices (3 per triangle)
     indices: FixedArray(u32, MAX_STROKE_INDICES),
 };
-
-// =============================================================================
-// Errors
-// =============================================================================
 
 pub const StrokeError = error{
     TooManyInputPoints,
@@ -99,23 +50,9 @@ pub const StrokeError = error{
     DegeneratePath,
 };
 
-// =============================================================================
-// Public API
-// =============================================================================
-
-/// Expand a stroke into a filled polygon outline
-///
-/// Takes a polyline (sequence of connected points) and expands it into
-/// a thick polygon that represents the stroked path. The result can be
-/// triangulated and rendered as a fill.
-///
-/// The output polygon is assembled as:
-/// - Start cap (for open paths)
-/// - Left side (all left offset points, forward)
-/// - End cap (for open paths)
-/// - Right side (all right offset points, backward)
-///
-/// This creates a single continuous polygon suitable for triangulation.
+/// Expands a polyline into a thick outline polygon: start cap, left offsets
+/// forward, end cap, right offsets reversed — one continuous polygon for
+/// triangulation.
 pub fn expandStroke(
     points: []const Vec2,
     width: f32,
@@ -124,7 +61,6 @@ pub fn expandStroke(
     miter_limit: f32,
     closed: bool,
 ) StrokeError!ExpandedStroke {
-    // API boundary assertions
     std.debug.assert(width > 0);
     std.debug.assert(miter_limit > 0);
 
@@ -139,16 +75,13 @@ pub fn expandStroke(
         .closed = closed,
     };
 
-    // Special case: single line segment (2 points)
     if (n == 2) {
         return expandSingleSegment(points[0], points[1], half_width, cap, closed);
     }
 
-    // Build left and right offset arrays
     var left_offsets: FixedArray(Vec2, MAX_STROKE_OUTPUT / 2) = .{};
     var right_offsets: FixedArray(Vec2, MAX_STROKE_OUTPUT / 2) = .{};
 
-    // Generate offset points for each input point
     try generateOffsetPoints(
         points,
         half_width,
@@ -159,27 +92,22 @@ pub fn expandStroke(
         &right_offsets,
     );
 
-    // Assemble the final polygon
     if (!closed) {
-        // Open path: start cap → left side → end cap → right side (reversed)
         try addStartCap(&result.points, points[0], points[1], half_width, cap);
     }
 
-    // Add left side points
     for (left_offsets.constSlice()) |pt| {
         try appendPoint(&result.points, pt);
     }
 
     if (!closed) {
-        // End cap for open paths
         try addEndCap(&result.points, points[n - 2], points[n - 1], half_width, cap);
     }
-    // For closed paths, no end cap needed - the polygon closes naturally
-    // Note: This may leave a small visual gap at the closure point due to
-    // how the ear-clipper handles the resulting concave polygon. A future
-    // improvement would be to generate triangles directly as a quad-strip.
+    // Closed paths get no end cap; the polygon closes naturally, but this can
+    // leave a small visual gap at the closure (the ear-clipper handles the
+    // resulting concave ring). Generating triangles directly as a quad-strip
+    // would fix it.
 
-    // Add right side points in reverse order
     var i: usize = right_offsets.len;
     while (i > 0) {
         i -= 1;
@@ -189,8 +117,8 @@ pub fn expandStroke(
     return result;
 }
 
-/// Expand stroke directly to triangles (bypasses ear-clipper)
-/// This is more reliable for closed paths which create concave ring polygons.
+/// Expands stroke directly to triangles, bypassing the ear-clipper: more
+/// reliable for closed paths, which create concave ring polygons.
 pub fn expandStrokeToTriangles(
     points: []const Vec2,
     width: f32,
@@ -213,12 +141,10 @@ pub fn expandStrokeToTriangles(
         .indices = .{},
     };
 
-    // Special case: single line segment (2 points)
     if (n == 2) {
         return expandSingleSegmentToTriangles(points[0], points[1], half_width, cap);
     }
 
-    // Build left and right offset arrays
     var left_offsets: FixedArray(Vec2, MAX_STROKE_OUTPUT / 2) = .{};
     var right_offsets: FixedArray(Vec2, MAX_STROKE_OUTPUT / 2) = .{};
 
@@ -232,7 +158,6 @@ pub fn expandStrokeToTriangles(
         &right_offsets,
     );
 
-    // Add all vertices (left then right)
     const left_start: u32 = 0;
     for (left_offsets.constSlice()) |pt| {
         if (result.vertices.len >= MAX_STROKE_OUTPUT) return error.TooManyOutputPoints;
@@ -246,7 +171,6 @@ pub fn expandStrokeToTriangles(
 
     const num_offsets: u32 = @intCast(left_offsets.len);
 
-    // Generate triangles for each segment as a quad
     const seg_count: u32 = if (closed) num_offsets else num_offsets - 1;
     for (0..seg_count) |i_usize| {
         const i: u32 = @intCast(i_usize);
@@ -257,7 +181,6 @@ pub fn expandStrokeToTriangles(
         const r0 = right_start + i;
         const r1 = right_start + next_i;
 
-        // Two triangles per quad: (l0, l1, r1) and (l0, r1, r0)
         if (result.indices.len + 6 > MAX_STROKE_INDICES) return error.TooManyOutputPoints;
         result.indices.appendAssumeCapacity(l0);
         result.indices.appendAssumeCapacity(l1);
@@ -268,7 +191,6 @@ pub fn expandStrokeToTriangles(
         result.indices.appendAssumeCapacity(r0);
     }
 
-    // Add caps for open paths
     if (!closed) {
         try addCapTriangles(&result, points[0], points[1], half_width, cap, true, left_start, right_start);
         try addCapTriangles(&result, points[n - 2], points[n - 1], half_width, cap, false, left_start + num_offsets - 1, right_start + num_offsets - 1);
@@ -294,7 +216,6 @@ fn expandSingleSegmentToTriangles(
     const normal = dir.perp();
     const offset = normal.scale(half_width);
 
-    // Four corners of the basic rectangle
     const left0 = p0.add(offset);
     const left1 = p1.add(offset);
     const right0 = p0.sub(offset);
@@ -302,7 +223,6 @@ fn expandSingleSegmentToTriangles(
 
     switch (cap) {
         .butt => {
-            // Simple rectangle: 4 vertices, 2 triangles
             result.vertices.appendAssumeCapacity(left0);
             result.vertices.appendAssumeCapacity(left1);
             result.vertices.appendAssumeCapacity(right1);
@@ -316,7 +236,6 @@ fn expandSingleSegmentToTriangles(
             result.indices.appendAssumeCapacity(3);
         },
         .square => {
-            // Extended rectangle
             const back = dir.scale(-half_width);
             const fwd = dir.scale(half_width);
 
@@ -333,16 +252,13 @@ fn expandSingleSegmentToTriangles(
             result.indices.appendAssumeCapacity(3);
         },
         .round => {
-            // For round caps, create a fan at each end
             const base_idx: u32 = @intCast(result.vertices.len);
 
-            // Add the four corners
             result.vertices.appendAssumeCapacity(left0);
             result.vertices.appendAssumeCapacity(left1);
             result.vertices.appendAssumeCapacity(right1);
             result.vertices.appendAssumeCapacity(right0);
 
-            // Main rectangle
             result.indices.appendAssumeCapacity(base_idx + 0);
             result.indices.appendAssumeCapacity(base_idx + 1);
             result.indices.appendAssumeCapacity(base_idx + 2);
@@ -350,9 +266,7 @@ fn expandSingleSegmentToTriangles(
             result.indices.appendAssumeCapacity(base_idx + 2);
             result.indices.appendAssumeCapacity(base_idx + 3);
 
-            // Start cap (semicircle at p0)
             try addSemicircleTriangles(&result, p0, offset, dir.negate());
-            // End cap (semicircle at p1)
             try addSemicircleTriangles(&result, p1, offset.negate(), dir);
         },
     }
@@ -371,11 +285,8 @@ fn addCapTriangles(
     right_idx: u32,
 ) StrokeError!void {
     switch (cap) {
-        .butt => {
-            // No additional geometry needed
-        },
+        .butt => {},
         .square => {
-            // Add extended rectangle at the cap
             const dir = p1.sub(p0).normalize();
             const normal = dir.perp();
             const offset = normal.scale(half_width);
@@ -392,12 +303,12 @@ fn addCapTriangles(
 
             if (result.indices.len + 6 > MAX_STROKE_INDICES) return error.TooManyOutputPoints;
             if (is_start) {
-                result.indices.appendAssumeCapacity(base_idx); // left_ext
-                result.indices.appendAssumeCapacity(left_idx); // left corner
-                result.indices.appendAssumeCapacity(right_idx); // right corner
-                result.indices.appendAssumeCapacity(base_idx); // left_ext
-                result.indices.appendAssumeCapacity(right_idx); // right corner
-                result.indices.appendAssumeCapacity(base_idx + 1); // right_ext
+                result.indices.appendAssumeCapacity(base_idx);
+                result.indices.appendAssumeCapacity(left_idx);
+                result.indices.appendAssumeCapacity(right_idx);
+                result.indices.appendAssumeCapacity(base_idx);
+                result.indices.appendAssumeCapacity(right_idx);
+                result.indices.appendAssumeCapacity(base_idx + 1);
             } else {
                 result.indices.appendAssumeCapacity(left_idx);
                 result.indices.appendAssumeCapacity(base_idx);
@@ -420,11 +331,6 @@ fn addCapTriangles(
     }
 }
 
-/// Add semicircle triangle fan using incremental rotation.
-///
-/// One sin/cos pair for the step angle, then 2 multiplies + 2 adds per
-/// arc vertex.  The previous implementation called cos+sin per segment
-/// and did a three-term interpolation (6 muls + 4 adds per vertex).
 fn addSemicircleTriangles(
     result: *StrokeTriangles,
     center: Vec2,
@@ -441,17 +347,13 @@ fn addSemicircleTriangles(
 
     const segments = ROUND_SEGMENTS;
 
-    // Determine sweep direction from the cross product of start_offset and
-    // direction.  Positive cross → CCW sweep, negative → CW sweep.
     const cross = start_offset.x * direction.y - start_offset.y * direction.x;
     const sweep_sign: f32 = if (cross >= 0) 1.0 else -1.0;
     const step_angle = sweep_sign * std.math.pi / @as(f32, @floatFromInt(segments));
 
-    // Pre-compute rotation matrix — one sin/cos pair total.
     const cos_step = @cos(step_angle);
     const sin_step = @sin(step_angle);
 
-    // Emit arc vertices via incremental rotation (2 muls + 2 adds per step).
     var offset = start_offset;
     for (1..segments + 1) |_| {
         const rx = offset.x * cos_step - offset.y * sin_step;
@@ -471,10 +373,6 @@ fn addSemicircleTriangles(
     }
 }
 
-// =============================================================================
-// Internal: Single segment expansion
-// =============================================================================
-
 fn expandSingleSegment(
     p0: Vec2,
     p1: Vec2,
@@ -493,7 +391,6 @@ fn expandSingleSegment(
     const normal = dir.perp();
     const offset = normal.scale(half_width);
 
-    // Four corners of the basic rectangle
     const left0 = p0.add(offset);
     const left1 = p1.add(offset);
     const right0 = p0.sub(offset);
@@ -501,14 +398,12 @@ fn expandSingleSegment(
 
     switch (cap) {
         .butt => {
-            // Simple rectangle: left0 → left1 → right1 → right0
             try appendPoint(&result.points, left0);
             try appendPoint(&result.points, left1);
             try appendPoint(&result.points, right1);
             try appendPoint(&result.points, right0);
         },
         .square => {
-            // Extended rectangle
             const back = dir.scale(-half_width);
             const fwd = dir.scale(half_width);
 
@@ -518,23 +413,15 @@ fn expandSingleSegment(
             try appendPoint(&result.points, right0.add(back));
         },
         .round => {
-            // Start with back semicircle
             try addSemicircle(&result.points, p0, offset, dir.negate(), ROUND_SEGMENTS);
-            // Top edge
             try appendPoint(&result.points, left1);
-            // Front semicircle
             try addSemicircle(&result.points, p1, offset.negate(), dir, ROUND_SEGMENTS);
-            // Bottom edge (back to start)
             try appendPoint(&result.points, right0);
         },
     }
 
     return result;
 }
-
-// =============================================================================
-// Internal: Generate offset points
-// =============================================================================
 
 fn generateOffsetPoints(
     points: []const Vec2,
@@ -550,17 +437,15 @@ fn generateOffsetPoints(
 
     const n = points.len;
 
-    // For each vertex, compute the offset points
     var i: usize = 0;
     while (i < n) : (i += 1) {
         const curr = points[i];
 
-        // Get adjacent segment directions
         const has_prev = (i > 0) or closed;
         const has_next = (i < n - 1) or closed;
 
         if (!has_prev and !has_next) {
-            // Isolated point - shouldn't happen with n >= 2
+            // Unreachable with n >= 2; kept defensive.
             continue;
         }
 
@@ -579,7 +464,6 @@ fn generateOffsetPoints(
             next_normal = segmentNormal(curr, next);
         }
 
-        // First point of open path
         if (!has_prev) {
             const offset = next_normal.scale(half_width);
             try appendPointToHalf(left_offsets, curr.add(offset));
@@ -587,7 +471,6 @@ fn generateOffsetPoints(
             continue;
         }
 
-        // Last point of open path
         if (!has_next) {
             const offset = prev_normal.scale(half_width);
             try appendPointToHalf(left_offsets, curr.add(offset));
@@ -595,7 +478,6 @@ fn generateOffsetPoints(
             continue;
         }
 
-        // Interior point or closed path vertex - need to handle join
         try addJoinPoints(
             left_offsets,
             right_offsets,
@@ -608,10 +490,6 @@ fn generateOffsetPoints(
         );
     }
 }
-
-// =============================================================================
-// Internal: Join handling
-// =============================================================================
 
 fn addJoinPoints(
     left_offsets: *FixedArray(Vec2, MAX_STROKE_OUTPUT / 2),
@@ -626,11 +504,9 @@ fn addJoinPoints(
     std.debug.assert(half_width > 0);
     std.debug.assert(miter_limit > 0);
 
-    // Calculate the turn direction
     const cross = prev_normal.cross(next_normal);
     const dot = prev_normal.dot(next_normal);
 
-    // Near-collinear segments - just use average normal
     if (@abs(cross) < 1e-6 and dot > 0.9) {
         const avg = prev_normal.add(next_normal).normalize();
         try appendPointToHalf(left_offsets, point.add(avg.scale(half_width)));
@@ -638,10 +514,8 @@ fn addJoinPoints(
         return;
     }
 
-    // Determine which side is outer (needs the join)
     const is_left_turn = cross > 0;
 
-    // For the inner side, compute the intersection point
     const avg_normal = prev_normal.add(next_normal).normalize();
     const inner_dot = prev_normal.dot(avg_normal);
     const inner_scale = if (@abs(inner_dot) > 0.1)
@@ -653,13 +527,10 @@ fn addJoinPoints(
     const next_offset = next_normal.scale(half_width);
 
     if (is_left_turn) {
-        // Left turn: outer join on left, inner point on right
         try addOuterJoin(left_offsets, point, prev_offset, next_offset, join, miter_limit, half_width);
         try appendPointToHalf(right_offsets, point.sub(avg_normal.scale(inner_scale)));
     } else {
-        // Right turn: outer join on right, inner point on left
         try appendPointToHalf(left_offsets, point.add(avg_normal.scale(inner_scale)));
-        // For right side, we need to negate offsets
         try addOuterJoin(right_offsets, point, prev_offset.negate(), next_offset.negate(), join, miter_limit, half_width);
     }
 }
@@ -682,12 +553,10 @@ fn addOuterJoin(
             try addArcToHalf(side, point, prev_offset, next_offset, ROUND_SEGMENTS);
         },
         .miter => {
-            // Calculate miter point
             const miter_dir = prev_offset.add(next_offset).normalize();
             const miter_dot = prev_offset.normalize().dot(miter_dir);
 
             if (@abs(miter_dot) < 0.1) {
-                // Nearly 180° turn, use bevel
                 try appendPointToHalf(side, point.add(prev_offset));
                 try appendPointToHalf(side, point.add(next_offset));
                 return;
@@ -695,22 +564,15 @@ fn addOuterJoin(
 
             const miter_len = half_width / miter_dot;
 
-            // Check miter limit
             if (@abs(miter_len) / half_width > miter_limit) {
-                // Exceed limit, fall back to bevel
                 try appendPointToHalf(side, point.add(prev_offset));
                 try appendPointToHalf(side, point.add(next_offset));
             } else {
-                // Use miter
                 try appendPointToHalf(side, point.add(miter_dir.scale(miter_len)));
             }
         },
     }
 }
-
-// =============================================================================
-// Internal: Line caps
-// =============================================================================
 
 fn addStartCap(
     result: *FixedArray(Vec2, MAX_STROKE_OUTPUT),
@@ -727,18 +589,14 @@ fn addStartCap(
 
     switch (cap) {
         .butt => {
-            // Just the corner point (left side will continue from here)
             try appendPoint(result, p0.add(offset));
         },
         .square => {
             const back = dir.scale(-half_width);
-            // Bottom-left corner of extended cap
             try appendPoint(result, p0.add(back).sub(offset));
-            // Top-left corner
             try appendPoint(result, p0.add(back).add(offset));
         },
         .round => {
-            // Semicircle from right side around to left side
             try addSemicircle(result, p0, offset.negate(), dir.negate(), ROUND_SEGMENTS);
         },
     }
@@ -759,43 +617,26 @@ fn addEndCap(
 
     switch (cap) {
         .butt => {
-            // Just the corner point (will connect to right side)
             try appendPoint(result, p1.sub(offset));
         },
         .square => {
             const fwd = dir.scale(half_width);
-            // Top-right corner of extended cap
             try appendPoint(result, p1.add(fwd).add(offset));
-            // Bottom-right corner
             try appendPoint(result, p1.add(fwd).sub(offset));
         },
         .round => {
-            // Semicircle from left side around to right side
             try addSemicircle(result, p1, offset, dir, ROUND_SEGMENTS);
         },
     }
 }
 
-// =============================================================================
-// Internal: Geometry helpers
-// =============================================================================
-
-/// Compute perpendicular normal for a line segment (unit length, pointing left).
-/// Delegates to `Vec2.normalize().perp()` — kept as a named helper for readability
-/// at call sites where the semantic meaning "segment normal" matters.
+/// Unit normal of p0→p1 pointing left of the direction.
 fn segmentNormal(p0: Vec2, p1: Vec2) Vec2 {
     std.debug.assert(!std.math.isNan(p0.x) and !std.math.isNan(p1.x));
 
     return p1.sub(p0).normalize().perp();
 }
 
-/// Add semicircle points (for round caps).
-///
-/// Uses incremental rotation: one sin/cos pair for the step angle, then
-/// two multiplies + two adds per arc point. The previous implementation
-/// called atan2 twice and cos+sin per segment (2·atan2 + N·cos + N·sin).
-/// This version costs 1·cos + 1·sin + N·(2 mul + 2 add) — roughly 3–4×
-/// faster for ROUND_SEGMENTS = 8.
 fn addSemicircle(
     result: *FixedArray(Vec2, MAX_STROKE_OUTPUT),
     center: Vec2,
@@ -805,18 +646,13 @@ fn addSemicircle(
 ) StrokeError!void {
     std.debug.assert(segments > 0);
 
-    // Determine sweep direction from the cross product of start_offset and
-    // direction.  Positive cross → CCW sweep, negative → CW sweep.
-    // The total sweep is always π (semicircle).
     const cross = start_offset.x * direction.y - start_offset.y * direction.x;
     const sweep_sign: f32 = if (cross >= 0) 1.0 else -1.0;
     const step_angle = sweep_sign * std.math.pi / @as(f32, @floatFromInt(segments));
 
-    // Pre-compute rotation matrix for the step angle — one sin/cos pair total.
     const cos_step = @cos(step_angle);
     const sin_step = @sin(step_angle);
 
-    // Emit arc points via incremental rotation (2 muls + 2 adds per step).
     var offset = start_offset;
     var i: u32 = 0;
     while (i <= segments) : (i += 1) {
@@ -827,12 +663,6 @@ fn addSemicircle(
     }
 }
 
-/// Add arc points to half buffer (for round joins).
-///
-/// Uses incremental rotation: one atan2 + one sin/cos for the step angle,
-/// then two multiplies + two adds per arc point.  The previous version
-/// called 2·atan2 + N·(cos + sin).  This costs 1·atan2 + 1·cos + 1·sin +
-/// N·(2 mul + 2 add).
 fn addArcToHalf(
     side: *FixedArray(Vec2, MAX_STROKE_OUTPUT / 2),
     center: Vec2,
@@ -842,19 +672,16 @@ fn addArcToHalf(
 ) StrokeError!void {
     std.debug.assert(segments > 0);
 
-    // Signed angle between the two offset vectors via atan2(cross, dot).
-    // This automatically takes the shorter arc (result in [−π, π]).
+    // atan2(cross, dot) gives the signed angle of the shorter arc.
     const cross = from_offset.x * to_offset.y - from_offset.y * to_offset.x;
     const dot = from_offset.x * to_offset.x + from_offset.y * to_offset.y;
     const angle_diff = std.math.atan2(cross, dot);
 
     const step_angle = angle_diff / @as(f32, @floatFromInt(segments));
 
-    // Pre-compute rotation matrix — one sin/cos pair total.
     const cos_step = @cos(step_angle);
     const sin_step = @sin(step_angle);
 
-    // Emit arc points via incremental rotation.
     var offset = from_offset;
     var i: u32 = 0;
     while (i <= segments) : (i += 1) {
@@ -865,21 +692,15 @@ fn addArcToHalf(
     }
 }
 
-/// Append point with bounds check
 fn appendPoint(buf: *FixedArray(Vec2, MAX_STROKE_OUTPUT), pt: Vec2) StrokeError!void {
     if (buf.len >= MAX_STROKE_OUTPUT) return error.TooManyOutputPoints;
     buf.appendAssumeCapacity(pt);
 }
 
-/// Append point to half buffer with bounds check
 fn appendPointToHalf(buf: *FixedArray(Vec2, MAX_STROKE_OUTPUT / 2), pt: Vec2) StrokeError!void {
     if (buf.len >= MAX_STROKE_OUTPUT / 2) return error.TooManyOutputPoints;
     buf.appendAssumeCapacity(pt);
 }
-
-// =============================================================================
-// Tests
-// =============================================================================
 
 test "expandStroke simple line butt cap" {
     const points = [_]Vec2{
@@ -889,7 +710,6 @@ test "expandStroke simple line butt cap" {
 
     const result = try expandStroke(&points, 10.0, .butt, .miter, 4.0, false);
 
-    // Butt cap: should have 4 corners (rectangle)
     try std.testing.expectEqual(@as(usize, 4), result.points.len);
     try std.testing.expect(!result.closed);
 }
@@ -902,7 +722,6 @@ test "expandStroke simple line round cap" {
 
     const result = try expandStroke(&points, 10.0, .round, .miter, 4.0, false);
 
-    // Round cap: should have more points for the semicircles
     try std.testing.expect(result.points.len > 4);
 }
 
@@ -914,7 +733,6 @@ test "expandStroke simple line square cap" {
 
     const result = try expandStroke(&points, 10.0, .square, .miter, 4.0, false);
 
-    // Square cap: 4 corners of extended rectangle
     try std.testing.expectEqual(@as(usize, 4), result.points.len);
 }
 
@@ -927,7 +745,6 @@ test "expandStroke with corner miter join" {
 
     const result = try expandStroke(&points, 10.0, .butt, .miter, 4.0, false);
 
-    // Should have points for both segments plus join
     try std.testing.expect(result.points.len >= 5);
 }
 
@@ -952,7 +769,6 @@ test "expandStroke with corner round join" {
 
     const result = try expandStroke(&points, 10.0, .butt, .round, 4.0, false);
 
-    // Round join should add arc points
     try std.testing.expect(result.points.len >= 6);
 }
 
@@ -980,12 +796,10 @@ test "expandStroke degenerate path error" {
 }
 
 test "segmentNormal correctness" {
-    // Horizontal line: normal should point up (left of direction)
     const n1 = segmentNormal(.{ .x = 0, .y = 0 }, .{ .x = 10, .y = 0 });
     try std.testing.expectApproxEqAbs(@as(f32, 0), n1.x, 1e-6);
     try std.testing.expectApproxEqAbs(@as(f32, 1), n1.y, 1e-6);
 
-    // Vertical line: normal should point left
     const n2 = segmentNormal(.{ .x = 0, .y = 0 }, .{ .x = 0, .y = 10 });
     try std.testing.expectApproxEqAbs(@as(f32, -1), n2.x, 1e-6);
     try std.testing.expectApproxEqAbs(@as(f32, 0), n2.y, 1e-6);
@@ -994,20 +808,17 @@ test "segmentNormal correctness" {
 test "normalize handles zero vector" {
     const zero = Vec2{ .x = 0, .y = 0 };
     const n = zero.normalize();
-    // Should return a default direction, not NaN
     try std.testing.expect(!std.math.isNan(n.x));
     try std.testing.expect(!std.math.isNan(n.y));
 }
 
 test "miter limit fallback to bevel" {
-    // Very sharp angle should exceed miter limit and fall back to bevel
     const points = [_]Vec2{
         .{ .x = 0, .y = 0 },
         .{ .x = 50, .y = 0 },
-        .{ .x = 49, .y = 5 }, // Very sharp turn
+        .{ .x = 49, .y = 5 },
     };
 
-    // With low miter limit, should fall back to bevel
     const result = try expandStroke(&points, 10.0, .butt, .miter, 1.0, false);
     try std.testing.expect(result.points.len >= 5);
 }
@@ -1020,18 +831,15 @@ test "single segment creates valid polygon" {
 
     const result = try expandStroke(&points, 20.0, .butt, .miter, 4.0, false);
 
-    // Verify we got a proper rectangle
     try std.testing.expectEqual(@as(usize, 4), result.points.len);
 
-    // Verify points form a valid polygon (not degenerate)
     const p0 = result.points.get(0);
     const p1 = result.points.get(1);
     const p2 = result.points.get(2);
     const p3 = result.points.get(3);
 
-    // Check that opposite sides are roughly parallel (rectangle shape)
     const d01 = p1.sub(p0);
     const d32 = p2.sub(p3);
     const dot = d01.dot(d32);
-    try std.testing.expect(dot > 0); // Same direction
+    try std.testing.expect(dot > 0);
 }

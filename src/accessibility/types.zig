@@ -1,61 +1,48 @@
-//! Semantic types for accessible elements.
-//!
-//! Based on WAI-ARIA with mappings to platform equivalents.
-//! Roles are exhaustive - no "custom" role to prevent misuse.
+//! WAI-ARIA-based types; roles are exhaustive, with no "custom" role to
+//! prevent misuse.
 
 const std = @import("std");
 
-/// Semantic role - what IS this element?
-/// Deliberately limited set covering Gooey's component library.
 pub const Role = enum(u8) {
-    // Atomic widgets
     button = 0,
     checkbox = 1,
     radio = 2,
-    switch_ = 3, // toggle switch
+    switch_ = 3,
     link = 4,
 
-    // Text input
     textbox = 5, // single-line
     textarea = 6, // multi-line
     searchbox = 7,
-    spinbutton = 8, // numeric input
+    spinbutton = 8,
 
-    // Selection
-    combobox = 10, // dropdown
+    combobox = 10,
     listbox = 11,
     option = 12,
     menu = 13,
     menuitem = 14,
     menubar = 15,
 
-    // Navigation
     tab = 20,
     tablist = 21,
     tabpanel = 22,
 
-    // Disclosure
     tree = 25,
     treeitem = 26,
 
-    // Sliders
     slider = 30,
     scrollbar = 31,
 
-    // Structure
-    group = 40, // generic grouping
+    group = 40,
     region = 41, // landmark
     dialog = 42,
     alertdialog = 43,
     toolbar = 44,
     tooltip = 45,
 
-    // Status
-    alert = 50, // important, time-sensitive
-    status = 51, // advisory
+    alert = 50,
+    status = 51,
     progressbar = 52,
 
-    // Document
     heading = 60,
     paragraph = 61,
     list = 62,
@@ -63,11 +50,9 @@ pub const Role = enum(u8) {
     img = 64,
     separator = 65,
 
-    // Special
     presentation = 254, // explicitly NOT accessible
     none = 255, // inherit from context
 
-    /// Convert to macOS NSAccessibility role identifier
     pub fn toNSRole(self: Role) []const u8 {
         return switch (self) {
             .button => "AXButton",
@@ -114,7 +99,6 @@ pub const Role = enum(u8) {
         };
     }
 
-    /// Convert to AT-SPI2 role constant (Linux)
     pub fn toAtspiRole(self: Role) u32 {
         return switch (self) {
             .button => 25, // ATSPI_ROLE_PUSH_BUTTON
@@ -158,9 +142,9 @@ pub const Role = enum(u8) {
         };
     }
 
-    /// Convert to a UI Automation control type id (Windows). Follows the ARIA
-    /// mapping browsers use: a switch is a toggle button, a dialog is a pane
-    /// that reports `IsDialog`, and a heading is text with a heading level.
+    /// Follows the ARIA mapping browsers use: a switch is a toggle button, a
+    /// dialog is a pane that reports `IsDialog`, and a heading is text with a
+    /// heading level.
     pub fn toUiaControlType(self: Role) i32 {
         return switch (self) {
             .button => 50000, // UIA_ButtonControlTypeId
@@ -204,7 +188,6 @@ pub const Role = enum(u8) {
         };
     }
 
-    /// Convert to ARIA role string (Web)
     pub fn toAriaRole(self: Role) []const u8 {
         return switch (self) {
             .button => "button",
@@ -249,7 +232,6 @@ pub const Role = enum(u8) {
         };
     }
 
-    /// Returns true if this role typically accepts keyboard focus
     pub fn isFocusableByDefault(self: Role) bool {
         return switch (self) {
             .button,
@@ -275,21 +257,19 @@ pub const Role = enum(u8) {
     }
 };
 
-/// Element state flags - packed for cache efficiency.
-/// All fields default false (zero-initialized).
 pub const State = packed struct(u16) {
-    focused: bool = false, // has keyboard focus
-    selected: bool = false, // selected in a collection
-    checked: bool = false, // checkbox/radio/switch is on
-    pressed: bool = false, // toggle button is pressed
-    expanded: bool = false, // disclosure is open
-    disabled: bool = false, // non-interactive
-    readonly: bool = false, // value cannot be changed
-    required: bool = false, // form field is required
-    invalid: bool = false, // validation failed
-    busy: bool = false, // async operation in progress
-    hidden: bool = false, // not visible (skip in a11y tree)
-    has_popup: bool = false, // element triggers a popup (listbox, menu, dialog, etc.)
+    focused: bool = false,
+    selected: bool = false,
+    checked: bool = false,
+    pressed: bool = false,
+    expanded: bool = false,
+    disabled: bool = false,
+    readonly: bool = false,
+    required: bool = false,
+    invalid: bool = false,
+    busy: bool = false,
+    hidden: bool = false,
+    has_popup: bool = false,
     _reserved: u4 = 0,
 
     pub fn eql(self: State, other: State) bool {
@@ -305,11 +285,10 @@ pub const State = packed struct(u16) {
     }
 };
 
-/// Live region politeness for announcements
 pub const Live = enum(u2) {
-    off = 0, // no announcements
-    polite = 1, // announce when idle
-    assertive = 2, // interrupt immediately
+    off = 0,
+    polite = 1,
+    assertive = 2,
 
     pub fn toAriaLive(self: Live) ?[]const u8 {
         return switch (self) {
@@ -328,19 +307,16 @@ pub const Orientation = enum(u1) {
     vertical = 1,
 };
 
-/// Heading level (1-6, 0 = not a heading)
-/// Using enum instead of u3 to prevent invalid level 7.
+/// Heading level, stored as an enum rather than u3 to prevent invalid level 7.
 pub const HeadingLevel = enum(u3) {
-    none = 0, // Not a heading
+    none = 0,
     h1 = 1,
     h2 = 2,
     h3 = 3,
     h4 = 4,
     h5 = 5,
     h6 = 6,
-    // Level 7 intentionally omitted - invalid in HTML
 
-    /// Convert to ARIA heading level (1-6) or null for none
     pub fn toAriaLevel(self: HeadingLevel) ?u8 {
         return switch (self) {
             .none => null,
@@ -353,7 +329,6 @@ pub const HeadingLevel = enum(u3) {
         };
     }
 
-    /// Create from numeric level (clamps invalid values)
     pub fn fromInt(level: u8) HeadingLevel {
         return switch (level) {
             1 => .h1,
@@ -366,41 +341,32 @@ pub const HeadingLevel = enum(u3) {
         };
     }
 
-    /// Check if this is a valid heading (not none)
     pub fn isHeading(self: HeadingLevel) bool {
         return self != .none;
     }
 };
 
-// Compile-time assertions per CLAUDE.md
 comptime {
-    // State must fit in 16 bits
     std.debug.assert(@sizeOf(State) == 2);
     std.debug.assert(@bitSizeOf(State) == 16);
 
-    // Role must fit in a byte
     std.debug.assert(@sizeOf(Role) == 1);
 
-    // Live must be minimal
     std.debug.assert(@sizeOf(Live) == 1);
 
-    // HeadingLevel must fit in a byte
     std.debug.assert(@sizeOf(HeadingLevel) == 1);
 }
 
 test "heading level validation" {
-    // Valid levels
     try std.testing.expectEqual(@as(?u8, 1), HeadingLevel.h1.toAriaLevel());
     try std.testing.expectEqual(@as(?u8, 6), HeadingLevel.h6.toAriaLevel());
     try std.testing.expectEqual(@as(?u8, null), HeadingLevel.none.toAriaLevel());
 
-    // fromInt clamps invalid values
     try std.testing.expectEqual(HeadingLevel.h1, HeadingLevel.fromInt(1));
     try std.testing.expectEqual(HeadingLevel.none, HeadingLevel.fromInt(0));
-    try std.testing.expectEqual(HeadingLevel.none, HeadingLevel.fromInt(7)); // Invalid -> none
-    try std.testing.expectEqual(HeadingLevel.none, HeadingLevel.fromInt(255)); // Invalid -> none
+    try std.testing.expectEqual(HeadingLevel.none, HeadingLevel.fromInt(7));
+    try std.testing.expectEqual(HeadingLevel.none, HeadingLevel.fromInt(255));
 
-    // isHeading check
     try std.testing.expect(HeadingLevel.h1.isHeading());
     try std.testing.expect(!HeadingLevel.none.isHeading());
 }
@@ -427,28 +393,23 @@ test "state bitcast roundtrip" {
 }
 
 test "has_popup state field" {
-    // Default is false
     const s1 = State{};
     try std.testing.expect(!s1.has_popup);
 
-    // Can be set to true
     const s2 = State{ .has_popup = true };
     try std.testing.expect(s2.has_popup);
 
-    // Works with other state flags
     const s3 = State{ .expanded = true, .has_popup = true };
     try std.testing.expect(s3.expanded);
     try std.testing.expect(s3.has_popup);
     try std.testing.expect(!s3.disabled);
 
-    // Bitcast roundtrip preserves has_popup
     const bits = s3.toU16();
     const s4 = State.fromU16(bits);
     try std.testing.expect(s3.eql(s4));
     try std.testing.expect(s4.has_popup);
     try std.testing.expect(s4.expanded);
 
-    // Equality check works with has_popup
     const s5 = State{ .has_popup = true };
     const s6 = State{ .has_popup = false };
     try std.testing.expect(!s5.eql(s6));

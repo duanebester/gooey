@@ -1,9 +1,3 @@
-//! Legend Primitive for Gooey Charts
-//!
-//! Renders a legend showing series names and colors.
-//! Supports multiple positions (top, bottom, left, right) and
-//! different marker shapes (rect, circle, line).
-
 const std = @import("std");
 const constants = @import("../constants.zig");
 
@@ -15,12 +9,7 @@ pub const Painter = paint.Painter;
 const MAX_LEGEND_ITEMS = constants.MAX_LEGEND_ITEMS;
 const MAX_LABEL_LENGTH = constants.MAX_LABEL_LENGTH;
 
-// =============================================================================
-// Legend
-// =============================================================================
-
 pub const Legend = struct {
-    /// Legend position relative to the chart area.
     pub const Position = enum {
         top,
         bottom,
@@ -28,14 +17,12 @@ pub const Legend = struct {
         right,
     };
 
-    /// Shape of the legend marker/swatch.
     pub const Shape = enum {
         rect,
         circle,
         line,
     };
 
-    /// A single legend item.
     pub const Item = struct {
         label: []const u8,
         color: Color,
@@ -52,7 +39,6 @@ pub const Legend = struct {
         }
     };
 
-    /// Configuration options for legend rendering.
     pub const Options = struct {
         position: Position = .bottom,
         spacing: f32 = 16.0,
@@ -64,7 +50,6 @@ pub const Legend = struct {
         item_gap: f32 = 8.0, // Gap between marker and label
     };
 
-    /// Bounds for positioning and layout.
     pub const Bounds = struct {
         x: f32,
         y: f32,
@@ -72,27 +57,22 @@ pub const Legend = struct {
         height: f32,
     };
 
-    /// Result of drawing a legend, includes consumed space.
+    /// `consumed` is the space the legend occupied.
     pub const DrawResult = struct {
         consumed: Bounds,
     };
 
-    /// Draw a legend with the given items and options.
-    /// Returns the bounds consumed by the legend.
     pub fn draw(
         painter: *Painter,
         bounds: Bounds,
         items: []const Item,
         opts: Options,
     ) DrawResult {
-        // Assertions at API boundary
         std.debug.assert(items.len > 0 and items.len <= MAX_LEGEND_ITEMS);
         std.debug.assert(bounds.width >= 0 and bounds.height >= 0);
 
-        // Calculate layout based on position
         const layout = calculateLayout(items, bounds, opts);
 
-        // Draw background if specified
         if (opts.background) |bg| {
             paint.rect(painter, .{
                 .x = layout.x,
@@ -102,7 +82,6 @@ pub const Legend = struct {
             }, 0, bg);
         }
 
-        // Draw items based on orientation
         switch (opts.position) {
             .top, .bottom => drawHorizontal(painter, items, layout, opts),
             .left, .right => drawVertical(painter, items, layout, opts),
@@ -111,7 +90,6 @@ pub const Legend = struct {
         return .{ .consumed = layout };
     }
 
-    /// Calculate the required dimensions for the legend.
     pub fn calculateDimensions(
         items: []const Item,
         opts: Options,
@@ -125,7 +103,6 @@ pub const Legend = struct {
 
         switch (opts.position) {
             .top, .bottom => {
-                // Horizontal layout
                 var total_width: f32 = opts.padding * 2;
                 for (items, 0..) |item, i| {
                     if (i > 0) total_width += opts.spacing;
@@ -136,7 +113,6 @@ pub const Legend = struct {
                 return .{ .width = total_width, .height = height };
             },
             .left, .right => {
-                // Vertical layout
                 var max_width: f32 = 0;
                 for (items) |item| {
                     const item_width = opts.item_size + opts.item_gap +
@@ -153,11 +129,6 @@ pub const Legend = struct {
     }
 };
 
-// =============================================================================
-// Helper Functions (kept under 70 lines each per CLAUDE.md)
-// =============================================================================
-
-/// Calculate the layout bounds for the legend.
 fn calculateLayout(
     items: []const Legend.Item,
     bounds: Legend.Bounds,
@@ -196,7 +167,6 @@ fn calculateLayout(
     };
 }
 
-/// Draw legend items horizontally (for top/bottom positions).
 fn drawHorizontal(
     painter: *Painter,
     items: []const Legend.Item,
@@ -213,17 +183,14 @@ fn drawHorizontal(
     for (items, 0..) |item, i| {
         if (i > 0) x += opts.spacing;
 
-        // Draw marker
         drawMarker(painter, x, y_center, opts.item_size, item.color, item.shape);
         x += opts.item_size + opts.item_gap;
 
-        // Draw label - vertically centered with marker
         _ = paint.textCentered(painter, item.label, x, y_center, opts.color, opts.font_size);
         x += paint.measure(painter, item.label);
     }
 }
 
-/// Draw legend items vertically (for left/right positions).
 fn drawVertical(
     painter: *Painter,
     items: []const Legend.Item,
@@ -233,20 +200,16 @@ fn drawVertical(
     std.debug.assert(items.len > 0);
 
     const item_height = @max(opts.item_size, opts.font_size);
-    // Add spacing between items in the height calculation
     const row_height = item_height + opts.spacing;
     var y = layout.y + opts.padding + item_height / 2;
 
     for (items, 0..) |item, i| {
-        // Add row spacing for all items after the first
         if (i > 0) y += row_height;
 
         const x = layout.x + opts.padding;
 
-        // Draw marker
         drawMarker(painter, x, y, opts.item_size, item.color, item.shape);
 
-        // Draw label - vertically centered with marker
         const label_x = x + opts.item_size + opts.item_gap;
         _ = paint.textCentered(painter, item.label, label_x, y, opts.color, opts.font_size);
     }
@@ -270,16 +233,12 @@ fn drawMarker(
             );
         },
         .circle => {
-            // Draw filled circle centered at (x + radius, y_center)
-            // Uses adaptive LOD - small legend markers get fewer segments
             const radius = size / 2;
             painter.circle(.{ x + radius, y_center }, radius, color);
         },
         .line => {
-            // Draw a horizontal line with a point marker
             const line_y = y_center;
             painter.line(.{ x, line_y }, .{ x + size, line_y }, 2.0, color);
-            // Draw small circle/square at center
             const marker_size = size * 0.4;
             painter.fill(.{
                 .x = x + size / 2 - marker_size / 2,
@@ -291,12 +250,7 @@ fn drawMarker(
     }
 }
 
-// =============================================================================
-// Convenience Functions
-// =============================================================================
-
-/// Create legend items from series data.
-/// Caller provides output buffer to avoid allocation.
+/// Writes into `out_items` to avoid allocation.
 pub fn itemsFromSeries(
     comptime SeriesType: type,
     series: []const SeriesType,
@@ -315,15 +269,10 @@ pub fn itemsFromSeries(
     return out_items[0..count];
 }
 
-/// Check if a type has a color field.
 fn hasColorField(comptime T: type, ptr: *const T) bool {
     _ = ptr;
     return @hasField(T, "color");
 }
-
-// =============================================================================
-// Tests
-// =============================================================================
 
 test "Legend.Options defaults" {
     const opts = Legend.Options{};
@@ -368,11 +317,9 @@ test "Legend.calculateDimensions horizontal" {
     const opts = Legend.Options{ .position = .bottom };
     const dims = Legend.calculateDimensions(&items, opts);
 
-    // Should have non-zero dimensions
     try std.testing.expect(dims.width > 0);
     try std.testing.expect(dims.height > 0);
 
-    // Width should be greater than height for horizontal layout
     try std.testing.expect(dims.width > dims.height);
 }
 
@@ -386,11 +333,9 @@ test "Legend.calculateDimensions vertical" {
     const opts = Legend.Options{ .position = .left };
     const dims = Legend.calculateDimensions(&items, opts);
 
-    // Should have non-zero dimensions
     try std.testing.expect(dims.width > 0);
     try std.testing.expect(dims.height > 0);
 
-    // Height should be larger for vertical layout with 3 items
     try std.testing.expect(dims.height > dims.width);
 }
 
@@ -417,7 +362,6 @@ test "calculateLayout top position" {
 
     const layout = calculateLayout(&items, bounds, opts);
 
-    // Should be at top, centered horizontally
     try std.testing.expectEqual(@as(f32, 0), layout.y);
     try std.testing.expect(layout.x > 0); // Centered means x > 0 for small legend
 }
@@ -432,7 +376,6 @@ test "calculateLayout bottom position" {
 
     const layout = calculateLayout(&items, bounds, opts);
 
-    // Should be at bottom
     try std.testing.expect(layout.y + layout.height <= 300);
     try std.testing.expect(layout.y > 0); // Not at y=0 since it's at bottom
 }
@@ -447,7 +390,6 @@ test "calculateLayout left position" {
 
     const layout = calculateLayout(&items, bounds, opts);
 
-    // Should be at left edge
     try std.testing.expectEqual(@as(f32, 0), layout.x);
     try std.testing.expect(layout.y > 0); // Centered vertically
 }
@@ -462,7 +404,6 @@ test "calculateLayout right position" {
 
     const layout = calculateLayout(&items, bounds, opts);
 
-    // Should be at right edge
     try std.testing.expect(layout.x + layout.width <= 400);
     try std.testing.expect(layout.x > 0); // Not at x=0 since it's on right
 }

@@ -1,17 +1,3 @@
-//! Recording a packed frame's draws into a command buffer (contract §9).
-//!
-//! The packed frame is already in draw order, one `Draw` per run of one
-//! pipeline and one clip, so recording is one pass: set the scissor when the
-//! clip changes, bind the pipeline when it changes, and issue the draw. The
-//! frame's descriptor set holds every buffer and atlas, so it is bound once.
-//!
-//! Performance sketch (CLAUDE.md §7): `writeInstances` copies the used prefix
-//! of each packed array into the frame's mapped buffers, at most the 1.9 MB
-//! `FrameCapacity` holds at `.standard`; a todo frame copies about 11 KiB.
-//! `recordDraws` records at most one scissor, one bind, and one draw per
-//! quad or sprite draw, plus one push constant and one draw per mesh, so
-//! commands are bounded by `records.paint_record_count_frame_max`.
-
 const std = @import("std");
 const vk = @import("vulkan.zig");
 const vk_types = @import("vk_types.zig");
@@ -44,8 +30,7 @@ pub const Target = struct {
     pipelines: *const [pipeline_count]vk.Pipeline,
     descriptor_set: vk.DescriptorSet,
     extent: vk.Extent2D,
-    /// Device pixels per logical pixel on each axis: the framebuffer extent
-    /// over the viewport's logical size.
+    /// Device pixels per logical pixel on each axis.
     scale_x: f32,
     scale_y: f32,
 };
@@ -83,7 +68,6 @@ pub fn writeInstances(
     }
 }
 
-/// Record every draw of `frame` in order. Returns the draw calls recorded.
 pub fn recordDraws(target: *const Target, frame: *const PackedFrame) u32 {
     assert(target.command != null);
     assert(target.scale_x > 0);
@@ -105,7 +89,6 @@ pub fn recordDraws(target: *const Target, frame: *const PackedFrame) u32 {
     for (frame.drawList()) |*draw| {
         assert(draw.count > 0);
         assert(draw.clip < frame.clip_count);
-        // Pack emits no draw under a zero-area clip (contract §9).
         assert(frame.clips[draw.clip][2] > 0);
         assert(frame.clips[draw.clip][3] > 0);
         // A clip that covers no pixel centre (off the framebuffer, or between
@@ -139,7 +122,6 @@ pub fn recordDraws(target: *const Target, frame: *const PackedFrame) u32 {
     return draw_calls;
 }
 
-/// One draw per mesh, with its index pushed for the topology's vertex shader.
 fn recordMeshes(
     target: *const Target,
     frame: *const PackedFrame,

@@ -1,9 +1,5 @@
-//! Elements: `box`, `text`, and `paint` (contract §1).
-//!
 //! Elements are plain values built in a render function and consumed by
-//! `Cx.render` in the same call. `Style` holds what can be shared (layout and
-//! appearance); `Box` holds what is per element (key, handlers, focus, and
-//! accessibility). Child dispatch lives in `cx.zig`.
+//! `Cx.render` in the same call.
 
 const std = @import("std");
 const id_mod = @import("id.zig");
@@ -160,7 +156,7 @@ pub const ScrollAlignment = enum { start, center, end, nearest };
 /// The platform's shape, so hosts apply a resolved cursor without a mapping.
 pub const CursorShape = @import("../platform/interface.zig").CursorShape;
 /// `.none` makes the box itself transparent to the pointer, as CSS
-/// `pointer-events: none` and 0.3.1's `pointer_events` did: a press, release,
+/// `pointer-events: none`: a press, release,
 /// hover, cursor, or wheel over it goes to the box below or around it instead.
 /// Its children still take the pointer, and their events still bubble through
 /// its handlers. Keyboard focus, Tab, keys, and actions are unchanged. A box
@@ -202,7 +198,7 @@ pub const Style = struct {
     shadow: ?Shadow = null,
     /// Multiplies the alpha of everything the element and its subtree draw,
     /// layers it opens included, from 0 (invisible) to 1. Nested opacities
-    /// multiply. Each record fades on its own, as in 0.3.1, so overlapping
+    /// multiply. Each record fades on its own, so overlapping
     /// children show through one another rather than fading as one image.
     /// Hit testing and accessibility ignore it: an invisible box still takes
     /// the pointer unless `pointer_events` is `.none`.
@@ -213,11 +209,11 @@ pub const Style = struct {
     pointer_events: PointerEvents = .auto,
     /// Where the element was built, `.source = @src()`, for the debugger's
     /// inspector. Debug and ReleaseSafe store it; ReleaseFast and
-    /// ReleaseSmall accept and drop it (contract decision 16).
+    /// ReleaseSmall accept and drop it.
     source: ?std.builtin.SourceLocation = null,
 };
 
-/// A comptime-hashed key context name (contract §5): keymap bindings with
+/// A comptime-hashed key context name: keymap bindings with
 /// this context match only while the box is on the focus path.
 pub const KeyContext = struct {
     hash: u64,
@@ -229,7 +225,7 @@ pub const KeyContext = struct {
 };
 
 /// Handle `action` (see `action`) when a keymap binding names it and this
-/// box is on the focus path (contract §5).
+/// box is on the focus path.
 pub const ActionBinding = struct { action: u64, handler: Handler };
 
 /// The id of action type `Action` (`const Undo = struct {};`), for keymap
@@ -283,7 +279,7 @@ pub const A11y = struct {
     pub const Range = struct { min: f32, max: f32, now: f32, orientation: Orientation };
 };
 
-/// Per-instance identity and behaviour (contract §1).
+/// Per-instance identity and behaviour.
 pub const Box = struct {
     key: ?Key = null,
     style: Style = .{},
@@ -352,7 +348,6 @@ pub const DragSource = struct {
     }
 };
 
-/// A box that accepts drops of payloads of one type.
 pub const DropTarget = struct {
     type_id: usize,
     on_drop: Handler,
@@ -375,16 +370,16 @@ pub const Text = struct {
     color: ?ColorToken = null,
     weight: FontWeight = .regular,
     italic: bool = false,
-    /// `.mono` draws with `Config.fonts.mono` (contract decision 8); using it
+    /// `.mono` draws with `Config.fonts.mono`; using it
     /// with no second family loaded panics on the first frame.
     family: FontFamily = .app,
-    /// Wrapping against the parent's content width (contract decision 9):
+    /// Wrapping against the parent's content width:
     /// `.words` breaks between words and at newlines, `.newlines` only at
     /// newlines. Wrapped lines count against the frame's glyph and record limits.
     wrap: enum { none, words, newlines } = .none,
     /// Line pitch in percent of the font's line height; null keeps the font's.
     line_height: ?u16 = null,
-    /// Line placement, as in 0.3.1. `.left` starts each line at the text's
+    /// Line placement. `.left` starts each line at the text's
     /// own box, which the parent's alignment places; `.center` and `.right`
     /// place each line within the parent's content width, whatever the
     /// parent's alignment.
@@ -430,8 +425,6 @@ pub fn paint(
     return .{ .data = data, .paint_fn = paint_fn, .style = style };
 }
 
-/// Render `render_fn` only when `condition` holds; the subtree is not built
-/// otherwise.
 pub const When = struct {
     condition: bool,
     render_fn: *const fn (cx: *Cx) void,
@@ -448,8 +441,6 @@ pub const Cx = @import("cx.zig").Cx;
 pub const Painter = @import("emit.zig").Painter;
 
 test "color tokens resolve against the theme" {
-    // Goal: every token name matches a Theme field. Method: resolve a token
-    // and a literal against the light theme.
     const theme = &Theme.light;
     const primary = (ColorToken{ .primary = {} }).resolve(theme);
     try std.testing.expectEqual(theme.primary.r, primary.r);

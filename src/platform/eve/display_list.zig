@@ -1,13 +1,9 @@
-//! One BT81x display list, built command by command for one frame.
-//!
-//! The list is the chip's whole picture: at most 2048 commands (`RAM_DL`,
-//! 8 KiB), of which a frame uses at most `words_max` (1536) so the chip
-//! renders every line in time, swapped in at vertical blank. This file encodes commands and the
-//! drawing helpers the renderer composes primitives from; it keeps the
-//! graphics state already emitted so repeated colors, widths, and scissors
-//! cost nothing.
-//!
-//! ## Primitive helpers
+//! One BT81x display list, built command by command for one frame: at most
+//! 2048 commands (`RAM_DL`, 8 KiB), of which a frame uses at most `words_max`
+//! (1536) so the chip renders every line in time, swapped in at vertical
+//! blank. This file encodes commands and the drawing helpers the renderer
+//! composes primitives from; it keeps the graphics state already emitted so
+//! repeated colors, widths, and scissors cost nothing.
 //!
 //! - `roundRect`: `RECTS` with `LINE_WIDTH` as the corner radius. EVE grows a
 //!   rect by its line width on every side, so the vertices are inset by it.
@@ -33,7 +29,6 @@ const assert = std.debug.assert;
 /// Commands a frame's list may use: the measured line-budget cap
 /// (`EveLimits.display_list_words_frame_max`), below `RAM_DL`'s 2048.
 pub const words_max: u32 = eve_limits.EveLimits.bt81x.display_list_words_frame_max;
-/// Commands `begin` emits, before any primitive.
 pub const preamble_words: u32 = 7;
 /// Worst case of `roundRect` and `squareRect`: scissor (2), color (2),
 /// line width, begin, translate (2), and two vertices.
@@ -179,14 +174,12 @@ pub const DisplayList = struct {
         return self.words[0..self.count];
     }
 
-    /// Whether `words` more commands still leave room for `DISPLAY`.
     pub fn room(self: *const Self, words: u32) bool {
         assert(words > 0);
         assert(self.count < words_max);
         return self.count + words + 1 <= words_max;
     }
 
-    /// Set the clip the next primitives draw within.
     pub fn setClip(self: *Self, clip: Scissor) void {
         assert(clip[2] > 0);
         assert(clip[3] > 0);
@@ -194,10 +187,6 @@ pub const DisplayList = struct {
         assert(clip[1] + clip[3] <= self.panel[3]);
         self.clip = clip;
     }
-
-    // =========================================================================
-    // Rects
-    // =========================================================================
 
     /// An antialiased rect with rounded corners, `radius` in device pixels.
     pub fn roundRect(self: *Self, box: Box, radius: f32, color: Color) void {
@@ -273,10 +262,6 @@ pub const DisplayList = struct {
         self.emit(colorMask(true));
         self.emit(stencilOp(stencil_keep, stencil_keep));
     }
-
-    // =========================================================================
-    // Cells, strips, and points
-    // =========================================================================
 
     /// Draw cell `index` of page `page` (a bitmap handle) with its top-left
     /// corner at whole device pixel (x, y).
@@ -393,15 +378,10 @@ pub const DisplayList = struct {
         self.setTranslate(.{ 0, 0 });
     }
 
-    /// A `VERTEX2F` at device position (x, y), with no translation.
     pub fn vertex(self: *Self, x: f32, y: f32) void {
         self.setTranslate(.{ 0, 0 });
         self.emit(vertex2f(x, y));
     }
-
-    // =========================================================================
-    // State
-    // =========================================================================
 
     /// Set up page `index`'s bitmap handle, once per list.
     fn configurePage(self: *Self, index: u8, layout: PageLayout) void {
@@ -498,10 +478,6 @@ pub const DisplayList = struct {
     }
 };
 
-// =============================================================================
-// Encoding
-// =============================================================================
-
 fn colorRgb(rgb: u32) u32 {
     assert(rgb <= 0xFFFFFF);
     return (4 << 24) | rgb;
@@ -570,10 +546,6 @@ pub fn roundUnits(value: f32) u32 {
     return @intFromFloat(std.math.clamp(@round(value), 0, 4095));
 }
 
-// =============================================================================
-// Tests
-// =============================================================================
-
 const testing = std.testing;
 
 const white = Color{ .rgb = 0xFFFFFF, .alpha = 255 };
@@ -592,9 +564,6 @@ fn containsSequence(words: []const u32, sequence: []const u32) bool {
 }
 
 test "a rounded rect is inset by its radius, which is the line width" {
-    // A 100x40 box at (10, 20) with radius 8: EVE adds the line width on
-    // every side, so the vertices must be (18, 28) and (102, 52) and the line
-    // width 8 px = 128 sixteenths. A wrong inset makes rects 16 px too wide.
     var list: DisplayList = .{};
     testList(&list);
     list.roundRect(.{ .x = 10, .y = 20, .w = 100, .h = 40 }, 8, white);
@@ -608,8 +577,6 @@ test "a rounded rect is inset by its radius, which is the line width" {
 }
 
 test "square rects use a 1 px radius scissored to their pixel bounds" {
-    // A radius under 1 px fades the whole rect on the BT817, so a 1 px wide
-    // line at x = 40 must draw with LINE_WIDTH 16, scissored to x 40..41.
     var list: DisplayList = .{};
     testList(&list);
     list.squareRect(.{ .x = 40, .y = 0, .w = 1, .h = 100 }, white);
@@ -622,9 +589,6 @@ test "square rects use a 1 px radius scissored to their pixel bounds" {
 }
 
 test "cells past 511 px shift the origin, and later vertices shift it back" {
-    // VERTEX2II reaches only 0..511: a cell at (600, 40) must translate X by
-    // 512 px (8192 sixteenths) and draw at local x 88; a rect drawn next must
-    // undo the translation or it would land 512 px to the right.
     var list: DisplayList = .{};
     testList(&list);
     list.cell(0, .{ .address = 0, .cell_size = 8 }, 1, .{ 600, 40 }, white);
@@ -637,8 +601,6 @@ test "cells past 511 px shift the origin, and later vertices shift it back" {
 }
 
 test "the list fills exactly to its last word and closes with DISPLAY" {
-    // Capacity: after the preamble, `room` must allow exactly the words that
-    // leave space for DISPLAY, refuse one more, and `finish` must end there.
     var list: DisplayList = .{};
     testList(&list);
     const free = words_max - preamble_words - 1;

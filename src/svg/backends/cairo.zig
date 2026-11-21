@@ -1,7 +1,5 @@
-//! SVG Rasterizer for Linux and Windows - Software rendering
-//!
-//! Rasterizes SVG path data to RGBA buffers using a scanline fill algorithm.
-//! Output format: R = fill alpha, G = stroke alpha, B = 0, A = max(fill, stroke)
+//! Software SVG rasterization for Linux and Windows.
+//! Output format: R = fill alpha, G = stroke alpha, B = 0, A = max(fill, stroke).
 //!
 //! Every allocation comes from the caller's allocator, reserved up front from
 //! `RasterBudget` and the icon's side, and nothing grows after that: the
@@ -39,13 +37,11 @@ pub const RasterizeError = error{
 
 pub const RasterBudget = svg_mod.RasterBudget;
 
-/// Stroke options for SVG rendering
 pub const StrokeOptions = struct {
     enabled: bool = false,
     width: f32 = 1.0,
 };
 
-/// Edge structure for scanline fill algorithm
 const Edge = struct {
     y_min: i32,
     y_max: i32,
@@ -58,7 +54,6 @@ const Edge = struct {
     }
 };
 
-/// Active edge for scanline processing
 const ActiveEdge = struct {
     x: f32,
     inv_slope: f32,
@@ -87,7 +82,6 @@ pub fn scratchBytes(budget: RasterBudget, device_size_max: u32) u32 {
         edge_bytes + row_coverage_bytes + stroke_buffer_bytes + scratch_alignment_slack_bytes;
 }
 
-/// Rasterize SVG path data to RGBA buffer (simple version)
 pub fn rasterize(
     allocator: std.mem.Allocator,
     path_data: []const u8,
@@ -107,7 +101,6 @@ pub fn rasterize(
     );
 }
 
-/// Rasterize SVG path data with extended options
 pub fn rasterizeWithOptions(
     allocator: std.mem.Allocator,
     path_data: []const u8,
@@ -127,10 +120,8 @@ pub fn rasterizeWithOptions(
     const required_size = pixel_count * 4;
     if (buffer.len < required_size) return error.BufferTooSmall;
 
-    // Clear buffer (transparent black)
     @memset(buffer[0..required_size], 0);
 
-    // Parse SVG path (supports both raw path data and SVG elements like circle, rect, etc.)
     var path = svg_mod.SvgPath.init(allocator);
     defer path.deinit();
     try svg_mod.parseBounded(allocator, &path, path_data);
@@ -269,7 +260,7 @@ fn appendEdges(geometry: *const Geometry, edges: *std.ArrayList(Edge)) void {
     const supersample_height = geometry.size * fill_samples_y;
     const scale = geometry.scale;
     for (geometry.polygons.items) |poly| {
-        if (poly.end <= poly.start + 2) continue; // Need at least 3 points
+        if (poly.end <= poly.start + 2) continue;
         const pts = geometry.points.items[poly.start..poly.end];
         for (0..pts.len) |i| {
             const p0 = pts[i];
@@ -280,7 +271,6 @@ fn appendEdges(geometry: *const Geometry, edges: *std.ArrayList(Edge)) void {
             const x1 = p1.x * scale;
             const y1 = p1.y * scale * samples_f;
 
-            // Skip horizontal edges (they don't contribute to fill)
             const dy = y1 - y0;
             if (@abs(dy) < 0.0001) continue;
 
@@ -289,7 +279,6 @@ fn appendEdges(geometry: *const Geometry, edges: *std.ArrayList(Edge)) void {
             const top_y = if (is_down) y0 else y1;
             const bot_y = if (is_down) y1 else y0;
 
-            // Integer scanlines at supersample resolution.
             const y_min: i32 = @max(0, @as(i32, @intFromFloat(@ceil(top_y))));
             const y_max: i32 = @min(supersample_height, @as(i32, @intFromFloat(@ceil(bot_y))));
             if (y_min >= y_max) continue;
@@ -386,7 +375,6 @@ fn accumulateSpans(active_edges: []const ActiveEdge, row_coverage: []f32) void {
         assert(x_end <= row_coverage.len);
         for (x_start..x_end) |x| {
             const x_f: f32 = @floatFromInt(x);
-            // How much of pixel [x, x+1] lies within [x0_f, x1_f].
             const left_edge = @max(x_f, x0_f);
             const right_edge = @min(x_f + 1.0, x1_f);
             row_coverage[x] += @max(0.0, right_edge - left_edge);
@@ -413,7 +401,6 @@ fn writeRowCoverage(row_coverage: []const f32, pixel_row: i32, buffer: []u8) voi
     }
 }
 
-/// Render polygon strokes with anti-aliased lines
 fn renderPolygonsStroke(geometry: *const Geometry, stroke_width: f32, buffer: []u8) void {
     assert(geometry.size > 0);
     assert(stroke_width >= 0);
@@ -457,7 +444,6 @@ fn renderPolygonsStroke(geometry: *const Geometry, stroke_width: f32, buffer: []
     }
 }
 
-/// Draw an anti-aliased thick line
 fn drawThickLine(
     buffer: []u8,
     size: u32,
@@ -473,11 +459,9 @@ fn drawThickLine(
 
     if (length < 0.001) return;
 
-    // Normal vector
     const nx = -dy / length;
     const ny = dx / length;
 
-    // Expand bounds by half_width + 1 for anti-aliasing
     const expand = half_width + 1.0;
     const size_f: f32 = @floatFromInt(size);
 
@@ -509,11 +493,9 @@ fn drawThickLine(
             const px: f32 = @as(f32, @floatFromInt(px_usize)) + 0.5;
             const py: f32 = @as(f32, @floatFromInt(py_usize)) + 0.5;
 
-            // Distance to line segment
             const dist = distanceToLineSegment(px, py, x0, y0, x1, y1, nx, ny, length);
 
             if (dist < half_width + 1.0) {
-                // Anti-aliased alpha based on distance from edge
                 const alpha_f = 1.0 - @max(0.0, (dist - half_width + 0.5));
                 const alpha: u8 = @intFromFloat(@min(255.0, @max(0.0, alpha_f * 255.0)));
 
@@ -526,7 +508,6 @@ fn drawThickLine(
     }
 }
 
-/// Calculate distance from point to line segment
 fn distanceToLineSegment(
     px: f32,
     py: f32,
@@ -538,21 +519,17 @@ fn distanceToLineSegment(
     ny: f32,
     length: f32,
 ) f32 {
-    // Project point onto line
     const dx = px - x0;
     const dy = py - y0;
     const t = (dx * (x1 - x0) + dy * (y1 - y0)) / (length * length);
 
     if (t < 0) {
-        // Before start of segment
         return @sqrt(dx * dx + dy * dy);
     } else if (t > 1) {
-        // After end of segment
         const dx2 = px - x1;
         const dy2 = py - y1;
         return @sqrt(dx2 * dx2 + dy2 * dy2);
     } else {
-        // Perpendicular distance to line
         return @abs(dx * nx + dy * ny);
     }
 }

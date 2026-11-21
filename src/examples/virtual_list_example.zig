@@ -1,16 +1,3 @@
-//! Virtual list on the 0.4.0 core: 1,000 chat messages of five heights in a
-//! `List` that builds only the messages in view.
-//!
-//! Each text message is as tall as its text wraps at the list's width,
-//! measured with `cx.measureText` in the same styles the bubble draws, so a
-//! narrower window makes taller bubbles; `MessageRow.count_max` bounds the
-//! sum the list takes of them. An image keeps its placeholder's fixed
-//! height. Top, Bottom,
-//! and Jump move the list through `List.scrollTo`, as 0.3.1's buttons did;
-//! its Prev and Next selection and scroll readout are left out.
-//!
-//! Run with: zig build run-virtual-list
-
 const std = @import("std");
 const gooey = @import("gooey");
 const components = @import("gooey-components");
@@ -82,7 +69,6 @@ pub const State = struct {
         effects.scrollTo(list, .end);
     }
 
-    /// Message 500, centred, as 0.3.1's Jump did.
     pub fn jump(_: *State, list: gooey.ElementId, effects: *gooey.Effects) void {
         List(MessageRow).scrollTo(effects, list, 500, .center);
     }
@@ -95,7 +81,6 @@ pub const App = gooey.App(State, render, .{
     .limits = .standard,
 });
 
-/// The generated entry point (contract §7).
 pub const main = App.main;
 
 pub fn render(cx: *Cx) void {
@@ -146,8 +131,6 @@ pub fn render(cx: *Cx) void {
     }));
 }
 
-// 0.3.1's bubble colours, as 0-1 channels (0.3.1 passed 0-255 values and
-// failed its colour assertion on the first frame).
 const sent_color = Color.rgb(0, 122.0 / 255.0, 1);
 const received_color = Color.rgb(229.0 / 255.0, 229.0 / 255.0, 234.0 / 255.0);
 
@@ -183,7 +166,6 @@ pub const MessageRow = struct {
         }
     }
 
-    /// "Alice" is "me": her messages are blue with white text.
     fn isMe(message: *const Message) bool {
         return std.mem.eql(u8, message.sender, "Alice");
     }

@@ -1,4 +1,4 @@
-//! Keymaps and actions (contract §5).
+//! Keymaps and actions.
 //!
 //! An action is a type such as `const Undo = struct {};`, named at runtime by
 //! its comptime-hashed id (`ui.action(Undo)`). `Config.keymap` binds key
@@ -69,7 +69,7 @@ pub fn compile(comptime bindings: []const Binding) []const Compiled {
 
 /// The action the last matching binding names, given a predicate telling
 /// whether a context hash is on the focus path. Later bindings override
-/// earlier ones, as in 0.3.1's `Keymap.match`.
+/// earlier ones.
 pub fn match(
     table: []const Compiled,
     key: *const input.KeyEvent,
@@ -88,9 +88,6 @@ pub fn match(
 }
 
 test "the last matching binding wins and contexts gate their bindings" {
-    // Goal: 0.3.1's precedence and context rules. Methodology: two bindings
-    // for cmd-z, the later one only inside "Editor", queried with and
-    // without that context on the path.
     const Undo = struct {};
     const EditorUndo = struct {};
     const table = comptime compile(&.{

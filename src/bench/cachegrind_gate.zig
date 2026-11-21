@@ -1,41 +1,8 @@
-//! Instruction-Count Benchmark Gate (Linux)
-//!
-//! Runs every benchmark of the base and the head of a pull request under
-//! `valgrind --tool=cachegrind`, one process per benchmark, and fails when a
-//! benchmark's instruction count (Ir) grows by more than the threshold.
-//! Improvements never fail.
-//!
-//! Wall time on shared CI runners swings by tens of percent between runs, so
-//! the macOS gate compares noise. Instruction counts of the same code
-//! repeat to within about 0.1% (see `threshold_percent_default`), and the
-//! base and the head are measured in the same job on the same machine, so a
-//! difference is the code's.
-//!
-//! Inputs are two directories made by `zig build bench-ir-build`, one per
-//! side, each holding the four harnesses built with fixed iteration counts
-//! and Valgrind client requests. Each harness run with
-//! `--cachegrind-benchmark <index>` instruments only that benchmark (see
-//! `bench/json_writer.zig`), so Ir counts nothing but that benchmark's work,
-//! plus any setup the harness performs between it and the previous one.
-//!
-//! Usage:
-//!   bench-ir-gate --base <dir> --head <dir> [--work <dir>]
-//!                 [--threshold <percent>] [--jobs <count>]
-//!
-//! Exit code 0: no regression.  1: a regression above the threshold.
-//! 2: usage or measurement error.
-//!
-//! Resource sketch: at most 4 modules x 2 sides x 256 benchmarks, so at most
-//! 2,048 Valgrind processes, `jobs` at a time. Storage is one `Gate` of about
-//! 300 KiB, allocated once at start; JSON parsing allocates and frees per file.
-
 const std = @import("std");
 const builtin = @import("builtin");
 const Io = std.Io;
 const Dir = std.Io.Dir;
 
-/// Regression threshold, in percent of the base's Ir.
-///
 /// Measured noise: across three runs of this gate on identical code, the
 /// largest per-benchmark delta was 0.114% (text/scaling_shape_10ch), and all
 /// but a handful stayed under 0.05%. The residue comes from timing samples,
@@ -44,8 +11,7 @@ const Dir = std.Io.Dir;
 /// that wall time on shared runners can resolve.
 const threshold_percent_default: f64 = 0.5;
 
-/// Harness modules, in the order the report lists them. Each is installed as
-/// `<module>-bench` by `bench-ir-build`.
+/// Installed as `<module>-bench` by `bench-ir-build`, in report order.
 const modules = [_][]const u8{ "layout", "core", "text", "accessibility" };
 
 /// Matches `MAX_ENTRIES` in `bench/json_writer.zig`.
@@ -57,8 +23,6 @@ const name_length_max: u32 = 128 + 4;
 
 const path_length_max: u32 = 1024;
 
-/// Concurrent Valgrind processes. Ir does not depend on load, so the gate
-/// runs as many as the machine has cores, up to this bound.
 const job_count_max: u32 = 64;
 
 /// Largest benchmark JSON a harness writes (256 entries of ~300 bytes).
@@ -66,7 +30,6 @@ const json_bytes_max: u32 = 1024 * 1024;
 
 const Side = enum { base, head };
 
-/// One module's benchmarks on one side, in harness call order.
 const BenchmarkList = struct {
     names: [benchmark_count_max][name_length_max]u8,
     name_lengths: [benchmark_count_max]u8,
@@ -210,13 +173,6 @@ fn fail(comptime format: []const u8, values: anytype) noreturn {
     std.process.exit(2);
 }
 
-// =============================================================================
-// Measurement
-// =============================================================================
-
-/// List one module's benchmarks on both sides, then measure them all.
-/// A module missing from the base (a new harness) is reported as new; a
-/// module missing from the head is a build error.
 fn measureModule(io: Io, args: *const Args, gate: *Gate, module_index: u32, module: []const u8) void {
     std.debug.assert(module_index < modules.len);
     for ([_]Side{ .base, .head }) |side| {
@@ -248,8 +204,6 @@ fn fileExists(io: Io, path: []const u8) bool {
     return true;
 }
 
-/// Run the harness once natively to learn its benchmarks and their order
-/// from the JSON report. Fixed iteration counts make this run quick.
 fn listBenchmarks(
     io: Io,
     args: *const Args,
@@ -283,7 +237,6 @@ fn listBenchmarks(
     if (list.count == 0) fail("{s} recorded no benchmarks", .{binary});
 }
 
-/// Read the single JSON report the harness wrote into `json_dir`.
 fn readReport(io: Io, json_dir: []const u8) []u8 {
     var dir = Dir.cwd().openDir(io, json_dir, .{ .iterate = true }) catch |err| {
         fail("cannot open {s}: {s}", .{ json_dir, @errorName(err) });
@@ -299,8 +252,6 @@ fn readReport(io: Io, json_dir: []const u8) []u8 {
     fail("no JSON report in {s}", .{json_dir});
 }
 
-/// Copy benchmark names, in order, into `list`. A name seen before gets a
-/// `#<n>` suffix so every benchmark has a distinct key on both sides.
 fn parseNames(bytes: []const u8, list: *BenchmarkList) !void {
     std.debug.assert(bytes.len > 0);
     var parsed = try std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, bytes, .{});
@@ -364,7 +315,6 @@ const Job = struct {
     }
 };
 
-/// Measure every benchmark of both sides, `job_count` processes at a time.
 fn measureLists(
     io: Io,
     args: *const Args,
@@ -448,8 +398,6 @@ fn finishJob(io: Io, job: *Job, name: []const u8) u64 {
     return ir;
 }
 
-/// Ir from a Cachegrind output file's `summary:` line (the only event when
-/// cache and branch simulation are off).
 fn parseSummaryIr(bytes: []const u8) ?u64 {
     var lines = std.mem.splitScalar(u8, bytes, '\n');
     var line_count: u32 = 0;
@@ -462,13 +410,8 @@ fn parseSummaryIr(bytes: []const u8) ?u64 {
     return null;
 }
 
-// =============================================================================
-// Report
-// =============================================================================
-
 const Status = enum { ok, regressed, improved, added, removed };
 
-/// Classify one benchmark. Only growth beyond the threshold fails.
 fn classify(base_ir: u64, head_ir: u64, threshold_percent: f64) Status {
     std.debug.assert(base_ir > 0);
     std.debug.assert(head_ir > 0);
@@ -486,8 +429,7 @@ fn deltaPercent(base_ir: u64, head_ir: u64) f64 {
     return (head - base) / base * 100.0;
 }
 
-/// Print the Markdown table to stdout (CI appends it to the job summary)
-/// and return the totals.
+/// CI appends the Markdown table to the job summary.
 fn report(io: Io, gate: *const Gate, threshold_percent: f64) Totals {
     var buffer: [4096]u8 = undefined;
     var writer = Io.File.stdout().writerStreaming(io, &buffer);
@@ -569,18 +511,11 @@ fn countStatus(totals: *Totals, status: Status) void {
     }
 }
 
-// =============================================================================
-// Tests
-// =============================================================================
-
 test "classify: growth past the threshold regresses, a drop never fails" {
-    // 1,000,000 Ir base: +0.6% fails at a 0.5% threshold, +0.4% passes, and
-    // a -10% improvement is reported but is not a regression.
     try std.testing.expectEqual(Status.regressed, classify(1_000_000, 1_006_000, 0.5));
     try std.testing.expectEqual(Status.ok, classify(1_000_000, 1_004_000, 0.5));
     try std.testing.expectEqual(Status.ok, classify(1_000_000, 995_000, 0.5));
     try std.testing.expectEqual(Status.improved, classify(1_000_000, 900_000, 0.5));
-    // Exactly at the threshold does not fail.
     try std.testing.expectEqual(Status.ok, classify(1_000_000, 1_005_000, 0.5));
 }
 
@@ -601,7 +536,6 @@ test "parseSummaryIr: reads the summary line of a Cachegrind output file" {
 }
 
 test "parseNames: repeated names get distinct keys in call order" {
-    // core-bench records zigzag_32_butt_miter twice; each run must keep its own Ir.
     const json =
         \\{"benchmarks": [{"name": "convex_8"}, {"name": "zigzag_32_butt_miter"},
         \\ {"name": "zigzag_32_butt_miter"}, {"name": "zigzag_32_butt_miter_x"}]}

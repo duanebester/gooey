@@ -1,11 +1,3 @@
-//! Layout: a header with a floating dropdown menu over a content card, on
-//! the core.
-//!
-//! The menu is a `.popover` layer anchored 4 px below its trigger, as 0.3.1's
-//! `Floating.dropdown()` placed it. A click outside the trigger and menu
-//! closes it, and so does Escape, through a keymap action. The layout,
-//! colours, and text match the 0.3.1 example.
-
 const std = @import("std");
 const gooey = @import("gooey");
 const components = @import("gooey-components");
@@ -41,10 +33,8 @@ pub const App = gooey.App(State, render, .{
     .keymap = &.{.{ .keys = "escape", .action = ui.action(CloseMenu) }},
 });
 
-/// The generated entry point (contract §7).
 pub const main = App.main;
 
-/// The gap between the trigger and the menu, from `Floating.dropdown()`.
 const menu_gap: f32 = 4;
 const menu_width: f32 = 160;
 /// The core `Button`'s medium vertical padding, top plus bottom.
@@ -91,9 +81,9 @@ const Header = struct {
     }
 };
 
-/// The button and, while open, the menu it anchors. The click-outside
-/// handler sits on their shared box, so pressing the button while the menu
-/// is open toggles it closed instead of closing and reopening it.
+/// The click-outside handler sits on the button and menu's shared
+/// box, so pressing the button while the menu is open toggles it
+/// closed.
 const DropdownTrigger = struct {
     pub fn render(_: DropdownTrigger, cx: *Cx) void {
         const s = cx.state(State);

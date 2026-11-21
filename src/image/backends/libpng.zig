@@ -1,19 +1,12 @@
-//! Image Loader - Linux libpng Backend
-//!
-//! Decodes PNG images using libpng on Linux systems.
-//! JPEG and other formats are currently unsupported but can be added.
-
 const std = @import("std");
 const interface_verify = @import("../../core/interface_verify.zig");
 const atlas = @import("../atlas.zig");
 const ImageData = atlas.ImageData;
 
-// Compile-time interface verification
 comptime {
     interface_verify.verifyImageLoaderModule(@This());
 }
 
-/// Result of image decoding
 pub const DecodedImage = struct {
     width: u32,
     height: u32,
@@ -36,7 +29,6 @@ pub const DecodedImage = struct {
     }
 };
 
-/// Load error types
 pub const LoadError = error{
     FileNotFound,
     InvalidFormat,
@@ -46,7 +38,6 @@ pub const LoadError = error{
     IoError,
 };
 
-/// Supported image formats
 pub const ImageFormat = enum {
     png,
     jpeg,
@@ -55,9 +46,7 @@ pub const ImageFormat = enum {
     bmp,
 };
 
-/// Load image from raw bytes (PNG, JPEG, etc.)
 pub fn loadFromMemory(allocator: std.mem.Allocator, data: []const u8) LoadError!DecodedImage {
-    // Detect format
     const format = detectFormat(data) orelse return LoadError.InvalidFormat;
 
     return switch (format) {
@@ -67,31 +56,25 @@ pub fn loadFromMemory(allocator: std.mem.Allocator, data: []const u8) LoadError!
     };
 }
 
-/// Detect image format from magic bytes
 pub fn detectFormat(data: []const u8) ?ImageFormat {
     if (data.len < 8) return null;
 
-    // PNG: 89 50 4E 47 0D 0A 1A 0A
     if (std.mem.eql(u8, data[0..8], &[_]u8{ 0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n' })) {
         return .png;
     }
 
-    // JPEG: FF D8 FF
     if (data.len >= 3 and data[0] == 0xFF and data[1] == 0xD8 and data[2] == 0xFF) {
         return .jpeg;
     }
 
-    // GIF: GIF87a or GIF89a
     if (data.len >= 6 and std.mem.eql(u8, data[0..3], "GIF")) {
         return .gif;
     }
 
-    // WebP: RIFF....WEBP
     if (data.len >= 12 and std.mem.eql(u8, data[0..4], "RIFF") and std.mem.eql(u8, data[8..12], "WEBP")) {
         return .webp;
     }
 
-    // BMP: BM
     if (data.len >= 2 and data[0] == 'B' and data[1] == 'M') {
         return .bmp;
     }
@@ -99,18 +82,12 @@ pub fn detectFormat(data: []const u8) ?ImageFormat {
     return null;
 }
 
-// =============================================================================
-// libpng Implementation
-// =============================================================================
-
 const png = struct {
-    // libpng types
     const png_structp = ?*anyopaque;
     const png_infop = ?*anyopaque;
     const png_bytep = [*]u8;
     const png_bytepp = [*][*]u8;
 
-    // libpng functions
     extern "c" fn png_create_read_struct(
         user_png_ver: [*:0]const u8,
         error_ptr: ?*anyopaque,
@@ -150,15 +127,12 @@ const libc = struct {
     extern "c" fn png_init_io(png_ptr: png.png_structp, fp: *anyopaque) void;
 };
 
-/// PNG loading using libpng
 fn loadPng(allocator: std.mem.Allocator, data: []const u8) LoadError!DecodedImage {
-    // Check PNG signature
     const png_signature = [_]u8{ 0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n' };
     if (data.len < 8 or !std.mem.eql(u8, data[0..8], &png_signature)) {
         return LoadError.InvalidFormat;
     }
 
-    // Create PNG read struct
     var png_ptr = png.png_create_read_struct("1.6.0", null, null, null);
     if (png_ptr == null) {
         return LoadError.OutOfMemory;
@@ -176,7 +150,8 @@ fn loadPng(allocator: std.mem.Allocator, data: []const u8) LoadError!DecodedImag
         png.png_destroy_read_struct(&png_ptr, &info_ptr, &null_info);
     }
 
-    // Use memory-based reading - create a simple FILE* wrapper using fmemopen
+    // Use memory-based reading: libpng needs a FILE*, so wrap the bytes with
+    // fmemopen instead of a temporary file.
     const fp = libc.fmemopen(@ptrCast(data.ptr), data.len, "rb") orelse {
         return LoadError.IoError;
     };
@@ -184,7 +159,6 @@ fn loadPng(allocator: std.mem.Allocator, data: []const u8) LoadError!DecodedImag
 
     libc.png_init_io(png_ptr, fp);
 
-    // Read PNG info
     png.png_read_info(png_ptr, info_ptr);
 
     const width = png.png_get_image_width(png_ptr, info_ptr);
@@ -196,7 +170,6 @@ fn loadPng(allocator: std.mem.Allocator, data: []const u8) LoadError!DecodedImag
         return LoadError.DecodeFailed;
     }
 
-    // Transform to RGBA
     if (bit_depth == 16) {
         png.png_set_strip_16(png_ptr);
     }
@@ -219,13 +192,11 @@ fn loadPng(allocator: std.mem.Allocator, data: []const u8) LoadError!DecodedImag
 
     png.png_read_update_info(png_ptr, info_ptr);
 
-    // Allocate output buffer
     const pixels = allocator.alloc(u8, width * height * 4) catch {
         return LoadError.OutOfMemory;
     };
     errdefer allocator.free(pixels);
 
-    // Allocate row pointers
     const row_pointers = allocator.alloc([*]u8, height) catch {
         return LoadError.OutOfMemory;
     };
@@ -235,7 +206,6 @@ fn loadPng(allocator: std.mem.Allocator, data: []const u8) LoadError!DecodedImag
         row_pointers[y] = pixels.ptr + y * width * 4;
     }
 
-    // Read image data
     png.png_read_image(png_ptr, row_pointers.ptr);
     png.png_read_end(png_ptr, null);
 

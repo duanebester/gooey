@@ -1,19 +1,12 @@
-//! FbdevRenderer - the fbdev backend's contract `Renderer` (contract §9).
-//!
-//! Draws each packed frame with the CPU renderer into a panel-sized back
-//! buffer, draws the software cursor over it, and copies the result to the
-//! panel (`Framebuffer.present`). Atlas records arrive through `uploadAtlas`
-//! and land in the CPU renderer's own atlases; the renderer draws on the
-//! caller's thread, so an upload never races a frame that samples the atlas.
-//!
-//! The panel's size is fixed by the hardware, so `resize` only ever restates
-//! it; the window budget is checked against it before initialization.
-//!
-//! ## Memory (CLAUDE.md §2)
+//! The fbdev backend's `Renderer`: draws each packed frame with the CPU
+//! renderer into a panel-sized back buffer, draws the software cursor over
+//! it, and copies the result to the panel. Uploads land in the CPU renderer's
+//! own atlases; drawing runs on the caller's thread, so an upload never races
+//! a frame that samples the atlas.
 //!
 //! `initInPlace` reserves the back buffer (4 B per panel pixel) from fresh
-//! pages, and the CPU renderer's raster scratch and atlases at the window's
-//! `RenderLimits`. Nothing is allocated afterwards.
+//! pages and the CPU renderer's raster scratch and atlases at the window's
+//! `RenderLimits`; nothing is allocated afterwards.
 
 const std = @import("std");
 const backend = @import("../../core/backend.zig");
@@ -34,10 +27,8 @@ pub const Cursor = struct {
 pub const FbdevRenderer = struct {
     /// `Surface.native`; the panel outlives the renderer.
     framebuffer: ?*Framebuffer = null,
-    /// One frame in the renderer's pixel format, panel-sized.
     back_buffer: []u32 = &.{},
     renderer: cpu.Renderer = undefined,
-    /// The panel's size, restated by every `resize`; `draw` asserts it.
     size_px: backend.SizePx = .{ .width = 0, .height = 0 },
     /// Set by the window before each `draw`.
     cursor: Cursor = .{},
@@ -48,8 +39,8 @@ pub const FbdevRenderer = struct {
         backend.verifyRenderer(Self);
     }
 
-    /// `surface.native` points at the platform's `Framebuffer`, whose panel
-    /// size `surface.size_px` must be.
+    // `surface.native` points at the platform's `Framebuffer`, whose panel
+    // size `surface.size_px` must be.
     pub fn initInPlace(
         self: *Self,
         surface: *const backend.Surface,
@@ -74,7 +65,7 @@ pub const FbdevRenderer = struct {
         self.cursor = .{};
     }
 
-    /// The back buffer is rewritten every frame, so all of it counts as used.
+    // The back buffer is rewritten every frame, so all of it counts as used.
     pub fn deinit(self: *Self) void {
         if (self.framebuffer == null) return;
         assert(self.back_buffer.len == @as(usize, self.size_px.width) * self.size_px.height);
@@ -95,7 +86,6 @@ pub const FbdevRenderer = struct {
         self.renderer.uploadAtlas(kind, dirty, pixels);
     }
 
-    /// The panel never changes size; a resize restates it.
     pub fn resize(self: *Self, size_px: backend.SizePx) void {
         const framebuffer = self.framebuffer.?;
         assert(size_px.width == framebuffer.width);
@@ -109,8 +99,6 @@ pub const FbdevRenderer = struct {
         return self.renderer.capabilities();
     }
 
-    /// Rasterize `frame` into the back buffer, draw the cursor over it, and
-    /// copy the result to the panel.
     pub fn draw(
         self: *Self,
         frame: *const PackedFrame,
@@ -133,10 +121,6 @@ pub const FbdevRenderer = struct {
         framebuffer.present(target);
     }
 };
-
-// =============================================================================
-// Software cursor
-// =============================================================================
 
 /// Arrow cursor, hot spot at the top-left: `X` outline, `o` fill, space clear.
 const cursor_rows = [_]*const [12]u8{
@@ -161,7 +145,6 @@ const cursor_rows = [_]*const [12]u8{
     "       XX   ",
 };
 
-/// Draw the arrow at a logical position, scaled to whole device pixels.
 fn drawCursor(target: cpu.raster.Target, x: f64, y: f64, scale_factor: f32) void {
     assert(scale_factor > 0);
     assert(target.width > 0);

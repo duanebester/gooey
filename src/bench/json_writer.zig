@@ -1,23 +1,5 @@
-//! Benchmark JSON Reporter
-//!
-//! Collects benchmark results during a run and writes them to a JSON file
-//! for CI artifact storage and cross-run comparison.  All collection storage
-//! is fixed-capacity and stack-resident.  A single heap allocation occurs in
-//! finish() via `std.json.Stringify.valueAlloc` to serialize the JSON payload;
-//! this happens once at process exit.
-//!
-//! Usage:
-//!   var reporter = Reporter.init("core");
-//!   reporter.addEntry(entry("convex_8", 8, total_ns, iters));
-//!   reporter.finish();
-//!
-//! When the process receives `--json-dir <path>`, the reporter writes:
-//!   <path>/<os>-<arch>-<module>-benchmarks-<mm-dd-yyyy>.json
-//!
-//! When the process receives `--cachegrind-benchmark <index>`, it is one run
-//! of the instruction-count gate (`bench/cachegrind_gate.zig`): the reporter
-//! turns Cachegrind instrumentation on for the benchmark with that ordinal
-//! only, and the process exits once that benchmark has been recorded.
+//! Benchmark JSON reporter; also runs the Cachegrind single-benchmark
+//! mode used by `bench/cachegrind_gate.zig`.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -26,109 +8,58 @@ const Io = std.Io;
 const cachegrind = std.valgrind.cachegrind;
 const options = @import("bench_options");
 
-// =============================================================================
-// Sampling Policy
-// =============================================================================
-
-/// Minimum wall-clock time every harness loop samples before it concludes,
-/// in nanoseconds; each loop also runs a minimum iteration count.
-///
-/// The Cachegrind gate builds the harnesses with `fixed_iterations`, which
-/// makes this zero: every loop then runs exactly its minimum iteration count,
-/// so a benchmark executes the same work on every run and its instruction
-/// count is comparable between the base and the head of a pull request.
-/// Under Valgrind a wall-clock budget would instead buy a run-dependent
-/// number of iterations.
+/// The Cachegrind gate builds the harnesses with `fixed_iterations`,
+/// making this zero so every loop runs a fixed iteration count and
+/// instruction counts stay comparable between the base and the head
+/// of a pull request.
 pub const sample_time_ns_min: u64 = if (options.fixed_iterations) 0 else 50 * std.time.ns_per_ms;
 
-// =============================================================================
-// Limits
-// =============================================================================
-
-/// Maximum benchmark entries per module.  The largest module (core) has ~59
-/// entries today; 256 provides generous headroom without blowing the stack.
+/// The largest module (core) has ~59 entries today.
 const MAX_ENTRIES: u32 = 256;
 
-/// Maximum benchmark name length in bytes.  Names like
-/// "zigzag_128_tri_butt_miter" are well under this.
 const MAX_NAME_LENGTH: u32 = 128;
 
-/// Maximum file-system path length for the output directory.
 const MAX_PATH_LENGTH: u32 = 512;
 
-/// Maximum module name length (e.g. "context", "layout").
 const MAX_MODULE_NAME_LENGTH: u32 = 64;
 
-/// Maximum length of the generated filename (without directory).
-/// Format: <os>-<arch>-<module>-benchmarks-<mm-dd-yyyy>.json
-/// Worst case: "freestanding-powerpc64le-context-benchmarks-12-31-2099.json" = ~62 chars.
+/// Worst case: "freestanding-powerpc64le-context-benchmarks-12-31-2099.json"
+/// is ~62 chars.
 const MAX_FILENAME_LENGTH: u32 = 128;
 
-// =============================================================================
-// Platform Detection (comptime)
-// =============================================================================
-
-/// Operating system name for the JSON metadata and filename.
 const os_name: []const u8 = @tagName(builtin.os.tag);
 
-/// CPU architecture name for the JSON metadata and filename.
 const arch_name: []const u8 = @tagName(builtin.cpu.arch);
 
-// =============================================================================
-// Re-exports
-// =============================================================================
-
-/// The per-iteration timing accumulator the harnesses feed. Re-exported here
-/// because `json_writer.zig` is the root of the `bench` module, so harnesses
-/// reach it as `bench.Sampler` alongside `bench.entry` / `bench.Reporter`.
+/// Re-exported because this file is the `bench` module root, so harnesses
+/// reach it as `bench.Sampler`.
 pub const Sampler = @import("sampler.zig").Sampler;
 
-// =============================================================================
-// Entry — one benchmark result
-// =============================================================================
-
-/// A single benchmark measurement, stored in a fixed-size record.
-/// All fields use explicitly-sized types for cross-platform consistency.
 pub const Entry = struct {
-    /// Benchmark name, null-padded to fixed length.
     name: [MAX_NAME_LENGTH]u8 = @splat(0),
     name_length: u32 = 0,
 
-    /// Number of operations per iteration (vertex count, node count, etc.).
     operation_count: u32 = 0,
 
-    /// Total wall-clock nanoseconds across all timed iterations.
     total_time_ns: u64 = 0,
 
-    /// Number of timed iterations completed.
     iterations: u32 = 0,
 
-    /// Whether `min_per_op_ns` contains a recorded value. Every harness emits
-    /// it, but the flag lets a hand-constructed `Entry` (or a future
-    /// caller) opt out, and mirrors the tolerant shape `has_percentiles` uses.
     has_min: bool = false,
 
-    /// Minimum observed per-operation nanoseconds — the best-of-N estimator
-    /// the regression gate classifies on (see `bench/sampler.zig`).
     min_per_op_ns: f64 = 0.0,
 
-    /// Whether percentile fields contain meaningful data.
-    /// True only for text benchmarks that collect per-iteration samples.
     has_percentiles: bool = false,
 
-    /// Median per-operation nanoseconds (text benchmarks only).
     p50_per_op_ns: f64 = 0.0,
 
-    /// 99th-percentile per-operation nanoseconds (text benchmarks only).
     p99_per_op_ns: f64 = 0.0,
 
-    /// Returns the populated slice of the name buffer.
     pub fn nameSlice(self: *const Entry) []const u8 {
         std.debug.assert(self.name_length <= MAX_NAME_LENGTH);
         return self.name[0..self.name_length];
     }
 
-    /// Average time per iteration in milliseconds.
     pub fn avgTimeMs(self: *const Entry) f64 {
         std.debug.assert(self.iterations > 0);
         std.debug.assert(self.total_time_ns > 0);
@@ -137,7 +68,6 @@ pub const Entry = struct {
         return avg_ns / @as(f64, @floatFromInt(std.time.ns_per_ms));
     }
 
-    /// Average nanoseconds per operation.
     pub fn timePerOpNs(self: *const Entry) f64 {
         std.debug.assert(self.iterations > 0);
         std.debug.assert(self.operation_count > 0);
@@ -147,13 +77,8 @@ pub const Entry = struct {
     }
 };
 
-// =============================================================================
-// Entry Constructors
-// =============================================================================
-
-/// Create an entry from the common benchmark result fields. `min_per_op_ns`
-/// is the best-of-N estimator from the harness `Sampler`; pass 0 only for a
-/// genuinely unmeasured entry.
+/// `min` is the best-of-N estimator from the harness `Sampler`; pass 0 only
+/// for a genuinely unmeasured entry.
 pub fn entry(
     name: []const u8,
     operation_count: u32,
@@ -178,9 +103,8 @@ pub fn entry(
     return e;
 }
 
-/// Create an entry that includes the min plus p50/p99 percentile data (text
-/// benchmarks). Arguments are ordered by ascending percentile — min (p0),
-/// p50, p99 — so the float arguments are hard to transpose at the call site.
+/// Arguments are ordered by ascending percentile — min (p0), p50, p99 — so the
+/// float arguments are hard to transpose at the call site.
 pub fn entryWithPercentiles(
     name: []const u8,
     operation_count: u32,
@@ -201,22 +125,12 @@ pub fn entryWithPercentiles(
     return e;
 }
 
-// =============================================================================
-// Calendar Date
-// =============================================================================
-
 const CalendarDate = struct {
     year: u16,
-    month: u8, // 1–12
-    day: u8, // 1–31
+    month: u8, // 1-12
+    day: u8, // 1-31
 };
 
-/// Derive the current UTC calendar date from the system clock.
-///
-/// Uses `std.Io.Clock.real` — wall-clock seconds since the Unix epoch — and
-/// then reuses the existing `std.time.epoch` calendar arithmetic.  Only the
-/// *source* of the seconds changes vs. Zig 0.15; the Y/M/D decomposition is
-/// unchanged.
 fn getCurrentDate(io: Io) CalendarDate {
     const timestamp_seconds: u64 = @intCast(@max(0, Io.Clock.real.now(io).toSeconds()));
     const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = timestamp_seconds };
@@ -240,11 +154,6 @@ fn getCurrentDate(io: Io) CalendarDate {
     };
 }
 
-// =============================================================================
-// JSON Serialization Types
-// =============================================================================
-
-/// Metadata block written at the top of every JSON report.
 /// Field order here determines field order in the JSON output.
 const JsonMetadata = struct {
     module: []const u8,
@@ -255,9 +164,6 @@ const JsonMetadata = struct {
     entry_count: u32,
 };
 
-/// One benchmark result in the JSON output.  Mirrors the Entry struct but
-/// uses JSON-friendly types: `[]const u8` for name (not a fixed buffer),
-/// `?f64` for nullable percentiles, and pre-computed derived fields.
 const JsonBenchmarkEntry = struct {
     name: []const u8,
     operation_count: u32,
@@ -269,7 +175,6 @@ const JsonBenchmarkEntry = struct {
     p50_per_op_ns: ?f64,
     p99_per_op_ns: ?f64,
 
-    /// Convert from the fixed-capacity Entry to a JSON-serializable form.
     /// Optional fields serialize as `null` when unrecorded, so a reader on an
     /// older schema (no min) can fall back tolerantly.
     fn fromEntry(e: *const Entry) JsonBenchmarkEntry {
@@ -290,22 +195,11 @@ const JsonBenchmarkEntry = struct {
     }
 };
 
-/// Top-level JSON document structure.
 const JsonPayload = struct {
     metadata: JsonMetadata,
     benchmarks: []const JsonBenchmarkEntry,
 };
 
-// =============================================================================
-// Reporter
-// =============================================================================
-
-/// Collects benchmark entries and writes a JSON report file on finish().
-///
-/// All collection storage is inline — no heap allocation during benchmarking.
-/// The reporter parses process argv at init time to detect `--json-dir <path>`.
-/// If the flag is absent, finish() is a no-op and the reporter acts as a
-/// silent sink.
 pub const Reporter = struct {
     entries: [MAX_ENTRIES]Entry = undefined,
     count: u32 = 0,
@@ -318,28 +212,17 @@ pub const Reporter = struct {
 
     json_enabled: bool = false,
 
-    /// Ordinal of the one benchmark a `--cachegrind-benchmark` run measures,
-    /// or null for an ordinary run.
     cachegrind_index: ?u32 = null,
 
-    /// Benchmarks recorded so far, counting entries dropped at capacity, so
-    /// ordinals stay aligned with the harness's call order.
+    /// Counts entries dropped at capacity too, so ordinals stay aligned with
+    /// the harness's call order.
     benchmark_seen_count: u32 = 0,
 
-    /// I/O interface for file system operations (directory creation, file writing).
     /// Passed from the process entry point; defaults to `Io.failing` so that
     /// struct-literal initialisation (`.{}`) still compiles in tests where
     /// file I/O is never exercised.
     io: Io = Io.failing,
 
-    /// Create a reporter for the given module.  Scans `argv` for
-    /// `--json-dir <path>`.
-    ///
-    /// `argv` is passed explicitly (rather than reaching for a global) so
-    /// callers can unit-test arg parsing with a fixed slice, and so the
-    /// reporter never depends on platform-specific globals.  Benchmark
-    /// `main` functions receive `std.process.Init` and forward
-    /// `init.args.vector` here.
     pub fn init(
         module_name: []const u8,
         io: Io,
@@ -360,15 +243,9 @@ pub const Reporter = struct {
         return self;
     }
 
-    /// Append a benchmark entry to the collection.
-    ///
-    /// Each harness records every benchmark through this call right after
-    /// running it, before printing it, and calls `beginBenchmark` once it has
-    /// printed, so the work between `beginBenchmark` and `addEntry` is one
-    /// benchmark's alone. In a `--cachegrind-benchmark` run this is where
-    /// instrumentation stops for the measured benchmark, and the process exits
-    /// there: nothing after it is measured, and skipping the rest of the suite
-    /// halves the gate's time.
+    /// In a `--cachegrind-benchmark` run this ends the measured
+    /// benchmark: instrumentation stops here and the process exits,
+    /// so nothing after it is measured.
     pub fn addEntry(self: *Reporter, e: Entry) void {
         std.debug.assert(e.name_length > 0);
         if (self.cachegrind_index) |index| self.cachegrindEnd(index);
@@ -383,8 +260,6 @@ pub const Reporter = struct {
         self.count += 1;
     }
 
-    /// Write the JSON file if `--json-dir` was provided.  Otherwise no-op.
-    /// Call this once at the end of main().
     pub fn finish(self: *const Reporter) void {
         if (!self.json_enabled) return;
 
@@ -396,9 +271,8 @@ pub const Reporter = struct {
         };
     }
 
-    /// Mark the start of the next benchmark. Harnesses call this after
-    /// printing the previous result, so formatting timing values, whose cost
-    /// varies with the values, stays outside the measured region.
+    /// Called after printing the previous result so formatting stays
+    /// outside the measured region.
     pub fn beginBenchmark(self: *const Reporter) void {
         const index = self.cachegrind_index orelse return;
         // The process exits at the measured benchmark, so no later one starts.
@@ -406,18 +280,15 @@ pub const Reporter = struct {
         if (self.benchmark_seen_count == index) cachegrind.startInstrumentation();
     }
 
-    /// Exclude harness setup that belongs to no benchmark, such as loading
-    /// fonts, from the next benchmark's region; `beginBenchmark` resumes it.
-    /// Font loading in particular reads fontconfig's caches and varies in
-    /// instruction count from run to run.
+    /// Excludes setup that belongs to no benchmark (e.g. font loading,
+    /// whose Ir varies run-to-run) from the measured region.
     pub fn pauseBenchmark(self: *const Reporter) void {
         const index = self.cachegrind_index orelse return;
         std.debug.assert(self.benchmark_seen_count <= index);
         if (self.benchmark_seen_count == index) cachegrind.stopInstrumentation();
     }
 
-    /// End the Cachegrind region of the benchmark just recorded. Exits the
-    /// process once the measured benchmark has ended.
+    /// Exits the process once the measured benchmark has ended.
     fn cachegrindEnd(self: *Reporter, index: u32) void {
         std.debug.assert(self.benchmark_seen_count <= index);
         if (self.benchmark_seen_count == index) {
@@ -428,15 +299,8 @@ pub const Reporter = struct {
         std.debug.assert(self.benchmark_seen_count <= index);
     }
 
-    // =========================================================================
-    // Arg Parsing (private)
-    // =========================================================================
-
-    /// Scan `argv` for `--json-dir <path>` and `--cachegrind-benchmark
-    /// <index>`.  Zero allocation — the argv slice is borrowed from
-    /// `std.process.Init.args.vector`.
     fn parseArgs(self: *Reporter, argv: []const [*:0]const u8) void {
-        // argv may be empty under test runners; only assert non-negative.
+        // argv may be empty under test runners.
         var i: u32 = if (argv.len >= 1) 1 else 0;
         const argc: u32 = @intCast(argv.len);
         while (i < argc) : (i += 1) {
@@ -448,7 +312,6 @@ pub const Reporter = struct {
             }
             if (!std.mem.eql(u8, arg, "--json-dir")) continue;
 
-            // The directory path is the next argument.
             if (i + 1 >= argc) {
                 std.debug.print("bench: --json-dir requires a path argument\n", .{});
                 return;
@@ -470,17 +333,11 @@ pub const Reporter = struct {
         }
     }
 
-    // =========================================================================
-    // Filename Construction (private)
-    // =========================================================================
-
     const FilenameBuffer = struct {
         buf: [MAX_PATH_LENGTH + MAX_FILENAME_LENGTH + 1]u8 = undefined, // +1 for path separator
         len: u32 = 0,
     };
 
-    /// Build the full output path:
-    ///   <json_dir>/<os>-<arch>-<module>-benchmarks-<mm-dd-yyyy>.json
     fn buildFilePath(self: *const Reporter) FilenameBuffer {
         std.debug.assert(self.json_dir_length > 0);
         std.debug.assert(self.module_name_length > 0);
@@ -497,7 +354,8 @@ pub const Reporter = struct {
             date.day,
             date.year,
         }) catch {
-            // Buffer overflow — path + filename exceeds capacity.
+            // Path + filename exceeded capacity; the caller checks
+            // `len == 0`.
             std.debug.print("bench: output path too long\n", .{});
             return result;
         };
@@ -506,19 +364,12 @@ pub const Reporter = struct {
         return result;
     }
 
-    // =========================================================================
-    // JSON Writing (private)
-    // =========================================================================
-
-    /// Write the complete JSON report to disk using `std.json` for serialization.
-    /// Performs a single heap allocation via page_allocator to serialize the
-    /// payload; this runs once at process exit so the allocation cost is
-    /// irrelevant to benchmark timing.
+    /// Single heap allocation, once at process exit, so the cost never
+    /// lands in a timed region.
     fn writeJsonFile(self: *const Reporter) !void {
         std.debug.assert(self.json_enabled);
         std.debug.assert(self.json_dir_length > 0);
 
-        // Ensure output directory exists.
         const dir_path = self.json_dir[0..self.json_dir_length];
         Dir.cwd().createDirPath(self.io, dir_path) catch |err| {
             std.debug.print("bench: cannot create directory \"{s}\": {s}\n", .{ dir_path, @errorName(err) });
@@ -533,30 +384,25 @@ pub const Reporter = struct {
         const file = try Dir.cwd().createFile(self.io, path_slice, .{});
         defer file.close(self.io);
 
-        // Build the JSON payload from collected entries.
         const json_bytes = try self.serializePayload();
         defer std.heap.page_allocator.free(json_bytes);
 
-        // `file.writerStreaming` returns an `Io.File.Writer`; the actual
-        // byte-sink methods live on its `.interface` (`std.Io.Writer`).
-        // `File.Writer.flush` forwards to the interface flush and then
-        // surfaces any latched error — use it at the end.
+        // Byte-sink methods live on `writer.interface`
+        // (`std.Io.Writer`), not on the `Io.File.Writer` itself.
         var write_buf: [4096]u8 = undefined;
         var writer = file.writerStreaming(self.io, &write_buf);
         try writer.interface.writeAll(json_bytes);
-        try writer.interface.writeAll("\n"); // Trailing newline for POSIX friendliness.
+        try writer.interface.writeAll("\n");
         try writer.flush();
 
         std.debug.print("\nbench: wrote {d} entries to {s}\n", .{ self.count, path_slice });
     }
 
-    /// Convert collected entries to a JSON byte string via `std.json`.
     /// Caller owns the returned slice (allocated with page_allocator).
     fn serializePayload(self: *const Reporter) ![]u8 {
         std.debug.assert(self.count <= MAX_ENTRIES);
         std.debug.assert(self.module_name_length > 0);
 
-        // Format the date string into a stack buffer.
         var date_buf: [16]u8 = undefined;
         const date = getCurrentDate(self.io);
         const date_str = std.fmt.bufPrint(&date_buf, "{d:0>2}-{d:0>2}-{d}", .{
@@ -565,8 +411,7 @@ pub const Reporter = struct {
             date.year,
         }) catch unreachable; // 16 bytes is always sufficient for "mm-dd-yyyy".
 
-        // Convert fixed-capacity entries to JSON-serializable form.
-        // 256 entries × ~72 bytes each ≈ 18 KB on the stack — well within budget.
+        // 256 entries x ~72 bytes each is ~18 KB on the stack.
         var json_entries: [MAX_ENTRIES]JsonBenchmarkEntry = undefined;
         for (0..self.count) |i| {
             json_entries[i] = JsonBenchmarkEntry.fromEntry(&self.entries[i]);
@@ -594,9 +439,9 @@ pub const Reporter = struct {
     }
 };
 
-/// Parse the ordinal after `--cachegrind-benchmark` at `argv[flag_index]`.
-/// Only the gate passes this flag, so a missing or malformed value is a gate
-/// bug: fail fast rather than run unmeasured and report zero instructions.
+/// Only the gate passes this flag, so a missing or malformed value is
+/// a gate bug: fail fast rather than run unmeasured and report zero
+/// instructions.
 fn parseCachegrindIndex(argv: []const [*:0]const u8, flag_index: u32) u32 {
     std.debug.assert(flag_index < argv.len);
     std.debug.assert(std.mem.eql(u8, std.mem.sliceTo(argv[flag_index], 0), "--cachegrind-benchmark"));
@@ -609,10 +454,6 @@ fn parseCachegrindIndex(argv: []const [*:0]const u8, flag_index: u32) u32 {
     std.debug.print("bench: --cachegrind-benchmark requires an index below {d}\n", .{MAX_ENTRIES});
     std.process.exit(2);
 }
-
-// =============================================================================
-// Tests
-// =============================================================================
 
 // Pull the shared Sampler's tests into this (the bench module root) test
 // binary. A bare `pub const Sampler = @import(...)` alias does not cause Zig
@@ -628,22 +469,18 @@ test "entry: name is copied and truncated correctly" {
     std.debug.assert(e.operation_count == 128);
     std.debug.assert(e.iterations == 10);
     std.debug.assert(!e.has_percentiles);
-    // `entry` always records a min, even when percentiles are absent.
     std.debug.assert(e.has_min);
     std.debug.assert(e.min_per_op_ns == 4.0);
 }
 
 test "entry: avgTimeMs and timePerOpNs compute correctly" {
-    // 1_000_000 ns total, 10 iterations → 100_000 ns avg → 0.1 ms.
     const e = entry("test", 100, 1_000_000, 10, 950.0);
     const avg_ms = e.avgTimeMs();
     const per_op_ns = e.timePerOpNs();
 
-    // 0.1 ms average.
     std.debug.assert(avg_ms > 0.099);
     std.debug.assert(avg_ms < 0.101);
 
-    // 100_000 ns avg / 100 ops = 1000 ns/op.
     std.debug.assert(per_op_ns > 999.0);
     std.debug.assert(per_op_ns < 1001.0);
 }
@@ -660,7 +497,7 @@ test "entryWithPercentiles: percentile fields are set" {
 test "reporter: addEntry collects entries" {
     var reporter = Reporter.init("test_module", Io.failing, &.{});
     std.debug.assert(reporter.count == 0);
-    std.debug.assert(!reporter.json_enabled); // No --json-dir in empty argv.
+    std.debug.assert(!reporter.json_enabled);
 
     reporter.addEntry(entry("bench_a", 10, 500, 5, 40.0));
     reporter.addEntry(entry("bench_b", 20, 1000, 10, 40.0));
@@ -672,15 +509,12 @@ test "reporter: addEntry collects entries" {
 test "reporter: finish is no-op when json is disabled" {
     var reporter = Reporter.init("noop", Io.failing, &.{});
     reporter.addEntry(entry("x", 1, 100, 1, 100.0));
-    // Must not crash or attempt file I/O.
     reporter.finish();
 }
 
 test "getCurrentDate: returns plausible values" {
-    // `std.testing.io` is the blessed per-test `Io` instance — backed by
-    // `Io.Threaded` and initialised by the test runner for the lifetime
-    // of each test.  It routes wall-clock reads through the real system
-    // clock, unlike `Io.failing` which would return `Timestamp.zero`.
+    // `std.testing.io` routes wall-clock reads through the real
+    // system clock; `Io.failing` would return `Timestamp.zero`.
     const date = getCurrentDate(std.testing.io);
     std.debug.assert(date.year >= 2025);
     std.debug.assert(date.month >= 1);
@@ -690,7 +524,6 @@ test "getCurrentDate: returns plausible values" {
 }
 
 test "reporter: buildFilePath produces expected format" {
-    // Manually construct a reporter with a known dir and module.
     var reporter: Reporter = .{};
     const dir = "bench-results";
     @memcpy(reporter.json_dir[0..dir.len], dir);
@@ -703,14 +536,10 @@ test "reporter: buildFilePath produces expected format" {
     std.debug.assert(result.len > 0);
     const path = result.buf[0..result.len];
 
-    // Path must start with the directory.
     std.debug.assert(std.mem.startsWith(u8, path, "bench-results/"));
-    // Path must contain os and arch.
     std.debug.assert(std.mem.indexOf(u8, path, os_name) != null);
     std.debug.assert(std.mem.indexOf(u8, path, arch_name) != null);
-    // Path must end with .json.
     std.debug.assert(std.mem.endsWith(u8, path, ".json"));
-    // Path must contain the module name.
     std.debug.assert(std.mem.indexOf(u8, path, "-core-benchmarks-") != null);
 }
 
@@ -722,7 +551,6 @@ test "JsonBenchmarkEntry.fromEntry: converts without percentiles" {
     std.debug.assert(json_entry.operation_count == 64);
     std.debug.assert(json_entry.total_time_ns == 1_000_000);
     std.debug.assert(json_entry.iterations == 10);
-    // Min is recorded even without percentiles; the percentiles stay null.
     std.debug.assert(json_entry.min_per_op_ns.? == 1200.0);
     std.debug.assert(json_entry.p50_per_op_ns == null);
     std.debug.assert(json_entry.p99_per_op_ns == null);
@@ -738,9 +566,9 @@ test "JsonBenchmarkEntry.fromEntry: converts with percentiles" {
     std.debug.assert(json_entry.p99_per_op_ns.? == 128.7);
 }
 
-/// Read a parsed JSON number as f64. JSON has a single number type, so the
-/// parser stores an integer-valued number (e.g. the float 5.0 stringified as
-/// `5`) as `.integer`; callers that expect a float must accept both.
+/// JSON has a single number type: an integer-valued number (e.g. 5.0
+/// stringified as `5`) parses as `.integer`, so callers expecting a
+/// float must accept both.
 fn jsonNumberAsF64(v: std.json.Value) f64 {
     return switch (v) {
         .float => |f| f,
@@ -750,10 +578,6 @@ fn jsonNumberAsF64(v: std.json.Value) f64 {
 }
 
 test "reporter: serializePayload produces valid JSON" {
-    // `serializePayload` reads the wall clock (real-time) for the
-    // `timestamp_unix` metadata field; route that through the
-    // per-test `std.testing.io` instance (backed by `Io.Threaded`)
-    // instead of `Io.failing`, which would return `Timestamp.zero`.
     var reporter = Reporter.init("test_mod", std.testing.io, &.{});
     reporter.addEntry(entry("alpha", 10, 500_000, 50, 900.0));
     reporter.addEntry(entryWithPercentiles("beta", 20, 1_000_000, 100, 4.0, 5.0, 15.0));
@@ -761,33 +585,25 @@ test "reporter: serializePayload produces valid JSON" {
     const json_bytes = try reporter.serializePayload();
     defer std.heap.page_allocator.free(json_bytes);
 
-    // Must parse without error.
     var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, json_bytes, .{});
     defer parsed.deinit();
 
-    // Verify top-level structure.
     const root = parsed.value.object;
     std.debug.assert(root.contains("metadata"));
     std.debug.assert(root.contains("benchmarks"));
 
-    // Verify metadata fields.
     const metadata = root.get("metadata").?.object;
     std.debug.assert(std.mem.eql(u8, metadata.get("module").?.string, "test_mod"));
     std.debug.assert(std.mem.eql(u8, metadata.get("os").?.string, os_name));
     std.debug.assert(std.mem.eql(u8, metadata.get("arch").?.string, arch_name));
     std.debug.assert(metadata.get("entry_count").?.integer == 2);
 
-    // Verify benchmark entries.
     const benchmarks = root.get("benchmarks").?.array;
     std.debug.assert(benchmarks.items.len == 2);
     std.debug.assert(std.mem.eql(u8, benchmarks.items[0].object.get("name").?.string, "alpha"));
     std.debug.assert(benchmarks.items[0].object.get("p50_per_op_ns").? == .null);
-    // JSON has no separate float type, so an integer-valued float like 5.0
-    // round-trips as `.integer`; read both percentiles tolerantly.
     std.debug.assert(jsonNumberAsF64(benchmarks.items[1].object.get("p50_per_op_ns").?) == 5.0);
     std.debug.assert(jsonNumberAsF64(benchmarks.items[1].object.get("p99_per_op_ns").?) == 15.0);
-    // Min is recorded for every entry (even the percentile-less "alpha"),
-    // and round-trips as a number for the entry that set it explicitly.
     std.debug.assert(benchmarks.items[0].object.get("min_per_op_ns").? != .null);
     std.debug.assert(jsonNumberAsF64(benchmarks.items[1].object.get("min_per_op_ns").?) == 4.0);
 }

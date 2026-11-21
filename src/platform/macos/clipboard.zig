@@ -1,17 +1,9 @@
-//! macOS Clipboard (Pasteboard) Support
-//!
-//! Provides simple text clipboard access using NSPasteboard.
-//! Uses the general (system) pasteboard for copy/paste operations.
-
 const std = @import("std");
 const objc = @import("objc");
 const core_clipboard = @import("../../core/clipboard.zig");
 
-// AppKit constant for string pasteboard type
 extern "c" var NSPasteboardTypeString: objc.c.id;
 
-/// Read the clipboard text into `out`, cut at a codepoint boundary, and
-/// return its length (0 for none). Claims no storage (core hosts).
 pub fn readText(out: []u8) u32 {
     std.debug.assert(out.len > 0);
     const NSPasteboard = objc.getClass("NSPasteboard") orelse return 0;
@@ -31,19 +23,17 @@ pub fn readText(out: []u8) u32 {
     return @intCast(kept);
 }
 
-/// Write text to the system clipboard.
-/// Returns true on success.
 pub fn setText(text: []const u8) bool {
     const NSPasteboard = objc.getClass("NSPasteboard") orelse return false;
     const NSString = objc.getClass("NSString") orelse return false;
 
     const pasteboard = NSPasteboard.msgSend(objc.Object, "generalPasteboard", .{});
 
-    // Clear existing contents (required before writing)
+    // Required before writing.
     _ = pasteboard.msgSend(c_long, "clearContents", .{});
 
-    // Create NSString from our text - need null-terminated string
-    // Since text may not be null-terminated, we use initWithBytes:length:encoding:
+    // `text` may not be NUL-terminated, so `initWithBytes:length:encoding:`
+    // instead of a null-terminated constructor.
     const ns_string_id: objc.c.id = NSString.msgSend(objc.c.id, "alloc", .{});
     if (ns_string_id == null) return false;
 
@@ -61,24 +51,18 @@ pub fn setText(text: []const u8) bool {
 
     const initialized = objc.Object.fromId(initialized_id);
 
-    // Write to pasteboard
     return pasteboard.msgSend(bool, "setString:forType:", .{
         initialized.value,
         NSPasteboardTypeString,
     });
 }
 
-// =============================================================================
-// Tests
-// =============================================================================
-
 test "clipboard round-trip" {
     const test_text = "Hello from Gooey clipboard test! 🎉";
 
-    // Write to clipboard
     const write_ok = setText(test_text);
     if (!write_ok) {
-        // Skip test if clipboard not available (e.g., headless CI)
+        // No clipboard (headless CI): skip.
         return;
     }
 

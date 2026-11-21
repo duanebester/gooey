@@ -1,19 +1,12 @@
-//! macOS platform: the shared NSApplication, its event loop, the main menu,
-//! and the quit Apple Event. The core host (`core_host.zig`) runs `run` and
-//! turns the loop through `setLoopTurnCallback`.
-
 const std = @import("std");
 const assert = std.debug.assert;
 const objc = @import("objc");
 const appkit = @import("appkit.zig");
 
-/// Nonzero when the calling thread is the process's main thread.
 extern "c" fn pthread_main_np() c_int;
 
-// External Foundation constants - linked at runtime
 extern "c" var NSDefaultRunLoopMode: *anyopaque;
 
-// We need distantFuture for blocking event wait
 fn getDistantFuture() objc.Object {
     const NSDate = objc.getClass("NSDate") orelse unreachable;
     return NSDate.msgSend(objc.Object, "distantFuture", .{});
@@ -24,30 +17,24 @@ fn getDistantFuture() objc.Object {
 const ae_core_event_class: u32 = 0x61657674;
 const ae_quit_application: u32 = 0x71756974;
 
-/// Receives the quit Apple Event; registered once, by the first `initInPlace`.
 var quit_handler_class: ?objc.Class = null;
 
 pub const MacPlatform = struct {
     app: objc.Object,
     running: bool,
 
-    /// A `GooeyQuitHandler` pointing back here; see `handleQuitEvent`.
     quit_handler: objc.Object,
-    /// The window Cmd+Q closes, set by `installMainMenu`.
     quit_window: ?objc.Object,
-    /// The quit Apple Event whose reply waits for teardown; `deinit` sends it.
+    /// The quit Apple Event whose reply waits for teardown; `deinit` resumes
+    /// it.
     quit_suspension: ?*const anyopaque,
 
-    /// Owner hook fired once per `run` iteration; see `setLoopTurnCallback`.
     loop_turn_callback: ?LoopTurnCallback = null,
 
     const Self = @This();
 
-    /// Callback invoked once per iteration of the `run` loop.
     pub const LoopTurnCallback = *const fn (*Self) void;
 
-    /// Initialize in place at the caller's final address, which the core
-    /// host's loop-turn callback receives.
     pub fn initInPlace(self: *Self) !void {
         assert(@intFromPtr(self) != 0);
 
@@ -77,9 +64,8 @@ pub const MacPlatform = struct {
         assert(!self.running);
     }
 
-    /// Runs last in the core host's teardown, so a held quit Apple Event is
-    /// answered only once every other deinit has run. Its sender (the Dock,
-    /// or loginwindow at logout) gets success, and the process exits 0.
+    /// Runs last in teardown, so the held quit Apple Event is answered only
+    /// after every other deinit has run.
     pub fn deinit(self: *Self) void {
         assert(self.app.value != null);
         self.running = false;
@@ -100,30 +86,24 @@ pub const MacPlatform = struct {
         // double-free of a shared instance we never owned.
     }
 
-    /// Install the per-turn owner hook. `null` clears it.
     pub fn setLoopTurnCallback(self: *Self, callback: ?LoopTurnCallback) void {
         self.loop_turn_callback = callback;
     }
 
-    /// Run the application event loop.
-    /// This blocks until quit() is called or the app terminates.
-    /// The core host renders on its own thread, not here.
     pub fn run(self: *Self) void {
         assert(self.app.value != null);
         assert(!self.running);
 
-        // Create autorelease pool (modern runtime API: objc_autoreleasePoolPush/Pop)
         const pool = objc.AutoreleasePool.init();
         defer pool.deinit();
 
         self.running = true;
 
-        // Activate the app
         _ = self.app.msgSend(void, "activateIgnoringOtherApps:", .{true});
 
-        // Finish launching
         _ = self.app.msgSend(void, "finishLaunching", .{});
-        // After `finishLaunching`, which installs AppKit's own quit handler.
+        // Install after `finishLaunching`, which installs AppKit's own quit
+        // handler.
         const install = "setEventHandler:andSelector:forEventClass:andEventID:";
         appleEventManager().msgSend(void, install, .{
             self.quit_handler.value,
@@ -132,13 +112,10 @@ pub const MacPlatform = struct {
             ae_quit_application,
         });
 
-        // Run the event loop - BLOCKING on events
         while (self.running) {
-            // Create an inner autorelease pool for each iteration
             const inner_pool = objc.AutoreleasePool.init();
             defer inner_pool.deinit();
 
-            // Block waiting for events (CPU efficient!)
             const event = self.app.msgSend(
                 ?*anyopaque,
                 "nextEventMatchingMask:untilDate:inMode:dequeue:",
@@ -180,9 +157,9 @@ pub const MacPlatform = struct {
         self.postWakeEvent();
     }
 
-    /// Wake the event loop: it blocks in `nextEventMatchingMask:` and turns
-    /// only after an event, which a close sent as `performClose:` (from the
-    /// Quit menu item or a script) or a main-queue tick does not produce.
+    /// The loop turns only after an event, which a close sent as
+    /// `performClose:` (from the Quit menu item or a script) or a main-queue
+    /// tick does not produce.
     pub fn postWakeEvent(self: *Self) void {
         const NSEvent = objc.getClass("NSEvent") orelse return;
         const ns_event_type_application_defined: u64 = 15;
@@ -301,7 +278,6 @@ pub const MacPlatform = struct {
         return NSAppleEventManager.msgSend(objc.Object, "sharedAppleEventManager", .{});
     }
 
-    /// Register `GooeyQuitHandler` once per process.
     fn registerQuitHandlerClass() !objc.Class {
         if (quit_handler_class) |class| return class;
         const NSObject = objc.getClass("NSObject") orelse return error.ClassNotFound;
@@ -316,13 +292,10 @@ pub const MacPlatform = struct {
         return class;
     }
 
-    // =========================================================================
-    // Calls from the 0.3.1 `context/window.zig`
-    // =========================================================================
-    //
-    // The core never makes these calls. They stay only while that file
-    // compiles, and go when phase 6 deletes it. The core host's render thread
-    // takes no lock the main thread could hold, so there is nothing to lock.
+    // The core never makes these calls. They stay only while the legacy
+    // `context/window.zig` compiles, and go when that file is deleted. The
+    // core host's render thread takes no lock the main thread could hold, so
+    // there is nothing to lock.
 
     pub fn lockRenderThreads(self: *Self) void {
         assert(self.app.value != null);

@@ -1,23 +1,10 @@
-//! Hand-written Win32 bindings for the Windows backend.
-//!
-//! Only the subset of `kernel32` and `user32` the backend calls. Declared by
-//! hand for the same reasons as `linux/vulkan.zig`: there are no C headers to
-//! import, Gooey takes no package dependencies (CLAUDE.md §12), and the tree
-//! type-checks from any host. Win32 never changes the layout of a released
-//! struct or the value of a released constant, so the declarations below stay
-//! correct once they match the SDK headers. The comptime block at the end pins
-//! the 64-bit layouts so an edit cannot drift.
-//!
-//! Naming follows the SDK (`CreateWindowExW`, `WM_SIZE`) rather than Gooey's
-//! style, so each declaration can be checked against Microsoft's documentation
-//! by searching for its exact name.
+//! Hand-written Win32 bindings for the Windows backend, named as in the SDK
+//! (`CreateWindowExW`, `WM_SIZE`) so each declaration can be checked against
+//! Microsoft's documentation. Win32 never changes the layout of a released
+//! struct or the value of a released constant.
 
 const std = @import("std");
 const assert = std.debug.assert;
-
-// =============================================================================
-// Scalar and handle types
-// =============================================================================
 
 pub const BOOL = i32;
 pub const ATOM = u16;
@@ -37,14 +24,9 @@ pub const HBRUSH = *opaque {};
 pub const HMENU = *opaque {};
 /// A movable global memory block, the only kind the clipboard accepts.
 pub const HGLOBAL = *opaque {};
-/// A kernel object handle; here, only the loop's waitable timer.
 pub const HANDLE = *opaque {};
 
 pub const WNDPROC = *const fn (HWND, u32, WPARAM, LPARAM) callconv(.winapi) LRESULT;
-
-// =============================================================================
-// Structures
-// =============================================================================
 
 pub const POINT = extern struct {
     x: i32,
@@ -122,44 +104,32 @@ pub const MONITORINFO = extern struct {
     dwFlags: u32,
 };
 
-// =============================================================================
-// Constants
-// =============================================================================
-
-// Window class styles.
 pub const CS_VREDRAW: u32 = 0x0001;
 pub const CS_HREDRAW: u32 = 0x0002;
 pub const CS_OWNDC: u32 = 0x0020;
 
-// Window styles.
 pub const WS_OVERLAPPEDWINDOW: u32 = 0x00CF_0000;
 pub const WS_EX_APPWINDOW: u32 = 0x0004_0000;
 pub const CW_USEDEFAULT: i32 = std.math.minInt(i32);
 
-// `ShowWindow` commands.
 pub const SW_HIDE: i32 = 0;
 pub const SW_SHOW: i32 = 5;
 
-// `SetWindowPos` flags.
 pub const SWP_NOMOVE: u32 = 0x0002;
 pub const SWP_NOZORDER: u32 = 0x0004;
 pub const SWP_NOACTIVATE: u32 = 0x0010;
 
-// `GetWindowLongPtrW` indices.
 pub const GWLP_USERDATA: i32 = -21;
 
 // `CreateWindowExW` parent that makes a message-only window: never shown,
 // never enumerated, and receiving no broadcasts. A pseudo-handle, -3.
 pub const HWND_MESSAGE: HWND = @ptrFromInt(@as(usize, @bitCast(@as(isize, -3))));
 
-// Clipboard formats.
 pub const CF_UNICODETEXT: u32 = 13;
 
-// `GlobalAlloc` flags.
 pub const GMEM_MOVEABLE: u32 = 0x0002;
 pub const GMEM_ZEROINIT: u32 = 0x0040;
 
-// `PeekMessageW` and `MsgWaitForMultipleObjectsEx`.
 pub const PM_NOREMOVE: u32 = 0x0000;
 pub const PM_REMOVE: u32 = 0x0001;
 // Windows 8 and later add `QS_TOUCH | QS_POINTER` to `QS_INPUT`; without them
@@ -181,13 +151,10 @@ pub const CREATE_WAITABLE_TIMER_HIGH_RESOLUTION: u32 = 0x0000_0002;
 // TIMER_MODIFY_STATE` (winnt.h).
 pub const TIMER_ALL_ACCESS: u32 = 0x001F_0003;
 
-// `WM_SIZE` request types.
 pub const SIZE_MINIMIZED: usize = 1;
 
-// `WM_SETCURSOR` hit-test code for the client area.
 pub const HTCLIENT: u16 = 1;
 
-// `TrackMouseEvent` flags.
 pub const TME_LEAVE: u32 = 0x0002;
 
 // Stock cursors, passed to `LoadCursorW` as `MAKEINTRESOURCE` ordinals.
@@ -197,25 +164,20 @@ pub const IDC_HAND: u16 = 32649;
 pub const IDC_SIZEWE: u16 = 32644;
 pub const IDC_SIZENS: u16 = 32645;
 
-// `SetProcessDpiAwarenessContext`. The context is a pseudo-handle: a small
-// negative integer in a pointer-sized slot.
+// Pseudo-handle: a small negative integer in a pointer-sized slot.
 pub const DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2: isize = -4;
 pub const USER_DEFAULT_SCREEN_DPI: u32 = 96;
 
-// `SystemParametersInfoW` actions.
 pub const SPI_GETWORKAREA: u32 = 0x0030;
 
-// `MonitorFromWindow` fallback.
 pub const MONITOR_DEFAULTTONEAREST: u32 = 0x0000_0002;
 
-// `GetSystemMetrics` indices.
 pub const SM_CXDOUBLECLK: i32 = 36;
 pub const SM_CYDOUBLECLK: i32 = 37;
 
 // One detent of a standard mouse wheel.
 pub const WHEEL_DELTA: i32 = 120;
 
-// Window messages.
 pub const WM_CREATE: u32 = 0x0001;
 pub const WM_DESTROY: u32 = 0x0002;
 pub const WM_SIZE: u32 = 0x0005;
@@ -260,8 +222,7 @@ pub const MK_LBUTTON: usize = 0x0001;
 pub const MK_RBUTTON: usize = 0x0002;
 pub const MK_MBUTTON: usize = 0x0010;
 
-// Virtual-key codes read through `GetKeyState` or routed by the window. The
-// full translation table lives in `input.zig`.
+// Virtual-key codes. The full translation table lives in `input.zig`.
 pub const VK_SHIFT: i32 = 0x10;
 pub const VK_CONTROL: i32 = 0x11;
 pub const VK_MENU: i32 = 0x12;
@@ -270,10 +231,6 @@ pub const VK_F4: i32 = 0x73;
 pub const VK_F10: i32 = 0x79;
 pub const VK_LWIN: i32 = 0x5B;
 pub const VK_RWIN: i32 = 0x5C;
-
-// =============================================================================
-// Functions
-// =============================================================================
 
 pub extern "kernel32" fn GetModuleHandleW(lpModuleName: ?LPCWSTR) callconv(.winapi) ?HINSTANCE;
 pub extern "kernel32" fn GetLastError() callconv(.winapi) u32;
@@ -445,16 +402,10 @@ pub extern "user32" fn EmptyClipboard() callconv(.winapi) BOOL;
 pub extern "user32" fn GetClipboardData(uFormat: u32) callconv(.winapi) ?HGLOBAL;
 pub extern "user32" fn SetClipboardData(uFormat: u32, hMem: HGLOBAL) callconv(.winapi) ?HGLOBAL;
 
-// =============================================================================
-// Parameter decoding
-// =============================================================================
-
-/// `LOWORD`: bits 0..15 of a message parameter.
 pub fn loWord(value: usize) u16 {
     return @truncate(value);
 }
 
-/// `HIWORD`: bits 16..31 of a message parameter.
 pub fn hiWord(value: usize) u16 {
     return @truncate(value >> 16);
 }
@@ -465,7 +416,6 @@ pub fn xFromLParam(lparam: LPARAM) i16 {
     return @bitCast(loWord(@bitCast(lparam)));
 }
 
-/// `GET_Y_LPARAM`: the signed client y coordinate.
 pub fn yFromLParam(lparam: LPARAM) i16 {
     return @bitCast(hiWord(@bitCast(lparam)));
 }
@@ -483,8 +433,8 @@ pub fn isKeyDown(virtual_key: i32) bool {
 }
 
 comptime {
-    // `x86_64-windows` only; see `docs/windows-port.md`. Every layout below
-    // and every handle in `linux/vulkan.zig` assumes 64-bit pointers.
+    // `x86_64-windows` only: every layout below and every handle in
+    // `linux/vulkan.zig` assumes 64-bit pointers.
     assert(@sizeOf(usize) == 8);
 
     assert(@sizeOf(POINT) == 8);
@@ -502,9 +452,6 @@ comptime {
 }
 
 test "message parameter decoding keeps the sign of client coordinates" {
-    // Methodology: pack the two 16-bit halves the way `MAKELPARAM` does and
-    // check the boundary values, including coordinates left of and above the
-    // client origin that a captured pointer reports.
     const negative: LPARAM = @bitCast(@as(usize, 0xFFFE_FFFF));
     try std.testing.expectEqual(@as(i16, -1), xFromLParam(negative));
     try std.testing.expectEqual(@as(i16, -2), yFromLParam(negative));

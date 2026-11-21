@@ -1,5 +1,4 @@
-//! Background jobs: `Effects.spawn` (contract §4, the 0.6 background-work
-//! design).
+//! Background jobs: `Effects.spawn`.
 //!
 //! A job is a type in `Config.jobs` with an `Input`, a `Result`, and
 //! `run(input: *const Input, job: *Job(Result)) !void`. A handler spawns one
@@ -53,7 +52,7 @@
 //!
 //! Resource sketch at `.standard`: 8 slots of 4 KiB input and 32 result
 //! slots of 4 KiB, 160 KiB reserved from fresh pages and zeroed up to their
-//! high-water marks on release (CLAUDE.md §21); 16 tasks (8 runners and 8
+//! high-water marks on release; 16 tasks (8 runners and 8
 //! interrupters, idle in a semaphore wait) whose stacks are the io's default.
 //! Per tick the main thread routes at most `job_result_count_max +
 //! job_count_max` deliveries, copying nothing; a cancel is two atomic
@@ -188,9 +187,9 @@ fn checkRun(comptime Spec: type) void {
 }
 
 /// `Input` is copied into the job's slot and must not reach `State` or any
-/// other memory the main thread owns (design decision D4): no pointer or
+/// other memory the main thread owns: no pointer or
 /// slice anywhere inside it. Large data goes through an app-owned buffer the
-/// input names by index. An explicit stack, not recursion (CLAUDE.md §6).
+/// input names by index. An explicit stack, not recursion.
 fn checkPointerFree(comptime Input: type, comptime job_name: []const u8) void {
     var stack: [input_type_depth_max]type = undefined;
     var count: u32 = 1;
@@ -520,10 +519,6 @@ pub const Pool = struct {
         if (self.wake) |service| service.wake(service.context);
     }
 
-    // =========================================================================
-    // Main thread
-    // =========================================================================
-
     /// Claim a slot, copy `input` into it, and start `run`. A job type not in
     /// `Config.jobs`, or a full table, is a programmer error.
     pub fn spawn(
@@ -709,10 +704,6 @@ pub const Pool = struct {
         const blocks = @divExact(self.result_stride, value_alignment);
         return std.mem.sliceAsBytes(self.result_blocks[index * blocks ..][0..blocks]);
     }
-
-    // =========================================================================
-    // Runners and interrupters (or the main thread, without workers)
-    // =========================================================================
 
     /// One runner: wait for a spawn of its slot, run it, deliver its end.
     /// Each turn runs one job. The task ends at `stop` (`stopping` is set

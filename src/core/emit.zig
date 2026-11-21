@@ -1,32 +1,7 @@
-//! Emit: turn the laid-out nodes into paint, hit, and accessibility records
-//! (contract §8, §6).
-//!
-//! One pass over the nodes in pre-order, which is draw order. A box writes
-//! its shadow, then one quad with its fill and border; text writes one glyph
-//! sprite per visible glyph, placed exactly as the 0.3.1 runtime places them
-//! (`text/render.zig`); a paint element runs its paint function with a
-//! `Painter`. Interactive and keyed boxes write hit records whose `parent`
-//! is the nearest ancestor hit record, so the router bubbles without the
-//! tree. A `Style.clip` or scroll box wraps its subtree in a clip pair and
-//! bounds its hits by the clip; a scroll box then measures its content and
-//! draws its scrollbar, adding two quads.
-//!
-//! Culling: a box fill, shadow, paint element or text line wholly outside the
-//! clip around it (a row scrolled out of its scroll box) writes no paint
-//! records and shapes no glyphs; a clip box scrolled out writes no clip pair.
-//! Its hit record stays, clipped to nothing, so Tab order, focus reveal,
-//! `Effects.bounds` and drop targets still see it, and its accessibility node
-//! stays with its laid-out bounds, so a screen reader reads and walks content
-//! out of view, as it does a web page or a native table's rows. Paint
-//! functions still run, culled, so text widths and IME answers hold.
-//!
-//! Work per tick: one visit per node, one hit and at most one accessibility
-//! record per box, and paint records only for what meets its clip: a scroll
-//! box of N wrapped lines costs the lines in view plus one margin line each
-//! side per text (`linesInView`, constant time), each line one sprite per
-//! glyph. Paint and glyph budgets therefore follow the viewport: a 1,000 px
-//! box of 20 px lines draws at most about 54 lines, however long its content.
-//! At `.standard` a frame is at most ~28,000 records.
+//! One pass over the laid-out nodes in pre-order, which is draw order. Culled
+//! content writes no paint records but keeps its hit and accessibility records,
+//! so Tab order and screen readers still see it, and paint functions still run.
+//! Paint budgets follow the viewport: a scroll box draws the lines in view.
 
 const std = @import("std");
 const records = @import("records.zig");
@@ -151,7 +126,7 @@ pub const Painter = struct {
     }
 
     /// A line `width` wide: an axis-aligned line is a quad, any other two
-    /// triangles, as 0.3.1's canvas drew them.
+    /// triangles.
     pub fn line(self: *Painter, from: [2]f32, to: [2]f32, width: f32, color: Color) void {
         assert(width > 0);
         assert(!std.math.isNan(from[0]) and !std.math.isNan(to[0]));
@@ -179,8 +154,8 @@ pub const Painter = struct {
         self.triangles(&.{ c0, c1, c2, c0, c2, c3 }, color);
     }
 
-    /// A filled circle of as many sides as its size on screen needs, as
-    /// 0.3.1's `fillCircleAdaptive`: 4 below 2 px of radius, up to 32.
+    /// A filled circle of as many sides as its size on screen needs:
+    /// 4 below 2 px of radius, up to 32.
     pub fn circle(self: *Painter, center: [2]f32, radius: f32, color: Color) void {
         assert(radius >= 0);
         assert(!std.math.isNan(center[0]) and !std.math.isNan(center[1]));
@@ -590,7 +565,7 @@ fn emitFocusRing(window: *Window, ring: *const FocusRing, paint_depth: u32) void
 }
 
 /// A modal fragment starts here: hit tests stop at its first record, so
-/// nothing emitted before it receives the pointer (contract §6).
+/// nothing emitted before it receives the pointer.
 fn blockEarlierHits(frame: *records.Frame) void {
     assert(frame.modal_hit_start <= frame.hit_count);
     frame.modal_hit_start = frame.hit_count;
@@ -620,7 +595,7 @@ const LayerRoot = struct {
 };
 
 /// Layers opened and not yet emitted. Fragments follow in layer kind order,
-/// then open order (contract §6), which is pre-order: the next fragment is
+/// then open order, which is pre-order: the next fragment is
 /// the lowest kind rank, then the lowest node index.
 const LayerQueue = struct {
     roots: [layer_count_ceiling]LayerRoot,
@@ -809,7 +784,7 @@ fn checkClipDepth(window: *const Window, depth: u32) void {
         "ResourceLimits.paint.clip_depth_max.", .{ depth + 1, depth_max, window.frame_number });
 }
 
-// 0.3.1's scroll container scrollbar colours (`widgets/scroll_container.zig`).
+// Scroll container scrollbar colours (`widgets/scroll_container.zig`).
 const scrollbar_room = window_mod.ScrollState.scrollbar_room;
 const scrollbar_radius: f32 = 4;
 const scrollbar_track_color = Color{ .r = 0, .g = 0, .b = 0, .a = 0.05 };
@@ -817,7 +792,7 @@ const scrollbar_thumb_color = Color{ .r = 0, .g = 0, .b = 0, .a = 0.3 };
 const scrollbar_thumb_drag_color = Color{ .r = 0, .g = 0, .b = 0, .a = 0.5 };
 
 /// Record what this emit measured, clamp the offset to it, and draw the
-/// scrollbars after the clipped content, as 0.3.1 does at `scissor_end`.
+/// scrollbars after the clipped content.
 /// A clamp or an overflow change makes this frame's layout or clip stale,
 /// and a resized viewport changes which rows a `List` builds, so each
 /// requests one more render; steady content requests none.
@@ -1020,9 +995,9 @@ fn emitPaint(window: *Window, node: *const Node, bounds: Rect, place: PaintPlace
     }
 }
 
-/// One glyph run per wrapped line (contract decision 9), pitched by the layout's
-/// line height and aligned by `lineSpan`, as 0.3.1's `emitTextCommands`
-/// places them. Only lines whose box meets `clip` draw:
+/// One glyph run per wrapped line, pitched by the layout's
+/// line height and aligned by `lineSpan`.
+/// Only lines whose box meets `clip` draw:
 /// lines are pitched evenly, so the rows in view follow from the clip by
 /// division, and a text of thousands of lines in a scroll box costs the lines
 /// on screen, not its length.
@@ -1228,7 +1203,7 @@ fn emitSvg(window: *Window, path: []const u8, bounds: Rect, options: SvgStyle) v
     } });
 }
 
-/// The most sides a circle gets, as 0.3.1's `Path.circleAdaptive`.
+/// The most sides a circle gets.
 const circle_sides_max: u32 = 32;
 
 /// Fan the circle's polygon from its first corner; returns the points used.
@@ -1253,7 +1228,7 @@ fn circlePoints(
     return count;
 }
 
-/// 0.3.1's thresholds: tiny circles are squares, then hexagons, then 12,
+/// Tiny circles are squares, then hexagons, then 12,
 /// 24, and 32 sides as the radius on screen passes 8, 32, and 128 px.
 fn circleSides(screen_radius: f32) u32 {
     assert(screen_radius >= 0);
@@ -1389,7 +1364,7 @@ fn colorEql(a: Color, b: Color) bool {
 }
 
 /// Draw a cached image, or queue its decode and draw nothing. Placement
-/// matches 0.3.1: fit inside `bounds`, then snap to the device pixel grid.
+/// fits inside `bounds`, then snaps to the device pixel grid.
 fn emitImage(window: *Window, path: []const u8, bounds: Rect, options: ImageStyle) void {
     assert(options.grayscale >= 0);
     assert(options.grayscale <= 1);

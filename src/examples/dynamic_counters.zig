@@ -1,11 +1,3 @@
-//! Dynamic counters: entities on the core (contract §7, decision 17).
-//!
-//! - Each counter is an entity in the `Counter` pool. Its buttons bind the
-//!   pure `Counter.increment` and `decrement` to it with `.entity`.
-//! - `addCounter` and `removeCounter` create and remove entities through
-//!   `Effects`; a removed counter's slot is freed after the drain.
-//! - The layout, colours, and limits match the 0.3.1 example.
-
 const std = @import("std");
 const gooey = @import("gooey");
 const components = @import("gooey-components");
@@ -36,7 +28,7 @@ pub const Counter = struct {
     }
 };
 
-/// Most counters at once, as in 0.3.1; the `.nano` pool holds 16.
+/// The `.nano` entity pool holds 16; keep this under it.
 pub const counter_count_max = 10;
 
 const labels = [counter_count_max][]const u8{
@@ -77,7 +69,6 @@ pub const App = gooey.App(State, render, .{
     .entities = &.{Counter},
 });
 
-/// The generated entry point (contract §7).
 pub const main = App.main;
 
 const muted: Color = .rgb(0.5, 0.5, 0.5);
@@ -139,8 +130,8 @@ const CounterCard = struct {
         const data = cx.get(Counter, self.counter);
         var buffer: [12]u8 = undefined;
         const count = std.fmt.bufPrint(&buffer, "{d}", .{data.count}) catch unreachable;
-        // Keyed by slot and generation, so a reused slot starts fresh
-        // (decision 17).
+        // Keyed by slot and generation, so a reused slot starts
+        // fresh.
         const key: u64 = (@as(u64, self.counter.generation) << 32) | self.counter.slot;
         cx.render(ui.box(.{
             .key = .{ .index = key },
@@ -150,7 +141,6 @@ const CounterCard = struct {
                 .background = .{ .rgba = .white },
                 .corner_radius = .all(8),
                 .width_min = 120,
-                // 0.3.1's shadow defaulted to a 4 px drop.
                 .shadow = .{ .blur = 8, .offset_y = 4, .color = .{ .rgba = .rgba(0, 0, 0, 0.1) } },
             },
         }, .{

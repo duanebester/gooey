@@ -1,13 +1,3 @@
-//! Todo: a text input, a list, and filters on the core.
-//!
-//! A filter bar and footer frame the list; its scripted run is the
-//! `core_todo` golden. The draft is a
-//! `TextInput` bound to `State.draft`; IME composition reaches its retained
-//! engine through the router like any key.
-//! The rows scroll in a core scroll box between the fixed header and footer,
-//! and the input fills the row beside Add, so the layout holds at any count
-//! and down to narrow windows.
-
 const std = @import("std");
 const gooey = @import("gooey");
 const components = @import("gooey-components");
@@ -56,12 +46,10 @@ fn utf8Prefix(value: []const u8, bytes_max: u32) u32 {
 pub const State = struct {
     todos: [todo_count_max]Todo = @splat(.{}),
     count: u32 = 0,
-    /// The id the next pushed todo gets; ids start at 1.
     id_next: u64 = 1,
     draft: []const u8 = "",
     filter: Filter = .all,
 
-    /// Append the trimmed `value`; blank values and a full list are ignored.
     fn push(self: *State, value: []const u8) void {
         const trimmed = std.mem.trim(u8, value, " \t\r\n");
         if (trimmed.len == 0) return;
@@ -109,7 +97,6 @@ pub const State = struct {
         self.count = kept;
     }
 
-    /// The index of the todo with `id`, or null once it is removed.
     fn find(self: *const State, id: u64) ?u32 {
         assert(id < self.id_next);
         for (self.todos[0..self.count], 0..) |*todo, index| {
@@ -142,7 +129,6 @@ pub const App = gooey.App(State, render, .{
     .limits = .small,
 });
 
-/// The generated entry point (contract §7).
 pub const main = App.main;
 
 const spacer = ui.box(.{ .style = .{ .width = .{ .grow = 1 }, .height = .{ .grow = 1 } } }, .{});
@@ -178,7 +164,6 @@ pub fn render(cx: *Cx) void {
     }));
 }
 
-/// The hint, then a spacer that holds the footer at the bottom.
 fn emptyHint(cx: *Cx) void {
     cx.render(ui.text(
         "Nothing yet \u{2014} add your first todo above.",
@@ -187,8 +172,6 @@ fn emptyHint(cx: *Cx) void {
     cx.render(spacer);
 }
 
-/// The rows fill the space between the filters and the footer and scroll
-/// once they overflow it.
 fn todoList(cx: *Cx) void {
     cx.render(ui.box(.{ .key = .{ .name = "todo-list" }, .style = .{
         .width = .{ .grow = 1 },
@@ -291,7 +274,6 @@ const Footer = struct {
 };
 
 test "the model adds trimmed drafts, toggles, removes, and clears" {
-    // Goal: the state methods the handlers call, without a window.
     var s = State{ .draft = "  buy milk  " };
     s.addTodo();
     try std.testing.expectEqualStrings("buy milk", s.todos[0].text());

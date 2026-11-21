@@ -1,23 +1,9 @@
-//! Compile-time pin list for Gooey's public API.
-//!
-//! Every name referenced below is a promise: deleting or renaming it must
-//! be an explicit, intentional act that updates this file in the same
-//! change. The list is the whole public surface of `root.zig`: the names an
-//! app writes as `gooey.<Name>`, and the namespaces handlers and
-//! accessibility fields reach into. `gooey.internals` and `gooey.testing`
-//! are deliberately unpinned: neither is API.
-//!
-//! If a pinned name disappears, `zig build test` (which reaches this file
-//! from `root.zig`'s test block) fails at comptime at that name's line.
-//! `pinExact` closes the other direction: a public name added to the root
-//! or to one of its namespaces without a line here fails too, so this file
-//! describes the whole surface.
+//! Compile-time pin list for Gooey's public API, enforced in both directions:
+//! a missing pinned name and an unpinned public name each fail `zig build test`.
 
 const std = @import("std");
 const gooey = @import("root.zig");
 
-/// The flat names: the app entry point, render context, element
-/// constructors, handlers, identity, retained state, and budget.
 fn pinSurface() void {
     comptime {
         _ = @TypeOf(gooey.App);
@@ -53,8 +39,6 @@ fn pinSurface() void {
     }
 }
 
-/// `gooey.ui`: the element constructors every render function calls and
-/// the style types their options name.
 fn pinUi() void {
     comptime {
         _ = @TypeOf(gooey.ui.box);
@@ -92,8 +76,7 @@ fn pinUi() void {
     }
 }
 
-/// The fields apps set by name. A rename breaks every literal that names
-/// the field, so each is pinned here, not only its containing type.
+/// A rename breaks every literal naming the field, so each is pinned by name.
 fn pinFields() void {
     comptime {
         const Box = gooey.ui.Box;
@@ -180,7 +163,6 @@ fn pinFields() void {
     }
 }
 
-/// `Effects`: what handlers ask the framework for.
 fn pinEffects() void {
     comptime {
         const Effects = gooey.Effects;
@@ -230,7 +212,6 @@ fn pinEffects() void {
     }
 }
 
-/// The namespaces whose types handlers and accessibility fields name.
 fn pinNamespaces() void {
     comptime {
         _ = gooey.animation;
@@ -255,8 +236,7 @@ fn pinNamespaces() void {
     }
 }
 
-/// `Cx`'s methods: it is opaque, so these are everything a render function
-/// or component reaches during a build.
+/// `Cx` is opaque, so these are everything a render function or component reaches.
 fn pinCx() void {
     comptime {
         const Cx = gooey.Cx;
@@ -301,8 +281,6 @@ fn pinCx() void {
     }
 }
 
-/// The exact public names of the root and its namespaces: one missing or
-/// one extra fails with the namespace and both lists.
 fn pinExact() void {
     comptime {
         expectDecls(gooey, "gooey", &.{

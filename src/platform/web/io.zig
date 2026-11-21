@@ -1,10 +1,7 @@
-//! Browser-backed `std.Io` clock support.
-//!
-//! Browser applications use explicit JavaScript callbacks for asynchronous
-//! services, so unsupported operations retain `std.Io.failing` semantics.
-//! Clocks are the exception: animation and interaction timing require a
+//! Browser clock support: animation and interaction timing need a
 //! monotonically advancing source even though no general-purpose WASM I/O
-//! backend exists.
+//! backend exists; every other operation keeps `std.Io.failing` semantics,
+//! since asynchronous services use explicit JavaScript callbacks.
 
 const std = @import("std");
 const imports = @import("imports.zig");

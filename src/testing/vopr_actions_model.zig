@@ -3,27 +3,11 @@
 //! model-free invariants cannot: a binding that fires outside its key
 //! context, an action that misses the focused scope, a chord that matches
 //! with the wrong modifiers, or a key an action took that also reached the
-//! focused control's own handler or default (a Return that both fired an
-//! action and clicked a button would leave the button's message).
-//!
-//! The model is written from the example's keymap and the contract's key
-//! rules, not from the router:
-//! - Ctrl+Z is Undo, Ctrl+Shift+Z is Redo, and plain Escape is Cancel,
-//!   wherever focus is, nothing focused included: the root box handles
-//!   them. Ctrl+S is Save only while focus is inside the "Editor" context,
-//!   whose one focusable is the text input. Modifiers match exactly.
-//! - A key no action took goes to the focused control: Tab and Shift+Tab
-//!   move through tab stops; Return or Space without Ctrl, Cmd, or Alt
-//!   clicks a focused button (Undo or Redo). The text input takes edits,
-//!   which change no message.
-//! - Any press focuses the innermost focusable record under it, or nothing;
-//!   only a left press and release over the same button clicks it, unless
-//!   the platform cancelled the gesture between them.
-//! The VOPR pins Ctrl as the edit modifier, so it drives `AppWith(.ctrl)`.
-//!
-//! The model checks the message, which shows only the last action of a
-//! drain; an action that fired twice for one key leaves the same message
-//! and is not caught here.
+//! focused control's own handler. Written from the example's keymap and the
+//! contract's key rules, not from the router. The VOPR pins Ctrl as the edit
+//! modifier, so it drives `AppWith(.ctrl)`. The model checks the message,
+//! which shows only the last action of a drain; an action that fired twice
+//! for one key leaves the same message and is not caught here.
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -194,7 +178,6 @@ pub const ActionsModel = struct {
         self.counts.fired[@backingInt(message)] += 1;
     }
 
-    /// The action the keymap binds `chord` to with the current focus.
     fn boundAction(self: *ActionsModel, frame: *const records.Frame, chord: Action.Chord) ?Message {
         const m = chord.modifiers;
         const ctrl_only = m.ctrl and !m.shift and !m.alt and !m.cmd;

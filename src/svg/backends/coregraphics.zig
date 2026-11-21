@@ -1,28 +1,15 @@
-//! SVG Rasterizer - CoreGraphics-based SVG path rendering
-//!
-//! Rasterizes SVG path data to RGBA bitmaps at device resolution.
-//! Uses two-channel encoding: R = fill alpha, G = stroke alpha.
-//! This allows the shader to apply different colors to fill and stroke.
-//!
-//! Key optimization: Builds CGPath directly from SVG commands, preserving
-//! bezier curves for native CoreGraphics rendering with optimal anti-aliasing.
-
 const std = @import("std");
 const svg_mod = @import("../path.zig");
 
-// Manual CoreGraphics bindings.
-//
-// Zig 0.16.0 switched from libclang to Aro for C translation, and Aro cannot
-// parse the ObjC block syntax (^) in the CoreGraphics umbrella header. We
-// declare only the functions we actually use. The framework is linked via
+// Manual CoreGraphics bindings: Zig 0.16.0's Aro cannot parse the ObjC block
+// syntax (^) in the CoreGraphics umbrella header. The framework is linked via
 // build.zig.
 const cg = struct {
-    // Opaque CoreGraphics types.
     const CGPath = opaque {};
     const CGContext = opaque {};
     const CGColorSpace = opaque {};
 
-    // Handle types (nullable opaque pointers, matching CF convention).
+    // Nullable opaque pointers, matching the CF convention.
     const CGMutablePathRef = ?*CGPath;
     const CGContextRef = ?*CGContext;
     const CGColorSpaceRef = ?*CGColorSpace;
@@ -30,12 +17,11 @@ const cg = struct {
     // CGFloat is f64 on 64-bit macOS.
     const CGFloat = f64;
 
-    // Constants.
+    // Values match the CoreGraphics enums (CGImageAlphaInfo, CGLineCap,
+    // CGLineJoin); the headers cannot be translated here.
     const kCGImageAlphaPremultipliedLast: u32 = 1;
     const kCGLineCapRound: i32 = 1;
     const kCGLineJoinRound: i32 = 1;
-
-    // --- CGPath functions ---
 
     extern "c" fn CGPathCreateMutable() CGMutablePathRef;
     extern "c" fn CGPathCloseSubpath(path: CGMutablePathRef) void;
@@ -45,12 +31,8 @@ const cg = struct {
     extern "c" fn CGPathAddQuadCurveToPoint(path: CGMutablePathRef, m: ?*const anyopaque, cpx: CGFloat, cpy: CGFloat, x: CGFloat, y: CGFloat) void;
     extern "c" fn CGPathRelease(path: CGMutablePathRef) void;
 
-    // --- CGColorSpace functions ---
-
     extern "c" fn CGColorSpaceCreateDeviceRGB() CGColorSpaceRef;
     extern "c" fn CGColorSpaceRelease(space: CGColorSpaceRef) void;
-
-    // --- CGBitmapContext functions ---
 
     extern "c" fn CGBitmapContextCreate(
         data: ?*anyopaque,
@@ -61,8 +43,6 @@ const cg = struct {
         space: CGColorSpaceRef,
         bitmap_info: u32,
     ) CGContextRef;
-
-    // --- CGContext functions ---
 
     extern "c" fn CGContextSetAllowsAntialiasing(ctx: CGContextRef, allows: bool) void;
     extern "c" fn CGContextSetShouldAntialias(ctx: CGContextRef, should: bool) void;
@@ -95,7 +75,6 @@ pub const RasterizeError = error{
     OutOfMemory,
 };
 
-/// Stroke options for SVG rendering
 pub const StrokeOptions = struct {
     enabled: bool = false,
     width: f32 = 1.0,
@@ -117,7 +96,6 @@ pub fn scratchBytes(budget: RasterBudget, device_size_max: u32) u32 {
         scratch_alignment_slack_bytes;
 }
 
-/// Rasterize SVG path data to RGBA buffer
 pub fn rasterize(
     allocator: std.mem.Allocator,
     path_data: []const u8,
@@ -137,7 +115,6 @@ pub fn rasterize(
     );
 }
 
-/// Build a CGPath directly from parsed SVG commands - preserves beziers for native CG rendering
 fn buildCGPathFromCommands(
     path: *const svg_mod.SvgPath,
     close_subpaths: bool,
@@ -154,7 +131,6 @@ fn buildCGPathFromCommands(
     for (path.commands.items) |cmd| {
         switch (cmd) {
             .move_to => {
-                // Close previous subpath if requested
                 if (close_subpaths and in_subpath) {
                     cg.CGPathCloseSubpath(cg_path);
                 }
@@ -249,7 +225,6 @@ fn buildCGPathFromCommands(
                 last_control_pt = .{ .x = cx2, .y = cy2 };
             },
             .smooth_curve_to => {
-                // Reflect last control point
                 const cx1 = if (last_control_pt) |lcp|
                     2 * cur_pt.x - lcp.x
                 else
@@ -348,7 +323,6 @@ fn buildCGPathFromCommands(
                 const y = if (is_rel) cur_pt.y + path.data.items[data_idx + 6] else path.data.items[data_idx + 6];
                 data_idx += 7;
 
-                // Convert SVG arc to CGPath arc using center parameterization
                 addArcToPath(cg_path, cur_pt.x, cur_pt.y, rx, ry, x_rot, large_arc, sweep, x, y);
                 cur_pt = .{ .x = x, .y = y };
                 last_control_pt = null;
@@ -362,7 +336,6 @@ fn buildCGPathFromCommands(
         }
     }
 
-    // Close final subpath if requested and still open
     if (close_subpaths and in_subpath) {
         cg.CGPathCloseSubpath(cg_path);
     }
@@ -370,7 +343,6 @@ fn buildCGPathFromCommands(
     return cg_path;
 }
 
-/// Convert SVG arc parameters to CGPath bezier approximation
 fn addArcToPath(
     path: cg.CGMutablePathRef,
     x0: f32,
@@ -383,7 +355,6 @@ fn addArcToPath(
     x1: f32,
     y1: f32,
 ) void {
-    // Handle degenerate cases
     if (rx_in == 0 or ry_in == 0) {
         cg.CGPathAddLineToPoint(path, null, x1, y1);
         return;
@@ -396,13 +367,11 @@ fn addArcToPath(
     const cos_phi = @cos(phi);
     const sin_phi = @sin(phi);
 
-    // Step 1: Compute (x1', y1') - transformed midpoint
     const dx = (x0 - x1) / 2.0;
     const dy = (y0 - y1) / 2.0;
     const x1p = cos_phi * dx + sin_phi * dy;
     const y1p = -sin_phi * dx + cos_phi * dy;
 
-    // Step 2: Compute center point (cx', cy')
     var lambda = (x1p * x1p) / (rx * rx) + (y1p * y1p) / (ry * ry);
     if (lambda > 1.0) {
         const sqrt_lambda = @sqrt(lambda);
@@ -424,11 +393,9 @@ fn addArcToPath(
     const cxp = coef * rx * y1p / ry;
     const cyp = -coef * ry * x1p / rx;
 
-    // Step 3: Compute center point (cx, cy)
     const cx = cos_phi * cxp - sin_phi * cyp + (x0 + x1) / 2.0;
     const cy = sin_phi * cxp + cos_phi * cyp + (y0 + y1) / 2.0;
 
-    // Step 4: Compute angles
     const ux = (x1p - cxp) / rx;
     const uy = (y1p - cyp) / ry;
     const vx = (-x1p - cxp) / rx;
@@ -449,7 +416,6 @@ fn addArcToPath(
         dtheta -= 2.0 * std.math.pi;
     }
 
-    // Approximate arc with cubic beziers (max 90 degrees per segment)
     const num_segments: u32 = @max(1, @as(u32, @intFromFloat(@ceil(@abs(dtheta) / (std.math.pi / 2.0)))));
     const segment_angle = dtheta / @as(f32, @floatFromInt(num_segments));
 
@@ -461,7 +427,6 @@ fn addArcToPath(
     }
 }
 
-/// Add a single arc segment (up to 90 degrees) as a cubic bezier
 fn addArcSegment(
     path: cg.CGMutablePathRef,
     cx: f32,
@@ -482,13 +447,11 @@ fn addArcSegment(
     const cos2 = @cos(angle2);
     const sin2 = @sin(angle2);
 
-    // End point of this segment (start of next)
     const ex = rx * cos2;
     const ey = ry * sin2;
     const x2 = cx + cos_phi * ex - sin_phi * ey;
     const y2 = cy + sin_phi * ex + cos_phi * ey;
 
-    // Control points
     const dx1 = -rx * sin1;
     const dy1 = ry * cos1;
     const cp1x = cx + cos_phi * (rx * cos1 + alpha * dx1) - sin_phi * (ry * sin1 + alpha * dy1);
@@ -502,7 +465,6 @@ fn addArcSegment(
     cg.CGPathAddCurveToPoint(path, null, cp1x, cp1y, cp2x, cp2y, x2, y2);
 }
 
-/// Setup a bitmap context with standard settings
 fn createBitmapContext(
     buffer: [*]u8,
     device_size: u32,
@@ -528,7 +490,6 @@ fn createBitmapContext(
     return ctx;
 }
 
-/// Rasterize SVG path data with fill and stroke options.
 /// Output format: R = fill alpha, G = stroke alpha, B = unused, A = combined alpha
 pub fn rasterizeWithOptions(
     allocator: std.mem.Allocator,
@@ -547,15 +508,12 @@ pub fn rasterizeWithOptions(
     const required_size = pixel_count * 4;
     if (buffer.len < required_size) return error.BufferTooSmall;
 
-    // Clear buffer (transparent black)
     @memset(buffer[0..required_size], 0);
 
-    // Parse SVG path (supports both raw path data and SVG elements like circle, rect, etc.)
     var path = svg_mod.SvgPath.init(allocator);
     defer path.deinit();
     try svg_mod.parseBounded(allocator, &path, path_data);
 
-    // Create color space once
     const color_space = cg.CGColorSpaceCreateDeviceRGB();
     if (color_space == null) return error.GraphicsError;
     defer cg.CGColorSpaceRelease(color_space);
@@ -563,7 +521,8 @@ pub fn rasterizeWithOptions(
     const scale: f64 = @as(f64, @floatFromInt(device_size)) / @as(f64, viewbox);
 
     if (fill and stroke.enabled) {
-        // Two-channel mode: need separate paths - closed for fill, open for stroke
+        // Closed path for fill, open for stroke: closing would fill the
+        // subpath outline instead of stroking it.
         const fill_path = buildCGPathFromCommands(&path, true) orelse return error.GraphicsError;
         defer cg.CGPathRelease(fill_path);
         const stroke_path = buildCGPathFromCommands(&path, false) orelse return error.GraphicsError;
@@ -573,7 +532,6 @@ pub fn rasterizeWithOptions(
         defer allocator.free(stroke_buffer);
         @memset(stroke_buffer, 0);
 
-        // Render fill directly to output buffer
         {
             const ctx = createBitmapContext(buffer.ptr, device_size, color_space, scale) orelse return error.GraphicsError;
             defer cg.CGContextRelease(ctx);
@@ -583,7 +541,6 @@ pub fn rasterizeWithOptions(
             cg.CGContextFillPath(ctx);
         }
 
-        // Render stroke to temp buffer (using open path)
         {
             const ctx = createBitmapContext(stroke_buffer.ptr, device_size, color_space, scale) orelse return error.GraphicsError;
             defer cg.CGContextRelease(ctx);
@@ -597,7 +554,6 @@ pub fn rasterizeWithOptions(
             cg.CGContextStrokePath(ctx);
         }
 
-        // Single pass: R = fill alpha, G = stroke alpha, A = max
         for (0..pixel_count) |i| {
             const idx = i * 4;
             const fill_a = buffer[idx + 3];
@@ -608,7 +564,6 @@ pub fn rasterizeWithOptions(
             buffer[idx + 3] = @max(fill_a, stroke_a);
         }
     } else {
-        // Single channel mode (fill-only or stroke-only)
         const cg_path = buildCGPathFromCommands(&path, fill) orelse return error.GraphicsError;
         defer cg.CGPathRelease(cg_path);
 
@@ -621,7 +576,6 @@ pub fn rasterizeWithOptions(
             cg.CGContextSetRGBFillColor(ctx, 1.0, 1.0, 1.0, 1.0);
             cg.CGContextFillPath(ctx);
 
-            // R = fill alpha, G = 0
             for (0..pixel_count) |i| {
                 const idx = i * 4;
                 buffer[idx + 0] = buffer[idx + 3];
@@ -636,7 +590,6 @@ pub fn rasterizeWithOptions(
             cg.CGContextSetLineJoin(ctx, cg.kCGLineJoinRound);
             cg.CGContextStrokePath(ctx);
 
-            // R = 0, G = stroke alpha
             for (0..pixel_count) |i| {
                 const idx = i * 4;
                 buffer[idx + 1] = buffer[idx + 3];

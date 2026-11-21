@@ -1,24 +1,10 @@
-//! Vulkan buffer, command pool, command buffer, and sync object creation.
-//!
-//! Free functions with targeted parameters — each takes only what it needs,
-//! not the entire VulkanRenderer. These are the per-frame resource primitives
-//! that higher-level code composes into application-specific buffer sets.
-
 const std = @import("std");
 const assert = std.debug.assert;
 const vk = @import("vulkan.zig");
 const vk_types = @import("vk_types.zig");
 
-// =============================================================================
-// Limits (CLAUDE.md Rule #4 — put a limit on everything)
-// =============================================================================
-
 /// Per-frame arrays are declared at the ceiling; only the budget's count is created.
 pub const frame_count_max: u32 = vk_types.frame_count_max;
-
-// =============================================================================
-// Result Types
-// =============================================================================
 
 pub const MappedBufferResult = struct {
     buffer: vk.Buffer,
@@ -40,7 +26,6 @@ pub const SyncObjects = struct {
     image_available_semaphores: [frame_count_max]vk.Semaphore,
     in_flight_fences: [frame_count_max]vk.Fence,
 
-    /// Destroy all sync objects. Safe to call with null entries.
     pub fn destroy(self: *SyncObjects, device: vk.Device) void {
         std.debug.assert(device != null);
         for (0..frame_count_max) |i| {
@@ -55,10 +40,6 @@ pub const SyncObjects = struct {
 pub const CommandBuffers = struct {
     render: [frame_count_max]vk.CommandBuffer,
 };
-
-// =============================================================================
-// Error Types
-// =============================================================================
 
 pub const BufferError = error{
     BufferCreationFailed,
@@ -114,8 +95,6 @@ pub fn queryAllocationBytesMax(physical_device: vk.PhysicalDevice) vk.DeviceSize
     return maintenance3.maxMemoryAllocationSize;
 }
 
-/// Which device limit, if any, keeps one reservation from being a single
-/// allocation in `memory_type_index`. Pure, so the boundaries are unit tested.
 fn checkReservation(
     mem_properties: *const vk.PhysicalDeviceMemoryProperties,
     options: *const MemoryPool.Options,
@@ -133,7 +112,6 @@ fn checkReservation(
     return null;
 }
 
-/// Name the reservation, its size, the broken limit and the heap.
 fn reportReservation(
     mem_properties: *const vk.PhysicalDeviceMemoryProperties,
     options: *const MemoryPool.Options,
@@ -157,16 +135,9 @@ fn reportReservation(
     );
 }
 
-// =============================================================================
-// MemoryPool — sub-allocate from a single large VkDeviceMemory block
-// =============================================================================
-
-/// Bump-allocator over a single VkDeviceMemory allocation.
-///
-/// Reduces N individual `vkAllocateMemory` calls to 1. Two pools cover all
-/// cases: host-visible (mapped buffers) and device-local (images).
-/// Uses a probe buffer at init to discover valid memory type bits, then
-/// asserts compatibility on every sub-allocation (CLAUDE.md Rule #11).
+/// Bump-allocator over a single VkDeviceMemory allocation: reduces N
+/// individual `vkAllocateMemory` calls to 1. A probe buffer at init discovers
+/// valid memory type bits; every sub-allocation asserts compatibility.
 pub const MemoryPool = struct {
     memory: vk.DeviceMemory = null,
     mapped: ?[*]u8 = null,
@@ -183,10 +154,6 @@ pub const MemoryPool = struct {
         required_properties: u32,
     };
 
-    /// Create a memory pool backed by a single large allocation.
-    ///
-    /// Uses a probe buffer to discover valid memoryTypeBits for storage/uniform
-    /// usage, then finds a memory type matching `required_properties`.
     /// If the pool is host-visible, the entire block is mapped at creation.
     /// A reservation larger than the device's allocation limit or its heap
     /// fails with a named error and a report instead of a bare driver refusal.
@@ -237,7 +204,6 @@ pub const MemoryPool = struct {
         }
         std.debug.assert(memory != null);
 
-        // Map entire block if host-visible
         var mapped: ?[*]u8 = null;
         const is_host_visible = (required_properties & vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0;
         if (is_host_visible) {
@@ -260,23 +226,18 @@ pub const MemoryPool = struct {
     }
 
     /// Sub-allocate a region satisfying `requirements` from this pool.
-    ///
-    /// Returns the pool's memory handle + aligned offset + mapped pointer.
-    /// Asserts (fails fast) if the pool is exhausted or memory type is
-    /// incompatible — both indicate a sizing bug, not a runtime condition.
+    /// Exhaustion or an incompatible memory type is a sizing bug, not a
+    /// runtime condition: both fail fast.
     pub fn allocate(self: *MemoryPool, requirements: vk.MemoryRequirements) SubAllocation {
-        // Assert pool's memory type is compatible with buffer requirements
         const type_bit = @as(u32, 1) << @as(u5, @intCast(self.memory_type_index));
         std.debug.assert((requirements.memoryTypeBits & type_bit) != 0);
 
-        // Align offset to buffer's required alignment
         const align_mask: vk.DeviceSize = requirements.alignment - 1;
         const aligned: vk.DeviceSize = (self.offset + align_mask) & ~align_mask;
 
-        // Fail fast if the pool is exhausted, in every build mode: the pool is
-        // sized at init from the app's budget, so running out is a sizing bug
-        // that would otherwise bind a buffer past the end of the allocation
-        // (CLAUDE.md §2).
+        // Fail fast in every build mode: the pool is sized at init from the
+        // app's budget, so running out is a sizing bug that would otherwise
+        // bind a buffer past the end of the allocation.
         assert(aligned >= self.offset);
         const end = aligned + requirements.size;
         if (end <= self.size) {
@@ -308,7 +269,6 @@ pub const MemoryPool = struct {
         self.offset = 0;
     }
 
-    /// Destroy the pool's backing memory. Safe to call with null memory.
     pub fn destroy(self: *MemoryPool, device: vk.Device) void {
         std.debug.assert(device != null);
         if (self.mapped != null and self.memory != null) {
@@ -319,20 +279,12 @@ pub const MemoryPool = struct {
     }
 };
 
-// =============================================================================
-// Public API — Buffers
-// =============================================================================
-
 /// Destroy only the buffer handle. Memory is NOT freed — use this for
 /// pool-allocated buffers where the pool owns the backing memory.
 pub fn destroyBufferOnly(device: vk.Device, buffer: vk.Buffer) void {
     std.debug.assert(device != null);
     if (buffer) |buf| vk.vkDestroyBuffer(device, buf, null);
 }
-
-// =============================================================================
-// Public API — Pool-Based Buffer Creation
-// =============================================================================
 
 /// Create a buffer backed by a sub-allocation from a MemoryPool.
 ///
@@ -391,10 +343,6 @@ pub fn createMappedBufferFromPool(
     };
 }
 
-// =============================================================================
-// Public API — Command Pool & Buffers
-// =============================================================================
-
 /// Create a command pool for the given queue family.
 ///
 /// Created with RESET_COMMAND_BUFFER_BIT so individual command buffers can be
@@ -420,7 +368,6 @@ pub fn createCommandPool(
     return pool;
 }
 
-/// Allocate render command buffers (one per frame in flight).
 /// Atlas transfers are recorded directly into per-frame render command buffers,
 /// so no dedicated transfer buffer is needed.
 pub fn allocateCommandBuffers(
@@ -437,7 +384,6 @@ pub fn allocateCommandBuffers(
         .render = @as([frame_count_max]vk.CommandBuffer, @splat(null)),
     };
 
-    // Allocate render command buffers (one per frame in flight)
     const render_alloc = vk.CommandBufferAllocateInfo{
         .sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
         .pNext = null,
@@ -452,13 +398,6 @@ pub fn allocateCommandBuffers(
     return result;
 }
 
-// =============================================================================
-// Public API — Synchronization
-// =============================================================================
-
-/// Create the per-frame synchronization objects: one acquire semaphore and
-/// one fence per frame in flight.
-///
 /// All fences are created in the signaled state so the first vkWaitForFences
 /// call succeeds immediately.
 pub fn createSyncObjects(device: vk.Device, frame_count: u32) SyncError!SyncObjects {
@@ -517,8 +456,6 @@ pub fn createSemaphores(device: vk.Device, out: []vk.Semaphore) SyncError!void {
     }
 }
 
-/// Destroy every semaphore in `semaphores` and null the entries. Null
-/// entries are skipped.
 pub fn destroySemaphores(device: vk.Device, semaphores: []vk.Semaphore) void {
     assert(device != null);
     for (semaphores) |*semaphore| {
@@ -526,10 +463,6 @@ pub fn destroySemaphores(device: vk.Device, semaphores: []vk.Semaphore) void {
         semaphore.* = null;
     }
 }
-
-// =============================================================================
-// Internal Helpers
-// =============================================================================
 
 fn createBufferHandle(
     device: vk.Device,
@@ -556,9 +489,6 @@ fn createBufferHandle(
 }
 
 test "reservations fail by name at the allocation and heap limits" {
-    // Goal: each limit admits a reservation of exactly its size and names the
-    // limit one byte past it. The allocation limit is checked first, so a
-    // reservation over both reports the allocation limit.
     var properties = std.mem.zeroes(vk.PhysicalDeviceMemoryProperties);
     properties.memoryTypeCount = 2;
     properties.memoryHeapCount = 2;
@@ -579,7 +509,6 @@ test "reservations fail by name at the allocation and heap limits" {
         @as(?PoolError, PoolError.VulkanReservationExceedsAllocationMax),
         checkReservation(&properties, &options, 0),
     );
-    // Type 1 lives in the 256 MiB heap: the heap is the binding limit there.
     options.size = 256 << 20;
     try std.testing.expectEqual(@as(?PoolError, null), checkReservation(&properties, &options, 1));
     options.size = (256 << 20) + 1;

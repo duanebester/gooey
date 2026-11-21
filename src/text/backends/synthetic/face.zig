@@ -1,18 +1,10 @@
-//! Synthetic font face: deterministic metrics and box glyphs, no font files.
-//!
-//! Goldens (`src/testing/goldens/`) compare paint and hit records across
-//! machines, and on a real backend every glyph position depends on which
-//! sans-serif the host resolves (DejaVu, Noto, SF Pro). This face derives
-//! every metric from the point size and the codepoint alone, so a golden
-//! captured on Linux matches one replayed on macOS bit for bit.
-//!
-//! Advances differ by character class rather than being one constant: a
-//! single advance would hide off-by-one errors in cursor placement, wrapping,
-//! and measurement, because every string of the same length would measure the
-//! same. Bold faces are 10% wider so a measurement taken with the wrong face
-//! shows up as a different width. The `.monospace` system family advances
-//! every glyph by one cell (0.6 em), so a run drawn with the wrong family
-//! (contract decision 8) also measures differently.
+//! Deterministic metrics and box glyphs, no font files: goldens compare paint
+//! and hit records across machines, so every metric derives from the point
+//! size and codepoint alone. Advances differ by character class (a single
+//! advance would hide off-by-one errors in cursor placement and wrapping);
+//! bold faces are 10% wider, and the `.monospace` family advances every glyph
+//! by one cell, so a run drawn with the wrong face or family measures
+//! differently.
 
 const std = @import("std");
 const types = @import("../../types.zig");
@@ -184,9 +176,6 @@ fn advanceEm(glyph_id: u16) f32 {
 }
 
 test "synthetic advances differ by class and bold is wider" {
-    // Goal: the properties goldens rely on. A narrow and a wide glyph must
-    // differ, so cursor and wrap errors change positions; bold must be wider,
-    // so measuring with the wrong face changes widths.
     var regular = try SyntheticFace.initSystem(.sans_serif, 20, .regular);
     var bold = try SyntheticFace.initSystem(.sans_serif, 20, .bold);
     try std.testing.expect(regular.glyphAdvance('i') < regular.glyphAdvance('m'));

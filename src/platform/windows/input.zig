@@ -1,37 +1,24 @@
 //! Win32 input translation: one `WM_*` message in, at most one Gooey event out.
 //!
-//! Every window message that carries user input passes through
-//! `Translator.translate`, and the window delivers the result in one place
-//! (`Window.handleInput`). Phase 4 of 0.4.0 replaces that delivery with a
-//! bounded `EventQueue`; keeping translation in one pure function means the
-//! change touches one call rather than the window procedure
-//! (`docs/windows-port.md`, seam 1).
-//!
 //! The translator holds no Win32 handles and calls no Win32 functions. State
 //! the OS owns (modifier keys, message time, the pointer position) is sampled
 //! by the caller into `Context`, and the capture and leave-tracking calls the
 //! window makes after each event are decided here by `pointerActions`, so
 //! every rule is testable on any host.
 //!
-//! ## Buttons, capture, and leave tracking
-//!
 //! Held buttons are a set, so a second button's release keeps the capture
-//! the first press took. Every held button reports `mouse_dragged` motion,
-//! inside the client or not, and the window releases capture only when the
-//! last button goes up. Losing capture (`WM_CAPTURECHANGED`) with a button
+//! the first press took. Losing capture (`WM_CAPTURECHANGED`) with a button
 //! held forgets every held button and reports one `pointer_cancelled`, not a
 //! `mouse_up`: the gesture was taken away, so a drag must cancel rather than
 //! drop or commit where the pointer happened to be. Capture loss calls no
 //! `ReleaseCapture`: the capture is already gone. Losing keyboard focus
 //! (`WM_KILLFOCUS`) reports one `focus_lost` carrying the cancelled gesture
-//! and every held key, which the core releases (decision R3 of the 0.6
-//! budget plan), so every message translates to at most one event.
+//! and every held key, so every message translates to at most one event.
 //!
 //! `pointer_inside` means `mouse_entered` was reported and `mouse_exited` was
-//! not. After the last release the window re-arms leave tracking, which
-//! capture may have cancelled; `TrackMouseEvent` reports `WM_MOUSELEAVE` at
-//! once when the pointer is already outside, so a release outside the client
-//! reports the exit, and the next motion inside reports the arrival.
+//! not. `TrackMouseEvent` reports `WM_MOUSELEAVE` at once when the pointer is
+//! already outside, so a release outside the client reports the exit, and the
+//! next motion inside reports the arrival.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -42,15 +29,12 @@ const win32 = @import("win32.zig");
 const KeyCode = input.KeyCode;
 const MouseButton = input.MouseButton;
 
-/// Logical pixels scrolled per wheel detent. Matches the 15 units per detent
-/// libinput reports on the Wayland backend, so a scroll view moves the same
-/// distance per notch on both.
+/// Logical pixels scrolled per wheel detent, matching the 15 units per detent
+/// the Wayland backend reports.
 pub const wheel_detent_px: f64 = 15.0;
 
-/// Longest UTF-8 encoding of one code point: the text buffer's capacity.
 const text_bytes_max: u8 = 4;
 
-/// One window message, as the window procedure receives it.
 pub const Message = struct {
     id: u32,
     wparam: win32.WPARAM,
@@ -84,9 +68,8 @@ pub const key_code_count_max: u32 = input.held_key_count_max;
 
 const KeySet = input.HeldKeys;
 
-/// The most events `Translator.translate` reports for one message, focus
-/// loss included; the window's burst (`window.input_burst_count_max`)
-/// covers it.
+/// The most events `Translator.translate` reports for one message; the
+/// window's burst (`window.input_burst_count_max`) covers it.
 pub const message_event_count_max: u32 = 1;
 
 comptime {
@@ -111,8 +94,8 @@ pub const PointerActions = struct {
     pub const none = PointerActions{ .capture = .none, .track_leave = false };
 };
 
-/// Thresholds for grouping presses into double and triple clicks, read from
-/// the user's system settings once at platform initialization.
+/// Press-grouping thresholds read from the user's system settings once at
+/// platform initialization.
 pub const ClickSettings = struct {
     time_ms_max: u32,
     /// Largest distance, in device pixels on each axis, between presses.
@@ -184,9 +167,7 @@ pub const Translator = struct {
         };
     }
 
-    /// The Win32 calls the window makes after delivering `event`, translated
-    /// from a message with `message_id`. Pure, so the capture and tracking
-    /// rules are testable without a window.
+    /// Pure, so the capture and tracking rules are testable without a window.
     pub fn pointerActions(
         self: *const Translator,
         message_id: u32,
@@ -222,8 +203,6 @@ pub const Translator = struct {
                 // A lost capture is already gone, and another window in this
                 // thread may own it now, so only a real release lets go.
                 const lost = message_id == win32.WM_CAPTURECHANGED;
-                // Capture can cancel leave tracking; re-arming reports the
-                // leave at once when the pointer is already outside.
                 return .{
                     .capture = if (lost) .none else .release,
                     .track_leave = self.pointer_inside,
@@ -284,7 +263,7 @@ pub const Translator = struct {
     /// Forget every held button after capture moved to another window, and
     /// report the gesture cancelled. Null when none is held, which is also
     /// the outcome of the capture change the window's own `ReleaseCapture`
-    /// causes: it releases only after the last button.
+    /// causes.
     fn captureLost(self: *Translator, context: *const Context) ?input.InputEvent {
         assert(std.math.isFinite(context.pointer.x));
         if (self.buttons_held == 0) return null;
@@ -297,9 +276,8 @@ pub const Translator = struct {
     /// After the window lost keyboard focus, forget every held button and
     /// key and report them in one `focus_lost`: their real releases go to
     /// the window that gained focus, so without it a drag never ends and a
-    /// key stays down. Null when nothing is held. A pending surrogate half
-    /// and the click sequence are dropped, so the first click after focus
-    /// returns is a single click.
+    /// key stays down. Null when nothing is held. The click sequence is
+    /// dropped, so the first click after focus returns is a single click.
     fn focusLost(self: *Translator, context: *const Context) ?input.InputEvent {
         assert(context.scale_factor > 0);
         self.high_surrogate = null;
@@ -353,8 +331,7 @@ pub const Translator = struct {
     }
 
     /// Remove `button` from the held set and report its release. A release
-    /// of a button not held (pressed in another window) is still reported,
-    /// as before held buttons were tracked.
+    /// of a button not held (pressed in another window) is still reported.
     fn buttonReleased(
         self: *Translator,
         button: MouseButton,
@@ -513,10 +490,6 @@ pub fn logicalFromDevice(point: win32.POINT, scale_factor: f64) geometry.Point(f
     return .{ .x = x / scale_factor, .y = y / scale_factor };
 }
 
-// =============================================================================
-// Mouse buttons
-// =============================================================================
-
 fn buttonBit(button: MouseButton) u8 {
     const bit: u8 = switch (button) {
         .left => @intCast(win32.MK_LBUTTON),
@@ -549,19 +522,14 @@ fn buttonFirst(bits: u8) ?MouseButton {
     return null;
 }
 
-// =============================================================================
-// System keys
-// =============================================================================
-
 /// Bit 29 of a key message's flags, the context code: Alt was held.
 const flag_alt_down: usize = 1 << 29;
 
 /// Whether a `WM_SYSKEYDOWN`, `WM_SYSKEYUP`, or `WM_SYSCHAR` message also goes
-/// to `DefWindowProcW` after the key is delivered. Only Alt+F4 (close) and
-/// Alt+Space (the system menu, opened from its `WM_SYSCHAR`) do. Everything
-/// else is consumed: Gooey windows have no menu bar, so `DefWindowProcW`
-/// would beep on Alt+letter, and a lone Alt or F10 release would enter menu
-/// mode and swallow the next key.
+/// to `DefWindowProcW`. Only Alt+F4 (close) and Alt+Space (the system menu,
+/// opened from its `WM_SYSCHAR`) do: Gooey windows have no menu bar, so
+/// `DefWindowProcW` would beep on Alt+letter, and a lone Alt or F10 release
+/// would enter menu mode and swallow the next key.
 pub fn systemKeyUsesDefault(message: *const Message) bool {
     assert(message.id == win32.WM_SYSKEYDOWN or message.id == win32.WM_SYSKEYUP or
         message.id == win32.WM_SYSCHAR);
@@ -577,14 +545,10 @@ pub fn systemKeyUsesDefault(message: *const Message) bool {
     return virtual_key == virtual_key_f4 or virtual_key == virtual_key_space;
 }
 
-// =============================================================================
-// Virtual-key translation
-// =============================================================================
-
 /// Bit 24 of a key message's flags: the key is on the extended block, which
 /// separates right Ctrl, right Alt, and keypad Enter from their twins.
 const flag_extended: usize = 1 << 24;
-/// The scan code, bits 16..23. Right Shift is the only way to tell it apart.
+/// The scan code, bits 16..23; right Shift is identified only by scan code.
 const scan_code_shift = 16;
 const scan_code_right_shift: u8 = 0x36;
 
@@ -657,10 +621,6 @@ pub fn keyCodeFromVirtualKey(virtual_key: u8, flags: usize) KeyCode {
     };
 }
 
-// =============================================================================
-// Tests
-// =============================================================================
-
 const testing = std.testing;
 
 const test_settings = ClickSettings{ .time_ms_max = 500, .distance_px_max = 4 };
@@ -685,12 +645,10 @@ fn mouseMessage(id: u32, key_state: usize, x_px: i16, y_px: i16) Message {
 }
 
 const leave_message = Message{ .id = win32.WM_MOUSELEAVE, .wparam = 0, .lparam = 0 };
-/// Capture moving to no window, as the window's own `ReleaseCapture` causes,
-/// or to another window: the translator never sees the gaining handle.
+/// Capture lost to no window or to another; the translator never sees the
+/// gaining handle.
 const capture_lost_message = Message{ .id = win32.WM_CAPTURECHANGED, .wparam = 0, .lparam = 0 };
 
-/// Translate `message` and return the event with the actions the window
-/// would take for it.
 const Step = struct { event: input.InputEvent, actions: PointerActions };
 
 fn step(translator: *Translator, message: Message) ?Step {
@@ -720,13 +678,10 @@ test "pointer motion reports arrival once, then motion, then drags" {
     try testing.expect(translator.translate(&drag, &context).? == .mouse_dragged);
 
     try testing.expect(translator.translate(&leave_message, &context).? == .mouse_exited);
-    // Negative space: a second leave without an arrival reports nothing.
     try testing.expect(translator.translate(&leave_message, &context) == null);
 }
 
 test "held buttons are a set and capture is released only after the last" {
-    // Methodology: press left then right, release right, then left. Each
-    // `wParam` carries the key state Windows reports after the message.
     const left_bit = win32.MK_LBUTTON;
     const both_bits = win32.MK_LBUTTON | win32.MK_RBUTTON;
     var translator = Translator.init(test_settings);
@@ -745,7 +700,6 @@ test "held buttons are a set and capture is released only after the last" {
     const drag = step(&translator, mouseMessage(win32.WM_MOUSEMOVE, left_bit, 12, 10)).?;
     try testing.expectEqual(MouseButton.left, drag.event.mouse_dragged.button);
 
-    // Releasing the last button lets go of capture and re-arms tracking.
     const left_up = step(&translator, mouseMessage(win32.WM_LBUTTONUP, 0, 12, 10)).?;
     try testing.expectEqual(MouseButton.left, left_up.event.mouse_up.button);
     try expectActions(left_up.actions, .release, true);
@@ -755,7 +709,6 @@ test "held buttons are a set and capture is released only after the last" {
 }
 
 test "all three buttons fill the held set and release in any order" {
-    // Boundary: every button held at once, released middle, left, right.
     var translator = Translator.init(test_settings);
     _ = step(&translator, mouseMessage(win32.WM_LBUTTONDOWN, win32.MK_LBUTTON, 0, 0)).?;
     _ = step(&translator, mouseMessage(win32.WM_MBUTTONDOWN, 0, 0, 0)).?;
@@ -774,10 +727,6 @@ test "all three buttons fill the held set and release in any order" {
 }
 
 test "capture loss cancels the gesture once, without ReleaseCapture" {
-    // Goal: a lost capture cancels a drag rather than dropping it where the
-    // pointer was (0.6 plan, PR 2). Methodology: hold two buttons, lose
-    // capture, and call `translate` as the window does, once per possible
-    // button until it returns null: one `pointer_cancelled`, no `mouse_up`.
     var translator = Translator.init(test_settings);
     const both_bits = win32.MK_LBUTTON | win32.MK_RBUTTON;
     _ = step(&translator, mouseMessage(win32.WM_MOUSEMOVE, 0, 10, 10)).?;
@@ -790,14 +739,11 @@ test "capture loss cancels the gesture once, without ReleaseCapture" {
     try testing.expectEqual(@as(u8, 0), translator.buttons_held);
     try testing.expect(step(&translator, capture_lost_message) == null);
 
-    // Motion after the loss is free motion, not a drag.
     const free = step(&translator, mouseMessage(win32.WM_MOUSEMOVE, 0, 11, 10)).?;
     try testing.expect(free.event == .mouse_moved);
 }
 
 test "capture changes with no held button produce nothing" {
-    // Negative space: a loss with nothing held, and the change the window's
-    // own `ReleaseCapture` causes after the last release, report nothing.
     var translator = Translator.init(test_settings);
     try testing.expect(step(&translator, capture_lost_message) == null);
 
@@ -808,9 +754,6 @@ test "capture changes with no held button produce nothing" {
 }
 
 test "a captured drag outside the client stays a drag; release outside then re-enter" {
-    // Methodology: drag out with capture (no leave notification arrives),
-    // release outside, then deliver the `WM_MOUSELEAVE` that re-arming
-    // tracking produces at once, and move back in.
     var translator = Translator.init(test_settings);
     const held = win32.MK_LBUTTON;
     _ = step(&translator, mouseMessage(win32.WM_MOUSEMOVE, 0, 10, 10)).?;
@@ -832,9 +775,6 @@ test "a captured drag outside the client stays a drag; release outside then re-e
 }
 
 test "a leave during a captured drag reports one exit and the arrival after release" {
-    // Methodology: the system reports `WM_MOUSELEAVE` mid-drag; motion out
-    // and back in stays a drag, the release inside needs no re-arming, and
-    // the next free motion reports the arrival.
     var translator = Translator.init(test_settings);
     const held = win32.MK_LBUTTON;
     _ = step(&translator, mouseMessage(win32.WM_MOUSEMOVE, 0, 10, 10)).?;
@@ -857,8 +797,6 @@ test "a leave during a captured drag reports one exit and the arrival after rele
 }
 
 test "motion reports a release the window never saw, one button at a time" {
-    // Methodology: two held buttons, then motion whose key state holds none.
-    // Each motion reports one release; the last lets go of capture.
     var translator = Translator.init(test_settings);
     _ = step(&translator, mouseMessage(win32.WM_MOUSEMOVE, 0, 10, 10)).?;
     _ = step(&translator, mouseMessage(win32.WM_LBUTTONDOWN, win32.MK_LBUTTON, 10, 10)).?;
@@ -876,8 +814,8 @@ test "motion reports a release the window never saw, one button at a time" {
 }
 
 test "key state never adds a button the window did not see pressed" {
-    // Negative space: a drag that began in another window moves over this
-    // one with the left button down. It is free motion, not a drag.
+    // A drag that began in another window moves over with the button down;
+    // it is free motion, not a drag.
     var translator = Translator.init(test_settings);
     const held = win32.MK_LBUTTON | win32.MK_RBUTTON | win32.MK_MBUTTON;
     const arrival = step(&translator, mouseMessage(win32.WM_MOUSEMOVE, held, 10, 10)).?;
@@ -893,8 +831,6 @@ fn systemKey(id: u32, virtual_key: u8, alt_down: bool) Message {
 }
 
 test "only Alt+F4 and Alt+Space reach DefWindowProcW" {
-    // Methodology: each system key decision, pressed and released, with the
-    // context code set as Windows reports it.
     const f4: u8 = @intCast(win32.VK_F4);
     const f10: u8 = @intCast(win32.VK_F10);
     const space: u8 = @intCast(win32.VK_SPACE);
@@ -902,20 +838,17 @@ test "only Alt+F4 and Alt+Space reach DefWindowProcW" {
     for ([_]u32{ win32.WM_SYSKEYDOWN, win32.WM_SYSKEYUP }) |id| {
         try testing.expect(systemKeyUsesDefault(&systemKey(id, f4, true)));
         try testing.expect(systemKeyUsesDefault(&systemKey(id, space, true)));
-        // A lone Alt, F10, and Alt+letter would enter menu mode or beep.
         try testing.expect(!systemKeyUsesDefault(&systemKey(id, alt, true)));
         try testing.expect(!systemKeyUsesDefault(&systemKey(id, alt, false)));
         try testing.expect(!systemKeyUsesDefault(&systemKey(id, f10, false)));
         try testing.expect(!systemKeyUsesDefault(&systemKey(id, f10, true)));
         try testing.expect(!systemKeyUsesDefault(&systemKey(id, 'A', true)));
-        // Negative space: F4 and Space without Alt, and F4's neighbours.
         try testing.expect(!systemKeyUsesDefault(&systemKey(id, f4, false)));
         try testing.expect(!systemKeyUsesDefault(&systemKey(id, space, false)));
         try testing.expect(!systemKeyUsesDefault(&systemKey(id, f4 - 1, true)));
         try testing.expect(!systemKeyUsesDefault(&systemKey(id, f4 + 1, true)));
     }
 
-    // `WM_SYSCHAR`: only Alt+Space's character opens the system menu.
     try testing.expect(systemKeyUsesDefault(&systemKey(win32.WM_SYSCHAR, ' ', true)));
     try testing.expect(!systemKeyUsesDefault(&systemKey(win32.WM_SYSCHAR, 'a', true)));
     try testing.expect(!systemKeyUsesDefault(&systemKey(win32.WM_SYSCHAR, ' ' + 1, true)));
@@ -930,7 +863,6 @@ test "system keys are delivered as key events with Alt" {
     try testing.expect(press.key_down.modifiers.alt);
     const release = translator.translate(&systemKey(win32.WM_SYSKEYUP, 'F', true), &context).?;
     try testing.expectEqual(KeyCode.f, release.key_up.key);
-    // Negative space: `WM_SYSCHAR` is not text input.
     try testing.expect(translator.translate(&systemKey(win32.WM_SYSCHAR, 'f', true), &context) ==
         null);
 }
@@ -942,8 +874,6 @@ fn pressClickCount(translator: *Translator, message: Message, time_ms: u32) u32 
 }
 
 test "click counting honours button, time, and distance thresholds" {
-    // Methodology: press at the exact time and distance thresholds (still a
-    // multi-click), then one past each threshold in turn (the count resets).
     var translator = Translator.init(test_settings);
     const point = pointLParam(100, 100);
     const left = Message{ .id = win32.WM_LBUTTONDOWN, .wparam = 0, .lparam = point };
@@ -985,7 +915,6 @@ test "WM_CHAR assembles surrogate pairs and drops control characters" {
     const emoji = translator.translate(&char.message(0xDE00), &context).?.text_input.text;
     try testing.expectEqualStrings("\u{1F600}", emoji);
 
-    // Negative space: an unpaired low half, backspace, and DEL produce nothing.
     try testing.expect(translator.translate(&char.message(0xDE00), &context) == null);
     try testing.expect(translator.translate(&char.message(0x08), &context) == null);
     try testing.expect(translator.translate(&char.message(0x7F), &context) == null);
@@ -999,7 +928,6 @@ test "virtual keys map to positional key codes" {
     try testing.expectEqual(KeyCode.f1, keyCodeFromVirtualKey(0x70, 0));
     try testing.expectEqual(KeyCode.f20, keyCodeFromVirtualKey(0x83, 0));
 
-    // Twins split by the extended flag and the scan code.
     try testing.expectEqual(KeyCode.@"return", keyCodeFromVirtualKey(0x0D, 0));
     try testing.expectEqual(KeyCode.keypad_enter, keyCodeFromVirtualKey(0x0D, flag_extended));
     try testing.expectEqual(KeyCode.control, keyCodeFromVirtualKey(0x11, 0));
@@ -1009,7 +937,7 @@ test "virtual keys map to positional key codes" {
     try testing.expectEqual(KeyCode.shift, keyCodeFromVirtualKey(0x10, left_shift_flags));
     try testing.expectEqual(KeyCode.right_shift, keyCodeFromVirtualKey(0x10, right_shift_flags));
 
-    // Negative space: one past each range, and an unassigned code.
+    // One past each range, and an unassigned code.
     try testing.expectEqual(KeyCode.unknown, keyCodeFromVirtualKey(0x84, 0)); // VK_F21
     // 'Z' + 1 is VK_LWIN, so the letter range is bounded from below instead.
     try testing.expectEqual(KeyCode.unknown, keyCodeFromVirtualKey('A' - 1, 0));
@@ -1050,7 +978,6 @@ test "keys the IME consumed produce no key events" {
     try testing.expect(translator.translate(&press, &context) == null);
     try testing.expect(translator.translate(&release, &context) == null);
 
-    // Negative space: the neighbouring codes still translate.
     const before = Message{ .id = win32.WM_KEYDOWN, .wparam = processed - 1, .lparam = 0 };
     const after = Message{ .id = win32.WM_KEYUP, .wparam = processed + 1, .lparam = 0 };
     try testing.expect(translator.translate(&before, &context).? == .key_down);
@@ -1067,9 +994,6 @@ test "key repeat is reported only for presses" {
 }
 
 test "focus loss reports the held button and keys in one event" {
-    // Methodology: hold the left button, Shift, and A, lose focus, and
-    // translate the loss as the window does. One `focus_lost` carries the
-    // cancelled gesture and both keys; a second translation reports nothing.
     var translator = Translator.init(test_settings);
     const context = testContext(0);
     const focus_lost = Message{ .id = win32.WM_KILLFOCUS, .wparam = 0, .lparam = 0 };
@@ -1094,9 +1018,6 @@ test "focus loss reports the held button and keys in one event" {
 }
 
 test "focus loss with every key held stays within message_event_count_max" {
-    // Capacity test: hold every virtual key that maps to a key code, plus
-    // every button, then lose focus. The loss is one event, within the
-    // window's per-message burst, however many keys are down.
     var translator = Translator.init(test_settings);
     const context = testContext(0);
     var expected: KeySet = .empty;
@@ -1114,14 +1035,12 @@ test "focus loss with every key held stays within message_event_count_max" {
     const event = translator.translate(&focus_lost, &context).?;
     try testing.expect(event.focus_lost.pointer_cancelled);
     try testing.expect(event.focus_lost.keys_held.eql(expected));
-    // The burst is one event: a second translation reports nothing.
     comptime assert(message_event_count_max == 1);
     try testing.expect(translator.translate(&focus_lost, &context) == null);
 }
 
 test "focus loss with nothing held reports nothing and resets click and text state" {
-    // Negative space: no event, but the next press is a single click and a
-    // dangling surrogate half does not pair with a later low half.
+    // A dangling surrogate half must not pair with a later low half.
     var translator = Translator.init(test_settings);
     const context = testContext(0);
     const focus_lost = Message{ .id = win32.WM_KILLFOCUS, .wparam = 0, .lparam = 0 };

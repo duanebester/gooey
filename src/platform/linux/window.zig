@@ -1,11 +1,3 @@
-//! LinuxWindow - Window implementation for Linux/Wayland
-//!
-//! Provides window creation and management using Wayland's XDG shell protocol,
-//! with GPU rendering via Vulkan, or CPU rendering into shared memory when the
-//! build selects `-Dlinux-backend=wayland_cpu`. The window never draws: once
-//! the core host binds it (`CoreBinding`), the host's render thread owns the
-//! renderer.
-
 const std = @import("std");
 const wayland = @import("wayland.zig");
 const vk_renderer = @import("vk_renderer.zig");
@@ -30,22 +22,18 @@ const core_events = @import("../../core/events.zig");
 const core_router = @import("../../core/router.zig");
 const core_clipboard = @import("../../core/clipboard.zig");
 
-/// How the core host drives this window (contract §9), as on macOS: the
-/// window pushes input and configures into the core's queue and asks the
-/// host for a tick. The window never draws on the main thread; the host's
-/// render thread draws.
+/// The window pushes input and configures into the core's queue and asks
+/// the host for a tick; the host's render thread draws, never the window.
 pub const CoreBinding = struct {
     queue: *core_events.EventQueue,
     query: *const core_router.Query,
     context: *anyopaque,
-    /// Ask the host for a main-thread tick. Called on the main thread after
-    /// every push.
+    /// Ask the host for a main-thread tick, after every push.
     schedule_tick: *const fn (context: *anyopaque) void,
 };
 
-/// The renderer is fixed per build. Selecting it at comptime keeps the
-/// unselected renderer out of the binary, so a CPU build neither links nor
-/// loads Vulkan.
+/// Selecting the renderer at comptime keeps the unselected one out of the
+/// binary, so a CPU build neither links nor loads Vulkan.
 const use_cpu_renderer = switch (linux_backend.selected) {
     .wayland_vulkan => false,
     .wayland_cpu => true,
@@ -64,8 +52,7 @@ pub const renderer_scale_max: f32 = if (use_cpu_renderer)
 else
     std.math.floatMax(f32);
 
-/// Monotonic milliseconds for `Window.requestRenderAfter`. The callers carry
-/// no `Io`, so this uses the process-lifetime global.
+/// Callers carry no `Io`, so this uses the process-lifetime global.
 pub fn awakeTimeMs() i64 {
     const io = std.Io.Threaded.global_single_threaded.io();
     const now_ms = std.Io.Timestamp.now(io, .awake).toMilliseconds();
@@ -104,7 +91,6 @@ pub const Window = struct {
     allocator: Allocator,
     platform: *LinuxPlatform,
 
-    // Wayland objects
     wl_surface: ?*wayland.Surface = null,
     xdg_surface: ?*wayland.XdgSurface = null,
     xdg_toplevel: ?*wayland.XdgToplevel = null,
@@ -124,18 +110,14 @@ pub const Window = struct {
     configured: bool = false,
     closed: bool = false,
 
-    /// Unique identifier for this window in the WindowRegistry.
-    /// Set by WindowRegistry.register() after creation.
     window_id: WindowId = .invalid,
 
     pending_resize: bool = false,
     pending_width: u32 = 0,
     pending_height: u32 = 0,
 
-    // Decoration state
     has_server_decorations: bool = false,
 
-    // Rendering (Vulkan, or CPU into shared memory; see `Renderer`)
     renderer: Renderer,
 
     // Title storage. `xdg_toplevel.set_title` takes a C string, so the buffer
@@ -143,32 +125,18 @@ pub const Window = struct {
     title_buf: [title_bytes_max + 1]u8 = undefined,
     title_len: usize = 0,
 
-    // =========================================================================
-    // IME (Input Method Editor) State
-    // =========================================================================
-
-    /// Marked (composing) text from IME
     marked_text: []const u8 = "",
     /// `text.preedit_bytes_max` bytes, allocated with the window.
     marked_text_buffer: []u8 = &.{},
 
-    /// Whether IME is currently active for this window
     ime_active: bool = false,
 
-    // =========================================================================
-    // Input state
-    // =========================================================================
-
-    /// Click tracker for multi-click detection
     click_tracker: linux_input.ClickTracker = .{},
 
-    /// Currently pressed mouse button (for drag detection)
     pressed_button: ?input.MouseButton = null,
 
-    /// Called when window is about to close. Return false to prevent close.
     on_close: ?CloseCallback = null,
 
-    /// User data pointer for callbacks
     user_data: ?*anyopaque = null,
 
     /// Set once the core host binds the window; see `CoreBinding`.
@@ -179,16 +147,14 @@ pub const Window = struct {
     needs_redraw: bool = false,
     render_deadline_ms: ?i64 = null,
 
-    /// Close callback: called when window is about to close. Return false to prevent close.
+    /// Close callback: return false to prevent the close.
     pub const CloseCallback = *const fn (*Self) bool;
 
     const Self = @This();
 
-    /// Longest window title, in bytes, that `init` accepts.
-    ///
-    /// The bound exists because the title is stored inline (no allocation after
-    /// initialization, `CLAUDE.md` §2) and must reach the compositor as a C
-    /// string, so the buffer is one byte wider for the terminator.
+    /// Longest window title, in bytes, that `init` accepts: stored inline and
+    /// sent to the compositor as a C string, so the buffer is one byte wider
+    /// for the terminator.
     pub const title_bytes_max: usize = 255;
 
     /// Create the window and map it. The Wayland objects are created in
@@ -207,7 +173,6 @@ pub const Window = struct {
             .width_px = @intFromFloat(options.width),
             .height_px = @intFromFloat(options.height),
             .size = .{ .width = options.width, .height = options.height },
-            // Surface events may update the output's scale later.
             .scale_factor = plat.getScaleFactor(),
             .renderer = .{},
         };
@@ -236,12 +201,11 @@ pub const Window = struct {
 
         self.requestServerDecorations(plat);
 
-        // Commit to trigger the initial configure, and wait for it. This may
-        // update scale_factor through the preferred_buffer_scale callback.
+        // Commit to trigger the initial configure, and wait for it; this may
+        // update scale_factor.
         wayland.surfaceCommit(self.wl_surface.?);
         _ = wayland.wl_display_roundtrip(plat.display.?);
 
-        // errdefer for decoration (created above, may be null)
         errdefer {
             if (self.decoration) |dec| wayland.zxdgToplevelDecorationV1Destroy(dec);
             self.decoration = null;
@@ -255,9 +219,9 @@ pub const Window = struct {
 
         try self.mapWithRenderer(plat, options);
 
-        // A newly mapped window claims focus. `setActiveWindowId` also derives
-        // the `*LinuxWindow` that Wayland input dispatch needs, so publishing
-        // the id alone keeps both authorities in agreement.
+        // `setActiveWindowId` derives the `*LinuxWindow` Wayland input
+        // dispatch needs, so publishing the id alone keeps both authorities
+        // in agreement.
         plat.setActiveWindowId(self.window_id);
 
         std.debug.assert(self.window_id.isValid());
@@ -285,7 +249,6 @@ pub const Window = struct {
         self.wl_surface = wayland.compositorCreateSurface(compositor) orelse
             return error.FailedToCreateSurface;
 
-        // Set up surface listener (uses module-level static listener)
         _ = wayland.surfaceAddListener(self.wl_surface.?, &surface_listener, self);
         self.bindFractionalScale(plat);
         std.debug.assert(self.wl_surface != null);
@@ -316,14 +279,12 @@ pub const Window = struct {
             self.xdg_surface = null;
         }
 
-        // Set up XDG surface listener (uses module-level static listener)
         _ = wayland.xdgSurfaceAddListener(self.xdg_surface.?, &xdg_surface_listener, self);
 
         self.xdg_toplevel = wayland.xdgSurfaceGetToplevel(self.xdg_surface.?) orelse
             return error.FailedToCreateToplevel;
         const toplevel = self.xdg_toplevel.?;
 
-        // Set up toplevel listener (uses module-level static listener)
         _ = wayland.xdgToplevelAddListener(toplevel, &toplevel_listener, self);
 
         wayland.xdgToplevelSetTitle(toplevel, @ptrCast(&self.title_buf));
@@ -370,7 +331,6 @@ pub const Window = struct {
             self.xdg_toplevel.?,
         );
         if (self.decoration) |dec| {
-            // Add listener to get decoration mode response
             _ = wayland.zxdgToplevelDecorationV1AddListener(dec, &decoration_listener, self);
             wayland.zxdgToplevelDecorationV1SetMode(dec, .server_side);
         }
@@ -383,14 +343,13 @@ pub const Window = struct {
         std.debug.assert(self.wl_surface != null);
         std.debug.assert(self.viewport == null);
         const viewporter = plat.getViewporter() orelse {
-            // Fallback: use buffer scale (may not work correctly with Vulkan on all compositors)
+            // Fallback: buffer scale (may not work with Vulkan on all compositors)
             const scale_int: i32 = @intFromFloat(self.scale_factor);
             wayland.surfaceSetBufferScale(self.wl_surface.?, scale_int);
             return;
         };
         self.viewport = wayland.viewporterGetViewport(viewporter, self.wl_surface.?);
         if (self.viewport) |vp| {
-            // Set destination to logical size - the compositor will scale our buffer to this size
             wayland.viewportSetDestination(vp, @intCast(self.width_px), @intCast(self.height_px));
         }
     }
@@ -401,7 +360,6 @@ pub const Window = struct {
     fn mapWithRenderer(self: *Self, plat: *LinuxPlatform, options: *const WindowOptions) !void {
         std.debug.assert(self.xdg_surface != null);
         std.debug.assert(self.wl_surface != null);
-        // Set window geometry to logical size (what the user sees)
         wayland.xdgSurfaceSetWindowGeometry(
             self.xdg_surface.?,
             0,
@@ -410,19 +368,16 @@ pub const Window = struct {
             @intCast(self.height_px),
         );
 
-        // Commit surface state before creating Vulkan swapchain
         wayland.surfaceCommit(self.wl_surface.?);
         _ = wayland.wl_display_roundtrip(plat.display.?);
 
         const renderer_scale = self.scale_factor;
         try self.initRenderer(plat, options);
 
-        // Final commit after Vulkan initialization
         wayland.surfaceCommit(self.wl_surface.?);
 
-        // Roundtrip to ensure compositor has processed viewport state
-        // This is important for HiDPI - pointer coordinates won't be in
-        // the correct (logical) coordinate space until viewport is applied
+        // Pointer coordinates are not logical until the compositor has
+        // applied the viewport state.
         _ = wayland.wl_display_roundtrip(plat.display.?);
 
         // The core host starts from `scale_factor`, so a scale that arrived in
@@ -518,16 +473,13 @@ pub const Window = struct {
         if (self.platform.touch_window == self) self.platform.touch_window = null;
         std.debug.assert(self.platform.active_window != self);
 
-        // Destroy viewport
         if (self.viewport) |vp| {
             wayland.viewportDestroy(vp);
             self.viewport = null;
         }
 
-        // Clean up renderer
         self.renderer.deinit();
 
-        // Destroy Wayland objects in reverse order
         if (self.decoration) |dec| wayland.zxdgToplevelDecorationV1Destroy(dec);
         if (self.xdg_toplevel) |tl| wayland.xdgToplevelDestroy(tl);
         if (self.xdg_surface) |xs| wayland.xdgSurfaceDestroy(xs);
@@ -537,10 +489,6 @@ pub const Window = struct {
         self.allocator.free(self.marked_text_buffer);
         self.allocator.destroy(self);
     }
-
-    // =========================================================================
-    // Window Operations
-    // =========================================================================
 
     /// Close this window: the core host's close handler runs first and may
     /// decline. Otherwise the window records `closed = true` and returns;
@@ -590,19 +538,10 @@ pub const Window = struct {
         self.platform.setCursorShape(shape);
     }
 
-    // =========================================================================
-    // Calls from the 0.3.1 `context/window.zig`
-    // =========================================================================
-    //
-    // The core never makes these calls. They stay only while that file
-    // compiles, and go when phase 6 deletes it.
-
-    /// Record the requested light/dark appearance.
-    ///
-    /// Advisory only: Wayland has no server-side appearance protocol, so the
-    /// desktop environment owns the theme and the compositor cannot be told.
-    /// The flag is stored rather than dropped so the value the application
-    /// asked for stays observable instead of vanishing into a silent no-op.
+    // Calls kept only while the legacy `context/window.zig` compiles; the
+    // core never makes them.
+    /// Advisory only: Wayland has no server-side appearance protocol; stored
+    /// so the value the application asked for stays observable.
     pub fn setAppearance(self: *Self, dark: bool) void {
         std.debug.assert(@intFromPtr(self) != 0);
         self.dark_appearance = dark;
@@ -620,7 +559,6 @@ pub const Window = struct {
         std.debug.assert(self.needs_redraw);
     }
 
-    /// Keeps only the earliest deadline.
     pub fn requestRenderAfter(self: *Self, delay_ms: u32) void {
         std.debug.assert(delay_ms <= interface_mod.render_delay_ms_max);
 
@@ -638,10 +576,6 @@ pub const Window = struct {
 
         std.debug.assert(self.render_deadline_ms.? <= deadline_ms);
     }
-
-    // =========================================================================
-    // IME Support
-    // =========================================================================
 
     /// Set the marked (composing) text for IME. The window keeps as much as
     /// the text engines' preedit, `text.preedit_bytes_max`, which shows no
@@ -661,13 +595,10 @@ pub const Window = struct {
         if (kept > 0 and kept < text.len) std.debug.assert(text[kept] & 0xC0 != 0x80);
     }
 
-    /// Clear the marked text (composition ended or cancelled)
     pub fn clearMarkedText(self: *Self) void {
         self.marked_text = "";
     }
 
-    /// Place the IME's candidate window against the caret, in window
-    /// coordinates. The core host calls it when the focused field's caret moves.
     pub fn setImeCursorRect(self: *Self, x: f32, y: f32, w: f32, h: f32) void {
         std.debug.assert(w >= 0);
         std.debug.assert(h >= 0);
@@ -679,36 +610,26 @@ pub const Window = struct {
         );
     }
 
-    /// Check if there's active IME composition
     pub fn hasMarkedText(self: *const Self) bool {
         return self.marked_text.len > 0;
     }
 
-    /// Enable IME text input for this window
     pub fn enableIme(self: *Self) void {
         self.platform.enableTextInput();
     }
 
-    /// Disable IME text input for this window
     pub fn disableIme(self: *Self) void {
         self.platform.disableTextInput();
     }
 
-    // =========================================================================
-    // Core host binding
-    // =========================================================================
-
-    /// Set the close callback. Return false from callback to prevent window close.
     pub fn setCloseCallback(self: *Self, callback: ?CloseCallback) void {
         self.on_close = callback;
     }
 
-    /// Set user data pointer
     pub fn setUserData(self: *Self, data: ?*anyopaque) void {
         self.user_data = data;
     }
 
-    /// Get user data pointer with type cast
     pub fn getUserData(self: *Self, comptime T: type) ?*T {
         if (self.user_data) |ptr| {
             return @ptrCast(@alignCast(ptr));
@@ -716,15 +637,10 @@ pub const Window = struct {
         return null;
     }
 
-    // =========================================================================
-    // Input Handling
-    // =========================================================================
-
     /// Route one input event to the core. Events before `bindCore` reach
     /// nothing. Wayland and Vulkan framebuffer space are both Y-down (0 at
     /// top), matching the scene coordinate system, so no flipping is needed.
     pub fn handleInput(self: *Self, event: input.InputEvent) bool {
-        // Track the pressed button for the platform's drag detection.
         switch (event) {
             .mouse_down => |m| {
                 self.pressed_button = m.button;
@@ -797,11 +713,10 @@ pub const Window = struct {
         pushViewport(binding, self.size, self.scale_factor);
     }
 
-    /// Adopt the compositor's scale at the same logical size. Once bound, the
-    /// core rebuilds at the new scale and the render thread resizes the
-    /// buffers before presenting that frame. Before, the host reads
-    /// `scale_factor` when it binds. A configure whose size is still pending
-    /// keeps it, and reports the new scale with it.
+    /// Adopt the compositor's scale at the same logical size: the core
+    /// rebuilds and the render thread resizes the buffers before presenting
+    /// that frame. A configure whose size is still pending keeps it, and
+    /// reports the new scale with it.
     fn applyScale(self: *Self, scale: f64) void {
         std.debug.assert(scale > 0);
         if (self.scale_factor == scale) return;
@@ -822,13 +737,6 @@ pub const Window = struct {
         binding.schedule_tick(binding.context);
     }
 
-    // =========================================================================
-    // Interactive Window Operations (for client-side decorations)
-    // =========================================================================
-
-    /// Start an interactive move operation.
-    /// Call this in response to a pointer button press (e.g., on a title bar area).
-    /// The compositor will take over and move the window until the button is released.
     pub fn startMove(self: *Self) void {
         const toplevel = self.xdg_toplevel orelse return;
         const seat = self.platform.seat orelse return;
@@ -837,9 +745,6 @@ pub const Window = struct {
         wayland.xdgToplevelMove(toplevel, seat, serial);
     }
 
-    /// Start an interactive resize operation.
-    /// Call this in response to a pointer button press (e.g., on window edges).
-    /// The compositor will take over and resize the window until the button is released.
     pub fn startResize(self: *Self, edge: wayland.ResizeEdge) void {
         const toplevel = self.xdg_toplevel orelse return;
         const seat = self.platform.seat orelse return;
@@ -848,8 +753,6 @@ pub const Window = struct {
         wayland.xdgToplevelResize(toplevel, seat, serial, edge);
     }
 
-    /// Determine which resize edge the mouse is near, if any.
-    /// Returns null if not near any edge (inside the content area).
     pub fn getResizeEdge(self: *const Self, x: f64, y: f64, border_width: f64) ?wayland.ResizeEdge {
         const w: f64 = @floatFromInt(self.width_px);
         const h: f64 = @floatFromInt(self.height_px);
@@ -871,16 +774,10 @@ pub const Window = struct {
         return null;
     }
 
-    /// Check if a point is in the "title bar" area (top of window for dragging).
-    /// For client-side decorations, this might be the top N pixels of the window.
     pub fn isInTitleBar(self: *const Self, y: f64, title_bar_height: f64) bool {
         _ = self;
         return y < title_bar_height;
     }
-
-    // =========================================================================
-    // Wayland Callbacks
-    // =========================================================================
 
     fn surfaceEnter(
         data: ?*anyopaque,
@@ -950,7 +847,6 @@ pub const Window = struct {
         _ = data;
         _ = surface;
         _ = transform;
-        // Transform is informational, we don't need to handle it for now
     }
 
     fn xdgSurfaceConfigure(
@@ -960,10 +856,8 @@ pub const Window = struct {
     ) callconv(.c) void {
         const self: *Self = @ptrCast(@alignCast(data));
 
-        // Acknowledge the configure
         wayland.xdgSurfaceAckConfigure(xdg_surface, serial);
 
-        // Apply pending size changes
         if (self.pending_width > 0 and self.pending_height > 0) {
             self.pending_resize = true;
             if (self.core) |binding| self.resizeCore(binding);
@@ -1003,8 +897,6 @@ pub const Window = struct {
         _ = xdg_toplevel;
         _ = width_px;
         _ = height_px;
-        // Configure bounds is informational - the compositor suggests max size
-        // We don't need to enforce it for now
     }
 
     fn xdgToplevelWmCapabilities(
@@ -1015,17 +907,11 @@ pub const Window = struct {
         _ = data;
         _ = xdg_toplevel;
         _ = capabilities;
-        // WM capabilities tells us what the compositor supports
-        // We don't need to handle it for now
     }
 
-    /// The compositor asked this toplevel to close (titlebar button, window
-    /// menu, or a session request).
-    ///
     /// Routed through `close()` so the compositor request and a programmatic
-    /// close run the same handler and the same state transition. Destroying
-    /// the window here would free it underneath the Wayland dispatch calling
-    /// us.
+    /// close run the same handler and state transition. Destroying the window
+    /// here would free it underneath the Wayland dispatch calling us.
     fn xdgToplevelClose(
         data: ?*anyopaque,
         xdg_toplevel: *wayland.XdgToplevel,

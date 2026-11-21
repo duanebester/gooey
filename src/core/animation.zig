@@ -1,21 +1,3 @@
-//! Tweens, loops, and spring motion: library helpers over `retain` (contract
-//! §3).
-//!
-//! Each helper retains a small `.frame` state keyed under the box being
-//! built (`cx.id(key)`), reads the tick's clock (`cx.now()`), and asks
-//! for the next frame with `cx.requestRenderAfter` while it moves. A settled
-//! animation asks for nothing, so a window whose animations have finished
-//! draws no more frames. A loop never settles: it moves for as long as it is
-//! built, and stops asking once its caller stops building it. The state is
-//! swept like any `.frame` entry once its caller stops building it.
-//!
-//! Performance sketch (CLAUDE.md §7): one 64 B retained slot per animation,
-//! bounded by `ResourceLimits.retained.slot_count_64`. A call is O(1): a
-//! division and an easing curve for a tween, a remainder and a division for
-//! a loop, four acceleration evaluations (RK4) for a spring. Nothing
-//! allocates. While any animation moves the window builds one frame per
-//! display refresh, as 0.3.1 did.
-
 const std = @import("std");
 const cx_mod = @import("cx.zig");
 const id_mod = @import("id.zig");
@@ -25,21 +7,17 @@ const assert = std.debug.assert;
 const Cx = cx_mod.Cx;
 const Key = id_mod.Key;
 
-/// The longest tween; a longer one is a programmer error.
 pub const tween_duration_ms_max: u32 = 60_000;
 
-/// The longest loop period; a longer one is a programmer error.
 pub const loop_period_ms_max: u32 = 60_000;
 
-/// The longest step a spring integrates. A longer gap between frames (a
-/// stall, or the first frame after a wake) is clamped, keeping RK4 stable.
+/// The longest step a spring integrates; longer gaps are clamped to keep RK4 stable.
 const spring_step_s_max: f32 = 0.064;
 
 /// A spring closer than this to its target, and slower than this, is at rest.
 const spring_rest_threshold: f32 = 0.0005;
 
-/// Easing curves: linear time in [0, 1] to eased progress. Every curve maps
-/// 0 to 0 and 1 to 1; `easeOutBack` overshoots 1 on the way.
+/// Easing curves: every curve maps 0 to 0 and 1 to 1; `easeOutBack` overshoots 1 on the way.
 pub const Easing = struct {
     pub fn linear(t: f32) f32 {
         return t;
@@ -74,33 +52,27 @@ pub const Easing = struct {
 
 pub const Tween = struct {
     duration_ms: u32 = 200,
-    /// Time at 0 before the tween moves, for staggered entrances.
+    /// Time at 0 before the tween moves.
     delay_ms: u32 = 0,
     easing: *const fn (t: f32) f32 = Easing.easeOut,
 };
 
-/// Spring constants. Mass is 1, so stiffness and damping are per unit mass;
-/// critical damping is 2·√stiffness.
+/// Mass is 1, so stiffness and damping are per unit mass; critical damping is 2·√stiffness.
 pub const Spring = struct {
     stiffness: f32 = 170,
     damping: f32 = 26,
 
-    /// No bounce, fast settle.
     pub const snappy: Spring = .{ .stiffness = 300, .damping = 30 };
-    /// A visible bounce.
     pub const bouncy: Spring = .{ .stiffness = 180, .damping = 12 };
-    /// Slow and smooth.
     pub const gentle: Spring = .{ .stiffness = 120, .damping = 20 };
-    /// Very fast, no bounce.
     pub const stiff: Spring = .{ .stiffness = 400, .damping = 40 };
-    /// Low damping, visible oscillation.
     pub const wobbly: Spring = .{ .stiffness = 150, .damping = 8 };
 };
 
 pub const Phase = enum { entering, entered, exiting, exited };
 
-/// A motion's frame: `progress` runs 0 → 1 while entering and 1 → 0 while
-/// exiting; build the element only while `visible`.
+/// `progress` runs 0 → 1 while entering and 1 → 0 while exiting; build the
+/// element only while `visible`.
 pub const Motion = struct {
     progress: f32,
     visible: bool,
@@ -171,11 +143,9 @@ comptime {
 }
 
 /// The phase of the loop keyed `key` under the box being built: time since
-/// its first build, modulo `period_ms`, as a fraction in [0, 1). It asks for
-/// a frame in every build that reads it, so a loop costs one frame per
-/// display refresh while it is built and nothing once a build skips it: that
-/// build asks for no frame. A loop that the previous build did not read
-/// starts again from 0, like a returning `tween`.
+/// its first build, modulo `period_ms`, as a fraction in [0, 1). Every build
+/// that reads it requests a frame; a build that skips it requests none. A
+/// loop that the previous build did not read starts again from 0.
 pub fn loop(cx: *Cx, key: Key, period_ms: u32) f32 {
     assert(period_ms > 0);
     assert(period_ms <= loop_period_ms_max);
@@ -204,8 +174,7 @@ pub fn loop(cx: *Cx, key: Key, period_ms: u32) f32 {
 /// The eased progress of the tween keyed `key` under the box being built: 0
 /// from its first build through `delay_ms`, then along `easing` to 1 after
 /// `duration_ms`. A finished tween that the previous build did not read
-/// plays again, so an element that leaves and returns replays its entrance
-/// (0.3.1's `tween`).
+/// plays again, so an element that leaves and returns replays its entrance.
 pub fn tween(cx: *Cx, key: Key, options: Tween) f32 {
     checkTween(options);
     const window = cx_mod.windowOf(cx);
@@ -221,8 +190,7 @@ pub fn tween(cx: *Cx, key: Key, options: Tween) f32 {
 }
 
 /// The eased progress of a tween that starts finished, at 1, and plays from
-/// 0 again in each build whose `trigger` differs from the last one's
-/// (0.3.1's `tweenOn`).
+/// 0 again in each build whose `trigger` differs from the last one's.
 pub fn tweenOn(cx: *Cx, key: Key, trigger: u64, options: Tween) f32 {
     checkTween(options);
     const window = cx_mod.windowOf(cx);
@@ -246,8 +214,6 @@ fn checkTween(options: Tween) void {
     assert(options.delay_ms <= window_mod.render_delay_ms_max);
 }
 
-/// Progress at the window's clock, finishing the tween at its end and
-/// asking for the frame that moves it next.
 fn advance(cx: *Cx, state: *TweenState, options: Tween) f32 {
     assert(state.started);
     if (state.finished) return options.easing(1);
@@ -277,8 +243,7 @@ fn advance(cx: *Cx, state: *TweenState, options: Tween) f32 {
 
 /// An interruptible enter and exit for the element keyed `key`: a spring
 /// toward 1 while `show` and toward 0 otherwise, keeping its velocity when
-/// `show` flips mid-flight (0.3.1's `springMotion`). Shown at the first
-/// build, it enters from 0.
+/// `show` flips mid-flight. Shown at the first build, it enters from 0.
 pub fn motion(cx: *Cx, key: Key, show: bool, spring: Spring) Motion {
     assert(spring.stiffness > 0);
     assert(spring.damping >= 0);
@@ -287,9 +252,8 @@ pub fn motion(cx: *Cx, key: Key, show: bool, spring: Spring) Motion {
     const target: f32 = if (show) 1 else 0;
     if (state.target != target) {
         state.target = target;
-        // A spring at rest skips the step, so a new target wakes it, and
-        // its first step starts from now rather than from when it settled.
-        // One in flight keeps its velocity and clock.
+        // A spring at rest skips the step, so a new target wakes it; one in
+        // flight keeps its velocity and clock.
         if (state.at_rest) {
             state.at_rest = false;
             state.stepped_ns = now_ns;
@@ -355,8 +319,6 @@ fn acceleration(position: f32, velocity: f32, target: f32, spring: Spring) f32 {
 }
 
 test "easing curves map 0 to 0 and 1 to 1, and easeOutBack overshoots" {
-    // Goal: the endpoints every tween relies on, and the one overshoot.
-    // Method: evaluate each curve at both ends and easeOutBack mid-way.
     const names = .{ "linear", "easeIn", "easeOut", "easeInOut", "easeOutCubic", "easeOutBack" };
     inline for (names) |name| {
         const curve = @field(Easing, name);
@@ -368,9 +330,6 @@ test "easing curves map 0 to 0 and 1 to 1, and easeOutBack overshoots" {
 }
 
 test "a spring settles on its target and keeps its velocity when the target flips" {
-    // Goal: RK4 converges for the presets and a mid-flight reversal is not a
-    // snap. Method: step at 60 Hz toward 1 for 0.1 s, flip toward 0, and
-    // check the velocity still points up; then run 2 s and check the rest.
     var body: Body = .{ .position = 0, .velocity = 0 };
     for (0..6) |_| body = stepSpring(body, 1, .snappy, 1.0 / 60.0);
     try std.testing.expect(body.velocity > 0);

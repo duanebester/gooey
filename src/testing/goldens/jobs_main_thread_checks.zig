@@ -22,7 +22,6 @@ comptime {
 var job_started_count: u32 = 0;
 var job_saw_cancel_count: u32 = 0;
 
-/// Posts `count` results numbered from `first`.
 const Count = struct {
     pub const Input = struct { first: u32, count: u32 };
     pub const Result = struct { value: u32 };
@@ -111,12 +110,6 @@ const Harness = struct {
 };
 
 test "a job runs after the drain that spawned it and delivers in the next" {
-    // Goal: the no-worker schedule. Method: a spawn outside a tick does not
-    // run; the next tick's drain runs it whole, which posts into the ring
-    // but delivers nothing; the tick after delivers every result in post
-    // order and then `on_done`, and frees the slot. Eight posts fill
-    // `nano`'s result pool exactly, the most a job can post without a drain
-    // (one more fails fast: a post cannot wait without workers).
     var harness: Harness = undefined;
     try harness.init();
     defer harness.deinit();
@@ -139,11 +132,6 @@ test "a job runs after the drain that spawned it and delivers in the next" {
 }
 
 test "a job cancelled before its drain never runs, and its slot runs the next job" {
-    // Goal: cancel before start. Method: spawn and cancel before any tick.
-    // The drain must skip `run`, and the next deliver only `on_done` with
-    // `.cancelled`. A second cancel and a cancel of the stale id then do
-    // nothing: the next spawn takes the same slot under the next generation
-    // and finishes with its results.
     var harness: Harness = undefined;
     try harness.init();
     defer harness.deinit();
@@ -170,9 +158,6 @@ test "a job cancelled before its drain never runs, and its slot runs the next jo
 }
 
 test "a cancel after the job ran and before the drain drops what it posted" {
-    // Goal: cancel between the run and the delivery. Method: the first tick
-    // runs the job, which posts three results; cancel before the next tick,
-    // which must deliver none of them and report `.cancelled`.
     var harness: Harness = undefined;
     try harness.init();
     defer harness.deinit();

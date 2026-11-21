@@ -1,14 +1,3 @@
-//! Backend contracts of the 0.4.0 core (contract §9), verified at comptime.
-//!
-//! The `Renderer` contract is one set of signatures every renderer satisfies,
-//! checked with `contract.verifyFn` (complete function types), so a
-//! renderer that drifts fails to compile with the offending declaration's
-//! name instead of silently losing a feature.
-//!
-//! `PackedFrame` is the four-kind packed frame (`packed_frame.zig`): the pack stage
-//! turns paint records into it, and every renderer (Metal, Vulkan, WebGPU, and
-//! the CPU renderer) draws it.
-
 const std = @import("std");
 const contract = @import("../platform/contract.zig");
 const geometry = @import("../geometry/geometry.zig");
@@ -18,15 +7,12 @@ const atlas_uploads = @import("../text/atlas_uploads.zig");
 
 const assert = std.debug.assert;
 
-/// Renderer input produced by the pack stage. See the file comment.
 pub const PackedFrame = packed_mod.PackedFrame;
 
 pub const Color = geometry.Color;
 
-/// The atlas a sprite samples and `uploadAtlas` writes.
 pub const AtlasKind = enum(u8) { glyph, glyph_color, svg, image };
 
-/// A rectangle in device pixels within an atlas or a framebuffer.
 pub const RectPx = struct {
     x: u32,
     y: u32,
@@ -34,14 +20,12 @@ pub const RectPx = struct {
     height: u32,
 };
 
-/// Framebuffer extent in device pixels.
 pub const SizePx = struct {
     width: u32,
     height: u32,
 };
 
-/// What `draw` renders into: the framebuffer extent and its scale. Packed
-/// positions are logical pixels; a renderer maps `size_px / scale_factor`
+/// Packed positions are logical pixels; a renderer maps `size_px / scale_factor`
 /// logical pixels onto the framebuffer.
 pub const Viewport = struct {
     size_px: SizePx,
@@ -126,7 +110,7 @@ pub const Capabilities = struct {
     meshes: bool,
 };
 
-/// Verify `Renderer` against contract §9:
+/// Verify `Renderer` against the renderer contract:
 ///
 /// - `initInPlace` reserves everything the renderer will use for `limits`:
 ///   instance and geometry buffers at the paint limits, atlas textures at the
@@ -148,7 +132,7 @@ pub const Capabilities = struct {
 ///   float before any conversion to integer pixels, which it overflows above
 ///   scale 2.147. The frame is read only during the call.
 /// - Colours are straight RGBA, sRGB-encoded, blended in gamma space into a
-///   UNORM (not sRGB) framebuffer, as 0.3.1 drew on Metal and Vulkan.
+///   UNORM (not sRGB) framebuffer.
 /// - `draw` asserts `viewport.size_px` equals the last `resize` (or init). A
 ///   zero-size viewport (a minimised window) draws and presents nothing, but
 ///   pending atlas uploads still reach the GPU. An operating failure (no
@@ -191,7 +175,7 @@ pub fn verifyRenderer(comptime Renderer: type) void {
 
 /// Fail fast when `frame` holds what `capabilities` says the renderer cannot
 /// draw. Hosts call this before every `draw`: a missing feature stops the app
-/// with its name, never drops part of a frame (CLAUDE.md §2).
+/// with its name, never drops part of a frame.
 pub fn checkCapabilities(capabilities: Capabilities, frame: *const PackedFrame) void {
     assert(frame.mesh_count <= frame.meshes.len);
     assert(frame.clip_count >= 1);
@@ -239,8 +223,6 @@ test "RenderLimits carries the profile's window budget" {
 }
 
 test "fitLogical keeps the scale within the budget and lowers it past" {
-    // Goal: a window that fits keeps its scale and exact size; one past the
-    // budget renders at the largest scale that fits, uniformly on both axes.
     const window = limits_mod.WindowLimits{
         .framebuffer_width_max = 2000,
         .framebuffer_height_max = 900,
@@ -253,7 +235,6 @@ test "fitLogical keeps the scale within the budget and lowers it past" {
     try std.testing.expect(past.scale_factor < 2);
     try std.testing.expectEqual(@as(u32, 900), past.size_px.height);
     try std.testing.expectEqual(@as(u32, 1996), past.size_px.width);
-    // A fractional scale keeps a fractional logical size exact.
     const fractional = Viewport.fitLogical(667.333, 400, 1.5, &window);
     try std.testing.expectEqual(SizePx{ .width = 1001, .height = 600 }, fractional.size_px);
 }

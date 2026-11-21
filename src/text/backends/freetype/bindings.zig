@@ -1,15 +1,4 @@
-//! FreeType, HarfBuzz, and Fontconfig bindings for Linux text rendering
-//!
-//! Provides low-level access to:
-//! - FreeType: Font loading and glyph rasterization
-//! - HarfBuzz: Complex text shaping (ligatures, kerning, scripts)
-//! - Fontconfig: Font discovery and matching
-
 const std = @import("std");
-
-// ============================================================================
-// FreeType Types
-// ============================================================================
 
 pub const FT_Error = c_int;
 pub const FT_Int = c_int;
@@ -32,7 +21,6 @@ pub const FT_CharMap = *FT_CharMapRec;
 pub const FT_Glyph = *FT_GlyphRec;
 pub const FT_BitmapGlyph = *FT_BitmapGlyphRec;
 
-// FreeType face flags
 pub const FT_FACE_FLAG_SCALABLE: FT_Long = 1 << 0;
 pub const FT_FACE_FLAG_FIXED_SIZES: FT_Long = 1 << 1;
 pub const FT_FACE_FLAG_FIXED_WIDTH: FT_Long = 1 << 2;
@@ -42,7 +30,6 @@ pub const FT_FACE_FLAG_VERTICAL: FT_Long = 1 << 5;
 pub const FT_FACE_FLAG_KERNING: FT_Long = 1 << 6;
 pub const FT_FACE_FLAG_COLOR: FT_Long = 1 << 14;
 
-// FreeType load flags
 pub const FT_LOAD_DEFAULT: FT_Int32 = 0;
 pub const FT_LOAD_NO_SCALE: FT_Int32 = 1 << 0;
 pub const FT_LOAD_NO_HINTING: FT_Int32 = 1 << 1;
@@ -59,7 +46,6 @@ pub const FT_LOAD_MONOCHROME: FT_Int32 = 1 << 12;
 pub const FT_LOAD_LINEAR_DESIGN: FT_Int32 = 1 << 13;
 pub const FT_LOAD_COLOR: FT_Int32 = 1 << 20;
 
-// FreeType render modes
 pub const FT_Render_Mode = enum(c_int) {
     FT_RENDER_MODE_NORMAL = 0, // Grayscale (8-bit anti-aliased)
     FT_RENDER_MODE_LIGHT = 1, // Light hinting
@@ -69,7 +55,6 @@ pub const FT_Render_Mode = enum(c_int) {
     FT_RENDER_MODE_SDF = 5, // Signed distance field
 };
 
-// FreeType pixel modes (bitmap formats)
 pub const FT_Pixel_Mode = enum(u8) {
     FT_PIXEL_MODE_NONE = 0,
     FT_PIXEL_MODE_MONO = 1, // 1 bit per pixel
@@ -81,7 +66,6 @@ pub const FT_Pixel_Mode = enum(u8) {
     FT_PIXEL_MODE_BGRA = 7, // 32 bits per pixel (color emoji)
 };
 
-// FreeType glyph format
 pub const FT_Glyph_Format = enum(c_uint) {
     FT_GLYPH_FORMAT_NONE = 0,
     FT_GLYPH_FORMAT_COMPOSITE = ftMakeTag('c', 'o', 'm', 'p'),
@@ -95,13 +79,11 @@ fn ftMakeTag(a: u8, b: u8, c: u8, d: u8) c_uint {
     return (@as(c_uint, a) << 24) | (@as(c_uint, b) << 16) | (@as(c_uint, c) << 8) | @as(c_uint, d);
 }
 
-// FreeType vector (2D point)
 pub const FT_Vector = extern struct {
     x: FT_Pos,
     y: FT_Pos,
 };
 
-// FreeType bounding box
 pub const FT_BBox = extern struct {
     xMin: FT_Pos,
     yMin: FT_Pos,
@@ -109,7 +91,6 @@ pub const FT_BBox = extern struct {
     yMax: FT_Pos,
 };
 
-// FreeType bitmap
 pub const FT_Bitmap = extern struct {
     rows: c_uint,
     width: c_uint,
@@ -121,7 +102,6 @@ pub const FT_Bitmap = extern struct {
     palette: ?*anyopaque,
 };
 
-// FreeType glyph metrics (in 26.6 fixed-point)
 pub const FT_Glyph_Metrics = extern struct {
     width: FT_Pos,
     height: FT_Pos,
@@ -133,7 +113,6 @@ pub const FT_Glyph_Metrics = extern struct {
     vertAdvance: FT_Pos,
 };
 
-// FreeType size metrics
 pub const FT_Size_Metrics = extern struct {
     x_ppem: FT_UShort, // Horizontal pixels per EM
     y_ppem: FT_UShort, // Vertical pixels per EM
@@ -145,7 +124,6 @@ pub const FT_Size_Metrics = extern struct {
     max_advance: FT_Pos, // Max horizontal advance
 };
 
-// FreeType size record
 pub const FT_SizeRec = extern struct {
     face: FT_Face,
     generic: FT_Generic,
@@ -153,13 +131,11 @@ pub const FT_SizeRec = extern struct {
     internal: ?*anyopaque,
 };
 
-// FreeType generic (for client data)
 pub const FT_Generic = extern struct {
     data: ?*anyopaque,
     finalizer: ?*const fn (?*anyopaque) callconv(.c) void,
 };
 
-// FreeType glyph slot
 pub const FT_GlyphSlotRec = extern struct {
     library: FT_Library,
     face: FT_Face,
@@ -185,7 +161,6 @@ pub const FT_GlyphSlotRec = extern struct {
     internal: ?*anyopaque,
 };
 
-// FreeType outline
 pub const FT_Outline = extern struct {
     n_contours: c_short,
     n_points: c_short,
@@ -195,7 +170,6 @@ pub const FT_Outline = extern struct {
     flags: c_int,
 };
 
-// FreeType charmap
 pub const FT_CharMapRec = extern struct {
     face: FT_Face,
     encoding: FT_Encoding,
@@ -220,7 +194,6 @@ pub const FT_Encoding = enum(c_uint) {
     FT_ENCODING_APPLE_ROMAN = ftMakeTag('a', 'r', 'm', 'n'),
 };
 
-// FreeType face record
 pub const FT_FaceRec = extern struct {
     num_faces: FT_Long,
     face_index: FT_Long,
@@ -249,7 +222,6 @@ pub const FT_FaceRec = extern struct {
     // Internal fields follow (private)
 };
 
-// FreeType glyph record (for FT_Get_Glyph)
 pub const FT_GlyphRec = extern struct {
     library: FT_Library,
     clazz: ?*anyopaque,
@@ -257,7 +229,6 @@ pub const FT_GlyphRec = extern struct {
     advance: FT_Vector,
 };
 
-// FreeType bitmap glyph
 pub const FT_BitmapGlyphRec = extern struct {
     root: FT_GlyphRec,
     left: FT_Int,
@@ -265,17 +236,12 @@ pub const FT_BitmapGlyphRec = extern struct {
     bitmap: FT_Bitmap,
 };
 
-// FreeType 2x2 transformation matrix
 pub const FT_Matrix = extern struct {
     xx: FT_Fixed,
     xy: FT_Fixed,
     yx: FT_Fixed,
     yy: FT_Fixed,
 };
-
-// ============================================================================
-// FreeType Functions
-// ============================================================================
 
 pub extern "c" fn FT_Init_FreeType(alibrary: *FT_Library) FT_Error;
 pub extern "c" fn FT_Done_FreeType(library: FT_Library) FT_Error;
@@ -358,14 +324,9 @@ pub extern "c" fn FT_Get_Kerning(
     akerning: *FT_Vector,
 ) FT_Error;
 
-// Kerning modes
 pub const FT_KERNING_DEFAULT: FT_UInt = 0;
 pub const FT_KERNING_UNFITTED: FT_UInt = 1;
 pub const FT_KERNING_UNSCALED: FT_UInt = 2;
-
-// ============================================================================
-// HarfBuzz Types
-// ============================================================================
 
 pub const hb_bool_t = c_int;
 pub const hb_codepoint_t = u32;
@@ -439,7 +400,6 @@ fn hbMakeTag(a: u8, b: u8, c: u8, d: u8) c_uint {
     return (@as(c_uint, a) << 24) | (@as(c_uint, b) << 16) | (@as(c_uint, c) << 8) | @as(c_uint, d);
 }
 
-// Glyph info from shaping
 pub const hb_glyph_info_t = extern struct {
     codepoint: hb_codepoint_t, // Input: Unicode; Output: glyph ID
     mask: hb_mask_t,
@@ -448,7 +408,6 @@ pub const hb_glyph_info_t = extern struct {
     var2: u32, // Reserved
 };
 
-// Glyph position from shaping
 pub const hb_glyph_position_t = extern struct {
     x_advance: hb_position_t, // Horizontal advance (26.6 fixed)
     y_advance: hb_position_t, // Vertical advance (26.6 fixed)
@@ -469,27 +428,19 @@ pub const hb_buffer_cluster_level_t = enum(c_int) {
     HB_BUFFER_CLUSTER_LEVEL_CHARACTERS = 2,
 };
 
-/// Alias for default cluster level
 pub const HB_BUFFER_CLUSTER_LEVEL_DEFAULT = hb_buffer_cluster_level_t.HB_BUFFER_CLUSTER_LEVEL_MONOTONE_GRAPHEMES;
 
-// ============================================================================
-// HarfBuzz Functions
-// ============================================================================
-
-// Buffer management
 pub extern "c" fn hb_buffer_create() ?*hb_buffer_t;
 pub extern "c" fn hb_buffer_destroy(buffer: *hb_buffer_t) void;
 pub extern "c" fn hb_buffer_reset(buffer: *hb_buffer_t) void;
 pub extern "c" fn hb_buffer_clear_contents(buffer: *hb_buffer_t) void;
 
-// Buffer properties
 pub extern "c" fn hb_buffer_set_direction(buffer: *hb_buffer_t, direction: hb_direction_t) void;
 pub extern "c" fn hb_buffer_set_script(buffer: *hb_buffer_t, script: hb_script_t) void;
 pub extern "c" fn hb_buffer_set_language(buffer: *hb_buffer_t, language: ?*anyopaque) void;
 pub extern "c" fn hb_buffer_set_cluster_level(buffer: *hb_buffer_t, cluster_level: hb_buffer_cluster_level_t) void;
 pub extern "c" fn hb_buffer_guess_segment_properties(buffer: *hb_buffer_t) void;
 
-// Adding text
 pub extern "c" fn hb_buffer_add_utf8(
     buffer: *hb_buffer_t,
     text: [*]const u8,
@@ -506,7 +457,6 @@ pub extern "c" fn hb_buffer_add_utf32(
     item_length: c_int,
 ) void;
 
-// Getting results
 pub extern "c" fn hb_buffer_get_length(buffer: *hb_buffer_t) c_uint;
 
 pub extern "c" fn hb_buffer_get_glyph_infos(
@@ -519,7 +469,6 @@ pub extern "c" fn hb_buffer_get_glyph_positions(
     length: *c_uint,
 ) [*]hb_glyph_position_t;
 
-// Shaping
 pub extern "c" fn hb_shape(
     font: *hb_font_t,
     buffer: *hb_buffer_t,
@@ -527,13 +476,11 @@ pub extern "c" fn hb_shape(
     num_features: c_uint,
 ) void;
 
-// Font creation
 pub extern "c" fn hb_font_create(face: *hb_face_t) ?*hb_font_t;
 pub extern "c" fn hb_font_destroy(font: *hb_font_t) void;
 pub extern "c" fn hb_font_set_scale(font: *hb_font_t, x_scale: c_int, y_scale: c_int) void;
 pub extern "c" fn hb_font_set_ppem(font: *hb_font_t, x_ppem: c_uint, y_ppem: c_uint) void;
 
-// Face creation
 pub extern "c" fn hb_face_create_for_tables(
     reference_table_func: ?*anyopaque,
     user_data: ?*anyopaque,
@@ -542,14 +489,9 @@ pub extern "c" fn hb_face_create_for_tables(
 pub extern "c" fn hb_face_destroy(face: *hb_face_t) void;
 pub extern "c" fn hb_face_set_upem(face: *hb_face_t, upem: c_uint) void;
 
-// HarfBuzz <-> FreeType bridge
 pub extern "c" fn hb_ft_font_create_referenced(ft_face: FT_Face) ?*hb_font_t;
 pub extern "c" fn hb_ft_font_set_funcs(font: *hb_font_t) void;
 pub extern "c" fn hb_ft_font_changed(font: *hb_font_t) void;
-
-// ============================================================================
-// Fontconfig Types
-// ============================================================================
 
 pub const FcConfig = opaque {};
 pub const FcPattern = opaque {};
@@ -580,11 +522,9 @@ pub const FC_INDEX = "index";
 pub const FC_SCALABLE = "scalable";
 pub const FC_FONTFORMAT = "fontformat";
 
-// FT_FaceRec.style_flags bits
 pub const FT_STYLE_FLAG_ITALIC: FT_Long = 1 << 0;
 pub const FT_STYLE_FLAG_BOLD: FT_Long = 1 << 1;
 
-// Fontconfig weight values
 pub const FC_WEIGHT_THIN: c_int = 0;
 pub const FC_WEIGHT_EXTRALIGHT: c_int = 40;
 pub const FC_WEIGHT_LIGHT: c_int = 50;
@@ -595,12 +535,10 @@ pub const FC_WEIGHT_BOLD: c_int = 200;
 pub const FC_WEIGHT_EXTRABOLD: c_int = 205;
 pub const FC_WEIGHT_BLACK: c_int = 210;
 
-// Fontconfig slant values
 pub const FC_SLANT_ROMAN: c_int = 0;
 pub const FC_SLANT_ITALIC: c_int = 100;
 pub const FC_SLANT_OBLIQUE: c_int = 110;
 
-// Fontconfig spacing values
 pub const FC_PROPORTIONAL: c_int = 0;
 pub const FC_DUAL: c_int = 90;
 pub const FC_MONO: c_int = 100;
@@ -619,10 +557,6 @@ pub const FcMatchKind = enum(c_int) {
     FcMatchFont = 1,
     FcMatchScan = 2,
 };
-
-// ============================================================================
-// Fontconfig Functions
-// ============================================================================
 
 pub extern "c" fn FcInitLoadConfigAndFonts() ?*FcConfig;
 pub extern "c" fn FcConfigDestroy(config: *FcConfig) void;
@@ -708,51 +642,38 @@ pub extern "c" fn FcObjectSetAdd(os: *FcObjectSet, object: [*:0]const u8) FcBool
 
 pub extern "c" fn FcNameParse(name: [*:0]const u8) ?*FcPattern;
 
-// ============================================================================
-// Helper Functions
-// ============================================================================
-
-/// Convert FreeType 26.6 fixed-point to float
 pub inline fn f26dot6ToFloat(value: FT_Pos) f32 {
     return @as(f32, @floatFromInt(value)) / 64.0;
 }
 
-/// Convert float to FreeType 26.6 fixed-point
 pub inline fn floatToF26dot6(value: f32) FT_F26Dot6 {
     return @intFromFloat(value * 64.0);
 }
 
-/// Convert FreeType 16.16 fixed-point to float
 pub inline fn fixedToFloat(value: FT_Fixed) f32 {
     return @as(f32, @floatFromInt(value)) / 65536.0;
 }
 
-/// Convert float to FreeType 16.16 fixed-point
 pub inline fn floatToFixed(value: f32) FT_Fixed {
     return @intFromFloat(value * 65536.0);
 }
 
-/// Check if a FreeType face is monospace
 pub inline fn isMonospace(face: FT_Face) bool {
     return (face.face_flags & FT_FACE_FLAG_FIXED_WIDTH) != 0;
 }
 
-/// Check if a FreeType face has kerning
 pub inline fn hasKerning(face: FT_Face) bool {
     return (face.face_flags & FT_FACE_FLAG_KERNING) != 0;
 }
 
-/// Check if a FreeType face is scalable
 pub inline fn isScalable(face: FT_Face) bool {
     return (face.face_flags & FT_FACE_FLAG_SCALABLE) != 0;
 }
 
-/// Check if a FreeType face has color glyphs
 pub inline fn hasColor(face: FT_Face) bool {
     return (face.face_flags & FT_FACE_FLAG_COLOR) != 0;
 }
 
-/// Get the error string for a FreeType error (basic)
 pub fn ftErrorString(err: FT_Error) []const u8 {
     return switch (err) {
         0 => "no error",

@@ -1,18 +1,3 @@
-//! Data table on the 0.4.0 core: 10,000 rows of five columns in a `List`
-//! that builds only the rows in view, sorted by clicking a column header.
-//!
-//! The rows are generated in `on_init` into `State`, so every byte is
-//! reserved before the event loop, and a sort permutes `State.order` in
-//! place. 0.3.1's Top, Bottom, Jump, Prev, Next, and Clear buttons and its
-//! visible rows and cells readout move the scroll offset or read it, which
-//! waits on the List `scroll_to` decision, so the port leaves them out.
-//! Selection went with them: 0.3.1 never wired a row click, so only those
-//! buttons selected a row. The header sits above the list, which scrolls
-//! vertically only. Name takes the width the other columns leave, so header
-//! and rows reach the scrollbar; below 650 px of columns they overflow.
-//!
-//! Run with: zig build run-data-table
-
 const std = @import("std");
 const gooey = @import("gooey");
 const components = @import("gooey-components");
@@ -80,7 +65,7 @@ pub const State = struct {
     sort_column: ?Column = null,
     sort_direction: SortDirection = .none,
 
-    /// The same rows as 0.3.1, from its seeded generator.
+    /// Rows from the seeded generator, so the table is deterministic.
     fn init(self: *State, _: gooey.Init, _: *Effects) void {
         var seed: u64 = 12345;
         for (&self.rows, &self.order, 0..) |*row, *order, index| {
@@ -99,8 +84,6 @@ pub const State = struct {
         assert(self.rows[row_count - 1].id == row_count);
     }
 
-    /// A header click: the same column cycles ascending, descending, and
-    /// unsorted; another column starts ascending, as 0.3.1's table did.
     pub fn sortBy(self: *State, column: u32) void {
         assert(column < column_count);
         const picked: Column = @fromBackingInt(@intCast(column));
@@ -124,7 +107,7 @@ fn nextRandom(seed: *u64) u64 {
     return seed.* >> 33;
 }
 
-/// 0.3.1's heap sort, kept so equal keys land in the same order: it sorts the
+/// Heap sort, kept so equal keys land in the same order: it sorts the
 /// current order in place, in O(n log n) with no allocation.
 fn heapSort(
     order: *[row_count]u32,
@@ -192,7 +175,6 @@ pub const App = gooey.App(State, render, .{
     .on_init = State.init,
 });
 
-/// The generated entry point (contract §7).
 pub const main = App.main;
 
 pub fn render(cx: *Cx) void {
@@ -306,7 +288,6 @@ const TableRow = struct {
         const s = cx.state(State);
         assert(self.index < row_count);
         const row = &s.rows[s.order[self.index]];
-        // 0.3.1's alternate rows are faintly darker; the others are clear.
         const background: ?ui.ColorToken = if (self.index % 2 == 1)
             .{ .rgba = Color.rgba(0, 0, 0, 0.02) }
         else
@@ -344,7 +325,7 @@ const RowCells = struct {
     }
 };
 
-/// Human-readable size, as 0.3.1 printed it; 32 bytes hold every case.
+/// Human-readable size; 32 bytes hold every case.
 fn formatSize(buffer: *[32]u8, bytes: u64) []const u8 {
     const value: f64 = @floatFromInt(bytes);
     if (bytes < 1024) return std.fmt.bufPrint(buffer, "{d} B", .{bytes}) catch unreachable;
@@ -359,7 +340,7 @@ fn formatSize(buffer: *[32]u8, bytes: u64) []const u8 {
     return std.fmt.bufPrint(buffer, "{d:.2} GB", .{gigabytes}) catch unreachable;
 }
 
-/// Age in days, weeks, or months, as 0.3.1 printed it; 32 bytes hold every case.
+/// Age in days, weeks, or months; 32 bytes hold every case.
 fn formatModified(buffer: *[32]u8, days_ago: u16) []const u8 {
     if (days_ago == 0) return "Today";
     if (days_ago == 1) return "Yesterday";

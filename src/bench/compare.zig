@@ -1,126 +1,59 @@
-//! Benchmark Comparison Tool
-//!
-//! Reads two benchmark JSON files (baseline and current), compares
-//! `time_per_op_ns` for each named benchmark, and flags regressions
-//! above a configurable threshold.  When percentile data is present,
-//! p99 tail latency is checked independently — a p99 regression is
-//! flagged even when the average looks fine.
-//!
-//! Usage:
-//!   zig build bench-compare -- baseline.json current.json [--threshold 15]
-//!
-//! Exit code 0: no regressions detected.
-//! Exit code 1: one or more regressions above the threshold.
-//!
-//! All comparison storage is fixed-capacity and stack-resident.  Heap
-//! allocation occurs only for file I/O and JSON parsing (via page_allocator),
-//! freed immediately after copying into fixed buffers.
-
 const std = @import("std");
 const Dir = std.Io.Dir;
 const Io = std.Io;
 
-// =============================================================================
-// Limits
-// =============================================================================
-
-/// Maximum benchmark entries per file.  Matches json_writer.zig.
+/// Matches json_writer.zig.
 const MAX_ENTRIES: u32 = 256;
 
-/// Maximum benchmark name length in bytes.  Matches json_writer.zig.
+/// Matches json_writer.zig.
 const MAX_NAME_LENGTH: u32 = 128;
 
-/// Maximum file path length for CLI arguments.
 const MAX_PATH_LENGTH: u32 = 1024;
 
-/// Maximum module name length (e.g. "context", "layout").
 const MAX_MODULE_NAME_LENGTH: u32 = 64;
 
-/// Maximum metadata string length (os, arch, date fields).
 const MAX_META_STRING_LENGTH: u32 = 32;
 
-/// Default regression threshold in percent.  A benchmark whose
-/// time_per_op_ns increases by more than this percentage is flagged.
 const DEFAULT_THRESHOLD_PERCENT: f64 = 15.0;
 
-/// Absolute floor for percentage-based gating, in ns/op.
-///
-/// Below ~10 ns/op a measurement is dominated by timer resolution,
-/// cache-line placement, and scheduler jitter rather than by the code
-/// under test.  A percentage delta there carries no signal: two runs of
-/// byte-identical code routinely swing far past the threshold (observed
-/// 0.40 -> 0.58 ns/op = +46%, 1.97 -> 3.52 ns/op = +79%).  Entries whose
-/// baseline is below this floor are reported as `.noisy` and never fail
-/// the build — unless the *absolute* growth is itself >= this floor (see
-/// below), which would indicate a genuine order-of-magnitude blowup that
-/// no amount of jitter explains.
+/// Below ~10 ns/op, timer resolution and scheduler jitter dominate:
+/// identical code swings far past any percentage threshold (observed
+/// 0.40 -> 0.58 ns/op = +46%). Sub-floor entries are `.noisy`, unless
+/// the absolute growth itself clears this floor.
 const MIN_NS_FOR_THRESHOLD: f64 = 10.0;
 
-/// Multiple by which a sub-floor benchmark must grow before it counts as
-/// a real regression rather than `.noisy`.  Near the floor, jitter alone
-/// routinely doubles a measurement, so a fixed absolute delta produces
-/// false positives (observed 9.49 -> 19.84 ns/op = +109% on byte-identical
-/// code).  Requiring a 4x jump that also clears the floor isolates genuine
-/// order-of-magnitude blowups (e.g. 2 -> 50 ns/op) from sub-floor noise.
+/// Near the floor, jitter alone doubles a measurement (observed
+/// 9.49 -> 19.84 ns/op on identical code), so a sub-floor entry must
+/// grow 4x and clear the floor to count as a real regression.
 const CATASTROPHIC_JUMP_MULTIPLIER: f64 = 4.0;
 
-/// p99 tail latency is only gated at or above this baseline, in ns/op.
-///
-/// At nanosecond scale the p99 reflects OS scheduling preemptions, not
-/// the code path — identical code produces p99 swings of +138% on these
-/// micro-benchmarks.  Real tail-latency regressions worth gating show up
-/// in the genuinely expensive operations (cold text shaping ~28 us,
-/// buffer growth ~470 us), so we only let p99 fail the build once the
-/// baseline tail is >= 1 us.  Below that, p99 is printed for human
-/// insight but is informational only.
+/// Below ~1 us the p99 reflects scheduler preemptions, not the code
+/// (identical code swings +138%); it is reported but informational.
 const P99_MIN_NS_FOR_THRESHOLD: f64 = 1000.0;
 
-/// Extra slack applied to the p99 gate on top of the magnitude-scaled
-/// threshold.  Even above 1 us, tails of FFI/syscall-bound benchmarks
-/// (cold text shaping crosses into CoreText/HarfBuzz) swing materially
-/// run-to-run on byte-identical code — observed up to +31% on a ~40 us
-/// p99.  A 3x multiplier clears that measured noise while still failing
-/// on a genuine tail blowup (>= ~1.5x at the 15% default).  Means are
-/// far more stable and keep the tighter, unmultiplied gate.
+/// FFI-bound tails (CoreText/HarfBuzz) swing up to +31% run-to-run on
+/// identical code; 3x clears that noise while failing genuine blowups.
 const P99_THRESHOLD_MULTIPLIER: f64 = 3.0;
 
-/// Magnitude bands for the scaled threshold.  Faster benchmarks carry
-/// proportionally more run-to-run variance, so they earn a looser
-/// relative bound; only benchmarks at or above the medium ceiling are
-/// held to the full (tightest) configured threshold.
 const SMALL_BENCH_NS_CEILING: f64 = 100.0;
 const MEDIUM_BENCH_NS_CEILING: f64 = 1000.0;
 
-/// Threshold multipliers applied per magnitude band.  A 50 ns/op
-/// benchmark tolerates 2.5x the base threshold (37.5% at the 15%
-/// default); a 500 ns/op benchmark tolerates 1.5x (22.5%); a >= 1 us
-/// benchmark is held to 1.0x (15%).  These widen the gate just enough to
-/// absorb measured variance without letting real regressions through.
 const SMALL_BENCH_THRESHOLD_MULTIPLIER: f64 = 2.5;
 const MEDIUM_BENCH_THRESHOLD_MULTIPLIER: f64 = 1.5;
 
-/// Maximum JSON file size we will attempt to read (4 MB).
-/// 256 entries with full names and percentiles serializes to ~100 KB;
-/// 4 MB provides 40x headroom for unexpected verbosity.
+/// 256 entries serialize to ~100 KB; 4 MB gives 40x headroom.
 const MAX_JSON_FILE_BYTES: u32 = 4 * 1024 * 1024;
 
-/// Comparison table column widths, in characters.
 const COLUMN_WIDTH_NAME: u32 = 38;
 const COLUMN_WIDTH_VALUE: u32 = 16;
 const COLUMN_WIDTH_DELTA: u32 = 10;
 const COLUMN_WIDTH_STATUS: u32 = 14;
 
-/// Total table width: name + 2 values + delta + status + padding.
 const TABLE_WIDTH: u32 = COLUMN_WIDTH_NAME + COLUMN_WIDTH_VALUE * 2 +
     COLUMN_WIDTH_DELTA + COLUMN_WIDTH_STATUS + 4;
 
-// =============================================================================
-// Parsed Benchmark Entry
-// =============================================================================
-
-/// A single benchmark result extracted from a JSON report file.
-/// All strings are copied into fixed-size buffers so the JSON parse
-/// tree can be freed immediately.
+/// Strings are copied into fixed buffers so the JSON parse tree can
+/// be freed immediately.
 const ParsedEntry = struct {
     name: [MAX_NAME_LENGTH]u8 = @splat(0),
     name_length: u32 = 0,
@@ -131,9 +64,8 @@ const ParsedEntry = struct {
     avg_time_ms: f64 = 0.0,
     time_per_op_ns: f64 = 0.0,
 
-    // Best-of-N estimator. `has_min` is false for baselines written before
-    // the schema carried it, which is exactly when the gate falls back to
-    // classifying on the mean (`time_per_op_ns`).
+    // `has_min` is false on baselines written before the schema
+    // carried it; the gate then classifies on the mean.
     has_min: bool = false,
     min_per_op_ns: f64 = 0.0,
 
@@ -147,10 +79,6 @@ const ParsedEntry = struct {
         return self.name[0..self.name_length];
     }
 };
-
-// =============================================================================
-// Parsed Report — all entries from one JSON file
-// =============================================================================
 
 const ParsedReport = struct {
     module: [MAX_MODULE_NAME_LENGTH]u8 = @splat(0),
@@ -188,8 +116,8 @@ const ParsedReport = struct {
         return self.date[0..self.date_length];
     }
 
-    /// Linear scan by name.  With ≤256 entries this is faster than
-    /// building a hash map, and avoids heap allocation.
+    /// With <=256 entries a linear scan beats a hash map and avoids
+    /// heap allocation.
     fn findByName(self: *const ParsedReport, name: []const u8) ?u32 {
         std.debug.assert(name.len > 0);
         for (0..self.count) |i| {
@@ -201,23 +129,17 @@ const ParsedReport = struct {
     }
 };
 
-// =============================================================================
-// Comparison Types
-// =============================================================================
-
 const ComparisonStatus = enum(u8) {
     ok = 0,
     regression = 1,
     improvement = 2,
     new_entry = 3,
     removed_entry = 4,
-    /// Matched, but too fast (below `MIN_NS_FOR_THRESHOLD`) for a
-    /// percentage delta to mean anything.  Displayed with its delta for
-    /// human insight, but never fails the build.
+    /// Too fast for a percentage delta to mean anything; shown but
+    /// never fails the build.
     noisy = 5,
 };
 
-/// One row in the comparison table.
 const ComparisonEntry = struct {
     name: [MAX_NAME_LENGTH]u8 = @splat(0),
     name_length: u32 = 0,
@@ -226,15 +148,11 @@ const ComparisonEntry = struct {
     current_ns_per_op: f64 = 0.0,
     delta_percent: f64 = 0.0,
 
-    /// Whether both entries carry a min, in which case the status is
-    /// classified on the min (best-of-N) rather than the mean. The mean is
-    /// still shown in the main row for human context.
     gated_on_min: bool = false,
     baseline_min: f64 = 0.0,
     current_min: f64 = 0.0,
     delta_min_percent: f64 = 0.0,
 
-    /// Whether both entries have percentile data.
     has_percentiles: bool = false,
     baseline_p99: f64 = 0.0,
     current_p99: f64 = 0.0,
@@ -248,9 +166,8 @@ const ComparisonEntry = struct {
     }
 };
 
-/// Aggregate comparison results across all entries.
-/// Capacity is 2 × MAX_ENTRIES to handle the worst case where
-/// every entry in baseline and current is unique (no overlap).
+/// Capacity 2 x MAX_ENTRIES: the worst case is no overlap between the
+/// baseline and current entry sets.
 const ComparisonResult = struct {
     /// 2 × 256 entries × ~200 bytes each ≈ 100 KB on the stack.
     entries: [MAX_ENTRIES * 2]ComparisonEntry = undefined,
@@ -270,10 +187,6 @@ const ComparisonResult = struct {
         self.count += 1;
     }
 };
-
-// =============================================================================
-// CLI Argument Parsing
-// =============================================================================
 
 const Args = struct {
     baseline_path: [MAX_PATH_LENGTH]u8 = @splat(0),
@@ -304,19 +217,12 @@ const ArgsError = error{
     help_requested,
 };
 
-/// Parse CLI arguments: <baseline.json> <current.json> [--threshold N].
-/// Positional args come first; --threshold is optional.
-///
-/// `argv` is passed explicitly (rather than reaching for a global) so
-/// callers can unit-test arg parsing with a fixed slice, and so the
-/// parser never depends on platform-specific globals.  `main` receives
-/// `std.process.Init` and forwards `init.args.vector` here.
 fn parseArgs(argv: []const [*:0]const u8) ArgsError!Args {
     var args: Args = .{};
     var positional_count: u32 = 0;
 
-    // argv may be empty under test runners; start at 1 when argv[0] is
-    // present (the program name), otherwise at 0.
+    // Test runners may pass empty argv; skip the program name only
+    // when one is present.
     var i: u32 = if (argv.len >= 1) 1 else 0;
     const argc: u32 = @intCast(argv.len);
     while (i < argc) : (i += 1) {
@@ -336,7 +242,6 @@ fn parseArgs(argv: []const [*:0]const u8) ArgsError!Args {
             continue;
         }
 
-        // Positional argument: first is baseline, second is current.
         if (positional_count == 0) {
             if (arg.len > MAX_PATH_LENGTH) return error.path_too_long;
             @memcpy(args.baseline_path[0..arg.len], arg);
@@ -348,7 +253,6 @@ fn parseArgs(argv: []const [*:0]const u8) ArgsError!Args {
             args.current_path_length = @intCast(arg.len);
             positional_count += 1;
         }
-        // Extra positional args are silently ignored.
     }
 
     if (args.baseline_path_length == 0) return error.missing_baseline;
@@ -356,12 +260,8 @@ fn parseArgs(argv: []const [*:0]const u8) ArgsError!Args {
     return args;
 }
 
-// =============================================================================
-// JSON Parsing Helpers
-// =============================================================================
-
-/// Extract an f64 from a JSON value that may be encoded as integer or float.
-/// JSON serializers sometimes emit `17` instead of `17.0` for round floats.
+/// JSON serializers sometimes emit `17` instead of `17.0` for round
+/// floats.
 fn jsonAsFloat(value: std.json.Value) ?f64 {
     return switch (value) {
         .float => |f| f,
@@ -370,7 +270,6 @@ fn jsonAsFloat(value: std.json.Value) ?f64 {
     };
 }
 
-/// Extract a u32 from a JSON integer value.
 fn jsonAsU32(value: std.json.Value) ?u32 {
     return switch (value) {
         .integer => |i| if (i >= 0 and i <= std.math.maxInt(u32)) @as(u32, @intCast(i)) else null,
@@ -378,7 +277,6 @@ fn jsonAsU32(value: std.json.Value) ?u32 {
     };
 }
 
-/// Extract a u64 from a JSON integer value.
 fn jsonAsU64(value: std.json.Value) ?u64 {
     return switch (value) {
         .integer => |i| if (i >= 0) @as(u64, @intCast(i)) else null,
@@ -386,8 +284,6 @@ fn jsonAsU64(value: std.json.Value) ?u64 {
     };
 }
 
-/// Copy a JSON string into a fixed-size buffer.  Returns the number
-/// of bytes copied, or 0 if the value is not a string or exceeds capacity.
 fn copyJsonString(value: std.json.Value, dest: []u8) u32 {
     std.debug.assert(dest.len > 0);
     switch (value) {
@@ -400,10 +296,6 @@ fn copyJsonString(value: std.json.Value, dest: []u8) u32 {
     }
 }
 
-// =============================================================================
-// Report Loading
-// =============================================================================
-
 const LoadError = error{
     file_open_failed,
     file_read_failed,
@@ -413,15 +305,12 @@ const LoadError = error{
     entry_limit_exceeded,
 };
 
-/// Read a JSON benchmark file and parse it into a fixed-capacity report.
-/// Heap allocation for file I/O and JSON parsing is freed before return.
 fn loadReport(io: Io, path: []const u8) LoadError!ParsedReport {
     std.debug.assert(path.len > 0);
     std.debug.assert(path.len <= MAX_PATH_LENGTH);
 
     const allocator = std.heap.page_allocator;
 
-    // Read the entire file into memory.
     const file = Dir.cwd().openFile(io, path, .{}) catch {
         return error.file_open_failed;
     };
@@ -433,10 +322,9 @@ fn loadReport(io: Io, path: []const u8) LoadError!ParsedReport {
     if (stat.size > MAX_JSON_FILE_BYTES) {
         return error.file_read_failed;
     }
-    // `file.readerStreaming` returns an `Io.File.Reader`; the byte-source
-    // methods (`readAlloc` and friends) live on its `.interface`
-    // (`std.Io.Reader`).  The file size was bounded above against
-    // `MAX_JSON_FILE_BYTES`, so the cast to `usize` cannot overflow.
+    // Byte-source methods (`readAlloc` and friends) live on the
+    // reader's `.interface`; `stat.size` is bounded by
+    // MAX_JSON_FILE_BYTES above.
     var stream_buf: [4096]u8 = undefined;
     var reader = file.readerStreaming(io, &stream_buf);
     const contents = reader.interface.readAlloc(allocator, @intCast(stat.size)) catch {
@@ -444,8 +332,8 @@ fn loadReport(io: Io, path: []const u8) LoadError!ParsedReport {
     };
     defer allocator.free(contents);
 
-    // Parse JSON.  The parsed tree references `contents`, so both must
-    // stay alive until we finish copying into the fixed-capacity report.
+    // The parsed tree references `contents`; both must outlive the
+    // copy into the fixed-capacity report.
     var parsed = std.json.parseFromSlice(
         std.json.Value,
         allocator,
@@ -459,8 +347,6 @@ fn loadReport(io: Io, path: []const u8) LoadError!ParsedReport {
     return extractReport(parsed.value);
 }
 
-/// Extract metadata and benchmark entries from a parsed JSON value
-/// into a stack-resident ParsedReport.
 fn extractReport(root_value: std.json.Value) LoadError!ParsedReport {
     const root = switch (root_value) {
         .object => |obj| obj,
@@ -469,7 +355,6 @@ fn extractReport(root_value: std.json.Value) LoadError!ParsedReport {
 
     var report: ParsedReport = .{};
 
-    // -- Metadata --
     const metadata_value = root.get("metadata") orelse return error.missing_metadata;
     const metadata = switch (metadata_value) {
         .object => |obj| obj,
@@ -489,7 +374,6 @@ fn extractReport(root_value: std.json.Value) LoadError!ParsedReport {
         report.date_length = copyJsonString(v, &report.date);
     }
 
-    // -- Benchmark entries --
     const benchmarks_value = root.get("benchmarks") orelse return error.missing_benchmarks;
     const benchmarks = switch (benchmarks_value) {
         .array => |arr| arr,
@@ -511,7 +395,6 @@ fn extractReport(root_value: std.json.Value) LoadError!ParsedReport {
     return report;
 }
 
-/// Parse one benchmark entry from a JSON object into a ParsedEntry.
 fn extractEntry(obj: std.json.ObjectMap) ParsedEntry {
     var e: ParsedEntry = .{};
 
@@ -534,9 +417,8 @@ fn extractEntry(obj: std.json.ObjectMap) ParsedEntry {
         e.time_per_op_ns = jsonAsFloat(v) orelse 0.0;
     }
 
-    // Min field: present as float or null (or absent on an older baseline).
-    // A null/absent value leaves `has_min` false so the gate falls back to
-    // the mean for this entry.
+    // A null/absent min leaves `has_min` false so the gate falls back
+    // to the mean for this entry.
     if (obj.get("min_per_op_ns")) |v| {
         if (jsonAsFloat(v)) |min_per_op| {
             e.has_min = true;
@@ -544,11 +426,9 @@ fn extractEntry(obj: std.json.ObjectMap) ParsedEntry {
         }
     }
 
-    // Percentile fields: present as float or null in the JSON.
     if (obj.get("p50_per_op_ns")) |v| {
         if (jsonAsFloat(v)) |p50| {
             e.p50_per_op_ns = p50;
-            // Mark percentiles present only if p99 also has a value.
             if (obj.get("p99_per_op_ns")) |v99| {
                 if (jsonAsFloat(v99)) |p99| {
                     e.has_percentiles = true;
@@ -561,13 +441,6 @@ fn extractEntry(obj: std.json.ObjectMap) ParsedEntry {
     return e;
 }
 
-// =============================================================================
-// Comparison Logic
-// =============================================================================
-
-/// Compute percentage change from baseline to current.
-/// Positive result means current is slower (regression).
-/// Returns 0.0 when baseline is zero to avoid division by zero.
 fn deltaPercent(baseline: f64, current: f64) f64 {
     std.debug.assert(baseline >= 0.0);
     std.debug.assert(current >= 0.0);
@@ -575,11 +448,6 @@ fn deltaPercent(baseline: f64, current: f64) f64 {
     return ((current - baseline) / baseline) * 100.0;
 }
 
-/// Scale the configured threshold by the baseline magnitude.  Faster
-/// benchmarks carry proportionally more variance, so they earn a looser
-/// relative bound (see the multiplier constants for the rationale).
-/// `reference_ns` is the baseline value the delta was computed against
-/// (avg or p99); `base_threshold` is the user/default percentage.
 fn effectiveThreshold(reference_ns: f64, base_threshold: f64) f64 {
     std.debug.assert(reference_ns >= 0.0);
     std.debug.assert(base_threshold > 0.0);
@@ -593,26 +461,16 @@ fn effectiveThreshold(reference_ns: f64, base_threshold: f64) f64 {
     return base_threshold;
 }
 
-/// Classify the average (mean) dimension of a matched comparison.
-///
-/// Below `MIN_NS_FOR_THRESHOLD` the percentage is meaningless, so the
-/// entry is `.noisy` unless the *absolute* growth is itself at least a
-/// full floor's worth of ns — a jump that large on a sub-floor benchmark
-/// is an order-of-magnitude blowup, not jitter, and must still fail.
-/// Above the floor, the magnitude-scaled threshold gates both directions.
 fn classifyAvgStatus(baseline_ns: f64, current_ns: f64, base_threshold: f64) ComparisonStatus {
     std.debug.assert(baseline_ns >= 0.0);
     std.debug.assert(current_ns >= 0.0);
     std.debug.assert(base_threshold > 0.0);
 
     if (baseline_ns < MIN_NS_FOR_THRESHOLD) {
-        // Too fast to gate by percentage.  Only an order-of-magnitude
-        // blowup survives as a real regression: the current value must
-        // both clear the floor AND be at least CATASTROPHIC_JUMP_MULTIPLIER
-        // times the baseline.  A fixed absolute delta is wrong here — near
-        // the floor, noise alone doubles a benchmark (9.49 -> 19.84 ns is
-        // a +10 ns jump that is pure jitter, not a regression), whereas a
-        // genuine blowup (2 -> 50 ns) clears a 4x multiple with room.
+        // Near the floor, noise alone doubles a benchmark (observed
+        // 9.49 -> 19.84 ns on identical code), so only an
+        // order-of-magnitude blowup that also clears the floor counts
+        // as a regression.
         const catastrophic = current_ns >= MIN_NS_FOR_THRESHOLD and
             current_ns >= baseline_ns * CATASTROPHIC_JUMP_MULTIPLIER;
         if (catastrophic) return .regression;
@@ -626,9 +484,6 @@ fn classifyAvgStatus(baseline_ns: f64, current_ns: f64, base_threshold: f64) Com
     return .ok;
 }
 
-/// Compare two reports and populate a ComparisonResult.
-/// Iterates current entries first (to detect matches and new entries),
-/// then scans baseline for removed entries.
 fn compareReports(
     baseline: *const ParsedReport,
     current: *const ParsedReport,
@@ -640,23 +495,18 @@ fn compareReports(
 
     var result: ComparisonResult = .{};
 
-    // Track which baseline entries have been matched, so we can
-    // detect removed entries in the second pass.
     var baseline_matched: [MAX_ENTRIES]bool = @splat(false);
 
-    // First pass: iterate current entries.
     for (0..current.count) |ci| {
         const current_entry = &current.entries[ci];
         var comp = makeComparisonEntry(current_entry);
 
         if (baseline.findByName(current_entry.nameSlice())) |bi| {
-            // Matched — compute deltas.
             baseline_matched[bi] = true;
             const baseline_entry = &baseline.entries[bi];
             populateMatchedComparison(&comp, baseline_entry, current_entry, threshold_percent);
             result.count_compared += 1;
         } else {
-            // New entry — not present in baseline.
             comp.status = .new_entry;
             comp.current_ns_per_op = current_entry.time_per_op_ns;
             result.count_new += 1;
@@ -666,7 +516,6 @@ fn compareReports(
         result.addEntry(comp);
     }
 
-    // Second pass: find baseline entries not present in current.
     for (0..baseline.count) |bi| {
         if (baseline_matched[bi]) continue;
 
@@ -681,7 +530,6 @@ fn compareReports(
     return result;
 }
 
-/// Initialize a ComparisonEntry with the name from a ParsedEntry.
 fn makeComparisonEntry(source: *const ParsedEntry) ComparisonEntry {
     std.debug.assert(source.name_length > 0);
     var comp: ComparisonEntry = .{};
@@ -690,8 +538,6 @@ fn makeComparisonEntry(source: *const ParsedEntry) ComparisonEntry {
     return comp;
 }
 
-/// Fill in delta fields for a matched (baseline + current) comparison entry.
-/// Determines status based on whether avg or p99 exceeds the threshold.
 fn populateMatchedComparison(
     comp: *ComparisonEntry,
     baseline_entry: *const ParsedEntry,
@@ -705,9 +551,6 @@ fn populateMatchedComparison(
     comp.current_ns_per_op = current_entry.time_per_op_ns;
     comp.delta_percent = deltaPercent(baseline_entry.time_per_op_ns, current_entry.time_per_op_ns);
 
-    // Min comparison when both sides recorded it. The min (best-of-N) is the
-    // estimator least perturbed by runner noise, so it — not the mean — is
-    // what the central-tendency status gates on when available.
     const both_have_min = baseline_entry.has_min and current_entry.has_min;
     if (both_have_min) {
         comp.gated_on_min = true;
@@ -716,7 +559,6 @@ fn populateMatchedComparison(
         comp.delta_min_percent = deltaPercent(baseline_entry.min_per_op_ns, current_entry.min_per_op_ns);
     }
 
-    // Percentile comparison when both sides have data.
     if (baseline_entry.has_percentiles and current_entry.has_percentiles) {
         comp.has_percentiles = true;
         comp.baseline_p99 = baseline_entry.p99_per_op_ns;
@@ -724,11 +566,6 @@ fn populateMatchedComparison(
         comp.delta_p99_percent = deltaPercent(baseline_entry.p99_per_op_ns, current_entry.p99_per_op_ns);
     }
 
-    // Classify central tendency on the most stable estimator available: the
-    // min (best-of-N) when both sides recorded it, otherwise the mean. The
-    // same floor, magnitude-scaling, and noisy/regression rules apply to
-    // either input; the min is just far less jittery. A baseline recorded
-    // without a min still gates, on the mean.
     const central_baseline = if (both_have_min) baseline_entry.min_per_op_ns else baseline_entry.time_per_op_ns;
     const central_current = if (both_have_min) current_entry.min_per_op_ns else current_entry.time_per_op_ns;
     var status = classifyAvgStatus(
@@ -737,11 +574,6 @@ fn populateMatchedComparison(
         threshold_percent,
     );
 
-    // Tail-latency regressions matter even when the average looks fine
-    // (rule 7: back-of-envelope), but only once the tail is large enough
-    // to be a stable signal — below `P99_MIN_NS_FOR_THRESHOLD` the p99 is
-    // scheduler noise (see the constant's rationale).  A genuine p99
-    // regression always wins, upgrading the row to `.regression`.
     const p99_gated = comp.has_percentiles and
         comp.baseline_p99 >= P99_MIN_NS_FOR_THRESHOLD;
     if (p99_gated) {
@@ -753,9 +585,6 @@ fn populateMatchedComparison(
     comp.status = status;
 }
 
-/// Increment the regression/improvement counters on the result.
-/// Called once per entry, only for matched entries (new/removed
-/// are counted separately in compareReports).
 fn updateResultCounters(result: *ComparisonResult, status: ComparisonStatus) void {
     switch (status) {
         .regression => result.count_regressions += 1,
@@ -765,12 +594,7 @@ fn updateResultCounters(result: *ComparisonResult, status: ComparisonStatus) voi
     }
 }
 
-// =============================================================================
-// Output Formatting
-// =============================================================================
-
-/// Write a character repeated `count` times to stderr.
-/// Replaces `writer.writeByteNTimes()` which is unavailable in Zig 0.15.
+/// `writer.writeByteNTimes()` is unavailable in Zig 0.15.
 fn printRepeat(char: u8, count: u32) void {
     var buf: [TABLE_WIDTH]u8 = undefined;
     const len = @min(count, TABLE_WIDTH);
@@ -778,7 +602,6 @@ fn printRepeat(char: u8, count: u32) void {
     std.debug.print("{s}", .{buf[0..len]});
 }
 
-/// Print the full comparison report to stderr.
 fn printResults(
     args: *const Args,
     baseline: *const ParsedReport,
@@ -795,7 +618,6 @@ fn printResults(
     printSummary(result, args.threshold_percent);
 }
 
-/// Print the report header with file paths and metadata.
 fn printHeader(
     args: *const Args,
     baseline: *const ParsedReport,
@@ -804,7 +626,6 @@ fn printHeader(
     printRepeat('=', TABLE_WIDTH);
     std.debug.print("\n", .{});
 
-    // Title line: module name and platform if available.
     if (current.module_length > 0) {
         std.debug.print("  Benchmark Comparison -- {s} ({s}-{s})", .{
             current.moduleSlice(),
@@ -819,15 +640,12 @@ fn printHeader(
     printRepeat('=', TABLE_WIDTH);
     std.debug.print("\n", .{});
 
-    // File paths with dates.
     printPathLine("  Baseline", args.baselineSlice(), baseline.dateSlice());
     printPathLine("  Current ", args.currentSlice(), current.dateSlice());
 
-    // Threshold.
     std.debug.print("  Threshold: {d:.1}%\n", .{args.threshold_percent});
 }
 
-/// Print one "Baseline: path (date)" line.
 fn printPathLine(label: []const u8, path: []const u8, date: []const u8) void {
     std.debug.assert(label.len > 0);
     std.debug.assert(path.len > 0);
@@ -838,7 +656,6 @@ fn printPathLine(label: []const u8, path: []const u8, date: []const u8) void {
     }
 }
 
-/// Print the column header row.
 fn printTableHeader() void {
     printRepeat('-', TABLE_WIDTH);
     std.debug.print("\n", .{});
@@ -859,7 +676,6 @@ fn printTableHeader() void {
     std.debug.print("\n", .{});
 }
 
-/// Format and print one comparison row.
 fn printEntryRow(entry: *const ComparisonEntry) void {
     std.debug.assert(entry.name_length > 0);
 
@@ -884,21 +700,15 @@ fn printEntryRow(entry: *const ComparisonEntry) void {
         status_str,
     });
 
-    // Sub-line for the min (best-of-N) when both sides recorded it: this is
-    // the estimator the status gates on, so show it explicitly.
     if (entry.gated_on_min) {
         printMinLine(entry);
     }
 
-    // Sub-line for p99 tail latency when percentile data exists.
     if (entry.has_percentiles) {
         printPercentileLine(entry);
     }
 }
 
-/// Print a sub-line showing the min (best-of-N) comparison, indented under
-/// the main row and tagged `[gated]` because the status is classified on it
-/// rather than on the mean shown in the headline row.
 fn printMinLine(entry: *const ComparisonEntry) void {
     std.debug.assert(entry.gated_on_min);
 
@@ -913,10 +723,6 @@ fn printMinLine(entry: *const ComparisonEntry) void {
     });
 }
 
-/// Print a sub-line showing p99 comparison, indented under the main row.
-/// When the baseline tail is below `P99_MIN_NS_FOR_THRESHOLD` the p99 is
-/// not gated (it is scheduler noise at that scale), so we tag the line
-/// `[informational]` to explain why a large p99 delta did not fail.
 fn printPercentileLine(entry: *const ComparisonEntry) void {
     std.debug.assert(entry.has_percentiles);
 
@@ -936,7 +742,6 @@ fn printPercentileLine(entry: *const ComparisonEntry) void {
     });
 }
 
-/// Print the summary footer.
 fn printSummary(result: *const ComparisonResult, threshold_percent: f64) void {
     std.debug.assert(threshold_percent > 0.0);
 
@@ -962,20 +767,13 @@ fn printSummary(result: *const ComparisonResult, threshold_percent: f64) void {
     std.debug.print("\n", .{});
 }
 
-// =============================================================================
-// Formatting Helpers
-// =============================================================================
-
-/// Format a ns/op value for display, or "--" for missing entries.
 fn formatNsPerOp(value: f64, status: ComparisonStatus, is_baseline: bool, buf: []u8) []const u8 {
     std.debug.assert(buf.len >= 16);
-    // Show "--" for the side that doesn't exist.
     if (is_baseline and status == .new_entry) return "--";
     if (!is_baseline and status == .removed_entry) return "--";
     return std.fmt.bufPrint(buf, "{d:.2} ns/op", .{value}) catch "--";
 }
 
-/// Format a delta percentage, with sign prefix.
 fn formatDelta(delta_percent: f64, status: ComparisonStatus, buf: []u8) []const u8 {
     std.debug.assert(buf.len >= 16);
     if (status == .new_entry) return "NEW";
@@ -984,7 +782,6 @@ fn formatDelta(delta_percent: f64, status: ComparisonStatus, buf: []u8) []const 
     return std.fmt.bufPrint(buf, "{s}{d:.1}%", .{ sign, delta_percent }) catch "?";
 }
 
-/// Human-readable status label.
 fn statusLabel(status: ComparisonStatus) []const u8 {
     return switch (status) {
         .ok => "",
@@ -996,8 +793,6 @@ fn statusLabel(status: ComparisonStatus) []const u8 {
     };
 }
 
-/// Convert a comptime u32 to a decimal string for use in format specifiers.
-/// Zig's `std.fmt` requires comptime-known width strings.
 fn widthStr(comptime width: u32) *const [countDigits(width)]u8 {
     const buf = comptime blk: {
         var b: [countDigits(width)]u8 = undefined;
@@ -1013,7 +808,6 @@ fn widthStr(comptime width: u32) *const [countDigits(width)]u8 {
     return &buf;
 }
 
-/// Count the number of decimal digits in a comptime u32.
 fn countDigits(comptime value: u32) u32 {
     if (value == 0) return 1;
     var count: u32 = 0;
@@ -1024,10 +818,6 @@ fn countDigits(comptime value: u32) u32 {
     }
     return count;
 }
-
-// =============================================================================
-// Usage Message
-// =============================================================================
 
 fn printUsage() void {
     std.debug.print(
@@ -1058,10 +848,6 @@ fn printUsage() void {
         \\
     , .{});
 }
-
-// =============================================================================
-// Entry Point
-// =============================================================================
 
 pub fn main(init: std.process.Init) void {
     const args = parseArgs(init.minimal.args.vector) catch |err| {
@@ -1107,35 +893,24 @@ pub fn main(init: std.process.Init) void {
     }
 }
 
-// =============================================================================
-// Tests
-// =============================================================================
-
 test "deltaPercent: basic cases" {
-    // No change.
     const zero = deltaPercent(100.0, 100.0);
     std.debug.assert(zero == 0.0);
 
-    // 20% regression (slower).
     const regression = deltaPercent(100.0, 120.0);
     std.debug.assert(regression > 19.9);
     std.debug.assert(regression < 20.1);
 
-    // 20% improvement (faster).
     const improvement = deltaPercent(100.0, 80.0);
     std.debug.assert(improvement > -20.1);
     std.debug.assert(improvement < -19.9);
 
-    // Zero baseline returns 0 (no division by zero).
     const zero_baseline = deltaPercent(0.0, 42.0);
     std.debug.assert(zero_baseline == 0.0);
 }
 
 test "parseArgs: rejects missing arguments" {
-    // Pass an empty argv — parseArgs must fail with missing_baseline
-    // because there are no positional arguments to consume.
     if (parseArgs(&.{})) |_| {
-        // parseArgs should never succeed with no positional args.
         unreachable;
     } else |err| {
         std.debug.assert(err == error.missing_baseline or err == error.missing_current);
@@ -1143,19 +918,16 @@ test "parseArgs: rejects missing arguments" {
 }
 
 test "jsonAsFloat: handles integer and float values" {
-    // Float value.
     const float_val = std.json.Value{ .float = 42.5 };
     const f = jsonAsFloat(float_val);
     std.debug.assert(f != null);
     std.debug.assert(f.? == 42.5);
 
-    // Integer value promoted to float.
     const int_val = std.json.Value{ .integer = 100 };
     const i = jsonAsFloat(int_val);
     std.debug.assert(i != null);
     std.debug.assert(i.? == 100.0);
 
-    // Null value.
     const null_val = std.json.Value.null;
     std.debug.assert(jsonAsFloat(null_val) == null);
 }
@@ -1178,7 +950,6 @@ test "copyJsonString: copies string values" {
     std.debug.assert(len == 5);
     std.debug.assert(std.mem.eql(u8, dest[0..5], "hello"));
 
-    // Non-string returns 0.
     const int_val = std.json.Value{ .integer = 42 };
     std.debug.assert(copyJsonString(int_val, &dest) == 0);
 }
@@ -1234,13 +1005,11 @@ test "extractReport: parses well-formed JSON" {
     std.debug.assert(std.mem.eql(u8, report.archSlice(), "aarch64"));
     std.debug.assert(report.count == 2);
 
-    // First entry: no percentiles.
     std.debug.assert(std.mem.eql(u8, report.entries[0].nameSlice(), "alpha"));
     std.debug.assert(report.entries[0].operation_count == 8);
     std.debug.assert(report.entries[0].time_per_op_ns == 17.02);
     std.debug.assert(!report.entries[0].has_percentiles);
 
-    // Second entry: with percentiles.
     std.debug.assert(std.mem.eql(u8, report.entries[1].nameSlice(), "beta"));
     std.debug.assert(report.entries[1].has_percentiles);
     std.debug.assert(report.entries[1].p50_per_op_ns == 55.0);
@@ -1248,22 +1017,15 @@ test "extractReport: parses well-formed JSON" {
 }
 
 test "compareReports: detects regressions and improvements" {
-    // Build two minimal reports by hand.
     var baseline: ParsedReport = .{};
     var current: ParsedReport = .{};
 
-    // High-band values (>= 1 us) so the base 15% threshold applies
-    // directly, with no magnitude scaling, keeping the math obvious.
-
-    // Entry "fast" — 10% slower (below 15% threshold).
     baseline.entries[0] = makeTestEntry("fast", 1000.0);
     current.entries[0] = makeTestEntry("fast", 1100.0);
 
-    // Entry "slow" — 25% slower (above threshold).
     baseline.entries[1] = makeTestEntry("slow", 1000.0);
     current.entries[1] = makeTestEntry("slow", 1250.0);
 
-    // Entry "better" — 20% faster (improvement).
     baseline.entries[2] = makeTestEntry("better", 1000.0);
     current.entries[2] = makeTestEntry("better", 800.0);
 
@@ -1281,10 +1043,6 @@ test "compareReports: detects regressions and improvements" {
 }
 
 test "compareReports: gates on min, so a noisy mean swing alone is not a regression" {
-    // Both sides recorded a min. The mean jumped +30% (the kind of phantom
-    // swing identical-code reruns produce), but the best-of-N min moved only
-    // +3%. Because the status classifies on the min, the row stays clean —
-    // this is the whole point of the min gate.
     var baseline: ParsedReport = .{};
     var current: ParsedReport = .{};
 
@@ -1301,8 +1059,6 @@ test "compareReports: gates on min, so a noisy mean swing alone is not a regress
 }
 
 test "compareReports: a genuine min regression still flags even when the mean looks flat" {
-    // The mean barely moved (+1%) but the best-of-N min jumped +30%, which is
-    // a real, reproducible slowdown of the central cost — must flag.
     var baseline: ParsedReport = .{};
     var current: ParsedReport = .{};
 
@@ -1319,9 +1075,6 @@ test "compareReports: a genuine min regression still flags even when the mean lo
 }
 
 test "compareReports: falls back to mean gating when min is absent (old baseline)" {
-    // Neither entry carries a min (an older baseline schema). The gate must
-    // degrade to the mean-based classification it used before min existed:
-    // a +25% mean jump is still a regression.
     var baseline: ParsedReport = .{};
     var current: ParsedReport = .{};
 
@@ -1341,14 +1094,11 @@ test "compareReports: detects new and removed entries" {
     var baseline: ParsedReport = .{};
     var current: ParsedReport = .{};
 
-    // "kept" exists in both.
     baseline.entries[0] = makeTestEntry("kept", 50.0);
     current.entries[0] = makeTestEntry("kept", 50.0);
 
-    // "old" only in baseline (removed).
     baseline.entries[1] = makeTestEntry("old", 75.0);
 
-    // "fresh" only in current (new).
     current.entries[1] = makeTestEntry("fresh", 30.0);
 
     baseline.count = 2;
@@ -1356,7 +1106,7 @@ test "compareReports: detects new and removed entries" {
 
     const result = compareReports(&baseline, &current, 15.0);
 
-    std.debug.assert(result.count == 3); // kept + fresh + old
+    std.debug.assert(result.count == 3);
     std.debug.assert(result.count_compared == 1);
     std.debug.assert(result.count_new == 1);
     std.debug.assert(result.count_removed == 1);
@@ -1366,10 +1116,6 @@ test "compareReports: p99 regression flags even when avg is ok (tail >= 1us)" {
     var baseline: ParsedReport = .{};
     var current: ParsedReport = .{};
 
-    // Average is only 5% slower (below threshold), but p99 is 60% worse
-    // — past the 45% p99 gate (15% base x 1.0 high band x 3.0 p99 slack).
-    // The baseline tail (5 us) is above P99_MIN_NS_FOR_THRESHOLD, so the
-    // p99 regression is gated and flags the row.
     baseline.entries[0] = makeTestEntryWithPercentiles("tail_bad", 2000.0, 5000.0);
     current.entries[0] = makeTestEntryWithPercentiles("tail_bad", 2100.0, 8000.0);
 
@@ -1387,8 +1133,6 @@ test "compareReports: sub-floor entries are noisy, never regressions" {
     var baseline: ParsedReport = .{};
     var current: ParsedReport = .{};
 
-    // 0.40 -> 0.58 ns/op = +46%, but both are far below the 10 ns floor.
-    // This is the exact shape of the CI false positive (swap_remove_1000).
     baseline.entries[0] = makeTestEntry("tiny", 0.40);
     current.entries[0] = makeTestEntry("tiny", 0.58);
 
@@ -1406,9 +1150,6 @@ test "compareReports: sub-floor catastrophic absolute jump still flags" {
     var baseline: ParsedReport = .{};
     var current: ParsedReport = .{};
 
-    // 2 -> 50 ns/op: a 25x blowup. The percentage is meaningless at this
-    // scale, but the absolute growth (48 ns) exceeds a full floor, so it
-    // is a genuine order-of-magnitude regression we must not hide.
     baseline.entries[0] = makeTestEntry("blowup", 2.0);
     current.entries[0] = makeTestEntry("blowup", 50.0);
 
@@ -1425,9 +1166,6 @@ test "compareReports: sub-floor noise-doubling stays noisy, not regression" {
     var baseline: ParsedReport = .{};
     var current: ParsedReport = .{};
 
-    // 9.49 -> 19.84 ns/op = +109%, but the baseline is below the 10 ns
-    // floor and the jump is only ~2x. This is jitter near the floor
-    // (the CI false positive on nested_list_20x50), not a 4x blowup.
     baseline.entries[0] = makeTestEntry("near_floor", 9.49);
     current.entries[0] = makeTestEntry("near_floor", 19.84);
 
@@ -1444,9 +1182,6 @@ test "compareReports: scaled threshold absorbs small-bench variance" {
     var baseline: ParsedReport = .{};
     var current: ParsedReport = .{};
 
-    // 30 -> 39 ns/op = +30%. In the small band (< 100 ns) the effective
-    // threshold is 2.5 x 15% = 37.5%, so this run-to-run jitter is NOT a
-    // regression. The same +30% at >= 1 us (high band) would flag.
     baseline.entries[0] = makeTestEntry("jittery", 30.0);
     current.entries[0] = makeTestEntry("jittery", 39.0);
 
@@ -1463,9 +1198,6 @@ test "compareReports: p99 below 1us is informational, not gated" {
     var baseline: ParsedReport = .{};
     var current: ParsedReport = .{};
 
-    // Avg is flat, p99 doubles (+138%) — but the tail is only tens of ns,
-    // pure scheduler noise. Mirrors the CI false positive on
-    // shape_warm_arena_short_13ch_x100 (p99 37.92 -> 90.42 ns/op).
     baseline.entries[0] = makeTestEntryWithPercentiles("arena_short", 36.85, 37.92);
     current.entries[0] = makeTestEntryWithPercentiles("arena_short", 37.50, 90.42);
 
@@ -1482,9 +1214,6 @@ test "compareReports: moderate us-scale p99 swing is tolerated" {
     var baseline: ParsedReport = .{};
     var current: ParsedReport = .{};
 
-    // ~40 us cold-shape benchmark whose p99 swings +31% run-to-run on
-    // identical code (FFI into CoreText). Above the 1 us floor but under
-    // the 45% p99 gate, so it must NOT fail. Mirrors scaling_shape_200ch.
     baseline.entries[0] = makeTestEntryWithPercentiles("cold_shape", 39607.0, 50042.0);
     current.entries[0] = makeTestEntryWithPercentiles("cold_shape", 40854.0, 65666.0);
 
@@ -1498,15 +1227,12 @@ test "compareReports: moderate us-scale p99 swing is tolerated" {
 }
 
 test "widthStr: produces correct digit strings" {
-    // Single digit.
     const s10 = widthStr(5);
     std.debug.assert(std.mem.eql(u8, s10, "5"));
 
-    // Two digits.
     const s38 = widthStr(38);
     std.debug.assert(std.mem.eql(u8, s38, "38"));
 
-    // Three digits.
     const s256 = widthStr(256);
     std.debug.assert(std.mem.eql(u8, s256, "256"));
 }
@@ -1514,19 +1240,13 @@ test "widthStr: produces correct digit strings" {
 test "formatDelta: formats sign and special statuses" {
     var buf: [32]u8 = undefined;
 
-    // Positive delta shows "+".
     const pos = formatDelta(12.3, .ok, &buf);
     std.debug.assert(std.mem.eql(u8, pos, "+12.3%"));
 
-    // New entry shows "NEW".
     var buf2: [32]u8 = undefined;
     const new = formatDelta(0.0, .new_entry, &buf2);
     std.debug.assert(std.mem.eql(u8, new, "NEW"));
 }
-
-// =============================================================================
-// Test Helpers
-// =============================================================================
 
 fn makeTestEntry(name: []const u8, time_per_op_ns: f64) ParsedEntry {
     std.debug.assert(name.len > 0);
@@ -1541,7 +1261,7 @@ fn makeTestEntry(name: []const u8, time_per_op_ns: f64) ParsedEntry {
 fn makeTestEntryWithPercentiles(name: []const u8, time_per_op_ns: f64, p99: f64) ParsedEntry {
     var e = makeTestEntry(name, time_per_op_ns);
     e.has_percentiles = true;
-    e.p50_per_op_ns = time_per_op_ns; // Use avg as p50 for simplicity.
+    e.p50_per_op_ns = time_per_op_ns;
     e.p99_per_op_ns = p99;
     return e;
 }

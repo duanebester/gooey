@@ -1,24 +1,15 @@
-//! Compile-time interface verification
-//!
 //! Duck-typed `@hasDecl` checks for the subsystem shapes that have no single
-//! authoritative contract: SVG rasterizers and image decoders. These verify
-//! that a declaration exists, not that its type matches.
-//!
-//! This module does NOT cover the renderer the core draws through:
-//! `core/backend.zig` verifies that with complete function types
-//! (`platform/contract.zig`) rather than mere presence. Adding a weaker
-//! duck-typed check beside it would form a second, drifting contract.
+//! authoritative contract: SVG rasterizers and image decoders. This module
+//! does NOT cover the renderer the core draws through: `core/backend.zig`
+//! verifies that with complete function types rather than mere presence;
+//! adding a weaker duck-typed check beside it would form a second, drifting
+//! contract.
 //!
 //! Usage in a backend file:
-//!   const interface_verify = @import("../../core/interface_verify.zig");
 //!   comptime { interface_verify.verifyImageLoaderModule(@This()); }
 
 const std = @import("std");
 
-/// Verify a type implements the SvgRasterizer interface (struct-based)
-///
-/// Required methods:
-///   - rasterize or rasterizeWithOptions
 pub fn verifySvgRasterizerInterface(comptime T: type) void {
     comptime {
         if (!@hasDecl(T, "rasterize") and !@hasDecl(T, "rasterizeWithOptions")) {
@@ -27,23 +18,12 @@ pub fn verifySvgRasterizerInterface(comptime T: type) void {
     }
 }
 
-/// Verify a module implements the SvgRasterizer interface (module-level functions)
-///
-/// Required exports:
-///   - rasterize fn
-///   - rasterizeWithOptions fn
-///   - RasterizedSvg type
-///   - RasterizeError type
-///   - StrokeOptions type
-///   - RasterBudget type and scratchBytes fn
 pub fn verifySvgRasterizerModule(comptime M: type) void {
     comptime {
-        // Required function exports
         if (!@hasDecl(M, "rasterize") and !@hasDecl(M, "rasterizeWithOptions")) {
             @compileError("SvgRasterizer module must export rasterize or rasterizeWithOptions function");
         }
 
-        // Required type exports
         assertHasDecl(M, "RasterizedSvg", "SvgRasterizer module");
         assertHasDecl(M, "RasterizeError", "SvgRasterizer module");
         assertHasDecl(M, "StrokeOptions", "SvgRasterizer module");
@@ -52,28 +32,16 @@ pub fn verifySvgRasterizerModule(comptime M: type) void {
     }
 }
 
-/// Verify a module implements the ImageLoader interface (module-level functions)
-///
-/// Required exports:
-///   - load or loadFromMemory fn
-///   - DecodedImage type
-///   - LoadError type
 pub fn verifyImageLoaderModule(comptime M: type) void {
     comptime {
-        // Required function exports
         if (!@hasDecl(M, "load") and !@hasDecl(M, "loadFromMemory")) {
             @compileError("ImageLoader module must export load or loadFromMemory function");
         }
 
-        // Required type exports
         assertHasDecl(M, "DecodedImage", "ImageLoader module");
         assertHasDecl(M, "LoadError", "ImageLoader module");
     }
 }
-
-// =============================================================================
-// Helpers
-// =============================================================================
 
 fn assertHasDecl(comptime T: type, comptime name: []const u8, comptime interface: []const u8) void {
     if (!@hasDecl(T, name)) {
@@ -84,12 +52,7 @@ fn assertHasDecl(comptime T: type, comptime name: []const u8, comptime interface
     }
 }
 
-// =============================================================================
-// Tests
-// =============================================================================
-
 test "interface verification helpers compile" {
-    // These are comptime-only, just verify the module compiles
     _ = assertHasDecl;
 }
 
@@ -145,7 +108,6 @@ test "verifySvgRasterizerModule with mock" {
         }
     };
 
-    // Should not cause compile error
     comptime {
         verifySvgRasterizerModule(MockSvgModule);
     }
@@ -173,7 +135,6 @@ test "verifyImageLoaderModule with mock" {
         }
     };
 
-    // Should not cause compile error
     comptime {
         verifyImageLoaderModule(MockImageLoaderModule);
     }

@@ -1,37 +1,20 @@
-//! Frame trace (`-Dframe-trace=<scenario>`): per-frame phase timestamps for
-//! measuring frame time on real hardware. Off by default; when off, the
-//! window's `trace` field is `void` and every hook compiles to nothing.
-//!
-//! Each built frame gets one entry: the tick that built it, then build,
-//! layout, emit, and publish on the main thread, then pack, draw, and done on
-//! the render side. All timestamps come from one clock (`resources.io`,
-//! `.awake`), so the phases of one frame and the gaps between frames are
-//! comparable across threads. `publish → pack` is the present-pacing wait
-//! (display link, frame callback, or vblank); `pack → pack` of consecutive
-//! frames is the present cadence, which the report turns into missed
-//! refreshes. A host that learns when a frame reached the glass reports it
-//! with `notePresented` (macOS: `MTLDrawable.presentedTime`), which the
-//! report turns into the glass cadence.
+//! Per-frame phase timestamps for measuring frame time on real hardware.
+//! Off by default; when off, the window's `trace` field is `void` and every
+//! hook compiles to nothing. All timestamps come from one clock
+//! (`resources.io`, `.awake`), so the phases of one frame and the gaps
+//! between frames are comparable across threads.
 //!
 //! A scenario may drive the app with synthetic input, pushed into the core's
-//! queue once per built frame, before the drain, as a platform would push it:
-//! - `passive` records only (the app animates or a person drives it).
-//! - `redraw` requests a render every frame (steady-state rebuild).
-//! - `scroll` scrolls at the window centre, reversing every 60 frames.
-//! - `typing` clicks the window centre, then types 48 characters and deletes
-//!   them again, one key per frame, so the text stays bounded.
-//! After `frame_trace_seconds` the trace writes `frame-trace.csv` to the
-//! working directory (the browser console on the web) and requests quit.
+//! queue once per built frame, before the drain, as a platform would push it.
 //!
 //! Ownership: the main thread writes an entry's tick through publish fields
 //! before `publish` sets `frame_in_flight` (release); the render side writes
 //! pack through done after it reads the flag (acquire). The dump runs only
 //! with no frame in flight, so every entry it reads is complete.
 //!
-//! Resource sketch: `entry_count_max` entries × 96 B = 3 MiB, reserved at init
-//! from fresh pages only when tracing; one entry is written per frame. The
-//! dump formats one row at a time through a 4 KiB stack buffer and runs once,
-//! after the trace ends; it is the only file I/O, and it makes no Gooey
+//! Resource sketch: `entry_count_max` entries × 96 B, reserved at init from
+//! fresh pages only when tracing; one entry is written per frame. The dump
+//! formats one row at a time through a stack buffer and makes no Gooey
 //! allocation.
 
 const std = @import("std");
@@ -193,12 +176,10 @@ pub fn noteFrame(state: *State, frame_number: u64, counts: struct {
     target.viewport_height_px = counts.viewport_height_px;
 }
 
-/// What the tick should do after `beginTick`.
 pub const TickAction = enum { none, quit };
 
 /// Start of a main tick. With no frame in flight, either end the trace (dump
-/// and quit) or push this frame's synthetic input. Generic over the window
-/// so this file does not import it.
+/// and quit) or push this frame's synthetic input.
 pub fn beginTick(state: *State, window: anytype, in_flight: bool) TickAction {
     if (comptime !enabled) return .none;
     state.tick_ns = stamp(state);
@@ -317,7 +298,6 @@ const LogSink = struct {
     }
 };
 
-/// Format the header and one line per complete frame; returns the frames written.
 fn dumpLines(state: *const State, frame_count: u64, sink: anytype) u64 {
     var line_buffer: [512]u8 = undefined;
     const meta = std.fmt.bufPrint(&line_buffer, "# gooey frame trace: scenario={t} " ++

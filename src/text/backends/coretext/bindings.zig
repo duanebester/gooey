@@ -1,13 +1,4 @@
-//! CoreText bindings for font rendering on macOS
-//!
-//! Provides low-level access to Apple's text rendering system.
-//! CoreText handles font loading, glyph rendering, and text shaping.
-
 const std = @import("std");
-
-// ============================================================================
-// CoreFoundation Types
-// ============================================================================
 
 pub const CFIndex = isize;
 pub const CFTypeID = c_ulong;
@@ -60,22 +51,16 @@ pub const CGAffineTransform = extern struct {
     pub const identity = CGAffineTransform{ .a = 1, .b = 0, .c = 0, .d = 1, .tx = 0, .ty = 0 };
 };
 
-// ============================================================================
-// CoreGraphics Context
-// ============================================================================
-
 pub const CGContextRef = *anyopaque;
 pub const CGColorSpaceRef = *anyopaque;
 pub const CGImageRef = *anyopaque;
 pub const CGBitmapInfo = u32;
 
-// CGBitmapInfo values
 pub const kCGBitmapAlphaInfoMask: CGBitmapInfo = 0x1F;
 pub const kCGBitmapByteOrderMask: CGBitmapInfo = 0x7000;
 pub const kCGBitmapByteOrder32Little: CGBitmapInfo = 2 << 12;
 pub const kCGBitmapByteOrder32Big: CGBitmapInfo = 4 << 12;
 
-// CGImageAlphaInfo values
 pub const kCGImageAlphaNone: CGBitmapInfo = 0;
 pub const kCGImageAlphaPremultipliedLast: CGBitmapInfo = 1;
 pub const kCGImageAlphaPremultipliedFirst: CGBitmapInfo = 2;
@@ -85,31 +70,21 @@ pub const kCGImageAlphaNoneSkipLast: CGBitmapInfo = 5;
 pub const kCGImageAlphaNoneSkipFirst: CGBitmapInfo = 6;
 pub const kCGImageAlphaOnly: CGBitmapInfo = 7;
 
-// ============================================================================
-// CoreText Types
-// ============================================================================
-
 pub const CTFontRef = *anyopaque;
 pub const CTFontDescriptorRef = *anyopaque;
 pub const CTLineRef = *anyopaque;
 pub const CTRunRef = *anyopaque;
 
-// CTFontSymbolicTraits
 pub const CTFontSymbolicTraits = u32;
 pub const kCTFontTraitItalic: CTFontSymbolicTraits = 1 << 0;
 pub const kCTFontTraitBold: CTFontSymbolicTraits = 1 << 1;
 pub const kCTFontTraitMonoSpace: CTFontSymbolicTraits = 1 << 10;
 pub const kCTFontTraitColorGlyphs: CTFontSymbolicTraits = 1 << 13;
 
-// System UI font types
 pub const CTFontUIFontType = u32;
 pub const kCTFontUIFontUserFixedPitch: CTFontUIFontType = 1; // System monospace
 
 pub extern "c" fn CTFontCreateUIFontForLanguage(uiType: CTFontUIFontType, size: CGFloat, language: ?CFStringRef) ?CTFontRef;
-
-// ============================================================================
-// CoreFoundation Functions
-// ============================================================================
 
 pub extern "c" fn CFRelease(cf: CFTypeRef) void;
 pub extern "c" fn CFRetain(cf: CFTypeRef) CFTypeRef;
@@ -159,7 +134,6 @@ pub const CFRange = extern struct {
     }
 };
 
-// Dictionary functions
 pub extern "c" fn CFDictionaryCreateMutable(
     allocator: CFAllocatorRef,
     capacity: CFIndex,
@@ -178,17 +152,11 @@ pub extern "c" fn CFDictionaryGetValue(
     key: *const anyopaque,
 ) ?*const anyopaque;
 
-// Array functions
 pub extern "c" fn CFArrayGetCount(theArray: CFArrayRef) CFIndex;
 pub extern "c" fn CFArrayGetValueAtIndex(theArray: CFArrayRef, idx: CFIndex) *const anyopaque;
 
-// Dictionary callbacks
 pub extern "c" var kCFTypeDictionaryKeyCallBacks: anyopaque;
 pub extern "c" var kCFTypeDictionaryValueCallBacks: anyopaque;
-
-// ============================================================================
-// CoreGraphics Functions
-// ============================================================================
 
 pub extern "c" fn CGColorSpaceCreateDeviceGray() ?CGColorSpaceRef;
 pub extern "c" fn CGColorSpaceCreateDeviceRGB() ?CGColorSpaceRef;
@@ -220,18 +188,13 @@ pub extern "c" fn CGContextSetShouldSubpixelPositionFonts(c: CGContextRef, shoul
 pub extern "c" fn CGContextSetAllowsFontSubpixelQuantization(c: CGContextRef, allows: bool) void;
 pub extern "c" fn CGContextSetShouldSubpixelQuantizeFonts(c: CGContextRef, should: bool) void;
 
-// ============================================================================
-// CoreText Functions
-// ============================================================================
-
 pub extern "c" fn CTFontCreateWithName(
     name: CFStringRef,
     size: CGFloat,
     matrix: ?*const CGAffineTransform,
 ) ?CTFontRef;
 
-// Font descriptor attributes and traits, for matching a weight and slant
-// within a family.
+// Attributes for matching a weight and slant within a family.
 pub extern "c" var kCTFontFamilyNameAttribute: CFStringRef;
 pub extern "c" var kCTFontTraitsAttribute: CFStringRef;
 pub extern "c" var kCTFontWeightTrait: CFStringRef;
@@ -272,7 +235,6 @@ pub extern "c" fn CTFontCreateWithFontDescriptor(
     matrix: ?*const CGAffineTransform,
 ) ?CTFontRef;
 
-// Font metrics
 pub extern "c" fn CTFontGetAscent(font: CTFontRef) CGFloat;
 pub extern "c" fn CTFontGetDescent(font: CTFontRef) CGFloat;
 pub extern "c" fn CTFontGetLeading(font: CTFontRef) CGFloat;
@@ -285,7 +247,6 @@ pub extern "c" fn CTFontGetUnderlineThickness(font: CTFontRef) CGFloat;
 pub extern "c" fn CTFontGetBoundingBox(font: CTFontRef) CGRect;
 pub extern "c" fn CTFontGetSymbolicTraits(font: CTFontRef) CTFontSymbolicTraits;
 
-// Glyph operations
 pub extern "c" fn CTFontGetGlyphsForCharacters(
     font: CTFontRef,
     characters: [*]const UniChar,
@@ -315,7 +276,6 @@ pub const CTFontOrientation = enum(u32) {
     vertical = 2,
 };
 
-// Font drawing
 pub extern "c" fn CTFontDrawGlyphs(
     font: CTFontRef,
     glyphs: [*]const CGGlyph,
@@ -324,7 +284,6 @@ pub extern "c" fn CTFontDrawGlyphs(
     context: CGContextRef,
 ) void;
 
-// Line/Run operations (text shaping)
 pub extern "c" fn CTLineCreateWithAttributedString(attrString: CFAttributedStringRef) ?CTLineRef;
 pub extern "c" fn CTLineGetGlyphRuns(line: CTLineRef) CFArrayRef;
 pub extern "c" fn CTLineGetGlyphCount(line: CTLineRef) CFIndex;
@@ -342,11 +301,9 @@ pub extern "c" fn CTRunGetAdvances(run: CTRunRef, range: CFRange, buffer: [*]CGS
 pub extern "c" fn CTRunGetStringIndices(run: CTRunRef, range: CFRange, buffer: [*]CFIndex) void;
 pub extern "c" fn CTRunGetAttributes(run: CTRunRef) CFDictionaryRef;
 
-// Attributed string keys
 pub extern "c" var kCTFontAttributeName: CFStringRef;
 pub extern "c" var kCTForegroundColorAttributeName: CFStringRef;
 
-// CFAttributedString
 pub extern "c" fn CFAttributedStringCreate(
     allocator: CFAllocatorRef,
     str: CFStringRef,
@@ -360,17 +317,12 @@ pub extern "c" fn CTFontCreateCopyWithAttributes(
     attributes: ?CTFontDescriptorRef,
 ) ?CTFontRef;
 
-// ============================================================================
-// Helper Functions
-// ============================================================================
-
-/// Create a CFString from a Zig string slice (must be null-terminated or short)
+/// `str` must be comptime-known; a null terminator is appended.
 pub fn createCFString(comptime str: []const u8) ?CFStringRef {
     const terminated = str ++ [_]u8{0};
     return CFStringCreateWithCString(null, terminated[0 .. terminated.len - 1 :0], kCFStringEncodingUTF8);
 }
 
-/// Create a CFString from a runtime string (copies to buffer)
 pub fn createCFStringRuntime(str: []const u8) ?CFStringRef {
     if (str.len >= 4096) return null;
     var buf: [4096]u8 = undefined;
@@ -379,7 +331,6 @@ pub fn createCFStringRuntime(str: []const u8) ?CFStringRef {
     return CFStringCreateWithCString(null, buf[0..str.len :0], kCFStringEncodingUTF8);
 }
 
-/// Release a CoreFoundation object
 pub fn release(ref: anytype) void {
     CFRelease(@ptrCast(ref));
 }

@@ -1,18 +1,5 @@
-//! Per-window core state: build storage, the two record frames, the event
-//! queue, retained state, text engines, focus and hover, and the pack target.
-//!
 //! Everything is reserved in `initInPlace` from `ResourceLimits`; after the
-//! app crosses the initialization boundary the window only claims and
-//! releases slots in this storage (contract rule 4, CLAUDE.md §2).
-//!
-//! Performance sketch per window at `.small` (todo): 2,048 nodes × ~120 B
-//! (0.24 MiB); two frames of 8,192 paint records × 88 B, 2,048 hit records,
-//! 2,048 handlers, and 64 KiB of text (≈1.9 MiB); 128 queued events; 16
-//! input engines × 4 KiB; the layout engine's 2,049 elements × 384 B
-//! (0.75 MiB), a 176 KiB arena for text copies and 4,096 wrapped lines, and
-//! 32 KiB of wrap scratch (`LayoutCapacity`), resident only as far as a frame
-//! writes; 256 KiB of text scratch; and the packed frame at `limits.paint`
-//! (`packed_frame.zig`), resident only as far as frames write.
+//! initialization boundary the window only claims and releases slots.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -77,9 +64,9 @@ pub var wheel_delta_inverted: bool = builtin.os.tag == .macos;
 /// is `limits.build.box_depth_max`, asserted where the scratch is written.
 pub const box_depth_ceiling = limits_mod.box_depth_ceiling;
 
-/// Fail fast on text the core cannot shape or measure (CLAUDE.md §2). Every
-/// core path splits a text into shaping runs first (`text_system.runLength`),
-/// so a run past the shapers' bound is a programmer error in that split.
+/// Every core path splits a text into shaping runs first
+/// (`text_system.runLength`), so a run past the shapers' bound is a
+/// programmer error in that split.
 pub fn textFailed(window: *const Window, content: []const u8, err: anyerror) noreturn {
     if (err == error.TextRunTooLong) {
         std.debug.panic("a shaping run of {d} codepoints passed " ++
@@ -112,7 +99,6 @@ pub const Node = struct {
     depth: u8,
     /// Unkeyed children seen so far, for `ElementId.auto`.
     child_count: u32,
-    // Box.
     focusable: bool,
     /// Tab reaches it: focusable and `Box.tab_stop`.
     tab_stop: bool,
@@ -142,16 +128,13 @@ pub const Node = struct {
     corners: records.Corners,
     shadow: ?element.Shadow,
     shadow_color: records.Color,
-    // Text.
     text: records.TextRange,
     text_color: records.Color,
     font_size: u16,
     family: text_mod.FontFamily,
     variant: text_mod.FontVariant,
-    // Paint.
     paint_fn: ?*const fn (data: *const anyopaque, painter: *anyopaque) void,
     paint_data: ?*const anyopaque,
-    // Clip and scroll (`Style.clip`, `Style.scroll`).
     clip: bool,
     scroll: ?retained_mod.Handle(ScrollState),
     /// A box with a layer opens a fragment that emit paints after the
@@ -171,7 +154,7 @@ pub const FocusPlace = struct {
     content: records.Rect,
 };
 
-/// A scroll box's offset, retained by its key (contract §1), and what the
+/// A scroll box's offset, retained by its key, and what the
 /// last emit measured, so the router clamps a wheel step and the next build
 /// clamps a shrunk content without waiting for layout. The scrollbar's
 /// geometry lives here too, so emit draws the bar the router hit-tests.
@@ -190,14 +173,12 @@ pub const ScrollState = struct {
     /// of its last move or measurement: a box with `Scroll.anchor = .end`
     /// follows the end while this holds (`clamp`).
     at_end: bool,
-    /// The thumb the pointer is dragging, as 0.3.1's scroll containers do,
-    /// with the pointer coordinate and offset along that axis at the press.
+    /// The thumb the pointer is dragging, with the pointer coordinate and
+    /// offset along that axis at the press.
     dragging: ?ScrollAxis,
     drag_pointer_start: f32,
     drag_offset_start: f32,
 
-    // 0.3.1's scrollbar (`widgets/scroll_container.zig`). Its hover colour
-    // shows while the thumb is dragged; 0.3.1 never set its hover flag.
     pub const scrollbar_size: f32 = 8;
     pub const scrollbar_padding: f32 = 2;
     pub const scrollbar_room: f32 = scrollbar_size + scrollbar_padding;
@@ -287,10 +268,9 @@ pub const ScrollState = struct {
         return self.axes.anchor == .end and self.at_end;
     }
 
-    /// Scroll by a wheel delta, as 0.3.1's scroll containers do: offsets
-    /// follow the delta, inverted on macOS (`wheel_delta_inverted`). Returns
-    /// whether the offset moved, so a box that cannot scroll lets the wheel
-    /// reach its ancestors.
+    /// Scroll by a wheel delta: offsets follow the delta, inverted on macOS
+    /// (`wheel_delta_inverted`). Returns whether the offset moved, so a box
+    /// that cannot scroll lets the wheel reach its ancestors.
     pub fn wheel(self: *ScrollState, delta_x: f32, delta_y: f32) bool {
         assert(std.math.isFinite(delta_x));
         assert(std.math.isFinite(delta_y));
@@ -365,8 +345,8 @@ pub const ScrollState = struct {
     }
 
     /// A press on a scrollbar: on the thumb it starts a drag; elsewhere on
-    /// the track it jumps to the pressed fraction, as 0.3.1 does. Returns
-    /// whether the point was on a scrollbar.
+    /// the track it jumps to the pressed fraction. Returns whether the point
+    /// was on a scrollbar.
     pub fn press(self: *ScrollState, x: f32, y: f32) bool {
         assert(self.dragging == null);
         const axis = self.scrollbarAt(x, y) orelse return false;
@@ -452,8 +432,8 @@ pub const A11yBuilt = struct {
     selection: ?element.TextSelection,
 };
 
-/// A pointer capture (`Box.on_pointer_drag`, contract §5): from a press on
-/// a box with the handler until its button's release, Escape, or
+/// A pointer capture (`Box.on_pointer_drag`): from a press on a box with
+/// the handler until its button's release, Escape, or
 /// `pointer_cancelled`. One per window. Handlers are looked up by `id` in
 /// the frame on screen at each step rather than kept, since an entity or
 /// retained target behind one could be gone by the next frame.
@@ -470,7 +450,6 @@ pub const Capture = struct {
     /// holds when the pointer leaves a thin divider.
     cursor: element.CursorShape,
 
-    /// 0.3.1's `DRAG_THRESHOLD`: a press that moves no further is a click.
     pub const click_slop_px: f32 = 2;
 
     pub const none: Capture = .{
@@ -483,14 +462,14 @@ pub const Capture = struct {
     };
 };
 
-/// A drag of a `Box.draggable` (contract §5): armed by a press on it, and
-/// started once the pointer moves past `Capture.click_slop_px`, as 0.3.1's
-/// did. One per window. The payload is copied in, so the drag outlives its
-/// source's record; `over` is the innermost drop target of the payload's
-/// type under the pointer, or `.root`, recomputed by `router.updateHover`
-/// on each move and after each flip. A keyboard drag (`effects.startDrag`)
-/// starts active, ignores the pointer, and moves `over` with the keys, and
-/// `x`, `y` are the centre of `over`, or of the source over none.
+/// A drag of a `Box.draggable`: armed by a press on it, and started once
+/// the pointer moves past `Capture.click_slop_px`. One per window. The
+/// payload is copied in, so the drag outlives its source's record; `over` is
+/// the innermost drop target of the payload's type under the pointer, or
+/// `.root`, recomputed by `router.updateHover` on each move and after each
+/// flip. A keyboard drag (`effects.startDrag`) starts active, ignores the
+/// pointer, and moves `over` with the keys, and `x`, `y` are the centre of
+/// `over`, or of the source over none.
 pub const Drag = struct {
     phase: enum { idle, armed, active },
     keyboard: bool,
@@ -578,7 +557,7 @@ pub const KeySet = struct {
 };
 
 /// Draws a packed frame. TestBackend binds the `NullRenderer`; a platform
-/// window binds its renderer. One call per tick (bounded dispatch, §6).
+/// window binds its renderer. One call per tick.
 pub const Presenter = struct {
     context: *anyopaque,
     /// Runs on the render side. Reads only its arguments: the main thread
@@ -593,9 +572,7 @@ pub const Presenter = struct {
     ) void,
 };
 
-/// Opens a file dialog on the main thread, during the drain. Bound per
-/// backend: AppKit's panels on macOS, the XDG portal on Linux, and a
-/// scripted service in tests.
+/// Opens a file dialog on the main thread, during the drain.
 ///
 /// `open` returns the outcome when the dialog ran to completion inside the
 /// call, in the platform's modal loop. It returns null when the dialog stays
@@ -632,9 +609,7 @@ pub const Window = struct {
     built_index: u1,
     queue: events.EventQueue,
     completions: events.CompletionRing,
-    /// The image decode worker and its requests (`Painter.image`).
     images: images_mod.Loader,
-    /// Background jobs (`Effects.spawn`) and their workers.
     jobs: jobs_mod.Pool,
     /// The job deliveries the drain took from `completions`, as many as
     /// the ring holds.
@@ -685,7 +660,7 @@ pub const Window = struct {
     cursor: element.CursorShape,
     /// Ids from the pressed record up to the root, captured on press. A
     /// release fires the click handlers of records in this path only, so a
-    /// press that slides off a button does not click it (decision 7).
+    /// press that slides off a button does not click it.
     press_path: []ElementId,
     press_len: u32,
     /// The scroll box whose thumb is being dragged, or `.root`. The drag
@@ -697,10 +672,9 @@ pub const Window = struct {
     /// starts at most one of `capture` and `drag`.
     drag: Drag,
     pointer: ?struct { x: f32, y: f32 },
-    // Tick state.
     phase: Phase,
     /// Set by the main thread when a built frame is complete and cleared by
-    /// the render side once it has drawn it (contract rule 1). The only field
+    /// the render side once it has drawn it. The only field
     /// both threads touch: its release and acquire order the frame contents,
     /// and while it is set the main thread neither builds nor flips frames.
     frame_in_flight: std.atomic.Value(bool),
@@ -764,7 +738,7 @@ pub const Window = struct {
         return &self.frames[self.built_index];
     }
 
-    /// When the last build asked to render again, if it did (contract §5).
+    /// When the last build asked to render again, if it did.
     pub fn renderDeadlineNs(self: *const Window) ?u64 {
         assert(self.phase == .idle);
         const deadline = self.render_deadline_ns;
@@ -988,8 +962,8 @@ pub noinline fn initInPlace(self: *Window, gpa: std.mem.Allocator, options: *con
 }
 
 comptime {
-    // ReleaseFast and ReleaseSmall reserve nothing for the debugger (contract
-    // decision 16): neither the window's state nor a node's source.
+    // ReleaseFast and ReleaseSmall reserve nothing for the debugger: neither
+    // the window's state nor a node's source.
     if (!debugger_mod.enabled) {
         assert(@sizeOf(@FieldType(Window, "debugger")) == 0);
         assert(@sizeOf(@FieldType(Node, "source")) == 0);
@@ -1065,8 +1039,7 @@ fn initPaths(self: *Window, gpa: std.mem.Allocator, depth_max: u32) !void {
     self.press_path = try gpa.alloc(ElementId, depth_max);
 }
 
-/// Zeroed before they go back to `gpa`, which may hand them to another owner
-/// (CLAUDE.md §21); together they are at most 3.5 KiB.
+/// Zeroed before they go back to `gpa`, which may hand them to another owner.
 fn deinitPaths(self: *Window, gpa: std.mem.Allocator) void {
     assert(self.press_path.len == self.open_stack.len);
     assert(self.focus_path.len == self.open_stack.len);
@@ -1133,7 +1106,7 @@ fn initRuntimeStorage(
     }
     errdefer if (self.editors_reserved) self.editors.deinit(gpa);
     // One clipboard buffer for copy and paste, as large as the largest kind
-    // that has engines (decision 10).
+    // that has engines.
     self.clipboard_bytes = try gpa.alloc(u8, clipboardBytes(&limits.text));
     errdefer gpa.free(self.clipboard_bytes);
     self.clipboard = .init(self.clipboard_bytes);

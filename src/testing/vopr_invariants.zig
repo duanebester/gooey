@@ -1,32 +1,18 @@
 //! Invariants the VOPR checks for every app, with no app model: they state
 //! what the core's emit and focus rules promise about any rendered frame.
-//!
-//! - A11y and hits agree (`checkFrame`, after every flip). Emit writes both
-//!   from the same node (`emit.zig`: `emitA11y` from the laid-out bounds,
-//!   `emitHit` from the same bounds clipped to the enclosing clips), so:
-//!   1. every accessibility node with an interactive role
-//!      (`interactive_roles`) has a hit record with its id, and that
-//!      record's bounds lie within the node's (equal unless a clip or a
-//!      scroll box cut them);
-//!   2. every hit record with a click or key handler (`on_click`, `on_key`)
-//!      has an accessibility node with its id and an interactive role.
-//!   A separator with a range (a splitter) is interactive; one without is
-//!   not. A handled record with no node of its own passes rule 2 when the
-//!   nearest ancestor record with a node is interactive: it is part of that
-//!   control, as a Select's trigger box is of its combobox, whose node
-//!   speaks for it.
-//!   Exceptions: nodes in the drag layer have hits but no accessibility
-//!   nodes (`emitAccessibility` skips the `.drag` layer), so a record whose
-//!   chain of parents includes a drag-layer root is left out of rule 2;
-//!   there is no drag-layer flag in a record, so a record is left out when
-//!   the window's drag is active and its fragment is the last one.
-//! - Focus is live (`checkFocusLive`, whenever the rendered frame is
-//!   current): with nothing in flight or awaiting a flip and no render
-//!   requested, the focused id is `.root` or a record of the rendered frame
-//!   that takes focus (focusable, or the keyboard drag's drop target) at or
-//!   after the modal's first record. That is `router.validateFocus`'s
-//!   postcondition on the frame it built, which is now the rendered one; a
-//!   handler that moves focus after that build also requests a render.
+//! Emit writes the accessibility tree and the hit records from the same node
+//! (`emit.zig`: `emitA11y` from the laid-out bounds, `emitHit` from the same
+//! bounds clipped to the enclosing clips), so every node with an interactive
+//! role has a hit record with its id whose bounds lie within the node's, and
+//! every hit record with a click or key handler has a node with its id and an
+//! interactive role. A handled record with no node of its own passes the
+//! second rule when the nearest ancestor record with a node is interactive.
+//! Nodes in the drag layer have hits but no accessibility nodes, and there is
+//! no drag-layer flag in a record, so such a record is left out when the
+//! window's drag is active and its fragment is the last one. Focus must be
+//! live whenever the rendered frame is current: that is
+//! `router.validateFocus`'s postcondition on the frame it built, and a
+//! handler that moves focus after that build also requests a render.
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -63,7 +49,6 @@ fn interactive(node: *const records.A11yNode) bool {
     return std.mem.indexOfScalar(Role, &interactive_roles, node.role) != null;
 }
 
-/// Both directions of the a11y–hit agreement on `frame`.
 pub fn checkFrame(window: *const Window, frame: *const records.Frame) void {
     assert(frame.hit_count <= frame.hits.len);
     assert(frame.a11y_count <= frame.a11y.len);
@@ -134,8 +119,6 @@ fn handlerName(record: *const records.HitRecord) []const u8 {
     return if (record.on_click != index_none) "click" else "key";
 }
 
-/// The focused id is `.root` or a record of the rendered frame that takes
-/// focus, whenever that frame is current.
 pub fn checkFocusLive(window: *Window) void {
     assert(window.phase == .idle);
     if (window.frame_in_flight.load(.acquire)) return;
@@ -157,7 +140,6 @@ pub fn checkFocusLive(window: *Window) void {
     }
 }
 
-/// Print the first line where two frame dumps differ, with its neighbours.
 pub fn reportDumpDifference(expected: []const u8, actual: []const u8) void {
     var line_start: usize = 0;
     var line_number: u32 = 1;

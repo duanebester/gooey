@@ -1,21 +1,15 @@
-//! FbdevWindow - the single full-screen window of the fbdev backend.
-//!
-//! The window covers the whole panel: `WindowOptions.width` and `height` are
-//! ignored, and the size never changes after initialization. Frames are drawn
-//! by the CPU renderer into a back buffer reserved at initialization, a
-//! software cursor is drawn on top when a pointing device is attached, and the
-//! result is copied to the framebuffer by `Framebuffer.present`.
-//!
-//! The core host (`core_host.zig`) owns the loop: it routes input through
-//! `handleInput` and presents each frame it packs with `presentFrame`.
-//!
-//! ## Memory (CLAUDE.md §2)
+//! The single full-screen window of the fbdev backend: it covers the whole
+//! panel, `WindowOptions.width` and `height` are ignored, and the size never
+//! changes after initialization. Frames are drawn by the CPU renderer into a
+//! back buffer reserved at initialization, a software cursor is drawn on top
+//! when a pointing device is attached, and the result is copied to the
+//! framebuffer by `Framebuffer.present`.
 //!
 //! The panel's size is fixed by the hardware and known before the window
-//! opens. `init` checks it against the app's `ResourceLimits.window` and
-//! fails when it does not fit, then reserves the renderer: the panel-sized
-//! back buffer and the CPU renderer's raster scratch and atlases. Nothing is
-//! allocated afterwards.
+//! opens: `init` checks it against the app's `ResourceLimits.window` and
+//! fails when it does not fit, then reserves the renderer (the panel-sized
+//! back buffer and the CPU renderer's raster scratch and atlases). Nothing
+//! is allocated afterwards.
 
 const std = @import("std");
 const interface_mod = @import("../interface.zig");
@@ -50,7 +44,7 @@ pub const Window = struct {
 
     renderer: FbdevRenderer,
 
-    // Written only by the section of 0.3.1 calls below.
+    // Written only by the compatibility calls below.
     dark_appearance: bool = false,
     needs_redraw: bool = true,
     render_deadline_ms: ?i64 = null,
@@ -132,16 +126,14 @@ pub const Window = struct {
         self.allocator.destroy(self);
     }
 
-    /// The panel at the window's scale: the viewport every frame draws at.
     pub fn viewport(self: *const Self) backend.Viewport {
         assert(self.scale_factor > 0);
         assert(self.renderer.size_px.width > 0);
         return .{ .size_px = self.renderer.size_px, .scale_factor = @floatCast(self.scale_factor) };
     }
 
-    /// Draw `frame` with the cursor where the pointer is now, and present it.
-    /// The core host calls it as its presenter, after feeding the renderer
-    /// the frame's atlas records, and again when only the cursor moved.
+    // The core host calls it as its presenter, after feeding the renderer
+    // the frame's atlas records, and again when only the cursor moved.
     pub fn presentFrame(self: *Self, frame: *const PackedFrame, clear: geometry.Color) void {
         assert(!self.closed);
         assert(clear.a >= 0);
@@ -153,7 +145,6 @@ pub const Window = struct {
         self.renderer.draw(frame, self.viewport(), clear);
     }
 
-    /// Route one translated input event to the application.
     pub fn handleInput(self: *Self, event: input.InputEvent) bool {
         assert(!self.closed);
         switch (event) {
@@ -171,8 +162,8 @@ pub const Window = struct {
         return callback(self, event);
     }
 
-    /// Records the close; the core host's loop ends at its next turn. Reached
-    /// from the platform's Ctrl+Q and Alt+F4 chords.
+    // Records the close; the core host's loop ends at its next turn. Reached
+    // from the platform's Ctrl+Q and Alt+F4 chords.
     pub fn close(self: *Self) void {
         if (self.closed) return;
         self.closed = true;
@@ -183,12 +174,8 @@ pub const Window = struct {
         return self.closed;
     }
 
-    // =========================================================================
-    // Calls from the 0.3.1 `context/window.zig` and `cx.zig`
-    // =========================================================================
-    //
-    // The core never makes these calls. They stay only while those files
-    // compile, and go when phase 6 deletes them.
+    // The core never makes these calls; they stay only while the
+    // compatibility files compile.
 
     /// Stored only: the panel has no title bar.
     pub fn setTitle(self: *Self, title: []const u8) void {
@@ -228,10 +215,6 @@ pub const Window = struct {
         self.render_deadline_ms = deadline_ms;
         assert(self.render_deadline_ms.? <= deadline_ms);
     }
-
-    // =========================================================================
-    // Core host binding
-    // =========================================================================
 
     pub fn setInputCallback(self: *Self, callback: ?InputCallback) void {
         self.on_input = callback;

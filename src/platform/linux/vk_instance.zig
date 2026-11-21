@@ -1,24 +1,7 @@
-//! Vulkan instance, device, and debug messenger creation.
-//!
-//! The presentation surface is window-system specific and lives behind
-//! `vk_surface`; this module only needs its instance extension name.
-//!
-//! Free functions with targeted parameters — each takes only what it needs,
-//! not the entire VulkanRenderer. One-time initialization code that won't be
-//! touched after bringup; extracting it shrinks the daily working set.
-
 const std = @import("std");
 const vk = @import("vulkan.zig");
 
-// =============================================================================
-// Configuration
-// =============================================================================
-
 pub const enable_validation_layers = @import("builtin").mode == .debug;
-
-// =============================================================================
-// Result Types
-// =============================================================================
 
 pub const InstanceResult = struct {
     instance: vk.Instance,
@@ -41,16 +24,8 @@ pub const DeviceResult = struct {
     present_queue: vk.Queue,
 };
 
-// =============================================================================
-// Limits (CLAUDE.md Rule #4)
-// =============================================================================
-
 const MAX_PHYSICAL_DEVICES: u32 = 16;
 const MAX_QUEUE_FAMILIES: u32 = 32;
-
-// =============================================================================
-// Error Types
-// =============================================================================
 
 pub const InstanceError = error{
     VulkanInstanceCreationFailed,
@@ -65,18 +40,6 @@ pub const DeviceCreationError = error{
     DeviceCreationFailed,
 };
 
-// =============================================================================
-// Public API
-// =============================================================================
-
-/// Create Vulkan instance and (optionally) debug messenger.
-///
-/// When validation layers are enabled and available, the debug messenger is
-/// chained into instance creation via pNext and also created as a persistent
-/// object for runtime validation messages.
-///
-/// `surface_extension_name` is the window system's `VK_KHR_*_surface`
-/// extension, enabled beside `VK_KHR_surface`.
 pub fn createInstance(surface_extension_name: [*:0]const u8) InstanceError!InstanceResult {
     std.debug.assert(std.mem.startsWith(u8, std.mem.span(surface_extension_name), "VK_KHR_"));
     std.debug.assert(std.mem.endsWith(u8, std.mem.span(surface_extension_name), "_surface"));
@@ -128,7 +91,6 @@ pub fn createInstance(surface_extension_name: [*:0]const u8) InstanceError!Insta
 
     std.debug.assert(instance != null);
 
-    // Create persistent debug messenger after instance creation
     var debug_messenger: vk.DebugUtilsMessengerEXT = null;
     if (use_validation) {
         debug_messenger = createDebugMessenger(instance, &debug_create_info);
@@ -140,7 +102,6 @@ pub fn createInstance(surface_extension_name: [*:0]const u8) InstanceError!Insta
     };
 }
 
-/// Destroy the debug messenger. Safe to call with null messenger.
 pub fn destroyDebugMessenger(instance: vk.Instance, messenger: vk.DebugUtilsMessengerEXT) void {
     std.debug.assert(instance != null);
     if (messenger == null) return;
@@ -152,7 +113,6 @@ pub fn destroyDebugMessenger(instance: vk.Instance, messenger: vk.DebugUtilsMess
     }
 }
 
-/// Pick a suitable physical device and identify its queue families.
 pub fn pickPhysicalDevice(
     instance: vk.Instance,
     surface: vk.Surface,
@@ -189,7 +149,6 @@ pub fn pickPhysicalDevice(
     return DeviceSelectionError.NoSuitableVulkanDevice;
 }
 
-/// Create a logical device with graphics and present queues.
 pub fn createLogicalDevice(
     physical_device: vk.PhysicalDevice,
     families: QueueFamilies,
@@ -258,12 +217,6 @@ pub fn createLogicalDevice(
     };
 }
 
-// =============================================================================
-// Internal Helpers
-// =============================================================================
-
-/// Find graphics and present queue families for a physical device.
-/// Returns null if the device is not suitable (missing required queue families).
 fn findQueueFamilies(device: vk.PhysicalDevice, surface: vk.Surface) ?QueueFamilies {
     std.debug.assert(device != null);
     std.debug.assert(surface != null);
@@ -304,7 +257,6 @@ fn findQueueFamilies(device: vk.PhysicalDevice, surface: vk.Surface) ?QueueFamil
     return null;
 }
 
-/// Debug callback for Vulkan validation layer messages.
 fn debugCallback(
     severity: vk.DebugUtilsMessageSeverityFlagBitsEXT,
     msg_type: vk.DebugUtilsMessageTypeFlagsEXT,
@@ -328,7 +280,6 @@ fn debugCallback(
     return vk.FALSE;
 }
 
-/// Build the debug messenger create info (reused for pNext chain and standalone creation).
 fn debugMessengerCreateInfo() vk.DebugUtilsMessengerCreateInfoEXT {
     return .{
         .sType = vk.VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
@@ -344,7 +295,6 @@ fn debugMessengerCreateInfo() vk.DebugUtilsMessengerCreateInfoEXT {
     };
 }
 
-/// Create the persistent debug messenger (called after instance creation).
 fn createDebugMessenger(
     instance: vk.Instance,
     create_info: *const vk.DebugUtilsMessengerCreateInfoEXT,

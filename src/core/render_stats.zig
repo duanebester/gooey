@@ -1,6 +1,5 @@
 //! Render statistics: text shaping work per build, which the debugger's
-//! profiler shows. The text system records each shape cache miss with its time
-//! and each hit; the debugger resets the counts when a build starts.
+//! profiler shows.
 
 const std = @import("std");
 
@@ -11,18 +10,15 @@ pub const RenderStats = struct {
 
     const Self = @This();
 
-    /// Reset all counters to zero (call at the start of a build).
     pub fn reset(self: *Self) void {
         self.* = .{};
     }
 
-    /// Record a text shaping cache miss with timing
     pub inline fn recordShapeMiss(self: *Self, elapsed_ns: u64) void {
         self.shape_misses += 1;
         self.shape_time_ns += elapsed_ns;
     }
 
-    /// Record a shape cache hit (no shaping needed)
     pub inline fn recordShapeCacheHit(self: *Self) void {
         self.shape_cache_hits += 1;
     }
@@ -32,7 +28,6 @@ pub const RenderStats = struct {
 /// that builds frames.
 pub var frame_stats: RenderStats = .{};
 
-/// Start a new build's counts.
 pub fn beginFrame() void {
     frame_stats.reset();
 }

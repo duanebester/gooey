@@ -1,9 +1,6 @@
-//! WindowsPlatform - Win32 process state for the Windows backend.
-//!
-//! Owns the window class, the stock cursors, the bounded window registry, the
-//! clipboard's owner window, and the waitable timer the core host's loop
-//! waits on (`core_host.zig`). The host runs the message loop itself through
-//! `dispatchMessageBatch`.
+//! Win32 platform state: the window class, stock cursors, bounded window
+//! registry, clipboard owner window, and the waitable timer the core host's
+//! loop waits on.
 //!
 //! The timer is high resolution where the system has it: a millisecond
 //! timeout alone expires on the system tick (15.6 ms by default), so a 16.7 ms
@@ -31,12 +28,11 @@ pub const message_batch_max: u32 = 256;
 /// ceiling.
 pub const frame_period_ns_min: u64 = 16_666_667;
 
-/// UTF-16 name of the one window class every Gooey window uses.
 pub const class_name = std.unicode.utf8ToUtf16LeStringLiteral("GooeyWindow");
 
 pub const WindowsPlatform = struct {
     /// Cleared only by `quit`, a 0.3.1 call kept while `context/window.zig`
-    /// compiles. The core host's loop ends when the window closes.
+    /// compiles.
     running: bool = false,
     window_registry: WindowRegistry,
     hinstance: win32.HINSTANCE,
@@ -131,10 +127,6 @@ pub const WindowsPlatform = struct {
         return self.cursors[index] orelse self.cursors[fallback];
     }
 
-    // =========================================================================
-    // Window registry
-    // =========================================================================
-
     pub fn registerWindow(self: *Self, window: *anyopaque) !WindowId {
         assert(@intFromPtr(window) != 0);
         const id = self.window_registry.register(window) catch |err| {
@@ -162,12 +154,8 @@ pub const WindowsPlatform = struct {
         if (id) |window_id| assert(self.window_registry.contains(window_id));
     }
 
-    // =========================================================================
-    // Calls from the 0.3.1 `context/window.zig`
-    // =========================================================================
-    //
-    // The core never makes these calls. They stay only while that file
-    // compiles, and go when phase 6 deletes it.
+    // Calls from the 0.3.1 `context/window.zig`; they go when phase 6 deletes
+    // it. The core never makes these calls.
 
     pub fn quit(self: *Self) void {
         self.running = false;
@@ -277,7 +265,6 @@ fn clickSettings() windows_input.ClickSettings {
     return settings;
 }
 
-/// Milliseconds on the `.awake` clock, for `Window.requestRenderAfter`.
 pub fn nowMilliseconds() i64 {
     const ms = @divFloor(nowNanoseconds(), std.time.ns_per_ms);
     assert(ms <= std.math.maxInt(i64));
@@ -302,9 +289,6 @@ comptime {
 }
 
 test "frame timer arms, signals, and closes" {
-    // Methodology: create the real timer, arm it for 1 ms, and wait for it
-    // with a generous backstop; the timer, not the backstop, must end the
-    // wait. Covers the externs' signatures against the real kernel32.
     const timer = try createFrameTimer();
     defer closeFrameTimer(timer);
 

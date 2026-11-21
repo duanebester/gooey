@@ -1,49 +1,28 @@
 //! A reference model of the drag_drop example for the VOPR: which list holds
 //! each item, in what order, updated from every action the harness performs
-//! and compared with `app.state` after every step. A mismatch panics with the
-//! step and both states.
-//!
-//! The model is written from drag_drop's intended behaviour (its doc comment
-//! and contract §5), not from its code:
-//! - Every item is in exactly one list, with no duplicates, checked on the
-//!   app's own state every step before it is compared.
-//! - A drop moves the item to the end of the target list, keeping the order
-//!   of the rest of both lists; a drop on the item's own list moves it to
-//!   that list's end (`State.dropOn`: "as 0.3.1 did").
-//! - A pointer drag is armed by a press on a card and starts once the
-//!   pointer is more than `click_slop_px` from the press; a release over a
-//!   list drops the card's payload there, a release anywhere else drops
-//!   nothing, and a release before it started is a click (cards and lists
-//!   have no click handler, so nothing changes). Escape cancels it.
-//! - Any mouse button presses as the left does (the router reads no button
-//!   for a press): it focuses, and with no drag held it arms a drag that
-//!   remembers its button. Only a release of that button ends the drag; a
-//!   release of another button ends nothing. Only left releases click, and
-//!   nothing here handles a click. A move of any button moves the drag.
-//!   Held moves fold only into held moves of the same button, as the queue
-//!   folds them.
-//! - From the keyboard, Space (Shift allowed; not Ctrl, Alt, or Cmd) on a
-//!   focused card picks it up and announces it. During the drag every key
-//!   is the drag's: Tab and the arrows choose the next or previous list in
-//!   tree order, from the chosen list or else the card, and focus it; Space
-//!   or Enter drops on the chosen list, focuses it, and announces "<item>
-//!   moved to <list>"; over no list they do nothing; Escape cancels and
-//!   focuses the card; a press cancels it and lands as usual.
-//! - Space on a card announces a pick-up only when the keyboard drag starts:
-//!   while a pointer drag holds the gesture it starts none and announces
-//!   nothing.
+//! and compared with `app.state` after every step; a mismatch panics with
+//! the step and both states. Written from drag_drop's intended behaviour,
+//! not from its code. Every item is in exactly one list, with no duplicates,
+//! checked on the app's own state every step before it is compared. A drop
+//! moves the item to the end of the target list, keeping the order of the
+//! rest of both lists. A pointer drag is armed by a press on a card and
+//! starts once the pointer is more than `click_slop_px` from the press; a
+//! release over a list drops the card's payload there, a release anywhere
+//! else drops nothing, and a release before it started is a click, which
+//! nothing handles; Escape cancels it. Any mouse button presses as the left
+//! does, and only a release of the drag's own button ends it. From the
+//! keyboard, Space on a focused card picks it up; during the drag every key
+//! is the drag's: Tab and the arrows choose the next or previous list in
+//! tree order, Space or Enter drops on it, Escape cancels and focuses the
+//! card, and a press cancels it and lands as usual. Space announces a
+//! pick-up only when the keyboard drag starts.
 //!
 //! It does not model the core: the focus a drain starts from, hit records,
 //! payloads (`drag_payload`), and drop targets are read from the window. It
 //! folds consecutive moves as the queue does (`EventQueue.coalesce`), so a
 //! drag that leaves the slop and comes back within one drain stays armed.
-//! Events are applied in drain order after each `tickMain`, against the
-//! frame the drain routed against (the rendered one, after the tick's flip).
-//! After every drain the drag (phase, source, payload, keyboard target), the
-//! focus when no build moved it, and the announcements pending for the next
-//! build must match the core's. Pending announcements follow the live-region
-//! rules (contract §4): drag_drop's are all assertive, so only the newest
-//! one made since the last build survives, however many were made.
+//! drag_drop's announcements are all assertive, so only the newest one made
+//! since the last build survives, however many were made.
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -71,7 +50,6 @@ const item_count: u32 = drag_drop.items.len;
 /// Events one drain holds: the model folds them as the queue does, so it
 /// holds exactly the queue's events.
 const event_count_max: u32 = drag_drop.App.limits.events.queue_count_max;
-/// Announcements between builds; the core fails fast past it.
 /// Pending announcements at most: the polite FIFO and the assertive slot.
 const announcement_count_max: u32 =
     drag_drop.App.limits.a11y.announcement_polite_pending_max + 1;
@@ -111,7 +89,6 @@ pub const DragDropModel = struct {
         .resize,
     };
 
-    /// How deep a run went, per seed.
     pub const Stats = struct {
         /// Pointer drags past the slop, and keyboard pick-ups that started.
         drags_started: u32,
@@ -195,7 +172,6 @@ pub const DragDropModel = struct {
         };
     };
 
-    /// A pointer event's point and button.
     const Press = struct { point: Point, button: MouseButton };
 
     /// A queued input event, as far as drag_drop can tell them apart.
@@ -241,13 +217,11 @@ pub const DragDropModel = struct {
         return self.counts;
     }
 
-    /// Events the model can still record before the next drain.
     pub fn pendingRoom(self: *const DragDropModel) u32 {
         assert(self.event_count <= event_count_max);
         return event_count_max - self.event_count;
     }
 
-    /// Record an input action as the events the harness delivers for it.
     pub fn queue(self: *DragDropModel, action: Action) void {
         switch (action) {
             .pointer => |pointer| {

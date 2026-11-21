@@ -1,27 +1,4 @@
-//! The packed frame: what `pack` writes and every `Renderer.draw` reads
-//! (contract §8 and §9, phase 5).
-//!
-//! Four kinds in one draw-ordered stream. Paint records already are that
-//! stream (`records.Record`); packing lays them out for a GPU:
-//!
-//! - `Quad`: SDF fill, border, and blur. A shadow is a quad with `blur > 0`.
-//! - `Sprite`: an atlas rectangle with tint, the SVG stroke colour, image
-//!   corner radii, grayscale, and opacity. `Draw.pipeline` names the atlas.
-//! - `Mesh`: a range of `mesh_points` with a topology and a solid fill.
-//!   Triangles carry analytic edge modes in `edge_modes`; polylines and point
-//!   clouds stay GPU-expanded.
-//! - Clip: push and pop become one clip rectangle per draw (`Draw.clip`).
-//!
-//! A renderer walks `draws` in order. Each draw names one pipeline, a range of
-//! that pipeline's instances, and the clip rectangle every pixel it writes
-//! must lie in. Instance layouts are `extern` and 16-byte aligned, so a backend
-//! copies each array into its GPU buffer as is and its shaders declare the
-//! same structs. Colours are straight (not premultiplied) RGBA as the theme
-//! wrote them; positions are logical pixels with the origin at the top left.
-//!
-//! Storage is reserved once, at the window's budget (`Capacity`), from fresh
-//! pages, and nothing grows: `pack` fails fast naming the pool, its capacity,
-//! and the frame when the app passes a limit it declared (CLAUDE.md §2).
+//! The packed frame: what `pack` writes and every `Renderer.draw` reads.
 
 const std = @import("std");
 const geometry = @import("../geometry/geometry.zig");
@@ -40,7 +17,6 @@ pub const Rect = [4]f32;
 /// A quad, or a shadow when `blur > 0`.
 pub const Quad = extern struct {
     bounds: Rect,
-    /// The fill, or the shadow's colour.
     fill: Rgba,
     border_color: Rgba,
     /// Radii: top left, top right, bottom right, bottom left.
@@ -55,7 +31,6 @@ pub const Quad = extern struct {
     _pad: f32 = 0,
 };
 
-/// One atlas rectangle drawn into `bounds`.
 pub const Sprite = extern struct {
     bounds: Rect,
     /// Atlas coordinates in 0..1: left, top, right, bottom.
@@ -85,15 +60,13 @@ pub const Mesh = extern struct {
     edge_first: u32,
 };
 
-/// A mesh point in logical pixels; the records frame's pool, read in place.
+/// A mesh point in logical pixels.
 pub const MeshPoint = geometry.GpuPoint;
 
-/// How a triangle shader treats each of a triangle's three edges, two bits per
-/// edge in order v0→v1, v1→v2, v2→v0 (`mesh_edges.EdgeMode`: 0 interior,
-/// 1 fade, 2 underlap). See `mesh_edges.zig` for the anti-aliasing contract.
+// Two bits per edge, in order v0→v1, v1→v2, v2→v0 (`mesh_edges.EdgeMode`:
+// 0 interior, 1 fade, 2 underlap).
 pub const EdgeModes = u32;
 
-/// What one draw renders. Sprites name their atlas; meshes their topology.
 pub const Pipeline = enum(u8) {
     quad,
     glyph,
@@ -128,9 +101,8 @@ pub const Draw = extern struct {
 pub const clip_none: u32 = 0;
 pub const clip_unbounded: Rect = .{ -1e9, -1e9, 2e9, 2e9 };
 
-/// Per-kind counts, checked against the paint limits the window reserved.
-/// Pools share storage by kind (`quads` holds quads and shadows), but each
-/// keeps the limit the app declared for it.
+// Pools share storage by kind (`quads` holds quads and shadows) but each
+// keeps the limit the app declared for it.
 pub const Pool = enum {
     quads,
     shadows,
@@ -154,8 +126,6 @@ pub const Pool = enum {
         };
     }
 
-    /// The app's limit for this pool: the `PaintLimits` field `limitName`
-    /// names, which `PaintLimits.check` keeps in 1..ceiling.
     pub fn capacity(self: Pool, paint: *const limits_mod.PaintLimits) u32 {
         switch (self) {
             inline else => |pool| {
@@ -171,9 +141,8 @@ pub const Pool = enum {
 
 pub const pool_count = @typeInfo(Pool).@"enum".field_names.len;
 
-/// What a packed frame reserves: the window's paint limits (including the
-/// debugger's headroom in safe builds) and its paint record bound, which
-/// bounds draws and clips because each record starts at most one of each.
+// The paint record bound also bounds draws and clips: each record starts at
+// most one of each.
 pub const Capacity = struct {
     paint: limits_mod.PaintLimits,
     paint_record_count_max: u32,
@@ -194,10 +163,8 @@ pub const PackedFrame = struct {
     clip_count: u32,
     draws: []Draw,
     draw_count: u32,
-    /// Per-pool counts of this frame, against `limits`.
     counts: [pool_count]u32,
     limits: limits_mod.PaintLimits,
-    /// The tick that built the frame; names the frame in failures.
     frame_number: u64,
     /// Pack's scratch for classifying triangle edges; not renderer input.
     edge_table: mesh_edges.EdgeTable,
@@ -259,9 +226,8 @@ pub const PackedFrame = struct {
         self.* = undefined;
     }
 
-    /// Empty the frame for tick `frame_number`, borrowing its mesh points.
-    /// Earlier contents stay in place but are unreachable: every reader bounds
-    /// by the counts.
+    // Earlier contents stay in place but are unreachable: every reader
+    // bounds by the counts.
     pub fn reset(self: *PackedFrame, frame_number: u64, mesh_points: []const MeshPoint) void {
         assert(frame_number >= self.frame_number);
         assert(self.clips.len > 0);
@@ -293,7 +259,6 @@ pub const PackedFrame = struct {
 
     pub fn drawList(self: *const PackedFrame) []const Draw {
         assert(self.draw_count <= self.draws.len);
-        // Every draw covers at least one instance.
         assert(self.draw_count <= self.quad_count + self.sprite_count + self.mesh_count);
         return self.draws[0..self.draw_count];
     }
@@ -331,14 +296,12 @@ pub const PackedFrame = struct {
         return self.clips[0..self.clip_count];
     }
 
-    /// The points of `mesh`, in place in the records frame.
     pub fn meshPoints(self: *const PackedFrame, mesh: *const Mesh) []const MeshPoint {
         assert(mesh.count > 0);
         assert(mesh.first + mesh.count <= self.mesh_points.len);
         return self.mesh_points[mesh.first..][0..mesh.count];
     }
 
-    /// The instances of `draw`'s kind that it covers.
     pub fn drawRange(
         self: *const PackedFrame,
         draw: *const Draw,
@@ -407,9 +370,6 @@ pub fn edgeCapacity(paint: *const limits_mod.PaintLimits) u32 {
     return count;
 }
 
-/// Bytes `PackedFrame.initInPlace` reserves for the pools `paint` sizes:
-/// quads, sprites, meshes, edge modes and the edge table. Clips and draws
-/// follow the paint record budget instead (`Capacity`).
 pub fn paintBytes(paint: *const limits_mod.PaintLimits) u64 {
     var bytes: u64 = 0;
     bytes += @as(u64, quadCapacity(paint)) * @sizeOf(Quad);
@@ -421,9 +381,8 @@ pub fn paintBytes(paint: *const limits_mod.PaintLimits) u64 {
     return bytes;
 }
 
-/// Points every mesh of a frame may hold: one pool for all three topologies.
-/// The records frame reserves the same sum (`Window`), and renderers size
-/// their point buffers from it.
+// The records frame reserves the same sum, and renderers size their point
+// buffers from it.
 pub fn meshPointCapacity(paint: *const limits_mod.PaintLimits) u32 {
     const count = @as(u64, paint.path_vertex_count_frame_max) +
         paint.polyline_point_count_frame_max + paint.point_count_frame_max;

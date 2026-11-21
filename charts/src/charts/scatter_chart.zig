@@ -1,13 +1,6 @@
-//! Scatter Chart Component for Gooey Charts
-//!
-//! Renders X/Y data as scattered points with optional size encoding (bubble chart).
-//! Supports multiple point shapes and multiple series with different colors.
-//!
-//! NOTE: ScatterChart stores a *slice* to externally-owned series data.
-//! The caller is responsible for ensuring the data outlives the chart.
-//! This avoids embedding large arrays on the stack (per CLAUDE.md).
-//!
-//! Capacities are the app's, fixed at comptime:
+//! ScatterChart stores a slice to externally-owned series data; the caller
+//! must keep the data alive while the chart renders. Capacities are the
+//! app's, fixed at comptime:
 //! `const Segments = ScatterChart(.{ .point_count_max = 8, .series_count_max = 3 });`
 //! sizes `Segments.Series` and the per-render projection scratch for 8 points.
 //! Each render keeps at most one `[point_count_max][2]f32` array (8 bytes per
@@ -36,15 +29,7 @@ pub const Painter = paint.Painter;
 
 const LOD_THRESHOLD = constants.LOD_THRESHOLD;
 
-// =============================================================================
-// Default Color Palette (imported from theme.zig - single source of truth)
-// =============================================================================
-
 pub const default_palette = theme_mod.google_palette;
-
-// =============================================================================
-// Point Shapes
-// =============================================================================
 
 pub const PointShape = enum {
     circle,
@@ -53,113 +38,78 @@ pub const PointShape = enum {
     diamond,
 };
 
-// =============================================================================
-// ScatterChart
-// =============================================================================
-
 /// A scatter chart drawing up to `capacity.series_count_max` series, each
 /// holding up to `capacity.point_count_max` points.
 pub fn ScatterChart(comptime capacity: types.PointCapacity) type {
     capacity.check();
     return struct {
-        // Data - stored as a slice to avoid large stack allocation
-        // The caller owns the underlying data; chart just references it
         data: []const Series,
 
-        // Dimensions
         width: f32 = constants.DEFAULT_WIDTH,
         height: f32 = constants.DEFAULT_HEIGHT,
 
-        // Margins
         margin_top: f32 = constants.DEFAULT_MARGIN_TOP,
         margin_right: f32 = constants.DEFAULT_MARGIN_RIGHT,
         margin_bottom: f32 = constants.DEFAULT_MARGIN_BOTTOM,
         margin_left: f32 = constants.DEFAULT_MARGIN_LEFT,
 
-        // Point styling
         point_radius: f32 = constants.DEFAULT_POINT_RADIUS,
         point_shape: PointShape = .circle,
         point_opacity: f32 = 0.8,
 
-        // Size encoding (bubble chart mode)
         // When size_data is set, point radii are scaled by the corresponding values
         size_data: ?[]const []const f32 = null, // Per-series, per-point sizes
         size_range: [2]f32 = .{ 4.0, 20.0 }, // Min/max radius for size scaling
 
-        // Domain overrides (null = auto-detect from data)
         x_domain_min: ?f32 = null,
         x_domain_max: ?f32 = null,
         y_domain_min: ?f32 = null,
         y_domain_max: ?f32 = null,
 
-        // Axes
         show_x_axis: bool = true,
         show_y_axis: bool = true,
         x_axis_opts: Axis.Options = .{ .orientation = .bottom },
         y_axis_opts: Axis.Options = .{ .orientation = .left },
 
-        // Grid
         show_grid: bool = true,
         grid_opts: Grid.Options = .{ .show_horizontal = true, .show_vertical = true },
 
-        // Theme (optional - uses default colors if null)
         chart_theme: ?*const ChartTheme = null,
 
-        // Accessibility
         accessible_title: ?[]const u8 = null,
         accessible_description: ?[]const u8 = null,
 
-        // Level-of-Detail (LOD) for large datasets
-        // When enabled, datasets with >LOD_THRESHOLD points use LTTB decimation
+        // Datasets past `LOD_THRESHOLD` points decimate with LTTB.
         enable_lod: bool = true,
         lod_target_points: u32 = LOD_THRESHOLD,
 
         const Self = @This();
 
-        /// Most points one series holds.
         pub const point_count_max: u32 = capacity.point_count_max;
 
-        /// Most series one chart draws.
         pub const series_count_max: u32 = capacity.series_count_max;
 
-        /// The series this chart draws, sized by `point_count_max`.
         pub const Series = types.Series(point_count_max);
 
-        // ==========================================================================
-        // Initialization
-        // ==========================================================================
-
-        /// Create a scatter chart from a slice of series.
-        /// The slice must outlive the chart - data is NOT copied.
+        /// The slice must outlive the chart; the data is not copied.
         pub fn init(data: []const Series) Self {
             std.debug.assert(data.len > 0);
             std.debug.assert(data.len <= series_count_max);
             return .{ .data = data };
         }
 
-        /// Create a scatter chart from a single series (as a 1-element slice).
-        /// The series must outlive the chart - data is NOT copied.
+        /// The series must outlive the chart; the data is not copied.
         pub fn initSingle(series: *const Series) Self {
             std.debug.assert(series.data_len > 0);
             const slice: []const Series = @as([*]const Series, @ptrCast(series))[0..1];
             return .{ .data = slice };
         }
 
-        // ==========================================================================
-        // Accessors
-        // ==========================================================================
-
         pub fn seriesCount(self: *const Self) u32 {
             std.debug.assert(self.data.len <= series_count_max);
             return @intCast(self.data.len);
         }
 
-        // ==========================================================================
-        // Accessibility
-        // ==========================================================================
-
-        /// Get accessibility information for this chart.
-        /// Use with `charts.describeChart()` to generate screen reader descriptions.
         pub fn getAccessibilityInfo(self: *const Self) a11y.ChartInfo {
             var info = a11y.infoFromSeries(Series, self.data, .scatter);
             info.title = self.accessible_title;
@@ -167,30 +117,22 @@ pub fn ScatterChart(comptime capacity: types.PointCapacity) type {
             return info;
         }
 
-        /// Generate a full accessible description for this chart.
-        /// Returns a slice into the provided buffer.
+        /// Writes into `buf` and returns a slice of it.
         pub fn describe(self: *const Self, buf: []u8) []const u8 {
             const info = self.getAccessibilityInfo();
             return a11y.describe(&info, buf);
         }
 
-        /// Generate a short summary for tooltips or live regions.
         pub fn summarize(self: *const Self, buf: []u8) []const u8 {
             const info = self.getAccessibilityInfo();
             return a11y.summarize(&info, buf);
         }
 
-        // ==========================================================================
-        // Rendering
-        // ==========================================================================
-
         /// Render the scatter chart, offset by the paint element's bounds.
         pub fn render(self: *const Self, painter: *Painter) void {
-            // Assertions at API boundary
             std.debug.assert(self.data.len > 0);
             std.debug.assert(self.width > 0 and self.height > 0);
 
-            // Calculate inner bounds
             const inner_x = painter.bounds.x + self.margin_left;
             const inner_y = painter.bounds.y + self.margin_top;
             const inner_width = self.width - self.margin_left - self.margin_right;
@@ -198,15 +140,12 @@ pub fn ScatterChart(comptime capacity: types.PointCapacity) type {
 
             std.debug.assert(inner_width > 0 and inner_height > 0);
 
-            // Calculate data extents
             const x_extent = self.findXExtent();
             const y_extent = self.findYExtent();
 
-            // Apply nice range for both axes
             const nice_x = util.niceRange(x_extent.min, x_extent.max, 5);
             const nice_y = util.niceRange(y_extent.min, y_extent.max, 5);
 
-            // Create scales
             const x_scale = LinearScale.init(
                 self.x_domain_min orelse nice_x.min,
                 self.x_domain_max orelse nice_x.max,
@@ -221,7 +160,6 @@ pub fn ScatterChart(comptime capacity: types.PointCapacity) type {
                 inner_y,
             );
 
-            // Draw grid (behind points)
             if (self.show_grid) {
                 self.drawGrid(
                     painter,
@@ -234,10 +172,8 @@ pub fn ScatterChart(comptime capacity: types.PointCapacity) type {
                 );
             }
 
-            // Draw points for each series
             self.drawAllPoints(painter, x_scale, y_scale);
 
-            // Axes on top.
             if (self.show_x_axis) {
                 const x_opts = Axis.themed(self.x_axis_opts, .bottom, self.chart_theme);
                 Axis.drawLinear(painter, x_scale, inner_x, inner_y + inner_height, x_opts);
@@ -249,11 +185,6 @@ pub fn ScatterChart(comptime capacity: types.PointCapacity) type {
             }
         }
 
-        // ==========================================================================
-        // Private Helpers - Domain Calculation
-        // ==========================================================================
-
-        /// Find the min/max X values across all series.
         fn findXExtent(self: *const Self) struct { min: f32, max: f32 } {
             std.debug.assert(self.data.len > 0);
 
@@ -266,7 +197,6 @@ pub fn ScatterChart(comptime capacity: types.PointCapacity) type {
                 max = @max(max, extent.max);
             }
 
-            // Handle empty data or single point case
             if (min > max) {
                 return .{ .min = 0, .max = 1 };
             }
@@ -277,7 +207,6 @@ pub fn ScatterChart(comptime capacity: types.PointCapacity) type {
             return .{ .min = min, .max = max };
         }
 
-        /// Find the min/max Y values across all series.
         fn findYExtent(self: *const Self) struct { min: f32, max: f32 } {
             std.debug.assert(self.data.len > 0);
 
@@ -290,7 +219,6 @@ pub fn ScatterChart(comptime capacity: types.PointCapacity) type {
                 max = @max(max, extent.max);
             }
 
-            // Handle empty data or single point case
             if (min > max) {
                 return .{ .min = 0, .max = 1 };
             }
@@ -301,11 +229,6 @@ pub fn ScatterChart(comptime capacity: types.PointCapacity) type {
             return .{ .min = min, .max = max };
         }
 
-        // ==========================================================================
-        // Private Helpers - Drawing
-        // ==========================================================================
-
-        /// Draw grid lines.
         fn drawGrid(
             self: *const Self,
             painter: *Painter,
@@ -316,7 +239,6 @@ pub fn ScatterChart(comptime capacity: types.PointCapacity) type {
             w: f32,
             h: f32,
         ) void {
-            // Apply theme colors if available
             var grid_opts = self.grid_opts;
             if (self.chart_theme) |t| {
                 grid_opts.color = t.grid_color;
@@ -344,22 +266,19 @@ pub fn ScatterChart(comptime capacity: types.PointCapacity) type {
         ) void {
             std.debug.assert(self.data.len > 0);
 
-            // OPTIMIZATION: Use point cloud batched rendering for circles with uniform radius
-            // This renders ALL points across ALL series in ONE GPU draw call using instanced
-            // rendering. Per-point drawing: N series × M points = N×M draw calls,
-            // N×M×64 vertices (tessellated).
-            // Batched:           1 draw call, total_points × 4 vertices (quads with SDF)
+            // One instanced draw call for every circle: per-point drawing would
+            // be N×M calls of N×M×64 tessellated vertices; batching is one call
+            // of total_points × 4 quads.
             const can_batch = self.point_shape == .circle and self.size_data == null;
 
             if (can_batch) {
                 self.drawAllPointsBatched(painter, x_scale, y_scale);
             } else {
-                // Fall back to individual drawing for non-circle shapes or variable sizes
+                // Non-circle shapes or variable sizes draw individually.
                 for (self.data, 0..) |*series, series_idx| {
                     const color = self.getSeriesColor(series, series_idx);
                     const alpha_color = Color.rgba(color.r, color.g, color.b, self.point_opacity);
 
-                    // Get size data for this series if available
                     const size_slice: ?[]const f32 = if (self.size_data) |sd|
                         if (series_idx < sd.len) sd[series_idx] else null
                     else
@@ -378,7 +297,8 @@ pub fn ScatterChart(comptime capacity: types.PointCapacity) type {
             }
         }
 
-        /// Draw each series as one point cloud at `point_opacity`.
+        /// Draw each series as one point cloud at `point_opacity`. Only circles
+        /// batch.
         fn drawAllPointsBatched(
             self: *const Self,
             painter: *Painter,
@@ -406,9 +326,6 @@ pub fn ScatterChart(comptime capacity: types.PointCapacity) type {
             }
         }
 
-        /// Draw points for a single series.
-        /// OPTIMIZED: Uses pointCloud batch rendering when all points have uniform radius.
-        /// For large datasets (>LOD_THRESHOLD), uses LTTB decimation to reduce point count.
         fn drawSeriesPoints(
             self: *const Self,
             painter: *Painter,
@@ -424,7 +341,6 @@ pub fn ScatterChart(comptime capacity: types.PointCapacity) type {
 
             if (series.data_len == 0) return;
 
-            // Calculate size range for normalization if size data provided
             var size_min: f32 = 0;
             var size_max: f32 = 1;
             if (size_slice) |sizes| {
@@ -440,14 +356,12 @@ pub fn ScatterChart(comptime capacity: types.PointCapacity) type {
                 }
             }
 
-            // Draw each point
             var i: u32 = 0;
             while (i < series.data_len) : (i += 1) {
                 const point = &series.data[i];
                 const px = x_scale.scale(point.x);
                 const py = y_scale.scale(point.y);
 
-                // Calculate radius (either fixed or from size data)
                 const radius = if (size_slice) |sizes|
                     if (i < sizes.len)
                         self.scaleSize(sizes[i], size_min, size_max)
@@ -460,7 +374,6 @@ pub fn ScatterChart(comptime capacity: types.PointCapacity) type {
             }
         }
 
-        /// Scale a size value to the configured radius range.
         fn scaleSize(self: *const Self, value: f32, min: f32, max: f32) f32 {
             std.debug.assert(self.size_range[1] >= self.size_range[0]);
 
@@ -471,7 +384,6 @@ pub fn ScatterChart(comptime capacity: types.PointCapacity) type {
             return self.size_range[0] + clamped * (self.size_range[1] - self.size_range[0]);
         }
 
-        /// Draw a single point with the configured shape.
         fn drawPoint(
             self: *const Self,
             painter: *Painter,
@@ -491,7 +403,6 @@ pub fn ScatterChart(comptime capacity: types.PointCapacity) type {
             }
         }
 
-        /// Draw a square point centered at (x, y).
         fn drawSquare(
             _: *const Self,
             painter: *Painter,
@@ -508,8 +419,6 @@ pub fn ScatterChart(comptime capacity: types.PointCapacity) type {
             );
         }
 
-        /// Draw a triangle point centered at (x, y).
-        /// OPTIMIZED: Uses single fillTriangle call instead of 8 rectangle strips.
         fn drawTriangle(
             _: *const Self,
             painter: *Painter,
@@ -519,23 +428,19 @@ pub fn ScatterChart(comptime capacity: types.PointCapacity) type {
             color: Color,
         ) void {
             std.debug.assert(radius > 0);
-            // Equilateral triangle with centroid at (x, y)
+            // Equilateral triangle with centroid at (x, y).
             const h = radius * 2.2; // Height for similar visual area
             const half_w = h * 0.577; // half_width = height * tan(30°) ≈ height / sqrt(3)
 
-            // Triangle vertices: top, bottom-left, bottom-right
             const top_y = y - h * 0.667; // 2/3 above centroid
             const bottom_y = y + h * 0.333; // 1/3 below centroid
 
-            // Single triangle call - much more efficient than 8 rectangles
             painter.triangles(
                 &.{ .{ x, top_y }, .{ x - half_w, bottom_y }, .{ x + half_w, bottom_y } },
                 color,
             );
         }
 
-        /// Draw a diamond point centered at (x, y).
-        /// OPTIMIZED: Uses 2 fillTriangle calls instead of 16 rectangle strips.
         fn drawDiamond(
             _: *const Self,
             painter: *Painter,
@@ -545,25 +450,21 @@ pub fn ScatterChart(comptime capacity: types.PointCapacity) type {
             color: Color,
         ) void {
             std.debug.assert(radius > 0);
-            // Diamond is a rotated square
             const half = radius * 1.0; // Half diagonal
 
-            // Diamond vertices: top, right, bottom, left
             const top = y - half;
             const bottom = y + half;
             const left = x - half;
             const right = x + half;
 
-            // Two triangles to form the diamond (top half and bottom half)
             painter.triangles(&.{
                 .{ x, top }, .{ left, y }, .{ right, y }, // Top triangle
                 .{ x, bottom }, .{ left, y }, .{ right, y }, // Bottom triangle
             }, color);
         }
 
-        /// Get color for a series (use series color or fall back to theme/default palette).
         fn getSeriesColor(self: *const Self, series: *const Series, index: usize) Color {
-            // Priority: series explicit color > theme palette > default palette
+            // Priority: series explicit color > theme palette > default palette.
             if (series.color) |color| {
                 return color;
             }
@@ -574,11 +475,6 @@ pub fn ScatterChart(comptime capacity: types.PointCapacity) type {
             return default_palette[index % default_palette.len];
         }
 
-        // ==========================================================================
-        // Hit Testing
-        // ==========================================================================
-
-        /// Test if a point (px, py) hits any data point. Returns series and point index if hit.
         pub fn hitTest(
             self: *const Self,
             px: f32,
@@ -587,13 +483,11 @@ pub fn ScatterChart(comptime capacity: types.PointCapacity) type {
             std.debug.assert(self.data.len > 0);
             std.debug.assert(self.width > 0 and self.height > 0);
 
-            // Calculate inner bounds
             const inner_x = self.margin_left;
             const inner_y = self.margin_top;
             const inner_width = self.width - self.margin_left - self.margin_right;
             const inner_height = self.height - self.margin_top - self.margin_bottom;
 
-            // Calculate scales
             const x_extent = self.findXExtent();
             const y_extent = self.findYExtent();
             const nice_x = util.niceRange(x_extent.min, x_extent.max, 5);
@@ -626,7 +520,6 @@ pub fn ScatterChart(comptime capacity: types.PointCapacity) type {
                     const point_x = x_scale.scale(point.x);
                     const point_y = y_scale.scale(point.y);
 
-                    // Simple circular hit test with some padding
                     const hit_radius = self.point_radius + 4; // 4px padding for easier clicking
                     const dx = px - point_x;
                     const dy = py - point_y;
@@ -642,10 +535,6 @@ pub fn ScatterChart(comptime capacity: types.PointCapacity) type {
         }
     };
 }
-
-// =============================================================================
-// Tests
-// =============================================================================
 
 /// A chart with room for two series of 16 points, enough for every test below.
 const TestChart = ScatterChart(.{ .point_count_max = 16, .series_count_max = 2 });
@@ -733,7 +622,6 @@ test "ScatterChart defaults" {
 }
 
 test "ScatterChart struct size is small" {
-    // ScatterChart should be small - just a slice pointer + options
     const size = @sizeOf(TestChart);
     std.debug.print("\nScatterChart size: {} bytes\n", .{size});
     try std.testing.expect(size < 400);
@@ -749,12 +637,10 @@ test "ScatterChart scaleSize" {
     var chart = TestChart.init(&series);
     chart.size_range = .{ 4.0, 20.0 };
 
-    // Test scaling
     try std.testing.expectEqual(@as(f32, 4.0), chart.scaleSize(0, 0, 100));
     try std.testing.expectEqual(@as(f32, 12.0), chart.scaleSize(50, 0, 100));
     try std.testing.expectEqual(@as(f32, 20.0), chart.scaleSize(100, 0, 100));
 
-    // Edge case: min == max
     try std.testing.expectEqual(@as(f32, 4.0), chart.scaleSize(50, 50, 50));
 }
 
@@ -767,7 +653,6 @@ test "ScatterChart LOD defaults" {
 
     const chart = TestChart.init(&series);
 
-    // LOD should be enabled by default
     try std.testing.expect(chart.enable_lod);
     try std.testing.expectEqual(LOD_THRESHOLD, chart.lod_target_points);
 }
@@ -781,7 +666,6 @@ test "ScatterChart point shapes" {
 
     var chart = TestChart.init(&series);
 
-    // Test all shapes can be set
     chart.point_shape = .circle;
     try std.testing.expect(chart.point_shape == .circle);
 
@@ -806,8 +690,6 @@ test "ScatterChart hitTest returns null for miss" {
     chart.width = 400;
     chart.height = 300;
 
-    // Point at (50, 50) maps to roughly center-ish of chart
-    // Testing a far corner should return null
     const result = chart.hitTest(0, 0);
     try std.testing.expect(result == null);
 }

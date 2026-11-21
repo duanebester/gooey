@@ -1,25 +1,15 @@
-//! Layout-engine fuzz targets.
-//!
-//! These targets generate random *valid* layout trees using
-//! `std.testing.Smith` and run a full `endFrame()` over each one. The goal
-//! is to catch crashes, assertion violations, and depth/capacity overruns
-//! when the tree exercises corners the integration tests don't cover.
-//!
-//! What the fuzzer asserts after every successful frame: every element's
-//! bounding box has finite, non-NaN coordinates and non-negative width and
-//! height. `core/emit.zig` paints from these boxes, so NaN would propagate
-//! into the packed frame and every GPU backend.
-//!
-//! Run with `zig build fuzz` (single-shot, time-bounded smoke) or
-//! `zig build fuzz -- --infinite` for the 0.16 infinite-mode runner.
+// Fuzz targets generate random valid layout trees (`std.testing.Smith`) and
+// run `endFrame()`. After every frame it asserts each bounding box has
+// finite coordinates and non-negative size: `core/emit.zig` paints from
+// these, so NaN would propagate into the packed frame and every GPU backend.
+// Run with `zig build fuzz` (or `-- --infinite`).
 
 const std = @import("std");
 const gooey = @import("gooey");
 
-// The fuzz module compiles standalone (separate root from `src/root.zig`)
-// so it can't peer-import `engine.zig`; types must come through the public
-// `gooey.internals.layout.*` surface. This also pins us to the supported public API —
-// if a name disappears the fuzzer is forced to stay in sync.
+// The fuzz module compiles standalone (separate root from `src/root.zig`),
+// so types must come through the public `gooey.internals.layout.*` surface;
+// if a name disappears the fuzzer fails to build.
 const layout = gooey.internals.layout;
 const engine_mod = layout.engine;
 const types = layout.types;
@@ -33,30 +23,20 @@ const Sizing = types.Sizing;
 const SizingAxis = types.SizingAxis;
 const Padding = types.Padding;
 
-// ============================================================================
-// Capacity caps (CLAUDE.md §4)
-// ============================================================================
-
-/// Smith inputs are unbounded, but the engine has fixed capacities. Pick
-/// limits well under those so we exercise the algorithm, not the panics.
+/// Smith inputs are unbounded but the engine's capacities are fixed; these
+/// stay well under them to exercise the algorithm, not the panics.
 const MAX_FUZZ_ELEMENTS: u32 = 256;
 const MAX_FUZZ_DEPTH: u32 = 8;
 const MAX_FUZZ_CHILDREN_PER_NODE: u32 = 8;
 const MAX_FUZZ_TEXT_LEN: u32 = 64;
 
-/// Viewport bounds — kept moderate so coordinate math stays in a regime
-/// the renderer would actually see in production. Stored as integers
-/// because `Smith.valueRangeAtMost` rejects `f32` (no continuous range
-/// thanks to NaN/Inf); we cast at use site.
+/// Viewport bounds, kept in the regime the renderer sees in production.
+/// Stored as integers because `Smith.valueRangeAtMost` rejects `f32` (no
+/// continuous range thanks to NaN/Inf); cast at use site.
 const FUZZ_VIEWPORT_MIN: u32 = 64;
 const FUZZ_VIEWPORT_MAX: u32 = 4096;
 
-// ============================================================================
-// Entry points
-// ============================================================================
-
-/// Build a random layout tree and run the full pipeline. Asserts the
-/// engine's documented post-conditions on the resulting bounds.
+/// Asserts the engine's documented post-conditions on the resulting bounds.
 pub fn fuzzLayoutTree(_: void, smith: *std.testing.Smith) anyerror!void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -72,10 +52,8 @@ pub fn fuzzLayoutTree(_: void, smith: *std.testing.Smith) anyerror!void {
     var state: TreeState = .{ .smith = smith, .arena = arena.allocator(), .elements_emitted = 0 };
     try emitContainer(&engine, &state, 0);
 
-    // Drain any unclosed containers (defensive — emitContainer should
-    // always pair open/close itself, but we don't want a malformed tree
-    // to halt the fuzzer; the engine's `closeElement` assertion would
-    // catch the bug long before we got here).
+    // Drain any unclosed containers: `emitContainer` should pair
+    // open/close, and `closeElement` asserts would catch a bug before this.
     while (engine.open_element_stack.len > 0) engine.closeElement();
 
     try engine.endFrame();
@@ -111,10 +89,6 @@ pub fn fuzzTextWrapping(_: void, smith: *std.testing.Smith) anyerror!void {
 
     try engine.endFrame();
 }
-
-// ============================================================================
-// Tree builder
-// ============================================================================
 
 const TreeState = struct {
     smith: *std.testing.Smith,
@@ -156,8 +130,7 @@ fn emitContainer(engine: *LayoutEngine, state: *TreeState, depth: u32) anyerror!
     const child_count = state.smith.valueRangeAtMost(u32, 0, MAX_FUZZ_CHILDREN_PER_NODE);
     var i: u32 = 0;
     while (i < child_count) : (i += 1) {
-        // Stop spawning if we'd blow the per-frame cap; the engine's
-        // assert in `createElement` would fire on overflow.
+        // Stop before the per-frame cap; `createElement` asserts on overflow.
         if (state.elements_emitted >= MAX_FUZZ_ELEMENTS) break;
         try emitContainer(engine, state, depth + 1);
     }
@@ -165,8 +138,6 @@ fn emitContainer(engine: *LayoutEngine, state: *TreeState, depth: u32) anyerror!
     engine.closeElement();
 }
 
-/// Pick a random Sizing pair across all four sizing types. Returns
-/// `Sizing` (both axes); fuzzed independently per axis.
 fn randomSizing(smith: *std.testing.Smith) Sizing {
     return .{
         .width = randomSizingAxis(smith),
@@ -174,10 +145,8 @@ fn randomSizing(smith: *std.testing.Smith) Sizing {
     };
 }
 
-/// Pick a random single-axis sizing constraint. Bounded so the
-/// generated tree fits in a sane coordinate space. Smith doesn't deal
-/// with `f32` directly (no continuous range), so we draw a `u32` and
-/// scale it into the target floating range.
+/// Smith doesn't deal with `f32` directly (no continuous range), so a
+/// `u32` is drawn and scaled into the target floating range.
 fn randomSizingAxis(smith: *std.testing.Smith) SizingAxis {
     const kind = smith.valueRangeLessThan(u8, 0, 4);
     return switch (kind) {
@@ -188,10 +157,6 @@ fn randomSizingAxis(smith: *std.testing.Smith) SizingAxis {
         else => unreachable,
     };
 }
-
-// ============================================================================
-// Helpers
-// ============================================================================
 
 /// Deterministic mock text measurement — 10 px per byte, full font_size
 /// height. Avoids pulling in CoreText so the fuzzer can run anywhere.
@@ -220,8 +185,7 @@ fn sanitizeText(buf: []u8) []const u8 {
     return buf;
 }
 
-/// No NaN, no infinity, no negative width/height in any element's bounds.
-/// These would propagate straight into the GPU and produce UB.
+/// NaN or negative bounds would propagate straight into the GPU.
 fn assertBoundsFinite(engine: *const LayoutEngine) !void {
     const elements = engine.elements.items();
     try std.testing.expect(elements.len > 0);
@@ -235,10 +199,6 @@ fn assertBoundsFinite(engine: *const LayoutEngine) !void {
         try std.testing.expect(b.height >= 0);
     }
 }
-
-// ============================================================================
-// Tests — `std.testing.fuzz` entry points
-// ============================================================================
 
 test "fuzz: layout tree" {
     try std.testing.fuzz({}, fuzzLayoutTree, .{});

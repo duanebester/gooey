@@ -1,8 +1,3 @@
-//! Grid Primitive for Gooey Charts
-//!
-//! Renders background grid lines aligned with axis ticks.
-//! Grid lines help users read values from the chart.
-
 const std = @import("std");
 const constants = @import("../constants.zig");
 const scale_mod = @import("scale.zig");
@@ -18,12 +13,7 @@ pub const Painter = paint.Painter;
 
 const MAX_TICKS = constants.MAX_TICKS;
 
-// =============================================================================
-// Grid
-// =============================================================================
-
 pub const Grid = struct {
-    /// Configuration options for grid rendering.
     pub const Options = struct {
         show_horizontal: bool = true,
         show_vertical: bool = false,
@@ -31,7 +21,6 @@ pub const Grid = struct {
         line_width: f32 = constants.DEFAULT_GRID_LINE_WIDTH,
     };
 
-    /// Bounds for the chart area.
     pub const Bounds = struct {
         x: f32,
         y: f32,
@@ -39,7 +28,6 @@ pub const Grid = struct {
         height: f32,
     };
 
-    /// Draw grid lines for linear scales on both axes.
     pub fn drawLinear(
         painter: *Painter,
         x_scale: LinearScale,
@@ -51,8 +39,6 @@ pub const Grid = struct {
         drawLinearXY(painter, x_scale, y_scale, bounds, tick_count, tick_count, opts);
     }
 
-    /// Draw grid lines for linear scales with separate X and Y tick counts.
-    /// Useful for line charts where X and Y axes may have different tick densities.
     pub fn drawLinearXY(
         painter: *Painter,
         x_scale: LinearScale,
@@ -62,25 +48,20 @@ pub const Grid = struct {
         y_tick_count: u32,
         opts: Options,
     ) void {
-        // Assertions at API boundary
         std.debug.assert(bounds.width >= 0 and bounds.height >= 0);
         std.debug.assert(!std.math.isNan(bounds.x) and !std.math.isNan(bounds.y));
         std.debug.assert(x_tick_count > 0 and x_tick_count <= MAX_TICKS);
         std.debug.assert(y_tick_count > 0 and y_tick_count <= MAX_TICKS);
 
-        // Draw horizontal grid lines (aligned with Y-axis ticks)
         if (opts.show_horizontal) {
             drawHorizontalLines(painter, y_scale, bounds, y_tick_count, opts);
         }
 
-        // Draw vertical grid lines (aligned with X-axis ticks)
         if (opts.show_vertical) {
             drawVerticalLinesLinear(painter, x_scale, bounds, x_tick_count, opts);
         }
     }
 
-    /// Draw grid lines with band scale on X-axis and linear scale on Y-axis.
-    /// Common for bar charts.
     pub fn drawMixed(
         painter: *Painter,
         x_scale: BandScale,
@@ -89,23 +70,19 @@ pub const Grid = struct {
         tick_count: u32,
         opts: Options,
     ) void {
-        // Assertions at API boundary
         std.debug.assert(bounds.width >= 0 and bounds.height >= 0);
         std.debug.assert(!std.math.isNan(bounds.x) and !std.math.isNan(bounds.y));
         std.debug.assert(tick_count > 0 and tick_count <= MAX_TICKS);
 
-        // Draw horizontal grid lines (aligned with Y-axis ticks)
         if (opts.show_horizontal) {
             drawHorizontalLines(painter, y_scale, bounds, tick_count, opts);
         }
 
-        // Draw vertical grid lines (at band centers)
         if (opts.show_vertical) {
             drawVerticalLinesBand(painter, x_scale, bounds, opts);
         }
     }
 
-    /// Draw grid with Scale union types.
     pub fn draw(
         painter: *Painter,
         x_scale: Scale,
@@ -139,11 +116,6 @@ pub const Grid = struct {
     }
 };
 
-// =============================================================================
-// Helper Functions
-// =============================================================================
-
-/// Draw horizontal grid lines aligned with Y-axis tick positions.
 fn drawHorizontalLines(
     painter: *Painter,
     y_scale: LinearScale,
@@ -162,14 +134,12 @@ fn drawHorizontalLines(
     for (tick_values[0..actual_count]) |value| {
         const y_pos = y_scale.scale(value);
 
-        // Skip if outside bounds
         if (y_pos < bounds.y or y_pos > bounds.y + bounds.height) continue;
 
         painter.line(.{ x1, y_pos }, .{ x2, y_pos }, opts.line_width, opts.color);
     }
 }
 
-/// Draw vertical grid lines aligned with X-axis tick positions (linear scale).
 fn drawVerticalLinesLinear(
     painter: *Painter,
     x_scale: LinearScale,
@@ -188,14 +158,12 @@ fn drawVerticalLinesLinear(
     for (tick_values[0..actual_count]) |value| {
         const x_pos = x_scale.scale(value);
 
-        // Skip if outside bounds
         if (x_pos < bounds.x or x_pos > bounds.x + bounds.width) continue;
 
         painter.line(.{ x_pos, y1 }, .{ x_pos, y2 }, opts.line_width, opts.color);
     }
 }
 
-/// Draw vertical grid lines at band centers (for categorical X-axis).
 fn drawVerticalLinesBand(
     painter: *Painter,
     x_scale: BandScale,
@@ -209,14 +177,12 @@ fn drawVerticalLinesBand(
     while (i < x_scale.label_count) : (i += 1) {
         const x_pos = x_scale.center(i);
 
-        // Skip if outside bounds
         if (x_pos < bounds.x or x_pos > bounds.x + bounds.width) continue;
 
         painter.line(.{ x_pos, y1 }, .{ x_pos, y2 }, opts.line_width, opts.color);
     }
 }
 
-/// Draw simple evenly-spaced horizontal lines (fallback).
 fn drawSimpleHorizontalLines(
     painter: *Painter,
     bounds: Grid.Bounds,
@@ -235,10 +201,6 @@ fn drawSimpleHorizontalLines(
         painter.line(.{ x1, y_pos }, .{ x2, y_pos }, opts.line_width, opts.color);
     }
 }
-
-// =============================================================================
-// Tests
-// =============================================================================
 
 test "Grid.Options defaults" {
     const opts = Grid.Options{};

@@ -5,27 +5,15 @@
 //! keeps its candidate list. `WM_IME_COMPOSITION` is read here and delivered
 //! as the shared `text_input` (committed text) and `composition` (preedit)
 //! events, the same pair the Wayland and macOS backends produce. The caret
-//! rectangle reaches `setImeCursorRect` and places the candidate list: each
-//! frame from the 0.3.1 runtime, or each loop turn from the core host's
-//! `Query.imeCursorRect`. The core host also detaches the input context while
-//! no text field is focused (`ImmAssociateContextEx`), so composition typed
-//! then is not swallowed.
-//!
-//! ## Memory (CLAUDE.md section 2)
+//! rectangle reaches `setImeCursorRect` and places the candidate list. The
+//! core host also detaches the input context while no text field is focused
+//! (`ImmAssociateContextEx`), so composition typed then is not swallowed.
 //!
 //! Strings are read into a fixed per-window `[units_max]u16` and encoded into
 //! fixed `[bytes_max]u8` buffers, both reserved when the window is created.
 //! `ImmGetCompositionStringW` is asked for the size first, so a string that
 //! exceeds `units_max` is detected before anything is copied; the window
 //! then applies the overload policy described at `readString`.
-//!
-//! ## Resource sketch
-//!
-//! One composition update costs two IMM calls per string read (size, then
-//! copy), at most `units_max` UTF-16 units decoded, and at most two events.
-//! Updates arrive at typing rate, a few per second, so the cost is negligible
-//! next to the frame they schedule. Resident storage per window is
-//! 2 * `units_max` + 2 * `bytes_max` bytes: 8 KiB at the limits below.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -41,12 +29,7 @@ pub const units_max: u32 = 1024;
 /// surrogate becomes U+FFFD, which takes three.
 const utf8_bytes_per_unit_max: u32 = 3;
 
-/// UTF-8 capacity that holds any `units_max` UTF-16 units.
 pub const bytes_max: u32 = units_max * utf8_bytes_per_unit_max;
-
-// =============================================================================
-// IMM32 bindings
-// =============================================================================
 
 /// An input context. Borrowed from the window by `ImmGetContext` and returned
 /// with `ImmReleaseContext`.
@@ -102,7 +85,6 @@ pub const CFS_EXCLUDE: u32 = 0x0080;
 // `ImmAssociateContextEx` flag that gives the window its default context back.
 pub const IACE_DEFAULT: u32 = 0x0010;
 
-// `ImmGetCompositionStringW` error results.
 const IMM_ERROR_NODATA: i32 = -1;
 const IMM_ERROR_GENERAL: i32 = -2;
 
@@ -152,10 +134,6 @@ comptime {
     assert(composition_flags_all == 0x1FBF);
     assert(composition_flags_all & (CS_INSERTCHAR | CS_NOMOVECARET) == 0);
 }
-
-// =============================================================================
-// Composition messages
-// =============================================================================
 
 /// Which strings one `WM_IME_COMPOSITION` changed.
 pub const Changes = struct {
@@ -287,10 +265,6 @@ fn isLowSurrogate(unit: u16) bool {
     return unit >= 0xDC00 and unit <= 0xDFFF;
 }
 
-// =============================================================================
-// Candidate placement
-// =============================================================================
-
 /// The IMM forms that place the candidate list for one caret.
 pub const Placement = struct {
     composition: COMPOSITIONFORM,
@@ -337,10 +311,6 @@ fn devicePixels(logical: f32, scale_factor: f64) i32 {
     return std.math.lossyCast(i32, device);
 }
 
-// =============================================================================
-// Tests
-// =============================================================================
-
 const testing = std.testing;
 
 fn testEncode(target: *[bytes_max]u8, units: []const u16) []const u8 {
@@ -362,7 +332,6 @@ test "composition flags report result, preedit, and cancellation" {
     try testing.expect(korean.preedit);
     try testing.expect(!korean.cancelled);
 
-    // Negative space: no flags is a cancellation, not an update.
     const cancelled = Changes.fromLParam(0);
     try testing.expect(!cancelled.result);
     try testing.expect(!cancelled.preedit);
@@ -370,10 +339,6 @@ test "composition flags report result, preedit, and cancellation" {
 }
 
 test "every composition flag alone keeps the preedit; anything else cancels" {
-    // Methodology: each `GCS_*` bit by itself, such as a cursor or clause
-    // move, changes neither string and must not cancel. Then the bits that
-    // carry no change (the unassigned 0x0040, the `CS_*` modifiers, and
-    // everything above `GCS_RESULTCLAUSE`) each count as no flag at all.
     const flags = [_]u32{
         GCS_COMPREADSTR,      GCS_COMPREADATTR, GCS_COMPREADCLAUSE, GCS_COMPATTR,
         GCS_COMPCLAUSE,       GCS_CURSORPOS,    GCS_DELTASTART,     GCS_RESULTREADSTR,
@@ -408,9 +373,6 @@ test "UTF-16 composition text encodes as UTF-8 with U+FFFD for unpaired surrogat
 }
 
 test "a full buffer of the widest units fits the UTF-8 capacity exactly" {
-    // Methodology: U+FFFF and an unpaired surrogate each take three UTF-8
-    // bytes for one unit, the worst case `bytes_max` is sized for. A buffer
-    // of `units_max` of them must fill the target exactly.
     var target: [bytes_max]u8 = undefined;
     var units: [units_max]u16 = undefined;
     for (&units, 0..) |*unit, index| unit.* = if (index % 2 == 0) 0xFFFF else 0xDC00;

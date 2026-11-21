@@ -1,15 +1,6 @@
-//! The renderer a Win32 window draws through, chosen with
-//! `-Dwindows-renderer=<value>` and fixed at compile time, so the unselected
-//! renderer is never analyzed, linked, or loaded:
-//!
-//! - `vulkan` (default): the Vulkan renderer shared with Linux, presented
-//!   through `vk_surface_win32.zig`.
-//! - `dx11`: Direct3D 11 (`dx11_renderer.zig`), which falls back to WARP on
-//!   machines without a hardware driver.
-//!
-//! Only Windows-target code may import this file: every target imports the
-//! `gooey_build_options` module, but `windows_renderer` means nothing
-//! elsewhere.
+//! The renderer a Win32 window draws through, selected at compile time with
+//! `-Dwindows-renderer`. Only Windows-target code may import this file:
+//! `windows_renderer` means nothing outside this backend.
 
 const build_options = @import("gooey_build_options");
 

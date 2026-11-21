@@ -1,17 +1,5 @@
-//! Platform-aware logger for Gooey applications.
-//!
-//! Provides a `std.log.scoped()`-compatible API that works on all platforms
-//! without requiring `pub const std_options` in the user's root file.
-//!
-//! On native targets, delegates to `std.log.scoped()`.
-//! On WASM/freestanding, writes directly to the browser console.
-//!
-//! Usage:
-//! ```
-//! const log = gooey.log.scoped(.myapp);
-//! log.info("connected to {s}", .{host});
-//! log.err("request failed: {}", .{code});
-//! ```
+//! Platform-aware logger: `std.log.scoped`-compatible on native; writes to the
+//! browser console on WASM, with no root-file `std_options` needed.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -20,10 +8,6 @@ const is_freestanding = builtin.os.tag == .freestanding;
 
 const MAX_LOG_MESSAGE_LEN = 4096;
 
-/// Returns a scoped logger for the given tag.
-///
-/// On native: delegates to `std.log.scoped(scope)`.
-/// On WASM:   formats and writes directly to `console.log` / `console.error`.
 pub fn scoped(comptime scope: @EnumLiteral()) type {
     if (is_freestanding) {
         return WasmLogger(scope);
@@ -32,12 +16,7 @@ pub fn scoped(comptime scope: @EnumLiteral()) type {
     }
 }
 
-/// Default (unscoped) logger — equivalent to `scoped(.default)`.
 pub const default = scoped(.default);
-
-// =============================================================================
-// Native logger — thin wrapper around std.log.scoped
-// =============================================================================
 
 fn NativeLogger(comptime scope: @EnumLiteral()) type {
     const std_scoped = std.log.scoped(scope);
@@ -60,10 +39,6 @@ fn NativeLogger(comptime scope: @EnumLiteral()) type {
         }
     };
 }
-
-// =============================================================================
-// WASM logger — writes directly to browser console, no std_options needed
-// =============================================================================
 
 fn WasmLogger(comptime scope: @EnumLiteral()) type {
     return struct {

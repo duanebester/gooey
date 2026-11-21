@@ -1,6 +1,3 @@
-//! Custom NSView subclass for receiving mouse/keyboard events
-//! Implements NSTextInputClient for IME support (emoji, dead keys, CJK input)
-
 const std = @import("std");
 const assert = std.debug.assert;
 const objc = @import("objc");
@@ -20,7 +17,6 @@ const NSEventModifierFlags = appkit.NSEventModifierFlags;
 
 var view_class: ?objc.Class = null;
 
-/// Register the GooeyMetalView class with the Objective-C runtime.
 /// Must be called once before creating any windows.
 pub fn registerClass() !void {
     if (view_class != null) return;
@@ -30,7 +26,6 @@ pub fn registerClass() !void {
     var cls = objc.allocateClassPair(NSView, "GooeyMetalView") orelse
         return error.ClassAllocationFailed;
 
-    // Add instance variable to store pointer to Zig Window
     if (!cls.addIvar("_gooeyWindow")) {
         return error.IvarAddFailed;
     }
@@ -41,14 +36,12 @@ pub fn registerClass() !void {
         return error.IvarAddFailed;
     }
 
-    // Register NSTextInputClient protocol conformance (required for IME)
     const NSTextInputClient = objc.getProtocol("NSTextInputClient") orelse
         return error.ProtocolNotFound;
     if (objc.c.class_addProtocol(cls.value, NSTextInputClient.value) == 0) {
         return error.ProtocolAddFailed;
     }
 
-    // Required for receiving events
     if (!cls.addMethod("acceptsFirstResponder", acceptsFirstResponder)) return error.MethodAddFailed;
     if (!cls.addMethod("isFlipped", isFlipped)) return error.MethodAddFailed;
     if (!cls.addMethod("acceptsFirstMouse:", acceptsFirstMouse)) return error.MethodAddFailed;
@@ -56,12 +49,10 @@ pub fn registerClass() !void {
         return error.MethodAddFailed;
     }
 
-    // Keyboard events
     if (!cls.addMethod("keyDown:", keyDown)) return error.MethodAddFailed;
     if (!cls.addMethod("keyUp:", keyUp)) return error.MethodAddFailed;
     if (!cls.addMethod("flagsChanged:", flagsChanged)) return error.MethodAddFailed;
 
-    // Mouse events
     if (!cls.addMethod("mouseDown:", mouseDown)) return error.MethodAddFailed;
     if (!cls.addMethod("mouseUp:", mouseUp)) return error.MethodAddFailed;
     if (!cls.addMethod("mouseMoved:", mouseMoved)) return error.MethodAddFailed;
@@ -73,7 +64,6 @@ pub fn registerClass() !void {
     if (!cls.addMethod("rightMouseDragged:", rightMouseDragged)) return error.MethodAddFailed;
     if (!cls.addMethod("scrollWheel:", scrollWheel)) return error.MethodAddFailed;
 
-    // NSTextInputClient protocol methods (for IME support)
     if (!cls.addMethod("hasMarkedText", hasMarkedText)) return error.MethodAddFailed;
     if (!cls.addMethod("markedRange", markedRange)) return error.MethodAddFailed;
     if (!cls.addMethod("selectedRange", selectedRange)) return error.MethodAddFailed;
@@ -94,7 +84,6 @@ pub fn registerClass() !void {
     view_class = cls;
 }
 
-/// Create a view instance
 pub fn create(frame: NSRect, window: *Window) !objc.Object {
     if (view_class == null) {
         try registerClass();
@@ -103,16 +92,11 @@ pub fn create(frame: NSRect, window: *Window) !objc.Object {
     const view = view_class.?.msgSend(objc.Object, "alloc", .{})
         .msgSend(objc.Object, "initWithFrame:", .{frame});
 
-    // Store the Zig window pointer
     const window_obj = objc.Object.fromId(@as(objc.c.id, @ptrCast(window)));
     view.setInstanceVariable("_gooeyWindow", window_obj);
 
     return view;
 }
-
-// =============================================================================
-// Helpers
-// =============================================================================
 
 inline fn getWindow(self: objc.c.id) ?*Window {
     const view = objc.Object.fromId(self);
@@ -170,11 +154,9 @@ fn parseEnterExitEvent(self_id: objc.c.id, event_id: objc.c.id) input.MouseEvent
     };
 }
 
-/// Extract UTF-8 string from NSString or NSAttributedString
 fn extractString(text_id: objc.c.id) ?[]const u8 {
     const text = objc.Object.fromId(text_id);
 
-    // Check if it's an NSAttributedString
     const NSAttributedString = objc.getClass("NSAttributedString") orelse return null;
     const is_attributed = text.msgSend(bool, "isKindOfClass:", .{NSAttributedString.value});
 
@@ -186,10 +168,6 @@ fn extractString(text_id: objc.c.id) ?[]const u8 {
     const cstr = ns_string.msgSend(?[*:0]const u8, "UTF8String", .{}) orelse return null;
     return std.mem.span(cstr);
 }
-
-// =============================================================================
-// NSView Method Implementations
-// =============================================================================
 
 fn acceptsFirstResponder(_: objc.c.id, _: objc.c.SEL) callconv(.c) bool {
     return true;
@@ -214,10 +192,6 @@ fn acceptsFirstMouse(self: objc.c.id, _: objc.c.SEL, event: objc.c.id) callconv(
 fn mouseDownCanMoveWindow(_: objc.c.id, _: objc.c.SEL) callconv(.c) bool {
     return false;
 }
-
-// =============================================================================
-// Mouse Method Implementations
-// =============================================================================
 
 /// The input method sees a click first, as NSTextView lets it: one that
 /// lands outside the marked text (`characterIndexForPoint:`) commits the
@@ -308,7 +282,7 @@ fn scrollWheel(self: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c)
 /// `verticalLineScroll` and `horizontalLineScroll`, as read on macOS 26.
 const wheel_line_points: f64 = 10;
 
-/// Scroll delta in points. Trackpads and Magic Mouse report points already.
+/// Trackpads and Magic Mouse report points already.
 fn scrollDelta(delta_x: f64, delta_y: f64, precise: bool) geometry.Point(f64) {
     const scale: f64 = if (precise) 1 else wheel_line_points;
     return geometry.Point(f64).init(delta_x * scale, delta_y * scale);
@@ -323,25 +297,19 @@ test "scrollDelta scales wheel lines to points and passes precise deltas through
     try std.testing.expectEqual(@as(f64, 1.5), precise.y);
 }
 
-// =============================================================================
-// Keyboard Method Implementations
-// =============================================================================
-
 fn keyDown(self: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) callconv(.c) void {
     const window = getWindow(self) orelse return;
     const view = objc.Object.fromId(self);
 
-    // Always send key_down event first (for shortcuts, navigation, etc.)
+    // Send key_down first, for shortcuts and navigation.
     if (parseKeyEvent(event_id)) |key_event| {
         const handled = window.handleInput(.{ .key_down = key_event });
 
-        // If the app handled the key, don't also send it to IME
         if (handled) {
             return;
         }
     }
 
-    // Route through interpretKeyEvents for IME support
     const NSArray = objc.getClass("NSArray") orelse return;
     const event_array = NSArray.msgSend(objc.Object, "arrayWithObject:", .{event_id});
     view.msgSend(void, "interpretKeyEvents:", .{event_array.value});
@@ -424,10 +392,6 @@ fn getCharactersIgnoringModifiers(event: objc.Object) ?[]const u8 {
     return std.mem.span(cstr.?);
 }
 
-// =============================================================================
-// NSTextInputClient Protocol Implementation
-// =============================================================================
-
 // Ranges: the view presents the marked text as a document that starts at 0,
 // counted in UTF-16 units as the protocol requires. `markedRange`,
 // `selectedRange`, and `attributedSubstringForProposedRange:` must agree, or
@@ -473,7 +437,6 @@ fn performKeyEquivalent(self: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) cal
     const modifier_flags = event.msgSend(c_ulong, "modifierFlags", .{});
     const mods = parseModifiers(modifier_flags);
 
-    // Only handle events with command modifier (key equivalents)
     if (mods.cmd) {
         const key_event = input.KeyEvent{
             .key = input.KeyCode.from(key_code),
@@ -494,7 +457,6 @@ fn performKeyEquivalent(self: objc.c.id, _: objc.c.SEL, event_id: objc.c.id) cal
         }
     }
 
-    // Return false to let the system handle unhandled key equivalents
     return false;
 }
 
@@ -527,15 +489,13 @@ fn clampRange(range: NSRange, length: c_ulong) NSRange {
 fn unmarkText(self: objc.c.id, _: objc.c.SEL) callconv(.c) void {
     const window = getWindow(self) orelse return;
     window.clearMarkedText();
-
-    // Send empty composition to signal end
     _ = window.handleInput(.{ .composition = .{
         .text = "",
     } });
 }
 
 fn validAttributesForMarkedText(_: objc.c.id, _: objc.c.SEL) callconv(.c) objc.c.id {
-    // Return empty array - we don't support styled marked text
+    // No styled marked text.
     const NSArray = objc.getClass("NSArray") orelse return null;
     return NSArray.msgSend(objc.c.id, "array", .{});
 }
@@ -562,8 +522,8 @@ fn attributedSubstring(
         @as([*:0]const u8, @ptrCast(window.marked_text_buffer.ptr)),
     });
     if (string.value == null) return null;
-    // A composition longer than the window's buffer was cut; never read past
-    // what the buffer holds.
+    // A composition longer than the window's buffer was cut; never read
+    // past what the buffer holds.
     const stored = string.msgSend(c_ulong, "length", .{});
     if (clamped.location + clamped.length > stored) return null;
     const attributed = NSAttributedString.msgSend(objc.Object, "alloc", .{})
@@ -584,8 +544,8 @@ fn insertText(
 
     // `str` lives until this call returns, and `handleInput` is done with it
     // by then: the core queue copies it (cutting it at a codepoint boundary
-    // past its text budget), and 0.3.1's widgets insert it. No window buffer
-    // sits between, so long dictation or a long IME commit arrives whole.
+    // past its text budget). No window buffer sits between, so long dictation
+    // or a long IME commit arrives whole.
     window.clearMarkedText();
     _ = window.handleInput(.{ .text_input = .{ .text = str } });
 }
@@ -612,16 +572,15 @@ fn firstRectForCharacterRange(
         return .{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = 0, .height = 0 } };
     };
 
-    // Get the view's window.
-    // Zig 0.16: ?objc.Object is not allowed as a return type in C calling convention.
-    // Use objc.c.id (which is [*c]T, already nullable) and check for null manually.
+    // Zig 0.16: ?objc.Object is not allowed as a return type in C calling
+    // convention. Use objc.c.id (which is [*c]T, already nullable) and check
+    // for null manually.
     const ns_window_id: objc.c.id = view.msgSend(objc.c.id, "window", .{});
     if (ns_window_id == null) {
         return .{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = 0, .height = 0 } };
     }
     const ns_window = objc.Object.fromId(ns_window_id);
 
-    // The rect comes from the core's rendered frame (contract §5 `Query`).
     // Before the core binds there is no caret to place the IME against.
     const binding = window.core orelse {
         return .{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = 0, .height = 0 } };
@@ -635,7 +594,6 @@ fn firstRectForCharacterRange(
     const caret_utf16 = window.rendered_marked_length_utf16;
     if (actual_range) |actual| actual.* = .{ .location = caret_utf16, .length = 0 };
 
-    // Convert from view coordinates to window coordinates, then to screen coordinates
     const window_rect = view.msgSend(NSRect, "convertRect:toView:", .{ view_rect, @as(objc.c.id, @ptrFromInt(0)) });
     const screen_rect = ns_window.msgSend(NSRect, "convertRectToScreen:", .{window_rect});
 
@@ -663,13 +621,6 @@ fn doCommandBySelector(_: objc.c.id, _: objc.c.SEL, _: objc.c.SEL) callconv(.c) 
 fn testNoTick(_: *anyopaque) void {}
 
 test "insertText delivers long text whole and setMarkedText cuts it at a codepoint" {
-    // Goal: dictation or an IME commit past 256 bytes reaches the core whole
-    // and valid. 0.3.1 cut "a" x 255 + "東京" at byte 256, inside "東", and the
-    // next paint panicked in the shaper. Methodology: call the real
-    // NSTextInputClient methods on a view bound to a core queue and read the
-    // queued events: the insert arrives whole, and the composition, which the
-    // window keeps for the input method in `text.preedit_bytes_max` (256 at
-    // `small`) bytes, is cut before "東".
     var queue: core_events.EventQueue = undefined;
     try queue.initInPlace(std.testing.allocator, .{
         .event_count_max = 4,

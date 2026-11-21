@@ -1,11 +1,3 @@
-//! DirectWrite font face implementation.
-//!
-//! Implements the FontFace interface with DirectWrite: the system font
-//! collection for discovery, design metrics for measurement, and
-//! `IDWriteGlyphRunAnalysis` for grayscale rasterization. No Direct2D, GDI, or
-//! render target is involved; DirectWrite writes coverage straight into the
-//! glyph cache's render buffer.
-//!
 //! Units match the CoreText backend: one font size unit is one logical pixel
 //! (one DirectWrite DIP), and rasterization runs at `font_size * scale` device
 //! pixels.
@@ -25,8 +17,6 @@ const SystemFont = types.SystemFont;
 const FontVariant = types.FontVariant;
 const FontFace = font_face_mod.FontFace;
 
-/// Substitutions and capacity failures log warnings; failures no input
-/// should cause log errors. See `shaper.zig`.
 const log = std.log.scoped(.directwrite);
 
 /// Longest family name `init` accepts, in UTF-8 bytes. A UTF-8 name never has
@@ -49,7 +39,6 @@ comptime {
     assert(family_name_bytes_max < std.math.maxInt(u16));
 }
 
-/// DirectWrite-backed font face.
 pub const DirectWriteFace = struct {
     /// The process-wide shared factory; this face holds one reference.
     factory: *dw.IDWriteFactory2,
@@ -63,16 +52,10 @@ pub const DirectWriteFace = struct {
 
     const Self = @This();
 
-    /// Load one variant of a family by name (e.g., "Segoe UI", "Cascadia Code").
-    ///
-    /// Selection: the name resolves to an installed family, the family's real
-    /// faces are listed, and `font_match.select` picks one by the CSS font
-    /// matching rule, as the FreeType and CoreText backends do. Fallback
-    /// policy: nothing is synthesized, and DirectWrite's simulated faces are
-    /// skipped. A family without the requested weight or slant renders with
-    /// the face CSS matching picks, with a warning. A family that is not
-    /// installed renders as Segoe UI, with a warning, as Fontconfig and
-    /// CoreText substitute a default family.
+    /// The name resolves to an installed family; `font_match.select` picks one
+    /// of its real faces by the CSS matching rule, as the other backends do.
+    /// Nothing is synthesized, and DirectWrite's simulated faces are skipped.
+    /// An uninstalled family renders as Segoe UI, with a warning.
     pub fn init(name: []const u8, size: f32, variant: FontVariant) !Self {
         assert(name.len > 0);
         assert(size > 0);
@@ -136,12 +119,10 @@ pub const DirectWriteFace = struct {
         self.* = undefined;
     }
 
-    /// Get as the generic FontFace interface.
     pub fn asFontFace(self: *Self) FontFace {
         return font_face_mod.createFontFace(Self, self);
     }
 
-    /// Glyph id for a Unicode codepoint; 0 (.notdef) when the font lacks it.
     pub fn glyphIndex(self: *const Self, codepoint: u21) u16 {
         const codepoints = [1]u32{codepoint};
         var glyph_ids = [1]u16{0};
@@ -158,12 +139,10 @@ pub const DirectWriteFace = struct {
         return glyph_ids[0];
     }
 
-    /// Advance width at the loaded size, in logical pixels.
     pub fn glyphAdvance(self: *const Self, glyph_id: u16) f32 {
         return self.glyphMetrics(glyph_id).advance_x;
     }
 
-    /// Metrics at the loaded size, in logical pixels, y up from the baseline.
     /// A glyph id outside the font reports zero metrics.
     pub fn glyphMetrics(self: *const Self, glyph_id: u16) GlyphMetrics {
         if (glyph_id < self.glyph_count) {
@@ -277,10 +256,6 @@ pub const DirectWriteFace = struct {
         return font_size / @as(f32, @floatFromInt(self.design_units_per_em));
     }
 };
-
-// =============================================================================
-// Font discovery
-// =============================================================================
 
 /// The family that stands in for a CSS generic name, or `name` itself.
 fn familyForGenericName(name: []const u8) []const u8 {
@@ -505,10 +480,6 @@ fn warnInexactFace(family: []const u8, variant: FontVariant, chosen: font_match.
     }
 }
 
-// =============================================================================
-// Metrics
-// =============================================================================
-
 fn computeMetrics(
     font_face: *dw.IDWriteFontFace,
     font_metrics: *const dw.DWRITE_FONT_METRICS,
@@ -618,10 +589,6 @@ fn scaleGlyphMetrics(
     assert(metrics.width >= 0);
     return metrics;
 }
-
-// =============================================================================
-// Rasterization
-// =============================================================================
 
 const GlyphRunOptions = struct {
     glyph_id: u16,

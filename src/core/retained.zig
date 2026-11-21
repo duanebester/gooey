@@ -1,19 +1,4 @@
-//! The retained store: size-class slabs, generation-checked handles, and the
-//! sweep (contract §3).
-//!
-//! Each slab is one reservation of `slot_count × stride` bytes plus metadata,
-//! made at init. `retain` finds an entry by (element id, type) through an
-//! open-addressing index, or claims a free slot and runs the type's `init`.
-//! The sweep after each build releases `.frame` entries untouched for
-//! `sweep_delay_frames` and `.scope` entries whose scope was not rendered;
-//! `.owned` entries leave only through `release`.
-//!
-//! Performance sketch at `.standard` (2,048 / 1,024 / 256 / 64 slots): 0.9 MiB
-//! of slab bytes plus 32 B of metadata and 16 B of index per slot (0.16 MiB).
-//! A lookup hashes once and probes the index linearly; the index is at most
-//! half full, so the expected probe count is under 2. The sweep visits every
-//! slot once per tick (3,392 at `.standard`, a few microseconds), and rebuilds
-//! a slab's index only when it released an entry.
+//! The retained store: size-class slabs with generation-checked handles.
 
 const std = @import("std");
 const id_mod = @import("id.zig");
@@ -29,8 +14,8 @@ pub const Lifetime = union(enum) {
     owned,
 };
 
-/// A generation-checked handle to retained state. Handles are the same type
-/// as entity handles, so a retained engine can be a handler target.
+// Handles are the same type as entity handles, so a retained engine can be a
+// handler target.
 pub fn Handle(comptime T: type) type {
     return handler_mod.Entity(T);
 }
@@ -39,13 +24,10 @@ pub const slab_alignment = 16;
 
 pub const size_classes = [_]u32{ 64, 256, 1024, 4096 };
 
-/// Whether `T` fits a size class, so `cx.retain` can hold it here.
 pub fn fitsSizeClass(comptime T: type) bool {
     return @alignOf(T) <= slab_alignment and @sizeOf(T) <= size_classes[size_classes.len - 1];
 }
 
-/// The size class index for `T`; a type above the largest class is a
-/// compile error, and it belongs in a dedicated pool.
 pub fn classOf(comptime T: type) u8 {
     if (@alignOf(T) > slab_alignment) {
         @compileError("retained type " ++ @typeName(T) ++ " needs alignment above 16");
@@ -66,7 +48,6 @@ const Meta = struct {
     in_use: bool,
 };
 
-/// One fixed pool of equal-stride slots.
 pub const Slab = struct {
     name: []const u8,
     stride: u32,
@@ -138,7 +119,6 @@ pub const Slab = struct {
         return @alignCast(self.bytes[start..][0..self.stride]);
     }
 
-    /// The slot holding (`id`, `type_id`), if any.
     pub fn find(self: *const Slab, id: ElementId, type_id: usize) ?u32 {
         const mask: u32 = @intCast(self.index.len - 1);
         var position = hashKey(id, type_id) & mask;
@@ -154,8 +134,7 @@ pub const Slab = struct {
         unreachable; // The index is at most half full.
     }
 
-    /// Claim a free slot for (`id`, `type_id`) and index it. The caller
-    /// initializes the slot's bytes.
+    // The caller initializes the slot's bytes.
     pub fn claim(self: *Slab, id: ElementId, type_id: usize, lifetime: Lifetime, frame: u64) u32 {
         assert(self.find(id, type_id) == null);
         if (self.free_count == 0) {
@@ -197,15 +176,13 @@ pub const Slab = struct {
         assert(self.free_count < self.meta.len);
         self.meta[slot].in_use = false;
         self.generations[slot] +%= 1;
-        // Zero the bytes before another owner can read them (CLAUDE.md §21).
+        // Zero the bytes before another owner can read them.
         @memset(self.slotBytes(slot), 0);
         self.free[self.free_count] = slot;
         self.free_count += 1;
     }
 
-    /// Release expired `.frame` entries and `.scope` entries whose scope was
-    /// not rendered this frame. `rendered` answers whether a scope id was
-    /// rendered. Returns the number released.
+    // `rendered` answers whether a scope id was rendered this frame.
     pub fn sweep(self: *Slab, frame: u64, delay_frames: u32, rendered: anytype) u32 {
         var released: u32 = 0;
         for (self.meta, 0..) |*meta, slot| {
@@ -255,7 +232,6 @@ pub const RetainedCapacity = struct {
     sweep_delay_frames: u32,
 };
 
-/// The four size-class slabs.
 pub const Retained = struct {
     slabs: [size_classes.len]Slab,
     sweep_delay_frames: u32,
@@ -287,7 +263,6 @@ pub const Retained = struct {
         for (&self.slabs) |*slab| slab.deinit(gpa);
     }
 
-    /// Find or create `T` for `id`. See `Cx.retain` for the public contract.
     pub fn retain(
         self: *Retained,
         comptime T: type,
@@ -309,15 +284,15 @@ pub const Retained = struct {
         return .{ .slot = slot, .generation = slab.generations[slot] };
     }
 
-    /// `T` retained for `id`, if any, without touching it: for the router,
-    /// which reads state the last build retained (a scroll offset).
+    // Does not touch the entry, for the router: it reads state the last build
+    // retained.
     pub fn find(self: *Retained, comptime T: type, id: ElementId) ?*T {
         const value = self.findConst(T, id) orelse return null;
         // The caller holds `self` mutably, so the value is mutable too.
         return @constCast(value);
     }
 
-    /// `find` for a reader that must not change the state: `Query`.
+    // The const variant for readers that must not change the state (`Query`).
     pub fn findConst(self: *const Retained, comptime T: type, id: ElementId) ?*const T {
         assert(id.isKeyed());
         const slab = &self.slabs[comptime classOf(T)];
@@ -326,9 +301,8 @@ pub const Retained = struct {
         return @ptrCast(slab.slotBytes(slot).ptr);
     }
 
-    /// The generation is checked in every build mode before the slot is
-    /// read: a handler in the frame on screen may name state a later sweep
-    /// released, and releasing advances the generation.
+    // The generation is checked before the slot is read: a handler in the
+    // frame on screen may name state a later sweep released.
     pub fn get(self: *Retained, comptime T: type, handle: Handle(T)) *T {
         const slab = &self.slabs[comptime classOf(T)];
         assert(handle.slot < slab.slotCount());
@@ -361,8 +335,6 @@ pub const Retained = struct {
 };
 
 test "retained entries live by lifetime and old handles fail" {
-    // Goal: the three lifetimes and generation checks. Method: retain one
-    // entry per lifetime, sweep across frames, and compare handles.
     const Counter = struct {
         value: u32,
         fn init(self: *@This()) void {

@@ -1,34 +1,8 @@
-//! Core Module Benchmarks
-//!
-//! Benchmark suite for triangulation, stroke expansion, FixedArray, Vec2,
-//! and geometry hot paths.  Measures the performance-critical
-//! operations that run during path rendering every frame.
-//!
-//! Run as executable: zig build bench-core
-//! Quick tests only:  zig build test (validates outputs, doesn't time)
-//!
-//! Scenarios:
-//!   - Triangulation: convex polygons (8–512 vertices), concave stars
-//!   - Stroke expansion: varying point counts and cap/join styles
-//!   - Stroke to triangles: direct GPU-ready output path
-//!   - FixedArray: append/clear, pop, orderedRemove, swapRemove
-//!   - Vec2: batch normalize, batch dot product
-//!   - Rect.contains: batch containment testing
-//!   - Pack: a frame of cards and a triangle chart, records to packed frame
-
 const std = @import("std");
 const gooey = @import("gooey");
 const bench = @import("bench");
 
-/// Minimal `Instant.now()` / `.since()` shim over `std.Io.Clock.awake`, kept
-/// local to the benchmark module so every sample site reads as a two-line
-/// capture-then-diff instead of threading `io` through every benchmark
-/// helper signature. `.awake` is the monotonic clock — deltas here can
-/// never go negative regardless of NTP or sysadmin clock edits.
-///
-/// `std.Io` is a pair of pointers into a process-lifetime vtable, so the
-/// per-call `global_single_threaded.io()` lookup compiles down to a pair
-/// of constant pointer loads — effectively free.
+/// `.awake` is the monotonic clock — deltas here can never go negative.
 const time = struct {
     inline fn benchIo() std.Io {
         return std.Io.Threaded.global_single_threaded.io();
@@ -69,11 +43,6 @@ const LineJoin = stroke_mod.LineJoin;
 const MAX_PATH_VERTICES = limits.MAX_PATH_VERTICES;
 const MAX_STROKE_INPUT = limits.MAX_STROKE_INPUT;
 
-// =============================================================================
-// Benchmark Configuration
-// =============================================================================
-
-/// Adaptive warmup iterations based on operation count.
 fn getWarmupIterations(operation_count: u32) u32 {
     std.debug.assert(operation_count > 0);
     if (operation_count >= 10000) return 2;
@@ -81,7 +50,6 @@ fn getWarmupIterations(operation_count: u32) u32 {
     return 5;
 }
 
-/// Adaptive minimum sample iterations based on operation count.
 fn getMinSampleIterations(operation_count: u32) u32 {
     std.debug.assert(operation_count > 0);
     if (operation_count >= 10000) return 5;
@@ -92,10 +60,6 @@ fn getMinSampleIterations(operation_count: u32) u32 {
 /// Minimum wall-clock time to sample before concluding a benchmark; zero in
 /// the Cachegrind gate's fixed-iteration build (see `bench.sample_time_ns_min`).
 const MIN_SAMPLE_TIME_NS: u64 = bench.sample_time_ns_min;
-
-// =============================================================================
-// Benchmark Results
-// =============================================================================
 
 const BenchmarkResult = struct {
     name: []const u8,
@@ -119,8 +83,7 @@ const BenchmarkResult = struct {
         return avg_ns / @as(f64, @floatFromInt(self.operation_count));
     }
 
-    /// Minimum observed per-operation nanoseconds — the best-of-N estimator,
-    /// least perturbed by runner noise. Mirrors `timePerOpNs` on the min sample.
+    /// The best-of-N estimator, least perturbed by runner noise.
     pub fn minPerOpNs(self: BenchmarkResult) f64 {
         std.debug.assert(self.iterations > 0);
         std.debug.assert(self.operation_count > 0);
@@ -135,27 +98,16 @@ const BenchmarkResult = struct {
     }
 };
 
-// =============================================================================
-// Data Types
-// =============================================================================
-
-/// Pre-generated polygon vertex data for triangulation benchmarks.
 const PolygonData = struct {
     points: [MAX_PATH_VERTICES]Vec2 = undefined,
     vertex_count: u32 = 0,
 };
 
-/// Pre-generated polyline data for stroke benchmarks.
 const StrokeData = struct {
     points: [MAX_STROKE_INPUT]Vec2 = undefined,
     point_count: u32 = 0,
 };
 
-// =============================================================================
-// Polygon Generators
-// =============================================================================
-
-/// Regular convex N-gon on a circle of radius 90 centered at (100, 100).
 /// CCW winding for consistent triangulator behavior.
 fn generateConvexPolygon(comptime vertex_count: u32) PolygonData {
     comptime {
@@ -179,8 +131,6 @@ fn generateConvexPolygon(comptime vertex_count: u32) PolygonData {
     return data;
 }
 
-/// Star polygon with N outer points and N inner points (2N vertices total).
-/// Alternates between outer radius 90 and inner radius 40.
 /// Concave shape — stresses reflex vertex tracking in ear-clipper.
 fn generateStarPolygon(comptime point_count: u32) PolygonData {
     comptime {
@@ -208,11 +158,6 @@ fn generateStarPolygon(comptime point_count: u32) PolygonData {
     return data;
 }
 
-// =============================================================================
-// Stroke Path Generators
-// =============================================================================
-
-/// Zigzag path — alternates between y=10 and y=60 with uniform x spacing.
 /// Sharp corners stress miter/bevel join logic.
 fn generateZigzagPath(comptime point_count: u32) StrokeData {
     comptime {
@@ -231,7 +176,6 @@ fn generateZigzagPath(comptime point_count: u32) StrokeData {
     return data;
 }
 
-/// Sine wave path — smooth curve with gradual direction changes.
 /// Exercises round join logic without extreme miter angles.
 fn generateSinePath(comptime point_count: u32) StrokeData {
     comptime {
@@ -252,7 +196,6 @@ fn generateSinePath(comptime point_count: u32) StrokeData {
     return data;
 }
 
-/// Circle-approximation path — points on a circle, for closed stroke testing.
 /// Uniform curvature exercises join logic at every vertex.
 fn generateCirclePath(comptime point_count: u32) StrokeData {
     comptime {
@@ -276,12 +219,7 @@ fn generateCirclePath(comptime point_count: u32) StrokeData {
     return data;
 }
 
-// =============================================================================
-// Benchmark Runners — Triangulation
-// =============================================================================
-
-/// Benchmark ear-clip triangulation: measures reset + triangulate.
-/// Operation count = vertex count (cost scales with polygon complexity).
+/// Measures reset + triangulate. Operation count = vertex count.
 fn benchTriangulate(
     comptime name: []const u8,
     comptime generateFn: fn () PolygonData,
@@ -296,14 +234,12 @@ fn benchTriangulate(
 
     var triangulator = Triangulator.init();
 
-    // Warmup.
     const warmup_count = getWarmupIterations(operation_count);
     for (0..warmup_count) |_| {
         triangulator.reset();
         _ = triangulator.triangulate(polygon_vertices, polygon) catch unreachable;
     }
 
-    // Timed sampling.
     const min_iterations = getMinSampleIterations(operation_count);
     var sampler: bench.Sampler = .{};
     var last_index_count: usize = 0;
@@ -329,11 +265,6 @@ fn benchTriangulate(
     };
 }
 
-// =============================================================================
-// Benchmark Runners — Stroke Expansion
-// =============================================================================
-
-/// Benchmark stroke expansion to polygon outline.
 /// Operation count = input point count.
 fn benchStrokeExpand(
     comptime name: []const u8,
@@ -351,13 +282,11 @@ fn benchStrokeExpand(
     const stroke_width: f32 = 2.0;
     const miter_limit: f32 = 4.0;
 
-    // Warmup.
     const warmup_count = getWarmupIterations(operation_count);
     for (0..warmup_count) |_| {
         _ = stroke_mod.expandStroke(path_points, stroke_width, cap, join, miter_limit, closed) catch unreachable;
     }
 
-    // Timed sampling.
     const min_iterations = getMinSampleIterations(operation_count);
     var sampler: bench.Sampler = .{};
     var last_output_count: usize = 0;
@@ -381,8 +310,7 @@ fn benchStrokeExpand(
     };
 }
 
-/// Benchmark direct stroke-to-triangles path (bypasses ear-clipper).
-/// Operation count = input point count.
+/// Bypasses ear-clipper. Operation count = input point count.
 fn benchStrokeToTriangles(
     comptime name: []const u8,
     comptime generateFn: fn () StrokeData,
@@ -399,13 +327,11 @@ fn benchStrokeToTriangles(
     const stroke_width: f32 = 2.0;
     const miter_limit: f32 = 4.0;
 
-    // Warmup.
     const warmup_count = getWarmupIterations(operation_count);
     for (0..warmup_count) |_| {
         _ = stroke_mod.expandStrokeToTriangles(path_points, stroke_width, cap, join, miter_limit, closed) catch unreachable;
     }
 
-    // Timed sampling.
     const min_iterations = getMinSampleIterations(operation_count);
     var sampler: bench.Sampler = .{};
     var last_triangle_count: usize = 0;
@@ -429,12 +355,7 @@ fn benchStrokeToTriangles(
     };
 }
 
-// =============================================================================
-// Benchmark Runners — FixedArray
-// =============================================================================
-
-/// Benchmark append N items then clear.
-/// Measures raw append throughput.  Operation count = item_count.
+/// Operation count = item_count.
 fn benchFixedArrayAppendClear(
     comptime name: []const u8,
     comptime item_count: u32,
@@ -447,7 +368,6 @@ fn benchFixedArrayAppendClear(
     const operation_count = item_count;
     const warmup_count = getWarmupIterations(operation_count);
 
-    // Warmup.
     for (0..warmup_count) |_| {
         var array: FixedArray(u32, 8192) = .{};
         for (0..item_count) |i| {
@@ -456,7 +376,6 @@ fn benchFixedArrayAppendClear(
         array.clear();
     }
 
-    // Timed sampling.
     const min_iterations = getMinSampleIterations(operation_count);
     var sampler: bench.Sampler = .{};
 
@@ -485,8 +404,7 @@ fn benchFixedArrayAppendClear(
     };
 }
 
-/// Benchmark pop all items from a pre-filled array.
-/// Measures LIFO removal throughput (O(1) per pop).  Operation count = item_count.
+/// Operation count = item_count.
 fn benchFixedArrayPopCycle(
     comptime name: []const u8,
     comptime item_count: u32,
@@ -499,7 +417,6 @@ fn benchFixedArrayPopCycle(
     const operation_count = item_count;
     const warmup_count = getWarmupIterations(operation_count);
 
-    // Warmup.
     for (0..warmup_count) |_| {
         var array: FixedArray(u32, 8192) = .{};
         for (0..item_count) |i| {
@@ -510,7 +427,6 @@ fn benchFixedArrayPopCycle(
         }
     }
 
-    // Timed sampling: fill outside timing window, pop inside.
     const min_iterations = getMinSampleIterations(operation_count);
     var sampler: bench.Sampler = .{};
 
@@ -544,8 +460,7 @@ fn benchFixedArrayPopCycle(
     };
 }
 
-/// Benchmark swapRemove from index 0 on a pre-filled array.
-/// Each swapRemove is O(1).  Operation count = item_count.
+/// Operation count = item_count.
 fn benchFixedArraySwapRemove(
     comptime name: []const u8,
     comptime item_count: u32,
@@ -558,7 +473,6 @@ fn benchFixedArraySwapRemove(
     const operation_count = item_count;
     const warmup_count = getWarmupIterations(operation_count);
 
-    // Warmup.
     for (0..warmup_count) |_| {
         var array: FixedArray(u32, 8192) = .{};
         for (0..item_count) |i| {
@@ -569,7 +483,6 @@ fn benchFixedArraySwapRemove(
         }
     }
 
-    // Timed sampling: fill outside timing window, remove inside.
     const min_iterations = getMinSampleIterations(operation_count);
     var sampler: bench.Sampler = .{};
 
@@ -596,7 +509,6 @@ fn benchFixedArraySwapRemove(
     };
 }
 
-/// Benchmark orderedRemove from index 0 on a pre-filled array.
 /// Each orderedRemove is O(n) due to element shifting — exposes quadratic total cost.
 /// Operation count = item_count.
 fn benchFixedArrayOrderedRemove(
@@ -611,7 +523,6 @@ fn benchFixedArrayOrderedRemove(
     const operation_count = item_count;
     const warmup_count = getWarmupIterations(operation_count);
 
-    // Warmup.
     for (0..warmup_count) |_| {
         var array: FixedArray(u32, 8192) = .{};
         for (0..item_count) |i| {
@@ -622,7 +533,6 @@ fn benchFixedArrayOrderedRemove(
         }
     }
 
-    // Timed sampling: fill outside timing window, remove inside.
     const min_iterations = getMinSampleIterations(operation_count);
     var sampler: bench.Sampler = .{};
 
@@ -649,12 +559,7 @@ fn benchFixedArrayOrderedRemove(
     };
 }
 
-// =============================================================================
-// Benchmark Runners — Vec2
-// =============================================================================
-
-/// Benchmark batch Vec2 normalize.
-/// Each iteration normalizes vector_count vectors.  Operation count = vector_count.
+/// Operation count = vector_count.
 fn benchVec2Normalize(
     comptime name: []const u8,
     comptime vector_count: u32,
@@ -664,7 +569,6 @@ fn benchVec2Normalize(
         std.debug.assert(vector_count <= 4096);
     }
 
-    // Generate non-degenerate test vectors.
     var vectors: [vector_count]Vec2 = undefined;
     for (0..vector_count) |i| {
         const fi: f32 = @as(f32, @floatFromInt(i)) + 1.0;
@@ -674,7 +578,7 @@ fn benchVec2Normalize(
     const operation_count = vector_count;
     const warmup_count = getWarmupIterations(operation_count);
 
-    // Warmup — accumulate into sink to prevent dead-code elimination.
+    // Accumulate into a sink to prevent dead-code elimination.
     var sink = Vec2.zero;
     for (0..warmup_count) |_| {
         for (0..vector_count) |i| {
@@ -682,7 +586,6 @@ fn benchVec2Normalize(
         }
     }
 
-    // Timed sampling.
     const min_iterations = getMinSampleIterations(operation_count);
     var sampler: bench.Sampler = .{};
 
@@ -708,11 +611,6 @@ fn benchVec2Normalize(
     };
 }
 
-// =============================================================================
-// Benchmark Runners — Geometry
-// =============================================================================
-
-/// Benchmark batch Rect.contains point testing.
 /// Points oscillate in and out of the rect to defeat branch prediction.
 /// Operation count = point_count.
 fn benchRectContains(
@@ -726,7 +624,6 @@ fn benchRectContains(
 
     const rect = RectF.init(10.0, 10.0, 100.0, 100.0);
 
-    // Generate points that oscillate across the rect boundary.
     var test_points: [point_count]PointF = undefined;
     for (0..point_count) |i| {
         const fi: f32 = @as(f32, @floatFromInt(i));
@@ -739,7 +636,6 @@ fn benchRectContains(
     const operation_count = point_count;
     const warmup_count = getWarmupIterations(operation_count);
 
-    // Warmup.
     var hit_count: u32 = 0;
     for (0..warmup_count) |_| {
         for (0..point_count) |i| {
@@ -749,7 +645,6 @@ fn benchRectContains(
         }
     }
 
-    // Timed sampling.
     const min_iterations = getMinSampleIterations(operation_count);
     var sampler: bench.Sampler = .{};
 
@@ -775,10 +670,6 @@ fn benchRectContains(
         .min_time_ns = sampler.min_time_ns,
     };
 }
-
-// =============================================================================
-// Benchmark Runners — Pack
-// =============================================================================
 
 /// Cards in the pack benchmark's UI frame. Each card is a shadow and its quad,
 /// then a clip around a label of `pack_card_glyph_count` glyphs and an icon:
@@ -951,8 +842,7 @@ fn benchPack(
     };
 }
 
-/// Pack the card frame, then the chart frame, in one fixture: the data plane
-/// every backend draws.
+/// Pack the card frame, then the chart frame, in one fixture.
 fn runPackBenchmarks(reporter: *bench.Reporter, gpa: std.mem.Allocator) !void {
     std.debug.print("\n", .{});
     std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
@@ -978,10 +868,6 @@ fn runPackBenchmarks(reporter: *bench.Reporter, gpa: std.mem.Allocator) !void {
     collect(reporter, benchPack("pack_chart_512_triangles", &fixture, pack_chart_triangle_count));
     std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
 }
-
-// =============================================================================
-// Comptime Wrappers — Polygon Generators
-// =============================================================================
 
 fn buildConvex8() PolygonData {
     return generateConvexPolygon(8);
@@ -1018,10 +904,6 @@ fn buildStar100() PolygonData {
     return generateStarPolygon(100);
 }
 
-// =============================================================================
-// Comptime Wrappers — Stroke Path Generators
-// =============================================================================
-
 fn buildZigzag4() StrokeData {
     return generateZigzagPath(4);
 }
@@ -1044,11 +926,6 @@ fn buildCircle64() StrokeData {
     return generateCirclePath(64);
 }
 
-// =============================================================================
-// Validation Tests
-// =============================================================================
-
-/// Assert that triangulation produces the correct number of triangles.
 fn validateTriangulation(comptime generateFn: fn () PolygonData) !void {
     const data = generateFn();
     std.debug.assert(data.vertex_count >= 3);
@@ -1106,7 +983,6 @@ test "validate: stroke to triangles produces output" {
     const result = try stroke_mod.expandStrokeToTriangles(path_points, 2.0, .butt, .miter, 4.0, false);
     try std.testing.expect(result.vertices.len > 0);
     try std.testing.expect(result.indices.len > 0);
-    // Index count must be a multiple of 3 (triangles).
     try std.testing.expectEqual(@as(usize, 0), result.indices.len % 3);
 }
 
@@ -1146,9 +1022,7 @@ test "validate: Vec2 normalize produces unit length" {
 
 test "validate: Rect.contains boundary behavior" {
     const rect = RectF.init(10.0, 10.0, 100.0, 100.0);
-    // Inside.
     try std.testing.expect(rect.contains(PointF.init(50.0, 50.0)));
-    // Outside.
     try std.testing.expect(!rect.contains(PointF.init(0.0, 0.0)));
     try std.testing.expect(!rect.contains(PointF.init(200.0, 200.0)));
 }
@@ -1193,11 +1067,6 @@ test "validate: pack classifies the chart's shared edges" {
     try std.testing.expectEqual(pack_chart_row_count, fixture.target.mesh_count);
 }
 
-// =============================================================================
-// Main Entry Point (for benchmark executable)
-// =============================================================================
-
-/// Print a benchmark result and record it in the JSON reporter.
 fn collect(reporter: *bench.Reporter, result: BenchmarkResult) void {
     reporter.addEntry(bench.entry(
         result.name,
@@ -1213,10 +1082,6 @@ fn collect(reporter: *bench.Reporter, result: BenchmarkResult) void {
 
 pub fn main(init: std.process.Init) !void {
     var reporter = bench.Reporter.init("core", init.io, init.minimal.args.vector);
-
-    // =========================================================================
-    // Triangulation — Convex Polygons
-    // =========================================================================
 
     std.debug.print("\n", .{});
     std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
@@ -1234,10 +1099,6 @@ pub fn main(init: std.process.Init) !void {
 
     std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
 
-    // =========================================================================
-    // Triangulation — Concave Stars
-    // =========================================================================
-
     std.debug.print("\n", .{});
     std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
     std.debug.print("Gooey Core Benchmarks — Triangulation (concave star polygons)\n", .{});
@@ -1252,10 +1113,6 @@ pub fn main(init: std.process.Init) !void {
 
     std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
 
-    // =========================================================================
-    // Stroke Expansion — Open Path Scaling
-    // =========================================================================
-
     std.debug.print("\n", .{});
     std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
     std.debug.print("Gooey Core Benchmarks — Stroke Expansion (open, butt cap, miter join)\n", .{});
@@ -1269,10 +1126,6 @@ pub fn main(init: std.process.Init) !void {
     collect(&reporter, benchStrokeExpand("zigzag_256_butt_miter", buildZigzag256, .butt, .miter, false));
 
     std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
-
-    // =========================================================================
-    // Stroke Expansion — Style Comparison (32 points)
-    // =========================================================================
 
     std.debug.print("\n", .{});
     std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
@@ -1292,10 +1145,6 @@ pub fn main(init: std.process.Init) !void {
 
     std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
 
-    // =========================================================================
-    // Stroke Expansion — Closed Paths
-    // =========================================================================
-
     std.debug.print("\n", .{});
     std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
     std.debug.print("Gooey Core Benchmarks — Stroke Expansion (closed paths)\n", .{});
@@ -1309,10 +1158,6 @@ pub fn main(init: std.process.Init) !void {
     collect(&reporter, benchStrokeExpand("circle_64_closed_round", buildCircle64, .butt, .round, true));
 
     std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
-
-    // =========================================================================
-    // Stroke To Triangles (direct GPU output)
-    // =========================================================================
 
     std.debug.print("\n", .{});
     std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
@@ -1328,10 +1173,6 @@ pub fn main(init: std.process.Init) !void {
 
     std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
 
-    // =========================================================================
-    // FixedArray — Append/Clear Throughput
-    // =========================================================================
-
     std.debug.print("\n", .{});
     std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
     std.debug.print("Gooey Core Benchmarks — FixedArray Append/Clear\n", .{});
@@ -1345,10 +1186,6 @@ pub fn main(init: std.process.Init) !void {
 
     std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
 
-    // =========================================================================
-    // FixedArray — Removal Strategy Comparison
-    // =========================================================================
-
     std.debug.print("\n", .{});
     std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
     std.debug.print("Gooey Core Benchmarks — FixedArray Removal Strategies (O(1) vs O(n))\n", .{});
@@ -1356,28 +1193,21 @@ pub fn main(init: std.process.Init) !void {
     printHeader();
     std.debug.print(&@as([105]u8, @splat('-')) ++ "\n", .{});
 
-    // O(1) removal: pop from end.
     collect(&reporter, benchFixedArrayPopCycle("pop_100", 100));
     collect(&reporter, benchFixedArrayPopCycle("pop_1000", 1000));
 
     std.debug.print(&@as([105]u8, @splat('-')) ++ "\n", .{});
 
-    // O(1) removal: swap with last element.
     collect(&reporter, benchFixedArraySwapRemove("swap_remove_100", 100));
     collect(&reporter, benchFixedArraySwapRemove("swap_remove_1000", 1000));
 
     std.debug.print(&@as([105]u8, @splat('-')) ++ "\n", .{});
 
-    // O(n) removal: shift all elements left. ns/op should grow with N.
     collect(&reporter, benchFixedArrayOrderedRemove("ordered_remove_100", 100));
     collect(&reporter, benchFixedArrayOrderedRemove("ordered_remove_500", 500));
     collect(&reporter, benchFixedArrayOrderedRemove("ordered_remove_1000", 1000));
 
     std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
-
-    // =========================================================================
-    // Vec2 — Batch Normalize
-    // =========================================================================
 
     std.debug.print("\n", .{});
     std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
@@ -1391,10 +1221,6 @@ pub fn main(init: std.process.Init) !void {
     collect(&reporter, benchVec2Normalize("normalize_4000", 4000));
 
     std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
-
-    // =========================================================================
-    // Rect.contains — Batch Containment
-    // =========================================================================
 
     std.debug.print("\n", .{});
     std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
@@ -1411,10 +1237,6 @@ pub fn main(init: std.process.Init) !void {
 
     try runPackBenchmarks(&reporter, init.gpa);
 
-    // =========================================================================
-    // Scaling Analysis — Triangulation
-    // =========================================================================
-
     std.debug.print("\n", .{});
     std.debug.print(&@as([105]u8, @splat('=')) ++ "\n", .{});
     std.debug.print("Gooey Core Benchmarks — Scaling Analysis (triangulate ns/op vs vertex count)\n", .{});
@@ -1422,8 +1244,6 @@ pub fn main(init: std.process.Init) !void {
     printHeader();
     std.debug.print(&@as([105]u8, @splat('-')) ++ "\n", .{});
 
-    // Ear-clipping is O(n²): ns/op should grow linearly with vertex count.
-    // Reflex-set optimization reduces constant factor for convex polygons.
     collect(&reporter, benchTriangulate("scaling_convex_8", buildConvex8));
     collect(&reporter, benchTriangulate("scaling_convex_16", buildConvex16));
     collect(&reporter, benchTriangulate("scaling_convex_32", buildConvex32));
@@ -1434,7 +1254,6 @@ pub fn main(init: std.process.Init) !void {
 
     std.debug.print(&@as([105]u8, @splat('-')) ++ "\n", .{});
 
-    // Stars are concave — more reflex vertices mean more work per ear test.
     collect(&reporter, benchTriangulate("scaling_star_5", buildStar5));
     collect(&reporter, benchTriangulate("scaling_star_10", buildStar10));
     collect(&reporter, benchTriangulate("scaling_star_50", buildStar50));
@@ -1460,10 +1279,6 @@ pub fn main(init: std.process.Init) !void {
 
     reporter.finish();
 }
-
-// =============================================================================
-// Helpers
-// =============================================================================
 
 fn printHeader() void {
     std.debug.print("| {s:<44} | {s:>8} | {s:>13} | {s:>14} | {s:>10} |\n", .{

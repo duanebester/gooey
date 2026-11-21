@@ -1,36 +1,10 @@
-//! Windows accessibility bridge using UI Automation.
-//!
-//! Narrator, NVDA, and other UI Automation clients find a window's elements by
-//! sending it `WM_GETOBJECT`. The platform window answers with this bridge's
-//! root provider (`uia.Host`), and clients then pull the tree through the
-//! providers in `windows_provider.zig`. The bridge's part each synced frame:
-//!
-//! 1. Diff the finished `Tree` against the previous snapshot, then rebuild
-//!    the snapshot, both under the server's lock (`syncDirty`).
-//! 2. With the lock released, raise UI Automation events for what changed:
-//!    property changes, structure changes, focus, and announcements.
-//!
-//! ## Activation
-//!
-//! `isActive` is true once any client has asked for the root, or while
-//! `UiaClientsAreListening` reports a subscribed client such as a screen
-//! reader. Only then does the accessibility system build the tree. The first
-//! root request also tells the core host, which polls for a screen reader at
-//! its next frame, so an idle app activates promptly.
-//!
-//! ## Resource sketch (CLAUDE.md §7)
-//!
-//! - Reserved at init, at `standard`'s 2,048 `a11y.element_count_max`: the
-//!   server (map and bookkeeping, about 50 KiB), the snapshot (192 KiB of
-//!   entries, 2 MiB of text), and the provider pool (384 KiB). Every one
-//!   scales with the field. Resident memory follows use, not capacity.
-//! - Per synced frame: one diff and one rebuild over at most the tree's
-//!   elements, and at most `change_count_max` (128) property events, plus one
-//!   structure, one focus, and the tree's announcements (the frame's, at
-//!   most `a11y.announcement_polite_pending_max + 1`, plus live-region
-//!   changes). Each event is one call into `uiautomationcore`, which
-//!   forwards it to listening clients.
-//!
+//! Windows accessibility bridge using UI Automation. Narrator and other UIA
+//! clients reach the window's providers through `WM_GETOBJECT`, which the
+//! platform window answers with this bridge's root (`uia.Host`), and pull the
+//! tree through the providers in `windows_provider.zig`. Each synced frame
+//! diffs and rebuilds the snapshot under the server's lock, then raises
+//! change events with the lock released. `isActive` is true once a client has
+//! asked for the root or `UiaClientsAreListening` reports a subscriber.
 //! Requires Windows 10 1709 for `UiaRaiseNotificationEvent`.
 
 const std = @import("std");
@@ -113,10 +87,6 @@ pub const WindowsBridge = struct {
     fn castSelf(ptr: *anyopaque) *Self {
         return @ptrCast(@alignCast(ptr));
     }
-
-    // =========================================================================
-    // Bridge implementation
-    // =========================================================================
 
     /// Runs every synced frame, dirty or not, so bounds that moved without a
     /// content change (scrolling, resizing) reach the snapshot.
@@ -332,10 +302,6 @@ comptime {
     assert(announcement_bytes_max <= provider_mod.bstr_bytes_max);
 }
 
-// =============================================================================
-// Tests
-// =============================================================================
-
 const testing = std.testing;
 
 test "an inert bridge without a window is safe to drive" {
@@ -362,9 +328,6 @@ test "an inert bridge without a window is safe to drive" {
 }
 
 test "a bridge on a real window publishes its root, syncs, and tears down cleanly" {
-    // Goal: the full lifecycle against real UI Automation calls: publish the
-    // root, sync two frames (one adding, one removing an element), raise
-    // events, then withdraw and free everything with no provider leaked.
     const class = std.unicode.utf8ToUtf16LeStringLiteral("STATIC");
     const instance = win32.GetModuleHandleW(null).?;
     const hwnd = win32.CreateWindowExW(
