@@ -1099,3 +1099,192 @@ test "gaps wider than their box overflow it, and its grow children get none" {
     const last = elements[elements.len - 1].computed.bounding_box;
     try std.testing.expect(last.x > row_x + 20);
 }
+
+/// A childless box of a fixed size, for the wrapping tests.
+fn fixedLeaf(engine: *LayoutEngine, width: f32, height: f32) !void {
+    assert(width >= 0);
+    assert(height >= 0);
+    try engine.openElement(.{ .layout = .{ .sizing = Sizing.fixed(width, height) } });
+    engine.closeElement();
+}
+
+test "a wrapping row breaks before the child that overflows, and fits its lines" {
+    // Five 100 px children with gaps of 10 in a 290 px content width: two
+    // fit (210), a third would not (320). Lines are as tall as their
+    // tallest child, so line tops come from heights 40 and 30, not 20.
+    var engine = try LayoutEngine.init(&test_capacity);
+    defer engine.deinit();
+    engine.beginFrame(800, 600);
+    try engine.openElement(.{ .layout = .{
+        .sizing = .{ .width = SizingAxis.fixed(300), .height = SizingAxis.fit() },
+        .padding = Padding.all(5),
+        .child_gap = 10,
+        .wrap = true,
+    } });
+    try fixedLeaf(&engine, 100, 20);
+    try fixedLeaf(&engine, 100, 40);
+    try fixedLeaf(&engine, 100, 30);
+    try fixedLeaf(&engine, 100, 10);
+    try fixedLeaf(&engine, 100, 25);
+    engine.closeElement();
+    try engine.endFrame();
+
+    // Lines of 40, 30, and 25, two gaps, and the padding.
+    const height_expected: f32 = 40 + 10 + 30 + 10 + 25 + 10;
+    try std.testing.expectEqual(height_expected, boundingBox(&engine, 0).height);
+    const expected = [_][2]f32{ .{ 5, 5 }, .{ 115, 5 }, .{ 5, 55 }, .{ 115, 55 }, .{ 5, 95 } };
+    for (expected, 1..) |position, index| {
+        const bounds = boundingBox(&engine, @intCast(index));
+        try std.testing.expectEqual(position[0], bounds.x);
+        try std.testing.expectEqual(position[1], bounds.y);
+    }
+}
+
+test "a wrapping row keeps a child that fits exactly on its line" {
+    // Three 100 px children and two 10 px gaps fill 320 px exactly; at
+    // 319 px the third wraps, below the first line and a 10 px gap.
+    const widths = [_]f32{ 320, 319 };
+    const third_y = [_]f32{ 0, 30 };
+    for (widths, third_y) |width, y| {
+        var engine = try LayoutEngine.init(&test_capacity);
+        defer engine.deinit();
+        engine.beginFrame(800, 600);
+        try engine.openElement(.{ .layout = .{
+            .sizing = .{ .width = SizingAxis.fixed(width), .height = SizingAxis.fit() },
+            .child_gap = 10,
+            .wrap = true,
+        } });
+        try fixedLeaf(&engine, 100, 20);
+        try fixedLeaf(&engine, 100, 20);
+        try fixedLeaf(&engine, 100, 20);
+        engine.closeElement();
+        try engine.endFrame();
+        try std.testing.expectEqual(y, boundingBox(&engine, 3).y);
+    }
+}
+
+test "grow children share their own line's free width, and a long child is cut to the row" {
+    // Line 1 is a 90 px box and grow boxes of weight 1 and 2: they share
+    // 300 - 90 = 210 as 70 and 140. The 250 px box would overflow line 1, so
+    // it starts line 2. The fit box around a 500 px box is wider than the
+    // row, so it takes line 3 alone, cut to the row's width; a fixed width
+    // would be its minimum, and would overflow instead.
+    var engine = try LayoutEngine.init(&test_capacity);
+    defer engine.deinit();
+    engine.beginFrame(800, 600);
+    try engine.openElement(.{ .layout = .{
+        .sizing = .{ .width = SizingAxis.fixed(300), .height = SizingAxis.fit() },
+        .wrap = true,
+    } });
+    try fixedLeaf(&engine, 90, 10);
+    try engine.openElement(.{ .layout = .{ .sizing = .{
+        .width = SizingAxis.growWeighted(1, 0, std.math.floatMax(f32)),
+        .height = SizingAxis.fixed(10),
+    } } });
+    engine.closeElement();
+    try engine.openElement(.{ .layout = .{ .sizing = .{
+        .width = SizingAxis.growWeighted(2, 0, std.math.floatMax(f32)),
+        .height = SizingAxis.fixed(10),
+    } } });
+    engine.closeElement();
+    try fixedLeaf(&engine, 250, 10);
+    try engine.openElement(.{ .layout = .{} });
+    try fixedLeaf(&engine, 500, 10);
+    engine.closeElement();
+    engine.closeElement();
+    try engine.endFrame();
+
+    try std.testing.expectApproxEqAbs(@as(f32, 70), boundingBox(&engine, 2).width, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 140), boundingBox(&engine, 3).width, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 160), boundingBox(&engine, 3).x, 0.01);
+    try std.testing.expectEqual(@as(f32, 250), boundingBox(&engine, 4).width);
+    try std.testing.expectEqual(@as(f32, 10), boundingBox(&engine, 4).y);
+    try std.testing.expectEqual(@as(f32, 300), boundingBox(&engine, 5).width);
+    try std.testing.expectEqual(@as(f32, 20), boundingBox(&engine, 5).y);
+}
+
+test "a wrapping row aligns each line on its own, and children within their line" {
+    // Main-axis centre places each line by its own width: line 1 (100, 100,
+    // and 80 px) starts at 10 in 300, line 2 (150 px) at 75. Cross-axis
+    // centre uses line 1's height (40), not the row's, so the 20 px child
+    // sits 10 down, and the cross-axis grow child stretches to the line.
+    var engine = try LayoutEngine.init(&test_capacity);
+    defer engine.deinit();
+    engine.beginFrame(800, 600);
+    try engine.openElement(.{ .layout = .{
+        .sizing = .{ .width = SizingAxis.fixed(300), .height = SizingAxis.fixed(200) },
+        .child_alignment = ChildAlignment.center(),
+        .main_axis_distribution = .center,
+        .wrap = true,
+    } });
+    try fixedLeaf(&engine, 100, 20);
+    try fixedLeaf(&engine, 100, 40);
+    try engine.openElement(.{ .layout = .{ .sizing = .{
+        .width = SizingAxis.fixed(80),
+        .height = SizingAxis.grow(),
+    } } });
+    engine.closeElement();
+    try fixedLeaf(&engine, 150, 10);
+    engine.closeElement();
+    try engine.endFrame();
+
+    try std.testing.expectEqual(@as(f32, 10), boundingBox(&engine, 1).x);
+    try std.testing.expectEqual(@as(f32, 10), boundingBox(&engine, 1).y);
+    try std.testing.expectEqual(@as(f32, 0), boundingBox(&engine, 2).y);
+    try std.testing.expectEqual(@as(f32, 40), boundingBox(&engine, 3).height);
+    try std.testing.expectEqual(@as(f32, 75), boundingBox(&engine, 4).x);
+    try std.testing.expectEqual(@as(f32, 40), boundingBox(&engine, 4).y);
+    try std.testing.expectEqual(@as(f32, 200), boundingBox(&engine, 0).height); // Fixed stays.
+}
+
+test "fit-content parents grow to heights that wrapping and aspect ratios derive from widths" {
+    // A fit column holds a grow-width wrapping row of four 100x20 boxes in
+    // 300 px (two lines, 40 tall), a grow-width 2:1 box (150 tall), and a
+    // 10 px box. Their minimums say 20 and 0, so the column must learn the
+    // derived heights after sizing to place the box at 190 and be 200 tall.
+    var engine = try LayoutEngine.init(&test_capacity);
+    defer engine.deinit();
+    engine.beginFrame(800, 600);
+    try engine.openElement(.{ .layout = .{
+        .sizing = .{ .width = SizingAxis.fixed(300), .height = SizingAxis.fit() },
+        .layout_direction = .top_to_bottom,
+    } });
+    try engine.openElement(.{ .layout = .{
+        .sizing = .{ .width = SizingAxis.grow(), .height = SizingAxis.fit() },
+        .wrap = true,
+    } });
+    for (0..4) |_| try fixedLeaf(&engine, 100, 20);
+    engine.closeElement();
+    try engine.openElement(.{ .layout = .{
+        .sizing = .{ .width = SizingAxis.grow(), .height = SizingAxis.fit() },
+        .aspect_ratio = 2,
+    } });
+    engine.closeElement();
+    try fixedLeaf(&engine, 300, 10);
+    engine.closeElement();
+    try engine.endFrame();
+
+    try std.testing.expectEqual(@as(f32, 40), boundingBox(&engine, 1).height);
+    try std.testing.expectEqual(@as(f32, 150), boundingBox(&engine, 6).height);
+    try std.testing.expectEqual(@as(f32, 190), boundingBox(&engine, 7).y);
+    try std.testing.expectEqual(@as(f32, 200), boundingBox(&engine, 0).height);
+}
+
+test "a wrapping scroll row scrolls to the end of its lines" {
+    // Six 100x40 boxes in 300 px make two lines, 80 tall, in a 50 px view:
+    // the end is 30 down. Measuring one line's height would give 0.
+    var engine = try LayoutEngine.init(&test_capacity);
+    defer engine.deinit();
+    engine.beginFrame(800, 600);
+    try engine.openElement(.{
+        .layout = .{ .sizing = Sizing.fixed(300, 50), .wrap = true },
+        .scroll = .{ .vertical = true, .target = .end },
+    });
+    for (0..6) |_| try fixedLeaf(&engine, 100, 40);
+    engine.closeElement();
+    try engine.endFrame();
+
+    const scroll = engine.elements.getConst(0).config.scroll.?;
+    try std.testing.expectEqual(@as(f32, 30), scroll.scroll_offset.y);
+    try std.testing.expectEqual(@as(f32, 40 - 30), boundingBox(&engine, 4).y);
+}

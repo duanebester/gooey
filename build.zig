@@ -1504,6 +1504,12 @@ fn addFailFastChecks(
         .{ .mode = "core-opacity-range", .stderr = "Style.opacity 1.01 is outside 0 to 1" },
         .{ .mode = "core-grow-weight", .stderr = "Sizing.grow weight 0: a weight must be " ++
             "finite and greater than 0" },
+        .{ .mode = "core-wrap-column", .stderr = "Style.wrap: only a .row wraps; " ++
+            "a .column cannot" },
+        .{ .mode = "core-aspect-ratio", .stderr = "Style.aspect_ratio 0: a ratio must be " ++
+            "finite and greater than 0" },
+        .{ .mode = "core-aspect-height", .stderr = "Style.aspect_ratio: the height follows " ++
+            "the width, so `height` must be .fit, with no height_min or height_max" },
         .{ .mode = "core-pointer-drag-unkeyed", .stderr = "Box.on_pointer_drag needs a key " ++
             "(contract §5): box at fail_fast_check.zig:" },
         .{ .mode = "core-drag-unkeyed", .stderr = "Box.draggable needs a key " ++

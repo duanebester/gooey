@@ -35,6 +35,9 @@
 //!   never run out of slots: a newer one replaces an older one (contract §4).
 //! - `core-opacity-range`: a box whose `Style.opacity` is just above 1.
 //! - `core-grow-weight`: a box that grows with a weight of 0.
+//! - `core-wrap-column`: a column that asks to wrap.
+//! - `core-aspect-ratio`: a box whose aspect ratio is 0.
+//! - `core-aspect-height`: a box with an aspect ratio and a fixed height.
 //! - `core-pointer-drag-unkeyed`: a box with `on_pointer_drag` and no key.
 //! - `core-drag-unkeyed`: a box with `draggable` and no key.
 //! - `core-drag-both`: a keyed box with both `draggable` and `on_pointer_drag`.
@@ -96,6 +99,9 @@ const Mode = enum {
     @"core-a11y-announcement-bytes",
     @"core-opacity-range",
     @"core-grow-weight",
+    @"core-wrap-column",
+    @"core-aspect-ratio",
+    @"core-aspect-height",
     @"core-pointer-drag-unkeyed",
     @"core-drag-unkeyed",
     @"core-drag-both",
@@ -145,6 +151,9 @@ pub fn main(init: std.process.Init) !void {
         .@"core-a11y-announcement-bytes" => coreAnnounce(init.gpa, init.io),
         .@"core-opacity-range" => coreTick(init.gpa, init.io, CoreApp.opacityRange),
         .@"core-grow-weight" => coreTick(init.gpa, init.io, CoreApp.growWeight),
+        .@"core-wrap-column" => coreTick(init.gpa, init.io, CoreApp.wrapColumn),
+        .@"core-aspect-ratio" => coreTick(init.gpa, init.io, CoreApp.aspectRatio),
+        .@"core-aspect-height" => coreTick(init.gpa, init.io, CoreApp.aspectHeight),
         .@"core-pointer-drag-unkeyed" => coreTick(init.gpa, init.io, CoreApp.unkeyedDrag),
         .@"core-drag-unkeyed" => coreTick(init.gpa, init.io, CoreApp.unkeyedDraggable),
         .@"core-drag-both" => coreTick(init.gpa, init.io, CoreApp.dragBoth),
@@ -447,6 +456,25 @@ const CoreApp = struct {
     /// The smallest invalid weight; any positive weight is valid.
     fn growWeight(cx: *gooey.Cx) void {
         cx.render(gooey.ui.box(.{ .style = .{ .width = .{ .grow = 0 } } }, .{}));
+    }
+
+    /// A column is the default direction, so `wrap` alone asks a column.
+    fn wrapColumn(cx: *gooey.Cx) void {
+        cx.render(gooey.ui.box(.{ .style = .{ .wrap = true } }, .{}));
+    }
+
+    /// The smallest invalid ratio; any positive finite ratio is valid.
+    fn aspectRatio(cx: *gooey.Cx) void {
+        cx.render(gooey.ui.box(.{ .style = .{ .aspect_ratio = 0 } }, .{}));
+    }
+
+    /// A valid ratio with a height of its own, which the ratio would replace.
+    fn aspectHeight(cx: *gooey.Cx) void {
+        cx.render(gooey.ui.box(.{ .style = .{
+            .width = .{ .fixed = 160 },
+            .height = .{ .fixed = 90 },
+            .aspect_ratio = 16.0 / 9.0,
+        } }, .{}));
     }
 
     /// Each level renders the next through `cx.render`, so the depth grows

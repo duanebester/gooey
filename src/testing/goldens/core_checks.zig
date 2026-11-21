@@ -6033,6 +6033,60 @@ test "grow siblings share free space by weight on the main axis only" {
     try testing.expectEqual(hits[3].bounds.y + 60, hits[4].bounds.y);
 }
 
+const FlexWrapApp = gooey.App(StyleState, flexWrapRender, style_config);
+
+/// A fit column holding a 230 px wrapping row of four keyed 100x20 boxes
+/// and a keyed 2:1 box that fills the column's width, then a keyed marker.
+fn flexWrapRender(cx: *Cx) void {
+    const tile: ui.Style = .{ .width = .{ .fixed = 100 }, .height = .{ .fixed = 20 } };
+    const names = [4][]const u8{ "a", "b", "c", "d" };
+    cx.render(ui.box(.{ .style = .{ .width = .{ .fixed = 230 } } }, .{
+        ui.box(.{ .style = .{
+            .direction = .row,
+            .wrap = true,
+            .width = .{ .grow = 1 },
+            .gap = 10,
+            .alignment = .{ .main = .center },
+        } }, .{
+            ui.box(.{ .key = .{ .name = names[0] }, .style = tile }, .{}),
+            ui.box(.{ .key = .{ .name = names[1] }, .style = tile }, .{}),
+            ui.box(.{ .key = .{ .name = names[2] }, .style = tile }, .{}),
+            ui.box(.{ .key = .{ .name = names[3] }, .style = tile }, .{}),
+        }),
+        ui.box(.{ .key = .{ .name = "picture" }, .style = .{
+            .width = .{ .grow = 1 },
+            .aspect_ratio = 2,
+        } }, .{}),
+        ui.box(.{ .key = .{ .name = "after" }, .style = tile }, .{}),
+    }));
+}
+
+test "Style.wrap breaks a row into lines and Style.aspect_ratio derives a height" {
+    // Goal: both fields through the core, into the layout, out as hit
+    // records. Method: two 100 px tiles and a 10 px gap fit 230 px (210) and
+    // a third does not, so the tiles make two lines 10 px apart, each
+    // centred: (230 - 210) / 2 = 10 from the left. The 2:1 box is 230 wide,
+    // so 115 tall, and the marker after it sits at 20 + 10 + 20 + 115 = 165,
+    // which only holds when the fit column learns both derived heights.
+    const app = try testing.allocator.create(FlexWrapApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    app.tick(0);
+    const frame = app.window.rendered();
+    // The six keyed boxes, in tree order, are the only hit records.
+    try testing.expectEqual(@as(u32, 6), frame.hit_count);
+    const hits = frame.hits[0..6];
+    const expected = [4][2]f32{ .{ 10, 0 }, .{ 120, 0 }, .{ 10, 30 }, .{ 120, 30 } };
+    for (hits[0..4], expected) |*record, position| {
+        try testing.expectEqual(position[0], record.bounds.x);
+        try testing.expectEqual(position[1], record.bounds.y);
+    }
+    try testing.expectEqual(@as(f32, 230), hits[4].bounds.width);
+    try testing.expectEqual(@as(f32, 115), hits[4].bounds.height);
+    try testing.expectEqual(@as(f32, 165), hits[5].bounds.y);
+}
+
 const PointerApp = gooey.App(StyleState, pointerRender, style_config);
 
 fn pointerRender(cx: *Cx) void {

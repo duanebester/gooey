@@ -462,6 +462,11 @@ pub const LayoutConfig = struct {
     main_axis_distribution: MainAxisDistribution = .start,
     /// Aspect ratio (width / height). When set, height is derived from width.
     aspect_ratio: ?f32 = null,
+    /// Break a `left_to_right` row into lines at its content width, as CSS
+    /// `flex-wrap: wrap`: children keep their own widths, grow children share
+    /// each line's free width, and lines stack top to bottom `child_gap`
+    /// apart. Its minimum width is its widest child's.
+    wrap: bool = false,
 
     pub fn row(gap: u16) LayoutConfig {
         return .{ .layout_direction = .left_to_right, .child_gap = gap };
