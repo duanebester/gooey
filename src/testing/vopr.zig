@@ -1633,13 +1633,13 @@ test "fuzz: text_area vopr" {
 }
 
 /// One seed through `runPaired`, which panics on the first differing frame.
-fn runPairedSeed(comptime workload: Workload) !Result(workload.Model()) {
+fn runPairedSeed(comptime workload: Workload, prng_seed: u64) !Result(workload.Model()) {
     const step_count = 300;
     const byte_count = bytes_swarm + step_count * bytes_per_action_max;
     const bytes = try std.testing.allocator.alloc(u8, byte_count);
     defer std.testing.allocator.free(bytes);
 
-    var prng = std.Random.DefaultPrng.init(1);
+    var prng = std.Random.DefaultPrng.init(prng_seed);
     prng.random().bytes(bytes);
     const options: RunOptions = .{ .step_count = step_count, .verbose = false };
     const result = try runPaired(
@@ -1662,20 +1662,23 @@ test "two instances fed the same bytes draw the same frames" {
     // and require frames beyond the first, and for each app with counts
     // some depth: a drop, rows seen, a splitter moved, an action fired,
     // the menu shown.
-    _ = try runPairedSeed(.todo);
-    const result = try runPairedSeed(.drag_drop);
+    _ = try runPairedSeed(.todo, 1);
+    const result = try runPairedSeed(.drag_drop, 1);
     try std.testing.expect(result.stats.drags_completed > 0);
-    const list = try runPairedSeed(.virtual_list);
+    const list = try runPairedSeed(.virtual_list, 1);
     try std.testing.expect(list.stats.rows_seen > 0);
-    const panes = try runPairedSeed(.splitter);
+    const panes = try runPairedSeed(.splitter, 1);
     try std.testing.expect(panes.stats.drags_moved > 0);
-    const fired = try runPairedSeed(.actions);
+    const fired = try runPairedSeed(.actions, 1);
     var fire_count: u32 = 0;
     for (fired.stats.fired) |count| fire_count += count;
     try std.testing.expect(fire_count > 0);
-    const overlay = try runPairedSeed(.nested_overlay);
+    // The Select's menu starts closed, so a seed shows it only once the
+    // swarm opens it; seed 1's swarm draws 19 frames and never does, while
+    // seed 4's opens it three times and the dialog once.
+    const overlay = try runPairedSeed(.nested_overlay, 4);
     try std.testing.expect(overlay.stats.menu_frames > 0);
-    const area = try runPairedSeed(.text_area);
+    const area = try runPairedSeed(.text_area, 1);
     try std.testing.expect(area.stats.checks.frames > 0);
 }
 

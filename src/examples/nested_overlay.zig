@@ -1,7 +1,7 @@
 //! Nested overlay regression example, on the core.
 //!
-//! The modal and its nested Select's menu start open. The menu must paint
-//! above the modal and take clicks over it: a layer opened inside a modal
+//! The modal starts open, with a Select inside. Its menu, once opened, must
+//! paint above the modal and take clicks over it: a layer opened inside a modal
 //! comes after the modal's fragment (contract §6). In 0.3.1, floating
 //! z-indexes that replaced inherited values painted the modal over the menu.
 //!
@@ -27,7 +27,6 @@ pub const options = [_][]const u8{ "Alpha", "Bravo", "Charlie" };
 
 pub const State = struct {
     selected: ?usize = null,
-    select_open: bool = true,
     dialog_open: bool = false,
 
     pub fn openDialog(self: *State) void {
@@ -38,20 +37,10 @@ pub const State = struct {
         self.dialog_open = false;
     }
 
-    pub fn toggleSelect(self: *State) void {
-        self.select_open = !self.select_open;
-    }
-
     pub fn selectOption(self: *State, index: u32) void {
         assert(index < options.len);
         self.selected = index;
-        self.select_open = false;
         assert(self.selected.? == index);
-    }
-
-    pub fn closeSelect(self: *State) void {
-        self.select_open = false;
-        assert(!self.select_open);
     }
 };
 
@@ -93,7 +82,7 @@ const ModalContent = struct {
         }
         cx.render(ui.box(.{ .style = .{ .width = .{ .fixed = 312 }, .gap = 16 } }, .{
             ui.text("Modal with nested Select", .{ .size = 22, .wrap = .words }),
-            ui.text("The open dropdown should be visible above this modal.", .{
+            ui.text("Open the dropdown: its options should show above this modal.", .{
                 .size = 14,
                 .color = .{ .rgba = .rgb(0.35, 0.35, 0.4) },
                 .wrap = .words,
@@ -102,10 +91,7 @@ const ModalContent = struct {
                 .key = "nested-select",
                 .options = &options,
                 .on_select = &on_select,
-                .on_toggle = cx.on(State.toggleSelect, .{}),
-                .on_close = cx.on(State.closeSelect, .{}),
                 .selected = state.selected,
-                .open = state.select_open,
                 .width = 280,
             },
             // Keyed, so the menu covering it has a modal record beneath.

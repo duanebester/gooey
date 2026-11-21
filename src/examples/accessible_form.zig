@@ -1,7 +1,7 @@
 //! Accessible form: accessibility patterns on the core.
 //!
-//! Headings, groups, labelled inputs, a radio group with set positions, a
-//! checkbox, a combobox `Select`, live-region error alerts, and
+//! Headings, groups, labelled inputs, a `RadioGroup` with set positions, a
+//! checkbox, a combobox `Select`, a `Tooltip`, live-region error alerts, and
 //! announcements from the submit handler. Every accessible element is a box
 //! whose `a11y` names its role, so a screen reader also gets its bounds.
 //!
@@ -23,6 +23,8 @@ const Button = components.Button;
 const Checkbox = components.Checkbox;
 const TextInput = components.TextInput;
 const Select = components.Select;
+const RadioGroup = components.RadioGroup;
+const Tooltip = components.Tooltip;
 
 // =============================================================================
 // Form State
@@ -41,7 +43,6 @@ pub const State = struct {
 
     // Experience level selection.
     experience_level: ?usize = null,
-    experience_open: bool = false,
 
     // Form status.
     form_submitted: bool = false,
@@ -80,19 +81,7 @@ pub const State = struct {
     pub fn selectExperience(self: *State, index: u32) void {
         assert(index < experience_options.len);
         self.experience_level = index;
-        self.experience_open = false;
         assert(self.experience_level.? == index);
-    }
-
-    pub fn toggleExperience(self: *State) void {
-        const was_open = self.experience_open;
-        self.experience_open = !self.experience_open;
-        assert(self.experience_open != was_open);
-    }
-
-    pub fn closeExperience(self: *State) void {
-        self.experience_open = false;
-        assert(!self.experience_open);
     }
 
     pub fn validate(self: *State) bool {
@@ -174,10 +163,7 @@ const FormBody = struct {
                 .contact_method = s.contact_method,
                 .newsletter = s.newsletter,
             },
-            ExperienceSection{
-                .experience_level = s.experience_level,
-                .experience_open = s.experience_open,
-            },
+            ExperienceSection{ .experience_level = s.experience_level },
             TermsSection{
                 .terms_accepted = s.terms_accepted,
                 .has_error = s.validation_errors.terms,
@@ -318,10 +304,24 @@ const ContactPreferencesSection = struct {
     contact_method: State.ContactMethod,
     newsletter: bool,
 
+    const labels = [_][]const u8{ "Email", "Phone", "Postal Mail" };
+
     pub fn render(self: ContactPreferencesSection, cx: *Cx) void {
+        const methods = comptime std.enums.values(State.ContactMethod);
+        comptime assert(methods.len == labels.len);
+        var on_select: [methods.len]Handler = undefined;
+        for (&on_select, methods) |*handler, method| {
+            handler.* = cx.on(State.setContact, .{ .arg = method });
+        }
         cx.render(ui.box(card(null, false), .{
             sectionHeading("Contact Preferences"),
-            RadioGroup{ .label = "Preferred Contact Method", .selected = self.contact_method },
+            RadioGroup{
+                .key = "contact-method",
+                .options = &labels,
+                .on_select = &on_select,
+                .selected = @backingInt(self.contact_method),
+                .label = "Preferred Contact Method",
+            },
             // 0.3.1's `ui.spacerMin(8)`: the newsletter sits apart from the radios.
             ui.box(.{ .style = .{ .height = .{ .fixed = 8 } } }, .{}),
             Checkbox{
@@ -336,158 +336,8 @@ const ContactPreferencesSection = struct {
     }
 };
 
-/// A radio group as a native one behaves: Tab enters it at the selected
-/// option and leaves it in one press, because only that option is a tab
-/// stop, and the arrow keys select the next or previous option, wrapping,
-/// with focus following (see `RadioKeys`).
-const RadioGroup = struct {
-    label: []const u8,
-    selected: State.ContactMethod,
-
-    const labels = [_][]const u8{ "Email", "Phone", "Postal Mail" };
-
-    pub fn render(self: RadioGroup, cx: *Cx) void {
-        const key = gooey.Key{ .name = "contact-method" };
-        const id = cx.id(key);
-        const keys = cx.retain(RadioKeys, id, .frame, RadioKeys.init);
-        cx.get(RadioKeys, keys).group = id;
-        // A radio group maps to a group role, as in 0.3.1.
-        cx.render(ui.box(.{
-            .key = key,
-            .style = .{ .gap = 12, .padding = .{ .top = 8 } },
-            .a11y = .{ .role = .group, .label = self.label },
-        }, .{
-            ui.text(self.label, .{
-                .size = 14,
-                .weight = .medium,
-                .color = .{ .rgba = label_color },
-            }),
-            ui.box(.{
-                // `RadioKeys.option` derives the options' ids from this key.
-                .key = .{ .name = "options" },
-                .style = .{ .gap = 8 },
-            }, .{RadioOptions{ .selected = self.selected, .keys = keys }}),
-        }));
-    }
-};
-
-/// The radio group's arrow keys, retained under its key so the options'
-/// key handlers have state to run on; only the group's id is kept.
-const RadioKeys = struct {
-    group: gooey.ElementId,
-
-    fn init(self: *RadioKeys) void {
-        self.group = .root;
-    }
-
-    fn option(self: *const RadioKeys, index: u32) gooey.ElementId {
-        assert(self.group.isKeyed());
-        assert(index < RadioGroup.labels.len);
-        const options = self.group.child(.{ .name = "options" });
-        return options.child(.{ .name = RadioGroup.labels[index] });
-    }
-
-    /// Down and Right select the next option, Up and Left the previous,
-    /// wrapping at the ends, by clicking it, and focus follows.
-    fn onKey(self: *RadioKeys, index: u32, effects: *Effects) void {
-        const count: u32 = RadioGroup.labels.len;
-        assert(index < count);
-        const event = effects.inputEvent() orelse return;
-        if (event.* != .key_down) return;
-        const modifiers = event.key_down.modifiers;
-        if (modifiers.cmd or modifiers.ctrl or modifiers.alt) return;
-        const target = switch (event.key_down.key) {
-            .down, .right => (index + 1) % count,
-            .up, .left => (index + count - 1) % count,
-            else => return,
-        };
-        assert(target != index);
-        effects.click(self.option(target));
-        effects.focus(self.option(target));
-        effects.stopPropagation();
-    }
-};
-
-const RadioOptions = struct {
-    selected: State.ContactMethod,
-    keys: gooey.Handle(RadioKeys),
-
-    pub fn render(self: RadioOptions, cx: *Cx) void {
-        const methods = std.enums.values(State.ContactMethod);
-        assert(methods.len == RadioGroup.labels.len);
-        for (methods, 0..) |method, index| {
-            cx.render(RadioOption{
-                .label = RadioGroup.labels[index],
-                .selected = self.selected == method,
-                .pos_in_set = @intCast(index + 1),
-                .set_size = @intCast(methods.len),
-                .on_select = cx.on(State.setContact, .{ .arg = method }),
-                .on_key = cx.on(RadioKeys.onKey, .{
-                    .entity = self.keys,
-                    .arg = @as(u32, @intCast(index)),
-                }),
-            });
-        }
-    }
-};
-
-const RadioOption = struct {
-    label: []const u8,
-    selected: bool,
-    pos_in_set: u16,
-    set_size: u16,
-    on_select: Handler,
-    on_key: Handler,
-
-    const accent = ui.Color.rgb(0.2, 0.5, 0.9);
-    const unselected = ui.Color.rgb(0.7, 0.7, 0.7);
-
-    pub fn render(self: RadioOption, cx: *Cx) void {
-        assert(self.pos_in_set >= 1);
-        assert(self.pos_in_set <= self.set_size);
-        cx.render(ui.box(.{
-            .key = .{ .name = self.label },
-            .style = .{ .direction = .row, .gap = 8, .alignment = .center_cross },
-            // Tab reaches the selected option, the arrows the others, and
-            // Enter or Space selects the focused one.
-            .focusable = true,
-            .tab_stop = self.selected,
-            .on_click = self.on_select,
-            .on_key = self.on_key,
-            .a11y = .{
-                .role = .radio,
-                .label = self.label,
-                .checked = self.selected,
-                .pos_in_set = self.pos_in_set,
-                .set_size = self.set_size,
-            },
-        }, .{
-            ui.box(.{ .style = .{
-                .width = .{ .fixed = 18 },
-                .height = .{ .fixed = 18 },
-                .corner_radius = .all(9),
-                .border = .{
-                    .width = 2,
-                    .color = .{ .rgba = if (self.selected) accent else unselected },
-                },
-                .background = .{ .rgba = ui.Color.white },
-                .alignment = .center,
-            } }, .{
-                if (self.selected) ui.box(.{ .style = .{
-                    .width = .{ .fixed = 10 },
-                    .height = .{ .fixed = 10 },
-                    .corner_radius = .all(5),
-                    .background = .{ .rgba = accent },
-                } }, .{}) else null,
-            }),
-            ui.text(self.label, .{ .size = 14, .color = .{ .rgba = title_color } }),
-        }));
-    }
-};
-
 const ExperienceSection = struct {
     experience_level: ?usize,
-    experience_open: bool,
 
     pub fn render(self: ExperienceSection, cx: *Cx) void {
         var on_select: [State.experience_options.len]Handler = undefined;
@@ -501,10 +351,7 @@ const ExperienceSection = struct {
                 .key = "experience",
                 .options = &State.experience_options,
                 .on_select = &on_select,
-                .on_toggle = cx.on(State.toggleExperience, .{}),
-                .on_close = cx.on(State.closeExperience, .{}),
                 .selected = self.experience_level,
-                .open = self.experience_open,
                 .placeholder = "Select your experience level",
                 // The default 200 is narrower than this placeholder (~202 pt
                 // of text) plus padding and the chevron.
@@ -554,12 +401,16 @@ const FormActions = struct {
                 .size = .large,
                 .on_click = cx.on(State.submit, .{}),
             },
-            Button{
-                .label = "Reset",
-                .accessible_name = "Reset form to default values",
-                .variant = .secondary,
-                .size = .large,
-                .on_click = cx.on(State.reset, .{}),
+            Tooltip(Button){
+                .key = "reset-tooltip",
+                .text = "Clears every field and choice",
+                .child = .{
+                    .label = "Reset",
+                    .accessible_name = "Reset form to default values",
+                    .variant = .secondary,
+                    .size = .large,
+                    .on_click = cx.on(State.reset, .{}),
+                },
             },
         }));
     }

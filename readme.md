@@ -136,6 +136,7 @@ Every example in `src/examples/` is a complete app; read them next. Run one with
 | `run-dashboard`        | `dashboard.zig`            | gooey-charts in `ui.paint` elements        |
 | `run-core-file-dialog` | `core_file_dialog.zig`     | Open, multi-select, folder, save dialogs   |
 | `run-splitter`         | `splitter.zig`             | `on_pointer_drag`, resize cursors, ranges  |
+| `run-context-menu`     | `context_menu.zig`         | `on_context_menu`, `ContextMenu`, Shift+F10 |
 | `run-drag-drop`        | `drag_drop.zig`            | `draggable`, `.drag` layer, `startDrag`    |
 | `run-background`       | `background.zig`           | `effects.spawn`, streamed results, cancel  |
 | `run-logo`             | `logo.zig`                 | Bouncing image, `.embedded` budget, boards |
@@ -251,8 +252,9 @@ A render function takes `*gooey.Cx` and emits elements with `cx.render`. There a
 element constructors:
 
 - `ui.box(box, children)`: a container. `ui.Box` holds per-element fields (`key`, `style`,
-  `layer`, `focusable`, `tab_stop`, `key_context`, `on_click`, `on_click_outside`, `on_key`,
-  `on_pointer_drag`, `draggable`, `drop_target`, `actions`, `a11y`).
+  `layer`, `focusable`, `tab_stop`, `key_context`, `on_click`, `on_click_outside`,
+  `on_context_menu`, `on_key`, `on_pointer_drag`, `draggable`, `drop_target`, `actions`,
+  `a11y`).
 - `ui.text(content, text)`: a text of any length. `ui.Text` has `size`, `color`, `weight`,
   `italic`, `family`, `wrap`, `line_height`, and `alignment`. Layout shapes a long text in
   runs split at spaces and line breaks, so it wraps and draws as one run would; its bytes
@@ -362,6 +364,7 @@ The `Cx` methods:
 | `cx.on(method, options)`             | Build a `Handler`.                                       |
 | `cx.id(key)`                         | The `ElementId` a child box with `key` will get.         |
 | `cx.hovered(id)`, `cx.focused(id)`   | Pointer and focus state, for choosing a style.           |
+| `cx.focusVisibleWithin(id)`          | Keyboard focus, with its ring, is on `id` or inside it.  |
 | `cx.theme()`, `cx.fontMetrics()`     | The active theme and base font metrics.                  |
 | `cx.requestRenderAfter(delay_ms)`    | Render again by then; renew it every frame you need it.  |
 | `cx.now()`                           | The tick's clock in nanoseconds; use differences.        |
@@ -572,6 +575,12 @@ pub const Fetch = struct {
 when it is focused, as a browser's `click` and native buttons do. Right and middle
 presses still move focus, run `on_click_outside`, and start captures and drags; a handler
 that wants them reads the button from `effects.inputEvent()`.
+
+`on_context_menu` fires on a right press (on macOS also a Ctrl+press, which then clicks
+nothing) and on Shift+F10, for the nearest box with one, after the press moved focus and ran
+click-outside handlers. The handler reads the press position from `effects.inputEvent()`;
+for the key, `effects.focusedElement()` names the element to open beside.
+`components.ContextMenu` does all of this for a list of `MenuItem` rows.
 
 ### Pointer capture
 
@@ -879,13 +888,21 @@ import-ban` fails if `components/` or `charts/` reference `gooey.internals`. Imp
 | --------------- | --------------------------------------------------------------------------- |
 | `Button`        | `label`, `on_click`, `variant`, `size` (`.small`, `.medium`, `.large`)      |
 | `Checkbox`      | `checked`, `on_click`, optional `label`                                     |
-| `Select`        | Dropdown on a popover layer; the app owns `selected` and `open`             |
+| `Select`        | Dropdown on a popover layer; the app owns `selected`, the Select its menu   |
+| `RadioGroup`    | One tab stop, arrow keys select and wrap; the app owns `selected`           |
+| `Tooltip(Child)`| Text on a tooltip layer after a hover delay or on keyboard focus            |
+| `ContextMenu(Child)` | Right-click and Shift+F10 menu of `MenuItem` rows over `child`         |
 | `Modal(Child)`  | Dialog over a backdrop on a modal layer                                     |
 | `List(Row)`     | Virtual list that builds only visible rows                                  |
 | `TextInput`     | Single-line input bound to a `[]const u8`                                   |
 | `TextArea`      | Multi-line input; `width = null` fills the parent; needs `limits.text.area` |
 | `CodeEditor`    | Line numbers, status bar, Tab indent; needs `limits.text.editor`            |
 | `Lucide`        | SVG data for every Lucide icon, for `Painter.svg`                           |
+
+The app owns values, such as `selected`, `checked`, and bound text; a component owns its
+transient state, such as whether a `Select`'s menu or a `ContextMenu` is open and a
+`Tooltip`'s hover timing. Whether a `Modal` shows is the app's decision, so the app owns
+`open`.
 
 `Select` takes one handler per option. From `nested_overlay.zig`:
 
@@ -901,10 +918,7 @@ import-ban` fails if `components/` or `charts/` reference `gooey.internals`. Imp
                 .key = "nested-select",
                 .options = &options,
                 .on_select = &on_select,
-                .on_toggle = cx.on(State.toggleSelect, .{}),
-                .on_close = cx.on(State.closeSelect, .{}),
                 .selected = state.selected,
-                .open = state.select_open,
                 .width = 280,
             },
 ```
@@ -1083,8 +1097,8 @@ pub const std_options = gooey.std_options;
   about. Linux has no screen reader bridge.
 - **Cut:** multi-window (one window per app), liquid glass, custom shaders, and
   post-processing.
-- **Deferred:** drag and drop between apps or with the OS, edge auto-scroll during a drag,
-  and tooltip layers.
+- **Deferred:** drag and drop between apps or with the OS, and edge auto-scroll during a
+  drag.
 
 ## Platforms
 

@@ -257,6 +257,9 @@ pub const Effects = struct {
     pointer_drag: ?PointerDrag,
     /// The frame on screen, for `bounds`; set by the router.
     rendered: ?*const records.Frame,
+    /// The element holding keyboard focus, for `focusedElement`; set by the
+    /// router, `.root` for none.
+    focused_id: ElementId,
     /// The payload being dropped, while delivering to `DropTarget.on_drop`.
     drop: ?Drop,
     /// A keyboard drag to start (`startDrag`), applied after the handler.
@@ -330,6 +333,7 @@ pub const Effects = struct {
             .current = current,
             .pointer_drag = null,
             .rendered = null,
+            .focused_id = .root,
             .drop = null,
             .drag_start = null,
             .gesture_idle = false,
@@ -342,6 +346,15 @@ pub const Effects = struct {
     /// The input event being delivered, for key and text handlers.
     pub fn inputEvent(self: *const Effects) ?*const input.InputEvent {
         return self.event;
+    }
+
+    /// The element holding keyboard focus when the handler runs, or null
+    /// when none does: for a component that returns focus where it was, or
+    /// opens a context menu from the keyboard beside it (`effects.bounds`).
+    pub fn focusedElement(self: *const Effects) ?ElementId {
+        if (self.focused_id == .root) return null;
+        assert(self.focused_id.isKeyed());
+        return self.focused_id;
     }
 
     /// The payload dropped on a `DropTarget`, inside its `on_drop`; null in

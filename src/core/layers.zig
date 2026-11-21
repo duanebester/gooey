@@ -4,8 +4,9 @@
 //! paint in `order` and hit-test in reverse, so what is on top receives input.
 //! Emit writes each fragment's paint after the previous one's into the one
 //! stream, and tags its hit records with the fragment. A modal fragment
-//! blocks hit testing of every earlier fragment. Only `.popover` and `.modal`
-//! are implemented (contract decision 13); `Cx` fails fast on the other kinds.
+//! blocks hit testing of every earlier fragment. A `.drag` or `.tooltip`
+//! fragment never takes the pointer, so a preview or a tooltip leaves hover
+//! and clicks to what lies under it.
 
 const std = @import("std");
 
@@ -42,6 +43,7 @@ pub fn kindRank(kind: Layer.Kind) u8 {
 }
 
 test "layer kinds rank above content" {
-    try std.testing.expect(kindRank(.popover) < kindRank(.modal));
+    try std.testing.expect(kindRank(.popover) < kindRank(.tooltip));
+    try std.testing.expect(kindRank(.tooltip) < kindRank(.modal));
     try std.testing.expect(kindRank(.modal) < kindRank(.drag));
 }

@@ -98,10 +98,10 @@ fn pinFields() void {
     comptime {
         const Box = gooey.ui.Box;
         for ([_][]const u8{
-            "key",      "style",           "layer",     "focusable",
-            "tab_stop", "key_context",     "on_click",  "on_click_outside",
-            "on_key",   "on_pointer_drag", "draggable", "drop_target",
-            "actions",  "a11y",
+            "key",      "style",           "layer",           "focusable",
+            "tab_stop", "key_context",     "on_click",        "on_click_outside",
+            "on_key",   "on_pointer_drag", "draggable",       "drop_target",
+            "actions",  "a11y",            "on_context_menu",
         }) |name| {
             _ = @FieldType(Box, name);
         }
@@ -198,6 +198,7 @@ fn pinEffects() void {
         _ = @TypeOf(Effects.remove);
         _ = @TypeOf(Effects.handler);
         _ = @TypeOf(Effects.inputEvent);
+        _ = @TypeOf(Effects.focusedElement);
         _ = @TypeOf(Effects.completionEvent);
         _ = @TypeOf(Effects.pointerDrag);
         _ = @TypeOf(Effects.bounds);
@@ -267,6 +268,7 @@ fn pinCx() void {
         _ = @TypeOf(Cx.fontMetrics);
         _ = @TypeOf(Cx.hovered);
         _ = @TypeOf(Cx.focused);
+        _ = @TypeOf(Cx.focusVisibleWithin);
         _ = @TypeOf(Cx.requestRenderAfter);
         _ = @TypeOf(Cx.now);
         _ = @TypeOf(Cx.limits);
@@ -326,11 +328,11 @@ fn pinExact() void {
             "ScrollOffset", "ScrollChild",   "ScrollAlignment",
         });
         expectDecls(gooey.Cx, "gooey.Cx", &.{
-            "ScrollPosition", "state",   "theme",              "fontMetrics", "id",
-            "hovered",        "focused", "requestRenderAfter", "now",         "limits",
-            "bounds",         "scroll",  "drag",               "on",          "retain",
-            "get",            "release", "render",             "measureText", "TextSize",
-            "titleBarInset",
+            "ScrollPosition", "state",              "theme",              "fontMetrics", "id",
+            "hovered",        "focused",            "requestRenderAfter", "now",         "limits",
+            "bounds",         "scroll",             "drag",               "on",          "retain",
+            "get",            "release",            "render",             "measureText", "TextSize",
+            "titleBarInset",  "focusVisibleWithin",
         });
         expectDecls(gooey.text, "gooey.text", &.{
             "Metrics",     "FontWeight",     "FontFamily",

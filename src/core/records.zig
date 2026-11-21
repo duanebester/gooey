@@ -199,6 +199,9 @@ pub const HitRecord = struct {
     cursor: ?CursorShape,
     on_click: u32,
     on_click_outside: u32,
+    /// `Box.on_context_menu`: a right press, a macOS Ctrl+press, or
+    /// Shift+F10 bubbles to the nearest record with one.
+    on_context_menu: u32,
     on_key: u32,
     /// `Box.on_pointer_drag`: a press here or on a child without one
     /// captures the pointer for this record (contract §5).

@@ -125,6 +125,7 @@ pub const Node = struct {
     cursor: ?element.CursorShape,
     on_click: u32,
     on_click_outside: u32,
+    on_context_menu: u32,
     on_key: u32,
     on_pointer_drag: u32,
     /// `Box.draggable` and `Box.drop_target`; a type of 0 means none.
@@ -153,8 +154,8 @@ pub const Node = struct {
     // Clip and scroll (`Style.clip`, `Style.scroll`).
     clip: bool,
     scroll: ?retained_mod.Handle(ScrollState),
-    /// A `.popover` or `.modal` box opens a fragment that emit paints after
-    /// the fragment that opened it.
+    /// A box with a layer opens a fragment that emit paints after the
+    /// fragment that opened it.
     layer: ?element.Layer,
     /// `Style.source`, for the debugger; no storage in release builds.
     source: debugger_mod.NodeSource,
@@ -674,6 +675,11 @@ pub const Window = struct {
     /// `build.box_depth_max` ids, reserved at init like `press_path`.
     hover_path: []ElementId,
     hover_len: u32,
+    /// Ids from the focused record up to the root in the frame on screen,
+    /// set before each build (`router.updateFocusPath`) for
+    /// `cx.focusVisibleWithin`. Empty while focus is not visible.
+    focus_path: []ElementId,
+    focus_len: u32,
     /// The hovered record's cursor, or the nearest ancestor's that sets one;
     /// `.default` over none. Hosts apply it after a tick when it changed.
     cursor: element.CursorShape,
@@ -825,6 +831,15 @@ pub const Window = struct {
         return false;
     }
 
+    pub fn isFocusVisibleWithin(self: *const Window, id: ElementId) bool {
+        assert(self.focus_len <= self.focus_path.len);
+        if (self.focus_len > 0) assert(self.focus_visible);
+        for (self.focus_path[0..self.focus_len]) |focused| {
+            if (focused == id) return true;
+        }
+        return false;
+    }
+
     /// Stack bytes per component level at the deepest nesting seen: the
     /// distance between the outermost and the deepest `cx.render` frames,
     /// divided by the levels between them. Zero until a nesting of 2.
@@ -934,6 +949,7 @@ pub noinline fn initInPlace(self: *Window, gpa: std.mem.Allocator, options: *con
         .content = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
     };
     self.hover_len = 0;
+    self.focus_len = 0;
     self.cursor = .default;
     self.press_len = 0;
     self.scroll_drag = .root;
@@ -1031,7 +1047,8 @@ fn deinitBuildStorage(self: *Window, gpa: std.mem.Allocator) void {
     gpa.destroy(self.layout);
 }
 
-/// The open, hover and press paths, one entry per level of box nesting.
+/// The open, hover, focus and press paths, one entry per level of box
+/// nesting.
 fn initPaths(self: *Window, gpa: std.mem.Allocator, depth_max: u32) !void {
     assert(depth_max > 0);
     assert(depth_max <= box_depth_ceiling);
@@ -1042,17 +1059,23 @@ fn initPaths(self: *Window, gpa: std.mem.Allocator, depth_max: u32) !void {
     self.hover_path = try gpa.alloc(ElementId, depth_max);
     errdefer gpa.free(self.hover_path);
 
+    self.focus_path = try gpa.alloc(ElementId, depth_max);
+    errdefer gpa.free(self.focus_path);
+
     self.press_path = try gpa.alloc(ElementId, depth_max);
 }
 
 /// Zeroed before they go back to `gpa`, which may hand them to another owner
-/// (CLAUDE.md §21); together they are at most 2.5 KiB.
+/// (CLAUDE.md §21); together they are at most 3.5 KiB.
 fn deinitPaths(self: *Window, gpa: std.mem.Allocator) void {
     assert(self.press_path.len == self.open_stack.len);
+    assert(self.focus_path.len == self.open_stack.len);
     @memset(std.mem.sliceAsBytes(self.press_path), 0);
+    @memset(std.mem.sliceAsBytes(self.focus_path), 0);
     @memset(std.mem.sliceAsBytes(self.hover_path), 0);
     @memset(self.open_stack, 0);
     gpa.free(self.press_path);
+    gpa.free(self.focus_path);
     gpa.free(self.hover_path);
     gpa.free(self.open_stack);
 }

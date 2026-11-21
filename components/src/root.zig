@@ -1,12 +1,14 @@
 //! Gooey Components: library controls (`Button`, `Checkbox`, `Select`,
-//! `Modal`, `List`, `TextInput`, `TextArea`, `CodeEditor`) and the Lucide icon
-//! set. Each control composes `ui.box`, `ui.text`, and `ui.paint` through the
-//! public API alone: `zig build import-ban` fails on any `gooey.internals`
-//! reference here, so a control can do only what an app can.
+//! `RadioGroup`, `Tooltip`, `ContextMenu`, `Modal`, `List`, `TextInput`,
+//! `TextArea`, `CodeEditor`) and the Lucide icon set. Each control composes
+//! `ui.box`, `ui.text`, and `ui.paint` through the public API alone: `zig
+//! build import-ban` fails on any `gooey.internals` reference here, so a
+//! control can do only what an app can.
 //!
-//! Keyboard: `Button`, `Checkbox`, and `Select` are focusable, so Tab reaches
-//! them, and the core turns Enter and Space into a click on the focused
-//! element. `Select` adds its own keys (see `SelectKeys`).
+//! Keyboard: `Button`, `Checkbox`, `Select`, and `RadioGroup` are focusable,
+//! so Tab reaches them, and the core turns Enter and Space into a click on
+//! the focused element. `Select`, `RadioGroup`, and `ContextMenu` add their
+//! own keys (see `SelectState`, `RadioKeys`, and `MenuState.onKey`).
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -180,10 +182,11 @@ pub const Checkbox = struct {
 // =============================================================================
 
 /// A dropdown of options, as the 0.3.1 `Select` draws it, with its menu on a
-/// `.popover` layer. The app owns `selected` and `open`: the trigger calls
-/// `on_toggle` to open the menu and `on_close` to close it, a click outside
-/// calls `on_close`, and option `i` calls `on_select[i]`, typically
-/// `cx.on(State.choose, .{ .arg = i })`.
+/// `.popover` layer. The app owns the value, `selected`: option `i` calls
+/// `on_select[i]`, typically `cx.on(State.choose, .{ .arg = i })`. The Select
+/// owns whether its menu is open, as `ContextMenu` and `Tooltip` own theirs:
+/// the trigger opens and closes it, and a choice or a click outside closes
+/// it.
 ///
 /// The combobox takes keyboard focus, and the focused option is the
 /// highlighted one, so a screen reader follows it. Enter, Space, Down, and
@@ -192,16 +195,14 @@ pub const Checkbox = struct {
 /// on the combobox; and Tab or Shift+Tab closes and moves on, since the
 /// options are not tab stops. Each opens or closes through the trigger and
 /// chooses through `on_select`, pressed with `effects.click`. A Select
-/// retains one 64 B slot for its keys, and adds a key handler per option.
+/// retains one 64 B slot for its open state and keys, and adds a key handler
+/// per option.
 pub const Select = struct {
     key: []const u8,
     options: []const []const u8,
     /// One handler per option.
     on_select: []const Handler,
-    on_toggle: Handler,
-    on_close: Handler,
     selected: ?usize = null,
-    open: bool = false,
     placeholder: []const u8 = "Select...",
     disabled: bool = false,
     width: f32 = 200,
@@ -221,8 +222,11 @@ pub const Select = struct {
         const theme = cx.theme();
         const key = Key{ .name = self.key };
         const id = cx.id(key);
-        const handle = cx.retain(SelectKeys, id, .frame, SelectKeys.init);
-        cx.get(SelectKeys, handle).root = id;
+        const handle = cx.retain(SelectState, id, .frame, SelectState.init);
+        const state = cx.get(SelectState, handle);
+        state.root = id;
+        // A disabled Select shows no menu, even one opened before it was.
+        const open = state.open and !self.disabled;
         const trigger_height = @as(f32, @floatFromInt(theme.font_size_base)) +
             self.padding * 2 + 4;
         cx.render(ui.box(.{
@@ -233,23 +237,33 @@ pub const Select = struct {
                 .corner_radius = .all(theme.radius_md),
             },
             .focusable = !self.disabled,
-            .on_key = if (self.disabled) null else cx.on(SelectKeys.onKey, .{
+            .on_key = if (self.disabled) null else cx.on(SelectState.onKey, .{
                 .entity = handle,
-                .arg = self.keyArg(SelectKeys.on_combobox),
+                .arg = self.keyArg(SelectState.on_combobox, open),
             }),
-            .on_click_outside = if (self.open) self.on_close else null,
+            // A chosen option's click bubbles here, through the menu, after
+            // its `on_select` ran: the combobox, whose node is interactive,
+            // closes the menu. A click on the open trigger reaches it too,
+            // and closing twice changes nothing.
+            .on_click = if (open) cx.on(SelectState.close, .{ .entity = handle }) else null,
+            .on_click_outside = if (open) cx.on(SelectState.close, .{ .entity = handle }) else null,
             .a11y = .{
                 .role = .combobox,
                 .label = self.accessible_name orelse self.placeholder,
                 .description = self.accessible_description,
                 .value = self.displayText(),
-                .expanded = self.open,
+                .expanded = open,
                 .has_popup = true,
                 .disabled = self.disabled,
             },
         }, .{
-            SelectTrigger{ .select = &self, .height = trigger_height },
-            if (self.open) SelectMenu{
+            SelectTrigger{
+                .select = &self,
+                .open = open,
+                .height = trigger_height,
+                .keys = handle,
+            },
+            if (open) SelectMenu{
                 .select = &self,
                 .offset_y = trigger_height,
                 .keys = handle,
@@ -263,14 +277,14 @@ pub const Select = struct {
     }
 
     /// What a key handler on the combobox or option `focused` acts on.
-    fn keyArg(self: *const Select, focused: u16) SelectKeys.Arg {
+    fn keyArg(self: *const Select, focused: u16, open: bool) SelectState.Arg {
         assert(self.options.len <= select_option_count_max);
         const start = self.selected orelse 0;
         return .{
             .focused = focused,
             .count = @intCast(self.options.len),
             .start = @intCast(start),
-            .open = self.open,
+            .open = open,
         };
     }
 };
@@ -279,11 +293,13 @@ pub const Select = struct {
 /// 16 bits, and a menu past a thousand rows is not a dropdown.
 pub const select_option_count_max: u32 = 1024;
 
-/// A `Select`'s keyboard handling, retained under its key so its handlers
-/// have state to run on. The arguments come from the frame on screen; only
-/// the combobox's id, which never changes, is kept.
-const SelectKeys = struct {
+/// A `Select`'s open state and keyboard handling, retained under its key so
+/// its handlers have state to run on. The key handlers' arguments come from
+/// the frame on screen, so a key that a drain routes after a choice closed
+/// the menu still acts on the menu that frame shows.
+const SelectState = struct {
     root: ElementId,
+    open: bool,
 
     /// `Arg.focused` for the combobox itself.
     const on_combobox: u16 = std.math.maxInt(u16);
@@ -302,16 +318,32 @@ const SelectKeys = struct {
         assert(select_option_count_max < on_combobox);
     }
 
-    fn init(self: *SelectKeys) void {
-        self.root = .root;
+    fn init(self: *SelectState) void {
+        self.* = .{ .root = .root, .open = false };
     }
 
-    fn trigger(self: *const SelectKeys) ElementId {
+    /// The trigger of a closed menu, and the keys that open one.
+    fn openMenu(self: *SelectState, effects: *Effects) void {
+        assert(self.root.isKeyed());
+        self.open = true;
+        effects.requestRender();
+    }
+
+    /// The trigger of an open menu, a click outside, and a choice: the
+    /// option's click bubbles to the combobox after `on_select` ran. Closing
+    /// a closed menu changes nothing, so a key routed against a frame that
+    /// still showed it cannot reopen it.
+    fn close(self: *SelectState, effects: *Effects) void {
+        self.open = false;
+        effects.requestRender();
+    }
+
+    fn trigger(self: *const SelectState) ElementId {
         assert(self.root.isKeyed());
         return self.root.child(.{ .name = "trigger" });
     }
 
-    fn option(self: *const SelectKeys, index: u16) ElementId {
+    fn option(self: *const SelectState, index: u16) ElementId {
         assert(self.root.isKeyed());
         assert(index < select_option_count_max);
         return self.root.child(.{ .name = "menu" }).child(.{ .index = index });
@@ -320,7 +352,7 @@ const SelectKeys = struct {
     /// Keys without Cmd, Ctrl, or Alt. A key an option leaves alone bubbles
     /// to the combobox's handler, which closes the menu on Esc and Tab.
     /// Shift+Tab takes the Tab arm too: `KeyCode` has no back-tab.
-    fn onKey(self: *SelectKeys, arg: Arg, effects: *Effects) void {
+    fn onKey(self: *SelectState, arg: Arg, effects: *Effects) void {
         assert(self.root.isKeyed());
         assert(arg.start < @max(arg.count, 1));
         const event = effects.inputEvent() orelse return;
@@ -337,7 +369,7 @@ const SelectKeys = struct {
     }
 
     /// Opening focuses the start option, which the next frame renders.
-    fn comboboxKey(self: *SelectKeys, arg: Arg, key: KeyCode, effects: *Effects) void {
+    fn comboboxKey(self: *SelectState, arg: Arg, key: KeyCode, effects: *Effects) void {
         assert(arg.focused == on_combobox);
         assert(arg.start < @max(arg.count, 1));
         switch (key) {
@@ -368,7 +400,7 @@ const SelectKeys = struct {
     }
 
     /// Movement stops at the first and last option, as a listbox's does.
-    fn optionKey(self: *SelectKeys, arg: Arg, key: KeyCode, effects: *Effects) void {
+    fn optionKey(self: *SelectState, arg: Arg, key: KeyCode, effects: *Effects) void {
         assert(arg.count > 0);
         assert(arg.focused < arg.count);
         const last = arg.count - 1;
@@ -378,7 +410,10 @@ const SelectKeys = struct {
             .home => 0,
             .end => last,
             .@"return", .keypad_enter, .space => {
+                // `effects.click` runs the option's own handler only, so the
+                // menu's close does not follow it; close here.
                 effects.click(self.option(arg.focused));
+                self.close(effects);
                 effects.focus(self.root);
                 effects.stopPropagation();
                 return;
@@ -393,7 +428,9 @@ const SelectKeys = struct {
 
 const SelectTrigger = struct {
     select: *const Select,
+    open: bool,
     height: f32,
+    keys: gooey.Handle(SelectState),
 
     pub fn render(self: SelectTrigger, cx: *Cx) void {
         const select = self.select;
@@ -404,15 +441,18 @@ const SelectTrigger = struct {
         const opacity: f32 = if (select.disabled) 0.6 else 1;
         const background = if (hovered) theme.overlay else theme.surface;
         const text_color = if (select.selected == null) theme.muted else theme.text;
-        const chevron = &chevrons[@intFromBool(select.open)][@intFromBool(select.disabled)];
-        // An open menu's trigger closes through `on_close`, not `on_toggle`.
-        // Every key a drain delivers after the one that chose an option
-        // routes against this frame, where the menu is still open, so a Tab
-        // or Esc that presses the trigger here must not reopen the menu the
-        // choice closed; closing a closed menu changes nothing.
+        const chevron = &chevrons[@intFromBool(self.open)][@intFromBool(select.disabled)];
+        // An open menu's trigger closes, it does not toggle. Every key a
+        // drain delivers after the one that chose an option routes against
+        // this frame, where the menu is still open, so a Tab or Esc that
+        // presses the trigger here must not reopen the menu the choice
+        // closed; closing a closed menu changes nothing.
         var on_click: ?Handler = null;
         if (!select.disabled) {
-            on_click = if (select.open) select.on_close else select.on_toggle;
+            on_click = if (self.open)
+                cx.on(SelectState.close, .{ .entity = self.keys })
+            else
+                cx.on(SelectState.openMenu, .{ .entity = self.keys });
         }
         cx.render(ui.box(.{
             .key = key,
@@ -421,7 +461,7 @@ const SelectTrigger = struct {
                 .height = .{ .fixed = self.height },
                 .padding = .symmetric(select.padding, select.padding / 2),
                 .background = .{ .rgba = background.withAlpha(opacity) },
-                .border = .{ .width = 1, .color = if (select.open) .border_focus else .border },
+                .border = .{ .width = 1, .color = if (self.open) .border_focus else .border },
                 .corner_radius = .all(theme.radius_md),
                 .direction = .row,
                 .alignment = .{ .main = .space_between, .cross = .center },
@@ -444,14 +484,14 @@ const SelectTrigger = struct {
 const SelectMenu = struct {
     select: *const Select,
     offset_y: f32,
-    keys: gooey.Handle(SelectKeys),
+    keys: gooey.Handle(SelectState),
 
     pub fn render(self: SelectMenu, cx: *Cx) void {
         const select = self.select;
-        assert(select.open);
+        assert(!select.disabled);
         const theme = cx.theme();
         cx.render(ui.box(.{
-            // `SelectKeys.option` derives the options' ids from this key.
+            // `SelectState.option` derives the options' ids from this key.
             .key = .{ .name = "menu" },
             .layer = .{
                 .kind = .popover,
@@ -477,7 +517,7 @@ const SelectMenu = struct {
 
 const SelectOptions = struct {
     select: *const Select,
-    keys: gooey.Handle(SelectKeys),
+    keys: gooey.Handle(SelectState),
 
     pub fn render(self: SelectOptions, cx: *Cx) void {
         const select = self.select;
@@ -510,9 +550,9 @@ const SelectOptions = struct {
                 .focusable = true,
                 .tab_stop = false,
                 .on_click = handler,
-                .on_key = cx.on(SelectKeys.onKey, .{
+                .on_key = cx.on(SelectState.onKey, .{
                     .entity = self.keys,
-                    .arg = select.keyArg(position),
+                    .arg = select.keyArg(position, true),
                 }),
                 .a11y = .{
                     .role = .option,
@@ -571,6 +611,723 @@ const chevrons = [2][2]SelectIcon{
 };
 
 const select_check = SelectIcon{ .path = Checkbox.checkmark.path, .color = .primary, .opacity = 1 };
+
+// =============================================================================
+// RadioGroup
+// =============================================================================
+
+/// A column of mutually exclusive options that behaves as a native radio
+/// group. The app owns `selected`: option `i` calls `on_select[i]`, typically
+/// `cx.on(State.choose, .{ .arg = i })`.
+///
+/// Tab enters the group at the selected option, or the first when none is,
+/// and leaves it in one press, because only that option is a tab stop. Down
+/// and Right select the next option, Up and Left the previous, wrapping at
+/// the ends, with focus following; Enter and Space select the focused one.
+/// Each selection goes through `on_select`, pressed with `effects.click`. A
+/// RadioGroup retains one 64 B slot for its keys, and adds a key handler per
+/// option.
+pub const RadioGroup = struct {
+    key: []const u8,
+    options: []const []const u8,
+    /// One handler per option.
+    on_select: []const Handler,
+    selected: ?usize = null,
+    /// Text above the options; also the group's screen-reader name.
+    label: ?[]const u8 = null,
+    /// The group's screen-reader name; defaults to the label.
+    accessible_name: ?[]const u8 = null,
+    accessible_description: ?[]const u8 = null,
+
+    pub fn render(self: RadioGroup, cx: *Cx) void {
+        assert(self.key.len > 0);
+        assert(self.options.len > 0);
+        assert(self.on_select.len == self.options.len);
+        assert(self.accessible_name != null or self.label != null);
+        if (self.selected) |index| assert(index < self.options.len);
+        if (self.options.len > radio_option_count_max) std.debug.panic(
+            "RadioGroup \"{s}\" of {d} options: capacity {d}",
+            .{ self.key, self.options.len, radio_option_count_max },
+        );
+        const theme = cx.theme();
+        const key = Key{ .name = self.key };
+        const id = cx.id(key);
+        const handle = cx.retain(RadioKeys, id, .frame, RadioKeys.init);
+        cx.get(RadioKeys, handle).root = id;
+        cx.render(ui.box(.{
+            .key = key,
+            .style = .{ .gap = 8 },
+            .a11y = .{
+                .role = .group,
+                .label = self.accessible_name orelse self.label,
+                .description = self.accessible_description,
+            },
+        }, .{
+            if (self.label) |label| ui.text(label, .{
+                .size = theme.font_size_base,
+                .weight = .medium,
+                .color = .text,
+            }) else null,
+            ui.box(.{
+                // `RadioKeys.option` derives the options' ids from this key.
+                .key = .{ .name = "options" },
+                .style = .{ .gap = 8 },
+            }, .{RadioOptions{ .group = &self, .keys = handle }}),
+        }));
+    }
+};
+
+/// The most options one `RadioGroup` lists: the key handlers pack indexes
+/// into 16 bits, and a group past a few dozen options wants a `Select`.
+pub const radio_option_count_max: u32 = 256;
+
+/// A `RadioGroup`'s arrow keys, retained under its key so the options' key
+/// handlers have state to run on; only the group's id, which never changes,
+/// is kept.
+const RadioKeys = struct {
+    root: ElementId,
+
+    const Arg = packed struct(u32) {
+        index: u16,
+        count: u16,
+    };
+
+    comptime {
+        assert(radio_option_count_max <= std.math.maxInt(u16));
+    }
+
+    fn init(self: *RadioKeys) void {
+        self.root = .root;
+    }
+
+    fn option(self: *const RadioKeys, index: u16) ElementId {
+        assert(self.root.isKeyed());
+        assert(index < radio_option_count_max);
+        return self.root.child(.{ .name = "options" }).child(.{ .index = index });
+    }
+
+    /// Keys without Cmd, Ctrl, or Alt select the next or previous option by
+    /// clicking it, and focus follows.
+    fn onKey(self: *RadioKeys, arg: Arg, effects: *Effects) void {
+        assert(arg.count > 0);
+        assert(arg.index < arg.count);
+        const event = effects.inputEvent() orelse return;
+        if (event.* != .key_down) return;
+        const modifiers = event.key_down.modifiers;
+        if (modifiers.cmd or modifiers.ctrl or modifiers.alt) return;
+        const target: u16 = switch (event.key_down.key) {
+            .down, .right => (arg.index + 1) % arg.count,
+            .up, .left => (arg.index + arg.count - 1) % arg.count,
+            else => return,
+        };
+        assert(target < arg.count);
+        effects.click(self.option(target));
+        effects.focus(self.option(target));
+        effects.stopPropagation();
+    }
+};
+
+const RadioOptions = struct {
+    group: *const RadioGroup,
+    keys: gooey.Handle(RadioKeys),
+
+    pub fn render(self: RadioOptions, cx: *Cx) void {
+        const group = self.group;
+        assert(group.options.len == group.on_select.len);
+        assert(group.options.len <= radio_option_count_max);
+        const count: u16 = @intCast(group.options.len);
+        // With nothing selected, the first option is the group's tab stop.
+        const tab_stop = group.selected orelse 0;
+        for (group.options, group.on_select, 0..) |label, handler, index| {
+            const position: u16 = @intCast(index);
+            cx.render(RadioOption{
+                .label = label,
+                .position = position,
+                .count = count,
+                .selected = group.selected == index,
+                .tab_stop = tab_stop == index,
+                .on_select = handler,
+                .on_key = cx.on(RadioKeys.onKey, .{
+                    .entity = self.keys,
+                    .arg = RadioKeys.Arg{ .index = position, .count = count },
+                }),
+            });
+        }
+    }
+};
+
+const RadioOption = struct {
+    label: []const u8,
+    position: u16,
+    count: u16,
+    selected: bool,
+    tab_stop: bool,
+    on_select: Handler,
+    on_key: Handler,
+
+    const ring_size: f32 = 18;
+    const dot_size: f32 = 10;
+
+    pub fn render(self: RadioOption, cx: *Cx) void {
+        assert(self.position < self.count);
+        if (self.selected) assert(self.tab_stop);
+        const theme = cx.theme();
+        cx.render(ui.box(.{
+            .key = .{ .index = self.position },
+            .style = .{
+                .direction = .row,
+                .gap = 8,
+                .alignment = .center_cross,
+                .cursor = .pointer,
+            },
+            .focusable = true,
+            .tab_stop = self.tab_stop,
+            .on_click = self.on_select,
+            .on_key = self.on_key,
+            .a11y = .{
+                .role = .radio,
+                .label = self.label,
+                .checked = self.selected,
+                .pos_in_set = self.position + 1,
+                .set_size = self.count,
+            },
+        }, .{
+            ui.box(.{ .style = .{
+                .width = .{ .fixed = ring_size },
+                .height = .{ .fixed = ring_size },
+                .corner_radius = .all(ring_size / 2),
+                .border = .{ .width = 2, .color = if (self.selected) .primary else .border },
+                .background = .surface,
+                .alignment = .center,
+            } }, .{
+                if (self.selected) ui.box(.{ .style = .{
+                    .width = .{ .fixed = dot_size },
+                    .height = .{ .fixed = dot_size },
+                    .corner_radius = .all(dot_size / 2),
+                    .background = .primary,
+                } }, .{}) else null,
+            }),
+            ui.text(self.label, .{ .size = theme.font_size_base, .color = .text }),
+        }));
+    }
+};
+
+// =============================================================================
+// Tooltip
+// =============================================================================
+
+/// A short text shown beside `child` on a `.tooltip` layer: after the
+/// pointer rests on it for `delay_ms`, or at once while keyboard focus with
+/// its ring is on it or inside it (`cx.focusVisibleWithin`). It hides when
+/// both leave, and Escape hides it until they do. It opens below the child,
+/// or above when it does not fit there, and never takes the pointer, so it
+/// cannot end the child's hover or block a click on what is under it.
+///
+/// The text is a `tooltip` node after the child's for the screen reader
+/// while it shows. A Tooltip retains one 64 B slot for its timing, so each
+/// one on screen counts against the app's retained budget.
+pub fn Tooltip(comptime Child: type) type {
+    return struct {
+        key: []const u8,
+        text: []const u8,
+        child: Child,
+        delay_ms: u32 = tooltip_delay_ms_default,
+        width_max: f32 = 320,
+
+        const Self = @This();
+
+        pub fn render(self: Self, cx: *Cx) void {
+            assert(self.key.len > 0);
+            assert(self.text.len > 0);
+            assert(self.width_max > 0);
+            const key = Key{ .name = self.key };
+            const id = cx.id(key);
+            const handle = cx.retain(TooltipState, id, .frame, TooltipState.init);
+            const state = cx.get(TooltipState, handle);
+            const shown = state.update(.{
+                .hovered = cx.hovered(id),
+                .focused = cx.focusVisibleWithin(id),
+                .now_ns = cx.now(),
+                .delay_ns = @as(u64, self.delay_ms) * std.time.ns_per_ms,
+            });
+            if (state.wait_ms) |wait_ms| cx.requestRenderAfter(wait_ms);
+            // The child's height from the last frame: a tooltip shows only
+            // after a frame has laid its child out.
+            const height = if (cx.bounds(id)) |rect| rect.height else 0;
+            cx.render(ui.box(.{
+                .key = key,
+                .on_key = cx.on(TooltipState.onKey, .{ .entity = handle }),
+            }, .{
+                self.child,
+                if (shown) TooltipBubble{
+                    .text = self.text,
+                    .offset_y = height + tooltip_gap,
+                    .width_max = self.width_max,
+                } else null,
+            }));
+        }
+    };
+}
+
+/// The rest before a hovered tooltip shows, as macOS and Windows wait.
+pub const tooltip_delay_ms_default: u32 = 500;
+/// The space between a tooltip and its child.
+const tooltip_gap: f32 = 4;
+
+/// A `Tooltip`'s timing, retained under its key: when the pointer came to
+/// rest on the child, and whether Escape dismissed it.
+const TooltipState = struct {
+    /// When the current hover began, or null while the pointer is away.
+    hover_since_ns: ?u64,
+    /// How long until the hover reaches the delay, for `requestRenderAfter`;
+    /// null when no render is waiting.
+    wait_ms: ?u32,
+    /// Shown in the last build, so Escape claims the key only then.
+    shown: bool,
+    /// Escape hid it; cleared once hover and focus both leave.
+    dismissed: bool,
+
+    const Inputs = struct { hovered: bool, focused: bool, now_ns: u64, delay_ns: u64 };
+
+    fn init(self: *TooltipState) void {
+        self.* = .{ .hover_since_ns = null, .wait_ms = null, .shown = false, .dismissed = false };
+    }
+
+    /// Whether the tooltip shows this build, from the child's hover and
+    /// focus and the tick's clock.
+    fn update(self: *TooltipState, inputs: Inputs) bool {
+        self.wait_ms = null;
+        if (!inputs.hovered and !inputs.focused) {
+            self.hover_since_ns = null;
+            self.dismissed = false;
+            self.shown = false;
+            return false;
+        }
+        if (!inputs.hovered) {
+            self.hover_since_ns = null;
+        } else {
+            if (self.hover_since_ns == null) self.hover_since_ns = inputs.now_ns;
+        }
+        var rested = false;
+        if (self.hover_since_ns) |since_ns| {
+            assert(since_ns <= inputs.now_ns);
+            const elapsed_ns = inputs.now_ns - since_ns;
+            rested = elapsed_ns >= inputs.delay_ns;
+            if (!rested) {
+                const wait_ns = inputs.delay_ns - elapsed_ns;
+                assert(wait_ns > 0);
+                // Rounded up, so the render it asks for lands at or past the delay.
+                const wait_ms = @divFloor(wait_ns - 1, std.time.ns_per_ms) + 1;
+                assert(wait_ms <= std.math.maxInt(u32));
+                self.wait_ms = @intCast(wait_ms);
+            }
+        }
+        self.shown = !self.dismissed and (inputs.focused or rested);
+        // Shown or dismissed, no render waits on the delay.
+        if (self.shown or self.dismissed) self.wait_ms = null;
+        if (self.shown) assert(!self.dismissed);
+        return self.shown;
+    }
+
+    /// Escape hides a shown tooltip; other keys, and Escape while it is
+    /// hidden, go on to the child's ancestors, such as a modal that closes.
+    fn onKey(self: *TooltipState, effects: *Effects) void {
+        const event = effects.inputEvent() orelse return;
+        if (event.* != .key_down) return;
+        if (event.key_down.key != .escape) return;
+        if (!self.shown) return;
+        self.dismissed = true;
+        self.shown = false;
+        effects.requestRender();
+        effects.stopPropagation();
+    }
+};
+
+const TooltipBubble = struct {
+    text: []const u8,
+    offset_y: f32,
+    width_max: f32,
+
+    pub fn render(self: TooltipBubble, cx: *Cx) void {
+        assert(self.offset_y >= tooltip_gap);
+        assert(self.width_max > 0);
+        const theme = cx.theme();
+        cx.render(ui.box(.{
+            .layer = .{
+                .kind = .tooltip,
+                .anchor = .{ .parent = .{ .y = self.offset_y } },
+                .clip = .escape,
+            },
+            .style = .{
+                .width_max = self.width_max,
+                .padding = .symmetric(8, 4),
+                .background = .overlay,
+                .border = .{ .width = 1, .color = .border },
+                .corner_radius = .all(theme.radius_sm),
+                .shadow = .{ .blur = 8, .offset_y = 2 },
+            },
+            .a11y = .{ .role = .tooltip, .label = self.text },
+        }, .{
+            ui.text(self.text, .{
+                .size = theme.font_size_base -| 2,
+                .color = .text,
+                .wrap = .words,
+            }),
+        }));
+    }
+};
+
+// =============================================================================
+// ContextMenu
+// =============================================================================
+
+/// One row of a `ContextMenu`: an action, or with `separator` a divider that
+/// ignores every other field. An action without `on_select`, or `disabled`,
+/// is drawn dimmed and skipped by the arrow keys.
+pub const MenuItem = struct {
+    label: []const u8 = "",
+    /// Runs when the row is chosen; the menu then closes. It must not stop
+    /// propagation, since the menu closes on the click it bubbles.
+    on_select: ?Handler = null,
+    /// A shortcut hint drawn at the row's end, such as "Ctrl+C"; binding it
+    /// is the app's keymap's job.
+    shortcut: ?[]const u8 = null,
+    disabled: bool = false,
+    /// Draws the label in the theme's `danger`, for a destructive action.
+    danger: bool = false,
+    separator: bool = false,
+
+    fn enabled(self: *const MenuItem) bool {
+        return !self.separator and !self.disabled and self.on_select != null;
+    }
+};
+
+/// A right-click menu over `child`, on a `.popover` layer at the pointer.
+/// A right press on the child (a Ctrl+press on macOS) opens it there, and
+/// Shift+F10 while focus is in the child opens it below the focused element;
+/// either focuses its first action, drawn only for the key. Down, Up, Home,
+/// and End move between actions, wrapping; Enter or Space chooses; Escape or
+/// Tab closes, and a choice or a close from the keyboard returns focus where
+/// it was. A press outside closes it, and a right press elsewhere in the
+/// child moves it.
+///
+/// The menu owns whether it is open and where, in one retained 64 B slot,
+/// so the app supplies only the rows. Each row's `on_select` is an ordinary
+/// handler, such as `cx.on(State.copy, .{ .arg = row })`.
+pub fn ContextMenu(comptime Child: type) type {
+    return struct {
+        key: []const u8,
+        items: []const MenuItem,
+        child: Child,
+        width_min: f32 = 180,
+        /// The menu's screen-reader name.
+        accessible_name: []const u8 = "Context menu",
+
+        const Self = @This();
+
+        pub fn render(self: Self, cx: *Cx) void {
+            assert(self.key.len > 0);
+            assert(self.items.len > 0);
+            if (self.items.len > menu_item_count_max) std.debug.panic(
+                "ContextMenu \"{s}\" of {d} items: capacity {d}",
+                .{ self.key, self.items.len, menu_item_count_max },
+            );
+            const key = Key{ .name = self.key };
+            const id = cx.id(key);
+            const handle = cx.retain(MenuState, id, .frame, MenuState.init);
+            const state = cx.get(MenuState, handle);
+            state.root = id;
+            const enabled = enabledMask(self.items);
+            cx.render(ui.box(.{
+                .key = key,
+                .on_context_menu = cx.on(MenuState.open, .{ .entity = handle, .arg = enabled }),
+            }, .{
+                self.child,
+                if (state.shown) MenuPanel{
+                    .items = self.items,
+                    .width_min = self.width_min,
+                    .accessible_name = self.accessible_name,
+                    .x = state.x,
+                    .y = state.y,
+                    .keys = handle,
+                    .enabled = enabled,
+                } else null,
+            }));
+        }
+    };
+}
+
+/// The most rows one `ContextMenu` holds: its key handler carries which rows
+/// are actions as a 64-bit mask, and a longer menu wants another design.
+pub const menu_item_count_max: u32 = 64;
+
+/// Bit `i` set when row `i` is an action the keys reach.
+fn enabledMask(items: []const MenuItem) u64 {
+    assert(items.len <= menu_item_count_max);
+    var mask: u64 = 0;
+    for (items, 0..) |*item, index| {
+        if (item.enabled()) mask |= @as(u64, 1) << @intCast(index);
+    }
+    return mask;
+}
+
+/// A `ContextMenu`'s state, retained under its key: whether it is open,
+/// where, and the element focus returns to.
+///
+/// Every handler sits on a `menuitem` row, so each handled record belongs to
+/// an interactive accessibility node: the row's own handler closes the menu
+/// and takes the keys, and the app's `on_select` sits on a box inside it that
+/// fills it, so a click runs `on_select` and then bubbles to the close.
+const MenuState = struct {
+    root: ElementId,
+    shown: bool,
+    x: f32,
+    y: f32,
+    restore: ElementId,
+
+    fn init(self: *MenuState) void {
+        self.* = .{ .root = .root, .shown = false, .x = 0, .y = 0, .restore = .root };
+    }
+
+    fn row(self: *const MenuState, index: u32) ElementId {
+        assert(self.root.isKeyed());
+        assert(index < menu_item_count_max);
+        return self.root.child(.{ .name = "menu" }).child(.{ .index = index });
+    }
+
+    /// The box inside row `index` that holds its `on_select`.
+    fn pick(self: *const MenuState, index: u32) ElementId {
+        return self.row(index).child(.{ .name = "pick" });
+    }
+
+    /// `Box.on_context_menu`: at the press, or below the focused element
+    /// for Shift+F10. Either focuses the first action, so the keys work at
+    /// once; only the key's focus draws a ring and lights the row.
+    fn open(self: *MenuState, enabled: u64, effects: *Effects) void {
+        assert(self.root.isKeyed());
+        const event = effects.inputEvent() orelse return;
+        const focused = effects.focusedElement();
+        switch (event.*) {
+            .mouse_down => |mouse| {
+                self.x = @floatCast(mouse.position.x);
+                self.y = @floatCast(mouse.position.y);
+            },
+            .key_down => {
+                const bounds = effects.bounds(focused orelse return) orelse return;
+                self.x = bounds.x;
+                self.y = bounds.y + bounds.height;
+            },
+            else => return,
+        }
+        assert(std.math.isFinite(self.x));
+        assert(std.math.isFinite(self.y));
+        if (menuStep(enabled, null, .first)) |index| effects.focus(self.row(index));
+        self.shown = true;
+        self.restore = focused orelse .root;
+        effects.requestRender();
+    }
+
+    /// A press outside: the press itself moves focus.
+    fn dismiss(self: *MenuState, effects: *Effects) void {
+        self.shown = false;
+        effects.requestRender();
+    }
+
+    /// A row's click, after its `on_select` ran, and the keys that close.
+    fn close(self: *MenuState, effects: *Effects) void {
+        self.shown = false;
+        if (self.restore == .root) effects.blur() else effects.focus(self.restore);
+        effects.requestRender();
+    }
+
+    /// A row's keys; the focused row is the one they act on.
+    fn onKey(self: *MenuState, enabled: u64, effects: *Effects) void {
+        assert(self.shown);
+        const event = effects.inputEvent() orelse return;
+        if (event.* != .key_down) return;
+        const key = event.key_down;
+        if (key.modifiers.cmd or key.modifiers.ctrl or key.modifiers.alt) return;
+        const current = self.focusedRow(effects.focusedElement());
+        const step: MenuStep = switch (key.key) {
+            .down => .next,
+            .up => .previous,
+            .home => .first,
+            .end => .last,
+            .@"return", .keypad_enter, .space => {
+                const index = current orelse return;
+                // `effects.click` runs the box's own handler only.
+                effects.click(self.pick(index));
+                self.close(effects);
+                effects.stopPropagation();
+                return;
+            },
+            .escape, .tab => {
+                self.close(effects);
+                effects.stopPropagation();
+                return;
+            },
+            else => return,
+        };
+        if (menuStep(enabled, current, step)) |index| effects.focus(self.row(index));
+        effects.stopPropagation();
+    }
+
+    fn focusedRow(self: *const MenuState, focused: ?ElementId) ?u32 {
+        const id = focused orelse return null;
+        var index: u32 = 0;
+        while (index < menu_item_count_max) : (index += 1) {
+            if (self.row(index) == id) return index;
+        }
+        return null;
+    }
+};
+
+const MenuStep = enum { next, previous, first, last };
+
+/// The action row a key moves to among `enabled`'s set bits, wrapping, or
+/// null when there is none. From no row, `next` takes the first and
+/// `previous` the last.
+fn menuStep(enabled: u64, current: ?u32, step: MenuStep) ?u32 {
+    if (enabled == 0) return null;
+    const first: u32 = @ctz(enabled);
+    const last: u32 = 63 - @as(u32, @clz(enabled));
+    assert(first <= last);
+    const from = current orelse return switch (step) {
+        .next, .first => first,
+        .previous, .last => last,
+    };
+    assert(from < menu_item_count_max);
+    return switch (step) {
+        .first => first,
+        .last => last,
+        .next => blk: {
+            const after = if (from == 63) 0 else enabled >> @intCast(from + 1);
+            break :blk if (after == 0) first else from + 1 + @as(u32, @ctz(after));
+        },
+        .previous => blk: {
+            const below = enabled & ((@as(u64, 1) << @intCast(from)) - 1);
+            break :blk if (below == 0) last else 63 - @as(u32, @clz(below));
+        },
+    };
+}
+
+/// The open menu, on a `.popover` layer anchored to the window, which keeps
+/// it inside the window near an edge. Its rows sit directly under it, keyed
+/// by index (`MenuState.row`).
+const MenuPanel = struct {
+    items: []const MenuItem,
+    width_min: f32,
+    accessible_name: []const u8,
+    x: f32,
+    y: f32,
+    keys: gooey.Handle(MenuState),
+    enabled: u64,
+
+    pub fn render(self: MenuPanel, cx: *Cx) void {
+        assert(self.items.len <= menu_item_count_max);
+        assert(self.width_min >= 0);
+        const theme = cx.theme();
+        cx.render(ui.box(.{
+            .key = .{ .name = "menu" },
+            .layer = .{
+                .kind = .popover,
+                .anchor = .{ .window = .{ .x = self.x, .y = self.y } },
+                .clip = .escape,
+            },
+            .style = .{
+                .width_min = self.width_min,
+                .padding = .all(4),
+                .gap = 2,
+                .background = .surface,
+                .border = .{ .width = 1, .color = .border },
+                .corner_radius = .all(theme.radius_md),
+                .shadow = .{ .blur = 12, .offset_y = 4 },
+            },
+            .on_click_outside = cx.on(MenuState.dismiss, .{ .entity = self.keys }),
+            .a11y = .{ .role = .menu, .label = self.accessible_name },
+        }, .{MenuRows{ .items = self.items, .keys = self.keys, .enabled = self.enabled }}));
+    }
+};
+
+const MenuRows = struct {
+    items: []const MenuItem,
+    keys: gooey.Handle(MenuState),
+    enabled: u64,
+
+    pub fn render(self: MenuRows, cx: *Cx) void {
+        assert(self.items.len <= menu_item_count_max);
+        const close = cx.on(MenuState.close, .{ .entity = self.keys });
+        const on_key = cx.on(MenuState.onKey, .{ .entity = self.keys, .arg = self.enabled });
+        for (self.items, 0..) |*item, index| {
+            const key = Key{ .index = index };
+            if (item.separator) {
+                cx.render(ui.box(.{
+                    .key = key,
+                    .style = .{ .width = .{ .grow = 1 }, .padding = .symmetric(0, 4) },
+                }, .{ui.box(.{ .style = .{
+                    .width = .{ .grow = 1 },
+                    .height = .{ .fixed = 1 },
+                    .background = .border,
+                } }, .{})}));
+            } else {
+                cx.render(MenuRow{ .item = item, .key = key, .close = close, .on_key = on_key });
+            }
+        }
+    }
+};
+
+const MenuRow = struct {
+    item: *const MenuItem,
+    key: Key,
+    close: Handler,
+    on_key: Handler,
+
+    pub fn render(self: MenuRow, cx: *Cx) void {
+        const item = self.item;
+        assert(!item.separator);
+        assert(item.label.len > 0);
+        const theme = cx.theme();
+        const enabled = item.enabled();
+        const id = cx.id(self.key);
+        // The keyboard's row is lit only while focus shows, so a menu opened
+        // with the pointer lights only what the pointer is over.
+        const lit = enabled and (cx.hovered(id) or cx.focusVisibleWithin(id));
+        const label_color: ui.ColorToken = if (!enabled)
+            .muted
+        else if (item.danger) .danger else .text;
+        cx.render(ui.box(.{
+            .key = self.key,
+            .style = .{
+                .width = .{ .grow = 1 },
+                .background = if (lit) .overlay else null,
+                .corner_radius = .all(theme.radius_sm),
+                .cursor = if (enabled) .pointer else null,
+            },
+            .focusable = enabled,
+            .tab_stop = false,
+            .on_click = if (enabled) self.close else null,
+            .on_key = if (enabled) self.on_key else null,
+            .a11y = .{ .role = .menuitem, .label = item.label, .disabled = !enabled },
+        }, .{ui.box(.{
+            // Fills the row, so every click on it lands here first.
+            .key = .{ .name = "pick" },
+            .style = .{
+                .direction = .row,
+                .width = .{ .grow = 1 },
+                .padding = .symmetric(10, 6),
+                .gap = 24,
+                .alignment = .{ .main = .space_between, .cross = .center },
+            },
+            .on_click = if (enabled) item.on_select else null,
+        }, .{
+            ui.text(item.label, .{ .size = theme.font_size_base, .color = label_color }),
+            if (item.shortcut) |shortcut| ui.text(shortcut, .{
+                .size = theme.font_size_base -| 2,
+                .color = .muted,
+            }) else null,
+        })}));
+    }
+};
 
 // =============================================================================
 // Modal
@@ -1710,6 +2467,9 @@ test "components compile against the gooey surface" {
     comptime {
         _ = Button;
         _ = Checkbox;
+        _ = RadioGroup;
+        _ = Tooltip(Button);
+        _ = ContextMenu(Button);
         _ = TextInput;
         _ = TextArea;
         _ = CodeEditor;

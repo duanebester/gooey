@@ -351,13 +351,15 @@ fn emitFragment(window: *Window, layers_open: *LayerQueue, root: *const LayerRoo
     var hit_scope: [window_mod.box_depth_ceiling + 1]u32 = undefined;
     var clips = Clips{ .entries = undefined, .len = 0, .base = root.clip };
     if (root.clip) |rect| window.built().appendPaint(.{ .clip_push = rect });
-    // A drag preview follows the pointer, so it never takes it: the target
-    // under it stays the drop target, and its records still bubble.
+    // A drag preview follows the pointer and a tooltip sits beside its
+    // trigger, so neither takes it: the target under a preview stays the
+    // drop target, a tooltip cannot end its trigger's hover or block a click
+    // below it, and their records still bubble.
     var takes_pointer = true;
     if (root.fragment != layers.content_fragment) {
         const kind = nodes[root.node_index].layer.?.kind;
         if (kind == .modal) blockEarlierHits(window.built());
-        takes_pointer = kind != .drag;
+        takes_pointer = kind != .drag and kind != .tooltip;
     }
     var ring: ?FocusRing = null;
     var index = root.node_index;
@@ -920,13 +922,14 @@ fn shadowBounds(bounds: Rect, shadow: element.Shadow) Rect {
 
 /// `parent` is the nearest enclosing hit record: for a layer's box, the
 /// opener's, so clicks inside a popover count as inside its opener.
-/// `takes_pointer` is false in a `.drag` fragment.
+/// `takes_pointer` is false in a `.drag` or `.tooltip` fragment.
 const HitPlace = struct { parent: u32, fragment: u8, takes_pointer: bool };
 
 fn emitHit(window: *Window, node: *const Node, bounds: Rect, place: HitPlace) u32 {
     if (!node.hit) return place.parent;
     assert(node.id.isKeyed() or node.on_click != index_none or node.focusable or
         node.on_key != index_none or node.on_click_outside != index_none or
+        node.on_context_menu != index_none or
         node.key_context != 0 or node.actions_len > 0 or node.scroll != null or
         node.cursor != null);
     if (node.on_pointer_drag != index_none) assert(node.id.isKeyed());
@@ -945,6 +948,7 @@ fn emitHit(window: *Window, node: *const Node, bounds: Rect, place: HitPlace) u3
         .cursor = node.cursor,
         .on_click = node.on_click,
         .on_click_outside = node.on_click_outside,
+        .on_context_menu = node.on_context_menu,
         .on_key = node.on_key,
         .on_pointer_drag = node.on_pointer_drag,
         .drag_type = node.drag_type,

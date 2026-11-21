@@ -5,6 +5,7 @@
 //! lifecycle guard panics on one) within their component-depth budget.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const gooey = @import("gooey");
 const counter = @import("counter_example");
 const todo = @import("todo_example");
@@ -14,6 +15,7 @@ const accessible_form = @import("accessible_form_example");
 const code_editor = @import("code_editor_example");
 const nested_overlay = @import("nested_overlay_example");
 const splitter = @import("splitter_example");
+const context_menu = @import("context_menu_example");
 const drag_drop = @import("drag_drop_example");
 const dashboard = @import("dashboard_example");
 const dynamic_counters = @import("dynamic_counters_example");
@@ -22,6 +24,7 @@ const virtual_list = @import("virtual_list_example");
 const data_table = @import("data_table_example");
 const lucide = @import("lucide_example");
 const components = @import("gooey-components");
+const vopr_invariants = @import("vopr_invariants");
 const core_driver = @import("core.zig");
 const trace_mod = @import("trace.zig");
 const traces = @import("traces.zig");
@@ -1564,22 +1567,12 @@ test "a stalled tick's 300 held-button moves fold into one on a 64-event queue" 
 /// panel is shorter than the open menu, and the menu covers the button.
 const SelectState = struct {
     selected: ?usize = null,
-    open: bool = false,
     below_clicks: u32 = 0,
 
     const options = [_][]const u8{ "One", "Two", "Three" };
 
-    pub fn toggle(self: *SelectState) void {
-        self.open = !self.open;
-    }
-
-    pub fn close(self: *SelectState) void {
-        self.open = false;
-    }
-
     pub fn choose(self: *SelectState, index: u32) void {
         self.selected = index;
-        self.open = false;
     }
 
     pub fn below(self: *SelectState) void {
@@ -1606,10 +1599,7 @@ fn selectRender(cx: *Cx) void {
                 .key = "level",
                 .options = &SelectState.options,
                 .on_select = &on_select,
-                .on_toggle = cx.on(SelectState.toggle, .{}),
-                .on_close = cx.on(SelectState.close, .{}),
                 .selected = state.selected,
-                .open = state.open,
                 .accessible_name = "Level",
                 .accessible_description = "How far along you are",
             },
@@ -1652,7 +1642,7 @@ test "a Select's menu opens on a popover above content and outside its clip" {
     try testing.expect(comboboxState(app).has_popup);
 
     clickAt(app, &now, 20, 20);
-    try testing.expect(app.state.open);
+    try testing.expect(comboboxState(app).expanded);
     try testing.expect(comboboxState(app).expanded);
     const frame = app.window.rendered();
     var button: ?internals.records.Rect = null;
@@ -1678,12 +1668,12 @@ test "a Select's menu opens on a popover above content and outside its clip" {
     clickAt(app, &now, target.x + 10, target.y + 4);
     try testing.expectEqual(chosen.?, app.state.selected.?);
     try testing.expectEqual(@as(u32, 0), app.state.below_clicks);
-    try testing.expect(!app.state.open);
+    try testing.expect(!comboboxState(app).expanded);
 
     clickAt(app, &now, 20, 20);
-    try testing.expect(app.state.open);
+    try testing.expect(comboboxState(app).expanded);
     clickAt(app, &now, 390, 290);
-    try testing.expect(!app.state.open);
+    try testing.expect(!comboboxState(app).expanded);
     try testing.expectEqual(chosen.?, app.state.selected.?);
     try testing.expect(!comboboxState(app).expanded);
 }
@@ -1765,18 +1755,37 @@ test "a modal blocks the pointer on every fragment opened before it" {
     try testing.expectEqual(@as(u32, 1), app.state.below_clicks);
 }
 
+/// Whether nested_overlay's combobox shows its menu open in the frame on
+/// screen, and its bounds.
+fn overlayCombobox(app: *nested_overlay.App) *const internals.records.A11yNode {
+    const frame = app.window.rendered();
+    for (frame.a11y[0..frame.a11y_count]) |*node| {
+        if (node.role == .combobox) return node;
+    }
+    unreachable; // The example's modal always shows its Select.
+}
+
+fn overlayComboboxExpanded(app: *nested_overlay.App) bool {
+    return overlayCombobox(app).state.expanded;
+}
+
 test "nested_overlay: a Select's menu inside a modal sits above the modal" {
     // Goal: contract §6, "a layer opened inside a layer's fragment comes
     // after that fragment", through the ported 0.3.1 regression example.
-    // Method: the modal and its Select start open; the menu's options cover
-    // the modal's keyed yellow area. The options must come after the modal
-    // in paint and hit order and take the click over the area beneath.
+    // Method: the modal starts open; a click on its Select opens the menu,
+    // whose options cover the modal's keyed yellow area. The options must
+    // come after the modal in paint and hit order and take the click over
+    // the area beneath, which closes the menu.
     const app = try testing.allocator.create(nested_overlay.App);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
     defer app.deinitHeadless();
     var now: u64 = 0;
     app.tick(now);
+    try testing.expect(!overlayComboboxExpanded(app));
+    const combobox = overlayCombobox(app).bounds;
+    clickAt(app, &now, combobox.x + combobox.width / 2, combobox.y + combobox.height / 2);
+    try testing.expect(overlayComboboxExpanded(app));
     const frame = app.window.rendered();
     // Content has no hit records here, so the modal's are the first.
     const modal_start = frame.modal_hit_start;
@@ -1805,7 +1814,7 @@ test "nested_overlay: a Select's menu inside a modal sits above the modal" {
 
     clickAt(app, &now, x, y);
     try testing.expectEqual(@as(?usize, 1), app.state.selected);
-    try testing.expect(!app.state.select_open);
+    try testing.expect(!overlayComboboxExpanded(app));
 }
 
 fn dialogCount(frame: *const internals.records.Frame) u32 {
@@ -5447,9 +5456,97 @@ test "a radio group is one tab stop whose arrow keys select and wrap" {
     pressKey(app, &now, .down, .{});
     try expectFocused(&app.window, .option, "Beginner");
     pressKey(app, &now, .tab, .{ .shift = true });
-    try testing.expect(!app.state.experience_open);
+    try testing.expect(!formNode(app, .combobox, "Experience level").?.state.expanded);
     try expectFocused(&app.window, .checkbox, "Subscribe to newsletter");
     try testing.expectEqual(@as(?usize, null), app.state.experience_level);
+}
+
+const reset_tooltip = "Clears every field and choice";
+
+/// Queue a pointer move and settle: the drain moves the hover against the
+/// frame on screen, the build shows it, and the next tick flips it on screen.
+fn formHover(app: *accessible_form.App, now: *u64, x: f32, y: f32) void {
+    app.window.queue.push(.{ .input = .{ .mouse_moved = mouse(x, y) } });
+    now.* += 1;
+    app.tick(now.*);
+    now.* += 1;
+    app.tick(now.*);
+}
+
+/// Advance the clock by `ms` and settle, so a render the last build asked
+/// for with `requestRenderAfter` runs and reaches the screen.
+fn formWait(app: *accessible_form.App, now: *u64, ms: u64) void {
+    now.* += ms * std.time.ns_per_ms;
+    app.tick(now.*);
+    now.* += 1;
+    app.tick(now.*);
+}
+
+test "a Tooltip shows after the hover delay and hides when the pointer leaves" {
+    // Goal: accessible_form's Reset tooltip waits for the pointer to rest,
+    // then shows beside its button, and is not hoverable. Methodology:
+    // hover Reset and step the clock to just short of the 500 ms delay,
+    // then past it; the tooltip node must appear only then, with no input
+    // in between, so the component's own `requestRenderAfter` drove that
+    // render. Then move the pointer onto the tooltip itself, which ends the
+    // button's hover: it hides.
+    const app = try testing.allocator.create(accessible_form.App);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    const button = formReveal(app, &now, .button, "Reset form to default values");
+    try testing.expect(formNode(app, .tooltip, reset_tooltip) == null);
+    formHover(app, &now, button.x + button.width / 2, button.y + button.height / 2);
+    try testing.expect(formNode(app, .tooltip, reset_tooltip) == null);
+    formWait(app, &now, 490);
+    try testing.expect(formNode(app, .tooltip, reset_tooltip) == null);
+    formWait(app, &now, 10);
+    const tooltip = formNode(app, .tooltip, reset_tooltip) orelse return error.NoTooltip;
+    // Below the button, or above it when the window's bottom is too near.
+    const below = tooltip.bounds.y >= button.y + button.height;
+    const above = tooltip.bounds.y + tooltip.bounds.height <= button.y;
+    try testing.expect(below or above);
+    formHover(
+        app,
+        &now,
+        tooltip.bounds.x + tooltip.bounds.width / 2,
+        tooltip.bounds.y + tooltip.bounds.height / 2,
+    );
+    try testing.expect(formNode(app, .tooltip, reset_tooltip) == null);
+}
+
+test "a Tooltip shows at once for keyboard focus, and Escape hides it" {
+    // Goal: keyboard users get the tooltip without a pointer, and can
+    // dismiss it, as WCAG 1.4.13 asks. Methodology: Tab to Reset; the
+    // tooltip must show with no wait. Escape hides it while focus stays;
+    // Shift+Tab and Tab back show it again, since leaving clears the
+    // dismissal. Then a pointer press on Reset, which focuses it without a
+    // ring, and a move away: the tooltip must hide, though Reset keeps
+    // focus, so a click never leaves one standing.
+    const app = try testing.allocator.create(accessible_form.App);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    for (0..9) |_| pressKey(app, &now, .tab, .{});
+    try expectFocused(&app.window, .button, "Reset form to default values");
+    try testing.expect(formNode(app, .tooltip, reset_tooltip) != null);
+    pressKey(app, &now, .escape, .{});
+    try expectFocused(&app.window, .button, "Reset form to default values");
+    try testing.expect(formNode(app, .tooltip, reset_tooltip) == null);
+    pressKey(app, &now, .tab, .{ .shift = true });
+    try expectFocused(&app.window, .button, "Submit registration form");
+    try testing.expect(formNode(app, .tooltip, reset_tooltip) == null);
+    pressKey(app, &now, .tab, .{});
+    try testing.expect(formNode(app, .tooltip, reset_tooltip) != null);
+
+    formClick(app, &now, .button, "Reset form to default values");
+    formHover(app, &now, 5, 5);
+    try expectFocused(&app.window, .button, "Reset form to default values");
+    try testing.expect(formNode(app, .tooltip, reset_tooltip) == null);
 }
 
 /// The options in the frame on screen whose `selected` state is set.
@@ -5502,7 +5599,7 @@ test "a Select opens, moves, and chooses from the keyboard" {
     try expectFocused(&app.window, .combobox, "Level");
     try expectRingAround(&app.window, focusedNode(&app.window).?.bounds);
     pressKey(app, &now, .down, .{});
-    try testing.expect(app.state.open);
+    try testing.expect(comboboxState(app).expanded);
     try expectFocused(&app.window, .option, "One");
     try testing.expectEqual(@as(?u16, 1), focusedNode(&app.window).?.pos_in_set);
     try testing.expectEqual(@as(?u16, 3), focusedNode(&app.window).?.set_size);
@@ -5519,13 +5616,13 @@ test "a Select opens, moves, and chooses from the keyboard" {
     try expectFocused(&app.window, .option, "Three");
     pressKey(app, &now, .@"return", .{});
     try testing.expectEqual(@as(?usize, 2), app.state.selected);
-    try testing.expect(!app.state.open);
+    try testing.expect(!comboboxState(app).expanded);
     try expectFocused(&app.window, .combobox, "Level");
 
     // Reopening starts on the chosen option, which alone is selected for
     // the screen reader; Esc closes without choosing.
     pressKey(app, &now, .space, .{});
-    try testing.expect(app.state.open);
+    try testing.expect(comboboxState(app).expanded);
     try expectFocused(&app.window, .option, "Three");
     try testing.expectEqual(@as(u32, 1), selectedOptions(&app.window));
     try testing.expect(focusedNode(&app.window).?.state.selected);
@@ -5533,7 +5630,7 @@ test "a Select opens, moves, and chooses from the keyboard" {
     try testing.expect(!focusedNode(&app.window).?.state.selected);
     pressKey(app, &now, .down, .{});
     pressKey(app, &now, .escape, .{});
-    try testing.expect(!app.state.open);
+    try testing.expect(!comboboxState(app).expanded);
     try testing.expectEqual(@as(?usize, 2), app.state.selected);
     try expectFocused(&app.window, .combobox, "Level");
 
@@ -5541,7 +5638,7 @@ test "a Select opens, moves, and chooses from the keyboard" {
     pressKey(app, &now, .up, .{});
     pressKey(app, &now, .space, .{});
     try testing.expectEqual(@as(?usize, 1), app.state.selected);
-    try testing.expect(!app.state.open);
+    try testing.expect(!comboboxState(app).expanded);
 }
 
 test "Tab from a Select's menu closes it and moves on, and a click opens it on the combobox" {
@@ -5563,9 +5660,9 @@ test "Tab from a Select's menu closes it and moves on, and a click opens it on t
     var ring: internals.records.Rect = undefined;
     pressKey(app, &now, .tab, .{});
     pressKey(app, &now, .down, .{});
-    try testing.expect(app.state.open);
+    try testing.expect(comboboxState(app).expanded);
     pressKey(app, &now, .tab, .{});
-    try testing.expect(!app.state.open);
+    try testing.expect(!comboboxState(app).expanded);
     try expectFocused(&app.window, .button, "Below");
     try expectRingAround(&app.window, focusedNode(&app.window).?.bounds);
     pressKey(app, &now, .tab, .{ .shift = true });
@@ -5573,7 +5670,7 @@ test "Tab from a Select's menu closes it and moves on, and a click opens it on t
     pressKey(app, &now, .space, .{});
     try expectFocused(&app.window, .option, "One");
     pressKey(app, &now, .tab, .{ .shift = true });
-    try testing.expect(!app.state.open);
+    try testing.expect(!comboboxState(app).expanded);
     try expectFocused(&app.window, .button, "Below");
     try testing.expectEqual(@as(u32, 0), app.state.below_clicks);
     try testing.expectEqual(@as(?usize, null), app.state.selected);
@@ -5581,11 +5678,11 @@ test "Tab from a Select's menu closes it and moves on, and a click opens it on t
     // A click opens the menu with focus on the combobox, ringless, where
     // Enter closes it again.
     clickAt(app, &now, 20, 20);
-    try testing.expect(app.state.open);
+    try testing.expect(comboboxState(app).expanded);
     try expectFocused(&app.window, .combobox, "Level");
     try testing.expectEqual(@as(u32, 0), focusRings(&app.window, &ring));
     pressKey(app, &now, .@"return", .{});
-    try testing.expect(!app.state.open);
+    try testing.expect(!comboboxState(app).expanded);
     try testing.expectEqual(@as(?usize, null), app.state.selected);
     try testing.expectEqual(@as(u32, 0), app.state.below_clicks);
 }
@@ -5614,7 +5711,7 @@ test "keys drained together after a Select choice leave its menu closed" {
     now += 1;
     app.tick(now);
     try testing.expectEqual(@as(?usize, 1), app.state.experience_level);
-    try testing.expect(!app.state.experience_open);
+    try testing.expect(!formNode(app, .combobox, "Experience level").?.state.expanded);
     try testing.expect(formNode(app, .listbox, "Experience level") == null);
     try expectFocused(&app.window, .button, "Submit registration form");
     // The last Enter submitted the empty form, which fails validation.
@@ -6581,6 +6678,87 @@ test "a drag preview never takes the pointer and adds no accessibility node" {
     try testing.expectEqual(@as(u32, 0), app.state.preview_clicks);
 }
 
+/// A 60 by 40 `trigger` at the top left whose `.tooltip` layer, keyed
+/// `tip` with a click handler, opens 40 px down, over `below`, a clickable
+/// box that spans the window under the trigger.
+const TooltipProbe = struct {
+    below_clicks: u32 = 0,
+    tip_clicks: u32 = 0,
+
+    fn clickBelow(self: *TooltipProbe) void {
+        self.below_clicks += 1;
+    }
+
+    fn clickTip(self: *TooltipProbe) void {
+        self.tip_clicks += 1;
+    }
+};
+
+const TooltipProbeApp = gooey.App(TooltipProbe, tooltipProbeRender, .{
+    .title = "Tooltip probe",
+    .width = 200,
+    .height = 100,
+    .limits = .nano,
+});
+
+fn tooltipProbeRender(cx: *Cx) void {
+    cx.render(ui.box(.{ .key = .{ .name = "row" } }, .{
+        ui.box(.{
+            .key = .{ .name = "trigger" },
+            .style = .{ .width = .{ .fixed = 60 }, .height = .{ .fixed = 40 } },
+        }, .{ui.box(.{
+            .key = .{ .name = "tip" },
+            .layer = .{ .kind = .tooltip, .anchor = .{ .parent = .{ .y = 40 } }, .clip = .escape },
+            .style = .{ .width = .{ .fixed = 60 }, .height = .{ .fixed = 30 } },
+            .on_click = cx.on(TooltipProbe.clickTip, .{}),
+            .a11y = .{ .role = .tooltip, .label = "Tip" },
+        }, .{})}),
+        ui.box(.{
+            .key = .{ .name = "below" },
+            .style = .{ .width = .{ .fixed = 200 }, .height = .{ .fixed = 60 } },
+            .on_click = cx.on(TooltipProbe.clickBelow, .{}),
+        }, .{}),
+    }));
+}
+
+test "a tooltip layer never takes the pointer and keeps its accessibility node" {
+    // Goal: the `.tooltip` layer's rules (contract decision 21). Methodology:
+    // the probe's tooltip, with a click handler, lies over `below` at
+    // (30, 55). A hit test there finds `below`, the tooltip's record does
+    // not take the pointer, the pointer there does not hover the trigger
+    // (a record that took it would bubble to its opener), and a click there
+    // clicks `below`, not the tooltip. Unlike a drag preview, the tooltip
+    // keeps its accessibility node.
+    const app = try testing.allocator.create(TooltipProbeApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    scrollMouse(app, &now, .{ .mouse_moved = mouse(30, 55) });
+    const tip_id = probeId("trigger").child(.{ .name = "tip" });
+    const frame = app.window.rendered();
+    var tip_found = false;
+    for (frame.hits[0..frame.hit_count]) |*record| {
+        if (record.id != tip_id) continue;
+        tip_found = true;
+        try testing.expect(!record.pointer);
+        try testing.expect(record.bounds.contains(30, 55));
+    }
+    try testing.expect(tip_found);
+    const query: internals.Query = .{ .window = &app.window };
+    try testing.expectEqual(probeId("below"), query.hitTest(.{ .x = 30, .y = 55 }).?);
+    try testing.expect(!app.window.isHovered(probeId("trigger")));
+    var tip_node = false;
+    for (frame.a11y[0..frame.a11y_count]) |*node| {
+        if (node.id == tip_id) tip_node = node.role == .tooltip;
+    }
+    try testing.expect(tip_node);
+    clickAt(app, &now, 30, 55);
+    try testing.expectEqual(@as(u32, 1), app.state.below_clicks);
+    try testing.expectEqual(@as(u32, 0), app.state.tip_clicks);
+}
+
 test "over follows the payload type, a flip under a still pointer, and a modal" {
     // Goal: `over` is the innermost target of the payload's type that the
     // pointer can reach, recomputed after a flip. Methodology: over `other`
@@ -6922,4 +7100,153 @@ test "drag_drop: keyboard drags during one frame in flight keep only the newest 
     window.render_requested = true;
     app.tick(now + 2);
     try testing.expectEqual(@as(u32, 0), window.rendered().announcements.count);
+}
+
+// =============================================================================
+// Context menus
+// =============================================================================
+
+/// The rendered accessibility node of `role` named `name`, if any.
+fn menuNode(
+    app: *context_menu.App,
+    role: gooey.ui.Role,
+    name: []const u8,
+) ?*const internals.records.A11yNode {
+    const frame = app.window.rendered();
+    for (frame.a11y[0..frame.a11y_count]) |*node| {
+        if (node.role != role) continue;
+        if (std.mem.eql(u8, frame.text(node.name) orelse "", name)) return node;
+    }
+    return null;
+}
+
+fn menuApp(app: *context_menu.App, now: *u64) !void {
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    app.tick(now.*);
+    now.* += 1;
+    app.tick(now.*);
+}
+
+const first_task = context_menu.State.titles[0];
+
+/// Press and release `button` at a point, with `modifiers`, and settle.
+fn menuPress(
+    app: *context_menu.App,
+    now: *u64,
+    point: [2]f32,
+    button: gooey.input.MouseButton,
+    modifiers: gooey.input.Modifiers,
+) void {
+    var event = mouseWith(point[0], point[1], button);
+    event.modifiers = modifiers;
+    app.window.queue.push(.{ .input = .{ .mouse_down = event } });
+    app.window.queue.push(.{ .input = .{ .mouse_up = event } });
+    for (0..2) |_| {
+        now.* += 1;
+        app.tick(now.*);
+    }
+}
+
+fn centre(node: *const internals.records.A11yNode) [2]f32 {
+    return .{ node.bounds.x + node.bounds.width / 2, node.bounds.y + node.bounds.height / 2 };
+}
+
+test "a right press opens a ContextMenu at the pointer, and a choice runs and closes it" {
+    // Goal: `Box.on_context_menu` from the pointer, end to end. Methodology:
+    // a right press on the first card at (100, y) opens its menu with the
+    // panel's corner at the press and focus on its first action, changes no
+    // state, and passes the VOPR's frame invariants (every handled record
+    // belongs to an interactive accessibility node). A left click on the disabled "Rename" keeps it open; one on
+    // "Mark done" runs its handler, closes the menu, and returns focus to
+    // the card the right press focused. A right press, then a left press
+    // outside, closes it without a choice.
+    const app = try testing.allocator.create(context_menu.App);
+    defer testing.allocator.destroy(app);
+    var now: u64 = 0;
+    try menuApp(app, &now);
+    defer app.deinitHeadless();
+    const card = menuNode(app, .group, first_task).?.bounds;
+    const press = [2]f32{ card.x + 100, card.y + card.height / 2 };
+    try testing.expect(menuNode(app, .menu, first_task) == null);
+    menuPress(app, &now, press, .right, .{});
+    const menu = menuNode(app, .menu, first_task) orelse return error.NoMenu;
+    try testing.expectApproxEqAbs(press[0], menu.bounds.x, 0.5);
+    try testing.expectApproxEqAbs(press[1], menu.bounds.y, 0.5);
+    try expectFocused(&app.window, .menuitem, "Mark done");
+    try testing.expect(!app.state.done[0]);
+    vopr_invariants.checkFrame(&app.window, app.window.rendered());
+
+    menuPress(app, &now, centre(menuNode(app, .menuitem, "Rename").?), .left, .{});
+    try testing.expect(menuNode(app, .menu, first_task) != null);
+    menuPress(app, &now, centre(menuNode(app, .menuitem, "Mark done").?), .left, .{});
+    try testing.expect(app.state.done[0]);
+    try testing.expect(menuNode(app, .menu, first_task) == null);
+    try expectFocused(&app.window, .group, first_task);
+
+    menuPress(app, &now, press, .right, .{});
+    try testing.expect(menuNode(app, .menu, first_task) != null);
+    menuPress(app, &now, .{ 500, 380 }, .left, .{});
+    try testing.expect(menuNode(app, .menu, first_task) == null);
+    try testing.expect(app.state.done[0]);
+}
+
+test "Shift+F10 opens a ContextMenu whose keys skip disabled rows and wrap" {
+    // Goal: the keyboard path. Methodology: Tab to the first card and press
+    // Shift+F10: the menu opens below the card with "Mark done" focused.
+    // Down skips the disabled "Rename" and the separator to "Delete", Down
+    // again wraps to "Mark done", and Up wraps back to "Delete". Escape
+    // closes it with focus back on the card; Shift+F10 and Enter on "Mark
+    // done" choose it, close, and return focus to the card.
+    const app = try testing.allocator.create(context_menu.App);
+    defer testing.allocator.destroy(app);
+    var now: u64 = 0;
+    try menuApp(app, &now);
+    defer app.deinitHeadless();
+    pressKey(app, &now, .tab, .{});
+    try expectFocused(&app.window, .group, first_task);
+    const card = menuNode(app, .group, first_task).?.bounds;
+    pressKey(app, &now, .f10, .{ .shift = true });
+    const menu = menuNode(app, .menu, first_task) orelse return error.NoMenu;
+    try testing.expectApproxEqAbs(card.x, menu.bounds.x, 0.5);
+    try testing.expectApproxEqAbs(card.y + card.height, menu.bounds.y, 0.5);
+    try expectFocused(&app.window, .menuitem, "Mark done");
+    vopr_invariants.checkFrame(&app.window, app.window.rendered());
+    const steps = [_]struct { key: gooey.input.KeyCode, name: []const u8 }{
+        .{ .key = .down, .name = "Delete" },
+        .{ .key = .down, .name = "Mark done" },
+        .{ .key = .up, .name = "Delete" },
+        .{ .key = .home, .name = "Mark done" },
+        .{ .key = .end, .name = "Delete" },
+    };
+    for (steps) |step| {
+        pressKey(app, &now, step.key, .{});
+        try expectFocused(&app.window, .menuitem, step.name);
+    }
+    pressKey(app, &now, .escape, .{});
+    try testing.expect(menuNode(app, .menu, first_task) == null);
+    try expectFocused(&app.window, .group, first_task);
+    try testing.expect(!app.state.removed[0]);
+
+    pressKey(app, &now, .f10, .{ .shift = true });
+    pressKey(app, &now, .@"return", .{});
+    try testing.expect(app.state.done[0]);
+    try testing.expect(menuNode(app, .menu, first_task) == null);
+    try expectFocused(&app.window, .group, first_task);
+}
+
+test "a Ctrl+press opens a context menu only on macOS, and clicks nothing there" {
+    // Goal: AppKit's Ctrl+click is a context press on macOS and an ordinary
+    // left press elsewhere. Methodology: a Ctrl+left press and release on
+    // the second card. On macOS the menu opens; elsewhere it does not, and
+    // the press focuses the card as any left press does.
+    const app = try testing.allocator.create(context_menu.App);
+    defer testing.allocator.destroy(app);
+    var now: u64 = 0;
+    try menuApp(app, &now);
+    defer app.deinitHeadless();
+    const title = context_menu.State.titles[1];
+    const card = menuNode(app, .group, title).?;
+    menuPress(app, &now, centre(card), .left, .{ .ctrl = true });
+    const opened = menuNode(app, .menu, title) != null;
+    try testing.expectEqual(builtin.os.tag == .macos, opened);
 }

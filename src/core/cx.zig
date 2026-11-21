@@ -215,6 +215,15 @@ pub const Cx = opaque {
         return windowOf(self).isFocused(target);
     }
 
+    /// Whether keyboard focus, drawn with its ring, is on `target` or inside
+    /// it in the frame on screen (CSS `:focus-visible` within
+    /// `:focus-within`). False after a pointer press moves focus, so a
+    /// tooltip shown for keyboard focus does not stay up after a click.
+    pub fn focusVisibleWithin(self: *const Cx, target: ElementId) bool {
+        windowOf(self).assertPhase(.build);
+        return windowOf(self).isFocusVisibleWithin(target);
+    }
+
     /// The drag in progress, once past its threshold, if its payload is a
     /// `T`: for dimming its source, restyling the target it is `over`, and
     /// placing a preview at `x`, `y` on a `.drag` layer.
@@ -385,7 +394,6 @@ pub const Cx = opaque {
 
     fn buildBox(self: *Cx, box: *const element.Box, children: anytype) void {
         const window = windowOf(self);
-        checkLayer(box);
         checkKeyed(window, box);
         const parent_index = window.open_stack[window.open_depth - 1];
         const box_id = resolveId(window, parent_index, box.key);
@@ -409,6 +417,7 @@ pub const Cx = opaque {
         node.tab_stop = box.focusable and box.tab_stop;
         node.on_click = handlerIndex(frame, box.on_click);
         node.on_click_outside = handlerIndex(frame, box.on_click_outside);
+        node.on_context_menu = handlerIndex(frame, box.on_context_menu);
         node.on_key = handlerIndex(frame, box.on_key);
         node.on_pointer_drag = handlerIndex(frame, box.on_pointer_drag);
         if (box.draggable) |source| {
@@ -430,7 +439,7 @@ pub const Cx = opaque {
         // (`checkKeyed`), so each takes a record.
         node.hit = box.key != null or scroll_handle != null or box.focusable or
             box.on_click != null or box.on_click_outside != null or box.on_key != null or
-            box.key_context != null or box.actions.len > 0 or box.style.cursor != null;
+            box.on_context_menu != null or box.key_context != null or box.actions.len > 0 or box.style.cursor != null;
         if (box.a11y) |*a11y| {
             node.a11y = copyA11y(frame, a11y, window.limits.a11y.value_bytes_max);
         }
@@ -592,16 +601,6 @@ fn noteDepth(window: *Window) void {
     }
 }
 
-fn checkLayer(box: *const element.Box) void {
-    if (box.layer) |layer| {
-        switch (layer.kind) {
-            .popover, .modal, .drag => {},
-            .tooltip => std.debug.panic("Box.layer .tooltip: only .popover, .modal, and " ++
-                ".drag layers are implemented (contract decision 13)", .{}),
-        }
-    }
-}
-
 /// Copy a box's accessibility annotation into the frame, strings included.
 /// The value keeps at most `value_bytes_max` bytes around its selection
 /// (`a11y_value.window`), so a long document cannot exhaust the frame's text.
@@ -729,6 +728,7 @@ fn addNode(window: *Window, kind: window_mod.NodeKind, node_id: ElementId) u32 {
         .cursor = null,
         .on_click = index_none,
         .on_click_outside = index_none,
+        .on_context_menu = index_none,
         .on_key = index_none,
         .on_pointer_drag = index_none,
         .drag_type = 0,
