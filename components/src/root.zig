@@ -8,7 +8,7 @@
 //! Keyboard: `Button`, `Checkbox`, `Select`, and `RadioGroup` are focusable,
 //! so Tab reaches them, and the core turns Enter and Space into a click on
 //! the focused element. `Select`, `RadioGroup`, and `ContextMenu` add their
-//! own keys (see `SelectKeys`, `RadioKeys`, and `MenuState.onKey`).
+//! own keys (see `SelectState`, `RadioKeys`, and `MenuState.onKey`).
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -182,10 +182,11 @@ pub const Checkbox = struct {
 // =============================================================================
 
 /// A dropdown of options, as the 0.3.1 `Select` draws it, with its menu on a
-/// `.popover` layer. The app owns `selected` and `open`: the trigger calls
-/// `on_toggle` to open the menu and `on_close` to close it, a click outside
-/// calls `on_close`, and option `i` calls `on_select[i]`, typically
-/// `cx.on(State.choose, .{ .arg = i })`.
+/// `.popover` layer. The app owns the value, `selected`: option `i` calls
+/// `on_select[i]`, typically `cx.on(State.choose, .{ .arg = i })`. The Select
+/// owns whether its menu is open, as `ContextMenu` and `Tooltip` own theirs:
+/// the trigger opens and closes it, and a choice or a click outside closes
+/// it.
 ///
 /// The combobox takes keyboard focus, and the focused option is the
 /// highlighted one, so a screen reader follows it. Enter, Space, Down, and
@@ -194,16 +195,14 @@ pub const Checkbox = struct {
 /// on the combobox; and Tab or Shift+Tab closes and moves on, since the
 /// options are not tab stops. Each opens or closes through the trigger and
 /// chooses through `on_select`, pressed with `effects.click`. A Select
-/// retains one 64 B slot for its keys, and adds a key handler per option.
+/// retains one 64 B slot for its open state and keys, and adds a key handler
+/// per option.
 pub const Select = struct {
     key: []const u8,
     options: []const []const u8,
     /// One handler per option.
     on_select: []const Handler,
-    on_toggle: Handler,
-    on_close: Handler,
     selected: ?usize = null,
-    open: bool = false,
     placeholder: []const u8 = "Select...",
     disabled: bool = false,
     width: f32 = 200,
@@ -223,8 +222,11 @@ pub const Select = struct {
         const theme = cx.theme();
         const key = Key{ .name = self.key };
         const id = cx.id(key);
-        const handle = cx.retain(SelectKeys, id, .frame, SelectKeys.init);
-        cx.get(SelectKeys, handle).root = id;
+        const handle = cx.retain(SelectState, id, .frame, SelectState.init);
+        const state = cx.get(SelectState, handle);
+        state.root = id;
+        // A disabled Select shows no menu, even one opened before it was.
+        const open = state.open and !self.disabled;
         const trigger_height = @as(f32, @floatFromInt(theme.font_size_base)) +
             self.padding * 2 + 4;
         cx.render(ui.box(.{
@@ -235,23 +237,33 @@ pub const Select = struct {
                 .corner_radius = .all(theme.radius_md),
             },
             .focusable = !self.disabled,
-            .on_key = if (self.disabled) null else cx.on(SelectKeys.onKey, .{
+            .on_key = if (self.disabled) null else cx.on(SelectState.onKey, .{
                 .entity = handle,
-                .arg = self.keyArg(SelectKeys.on_combobox),
+                .arg = self.keyArg(SelectState.on_combobox, open),
             }),
-            .on_click_outside = if (self.open) self.on_close else null,
+            // A chosen option's click bubbles here, through the menu, after
+            // its `on_select` ran: the combobox, whose node is interactive,
+            // closes the menu. A click on the open trigger reaches it too,
+            // and closing twice changes nothing.
+            .on_click = if (open) cx.on(SelectState.close, .{ .entity = handle }) else null,
+            .on_click_outside = if (open) cx.on(SelectState.close, .{ .entity = handle }) else null,
             .a11y = .{
                 .role = .combobox,
                 .label = self.accessible_name orelse self.placeholder,
                 .description = self.accessible_description,
                 .value = self.displayText(),
-                .expanded = self.open,
+                .expanded = open,
                 .has_popup = true,
                 .disabled = self.disabled,
             },
         }, .{
-            SelectTrigger{ .select = &self, .height = trigger_height },
-            if (self.open) SelectMenu{
+            SelectTrigger{
+                .select = &self,
+                .open = open,
+                .height = trigger_height,
+                .keys = handle,
+            },
+            if (open) SelectMenu{
                 .select = &self,
                 .offset_y = trigger_height,
                 .keys = handle,
@@ -265,14 +277,14 @@ pub const Select = struct {
     }
 
     /// What a key handler on the combobox or option `focused` acts on.
-    fn keyArg(self: *const Select, focused: u16) SelectKeys.Arg {
+    fn keyArg(self: *const Select, focused: u16, open: bool) SelectState.Arg {
         assert(self.options.len <= select_option_count_max);
         const start = self.selected orelse 0;
         return .{
             .focused = focused,
             .count = @intCast(self.options.len),
             .start = @intCast(start),
-            .open = self.open,
+            .open = open,
         };
     }
 };
@@ -281,11 +293,13 @@ pub const Select = struct {
 /// 16 bits, and a menu past a thousand rows is not a dropdown.
 pub const select_option_count_max: u32 = 1024;
 
-/// A `Select`'s keyboard handling, retained under its key so its handlers
-/// have state to run on. The arguments come from the frame on screen; only
-/// the combobox's id, which never changes, is kept.
-const SelectKeys = struct {
+/// A `Select`'s open state and keyboard handling, retained under its key so
+/// its handlers have state to run on. The key handlers' arguments come from
+/// the frame on screen, so a key that a drain routes after a choice closed
+/// the menu still acts on the menu that frame shows.
+const SelectState = struct {
     root: ElementId,
+    open: bool,
 
     /// `Arg.focused` for the combobox itself.
     const on_combobox: u16 = std.math.maxInt(u16);
@@ -304,16 +318,32 @@ const SelectKeys = struct {
         assert(select_option_count_max < on_combobox);
     }
 
-    fn init(self: *SelectKeys) void {
-        self.root = .root;
+    fn init(self: *SelectState) void {
+        self.* = .{ .root = .root, .open = false };
     }
 
-    fn trigger(self: *const SelectKeys) ElementId {
+    /// The trigger of a closed menu, and the keys that open one.
+    fn openMenu(self: *SelectState, effects: *Effects) void {
+        assert(self.root.isKeyed());
+        self.open = true;
+        effects.requestRender();
+    }
+
+    /// The trigger of an open menu, a click outside, and a choice: the
+    /// option's click bubbles to the combobox after `on_select` ran. Closing
+    /// a closed menu changes nothing, so a key routed against a frame that
+    /// still showed it cannot reopen it.
+    fn close(self: *SelectState, effects: *Effects) void {
+        self.open = false;
+        effects.requestRender();
+    }
+
+    fn trigger(self: *const SelectState) ElementId {
         assert(self.root.isKeyed());
         return self.root.child(.{ .name = "trigger" });
     }
 
-    fn option(self: *const SelectKeys, index: u16) ElementId {
+    fn option(self: *const SelectState, index: u16) ElementId {
         assert(self.root.isKeyed());
         assert(index < select_option_count_max);
         return self.root.child(.{ .name = "menu" }).child(.{ .index = index });
@@ -322,7 +352,7 @@ const SelectKeys = struct {
     /// Keys without Cmd, Ctrl, or Alt. A key an option leaves alone bubbles
     /// to the combobox's handler, which closes the menu on Esc and Tab.
     /// Shift+Tab takes the Tab arm too: `KeyCode` has no back-tab.
-    fn onKey(self: *SelectKeys, arg: Arg, effects: *Effects) void {
+    fn onKey(self: *SelectState, arg: Arg, effects: *Effects) void {
         assert(self.root.isKeyed());
         assert(arg.start < @max(arg.count, 1));
         const event = effects.inputEvent() orelse return;
@@ -339,7 +369,7 @@ const SelectKeys = struct {
     }
 
     /// Opening focuses the start option, which the next frame renders.
-    fn comboboxKey(self: *SelectKeys, arg: Arg, key: KeyCode, effects: *Effects) void {
+    fn comboboxKey(self: *SelectState, arg: Arg, key: KeyCode, effects: *Effects) void {
         assert(arg.focused == on_combobox);
         assert(arg.start < @max(arg.count, 1));
         switch (key) {
@@ -370,7 +400,7 @@ const SelectKeys = struct {
     }
 
     /// Movement stops at the first and last option, as a listbox's does.
-    fn optionKey(self: *SelectKeys, arg: Arg, key: KeyCode, effects: *Effects) void {
+    fn optionKey(self: *SelectState, arg: Arg, key: KeyCode, effects: *Effects) void {
         assert(arg.count > 0);
         assert(arg.focused < arg.count);
         const last = arg.count - 1;
@@ -380,7 +410,10 @@ const SelectKeys = struct {
             .home => 0,
             .end => last,
             .@"return", .keypad_enter, .space => {
+                // `effects.click` runs the option's own handler only, so the
+                // menu's close does not follow it; close here.
                 effects.click(self.option(arg.focused));
+                self.close(effects);
                 effects.focus(self.root);
                 effects.stopPropagation();
                 return;
@@ -395,7 +428,9 @@ const SelectKeys = struct {
 
 const SelectTrigger = struct {
     select: *const Select,
+    open: bool,
     height: f32,
+    keys: gooey.Handle(SelectState),
 
     pub fn render(self: SelectTrigger, cx: *Cx) void {
         const select = self.select;
@@ -406,15 +441,18 @@ const SelectTrigger = struct {
         const opacity: f32 = if (select.disabled) 0.6 else 1;
         const background = if (hovered) theme.overlay else theme.surface;
         const text_color = if (select.selected == null) theme.muted else theme.text;
-        const chevron = &chevrons[@intFromBool(select.open)][@intFromBool(select.disabled)];
-        // An open menu's trigger closes through `on_close`, not `on_toggle`.
-        // Every key a drain delivers after the one that chose an option
-        // routes against this frame, where the menu is still open, so a Tab
-        // or Esc that presses the trigger here must not reopen the menu the
-        // choice closed; closing a closed menu changes nothing.
+        const chevron = &chevrons[@intFromBool(self.open)][@intFromBool(select.disabled)];
+        // An open menu's trigger closes, it does not toggle. Every key a
+        // drain delivers after the one that chose an option routes against
+        // this frame, where the menu is still open, so a Tab or Esc that
+        // presses the trigger here must not reopen the menu the choice
+        // closed; closing a closed menu changes nothing.
         var on_click: ?Handler = null;
         if (!select.disabled) {
-            on_click = if (select.open) select.on_close else select.on_toggle;
+            on_click = if (self.open)
+                cx.on(SelectState.close, .{ .entity = self.keys })
+            else
+                cx.on(SelectState.openMenu, .{ .entity = self.keys });
         }
         cx.render(ui.box(.{
             .key = key,
@@ -423,7 +461,7 @@ const SelectTrigger = struct {
                 .height = .{ .fixed = self.height },
                 .padding = .symmetric(select.padding, select.padding / 2),
                 .background = .{ .rgba = background.withAlpha(opacity) },
-                .border = .{ .width = 1, .color = if (select.open) .border_focus else .border },
+                .border = .{ .width = 1, .color = if (self.open) .border_focus else .border },
                 .corner_radius = .all(theme.radius_md),
                 .direction = .row,
                 .alignment = .{ .main = .space_between, .cross = .center },
@@ -446,14 +484,14 @@ const SelectTrigger = struct {
 const SelectMenu = struct {
     select: *const Select,
     offset_y: f32,
-    keys: gooey.Handle(SelectKeys),
+    keys: gooey.Handle(SelectState),
 
     pub fn render(self: SelectMenu, cx: *Cx) void {
         const select = self.select;
-        assert(select.open);
+        assert(!select.disabled);
         const theme = cx.theme();
         cx.render(ui.box(.{
-            // `SelectKeys.option` derives the options' ids from this key.
+            // `SelectState.option` derives the options' ids from this key.
             .key = .{ .name = "menu" },
             .layer = .{
                 .kind = .popover,
@@ -479,7 +517,7 @@ const SelectMenu = struct {
 
 const SelectOptions = struct {
     select: *const Select,
-    keys: gooey.Handle(SelectKeys),
+    keys: gooey.Handle(SelectState),
 
     pub fn render(self: SelectOptions, cx: *Cx) void {
         const select = self.select;
@@ -512,9 +550,9 @@ const SelectOptions = struct {
                 .focusable = true,
                 .tab_stop = false,
                 .on_click = handler,
-                .on_key = cx.on(SelectKeys.onKey, .{
+                .on_key = cx.on(SelectState.onKey, .{
                     .entity = self.keys,
-                    .arg = select.keyArg(position),
+                    .arg = select.keyArg(position, true),
                 }),
                 .a11y = .{
                     .role = .option,

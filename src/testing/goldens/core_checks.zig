@@ -1567,22 +1567,12 @@ test "a stalled tick's 300 held-button moves fold into one on a 64-event queue" 
 /// panel is shorter than the open menu, and the menu covers the button.
 const SelectState = struct {
     selected: ?usize = null,
-    open: bool = false,
     below_clicks: u32 = 0,
 
     const options = [_][]const u8{ "One", "Two", "Three" };
 
-    pub fn toggle(self: *SelectState) void {
-        self.open = !self.open;
-    }
-
-    pub fn close(self: *SelectState) void {
-        self.open = false;
-    }
-
     pub fn choose(self: *SelectState, index: u32) void {
         self.selected = index;
-        self.open = false;
     }
 
     pub fn below(self: *SelectState) void {
@@ -1609,10 +1599,7 @@ fn selectRender(cx: *Cx) void {
                 .key = "level",
                 .options = &SelectState.options,
                 .on_select = &on_select,
-                .on_toggle = cx.on(SelectState.toggle, .{}),
-                .on_close = cx.on(SelectState.close, .{}),
                 .selected = state.selected,
-                .open = state.open,
                 .accessible_name = "Level",
                 .accessible_description = "How far along you are",
             },
@@ -1655,7 +1642,7 @@ test "a Select's menu opens on a popover above content and outside its clip" {
     try testing.expect(comboboxState(app).has_popup);
 
     clickAt(app, &now, 20, 20);
-    try testing.expect(app.state.open);
+    try testing.expect(comboboxState(app).expanded);
     try testing.expect(comboboxState(app).expanded);
     const frame = app.window.rendered();
     var button: ?internals.records.Rect = null;
@@ -1681,12 +1668,12 @@ test "a Select's menu opens on a popover above content and outside its clip" {
     clickAt(app, &now, target.x + 10, target.y + 4);
     try testing.expectEqual(chosen.?, app.state.selected.?);
     try testing.expectEqual(@as(u32, 0), app.state.below_clicks);
-    try testing.expect(!app.state.open);
+    try testing.expect(!comboboxState(app).expanded);
 
     clickAt(app, &now, 20, 20);
-    try testing.expect(app.state.open);
+    try testing.expect(comboboxState(app).expanded);
     clickAt(app, &now, 390, 290);
-    try testing.expect(!app.state.open);
+    try testing.expect(!comboboxState(app).expanded);
     try testing.expectEqual(chosen.?, app.state.selected.?);
     try testing.expect(!comboboxState(app).expanded);
 }
@@ -1768,18 +1755,37 @@ test "a modal blocks the pointer on every fragment opened before it" {
     try testing.expectEqual(@as(u32, 1), app.state.below_clicks);
 }
 
+/// Whether nested_overlay's combobox shows its menu open in the frame on
+/// screen, and its bounds.
+fn overlayCombobox(app: *nested_overlay.App) *const internals.records.A11yNode {
+    const frame = app.window.rendered();
+    for (frame.a11y[0..frame.a11y_count]) |*node| {
+        if (node.role == .combobox) return node;
+    }
+    unreachable; // The example's modal always shows its Select.
+}
+
+fn overlayComboboxExpanded(app: *nested_overlay.App) bool {
+    return overlayCombobox(app).state.expanded;
+}
+
 test "nested_overlay: a Select's menu inside a modal sits above the modal" {
     // Goal: contract §6, "a layer opened inside a layer's fragment comes
     // after that fragment", through the ported 0.3.1 regression example.
-    // Method: the modal and its Select start open; the menu's options cover
-    // the modal's keyed yellow area. The options must come after the modal
-    // in paint and hit order and take the click over the area beneath.
+    // Method: the modal starts open; a click on its Select opens the menu,
+    // whose options cover the modal's keyed yellow area. The options must
+    // come after the modal in paint and hit order and take the click over
+    // the area beneath, which closes the menu.
     const app = try testing.allocator.create(nested_overlay.App);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
     defer app.deinitHeadless();
     var now: u64 = 0;
     app.tick(now);
+    try testing.expect(!overlayComboboxExpanded(app));
+    const combobox = overlayCombobox(app).bounds;
+    clickAt(app, &now, combobox.x + combobox.width / 2, combobox.y + combobox.height / 2);
+    try testing.expect(overlayComboboxExpanded(app));
     const frame = app.window.rendered();
     // Content has no hit records here, so the modal's are the first.
     const modal_start = frame.modal_hit_start;
@@ -1808,7 +1814,7 @@ test "nested_overlay: a Select's menu inside a modal sits above the modal" {
 
     clickAt(app, &now, x, y);
     try testing.expectEqual(@as(?usize, 1), app.state.selected);
-    try testing.expect(!app.state.select_open);
+    try testing.expect(!overlayComboboxExpanded(app));
 }
 
 fn dialogCount(frame: *const internals.records.Frame) u32 {
@@ -5450,7 +5456,7 @@ test "a radio group is one tab stop whose arrow keys select and wrap" {
     pressKey(app, &now, .down, .{});
     try expectFocused(&app.window, .option, "Beginner");
     pressKey(app, &now, .tab, .{ .shift = true });
-    try testing.expect(!app.state.experience_open);
+    try testing.expect(!formNode(app, .combobox, "Experience level").?.state.expanded);
     try expectFocused(&app.window, .checkbox, "Subscribe to newsletter");
     try testing.expectEqual(@as(?usize, null), app.state.experience_level);
 }
@@ -5593,7 +5599,7 @@ test "a Select opens, moves, and chooses from the keyboard" {
     try expectFocused(&app.window, .combobox, "Level");
     try expectRingAround(&app.window, focusedNode(&app.window).?.bounds);
     pressKey(app, &now, .down, .{});
-    try testing.expect(app.state.open);
+    try testing.expect(comboboxState(app).expanded);
     try expectFocused(&app.window, .option, "One");
     try testing.expectEqual(@as(?u16, 1), focusedNode(&app.window).?.pos_in_set);
     try testing.expectEqual(@as(?u16, 3), focusedNode(&app.window).?.set_size);
@@ -5610,13 +5616,13 @@ test "a Select opens, moves, and chooses from the keyboard" {
     try expectFocused(&app.window, .option, "Three");
     pressKey(app, &now, .@"return", .{});
     try testing.expectEqual(@as(?usize, 2), app.state.selected);
-    try testing.expect(!app.state.open);
+    try testing.expect(!comboboxState(app).expanded);
     try expectFocused(&app.window, .combobox, "Level");
 
     // Reopening starts on the chosen option, which alone is selected for
     // the screen reader; Esc closes without choosing.
     pressKey(app, &now, .space, .{});
-    try testing.expect(app.state.open);
+    try testing.expect(comboboxState(app).expanded);
     try expectFocused(&app.window, .option, "Three");
     try testing.expectEqual(@as(u32, 1), selectedOptions(&app.window));
     try testing.expect(focusedNode(&app.window).?.state.selected);
@@ -5624,7 +5630,7 @@ test "a Select opens, moves, and chooses from the keyboard" {
     try testing.expect(!focusedNode(&app.window).?.state.selected);
     pressKey(app, &now, .down, .{});
     pressKey(app, &now, .escape, .{});
-    try testing.expect(!app.state.open);
+    try testing.expect(!comboboxState(app).expanded);
     try testing.expectEqual(@as(?usize, 2), app.state.selected);
     try expectFocused(&app.window, .combobox, "Level");
 
@@ -5632,7 +5638,7 @@ test "a Select opens, moves, and chooses from the keyboard" {
     pressKey(app, &now, .up, .{});
     pressKey(app, &now, .space, .{});
     try testing.expectEqual(@as(?usize, 1), app.state.selected);
-    try testing.expect(!app.state.open);
+    try testing.expect(!comboboxState(app).expanded);
 }
 
 test "Tab from a Select's menu closes it and moves on, and a click opens it on the combobox" {
@@ -5654,9 +5660,9 @@ test "Tab from a Select's menu closes it and moves on, and a click opens it on t
     var ring: internals.records.Rect = undefined;
     pressKey(app, &now, .tab, .{});
     pressKey(app, &now, .down, .{});
-    try testing.expect(app.state.open);
+    try testing.expect(comboboxState(app).expanded);
     pressKey(app, &now, .tab, .{});
-    try testing.expect(!app.state.open);
+    try testing.expect(!comboboxState(app).expanded);
     try expectFocused(&app.window, .button, "Below");
     try expectRingAround(&app.window, focusedNode(&app.window).?.bounds);
     pressKey(app, &now, .tab, .{ .shift = true });
@@ -5664,7 +5670,7 @@ test "Tab from a Select's menu closes it and moves on, and a click opens it on t
     pressKey(app, &now, .space, .{});
     try expectFocused(&app.window, .option, "One");
     pressKey(app, &now, .tab, .{ .shift = true });
-    try testing.expect(!app.state.open);
+    try testing.expect(!comboboxState(app).expanded);
     try expectFocused(&app.window, .button, "Below");
     try testing.expectEqual(@as(u32, 0), app.state.below_clicks);
     try testing.expectEqual(@as(?usize, null), app.state.selected);
@@ -5672,11 +5678,11 @@ test "Tab from a Select's menu closes it and moves on, and a click opens it on t
     // A click opens the menu with focus on the combobox, ringless, where
     // Enter closes it again.
     clickAt(app, &now, 20, 20);
-    try testing.expect(app.state.open);
+    try testing.expect(comboboxState(app).expanded);
     try expectFocused(&app.window, .combobox, "Level");
     try testing.expectEqual(@as(u32, 0), focusRings(&app.window, &ring));
     pressKey(app, &now, .@"return", .{});
-    try testing.expect(!app.state.open);
+    try testing.expect(!comboboxState(app).expanded);
     try testing.expectEqual(@as(?usize, null), app.state.selected);
     try testing.expectEqual(@as(u32, 0), app.state.below_clicks);
 }
@@ -5705,7 +5711,7 @@ test "keys drained together after a Select choice leave its menu closed" {
     now += 1;
     app.tick(now);
     try testing.expectEqual(@as(?usize, 1), app.state.experience_level);
-    try testing.expect(!app.state.experience_open);
+    try testing.expect(!formNode(app, .combobox, "Experience level").?.state.expanded);
     try testing.expect(formNode(app, .listbox, "Experience level") == null);
     try expectFocused(&app.window, .button, "Submit registration form");
     // The last Enter submitted the empty form, which fails validation.

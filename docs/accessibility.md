@@ -117,10 +117,7 @@ Select{
     .key = "experience",
     .options = &State.experience_options,
     .on_select = &on_select,
-    .on_toggle = cx.on(State.toggleExperience, .{}),
-    .on_close = cx.on(State.closeExperience, .{}),
     .selected = self.experience_level,
-    .open = self.experience_open,
     .placeholder = "Select your experience level",
     // The default 200 is narrower than this placeholder (~202 pt
     // of text) plus padding and the chevron.

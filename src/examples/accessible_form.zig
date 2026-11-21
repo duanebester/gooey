@@ -43,7 +43,6 @@ pub const State = struct {
 
     // Experience level selection.
     experience_level: ?usize = null,
-    experience_open: bool = false,
 
     // Form status.
     form_submitted: bool = false,
@@ -82,19 +81,7 @@ pub const State = struct {
     pub fn selectExperience(self: *State, index: u32) void {
         assert(index < experience_options.len);
         self.experience_level = index;
-        self.experience_open = false;
         assert(self.experience_level.? == index);
-    }
-
-    pub fn toggleExperience(self: *State) void {
-        const was_open = self.experience_open;
-        self.experience_open = !self.experience_open;
-        assert(self.experience_open != was_open);
-    }
-
-    pub fn closeExperience(self: *State) void {
-        self.experience_open = false;
-        assert(!self.experience_open);
     }
 
     pub fn validate(self: *State) bool {
@@ -176,10 +163,7 @@ const FormBody = struct {
                 .contact_method = s.contact_method,
                 .newsletter = s.newsletter,
             },
-            ExperienceSection{
-                .experience_level = s.experience_level,
-                .experience_open = s.experience_open,
-            },
+            ExperienceSection{ .experience_level = s.experience_level },
             TermsSection{
                 .terms_accepted = s.terms_accepted,
                 .has_error = s.validation_errors.terms,
@@ -354,7 +338,6 @@ const ContactPreferencesSection = struct {
 
 const ExperienceSection = struct {
     experience_level: ?usize,
-    experience_open: bool,
 
     pub fn render(self: ExperienceSection, cx: *Cx) void {
         var on_select: [State.experience_options.len]Handler = undefined;
@@ -368,10 +351,7 @@ const ExperienceSection = struct {
                 .key = "experience",
                 .options = &State.experience_options,
                 .on_select = &on_select,
-                .on_toggle = cx.on(State.toggleExperience, .{}),
-                .on_close = cx.on(State.closeExperience, .{}),
                 .selected = self.experience_level,
-                .open = self.experience_open,
                 .placeholder = "Select your experience level",
                 // The default 200 is narrower than this placeholder (~202 pt
                 // of text) plus padding and the chevron.

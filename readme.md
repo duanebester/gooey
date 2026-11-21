@@ -888,7 +888,7 @@ import-ban` fails if `components/` or `charts/` reference `gooey.internals`. Imp
 | --------------- | --------------------------------------------------------------------------- |
 | `Button`        | `label`, `on_click`, `variant`, `size` (`.small`, `.medium`, `.large`)      |
 | `Checkbox`      | `checked`, `on_click`, optional `label`                                     |
-| `Select`        | Dropdown on a popover layer; the app owns `selected` and `open`             |
+| `Select`        | Dropdown on a popover layer; the app owns `selected`, the Select its menu   |
 | `RadioGroup`    | One tab stop, arrow keys select and wrap; the app owns `selected`           |
 | `Tooltip(Child)`| Text on a tooltip layer after a hover delay or on keyboard focus            |
 | `ContextMenu(Child)` | Right-click and Shift+F10 menu of `MenuItem` rows over `child`         |
@@ -898,6 +898,11 @@ import-ban` fails if `components/` or `charts/` reference `gooey.internals`. Imp
 | `TextArea`      | Multi-line input; `width = null` fills the parent; needs `limits.text.area` |
 | `CodeEditor`    | Line numbers, status bar, Tab indent; needs `limits.text.editor`            |
 | `Lucide`        | SVG data for every Lucide icon, for `Painter.svg`                           |
+
+The app owns values, such as `selected`, `checked`, and bound text; a component owns its
+transient state, such as whether a `Select`'s menu or a `ContextMenu` is open and a
+`Tooltip`'s hover timing. Whether a `Modal` shows is the app's decision, so the app owns
+`open`.
 
 `Select` takes one handler per option. From `nested_overlay.zig`:
 
@@ -913,10 +918,7 @@ import-ban` fails if `components/` or `charts/` reference `gooey.internals`. Imp
                 .key = "nested-select",
                 .options = &options,
                 .on_select = &on_select,
-                .on_toggle = cx.on(State.toggleSelect, .{}),
-                .on_close = cx.on(State.closeSelect, .{}),
                 .selected = state.selected,
-                .open = state.select_open,
                 .width = 280,
             },
 ```
