@@ -242,6 +242,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "code-editor", .source = "src/examples/code_editor.zig" },
             .{ .name = "dashboard", .source = "src/examples/dashboard.zig" },
             .{ .name = "splitter", .source = "src/examples/splitter.zig" },
+            .{ .name = "text-area", .source = "src/examples/text_area.zig" },
             .{ .name = "drag-drop", .source = "src/examples/drag_drop.zig" },
             .{ .name = "background", .source = "src/examples/background.zig" },
             .{ .name = "logo", .source = "src/examples/logo.zig" },
@@ -644,6 +645,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "data-table", .source = "src/examples/data_table_example.zig" },
             .{ .name = "dashboard", .source = "src/examples/dashboard.zig" },
             .{ .name = "splitter", .source = "src/examples/splitter.zig" },
+            .{ .name = "text-area", .source = "src/examples/text_area.zig" },
             .{ .name = "drag-drop", .source = "src/examples/drag_drop.zig" },
             .{ .name = "background", .source = "src/examples/background.zig" },
             .{ .name = "logo", .source = "src/examples/logo.zig" },
@@ -1003,6 +1005,7 @@ fn addWindowsBuilds(
         .{ .name = "layout", .source = "src/examples/layout.zig" },
         .{ .name = "dynamic-counters", .source = "src/examples/dynamic_counters.zig" },
         .{ .name = "splitter", .source = "src/examples/splitter.zig" },
+        .{ .name = "text-area", .source = "src/examples/text_area.zig" },
         .{ .name = "drag-drop", .source = "src/examples/drag_drop.zig" },
         .{ .name = "background", .source = "src/examples/background.zig" },
     };
@@ -1316,6 +1319,7 @@ fn addMacosCoreExampleTypecheck(
         "animation",
         "splitter",
         "drag_drop",
+        "text_area",
         "background",
     };
     for (examples) |name| {
@@ -2314,6 +2318,12 @@ fn goldensImports(
         .optimize = optimize,
         .imports = example_imports,
     });
+    const text_area_mod = b.createModule(.{
+        .root_source_file = b.path("src/examples/text_area.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = example_imports,
+    });
     return b.allocator.dupe(std.Build.Module.Import, &.{
         .{ .name = "accessible_form_example", .module = accessible_form_mod },
         .{ .name = "background_example", .module = background_mod },
@@ -2331,6 +2341,7 @@ fn goldensImports(
         .{ .name = "lucide_example", .module = lucide_mod },
         .{ .name = "nested_overlay_example", .module = nested_overlay_mod },
         .{ .name = "splitter_example", .module = splitter_mod },
+        .{ .name = "text_area_example", .module = text_area_mod },
         .{ .name = "todo_example", .module = todo_mod },
         .{ .name = "virtual_list_example", .module = virtual_list_mod },
     }) catch @panic("OOM");

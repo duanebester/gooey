@@ -929,10 +929,11 @@ pub const WrapResult = struct {
 };
 
 /// Wrap text into lines based on available width. Two passes per batch:
-///   1. `scanWords` measures each word ONCE, until the word scratch is full
-///      or the text ends.
-///   2. `accumulateWordsIntoLines` packs the batch's words onto lines,
-///      carrying the line in progress into the next batch.
+///   1. `scanWords` measures each word ONCE, and each space and tab after
+///      it at its own advance, until the word scratch is full or the text
+///      ends.
+///   2. `LinePacker` packs the batch's words onto lines, carrying the line
+///      in progress into the next batch.
 /// A text of any length wraps exactly as it would in one batch: the word
 /// scratch bounds a batch, not a text, and the frame's line budget bounds
 /// the lines. Returns a slice allocated from the per-frame arena, so it is
@@ -940,7 +941,7 @@ pub const WrapResult = struct {
 ///
 /// Work: one measurement per word (cached by the text system) and one line
 /// record per line; batches of `word_count_text_max` words keep the scratch
-/// at 20 KiB whatever the text's length.
+/// at 24 KiB whatever the text's length.
 pub fn wrapText(
     engine: *LayoutEngine,
     text_str: []const u8,
@@ -994,8 +995,6 @@ pub fn measureWrapped(
     if (config.wrap_mode == .none or max_width <= 0 or text_str.len == 0) return one_line;
     var lines: BoundedList(types.WrappedLine) = .{ .buffer = engine.line_scratch };
     const max_line_width = wrapLines(engine, text_str, config, max_width, &lines);
-    // A text of only spaces wraps to no lines; layout keeps its measure.
-    if (lines.len == 0) return one_line;
     const line_count: f32 = @floatFromInt(lines.len);
     const result: engine_mod.TextMeasurement = .{
         .width = max_line_width,
@@ -1022,8 +1021,14 @@ fn wrapLines(
     var words: BoundedList(WordInfo) = .{ .buffer = engine.word_scratch };
     const user_data = engine.measure_text_user_data;
     var scan = WordScanState.init(text_str, measure_fn, config, user_data, &words);
-    var residual: LineResidual = .{};
-    var max_line_width: f32 = 0;
+    var packer: LinePacker = .{
+        .text = text_str,
+        .max_width = max_width,
+        .wrap_words = config.wrap_mode == .words,
+        .space_width = scan.space_width,
+        .tab_width = scan.tab_width,
+        .lines = lines,
+    };
     // Each full batch consumes at least one word, hence one byte.
     var batch_count: u32 = 0;
     while (true) : (batch_count += 1) {
@@ -1031,149 +1036,120 @@ fn wrapLines(
         words.len = 0;
         const done = scanWords(&scan);
         engine.word_count_used_max = @max(engine.word_count_used_max, words.len);
-        const batch_max = accumulateWordsIntoLines(
-            words.slice(),
-            config.wrap_mode,
-            max_width,
-            lines,
-            &residual,
-        );
-        max_line_width = @max(max_line_width, batch_max);
+        for (words.slice()) |*word| packer.pack(word);
         if (done) break;
     }
-    const final_max = finalizeLastLine(text_str, residual, lines);
+    // The last line runs to the text's end, whitespace included; a text
+    // ending in a newline has nothing after it.
+    if (packer.line_start < text_str.len) packer.finishLine(@intCast(text_str.len));
     engine.line_count_used_max = @max(engine.line_count_used_max, lines.len);
-    return @max(max_line_width, final_max);
+    std.debug.assert(lines.len > 0);
+    return packer.widest;
 }
 
-/// Carryover from the accumulator into `finalizeLastLine`: the byte offset
-/// where the in-progress line started and its accumulated width (sans
-/// trailing whitespace).
-const LineResidual = struct {
+/// Packs measured words onto lines as GPUI's `LineWrapper` does: a line's
+/// width is the advance of every codepoint on it, its leading whitespace
+/// and each space and tab included. A word's whitespace stays on its line,
+/// before the break, and counts toward fitting it, so a drawn line never
+/// passes the wrap width: a word that does not fit after what the line
+/// holds, or whose whitespace does not, starts the next line. Whitespace
+/// that does not fit even then breaks where it overflows, so the rest leads
+/// the next line. A line's first word stays whole however wide; that is
+/// the one line that may pass the width. With `.newlines`, only newlines
+/// break. The line in progress carries from one batch of words to the
+/// next, so a text wraps as it would in one batch.
+const LinePacker = struct {
+    text: []const u8,
+    max_width: f32,
+    wrap_words: bool,
+    space_width: f32,
+    tab_width: f32,
+    lines: *BoundedList(types.WrappedLine),
+    /// The line in progress: its first byte, and the advance of every
+    /// codepoint packed on it so far.
     line_start: u32 = 0,
     line_width: f32 = 0,
-    /// `line_width` plus the last word's trailing space, so a word in the
-    /// next batch packs as it would in this one.
-    line_width_with_space: f32 = 0,
-};
+    /// The widest finished line.
+    widest: f32 = 0,
 
-/// Walk pre-measured words and pack them onto lines. The two-flavor state
-/// (`line_width` without trailing space, `line_width_with_space` with it)
-/// matters because trailing whitespace should never push a word off-screen.
-/// `residual` carries the line in progress in from the previous batch and
-/// out to the next one, or to `finalizeLastLine` after the last. Returns the
-/// widest line this batch finished.
-fn accumulateWordsIntoLines(
-    words: []const WordInfo,
-    wrap_mode: TextConfig.WrapMode,
-    max_width: f32,
-    lines: *BoundedList(types.WrappedLine),
-    residual: *LineResidual,
-) f32 {
-    std.debug.assert(max_width >= 0);
-    std.debug.assert(wrap_mode != .none);
-
-    var max_line_width: f32 = 0;
-    // The line in progress, carried in from the previous batch.
-    var line_start: u32 = residual.line_start; // byte offset where current line starts
-    var line_width: f32 = residual.line_width; // width without trailing space
-    var line_width_with_space: f32 = residual.line_width_with_space;
-
-    for (words) |word| {
-        if (word.has_newline) {
-            // The word before a break packs like any other: past the width,
-            // the line so far ends first and the word starts the next one.
-            const overflows = line_width_with_space + word.width > max_width;
-            if (wrap_mode == .words and overflows and line_width > 0) {
-                appendLine(lines, .{
-                    .start_offset = line_start,
-                    .length = word.start - line_start,
-                    .width = line_width,
-                });
-                max_line_width = @max(max_line_width, line_width);
-                line_start = word.start;
-                line_width_with_space = 0;
-            }
-            // Then the break ends the line, its last word after its space; a
-            // break with no word before it ends the line at its last word.
-            const has_word = word.end > word.start;
-            const total_width = if (has_word) line_width_with_space + word.width else line_width;
-            appendLine(lines, .{
-                .start_offset = line_start,
-                .length = word.end - line_start,
-                .width = total_width,
-            });
-            max_line_width = @max(max_line_width, total_width);
-
-            line_start = word.end + 1; // +1 to skip the newline byte
-            line_width = 0;
-            line_width_with_space = 0;
-            continue;
-        }
-
-        const potential_width = line_width_with_space + word.width;
-        if (wrap_mode == .words and potential_width > max_width and line_width > 0) {
-            // Overflow - emit current line WITHOUT this word.
-            appendLine(lines, .{
-                .start_offset = line_start,
-                .length = word.start - line_start,
-                .width = line_width,
-            });
-            max_line_width = @max(max_line_width, line_width);
-
-            line_start = word.start;
-            line_width = word.width;
-            line_width_with_space = word.width + word.trailing_space_width;
-        } else if (wrap_mode == .words and word.width > max_width and line_width == 0) {
-            // Single word is wider than max_width - force it onto its own line.
-            appendLine(lines, .{
-                .start_offset = word.start,
-                .length = word.end - word.start,
-                .width = word.width,
-            });
-            max_line_width = @max(max_line_width, word.width);
-
-            line_start = word.end;
-            if (word.trailing_space_width > 0) line_start += 1; // Assume single-byte space
-            line_width = 0;
-            line_width_with_space = 0;
+    fn pack(self: *LinePacker, word: *const WordInfo) void {
+        std.debug.assert(self.line_start <= word.start);
+        std.debug.assert(word.start <= word.end);
+        std.debug.assert(word.end <= word.space_end);
+        std.debug.assert(word.space_end <= self.text.len);
+        if (!self.wrap_words) {
+            self.line_width += word.width + word.space_width;
         } else {
-            // Word fits - add it to current line.
-            line_width = line_width_with_space + word.width;
-            line_width_with_space = line_width + word.trailing_space_width;
+            self.packWord(word);
+        }
+        if (word.has_newline) {
+            std.debug.assert(self.text[word.space_end] == '\n');
+            self.finishLine(word.space_end);
+            self.line_start = word.space_end + 1; // The newline byte.
         }
     }
 
-    residual.* = .{
-        .line_start = line_start,
-        .line_width = line_width,
-        .line_width_with_space = line_width_with_space,
-    };
-    return max_line_width;
-}
+    /// The word, then its whitespace in one step when all of it fits, as
+    /// most does, else codepoint by codepoint (`packSpace`).
+    fn packWord(self: *LinePacker, word: *const WordInfo) void {
+        std.debug.assert(self.wrap_words);
+        const holds = word.start > self.line_start;
+        if (holds and self.line_width + word.width > self.max_width) {
+            self.finishLine(word.start);
+            self.line_start = word.start;
+        }
+        const width_before = self.line_width;
+        self.line_width += word.width;
+        if (self.line_width + word.space_width <= self.max_width) {
+            self.line_width += word.space_width;
+            return;
+        }
+        self.packSpace(word, width_before);
+    }
 
-/// Emit the trailing line if any content remains past the accumulator's
-/// last line break, stashing its `line_width`. Returns the width
-/// contribution so `wrapText` can fold it into `max_line_width`.
-fn finalizeLastLine(
-    text_str: []const u8,
-    residual: LineResidual,
-    lines: *BoundedList(types.WrappedLine),
-) f32 {
-    if (residual.line_start >= text_str.len) return 0;
+    /// The whitespace after `word` that does not all fit, one byte (a space
+    /// or tab) at a time. Its first overflow moves the word, with the
+    /// whitespace so far, to the next line, unless the word is the line's
+    /// first; an overflow there breaks inside the whitespace.
+    fn packSpace(self: *LinePacker, word: *const WordInfo, width_before: f32) void {
+        var word_first = word.start == self.line_start;
+        var position = word.end;
+        while (position < word.space_end) : (position += 1) {
+            const byte = self.text[position];
+            std.debug.assert(byte == ' ' or byte == '\t');
+            const advance = if (byte == '\t') self.tab_width else self.space_width;
+            if (self.line_width + advance > self.max_width and !word_first) {
+                const moved = self.line_width - width_before;
+                self.line_width = width_before;
+                self.finishLine(word.start);
+                self.line_start = word.start;
+                self.line_width = moved;
+                word_first = true;
+            }
+            if (self.line_width + advance > self.max_width and position > self.line_start) {
+                self.finishLine(position);
+                self.line_start = position;
+            }
+            self.line_width += advance;
+        }
+        std.debug.assert(position == word.space_end);
+    }
 
-    // Trim trailing whitespace from final line.
-    const remaining = text_str[residual.line_start..];
-    const trimmed = std.mem.trimEnd(u8, remaining, " \t\n");
-    if (trimmed.len == 0) return 0;
-
-    appendLine(lines, .{
-        .start_offset = residual.line_start,
-        .length = @intCast(trimmed.len),
-        .width = residual.line_width,
-    });
-    return residual.line_width;
-}
+    /// End the line in progress at `end`, exclusive, and start an empty one
+    /// there; the caller moves `line_start` past a newline.
+    fn finishLine(self: *LinePacker, end: u32) void {
+        std.debug.assert(self.line_start <= end);
+        std.debug.assert(self.line_width >= 0);
+        appendLine(self.lines, .{
+            .start_offset = self.line_start,
+            .length = end - self.line_start,
+            .width = self.line_width,
+        });
+        self.widest = @max(self.widest, self.line_width);
+        self.line_start = end;
+        self.line_width = 0;
+    }
+};
 
 /// Count a text's lines against the frame's budget before they take arena
 /// space, so an over-budget frame names the pool instead of failing as an
@@ -1215,21 +1191,30 @@ fn appendWord(words: *BoundedList(WordInfo), word: WordInfo) void {
 // Word-boundary scanning
 // ============================================================================
 
-/// Scanner state for `findWordBoundaries`. Split out so the inner loop can
-/// stay a pure switch on the current codepoint without a long `if` chain.
+/// Scanner state for `findWordBoundaries`: the unit in progress, a word and
+/// the run of spaces and tabs after it. A paragraph's leading whitespace is
+/// a unit with an empty word.
 const WordScanState = struct {
     text: []const u8,
     measure_fn: MeasureTextFn,
     config: TextConfig,
     user_data: ?*anyopaque,
     words: *BoundedList(WordInfo),
-    cached_space_width: f32,
-    word_start: u32 = 0,
+    /// A space's and a tab's advance, measured once: constant for a font
+    /// and size, they save a measure call per whitespace byte.
+    space_width: f32,
+    tab_width: f32,
     byte_pos: u32 = 0,
-    in_word: bool = false,
+    phase: Phase = .idle,
+    /// The unit's word: its first byte, its end once measured, and width.
+    word_start: u32 = 0,
+    word_end: u32 = 0,
+    word_width: f32 = 0,
+    /// The advance of the unit's whitespace so far.
+    space_width_sum: f32 = 0,
 
-    /// Cache the space width: constant for a given font_id/font_size, it
-    /// saves a measure call per word boundary.
+    const Phase = enum { idle, word, space };
+
     fn init(
         text: []const u8,
         measure_fn: MeasureTextFn,
@@ -1240,14 +1225,55 @@ const WordScanState = struct {
         std.debug.assert(text.len > 0);
         std.debug.assert(words.len == 0);
         const space = measure_fn(" ", config.font_id, config.font_size, null, user_data);
+        const tab = measure_fn("\t", config.font_id, config.font_size, null, user_data);
+        std.debug.assert(space.width >= 0);
+        std.debug.assert(tab.width >= 0);
         return .{
             .text = text,
             .measure_fn = measure_fn,
             .config = config,
             .user_data = user_data,
             .words = words,
-            .cached_space_width = space.width,
+            .space_width = space.width,
+            .tab_width = tab.width,
         };
+    }
+
+    /// Measure the word that ends at `byte_pos`, once.
+    fn endWord(self: *WordScanState) void {
+        std.debug.assert(self.phase == .word);
+        std.debug.assert(self.word_start < self.byte_pos);
+        const word_text = self.text[self.word_start..self.byte_pos];
+        const config = self.config;
+        const size = self.measure_fn(word_text, config.font_id, config.font_size, null, self.user_data);
+        self.word_end = self.byte_pos;
+        self.word_width = size.width;
+        self.space_width_sum = 0;
+        self.phase = .space;
+    }
+
+    /// Start a unit at `byte_pos`: a word, or whitespace with no word.
+    fn startUnit(self: *WordScanState, phase: Phase) void {
+        std.debug.assert(phase != .idle);
+        self.word_start = self.byte_pos;
+        self.word_end = self.byte_pos;
+        self.word_width = 0;
+        self.space_width_sum = 0;
+        self.phase = phase;
+    }
+
+    /// Append the unit in progress, its whitespace ending at `byte_pos`.
+    fn emitUnit(self: *WordScanState, has_newline: bool) void {
+        std.debug.assert(self.phase == .space);
+        appendWord(self.words, .{
+            .start = self.word_start,
+            .end = self.word_end,
+            .space_end = self.byte_pos,
+            .width = self.word_width,
+            .space_width = self.space_width_sum,
+            .has_newline = has_newline,
+        });
+        self.phase = .idle;
     }
 };
 
@@ -1267,11 +1293,12 @@ pub fn findWordBoundaries(
     return words.len;
 }
 
-/// Scan from where the last batch stopped, appending each word measured
-/// once, until `words` is full or the text ends. Returns whether the text
-/// ended; a full batch resumes at the codepoint it stopped before. Each
-/// codepoint appends at most one word, so a free slot at the top of the
-/// loop is room for it.
+/// Scan from where the last batch stopped, appending each unit (a word
+/// measured once, and the spaces and tabs after it, each at its own
+/// advance) until `words` is full or the text ends. Returns whether the
+/// text ended; a full batch resumes at the codepoint it stopped before.
+/// Each codepoint appends at most one unit, so a free slot at the top of
+/// the loop is room for it.
 fn scanWords(state: *WordScanState) bool {
     const text_str = state.text;
     std.debug.assert(text_str.len > 0);
@@ -1285,96 +1312,31 @@ fn scanWords(state: *WordScanState) bool {
         const codepoint_len: u32 = @intCast(codepoint_slice.len);
         const c = codepoint_slice[0]; // First byte for ASCII checks
         const is_ascii = codepoint_len == 1;
-        const is_space = is_ascii and (c == ' ' or c == '\t');
-        const is_newline = is_ascii and c == '\n';
-
-        if (is_newline) {
-            emitOnNewline(state);
-            state.in_word = false;
-            state.word_start = state.byte_pos + codepoint_len;
-            state.byte_pos += codepoint_len;
-            continue;
-        } else if (is_space) {
-            if (state.in_word) {
-                emitOnSpace(state);
-                state.in_word = false;
-            }
-            // Skip leading/consecutive spaces - next word starts after this space
-            state.word_start = state.byte_pos + codepoint_len;
+        if (is_ascii and c == '\n') {
+            // A newline ends the unit in progress, or an empty one.
+            if (state.phase == .word) state.endWord();
+            if (state.phase == .idle) state.startUnit(.space);
+            state.emitUnit(true);
+        } else if (is_ascii and (c == ' ' or c == '\t')) {
+            if (state.phase == .word) state.endWord();
+            if (state.phase == .idle) state.startUnit(.space);
+            state.space_width_sum += if (c == '\t') state.tab_width else state.space_width;
         } else {
-            // Regular character - start or continue word
-            if (!state.in_word) {
-                state.word_start = state.byte_pos;
-                state.in_word = true;
-            }
+            // A word starts after whitespace, which ends the unit before.
+            if (state.phase == .space) state.emitUnit(false);
+            if (state.phase == .idle) state.startUnit(.word);
         }
-
         state.byte_pos += codepoint_len;
         std.debug.assert(iter.i == state.byte_pos);
     }
 
-    // Final word (no trailing space/newline): one more slot.
-    if (state.in_word and state.word_start < text_str.len) {
+    // The last unit, if the text does not end in a newline: one more slot.
+    if (state.phase != .idle) {
         if (state.words.len == state.words.buffer.len) return false;
-        emitFinalWord(state);
-        state.in_word = false;
+        if (state.phase == .word) state.endWord();
+        state.emitUnit(false);
     }
     return true;
-}
-
-/// Append a word at a newline boundary.
-fn emitOnNewline(state: *WordScanState) void {
-    if (state.in_word) {
-        const word_text = state.text[state.word_start..state.byte_pos];
-        const word_width = state.measure_fn(word_text, state.config.font_id, state.config.font_size, null, state.user_data).width;
-        appendWord(state.words, .{
-            .start = state.word_start,
-            .end = state.byte_pos,
-            .width = word_width,
-            .trailing_space_width = 0,
-            .has_newline = true,
-        });
-    } else {
-        // Empty line (newline with no preceding word content)
-        appendWord(state.words, .{
-            .start = state.byte_pos,
-            .end = state.byte_pos,
-            .width = 0,
-            .trailing_space_width = 0,
-            .has_newline = true,
-        });
-    }
-}
-
-/// Append a word ending at a space character. Caller guarantees `in_word`.
-fn emitOnSpace(state: *WordScanState) void {
-    std.debug.assert(state.in_word);
-
-    const word_text = state.text[state.word_start..state.byte_pos];
-    const word_width = state.measure_fn(word_text, state.config.font_id, state.config.font_size, null, state.user_data).width;
-    appendWord(state.words, .{
-        .start = state.word_start,
-        .end = state.byte_pos,
-        .width = word_width,
-        .trailing_space_width = state.cached_space_width,
-        .has_newline = false,
-    });
-}
-
-/// Append the trailing word at end-of-string (no terminating space/newline).
-fn emitFinalWord(state: *WordScanState) void {
-    std.debug.assert(state.in_word);
-    std.debug.assert(state.word_start < state.text.len);
-
-    const word_text = state.text[state.word_start..];
-    const word_width = state.measure_fn(word_text, state.config.font_id, state.config.font_size, null, state.user_data).width;
-    appendWord(state.words, .{
-        .start = state.word_start,
-        .end = @intCast(state.text.len),
-        .width = word_width,
-        .trailing_space_width = 0,
-        .has_newline = false,
-    });
 }
 
 // ============================================================================

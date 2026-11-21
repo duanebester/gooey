@@ -46,7 +46,7 @@ const limits_mod = @import("../core/limits.zig");
 /// capacity the budget does not name (CLAUDE.md §2).
 ///
 /// Memory per engine: `element_count_max` × 384 B of elements, `arena_bytes`,
-/// `word_count_text_max` × 20 B of word scratch and
+/// `word_count_text_max` × 24 B of word scratch and
 /// `wrapped_line_count_frame_max` × 12 B of line scratch, all from fresh
 /// pages and resident only as far as frames write. At `nano` that is 0.19 MiB
 /// of elements, a 72 KiB arena and 32 KiB of scratch.
@@ -117,13 +117,16 @@ pub const LayoutCapacity = struct {
 /// (detects grow elements without a meaningful upper bound in the fast path).
 pub const UNCONSTRAINED_MAX: f32 = 1e10;
 
-/// Word boundary info for text wrapping (measured once per word, not per char)
+/// One unit of text wrapping: a word, measured once, and the run of spaces
+/// and tabs after it, each at its own advance. A paragraph's leading
+/// whitespace is a unit with an empty word.
 pub const WordInfo = struct {
     start: u32, // byte offset where word starts
-    end: u32, // byte offset where word ends (exclusive)
+    end: u32, // byte offset where word ends (exclusive); its whitespace starts here
+    space_end: u32, // byte offset where its whitespace ends (exclusive)
     width: f32, // measured width of this word
-    trailing_space_width: f32, // width of trailing whitespace (space/tab)
-    has_newline: bool, // word ends with a forced newline
+    space_width: f32, // advance of its whitespace, every space and tab counted
+    has_newline: bool, // a newline at `space_end` ends the unit's line
 };
 
 // ============================================================================

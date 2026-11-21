@@ -275,8 +275,9 @@ test "a text past one shaping run draws and wraps as one run would" {
     // advances 8 px a letter and 4 px a space, 28 px a copy. Unwrapped,
     // every glyph must sit where one run would put it, across the runs it is
     // shaped in, and the text measures 750 copies. Wrapped at 400 px, a line
-    // holds 14 copies (388 px without its trailing space), so 54 lines of 56
-    // codepoints, each starting at the left edge one line below the last.
+    // holds 14 copies (392 px with its trailing space, which counts toward
+    // fitting), so 54 lines of 56 codepoints, each starting at the left edge
+    // one line below the last.
     inline for (.{ false, true }) |wrap| {
         const app = try testing.allocator.create(LongTextApp);
         defer testing.allocator.destroy(app);
@@ -285,9 +286,9 @@ test "a text past one shaping run draws and wraps as one run would" {
         app.state.wrap = wrap;
         app.tick(0);
         const frame = app.window.rendered();
-        // The synthetic face draws a box for a space too; the last wrapped
-        // line drops its trailing space.
-        try testing.expectEqual(@as(u32, if (wrap) 2_999 else 3_000), spriteCount(frame));
+        // The synthetic face draws a box for a space too, and every line,
+        // the last included, draws its spaces.
+        try testing.expectEqual(@as(u32, 3_000), spriteCount(frame));
         var first: ?internals.records.Rect = null;
         var codepoint: u32 = 0;
         var previous_y: f32 = 0;
@@ -313,6 +314,71 @@ test "a text past one shaping run draws and wraps as one run would" {
             try testing.expectEqual(@as(f32, 750 * 28), text_element.computed.bounding_box.width);
         }
     }
+}
+
+/// Texts whose whitespace the wrap once measured short, each wrapped in a
+/// 40 px box at 16 px (the synthetic face: a letter 8 px, a space 4 px, a
+/// tab 5.6 px).
+const WrapSpaceState = struct {
+    case: u32 = 0,
+
+    const cases = [_][]const u8{
+        // Five spaces: drawn 52 px, once measured as one space, 36 px.
+        "aa     aa",
+        // Two tabs: drawn 43.2 px, once measured as one space, 36 px.
+        "aa\t\taa",
+        // Three spaces leading the second line: drawn 48 px, once 36 px.
+        "aa\n   aa aa",
+    };
+};
+
+const WrapSpaceApp = gooey.App(WrapSpaceState, wrapSpaceRender, .{
+    .title = "Wrap spaces",
+    .width = 200,
+    .height = 200,
+    .limits = .small,
+});
+
+fn wrapSpaceRender(cx: *Cx) void {
+    const state = cx.state(WrapSpaceState);
+    cx.render(ui.box(.{ .style = .{ .width = .{ .fixed = 40 } } }, .{
+        ui.text(WrapSpaceState.cases[state.case], .{ .size = 16, .wrap = .words }),
+    }));
+}
+
+test "a wrapped line's glyphs stay inside the wrap width" {
+    // Goal: words wrapping keeps every line's glyphs within the text's
+    // container. Method: wrap each case in a 40 px box at x 0 and require
+    // every glyph sprite (spaces and tabs draw boxes too) to end by x 40.
+    // The text_area VOPR found the overflow: the wrap gave a run of spaces
+    // or tabs one space's width, and did not count a line's leading spaces,
+    // while `emitText` draws every byte of the line. Each space and tab now
+    // counts at its own advance, as GPUI's `LineWrapper` counts them.
+    var overflow_count: u32 = 0;
+    for (0..WrapSpaceState.cases.len) |case| {
+        const app = try testing.allocator.create(WrapSpaceApp);
+        defer testing.allocator.destroy(app);
+        try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+        defer app.deinitHeadless();
+        app.state.case = @intCast(case);
+        app.tick(0);
+        const frame = app.window.rendered();
+        try testing.expect(spriteCount(frame) > 0);
+        var right_max: f32 = 0;
+        for (frame.paint[0..frame.paint_count]) |record| {
+            if (record != .sprite) continue;
+            right_max = @max(right_max, record.sprite.bounds.x + record.sprite.bounds.width);
+        }
+        if (right_max > 40.001) {
+            std.debug.print("case {d} \"{s}\": glyphs end at {d} px\n", .{
+                case,
+                WrapSpaceState.cases[case],
+                right_max,
+            });
+            overflow_count += 1;
+        }
+    }
+    try testing.expectEqual(@as(u32, 0), overflow_count);
 }
 
 /// Texts `cx.measureText` measures during render, each also laid out in a
@@ -362,8 +428,9 @@ test "cx.measureText sizes a text as layout lays it out" {
     // in a box as wide as its `max_width`; the text element layout sizes
     // must match the measure. The synthetic face advances 8 px a letter and
     // 4 px a space at 16 px, so the widths are also checked by hand: two
-    // lines of 52 px, one of 80 px, and 54 lines of 388 px for the text
-    // past one shaping run.
+    // lines, the first "abc abc " 56 px with the space that counts toward
+    // fitting it; one of 80 px; and 54 lines of 392 px for the text past one
+    // shaping run.
     const app = try testing.allocator.create(MeasureApp);
     defer testing.allocator.destroy(app);
     try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
@@ -380,12 +447,12 @@ test "cx.measureText sizes a text as layout lays it out" {
     }
     try testing.expectEqual(@as(u32, measure_cases.len), case_index);
     const line_height = measured[1].height;
-    try testing.expectEqual(@as(f32, 52), measured[0].width);
+    try testing.expectEqual(@as(f32, 56), measured[0].width);
     try testing.expectApproxEqAbs(line_height * 2, measured[0].height, 0.5);
     try testing.expectEqual(@as(f32, 80), measured[1].width);
     try testing.expectApproxEqAbs(line_height * 3, measured[2].height, 1);
     try testing.expect(measured[3].height > measured[0].height);
-    try testing.expectEqual(@as(f32, 388), measured[6].width);
+    try testing.expectEqual(@as(f32, 392), measured[6].width);
     try testing.expectApproxEqAbs(line_height * 54, measured[6].height, 27);
 }
 
@@ -2386,8 +2453,9 @@ test "wrapped text draws one run per line, pitched and aligned like its layout b
     // Goal: decision 9's `wrap`, `line_height`, and `alignment`. Methodology:
     // the synthetic face advances 'm' by 0.8 em and space by 0.25 em with a
     // 1.2 em line height, so at 10 px "mmm" is 24 px, a space 2.5 px, and a
-    // line 12 px. In 100 px, ".words" fits three words (77 px) and wraps the
-    // fourth (24 px); right-aligned they start 23 and 76 px in, 18 px apart
+    // line 12 px. In 100 px, ".words" fits three words and their spaces
+    // (79.5 px: the last space stays on the line and counts) and wraps the
+    // fourth (24 px); right-aligned they start 20.5 and 76 px in, 18 px apart
     // at 150%. ".newlines" ignores the width: "mm" (16 px) and the 103.5 px
     // line center at 42 and -1.75 px, 12 px apart. Each block's height is
     // its line count times its pitch (36 and 24 px), so the blocks stack
@@ -2402,7 +2470,7 @@ test "wrapped text draws one run per line, pitched and aligned like its layout b
     var starts: [8]internals.records.Rect = undefined;
     try testing.expectEqual(@as(u32, 5), lineStarts(&app.window, &starts));
     const reference = starts[4];
-    const expected_x = [_]f32{ 23, 76, 42, -1.75 };
+    const expected_x = [_]f32{ 20.5, 76, 42, -1.75 };
     const expected_y = [_]f32{ -60, -42, -24, -12 };
     for (starts[0..4], expected_x, expected_y) |start, x, y| {
         try testing.expectApproxEqAbs(x, start.x - reference.x, 1);
