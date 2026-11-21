@@ -87,6 +87,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    bench_mod.addImport("bench_options", benchOptionsModule(b, .{ .fixed_iterations = false }));
 
     // Benchmark comparison threshold (optional, default 15%).
     // Usage: zig build bench-compare -Dbench-threshold=10 -- old.json new.json
@@ -927,6 +928,13 @@ pub fn build(b: *std.Build) void {
         valgrind_run.addFileArg2(b.path("valgrind.supp"), .{ .prefix = "--suppressions=" });
         valgrind_run.addArtifactArg(valgrind_tests);
         test_valgrind_step.dependOn(&valgrind_run.step);
+
+        addBenchIrGate(b, .{
+            .valgrind_target = valgrind_target,
+            .gooey_options = untraced_options_mod,
+            .linux_backend = linux_backend,
+            .test_step = test_step,
+        });
     }
 
     addWasmBuilds(b, frame_trace);
@@ -1938,6 +1946,92 @@ fn addLinuxDefaultSteps(
     run_cmd.addPassthruArgs();
     run_cmd.step.dependOn(&install.step);
     run_step.dependOn(&run_cmd.step);
+}
+
+/// Build options for the `bench` module. The Cachegrind gate sets
+/// `fixed_iterations` so every benchmark runs a fixed number of iterations.
+fn benchOptionsModule(b: *std.Build, values: struct { fixed_iterations: bool }) *std.Build.Module {
+    const options = b.addOptions();
+    options.addOption(bool, "fixed_iterations", values.fixed_iterations);
+    return options.createModule();
+}
+
+/// The Linux instruction-count gate (`src/bench/cachegrind_gate.zig`).
+///
+/// `bench-ir-build` installs the four benchmark harnesses into
+/// `zig-out/bench-ir/`, built ReleaseFast for the baseline CPU (Valgrind
+/// decodes nothing past AVX2) with fixed iteration counts and Valgrind client
+/// requests compiled in, so each run can instrument exactly one benchmark.
+/// `bench-ir-gate -- --base <dir> --head <dir>` runs both sides' harnesses
+/// under Cachegrind and fails on an instruction-count regression.
+fn addBenchIrGate(b: *std.Build, config: struct {
+    valgrind_target: std.Build.ResolvedTarget,
+    gooey_options: *std.Build.Module,
+    linux_backend: LinuxBackend,
+    test_step: *std.Build.Step,
+}) void {
+    const bench_mod = b.createModule(.{
+        .root_source_file = b.path("src/bench/json_writer.zig"),
+        .target = config.valgrind_target,
+        .optimize = .fast,
+        .valgrind = true,
+    });
+    bench_mod.addImport("bench_options", benchOptionsModule(b, .{ .fixed_iterations = true }));
+
+    const gooey_mod = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = config.valgrind_target,
+        .optimize = .fast,
+        .valgrind = true,
+    });
+    gooey_mod.addImport("gooey_build_options", config.gooey_options);
+    linkLinuxGooeyLibraries(gooey_mod, config.linux_backend);
+
+    const build_step = b.step("bench-ir-build", "Build the benchmarks for the Cachegrind gate");
+    const harnesses = [_]struct { name: []const u8, source: []const u8 }{
+        .{ .name = "layout-bench", .source = "src/layout/benchmarks.zig" },
+        .{ .name = "core-bench", .source = "src/core/benchmarks.zig" },
+        .{ .name = "text-bench", .source = "src/text/benchmarks.zig" },
+        .{ .name = "accessibility-bench", .source = "src/accessibility/benchmarks.zig" },
+    };
+    for (harnesses) |harness| {
+        const exe = b.addExecutable(.{
+            .name = harness.name,
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(harness.source),
+                .target = config.valgrind_target,
+                .optimize = .fast,
+                .valgrind = true,
+                .imports = &.{
+                    .{ .name = "gooey", .module = gooey_mod },
+                    .{ .name = "bench", .module = bench_mod },
+                },
+            }),
+        });
+        linkLinuxLibraries(exe, config.linux_backend);
+        const install = b.addInstallArtifact(exe, .{
+            .dest_dir = .{ .override = .{ .custom = "bench-ir" } },
+        });
+        build_step.dependOn(&install.step);
+    }
+
+    const gate_exe = b.addExecutable(.{
+        .name = "bench-ir-gate",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/bench/cachegrind_gate.zig"),
+            .target = b.graph.host,
+            .optimize = .safe,
+        }),
+    });
+    const gate_run = b.addRunArtifact(gate_exe);
+    gate_run.addPassthruArgs();
+    b.step(
+        "bench-ir-gate",
+        "Compare instruction counts: zig build bench-ir-gate -- --base <dir> --head <dir>",
+    ).dependOn(&gate_run.step);
+
+    const gate_tests = b.addTest(.{ .root_module = gate_exe.root_module });
+    config.test_step.dependOn(&b.addRunArtifact(gate_tests).step);
 }
 
 /// Links the macOS frameworks the `gooey` module needs (tests included).

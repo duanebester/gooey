@@ -70,7 +70,9 @@ fn getMinSampleIterations(node_count: u32) u32 {
     return 10;
 }
 
-const MIN_SAMPLE_TIME_NS: u64 = 50 * std.time.ns_per_ms; // 50ms for fast dev iteration
+/// Minimum wall-clock time to sample before concluding a benchmark; zero in
+/// the Cachegrind gate's fixed-iteration build (see `bench.sample_time_ns_min`).
+const MIN_SAMPLE_TIME_NS: u64 = bench.sample_time_ns_min;
 
 // =============================================================================
 // Benchmark Results
@@ -829,7 +831,6 @@ test "validate: nested_floating_overlays" {
 /// Print a layout benchmark result and record it in the JSON reporter.
 /// Maps the layout-specific `node_count` field to the common `operation_count`.
 fn collect(reporter: *bench.Reporter, result: BenchmarkResult) void {
-    result.print();
     reporter.addEntry(bench.entry(
         result.name,
         result.node_count,
@@ -837,6 +838,9 @@ fn collect(reporter: *bench.Reporter, result: BenchmarkResult) void {
         result.iterations,
         result.minPerOpNs(),
     ));
+    result.print();
+    // Printing stays outside the next benchmark's Cachegrind region.
+    reporter.beginBenchmark();
 }
 
 pub fn main(init: std.process.Init) !void {

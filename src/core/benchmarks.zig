@@ -89,8 +89,9 @@ fn getMinSampleIterations(operation_count: u32) u32 {
     return 10;
 }
 
-/// Minimum wall-clock time to sample before concluding a benchmark.
-const MIN_SAMPLE_TIME_NS: u64 = 50 * std.time.ns_per_ms;
+/// Minimum wall-clock time to sample before concluding a benchmark; zero in
+/// the Cachegrind gate's fixed-iteration build (see `bench.sample_time_ns_min`).
+const MIN_SAMPLE_TIME_NS: u64 = bench.sample_time_ns_min;
 
 // =============================================================================
 // Benchmark Results
@@ -960,9 +961,14 @@ fn runPackBenchmarks(reporter: *bench.Reporter, gpa: std.mem.Allocator) !void {
     printHeader();
     std.debug.print(&@as([105]u8, @splat('-')) ++ "\n", .{});
 
+    // Reserving the fixture is setup, not part of the first pack benchmark.
+    reporter.pauseBenchmark();
+
     var fixture: PackFixture = undefined;
     try fixture.init(gpa);
     defer fixture.deinit(gpa);
+
+    reporter.beginBenchmark();
     appendPackCards(&fixture.frame);
     const card_records = pack_card_count * pack_card_record_count;
     collect(reporter, benchPack("pack_cards_3712_records", &fixture, card_records));
@@ -1193,7 +1199,6 @@ test "validate: pack classifies the chart's shared edges" {
 
 /// Print a benchmark result and record it in the JSON reporter.
 fn collect(reporter: *bench.Reporter, result: BenchmarkResult) void {
-    result.print();
     reporter.addEntry(bench.entry(
         result.name,
         result.operation_count,
@@ -1201,6 +1206,9 @@ fn collect(reporter: *bench.Reporter, result: BenchmarkResult) void {
         result.iterations,
         result.minPerOpNs(),
     ));
+    result.print();
+    // Printing stays outside the next benchmark's Cachegrind region.
+    reporter.beginBenchmark();
 }
 
 pub fn main(init: std.process.Init) !void {

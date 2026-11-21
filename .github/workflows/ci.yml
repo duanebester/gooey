@@ -11,6 +11,7 @@
 #   - build-macos: Build all optimization levels on macOS
 #   - build-wasm: Build WebAssembly targets
 #   - valgrind: Memory leak detection (Linux only)
+#   - bench-ir: Instruction-count benchmark gate on PRs (Linux, not required)
 #   - zig-fmt: Code formatting check
 # =============================================================================
 
@@ -527,6 +528,101 @@ jobs:
               echo "_No comparison data produced._"
             fi
           } >> "${GITHUB_STEP_SUMMARY}"
+
+  # ==========================================================================
+  # Instruction-Count Benchmark Gate (Linux, PR only)
+  # ==========================================================================
+  # Builds the benchmarks of the PR's merge-base and of the PR (ReleaseFast,
+  # baseline CPU), runs each benchmark of both under Cachegrind in this one job,
+  # and fails when a benchmark's instruction count grows by more than 0.5%.
+  # Instruction counts repeat to within ~0.1%, unlike wall time on shared
+  # runners; see src/bench/cachegrind_gate.zig. Deliberately absent from
+  # Required Checks until its signal has been reviewed on real PRs.
+  bench-ir:
+    name: Benchmark Ir Gate (Linux)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          # The merge-base must be reachable to build the base side.
+          fetch-depth: 0
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            valgrind \
+            libvulkan-dev \
+            libwayland-dev \
+            libfreetype-dev \
+            libharfbuzz-dev \
+            libfontconfig-dev \
+            libpng-dev \
+            libdbus-1-dev
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Cache Zig
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/zig
+            zig-cache
+          key: zig-cache-bench-ir-${{ hashFiles('build.zig', 'build.zig.zon') }}
+          restore-keys: |
+            zig-cache-bench-ir-
+            zig-cache-linux-
+
+      # The checkout is the PR merged onto its base branch, so the merge-base
+      # with the base branch is the base branch's tip: the comparison isolates
+      # this PR's change. A base that predates the gate cannot build its
+      # harnesses, so the gate reports that and passes.
+      - name: Check out merge-base
+        id: base
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -eo pipefail
+          base_sha=$(git merge-base HEAD "origin/${BASE_REF}")
+          git worktree add --detach "${RUNNER_TEMP}/gooey-base" "${base_sha}"
+          echo "Base: ${BASE_REF} at ${base_sha}"
+          if grep -q '"bench-ir-build"' "${RUNNER_TEMP}/gooey-base/build.zig"; then
+            echo "supported=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "supported=false" >> "${GITHUB_OUTPUT}"
+            echo "Base ${base_sha} has no bench-ir-build step; nothing to compare." \
+              | tee -a "${GITHUB_STEP_SUMMARY}"
+          fi
+
+      - name: Build benchmarks (base and head)
+        if: steps.base.outputs.supported == 'true'
+        run: |
+          set -eo pipefail
+          (cd "${RUNNER_TEMP}/gooey-base" && zig build bench-ir-build -Dskip-shader-compile=true)
+          zig build bench-ir-build -Dskip-shader-compile=true
+
+      - name: Compare instruction counts
+        if: steps.base.outputs.supported == 'true'
+        run: |
+          set -eo pipefail
+          zig build bench-ir-gate -Dskip-shader-compile=true -- \
+            --base "${RUNNER_TEMP}/gooey-base/zig-out/bench-ir" \
+            --head "${PWD}/zig-out/bench-ir" \
+            --work "${RUNNER_TEMP}/bench-ir-work" \
+            | tee bench-ir-report.md
+
+      - name: Post instruction-count summary
+        if: always() && steps.base.outputs.supported == 'true'
+        run: |
+          if [ -s bench-ir-report.md ]; then
+            cat bench-ir-report.md >> "${GITHUB_STEP_SUMMARY}"
+          fi
 
   # ==========================================================================
   # Valgrind Memory Leak Detection

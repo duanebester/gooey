@@ -13,11 +13,33 @@
 //!
 //! When the process receives `--json-dir <path>`, the reporter writes:
 //!   <path>/<os>-<arch>-<module>-benchmarks-<mm-dd-yyyy>.json
+//!
+//! When the process receives `--cachegrind-benchmark <index>`, it is one run
+//! of the instruction-count gate (`bench/cachegrind_gate.zig`): the reporter
+//! turns Cachegrind instrumentation on for the benchmark with that ordinal
+//! only, and the process exits once that benchmark has been recorded.
 
 const std = @import("std");
 const builtin = @import("builtin");
 const Dir = std.Io.Dir;
 const Io = std.Io;
+const cachegrind = std.valgrind.cachegrind;
+const options = @import("bench_options");
+
+// =============================================================================
+// Sampling Policy
+// =============================================================================
+
+/// Minimum wall-clock time every harness loop samples before it concludes,
+/// in nanoseconds; each loop also runs a minimum iteration count.
+///
+/// The Cachegrind gate builds the harnesses with `fixed_iterations`, which
+/// makes this zero: every loop then runs exactly its minimum iteration count,
+/// so a benchmark executes the same work on every run and its instruction
+/// count is comparable between the base and the head of a pull request.
+/// Under Valgrind a wall-clock budget would instead buy a run-dependent
+/// number of iterations.
+pub const sample_time_ns_min: u64 = if (options.fixed_iterations) 0 else 50 * std.time.ns_per_ms;
 
 // =============================================================================
 // Limits
@@ -296,6 +318,14 @@ pub const Reporter = struct {
 
     json_enabled: bool = false,
 
+    /// Ordinal of the one benchmark a `--cachegrind-benchmark` run measures,
+    /// or null for an ordinary run.
+    cachegrind_index: ?u32 = null,
+
+    /// Benchmarks recorded so far, counting entries dropped at capacity, so
+    /// ordinals stay aligned with the harness's call order.
+    benchmark_seen_count: u32 = 0,
+
     /// I/O interface for file system operations (directory creation, file writing).
     /// Passed from the process entry point; defaults to `Io.failing` so that
     /// struct-literal initialisation (`.{}`) still compiles in tests where
@@ -325,12 +355,23 @@ pub const Reporter = struct {
         self.module_name_length = @intCast(module_name.len);
 
         self.parseArgs(argv);
+        // Benchmark 0 runs from here to the first `addEntry`.
+        if (self.cachegrind_index == 0) cachegrind.startInstrumentation();
         return self;
     }
 
     /// Append a benchmark entry to the collection.
+    ///
+    /// Each harness records every benchmark through this call right after
+    /// running it, before printing it, and calls `beginBenchmark` once it has
+    /// printed, so the work between `beginBenchmark` and `addEntry` is one
+    /// benchmark's alone. In a `--cachegrind-benchmark` run this is where
+    /// instrumentation stops for the measured benchmark, and the process exits
+    /// there: nothing after it is measured, and skipping the rest of the suite
+    /// halves the gate's time.
     pub fn addEntry(self: *Reporter, e: Entry) void {
         std.debug.assert(e.name_length > 0);
+        if (self.cachegrind_index) |index| self.cachegrindEnd(index);
         if (self.count >= MAX_ENTRIES) {
             std.debug.print(
                 "bench: WARNING — entry limit ({d}) reached, dropping \"{s}\"\n",
@@ -355,18 +396,56 @@ pub const Reporter = struct {
         };
     }
 
+    /// Mark the start of the next benchmark. Harnesses call this after
+    /// printing the previous result, so formatting timing values, whose cost
+    /// varies with the values, stays outside the measured region.
+    pub fn beginBenchmark(self: *const Reporter) void {
+        const index = self.cachegrind_index orelse return;
+        // The process exits at the measured benchmark, so no later one starts.
+        std.debug.assert(self.benchmark_seen_count <= index);
+        if (self.benchmark_seen_count == index) cachegrind.startInstrumentation();
+    }
+
+    /// Exclude harness setup that belongs to no benchmark, such as loading
+    /// fonts, from the next benchmark's region; `beginBenchmark` resumes it.
+    /// Font loading in particular reads fontconfig's caches and varies in
+    /// instruction count from run to run.
+    pub fn pauseBenchmark(self: *const Reporter) void {
+        const index = self.cachegrind_index orelse return;
+        std.debug.assert(self.benchmark_seen_count <= index);
+        if (self.benchmark_seen_count == index) cachegrind.stopInstrumentation();
+    }
+
+    /// End the Cachegrind region of the benchmark just recorded. Exits the
+    /// process once the measured benchmark has ended.
+    fn cachegrindEnd(self: *Reporter, index: u32) void {
+        std.debug.assert(self.benchmark_seen_count <= index);
+        if (self.benchmark_seen_count == index) {
+            cachegrind.stopInstrumentation();
+            std.process.exit(0);
+        }
+        self.benchmark_seen_count += 1;
+        std.debug.assert(self.benchmark_seen_count <= index);
+    }
+
     // =========================================================================
     // Arg Parsing (private)
     // =========================================================================
 
-    /// Scan `argv` for `--json-dir <path>`.  Zero allocation — the argv
-    /// slice is borrowed from `std.process.Init.args.vector`.
+    /// Scan `argv` for `--json-dir <path>` and `--cachegrind-benchmark
+    /// <index>`.  Zero allocation — the argv slice is borrowed from
+    /// `std.process.Init.args.vector`.
     fn parseArgs(self: *Reporter, argv: []const [*:0]const u8) void {
         // argv may be empty under test runners; only assert non-negative.
         var i: u32 = if (argv.len >= 1) 1 else 0;
         const argc: u32 = @intCast(argv.len);
         while (i < argc) : (i += 1) {
             const arg = std.mem.sliceTo(argv[i], 0);
+            if (std.mem.eql(u8, arg, "--cachegrind-benchmark")) {
+                self.cachegrind_index = parseCachegrindIndex(argv, i);
+                i += 1;
+                continue;
+            }
             if (!std.mem.eql(u8, arg, "--json-dir")) continue;
 
             // The directory path is the next argument.
@@ -387,7 +466,7 @@ pub const Reporter = struct {
             @memcpy(self.json_dir[0..dir.len], dir);
             self.json_dir_length = @intCast(dir.len);
             self.json_enabled = true;
-            return;
+            i += 1;
         }
     }
 
@@ -514,6 +593,22 @@ pub const Reporter = struct {
         );
     }
 };
+
+/// Parse the ordinal after `--cachegrind-benchmark` at `argv[flag_index]`.
+/// Only the gate passes this flag, so a missing or malformed value is a gate
+/// bug: fail fast rather than run unmeasured and report zero instructions.
+fn parseCachegrindIndex(argv: []const [*:0]const u8, flag_index: u32) u32 {
+    std.debug.assert(flag_index < argv.len);
+    std.debug.assert(std.mem.eql(u8, std.mem.sliceTo(argv[flag_index], 0), "--cachegrind-benchmark"));
+    if (flag_index + 1 < argv.len) {
+        const value = std.mem.sliceTo(argv[flag_index + 1], 0);
+        if (std.fmt.parseInt(u32, value, 10)) |index| {
+            if (index < MAX_ENTRIES) return index;
+        } else |_| {}
+    }
+    std.debug.print("bench: --cachegrind-benchmark requires an index below {d}\n", .{MAX_ENTRIES});
+    std.process.exit(2);
+}
 
 // =============================================================================
 // Tests
