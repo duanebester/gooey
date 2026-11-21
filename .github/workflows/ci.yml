@@ -11,6 +11,7 @@
 #   - build-macos: Build all optimization levels on macOS
 #   - build-wasm: Build WebAssembly targets
 #   - valgrind: Memory leak detection (Linux only)
+#   - bench-macos: Run every benchmark on macOS as a smoke test (no gate)
 #   - bench-ir: Instruction-count benchmark gate on PRs (Linux, not required)
 #   - zig-fmt: Code formatting check
 # =============================================================================
@@ -19,13 +20,11 @@ name: CI
 
 on:
   push:
-    # Build baseline benchmark artifacts on main and on the long-lived
-    # integration branches so the PR bench-gate has a same-lineage baseline
-    # to download.
+    # Run on main and on the long-lived integration branches.
     branches: [main, "integration/**"]
   pull_request:
-    # Run the full pipeline (bench-gate included) for PRs targeting main or an
-    # integration branch.  Without the integration entry, PRs onto
+    # Run the full pipeline for PRs targeting main or an integration branch.
+    # Without the integration entry, PRs onto
     # integration/* would not trigger CI at all.
     branches: [main, "integration/**"]
   workflow_dispatch: {}
@@ -325,9 +324,11 @@ jobs:
   # ==========================================================================
   # Benchmarks (macOS)
   # ==========================================================================
-  # bench-macos produces the baseline that bench-gate compares against, so both
-  # jobs MUST run on the same pinned image: comparing across macOS versions (or
-  # a floating `macos-latest`) measures the OS, not the change.
+  # A smoke test: every benchmark still builds and runs against the macOS
+  # backends (CoreText, CoreGraphics). Nothing gates on its timings, which are
+  # too noisy on shared VM runners; performance regressions are gated by
+  # instruction counts in bench-ir. The uploaded results stay available for
+  # manual comparison. The image is pinned so those results stay comparable.
   bench-macos:
     name: Benchmarks (macOS)
     runs-on: macos-26
@@ -362,172 +363,6 @@ jobs:
           name: bench-macos
           path: bench-results/
           retention-days: 90
-
-  # ==========================================================================
-  # Benchmark Regression Gate (PR only)
-  # ==========================================================================
-  # Compares current PR benchmarks against the most recent successful main
-  # run.  Uses continue-on-error so regressions surface as warnings, not
-  # blockers — promote to required once you trust the signal on shared
-  # runners.  The 15% default threshold (in bench-compare) absorbs CI noise.
-  bench-gate:
-    name: Benchmark Gate (macOS)
-    runs-on: macos-26 # Must match bench-macos; see the note there.
-    if: github.event_name == 'pull_request'
-    needs: test-macos
-    continue-on-error: true
-    permissions:
-      actions: read
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v5
-
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: ${{ env.ZIG_VERSION }}
-
-      - name: Cache Zig
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/Library/Caches/zig
-            zig-cache
-          key: zig-cache-bench-gate-${{ hashFiles('build.zig', 'build.zig.zon') }}
-          restore-keys: |
-            zig-cache-bench-gate-
-            zig-cache-bench-macos-
-            zig-cache-macos-
-
-      # Find the latest successful CI run on the PR's base branch (falling
-      # back to main) and download its macOS benchmark artifact.  If no run
-      # exists or the artifact expired, skip comparison gracefully — the PR
-      # still gets benchmark numbers.
-      - name: Download baseline
-        id: baseline
-        env:
-          GH_TOKEN: ${{ github.token }}
-          # The branch this PR targets (e.g. main or integration/v0.2.0).
-          BASE_REF: ${{ github.base_ref }}
-        run: |
-          set -eo pipefail
-
-          # Download the bench-macos artifact from the latest successful CI
-          # run on the given branch.  Returns non-zero (without downloading)
-          # when no usable run or artifact exists, so the caller can fall back.
-          # Uses -f fields so branch names with slashes (integration/v0.2.0)
-          # are URL-encoded correctly in the query string.
-          try_branch() {
-            branch="$1"
-            run_id=$(gh api -X GET \
-              "repos/${{ github.repository }}/actions/workflows/ci.yml/runs" \
-              -f branch="${branch}" -f status=success -f per_page=1 \
-              --jq '.workflow_runs[0].id // empty')
-
-            if [ -z "${run_id}" ]; then
-              echo "  no successful run on '${branch}'."
-              return 1
-            fi
-
-            echo "  downloading baseline from '${branch}' run ${run_id}..."
-            if ! gh run download "${run_id}" --name bench-macos --dir baseline/; then
-              echo "  artifact missing or expired for '${branch}' run ${run_id}."
-              return 1
-            fi
-
-            echo "baseline_run_id=${run_id}" >> "${GITHUB_OUTPUT}"
-            echo "baseline_branch=${branch}" >> "${GITHUB_OUTPUT}"
-            return 0
-          }
-
-          # Prefer a same-lineage baseline from the PR's base branch so that
-          # integration/* PRs compare against an integration baseline -- which
-          # carries the best-of-N `min` samples the gate relies on.  Without
-          # this, integration PRs always compared against main, whose older
-          # artifacts predate `min` and forced the noise-sensitive mean gate.
-          # Fall back to main when the base branch has no usable artifact yet.
-          OK=0
-          if [ -n "${BASE_REF}" ]; then
-            echo "Trying PR base branch '${BASE_REF}'..."
-            if try_branch "${BASE_REF}"; then OK=1; fi
-          fi
-
-          if [ "${OK}" -ne 1 ] && [ "${BASE_REF}" != "main" ]; then
-            echo "Falling back to 'main'..."
-            if try_branch "main"; then OK=1; fi
-          fi
-
-          if [ "${OK}" -ne 1 ]; then
-            echo "No baseline available -- skipping comparison."
-            echo "has_baseline=false" >> "${GITHUB_OUTPUT}"
-            exit 0
-          fi
-
-          echo "has_baseline=true" >> "${GITHUB_OUTPUT}"
-          ls -la baseline/
-
-      - name: Run benchmarks
-        run: zig build bench-all -Dbench-json-dir=current/
-
-      # Compare each module independently.  bench-compare exits 1 on
-      # regression, 2 on usage/load errors.  We track per-module results
-      # so the summary tells you exactly which module regressed.
-      - name: Compare against baseline
-        if: steps.baseline.outputs.has_baseline == 'true'
-        id: compare
-        run: |
-          set -eo pipefail
-
-          FAILED=0
-          : > bench-report.txt
-
-          for module in core layout text accessibility; do
-            BASELINE=$(ls baseline/*-*-"${module}"-benchmarks-*.json 2>/dev/null | head -1)
-            CURRENT=$(ls current/*-*-"${module}"-benchmarks-*.json 2>/dev/null | head -1)
-
-            if [ -z "${BASELINE}" ]; then
-              echo "[warn] No baseline found for ${module} -- skipping."
-              continue
-            fi
-            if [ -z "${CURRENT}" ]; then
-              echo "[warn] No current result found for ${module} -- skipping."
-              continue
-            fi
-
-            echo ""
-            echo "=== Comparing ${module} ==="
-
-            # bench-compare prints to stderr; merge into stdout for capture.
-            if zig build bench-compare -- "${BASELINE}" "${CURRENT}" 2>&1 | tee -a bench-report.txt; then
-              echo "[pass] ${module}: OK"
-            else
-              FAILED=1
-              echo "[FAIL] ${module}: REGRESSION DETECTED"
-            fi
-          done
-
-          exit ${FAILED}
-
-      # Always post the comparison table to the Actions job summary so
-      # reviewers can inspect numbers without digging through logs.
-      - name: Post benchmark summary
-        if: always() && steps.baseline.outputs.has_baseline == 'true'
-        run: |
-          {
-            echo "## Benchmark Comparison"
-            echo ""
-            if [ -s bench-report.txt ]; then
-              echo "<details><summary>Full comparison output</summary>"
-              echo ""
-              echo '```'
-              cat bench-report.txt
-              echo '```'
-              echo ""
-              echo "</details>"
-            else
-              echo "_No comparison data produced._"
-            fi
-          } >> "${GITHUB_STEP_SUMMARY}"
 
   # ==========================================================================
   # Instruction-Count Benchmark Gate (Linux, PR only)
