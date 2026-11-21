@@ -12,7 +12,8 @@
 //! `records.hit_record_count_frame_max` records, and a bubble at most the box
 //! depth. A press focuses and runs click-outside handlers; the click fires
 //! on the left release, over a record the left press also landed in
-//! (decision 7). Right and middle buttons click nothing.
+//! (decision 7). Right and middle buttons click nothing; a right press, or a
+//! Ctrl+press on macOS, opens a context menu (`Box.on_context_menu`).
 //!
 //! A key no handler stopped has a default, as in a browser: Tab moves focus,
 //! and Enter or Space runs the focused record's `on_click` (0.4.2), one more
@@ -21,6 +22,7 @@
 //! draws the focus ring in emit.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const records = @import("records.zig");
 const element = @import("element.zig");
 const handler_mod = @import("handler.zig");
@@ -303,21 +305,24 @@ fn pointOf(position: anytype) Point {
 fn press(window: *Window, event: *const input.InputEvent, point: Point) void {
     const frame = window.rendered();
     const target = hitIndex(frame, point);
+    const context = contextPress(&event.mouse_down);
+    // A macOS Ctrl+press is the left button that opens a context menu: it
+    // clicks nothing, and takes no scrollbar, capture, or drag.
+    const left = event.mouse_down.button == .left and !context;
     // Only the left button drags a thumb or jumps a track, as native
     // scrollbars do, and a thumb drag in progress is not taken over: any
     // other press lands as usual below.
-    const scrollbar_free = event.mouse_down.button == .left and window.scroll_drag == .root;
+    const scrollbar_free = left and window.scroll_drag == .root;
     if (scrollbar_free and pressScrollbar(window, target, point)) return;
     // A press the scrollbar did not take leaves any thumb drag as it was.
     assert(window.scroll_drag == .root or !scrollbar_free);
     // Only the left button clicks, as a browser's `click` and native
     // buttons do: another button's press leaves a left press's path alone.
-    if (event.mouse_down.button == .left) {
-        window.press_len = pathOf(frame, target, window.press_path);
-    }
+    if (left) window.press_len = pathOf(frame, target, window.press_path);
     // A second button pressed during a gesture lands as usual but does
     // not take the gesture over.
-    const idle = window.capture.id == .root and window.drag.phase == .idle;
+    const ctrl_click = context and event.mouse_down.button == .left;
+    const idle = window.capture.id == .root and window.drag.phase == .idle and !ctrl_click;
     const gesture = if (idle) gestureIndex(frame, target) else index_none;
     var capturing = false;
     if (gesture != index_none) {
@@ -350,6 +355,10 @@ fn press(window: *Window, event: *const input.InputEvent, point: Point) void {
     }
     setFocus(window, focus_id, false);
     if (capturing) deliverCapture(window, event, .begin, point);
+    // After click-outside and focus, as a browser's `contextmenu` follows
+    // `mousedown`: a menu already open closes, and the handler sees where
+    // focus landed.
+    if (context) contextMenu(window, event, target);
 }
 
 /// A left release: click handlers bubbling from the record under the
@@ -898,8 +907,9 @@ fn keyToFocus(window: *Window, event: *const input.InputEvent) void {
     if (bubble(window, event, target, .key)) return;
     if (event.* != .key_down) return;
     // The defaults for a key no handler claimed, as a browser's: Tab moves
-    // focus, and Enter or Space clicks the element the key was sent to,
-    // which a handler may have moved focus away from.
+    // focus, Enter or Space clicks the element the key was sent to, which a
+    // handler may have moved focus away from, and Shift+F10 opens its
+    // context menu.
     const key = &event.key_down;
     assert(target < frame.hit_count);
     if (key.key == .tab) {
@@ -909,7 +919,45 @@ fn keyToFocus(window: *Window, event: *const input.InputEvent) void {
             if (frame.handlerAt(frame.hits[target].on_click)) |handler| {
                 _ = invoke(window, handler, event, null, frame.hits[target].id);
             }
+        } else {
+            if (opensContextMenu(key)) contextMenu(window, event, target);
         }
+    }
+}
+
+/// Shift+F10 alone, and not a repeat: the Windows and Linux key for the
+/// focused element's context menu.
+fn opensContextMenu(key: *const input.KeyEvent) bool {
+    const modifiers = key.modifiers;
+    if (key.is_repeat) return false;
+    if (modifiers.cmd or modifiers.ctrl or modifiers.alt) return false;
+    return key.key == .f10 and modifiers.shift;
+}
+
+/// A press that opens a context menu instead of clicking: the right button,
+/// or on macOS a Ctrl+press of the left, as AppKit's menus take it.
+fn contextPress(mouse: *const input.MouseEvent) bool {
+    if (mouse.button == .right) return true;
+    if (builtin.os.tag != .macos) return false;
+    return mouse.button == .left and mouse.modifiers.ctrl;
+}
+
+/// `Box.on_context_menu`: only the nearest record from `target` up that has
+/// one, so a menu inside a menu's area opens instead of both.
+fn contextMenu(window: *Window, event: *const input.InputEvent, target: u32) void {
+    assert(event.* == .mouse_down or event.* == .key_down);
+    const frame = window.rendered();
+    var index = target;
+    var depth: u32 = 0;
+    while (index != index_none) : (depth += 1) {
+        assert(depth <= window_mod.box_depth_ceiling);
+        assert(index < frame.hit_count);
+        const record = &frame.hits[index];
+        if (frame.handlerAt(record.on_context_menu)) |handler| {
+            _ = invoke(window, handler, event, null, record.id);
+            return;
+        }
+        index = record.parent;
     }
 }
 
@@ -1085,6 +1133,7 @@ fn call(window: *Window, handler: handler_mod.Handler, effects: *handler_mod.Eff
     effects.store = window.store;
     effects.jobs = &window.jobs;
     effects.rendered = window.rendered();
+    effects.focused_id = window.focus;
     effects.gesture_idle = window.drag.phase == .idle and window.capture.id == .root;
     handler.call(window.store, effects);
     if (effects.render_requested) window.render_requested = true;

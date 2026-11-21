@@ -5,6 +5,7 @@
 //! lifecycle guard panics on one) within their component-depth budget.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const gooey = @import("gooey");
 const counter = @import("counter_example");
 const todo = @import("todo_example");
@@ -14,6 +15,7 @@ const accessible_form = @import("accessible_form_example");
 const code_editor = @import("code_editor_example");
 const nested_overlay = @import("nested_overlay_example");
 const splitter = @import("splitter_example");
+const context_menu = @import("context_menu_example");
 const drag_drop = @import("drag_drop_example");
 const dashboard = @import("dashboard_example");
 const dynamic_counters = @import("dynamic_counters_example");
@@ -22,6 +24,7 @@ const virtual_list = @import("virtual_list_example");
 const data_table = @import("data_table_example");
 const lucide = @import("lucide_example");
 const components = @import("gooey-components");
+const vopr_invariants = @import("vopr_invariants");
 const core_driver = @import("core.zig");
 const trace_mod = @import("trace.zig");
 const traces = @import("traces.zig");
@@ -7091,4 +7094,153 @@ test "drag_drop: keyboard drags during one frame in flight keep only the newest 
     window.render_requested = true;
     app.tick(now + 2);
     try testing.expectEqual(@as(u32, 0), window.rendered().announcements.count);
+}
+
+// =============================================================================
+// Context menus
+// =============================================================================
+
+/// The rendered accessibility node of `role` named `name`, if any.
+fn menuNode(
+    app: *context_menu.App,
+    role: gooey.ui.Role,
+    name: []const u8,
+) ?*const internals.records.A11yNode {
+    const frame = app.window.rendered();
+    for (frame.a11y[0..frame.a11y_count]) |*node| {
+        if (node.role != role) continue;
+        if (std.mem.eql(u8, frame.text(node.name) orelse "", name)) return node;
+    }
+    return null;
+}
+
+fn menuApp(app: *context_menu.App, now: *u64) !void {
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    app.tick(now.*);
+    now.* += 1;
+    app.tick(now.*);
+}
+
+const first_task = context_menu.State.titles[0];
+
+/// Press and release `button` at a point, with `modifiers`, and settle.
+fn menuPress(
+    app: *context_menu.App,
+    now: *u64,
+    point: [2]f32,
+    button: gooey.input.MouseButton,
+    modifiers: gooey.input.Modifiers,
+) void {
+    var event = mouseWith(point[0], point[1], button);
+    event.modifiers = modifiers;
+    app.window.queue.push(.{ .input = .{ .mouse_down = event } });
+    app.window.queue.push(.{ .input = .{ .mouse_up = event } });
+    for (0..2) |_| {
+        now.* += 1;
+        app.tick(now.*);
+    }
+}
+
+fn centre(node: *const internals.records.A11yNode) [2]f32 {
+    return .{ node.bounds.x + node.bounds.width / 2, node.bounds.y + node.bounds.height / 2 };
+}
+
+test "a right press opens a ContextMenu at the pointer, and a choice runs and closes it" {
+    // Goal: `Box.on_context_menu` from the pointer, end to end. Methodology:
+    // a right press on the first card at (100, y) opens its menu with the
+    // panel's corner at the press and focus on its first action, changes no
+    // state, and passes the VOPR's frame invariants (every handled record
+    // belongs to an interactive accessibility node). A left click on the disabled "Rename" keeps it open; one on
+    // "Mark done" runs its handler, closes the menu, and returns focus to
+    // the card the right press focused. A right press, then a left press
+    // outside, closes it without a choice.
+    const app = try testing.allocator.create(context_menu.App);
+    defer testing.allocator.destroy(app);
+    var now: u64 = 0;
+    try menuApp(app, &now);
+    defer app.deinitHeadless();
+    const card = menuNode(app, .group, first_task).?.bounds;
+    const press = [2]f32{ card.x + 100, card.y + card.height / 2 };
+    try testing.expect(menuNode(app, .menu, first_task) == null);
+    menuPress(app, &now, press, .right, .{});
+    const menu = menuNode(app, .menu, first_task) orelse return error.NoMenu;
+    try testing.expectApproxEqAbs(press[0], menu.bounds.x, 0.5);
+    try testing.expectApproxEqAbs(press[1], menu.bounds.y, 0.5);
+    try expectFocused(&app.window, .menuitem, "Mark done");
+    try testing.expect(!app.state.done[0]);
+    vopr_invariants.checkFrame(&app.window, app.window.rendered());
+
+    menuPress(app, &now, centre(menuNode(app, .menuitem, "Rename").?), .left, .{});
+    try testing.expect(menuNode(app, .menu, first_task) != null);
+    menuPress(app, &now, centre(menuNode(app, .menuitem, "Mark done").?), .left, .{});
+    try testing.expect(app.state.done[0]);
+    try testing.expect(menuNode(app, .menu, first_task) == null);
+    try expectFocused(&app.window, .group, first_task);
+
+    menuPress(app, &now, press, .right, .{});
+    try testing.expect(menuNode(app, .menu, first_task) != null);
+    menuPress(app, &now, .{ 500, 380 }, .left, .{});
+    try testing.expect(menuNode(app, .menu, first_task) == null);
+    try testing.expect(app.state.done[0]);
+}
+
+test "Shift+F10 opens a ContextMenu whose keys skip disabled rows and wrap" {
+    // Goal: the keyboard path. Methodology: Tab to the first card and press
+    // Shift+F10: the menu opens below the card with "Mark done" focused.
+    // Down skips the disabled "Rename" and the separator to "Delete", Down
+    // again wraps to "Mark done", and Up wraps back to "Delete". Escape
+    // closes it with focus back on the card; Shift+F10 and Enter on "Mark
+    // done" choose it, close, and return focus to the card.
+    const app = try testing.allocator.create(context_menu.App);
+    defer testing.allocator.destroy(app);
+    var now: u64 = 0;
+    try menuApp(app, &now);
+    defer app.deinitHeadless();
+    pressKey(app, &now, .tab, .{});
+    try expectFocused(&app.window, .group, first_task);
+    const card = menuNode(app, .group, first_task).?.bounds;
+    pressKey(app, &now, .f10, .{ .shift = true });
+    const menu = menuNode(app, .menu, first_task) orelse return error.NoMenu;
+    try testing.expectApproxEqAbs(card.x, menu.bounds.x, 0.5);
+    try testing.expectApproxEqAbs(card.y + card.height, menu.bounds.y, 0.5);
+    try expectFocused(&app.window, .menuitem, "Mark done");
+    vopr_invariants.checkFrame(&app.window, app.window.rendered());
+    const steps = [_]struct { key: gooey.input.KeyCode, name: []const u8 }{
+        .{ .key = .down, .name = "Delete" },
+        .{ .key = .down, .name = "Mark done" },
+        .{ .key = .up, .name = "Delete" },
+        .{ .key = .home, .name = "Mark done" },
+        .{ .key = .end, .name = "Delete" },
+    };
+    for (steps) |step| {
+        pressKey(app, &now, step.key, .{});
+        try expectFocused(&app.window, .menuitem, step.name);
+    }
+    pressKey(app, &now, .escape, .{});
+    try testing.expect(menuNode(app, .menu, first_task) == null);
+    try expectFocused(&app.window, .group, first_task);
+    try testing.expect(!app.state.removed[0]);
+
+    pressKey(app, &now, .f10, .{ .shift = true });
+    pressKey(app, &now, .@"return", .{});
+    try testing.expect(app.state.done[0]);
+    try testing.expect(menuNode(app, .menu, first_task) == null);
+    try expectFocused(&app.window, .group, first_task);
+}
+
+test "a Ctrl+press opens a context menu only on macOS, and clicks nothing there" {
+    // Goal: AppKit's Ctrl+click is a context press on macOS and an ordinary
+    // left press elsewhere. Methodology: a Ctrl+left press and release on
+    // the second card. On macOS the menu opens; elsewhere it does not, and
+    // the press focuses the card as any left press does.
+    const app = try testing.allocator.create(context_menu.App);
+    defer testing.allocator.destroy(app);
+    var now: u64 = 0;
+    try menuApp(app, &now);
+    defer app.deinitHeadless();
+    const title = context_menu.State.titles[1];
+    const card = menuNode(app, .group, title).?;
+    menuPress(app, &now, centre(card), .left, .{ .ctrl = true });
+    const opened = menuNode(app, .menu, title) != null;
+    try testing.expectEqual(builtin.os.tag == .macos, opened);
 }

@@ -417,6 +417,7 @@ pub const Cx = opaque {
         node.tab_stop = box.focusable and box.tab_stop;
         node.on_click = handlerIndex(frame, box.on_click);
         node.on_click_outside = handlerIndex(frame, box.on_click_outside);
+        node.on_context_menu = handlerIndex(frame, box.on_context_menu);
         node.on_key = handlerIndex(frame, box.on_key);
         node.on_pointer_drag = handlerIndex(frame, box.on_pointer_drag);
         if (box.draggable) |source| {
@@ -438,7 +439,7 @@ pub const Cx = opaque {
         // (`checkKeyed`), so each takes a record.
         node.hit = box.key != null or scroll_handle != null or box.focusable or
             box.on_click != null or box.on_click_outside != null or box.on_key != null or
-            box.key_context != null or box.actions.len > 0 or box.style.cursor != null;
+            box.on_context_menu != null or box.key_context != null or box.actions.len > 0 or box.style.cursor != null;
         if (box.a11y) |*a11y| {
             node.a11y = copyA11y(frame, a11y, window.limits.a11y.value_bytes_max);
         }
@@ -727,6 +728,7 @@ fn addNode(window: *Window, kind: window_mod.NodeKind, node_id: ElementId) u32 {
         .cursor = null,
         .on_click = index_none,
         .on_click_outside = index_none,
+        .on_context_menu = index_none,
         .on_key = index_none,
         .on_pointer_drag = index_none,
         .drag_type = 0,

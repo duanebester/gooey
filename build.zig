@@ -243,6 +243,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "dashboard", .source = "src/examples/dashboard.zig" },
             .{ .name = "splitter", .source = "src/examples/splitter.zig" },
             .{ .name = "text-area", .source = "src/examples/text_area.zig" },
+            .{ .name = "context-menu", .source = "src/examples/context_menu.zig" },
             .{ .name = "drag-drop", .source = "src/examples/drag_drop.zig" },
             .{ .name = "background", .source = "src/examples/background.zig" },
             .{ .name = "logo", .source = "src/examples/logo.zig" },
@@ -646,6 +647,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "dashboard", .source = "src/examples/dashboard.zig" },
             .{ .name = "splitter", .source = "src/examples/splitter.zig" },
             .{ .name = "text-area", .source = "src/examples/text_area.zig" },
+            .{ .name = "context-menu", .source = "src/examples/context_menu.zig" },
             .{ .name = "drag-drop", .source = "src/examples/drag_drop.zig" },
             .{ .name = "background", .source = "src/examples/background.zig" },
             .{ .name = "logo", .source = "src/examples/logo.zig" },
@@ -1006,6 +1008,7 @@ fn addWindowsBuilds(
         .{ .name = "dynamic-counters", .source = "src/examples/dynamic_counters.zig" },
         .{ .name = "splitter", .source = "src/examples/splitter.zig" },
         .{ .name = "text-area", .source = "src/examples/text_area.zig" },
+        .{ .name = "context-menu", .source = "src/examples/context_menu.zig" },
         .{ .name = "drag-drop", .source = "src/examples/drag_drop.zig" },
         .{ .name = "background", .source = "src/examples/background.zig" },
     };
@@ -1318,6 +1321,7 @@ fn addMacosCoreExampleTypecheck(
         "images",
         "animation",
         "splitter",
+        "context_menu",
         "drag_drop",
         "text_area",
         "background",
@@ -2306,6 +2310,12 @@ fn goldensImports(
         .optimize = optimize,
         .imports = example_imports,
     });
+    const context_menu_mod = b.createModule(.{
+        .root_source_file = b.path("src/examples/context_menu.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = example_imports,
+    });
     const drag_drop_mod = b.createModule(.{
         .root_source_file = b.path("src/examples/drag_drop.zig"),
         .target = target,
@@ -2324,7 +2334,16 @@ fn goldensImports(
         .optimize = optimize,
         .imports = example_imports,
     });
+    // The VOPR's model-free frame invariants, so a golden can hold a frame
+    // the VOPR never reaches to the same rules.
+    const vopr_invariants_mod = b.createModule(.{
+        .root_source_file = b.path("src/testing/vopr_invariants.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "gooey", .module = gooey_mod }},
+    });
     return b.allocator.dupe(std.Build.Module.Import, &.{
+        .{ .name = "vopr_invariants", .module = vopr_invariants_mod },
         .{ .name = "accessible_form_example", .module = accessible_form_mod },
         .{ .name = "background_example", .module = background_mod },
         .{ .name = "actions_example", .module = actions_mod },
@@ -2342,6 +2361,7 @@ fn goldensImports(
         .{ .name = "nested_overlay_example", .module = nested_overlay_mod },
         .{ .name = "splitter_example", .module = splitter_mod },
         .{ .name = "text_area_example", .module = text_area_mod },
+        .{ .name = "context_menu_example", .module = context_menu_mod },
         .{ .name = "todo_example", .module = todo_mod },
         .{ .name = "virtual_list_example", .module = virtual_list_mod },
     }) catch @panic("OOM");

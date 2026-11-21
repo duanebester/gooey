@@ -281,6 +281,14 @@ pub const Box = struct {
     key_context: ?KeyContext = null,
     on_click: ?Handler = null,
     on_click_outside: ?Handler = null,
+    /// Open a context menu (contract §5): a right-button press on this box,
+    /// or on a child without one of its own, a Ctrl+press on macOS, or
+    /// Shift+F10 while focus is on it or inside it. The press focuses and
+    /// runs click-outside handlers first, as any press does, and clicks
+    /// nothing. The handler reads the press's position from
+    /// `effects.inputEvent()`; for the key, `effects.focusedElement()` names
+    /// the element to open beside.
+    on_context_menu: ?Handler = null,
     on_key: ?Handler = null,
     /// Pointer capture (contract §5): a press on this box, or on a child
     /// that sets none of its own, calls it with `begin`, then `move` for

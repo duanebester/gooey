@@ -58,9 +58,9 @@ and time is still to be designed.
 
 ## P4: standard components, open
 
-`gooey-components` has `Button`, `Checkbox`, `Select`, `RadioGroup`, `Tooltip`, `Modal`,
-`List`, `TextInput`, `TextArea`, `CodeEditor`, and the Lucide icons; `gooey-charts` has the
-charts. Still missing, in rough order of need:
+`gooey-components` has `Button`, `Checkbox`, `Select`, `RadioGroup`, `Tooltip`,
+`ContextMenu`, `Modal`, `List`, `TextInput`, `TextArea`, `CodeEditor`, and the Lucide icons;
+`gooey-charts` has the charts. Still missing, in rough order of need:
 
 - **Controls:** label with accessible association, separator, icon button, link, spinner,
   switch, slider, number input.

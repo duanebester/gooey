@@ -929,6 +929,7 @@ fn emitHit(window: *Window, node: *const Node, bounds: Rect, place: HitPlace) u3
     if (!node.hit) return place.parent;
     assert(node.id.isKeyed() or node.on_click != index_none or node.focusable or
         node.on_key != index_none or node.on_click_outside != index_none or
+        node.on_context_menu != index_none or
         node.key_context != 0 or node.actions_len > 0 or node.scroll != null or
         node.cursor != null);
     if (node.on_pointer_drag != index_none) assert(node.id.isKeyed());
@@ -947,6 +948,7 @@ fn emitHit(window: *Window, node: *const Node, bounds: Rect, place: HitPlace) u3
         .cursor = node.cursor,
         .on_click = node.on_click,
         .on_click_outside = node.on_click_outside,
+        .on_context_menu = node.on_context_menu,
         .on_key = node.on_key,
         .on_pointer_drag = node.on_pointer_drag,
         .drag_type = node.drag_type,

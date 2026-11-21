@@ -125,6 +125,7 @@ pub const Node = struct {
     cursor: ?element.CursorShape,
     on_click: u32,
     on_click_outside: u32,
+    on_context_menu: u32,
     on_key: u32,
     on_pointer_drag: u32,
     /// `Box.draggable` and `Box.drop_target`; a type of 0 means none.

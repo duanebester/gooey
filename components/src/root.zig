@@ -1,14 +1,14 @@
 //! Gooey Components: library controls (`Button`, `Checkbox`, `Select`,
-//! `RadioGroup`, `Tooltip`, `Modal`, `List`, `TextInput`, `TextArea`,
-//! `CodeEditor`) and the Lucide icon set. Each control composes `ui.box`,
-//! `ui.text`, and `ui.paint` through the public API alone: `zig build
-//! import-ban` fails on any `gooey.internals` reference here, so a control
-//! can do only what an app can.
+//! `RadioGroup`, `Tooltip`, `ContextMenu`, `Modal`, `List`, `TextInput`,
+//! `TextArea`, `CodeEditor`) and the Lucide icon set. Each control composes
+//! `ui.box`, `ui.text`, and `ui.paint` through the public API alone: `zig
+//! build import-ban` fails on any `gooey.internals` reference here, so a
+//! control can do only what an app can.
 //!
 //! Keyboard: `Button`, `Checkbox`, `Select`, and `RadioGroup` are focusable,
 //! so Tab reaches them, and the core turns Enter and Space into a click on
-//! the focused element. `Select` and `RadioGroup` add their own keys (see
-//! `SelectKeys` and `RadioKeys`).
+//! the focused element. `Select`, `RadioGroup`, and `ContextMenu` add their
+//! own keys (see `SelectKeys`, `RadioKeys`, and `MenuState.onKey`).
 
 const std = @import("std");
 const gooey = @import("gooey");
@@ -936,6 +936,358 @@ const TooltipBubble = struct {
                 .wrap = .words,
             }),
         }));
+    }
+};
+
+// =============================================================================
+// ContextMenu
+// =============================================================================
+
+/// One row of a `ContextMenu`: an action, or with `separator` a divider that
+/// ignores every other field. An action without `on_select`, or `disabled`,
+/// is drawn dimmed and skipped by the arrow keys.
+pub const MenuItem = struct {
+    label: []const u8 = "",
+    /// Runs when the row is chosen; the menu then closes. It must not stop
+    /// propagation, since the menu closes on the click it bubbles.
+    on_select: ?Handler = null,
+    /// A shortcut hint drawn at the row's end, such as "Ctrl+C"; binding it
+    /// is the app's keymap's job.
+    shortcut: ?[]const u8 = null,
+    disabled: bool = false,
+    /// Draws the label in the theme's `danger`, for a destructive action.
+    danger: bool = false,
+    separator: bool = false,
+
+    fn enabled(self: *const MenuItem) bool {
+        return !self.separator and !self.disabled and self.on_select != null;
+    }
+};
+
+/// A right-click menu over `child`, on a `.popover` layer at the pointer.
+/// A right press on the child (a Ctrl+press on macOS) opens it there, and
+/// Shift+F10 while focus is in the child opens it below the focused element;
+/// either focuses its first action, drawn only for the key. Down, Up, Home,
+/// and End move between actions, wrapping; Enter or Space chooses; Escape or
+/// Tab closes, and a choice or a close from the keyboard returns focus where
+/// it was. A press outside closes it, and a right press elsewhere in the
+/// child moves it.
+///
+/// The menu owns whether it is open and where, in one retained 64 B slot,
+/// so the app supplies only the rows. Each row's `on_select` is an ordinary
+/// handler, such as `cx.on(State.copy, .{ .arg = row })`.
+pub fn ContextMenu(comptime Child: type) type {
+    return struct {
+        key: []const u8,
+        items: []const MenuItem,
+        child: Child,
+        width_min: f32 = 180,
+        /// The menu's screen-reader name.
+        accessible_name: []const u8 = "Context menu",
+
+        const Self = @This();
+
+        pub fn render(self: Self, cx: *Cx) void {
+            assert(self.key.len > 0);
+            assert(self.items.len > 0);
+            if (self.items.len > menu_item_count_max) std.debug.panic(
+                "ContextMenu \"{s}\" of {d} items: capacity {d}",
+                .{ self.key, self.items.len, menu_item_count_max },
+            );
+            const key = Key{ .name = self.key };
+            const id = cx.id(key);
+            const handle = cx.retain(MenuState, id, .frame, MenuState.init);
+            const state = cx.get(MenuState, handle);
+            state.root = id;
+            const enabled = enabledMask(self.items);
+            cx.render(ui.box(.{
+                .key = key,
+                .on_context_menu = cx.on(MenuState.open, .{ .entity = handle, .arg = enabled }),
+            }, .{
+                self.child,
+                if (state.shown) MenuPanel{
+                    .items = self.items,
+                    .width_min = self.width_min,
+                    .accessible_name = self.accessible_name,
+                    .x = state.x,
+                    .y = state.y,
+                    .keys = handle,
+                    .enabled = enabled,
+                } else null,
+            }));
+        }
+    };
+}
+
+/// The most rows one `ContextMenu` holds: its key handler carries which rows
+/// are actions as a 64-bit mask, and a longer menu wants another design.
+pub const menu_item_count_max: u32 = 64;
+
+/// Bit `i` set when row `i` is an action the keys reach.
+fn enabledMask(items: []const MenuItem) u64 {
+    assert(items.len <= menu_item_count_max);
+    var mask: u64 = 0;
+    for (items, 0..) |*item, index| {
+        if (item.enabled()) mask |= @as(u64, 1) << @intCast(index);
+    }
+    return mask;
+}
+
+/// A `ContextMenu`'s state, retained under its key: whether it is open,
+/// where, and the element focus returns to.
+///
+/// Every handler sits on a `menuitem` row, so each handled record belongs to
+/// an interactive accessibility node: the row's own handler closes the menu
+/// and takes the keys, and the app's `on_select` sits on a box inside it that
+/// fills it, so a click runs `on_select` and then bubbles to the close.
+const MenuState = struct {
+    root: ElementId,
+    shown: bool,
+    x: f32,
+    y: f32,
+    restore: ElementId,
+
+    fn init(self: *MenuState) void {
+        self.* = .{ .root = .root, .shown = false, .x = 0, .y = 0, .restore = .root };
+    }
+
+    fn row(self: *const MenuState, index: u32) ElementId {
+        assert(self.root.isKeyed());
+        assert(index < menu_item_count_max);
+        return self.root.child(.{ .name = "menu" }).child(.{ .index = index });
+    }
+
+    /// The box inside row `index` that holds its `on_select`.
+    fn pick(self: *const MenuState, index: u32) ElementId {
+        return self.row(index).child(.{ .name = "pick" });
+    }
+
+    /// `Box.on_context_menu`: at the press, or below the focused element
+    /// for Shift+F10. Either focuses the first action, so the keys work at
+    /// once; only the key's focus draws a ring and lights the row.
+    fn open(self: *MenuState, enabled: u64, effects: *Effects) void {
+        assert(self.root.isKeyed());
+        const event = effects.inputEvent() orelse return;
+        const focused = effects.focusedElement();
+        switch (event.*) {
+            .mouse_down => |mouse| {
+                self.x = @floatCast(mouse.position.x);
+                self.y = @floatCast(mouse.position.y);
+            },
+            .key_down => {
+                const bounds = effects.bounds(focused orelse return) orelse return;
+                self.x = bounds.x;
+                self.y = bounds.y + bounds.height;
+            },
+            else => return,
+        }
+        assert(std.math.isFinite(self.x));
+        assert(std.math.isFinite(self.y));
+        if (menuStep(enabled, null, .first)) |index| effects.focus(self.row(index));
+        self.shown = true;
+        self.restore = focused orelse .root;
+        effects.requestRender();
+    }
+
+    /// A press outside: the press itself moves focus.
+    fn dismiss(self: *MenuState, effects: *Effects) void {
+        self.shown = false;
+        effects.requestRender();
+    }
+
+    /// A row's click, after its `on_select` ran, and the keys that close.
+    fn close(self: *MenuState, effects: *Effects) void {
+        self.shown = false;
+        if (self.restore == .root) effects.blur() else effects.focus(self.restore);
+        effects.requestRender();
+    }
+
+    /// A row's keys; the focused row is the one they act on.
+    fn onKey(self: *MenuState, enabled: u64, effects: *Effects) void {
+        assert(self.shown);
+        const event = effects.inputEvent() orelse return;
+        if (event.* != .key_down) return;
+        const key = event.key_down;
+        if (key.modifiers.cmd or key.modifiers.ctrl or key.modifiers.alt) return;
+        const current = self.focusedRow(effects.focusedElement());
+        const step: MenuStep = switch (key.key) {
+            .down => .next,
+            .up => .previous,
+            .home => .first,
+            .end => .last,
+            .@"return", .keypad_enter, .space => {
+                const index = current orelse return;
+                // `effects.click` runs the box's own handler only.
+                effects.click(self.pick(index));
+                self.close(effects);
+                effects.stopPropagation();
+                return;
+            },
+            .escape, .tab => {
+                self.close(effects);
+                effects.stopPropagation();
+                return;
+            },
+            else => return,
+        };
+        if (menuStep(enabled, current, step)) |index| effects.focus(self.row(index));
+        effects.stopPropagation();
+    }
+
+    fn focusedRow(self: *const MenuState, focused: ?ElementId) ?u32 {
+        const id = focused orelse return null;
+        var index: u32 = 0;
+        while (index < menu_item_count_max) : (index += 1) {
+            if (self.row(index) == id) return index;
+        }
+        return null;
+    }
+};
+
+const MenuStep = enum { next, previous, first, last };
+
+/// The action row a key moves to among `enabled`'s set bits, wrapping, or
+/// null when there is none. From no row, `next` takes the first and
+/// `previous` the last.
+fn menuStep(enabled: u64, current: ?u32, step: MenuStep) ?u32 {
+    if (enabled == 0) return null;
+    const first: u32 = @ctz(enabled);
+    const last: u32 = 63 - @as(u32, @clz(enabled));
+    assert(first <= last);
+    const from = current orelse return switch (step) {
+        .next, .first => first,
+        .previous, .last => last,
+    };
+    assert(from < menu_item_count_max);
+    return switch (step) {
+        .first => first,
+        .last => last,
+        .next => blk: {
+            const after = if (from == 63) 0 else enabled >> @intCast(from + 1);
+            break :blk if (after == 0) first else from + 1 + @as(u32, @ctz(after));
+        },
+        .previous => blk: {
+            const below = enabled & ((@as(u64, 1) << @intCast(from)) - 1);
+            break :blk if (below == 0) last else 63 - @as(u32, @clz(below));
+        },
+    };
+}
+
+/// The open menu, on a `.popover` layer anchored to the window, which keeps
+/// it inside the window near an edge. Its rows sit directly under it, keyed
+/// by index (`MenuState.row`).
+const MenuPanel = struct {
+    items: []const MenuItem,
+    width_min: f32,
+    accessible_name: []const u8,
+    x: f32,
+    y: f32,
+    keys: gooey.Handle(MenuState),
+    enabled: u64,
+
+    pub fn render(self: MenuPanel, cx: *Cx) void {
+        assert(self.items.len <= menu_item_count_max);
+        assert(self.width_min >= 0);
+        const theme = cx.theme();
+        cx.render(ui.box(.{
+            .key = .{ .name = "menu" },
+            .layer = .{
+                .kind = .popover,
+                .anchor = .{ .window = .{ .x = self.x, .y = self.y } },
+                .clip = .escape,
+            },
+            .style = .{
+                .width_min = self.width_min,
+                .padding = .all(4),
+                .gap = 2,
+                .background = .surface,
+                .border = .{ .width = 1, .color = .border },
+                .corner_radius = .all(theme.radius_md),
+                .shadow = .{ .blur = 12, .offset_y = 4 },
+            },
+            .on_click_outside = cx.on(MenuState.dismiss, .{ .entity = self.keys }),
+            .a11y = .{ .role = .menu, .label = self.accessible_name },
+        }, .{MenuRows{ .items = self.items, .keys = self.keys, .enabled = self.enabled }}));
+    }
+};
+
+const MenuRows = struct {
+    items: []const MenuItem,
+    keys: gooey.Handle(MenuState),
+    enabled: u64,
+
+    pub fn render(self: MenuRows, cx: *Cx) void {
+        assert(self.items.len <= menu_item_count_max);
+        const close = cx.on(MenuState.close, .{ .entity = self.keys });
+        const on_key = cx.on(MenuState.onKey, .{ .entity = self.keys, .arg = self.enabled });
+        for (self.items, 0..) |*item, index| {
+            const key = Key{ .index = index };
+            if (item.separator) {
+                cx.render(ui.box(.{
+                    .key = key,
+                    .style = .{ .width = .{ .grow = 1 }, .padding = .symmetric(0, 4) },
+                }, .{ui.box(.{ .style = .{
+                    .width = .{ .grow = 1 },
+                    .height = .{ .fixed = 1 },
+                    .background = .border,
+                } }, .{})}));
+            } else {
+                cx.render(MenuRow{ .item = item, .key = key, .close = close, .on_key = on_key });
+            }
+        }
+    }
+};
+
+const MenuRow = struct {
+    item: *const MenuItem,
+    key: Key,
+    close: Handler,
+    on_key: Handler,
+
+    pub fn render(self: MenuRow, cx: *Cx) void {
+        const item = self.item;
+        assert(!item.separator);
+        assert(item.label.len > 0);
+        const theme = cx.theme();
+        const enabled = item.enabled();
+        const id = cx.id(self.key);
+        // The keyboard's row is lit only while focus shows, so a menu opened
+        // with the pointer lights only what the pointer is over.
+        const lit = enabled and (cx.hovered(id) or cx.focusVisibleWithin(id));
+        const label_color: ui.ColorToken = if (!enabled)
+            .muted
+        else if (item.danger) .danger else .text;
+        cx.render(ui.box(.{
+            .key = self.key,
+            .style = .{
+                .width = .{ .grow = 1 },
+                .background = if (lit) .overlay else null,
+                .corner_radius = .all(theme.radius_sm),
+                .cursor = if (enabled) .pointer else null,
+            },
+            .focusable = enabled,
+            .tab_stop = false,
+            .on_click = if (enabled) self.close else null,
+            .on_key = if (enabled) self.on_key else null,
+            .a11y = .{ .role = .menuitem, .label = item.label, .disabled = !enabled },
+        }, .{ui.box(.{
+            // Fills the row, so every click on it lands here first.
+            .key = .{ .name = "pick" },
+            .style = .{
+                .direction = .row,
+                .width = .{ .grow = 1 },
+                .padding = .symmetric(10, 6),
+                .gap = 24,
+                .alignment = .{ .main = .space_between, .cross = .center },
+            },
+            .on_click = if (enabled) item.on_select else null,
+        }, .{
+            ui.text(item.label, .{ .size = theme.font_size_base, .color = label_color }),
+            if (item.shortcut) |shortcut| ui.text(shortcut, .{
+                .size = theme.font_size_base -| 2,
+                .color = .muted,
+            }) else null,
+        })}));
     }
 };
 
@@ -2079,6 +2431,7 @@ test "components compile against the gooey surface" {
         _ = Checkbox;
         _ = RadioGroup;
         _ = Tooltip(Button);
+        _ = ContextMenu(Button);
         _ = TextInput;
         _ = TextArea;
         _ = CodeEditor;
