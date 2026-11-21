@@ -242,6 +242,10 @@ const SizingFrame = struct {
     height: f32,
     /// The shrink ratio for `.shrink`, the space per grow weight for `.grow`.
     factor: f32,
+    /// What a `.percent` child takes its fraction of along the main axis: the
+    /// content size less the gaps between flow children, as Clay sizes it, so
+    /// percents that add up to 1 fill the parent exactly.
+    percent_basis: f32,
 };
 
 const SizingRule = enum {
@@ -343,29 +347,11 @@ fn sizeLeafChildren(engine: *LayoutEngine, frame: *const SizingFrame) void {
 inline fn sizeByRule(engine: *LayoutEngine, frame: *const SizingFrame, child: *LayoutElement) void {
     std.debug.assert(child.config.floating == null);
     std.debug.assert(frame.factor >= 0);
-    const is_horizontal = frame.is_horizontal;
+    std.debug.assert(frame.percent_basis >= 0);
     switch (frame.rule) {
         .assigned => {},
-        .shrink => {
-            const available = if (is_horizontal) frame.width else frame.height;
-            assignShrunkSize(
-                engine,
-                child,
-                is_horizontal,
-                available,
-                frame.width,
-                frame.height,
-                frame.factor,
-            );
-        },
-        .grow => assignGrownSize(
-            engine,
-            child,
-            is_horizontal,
-            frame.width,
-            frame.height,
-            frame.factor,
-        ),
+        .shrink => assignShrunkSize(engine, child, frame),
+        .grow => assignGrownSize(engine, child, frame),
     }
 }
 
@@ -391,6 +377,7 @@ fn planChildSizes(engine: *LayoutEngine, parent_index: u32) SizingFrame {
         .width = content.width,
         .height = content.height,
         .factor = 0,
+        .percent_basis = 0,
     };
     if (parent.config.layout.wrap) {
         std.debug.assert(is_horizontal);
@@ -422,7 +409,7 @@ fn planChildSizes(engine: *LayoutEngine, parent_index: u32) SizingFrame {
         },
     }
 
-    const totals = sumDesiredSizes(engine, first_child, is_horizontal, available);
+    const totals = sumDesiredSizes(engine, first_child, is_horizontal);
     frame.has_grandchildren = totals.has_grandchildren;
     planDistribution(&frame, &totals, available, gap);
     return frame;
@@ -439,13 +426,16 @@ fn planDistribution(
 ) void {
     std.debug.assert(totals.grow_weight_total >= 0);
     std.debug.assert(totals.total_desired >= 0);
+    std.debug.assert(totals.percent_total >= 0);
     const gap_count: f32 = @floatFromInt(@max(totals.child_count, 1) - 1);
     const total_gap = gap * gap_count;
-    const size_to_distribute = available - totals.total_desired - total_gap;
-    if (size_to_distribute < 0 and totals.total_desired > 0) {
+    frame.percent_basis = @max(0, available - total_gap);
+    const total_desired = totals.total_desired + totals.percent_total * frame.percent_basis;
+    const size_to_distribute = available - total_desired - total_gap;
+    if (size_to_distribute < 0 and total_desired > 0) {
         const overflow = -size_to_distribute;
         frame.rule = .shrink;
-        frame.factor = @max(0, 1.0 - overflow / totals.total_desired);
+        frame.factor = @max(0, 1.0 - overflow / total_desired);
         std.debug.assert(frame.factor <= 1.0);
     } else {
         // Gap overflow is intended: gaps count as used space and never
@@ -453,7 +443,7 @@ fn planDistribution(
         // rest overflows, as in CSS flexbox and clay. With nothing desired to
         // shrink, only the gaps can make the space negative here.
         if (size_to_distribute < 0) {
-            std.debug.assert(totals.total_desired == 0);
+            std.debug.assert(total_desired == 0);
             std.debug.assert(total_gap > available);
         }
         frame.rule = .grow;
@@ -493,11 +483,13 @@ fn sizeElement(
 }
 
 /// Pre-pass totals from `planChildSizes`: the grow children's summed
-/// weights, how much non-grow desired space they occupy, and the count
-/// itself (for gaps).
+/// weights, how much fit and fixed desired space they occupy, the percent
+/// children's summed fractions (of a basis known only once the count is),
+/// and the count itself (for gaps).
 const ChildTotals = struct {
     grow_weight_total: f32,
     total_desired: f32,
+    percent_total: f32,
     child_count: u32,
     has_grandchildren: bool,
 };
@@ -505,17 +497,13 @@ const ChildTotals = struct {
 /// Inspect each non-floating child and classify by sizing type. The
 /// numbers feed both the shrink-vs-grow decision in `planChildSizes`
 /// and the gap accounting.
-fn sumDesiredSizes(
-    engine: *LayoutEngine,
-    first_child: u32,
-    is_horizontal: bool,
-    available: f32,
-) ChildTotals {
+fn sumDesiredSizes(engine: *LayoutEngine, first_child: u32, is_horizontal: bool) ChildTotals {
     std.debug.assert(first_child < engine.elements.len());
-    std.debug.assert(available >= 0 or available == std.math.floatMax(f32));
+    std.debug.assert(first_child > 0); // Pre-order: a child follows its parent.
 
     var grow_weight_total: f32 = 0;
     var total_desired: f32 = 0;
+    var percent_total: f32 = 0;
     var child_count: u32 = 0;
     var has_grandchildren = false;
 
@@ -545,7 +533,10 @@ fn sumDesiredSizes(
                 break :blk @max(child_min, effective_max);
             },
             .fixed => |mm| mm.min, // fixed wants exactly this size
-            .percent => |p| available * p.value,
+            .percent => |p| blk: {
+                percent_total += p.value;
+                break :blk 0; // Added once the basis is known.
+            },
         };
 
         if (child_sizing.value != .grow) total_desired += child_desired;
@@ -555,9 +546,11 @@ fn sumDesiredSizes(
     }
 
     std.debug.assert(std.math.isFinite(grow_weight_total));
+    std.debug.assert(percent_total >= 0);
     return .{
         .grow_weight_total = grow_weight_total,
         .total_desired = total_desired,
+        .percent_total = percent_total,
         .child_count = child_count,
         .has_grandchildren = has_grandchildren,
     };
@@ -722,15 +715,11 @@ fn reassignUniformSizes(
 /// honoring its min constraint, then resolve the cross axis and aspect
 /// ratio. A leaf: no recursion, no side effects beyond `child.computed` and,
 /// for an aspect ratio, `engine.heights_derived`.
-fn assignShrunkSize(
-    engine: *LayoutEngine,
-    child: *LayoutElement,
-    is_horizontal: bool,
-    available: f32,
-    width: f32,
-    height: f32,
-    shrink_ratio: f32,
-) void {
+fn assignShrunkSize(engine: *LayoutEngine, child: *LayoutElement, frame: *const SizingFrame) void {
+    const is_horizontal = frame.is_horizontal;
+    const width = frame.width;
+    const height = frame.height;
+    const shrink_ratio = frame.factor;
     std.debug.assert(shrink_ratio >= 0);
     std.debug.assert(shrink_ratio <= 1.0);
 
@@ -742,7 +731,7 @@ fn assignShrunkSize(
         .grow => child_min_content,
         .fit => |mm| @max(child_min_content, if (mm.max >= 1e10) child_min_content else mm.max),
         .fixed => |mm| mm.min,
-        .percent => |p| available * p.value,
+        .percent => |p| frame.percent_basis * p.value,
     };
 
     const new_size: f32 = if (child_sizing.value == .grow)
@@ -790,14 +779,11 @@ fn childContentArea(child: *const LayoutElement) struct { width: f32, height: f3
 /// takes the share of the free space its weight gives it, any other child its
 /// desired size. The child then resolves its own size from what it is offered
 /// (`sizeElement`), so nested layouts run on accurate constraints.
-fn assignGrownSize(
-    engine: *LayoutEngine,
-    child: *LayoutElement,
-    is_horizontal: bool,
-    width: f32,
-    height: f32,
-    per_weight: f32,
-) void {
+fn assignGrownSize(engine: *LayoutEngine, child: *LayoutElement, frame: *const SizingFrame) void {
+    const is_horizontal = frame.is_horizontal;
+    const width = frame.width;
+    const height = frame.height;
+    const per_weight = frame.factor;
     std.debug.assert(per_weight >= 0);
     std.debug.assert(child.config.floating == null);
 
@@ -808,7 +794,9 @@ fn assignGrownSize(
         .grow => 0, // handled separately
         .fit => |mm| @max(child_min_main, mm.max),
         .fixed => |mm| mm.min,
-        .percent => |p| (if (is_horizontal) width else height) * p.value,
+        // `sizeElement` takes the fraction of what it is offered: offer the
+        // basis, so the fraction is taken once.
+        .percent => frame.percent_basis,
     };
 
     const per_grow: f32 = switch (child_sizing_main.value) {

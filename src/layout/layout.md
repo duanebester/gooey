@@ -87,7 +87,7 @@ Elements can size themselves in four ways:
 | `fit`     | Shrink to fit content          | `SizingAxis.fit()`        |
 | `grow`    | Expand to fill available space | `SizingAxis.grow()`       |
 | `fixed`   | Exact pixel size               | `SizingAxis.fixed(100)`   |
-| `percent` | Percentage of parent           | `SizingAxis.percent(0.5)` |
+| `percent` | Fraction of parent, less gaps  | `SizingAxis.percent(0.5)` |
 
 **Convenience constructors:**
 

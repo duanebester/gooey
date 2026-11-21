@@ -229,6 +229,49 @@ test "percent with min/max" {
     try std.testing.expectEqual(@as(f32, 300), elem.computed.sized_width);
 }
 
+// A percent child takes its fraction once, of its parent's content less the
+// gaps between flow children (decision 25). The fractions 0.5 and 0.25 beside
+// a grow child tell the readings apart: of the content less gaps, 190 and 95
+// leave the grow child 95; of the whole content, 200 and 100 leave it 80; and
+// a fraction taken twice, as the grow rule once did, gives 100 and 25.
+test "percent children take their fraction once, less the gaps" {
+    const directions = [_]LayoutDirection{ .left_to_right, .top_to_bottom };
+    for (directions) |direction| {
+        var engine = try LayoutEngine.init(&test_capacity);
+        defer engine.deinit();
+        engine.beginFrame(800, 600);
+
+        const is_row = direction == .left_to_right;
+        try engine.openElement(.{ .layout = .{
+            .sizing = Sizing.fixed(400, 400),
+            .layout_direction = direction,
+            .child_gap = 10,
+        } });
+        const mains = [_]SizingAxis{
+            SizingAxis.percent(0.5),
+            SizingAxis.percent(0.25),
+            SizingAxis.grow(),
+        };
+        for (mains) |main| {
+            const sizing: Sizing = if (is_row)
+                .{ .width = main, .height = SizingAxis.fixed(10) }
+            else
+                .{ .width = SizingAxis.fixed(10), .height = main };
+            try engine.openElement(.{ .layout = .{ .sizing = sizing } });
+            engine.closeElement();
+        }
+        engine.closeElement();
+        try engine.endFrame();
+
+        const expected = [_]f32{ 190, 95, 95 };
+        for (expected, 1..) |size, index| {
+            const bounds = boundingBox(&engine, @intCast(index));
+            const main_size = if (is_row) bounds.width else bounds.height;
+            try std.testing.expectApproxEqAbs(size, main_size, 0.01);
+        }
+    }
+}
+
 test "floating positioning" {
     var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();

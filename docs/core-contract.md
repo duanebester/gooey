@@ -216,6 +216,10 @@ Contract:
   main-axis space by weight, each clamped between its content minimum and its
   `width_max` or `height_max`. On the cross axis a grow box fills its parent whatever its
   weight. A weight must be finite and greater than 0; any other weight panics.
+- **Percent.** `.{ .percent = fraction }` along the parent's direction is that fraction of
+  the parent's content size less the gaps between its flow children, so fractions that
+  add up to 1 fill the parent exactly; on the cross axis it is the fraction of the content
+  size. In a wrapping row it is of the row's content width (decision 25).
 - **Opacity** multiplies the alpha of everything a box or paint element and its subtree
   draws, including the layers it opens; nested values multiply. Each record fades on its
   own, so overlapping children show through each other rather than fading as one group.
@@ -1602,6 +1606,14 @@ wrappers for list iteration.
     sizing, two while placing, and the marking and backward walk only on frames that
     derive a height. Layouts without either field run 0.5 to 2 % more instructions in
     the Cachegrind gate, from the branches the feature adds.
+25. **Percent less gaps (0.6, 2026-11-21).** A `.percent` child along its parent's
+    direction takes its fraction of the content size less the gaps between flow children,
+    as Clay sizes percent children, so fractions that add up to 1 fill the parent without
+    overflowing. It replaces a fraction of the whole content size, which a parent that did
+    not overflow then took a second time when it sized the child, so two halves of a
+    400 px row came out 100 px each; only `percent = 1` was unaffected. A wrapping row's
+    lines hold different gap counts, so a percent child there stays a fraction of the row's
+    content width, and the cross axis has no gaps to subtract.
 
 ## Open questions
 
