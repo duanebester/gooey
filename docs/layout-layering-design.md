@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented by the 0.4 core's layers (`docs/v0.4.0-core-contract.md` §6, `src/core/layers.zig`)
+Implemented by the 0.4 core's layers (`docs/core-contract.md` §6, `src/core/layers.zig`)
 and current as of v0.5.1 (2026-11-14). The contract is normative; this document keeps the
 reasoning behind it. It began as a proposal against the 0.3.1 runtime, whose floating
 elements carried an additive `i16` z-index and were sorted command by command into the

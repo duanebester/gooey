@@ -244,7 +244,7 @@ frame's worth, and `atlas.svg_rasterization_count_frame_max` icons rasterize per
 at once (2 at `nano`, 8 at `standard`), each with a `job_input_bytes_max` input, and
 `events.job_result_count_max` posted results of up to `job_result_bytes_max` bytes wait for a
 drain. The fields and
-their measurements are in `src/core/limits.zig` and `docs/v0.4.0-memory-budget.md`.
+their measurements are in `src/core/limits.zig` and `docs/memory-budget.md`.
 
 ### Render with `Cx` and `ui`
 

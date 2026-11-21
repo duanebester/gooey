@@ -53,7 +53,7 @@ file dialogs, cursors, accessibility (UI Automation), and frame pacing on a rend
 
 - **Seam 1 (phase 4).** Windows stop calling `on_input` and `on_render`; they push events
   into a bounded `EventQueue`, answer a read-only `Query` (IME caret rect, hit test), and
-  signal ticks (`docs/v0.4.0-core-contract.md`, section 9). Every input message already
+  signal ticks (`docs/core-contract.md`, section 9). Every input message already
   goes through `Translator.translate` and is delivered by `Window.handleInput`, so phase 4
   changes that one call.
 - **Seam 2 (phase 5).** The renderer draws a `PackedFrame` instead of the 0.3.1 `Scene`.
@@ -548,7 +548,7 @@ is the mask the shaders expect: R is fill alpha, G is stroke alpha, A is their m
   4,096 vertices for `nano` up to 64 KiB and 32,768 at the ceiling) plus one RGBA icon at
   `svg_icon_size_max` for the stroke buffer. `rasterScratchBytes` reserves exactly what
   one icon within those limits can use, 0.20–2.13 MiB across the profiles
-  (`docs/v0.4.0-memory-budget.md`). Parsing and flattening reserve their full capacity
+  (`docs/memory-budget.md`). Parsing and flattening reserve their full capacity
   up front and append through an allocator that cannot grow, so a longer path fails with
   `PathTooComplex` instead of exhausting the arena. `SvgAtlas` fails fast on it, naming
   the `ResourceLimits` field to raise, the configured value, and the icon. Linux and

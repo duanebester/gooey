@@ -1,14 +1,14 @@
-# Gooey 0.4.0 Core Contract
+# Gooey Core Contract
 
 ## Status
 
-Approved on 2026-10-30, which completes phase 2 of `docs/v0.4.0-plan.md`, and implemented
+Approved on 2026-10-30, at the end of the 0.4 migration's design phase, and implemented
 on `main`: milestone 1 and phase 4 shipped in v0.4.0, the packed frame and `Renderer`
 contract (phase 5, §9) in v0.4.3, and the last of phase 6 in v0.5.0 and v0.5.1. The 0.4
 migration is closed (2026-11-14). A change to a signature or rule here needs the same
 approval as the contract, recorded under "Approved decisions".
 
-Three promises here are deferred to 0.6 (plan, Status):
+Three promises here were deferred to 0.6:
 
 - **Build and draw overlap** (decision 7, "Changed in phase 5"). The core keeps one frame
   in flight, so the main thread does not build while the render thread draws. Shelved on
@@ -1427,7 +1427,7 @@ wrappers for list iteration.
       `disktree`, with `test-disktree` and its benchmark use. Any limit or profile that only
       disktree exercised gets its coverage from an existing test, or the PR says it lost it.
     - **Showcase is deferred:** the 0.3.1 `showcase` example is deleted now, and the
-      showcase tutorial (`docs/v0.4.0-showcase.md`) is built in a later release. Its roles
+      showcase tutorial is built in a later release. Its roles
       move to core examples: `todo` becomes the default `zig build run`, and `zig build
       wasm`, Pages, and the preview skill use a core example.
     - **Drag and drop is deferred:** `drag_drop` is deleted, and the 0.3.1 drag machinery

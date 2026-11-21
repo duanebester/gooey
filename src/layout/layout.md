@@ -3,7 +3,7 @@
 A Clay-inspired declarative layout engine for building UI hierarchies with flexbox-style sizing and positioning.
 
 This is internal machinery (`gooey.internals.layout`), not app API: apps lay out with
-`ui.box` and `ui.Style` (`docs/v0.4.0-core-contract.md` §1). The core (`src/core/cx.zig`)
+`ui.box` and `ui.Style` (`docs/core-contract.md` §1). The core (`src/core/cx.zig`)
 opens one element per node and reads each node's bounds from the engine's element list by
 index (`src/core/emit.zig`). The snippets below compile against v0.5.3's engine
 (`gooey.internals.layout`).
