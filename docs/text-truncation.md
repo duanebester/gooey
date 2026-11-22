@@ -2,11 +2,17 @@
 
 ## Status
 
-Proposed on 2026-11-22 against `main` after decision 28 (grids) and approved the same day
-with the answers under "Resolved questions". It is the last open item under "P1: layout" in
-`docs/api-developer-experience-roadmap.md`. It builds on decision 26 (content floors and
-largest-first shrink) and decision 27 (heights after widths), and changes no existing
-default: a text that sets neither field below lays out and draws as it does today.
+Proposed on 2026-11-22 against `main` after decision 28 (grids), approved the same day
+with the answers under "Resolved questions", and implemented as decision 29 in
+`docs/core-contract.md`. `src/examples/text_truncation.zig` shows a sidebar, a table, and
+clamped cards. Three points differ from the proposal: `overflow` is an inline enum beside
+`wrap` and `alignment` rather than a named `TextOverflow`; a `.none` text's one cut line is
+marked `cut_if_wide`, not `cut` ("Passes"); and, decided after review (resolved question
+6), `.clip` cuts a too-wide line at the cut width too, so no text draws past it. It is the
+last open item under "P1: layout" in `docs/api-developer-experience-roadmap.md`. It builds
+on decision 26 (content floors and largest-first shrink) and decision 27 (heights after
+widths). A text that fits its width lays out and draws byte for byte as before; only a line
+wider than its width, which drew past its parent before, is now cut at it.
 
 ## Why
 
@@ -80,13 +86,15 @@ pub const Text = struct {
     /// What marks a line cut short: one wider than the text (`.none` text, a
     /// `.newlines` paragraph, or a word longer than a `.words` line), or the last
     /// line of a text that `line_count_max` cut. `.clip` cuts with no mark:
-    /// lines past the limit are dropped and a too-wide line draws as today;
-    /// `.ellipsis` ends the line in "…".
-    overflow: TextOverflow = .clip,
+    /// lines past the limit are dropped and a too-wide line is cut at the
+    /// text's width; `.ellipsis` cuts it the same way and ends it in "…".
+    overflow: enum { clip, ellipsis } = .clip,
 };
-
-pub const TextOverflow = enum { clip, ellipsis };
 ```
+
+`overflow` is an inline enum, as `wrap` and `alignment` are beside it; the engine's
+`TextConfig.Overflow` mirrors it, and code that needs the type names it
+`@FieldType(ui.Text, "overflow")`.
 
 A table cell and a sidebar name, a card body of at most three lines, and a list preview:
 
@@ -125,7 +133,9 @@ sets `a11y.label` to the full text, as any row does today.
 
 A text is cut at the width it wraps at: its parent's content width (its cell's, in a grid),
 or the width its row shrank it to when that is narrower (`wrapElementText`'s `wrap_width`).
-A `.none` text is cut at the same width, which it ignores today.
+A `.none` text is cut at the same width, which it ignored before. A text whose parent
+scrolls along x is not cut: its parent's content may be wider than the parent, so the text
+scrolls instead.
 
 ### Which lines are cut
 
@@ -135,13 +145,20 @@ Each drawn line ends in one of three ways:
    is drawn too. Drawn as today.
 2. **Too wide.** It is wider than the cut width: the whole of a `.none` text, a `.newlines`
    paragraph, or a `.words` line holding one word longer than the cut width. With
-   `.ellipsis` it is cut; with `.clip` it draws whole, past its box, as today, so a
-   parent with `Style.clip = .clip` cuts its pixels at the parent's edge.
+   `.ellipsis` it is cut and ends in "…"; with `.clip` it is cut at the same place with no
+   mark, so no text draws past its cut width. Before, it drew whole, past its parent.
 3. **Clamped.** It is line `line_count_max` and text follows it. With `.ellipsis` it ends
    in an ellipsis even when it fits; with `.clip` it ends where wrapping ended it and the
    rest is dropped.
 
 A text of exactly `line_count_max` lines shows no ellipsis, as in CSS.
+
+`.clip` keeps decision 26's floors, unlike `.ellipsis`: a row that overflows does not
+shrink a `.clip` label below its one-line width, or a wrapping one below its widest word.
+So a `.clip` text is cut only where its parent cannot give it its floor (a fixed or grid
+column, a padded box), at the parent's content width. In a row that overflows despite its
+floors, a text that does not start at the row's left edge may still pass the row's right
+edge by its offset, as the row itself overflows (`Style.clip` on the row cuts that).
 
 ### Where a line is cut
 
@@ -189,7 +206,7 @@ glyph draws it through the text system's fallback, as any other missing glyph.
   decision 27's heights pass sizes its ancestors from the clamped height. A card row whose
   bodies are clamped to three lines is at most three lines tall.
 - **`cx.measureText`** returns what layout will size: at most `line_count_max` lines tall,
-  and for a `.ellipsis` text no wider than `max_width`.
+  and no wider than `max_width`.
 
 ### Alignment
 
@@ -220,7 +237,7 @@ The types bound the rest: `line_count_max` is a `u8` and `overflow` an enum.
 ### Storage
 
 - `TextConfig` gains `line_count_max: u8` (0 for none, as the engine's sentinel) and
-  `overflow: TextOverflow`, a byte each; a comptime assertion pins its size.
+  `overflow: Overflow`, `enum(u1) { clip, ellipsis }`.
 - `TextData` gains `ellipsis_width: f32`, measured once in `LayoutEngine.text` for an
   `.ellipsis` text and 0 otherwise.
 - `WrappedLine` gains `end: LineEnd`, `enum(u2) { whole, cut_if_wide, cut }`: rule 1, 2,
@@ -242,26 +259,31 @@ The types bound the rest: `line_count_max` is a `u8` and `overflow` an enum.
    one-line width sets `floors_differ`, as a wrapping text's does.
 2. **Minimums and sizing.** Unchanged: floors and minimums already flow through
    `computeMinSizes`, `planChildSizes`, and the grid's column passes.
-3. **Wrapping (`wrapElementText`, `wrapLines`).** A `.none` `.ellipsis` text whose one-line
-   width is above its cut width gets one line, `[0, len)`, marked `cut`; others keep
-   `wrapped_lines = null`, as today. A wrapping text packs lines as today and marks each
-   line wider than the cut width `cut_if_wide` when it is `.ellipsis`. With
-   `line_count_max = N`, `LinePacker` stops when line N would end at a wrap and text
-   follows: line N then runs to its paragraph's end, found by one scan for `'\n'`, and is
-   marked `cut` (or kept as wrapped, with `.clip`); the scan of words stops with it. A
-   line N that ends at a newline with text after it is marked `cut` as is. `measureWrapped`
-   uses the same packer, so `cx.measureText` stops at the same line. `TextSizeKey.style`
-   adds `line_count_max` and `overflow` to the bits it packs (bits 50 to 58).
+3. **Wrapping (`wrapElementText`, `wrapLines`).** A `.none` text whose one-line width is
+   above its cut width, and whose parent does not scroll along x, gets one line, `[0, len)`,
+   marked `cut_if_wide`, since no text follows it and its width came from the shaper emit
+   draws with (`cutOneLine`); others keep `wrapped_lines = null`, as today. A wrapping text
+   packs lines as today and marks each line wider than the cut width `cut_if_wide`, for
+   either overflow. With `line_count_max = N`, `LinePacker` stops when line N would end at a
+   wrap and text follows: line N then runs to its paragraph's end, found by one scan for
+   `'\n'`, and is marked `cut` (or kept as wrapped, with `.clip`); the scan of words stops
+   with it. A line N that ends at a newline with text after it is marked `cut` as is.
+   `measureWrapped` uses the same packer, so `cx.measureText` stops at the same line.
+   `TextSizeKey.style` adds `line_count_max` and `overflow` to the bits it packs (bits 50 to
+   58).
 4. **Heights (decision 27).** Unchanged: a clamped text that is not one line tall marks
    itself `min_height_dirty`, as any wrapped text does.
 5. **Emit (`emitText`).** A line marked `whole` draws as today. A line marked
-   `cut_if_wide` or `cut` goes to `text_render.placeTextCut`, which walks the line's
-   shaping runs (`runLength`) through `shapeTextInto`, adding advances until the next
-   cluster would pass the cut width less the ellipsis; trims trailing spaces and tabs; and
-   returns the kept byte length and its width. A `cut_if_wide` line whose runs all fit is
-   drawn whole. Emit then aligns the kept width plus the ellipsis, places the kept glyphs
-   from the same runs (each run a shape-cache hit the second time), and places the ellipsis
-   as a run of its own. A `.none` text's one cut line is drawn the same way.
+   `cut_if_wide` or `cut` goes to `emitCutLine`. `text_render.measureCut` walks the
+   line's shaping runs (`runLength`) through `shapeTextInto`, adding advances until the
+   pen passes the cut width less the ellipsis (less nothing, for `.clip`; the ellipsis
+   width is the one layout measured at declaration); it keeps the last cut before an advancing
+   glyph that starts a cluster and follows a byte that is not a space or tab, and returns
+   the kept byte length and its width. A `cut_if_wide` line whose runs all fit is drawn
+   whole. Emit then aligns the kept width plus the ellipsis, places the kept glyphs
+   from the same runs (`text_render.placeTextPrefix`, each run a shape-cache hit the
+   second time), and, for `.ellipsis`, places the ellipsis as a run of its own. A `.none`
+   text's one cut line is drawn the same way.
 
 The engine never builds a truncated string: the kept glyphs are a prefix of the shaped
 line, so the drawn text keeps the line's own kerning and the arena holds no new bytes.
@@ -279,8 +301,10 @@ scratch than they do today.
 Per text, with no allocation:
 
 - **Texts with neither field:** one branch in `LayoutEngine.text`, one in
-  `wrapElementText`, and one per drawn line in `emitText` reading `end`. Target: within
-  0.5 % instructions in the Cachegrind gate, as decision 28 held grids to.
+  `wrapElementText`, one per line packed, and one per drawn line in `emitText` reading
+  `end`. Target: within 0.5 % instructions in the Cachegrind gate, as decision 28 held
+  grids to. Measured against `main` at 0a37bfb: every existing benchmark within +0.032 %
+  (layout) and ±0.09 % (text, core, accessibility, noise), none regressed.
 - **Declaration of an `.ellipsis` text:** "…" is measured once per `.ellipsis` text when
   it is declared, through the measure callback, which is a shape-cache hit after the first
   frame; it replaces `widestWord`'s scan of every word, so a long `.words` body declared
@@ -291,6 +315,10 @@ Per text, with no allocation:
   paragraph. A 10,000-word body clamped to three lines measures one batch, 1,024 words,
   where it measures 10,000 today, and claims 3 lines where it claims about 250. The
   one-line measure in `LayoutEngine.text` still shapes the whole text once, as today.
+  Measured: `text_clamp`, 100 cards of a 400-word body (one batch) clamped to three lines,
+  runs 229 M instructions to `text_unclamped`'s 437 M, 48 % fewer, from the lines it
+  neither packs past the clamp nor copies and from the `widestWord` scan an `.ellipsis`
+  text skips. `text_ellipsis_cells`, 1,000 one-line cells cut by their rows, runs 20.6 M.
 - **A cut line in emit:** the runs up to the cut, walked twice: once to find the cut, once
   to place it, the second from the shape cache. A run is at most 512 bytes
   (`ShapedRunCache.MAX_TEXT_LEN`) or `run_codepoint_count_max` codepoints, so a cut line
@@ -299,50 +327,63 @@ Per text, with no allocation:
 - **Worst case at `standard`:** every one of 8,192 lines cut, each two short runs: about
   16,400 cached run lookups and one ellipsis run each. Today's emit already shapes each of
   those lines once through the same cache, so a frame of cut lines costs about twice a
-  frame of the same lines uncut, to be measured by a benchmark.
+  frame of the same lines uncut. Not yet measured: the gate's harnesses benchmark layout,
+  not emit, so the proposed emit benchmark of cut cells is still to be written.
 
 ## Tests
 
-- **Engine (`engine_tests.zig`, 10 px a character):** a `.none` `.ellipsis` text of 40
-  characters in a 100 px column is one line marked `cut` of width 100, one line tall; at
-  exactly 400 px it is `wrapped_lines = null`. A `.words` text of five lines clamped to 2
-  is two lines, the second marked `cut` and running to the paragraph's end, two lines tall,
-  and adds 2 to `wrapped_line_count`; clamped to 5 it is five `whole` lines; clamped to 4,
-  four lines with the last `cut`. A clamped line that ends at a newline with a paragraph
-  after it is `cut`. A word of 30 characters in a 100 px `.words` `.ellipsis` text is a
-  `cut_if_wide` line between two `whole` ones. `.clip` with a clamp drops lines and
-  marks none.
-- **Floors:** a 500 px row of a 400 px `.ellipsis` text and a 300 px fixed box gives the
-  text 200 px and cuts it; at 310 px the text is at its floor, the ellipsis's width; the
-  same row without `.ellipsis` keeps the text at 400 px and overflows, as decision 26 does.
-  Twelve equal `.grow` columns with one long `.ellipsis` text stay equal and the text is one
-  line. A `.fit` box around the text floors at the ellipsis plus its padding.
-- **Heights:** a card of a heading and a body clamped to 3 lines is three lines plus the
-  heading tall at any body length; its stretched grid row follows it (decision 27).
-- **Measure:** `cx.measureText` and layout agree on clamped and `.ellipsis` texts at three
-  widths, and the text size cache keys them apart from the same text unclamped.
-- **Emit (`core` tests with the synthetic backend, whose advances differ by character
-  class):** a line whose shaped width equals the cut width draws whole and one class wider
-  is cut; trailing spaces are trimmed before the ellipsis; "naïve café" cut inside "café"
-  never splits "é"; a cut width narrower than the ellipsis draws nothing; `.right` puts the
-  ellipsis's right edge within one advance of the box's; a single 3,000-byte word cut at
-  200 px shapes only its first run. The ellipsis's glyph id is 0x2026, which the synthetic
-  face shades apart from every ASCII glyph.
-- **Fail-fast modes** in `src/testing/fail_fast_check.zig` for both panics, with their
-  messages in `build.zig`.
-- **Goldens:** `core_truncation.txt` replays a new `src/examples/text_truncation.zig`
-  through the core: a sidebar of long channel names with badges, the grid example's table
-  with an `.ellipsis` name column, and three cards with bodies clamped to 3 lines.
-- **Fuzzing:** `fuzz.zig` gives random texts random clamps and overflow. Every frame checks
-  that a text draws at most `line_count_max` lines, that every `cut` line's width is its
-  cut width, and that its height is its drawn lines times the pitch.
-- **Benchmarks:** `text_clamp` in `src/layout/benchmarks.zig` (300 cards, each a
-  2,000-word body clamped to 3 lines) beside the same layout unclamped; an emit benchmark
-  of 1,000 cut table cells; the Cachegrind gate on every existing layout benchmark.
+- **Engine (`engine_tests.zig`, 10 px a byte, so "…" is 30 px):** a `.none` `.ellipsis`
+  text of 10 bytes in a 100 px column is uncut; 11 and 40 bytes are one `cut_if_wide` line
+  of width 100, one line tall; the same text with `.clip` is cut the same way with no
+  ellipsis width and keeps its 400 px floor; in a box that scrolls along x it is uncut. A
+  `.words`
+  text of five lines clamped to 5 is five `whole` lines; clamped to 4, 2, and 1 it keeps
+  that many, claims only those lines of the frame's budget, and its last is `cut`, runs on
+  to the paragraph's end, and is the cut width wide. `.clip` with a clamp drops lines and
+  marks none. A clamped line that ends at a newline with a paragraph after it is `cut` and
+  keeps its bytes; one followed only by blank lines is `whole`. A 30-byte word in a 100 px
+  `.words` `.ellipsis` text is a `cut_if_wide` line between two `whole` ones.
+- **Floors:** a row of a 400 px `.ellipsis` text and a 300 px fixed box gives the text
+  200 px in 500, its 30 px floor in 330, and the floor still in 310, overflowing; without
+  `.ellipsis` the text keeps 400 px. A `.fit` box around the text floors at the ellipsis
+  plus its padding.
+- **Heights and measure:** a padded column of a title and a 200-word body clamped to 3
+  lines is the title, three lines, and the padding tall, claims three lines, and
+  `LayoutEngine.measureText` returns the body's laid-out size; a `.none` `.ellipsis`
+  text measures at most the offered width.
+- **`cx.measureText` (`core_checks.zig`):** two cases join the existing table, a clamp
+  and a one-line `.ellipsis` text, each compared with its laid-out bounds.
+- **Emit (`core_checks.zig`, synthetic face at size 10: "a" 5 px, a space 2.5, "é" and
+  "…" 7):** ten "a" in 50 px draw uncut; in 49 px, eight and "…" 40 px after the first;
+  "aaaa  bbbbbb" in 34 px drops the two spaces before "…" (the synthetic face draws
+  spaces, so the glyph count shows it); "aaaaééé" in 37 px keeps "aaaaé", never a byte of
+  "é"; 5 px, narrower than "…", draws nothing; a clamp to 2 lines fills line 2 to
+  "aaaa aaaa" and adds "…"; `.right` starts the cut line 2 px in, so "…" ends inside 49;
+  `.clip` draws nine "a" in 49 px with no mark and ten in 50. No case draws past its box.
+  Existing checks whose text overflowed now see it cut: a centred `.newlines` line of
+  103.5 px in 100 is cut to 95.5 and centred; `cx.measureText` of an 80 px `.none` text
+  in 60 is 60; a 3,000-byte unwrapped text that must draw whole now sits in a box that
+  scrolls along x. The VOPR's text area check accepts a cut word line at the wrap width
+  and a zero-width preview cut to nothing.
+- **Fail-fast modes** `core-text-line-count-zero` and `core-text-line-count-none` in
+  `src/testing/fail_fast_check.zig`, with their messages in `build.zig`.
+- **Goldens:** `core_truncation.txt` replays `src/examples/text_truncation.zig` through
+  the core: a sidebar of long channel names beside unread badges, a file table on a grid
+  whose `.grow` name column cuts long names with "…" and whose fixed note column cuts a
+  long note with `.clip`, and three cards, two clamped to three lines
+  with `.ellipsis` (one long, one short) and one clamped to two with `.clip`.
+- **Fuzzing:** `fuzzTextWrapping` gives each text a random wrap mode, a clamp of 0 to 4
+  where it wraps, and either overflow, and checks that it keeps at most `line_count_max`
+  lines, that only `.ellipsis` marks a cut, that a cut line is at most the cut width, and
+  that the text is as tall as its lines.
+- **Benchmarks:** `text_clamp` and `text_unclamped` in `src/layout/benchmarks.zig`: 100
+  cards of a 400-word body at 300 px, clamped to three lines with `.ellipsis` and not
+  clamped; `text_ellipsis_cells`, 250 rows of four one-line `.ellipsis` cells that a row
+  shrinks and cuts; each also as a full frame. The Cachegrind gate on every benchmark.
 
 ## Later
 
-- **Start and middle truncation.** `TextOverflow.ellipsis_start` and `.ellipsis_middle`,
+- **Start and middle truncation.** `overflow` values `.ellipsis_start` and `.ellipsis_middle`,
   as GPUI's `TruncateStart` and `TruncateMiddle`, for file paths and file names. A start
   cut walks a line's runs from its end, so it lands with its own engine test, one line
   only, and no clamp.
@@ -364,8 +405,12 @@ Per text, with no allocation:
   glyphs draws the same thing.
 - **An affix string** (CSS `<string>`, GPUI's affix). Every caller uses "…"; a string
   would need copying into the frame and measuring per text.
-- **`.clip` as a third value.** A box with `clip = .clip` already cuts its children's
-  pixels at its edge, and a text-level clip would spend a clip-stack entry per text.
+- **A clip rect per cut `.clip` line.** It would cut pixel-exact, but through a glyph,
+  and costs a clip push and pop paint record per cut line out of
+  `paint.clip_depth_max` and the record budget, plus the glyphs past the edge that the
+  rect then hides. The glyph prefix `.ellipsis` already uses costs neither: it draws
+  fewer glyphs than the uncut line, reuses `measureCut` and `placeTextPrefix` with an
+  ellipsis width of 0, and is exact to a cluster.
 - **Cutting in the minimum or sizing pass.** Widths are not final until wrapping, and a
   cut there would measure each text more than once, which decisions 27 and 28 avoid.
 
@@ -373,7 +418,7 @@ Per text, with no allocation:
 
 Approved on 2026-11-22.
 
-1. **Fields.** `line_count_max: ?u8` and `overflow: TextOverflow` stay independent, as
+1. **Fields.** `line_count_max: ?u8` and `overflow` stay independent, as
    GPUI's `line_clamp` and `text_overflow`: a clamp does not imply the ellipsis, as it does
    in CSS's `line-clamp: N` and Tailwind's `line-clamp-N`, because an explicit field reads
    better. The default is named `.clip`, not `.visible`: with a clamp it drops the lines
@@ -388,3 +433,9 @@ Approved on 2026-11-22.
 4. **Trimming before the ellipsis.** Spaces and tabs, as CSS. GPUI also trims ASCII
    punctuation, which turns "3.5" into "3…".
 5. **Telling the app a text was cut.** Not in this change; see "Later".
+6. **`.clip` and too-wide lines** (after review). `.clip` cuts a line wider than its cut
+   width as `.ellipsis` does, without the "…", so `.clip` means the text never draws past
+   its width; it stays the default. It cuts with the glyph prefix, not a clip rect
+   ("Rejected"). It keeps decision 26's floors ("Which lines are cut"), so a label still
+   gives way only after its row's other children, and a text in a box that scrolls along
+   x is not cut. Every golden of a text that fits is unchanged byte for byte.

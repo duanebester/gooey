@@ -17,6 +17,9 @@ const text_mod = @import("../text/mod.zig");
 
 const assert = std.debug.assert;
 
+/// The bytes of a text a declaration panic names it by.
+const text_name_bytes_max: usize = 32;
+
 pub const ElementId = id_mod.ElementId;
 pub const Key = id_mod.Key;
 pub const Handler = handler_mod.Handler;
@@ -438,6 +441,7 @@ pub const Cx = opaque {
     }
 
     fn buildText(self: *Cx, content: []const u8, style: *const element.Text) void {
+        checkTextStyle(content, style);
         const window = windowOf(self);
         const parent_index = window.open_stack[window.open_depth - 1];
         const size = style.size orelse window.theme.font_size_base;
@@ -473,6 +477,7 @@ pub const Cx = opaque {
         assert(std.math.isFinite(max_width));
         assert(max_width >= 0);
         assert(content.len <= std.math.maxInt(u32));
+        checkTextStyle(content, &style);
         const config = textConfig(window, &style);
         const text_system = window.resources.text_system;
         const key: text_mod.TextSizeKey = .{
@@ -480,7 +485,10 @@ pub const Cx = opaque {
             .text_len = @intCast(content.len),
             .max_width_bits = @bitCast(max_width),
             .style = @as(u64, config.font_id) | @as(u64, config.font_size) << 16 |
-                @as(u64, config.line_height) << 32 | @as(u64, @backingInt(config.wrap_mode)) << 48,
+                @as(u64, config.line_height) << 32 |
+                @as(u64, @backingInt(config.wrap_mode)) << 48 |
+                @as(u64, config.line_count_max) << 50 |
+                @as(u64, @backingInt(config.overflow)) << 58,
         };
         if (text_system.text_size_cache.get(key)) |size| {
             return .{ .width = size[0], .height = size[1] };
@@ -514,7 +522,31 @@ pub const Cx = opaque {
                 .center => .center,
                 .right => .right,
             },
+            .line_count_max = style.line_count_max orelse 0,
+            .overflow = switch (style.overflow) {
+                .clip => .clip,
+                .ellipsis => .ellipsis,
+            },
         };
+    }
+
+    /// The truncation fields' misuse, at declaration: a clamp needs a wrap
+    /// to have lines to count, and keeps at least one. Names the text by its
+    /// first bytes, since a `ui.text` has no `source`.
+    fn checkTextStyle(content: []const u8, style: *const element.Text) void {
+        const count = style.line_count_max orelse return;
+        const name = content[0..@min(content.len, text_name_bytes_max)];
+        if (count == 0) {
+            std.debug.panic("Text.line_count_max 0 (\"{s}\"): a text shows 1 to 255 lines", .{
+                name,
+            });
+        }
+        if (style.wrap == .none) {
+            std.debug.panic("Text.line_count_max (\"{s}\"): a .none text is one line; " ++
+                "wrap at .words or .newlines", .{name});
+        }
+        assert(count > 0);
+        assert(style.wrap != .none);
     }
 
     /// The layout engine's line height is a percent of the font size; the

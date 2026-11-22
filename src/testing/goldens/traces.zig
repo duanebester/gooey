@@ -100,3 +100,15 @@ pub const grid = trace.Trace{
         .{ .label = "hover the Grace Hopper row", .step = .{ .move = .{ .x = 900, .y = 147 } } },
     },
 };
+
+/// `text_truncation`: one frame of cut names and clamped cards, then the
+/// pointer over the sidebar, which nothing in it answers.
+pub const truncation = trace.Trace{
+    .name = "truncation",
+    .width = 780,
+    .height = 600,
+    .scale_factor = 2,
+    .steps = &.{
+        .{ .label = "move over the sidebar", .step = .{ .move = .{ .x = 120, .y = 90 } } },
+    },
+};

@@ -40,6 +40,8 @@ const Mode = enum {
     @"core-grid-row-box",
     @"core-grid-row-box-cells",
     @"core-grid-count",
+    @"core-text-line-count-zero",
+    @"core-text-line-count-none",
     @"core-pointer-drag-unkeyed",
     @"core-drag-unkeyed",
     @"core-drag-both",
@@ -101,6 +103,8 @@ pub fn main(init: std.process.Init) !void {
         .@"core-grid-row-box" => coreTick(init.gpa, init.io, CoreApp.gridRowBox),
         .@"core-grid-row-box-cells" => coreTick(init.gpa, init.io, CoreApp.gridRowBoxCells),
         .@"core-grid-count" => coreTick(init.gpa, init.io, CoreApp.manyGrids),
+        .@"core-text-line-count-zero" => coreTick(init.gpa, init.io, CoreApp.textLineCountZero),
+        .@"core-text-line-count-none" => coreTick(init.gpa, init.io, CoreApp.textLineCountNone),
         .@"core-pointer-drag-unkeyed" => coreTick(init.gpa, init.io, CoreApp.unkeyedDrag),
         .@"core-drag-unkeyed" => coreTick(init.gpa, init.io, CoreApp.unkeyedDraggable),
         .@"core-drag-both" => coreTick(init.gpa, init.io, CoreApp.dragBoth),
@@ -421,6 +425,16 @@ const CoreApp = struct {
     /// A grid needs a column.
     fn gridColumns(cx: *gooey.Cx) void {
         cx.render(gooey.ui.box(.{ .style = .{ .grid = .{ .columns = &.{} } } }, .{}));
+    }
+
+    /// A clamp keeps at least one line.
+    fn textLineCountZero(cx: *gooey.Cx) void {
+        cx.render(gooey.ui.text("Quarterly report", .{ .wrap = .words, .line_count_max = 0 }));
+    }
+
+    /// A text that does not wrap has no lines to clamp.
+    fn textLineCountNone(cx: *gooey.Cx) void {
+        cx.render(gooey.ui.text("Quarterly report", .{ .line_count_max = 2 }));
     }
 
     /// One row more than a grid lists.

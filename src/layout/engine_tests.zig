@@ -783,7 +783,7 @@ test "a text of more words than one wrap batch wraps as one batch would" {
         try std.testing.expectEqual(@as(u32, @intCast(index * 9)), line.start_offset);
         // A wrapped line keeps its trailing space; the last line has none.
         const length: u32 = if (index + 1 == lines.len) 8 else 9;
-        try std.testing.expectEqual(length, line.length);
+        try std.testing.expectEqual(length, @as(u32, line.extent.length));
         const width: f32 = if (index + 1 == lines.len) 80 else 90;
         try std.testing.expectEqual(width, line.width);
     }
@@ -814,7 +814,7 @@ test "a word before a line break wraps and counts its space like any other" {
     try std.testing.expectEqual(expected.len, lines.len);
     for (lines, expected) |line, want| {
         try std.testing.expectEqual(want[0], line.start_offset);
-        try std.testing.expectEqual(want[1], line.length);
+        try std.testing.expectEqual(want[1], @as(u32, line.extent.length));
         try std.testing.expectEqual(@as(f32, @floatFromInt(want[2])), line.width);
         try std.testing.expect(line.width <= 75);
     }
@@ -1150,9 +1150,10 @@ test "unwrapped text depends on the whole-string measurement" {
     engine.setMeasureTextFn(MeasureRecorder.measure, &recorder);
     engine.beginFrame(800, 600);
 
+    // 500 px holds the 460 px text, which a narrower column would cut.
     try engine.openElement(.{
         .layout = .{
-            .sizing = Sizing.fixed(400, 600),
+            .sizing = Sizing.fixed(500, 600),
             .layout_direction = .top_to_bottom,
         },
     });
@@ -1469,4 +1470,249 @@ test "a wrapping scroll row scrolls to the end of its lines" {
     const scroll = engine.elements.getConst(0).config.scroll.?;
     try std.testing.expectEqual(@as(f32, 30), scroll.scroll_offset.y);
     try std.testing.expectEqual(@as(f32, 40 - 30), boundingBox(&engine, 4).y);
+}
+
+// Text truncation (`docs/text-truncation.md`). Every text here measures 10 px
+// a byte, so "…", three bytes, is 30 px, and lines are 10 px apart.
+
+const truncated: TextConfig = .{ .font_size = 10, .line_height = 100, .overflow = .ellipsis };
+
+/// `text` `count` times over, at compile time.
+inline fn repeated(comptime text: []const u8, comptime count: usize) *const [text.len * count]u8 {
+    comptime {
+        var bytes: [text.len * count]u8 = undefined;
+        for (0..count) |index| @memcpy(bytes[index * text.len ..][0..text.len], text);
+        const result = bytes;
+        return &result;
+    }
+}
+
+/// Lay out `content` with `config` in a column `width` wide and return its
+/// text element.
+fn truncationColumn(
+    engine: *LayoutEngine,
+    width: f32,
+    content: []const u8,
+    config: TextConfig,
+) !*const engine_mod.LayoutElement {
+    assert(width >= 0);
+    engine.setMeasureTextFn(measureTenPixelsPerCharacter, null);
+    engine.beginFrame(800, 600);
+    try engine.openElement(.{ .layout = .{
+        .sizing = .{ .width = SizingAxis.fixed(width), .height = SizingAxis.fit() },
+        .layout_direction = .top_to_bottom,
+    } });
+    try engine.text(content, config);
+    engine.closeElement();
+    try engine.endFrame();
+    return engine.elements.getConst(1);
+}
+
+test "an ellipsis text that does not wrap is cut at its column's width, one line tall" {
+    // Goal: the one-line cut and its boundary. 10 bytes fit 100 px exactly
+    // and stay uncut; 11 and 40 are one `cut_if_wide` line at the cut width.
+    var engine = try LayoutEngine.init(&test_capacity);
+    defer engine.deinit();
+
+    const fits = try truncationColumn(&engine, 100, "abcdefghij", truncated);
+    try std.testing.expect(fits.text_data.?.wrapped_lines == null);
+    try std.testing.expectEqual(@as(f32, 100), fits.computed.bounding_box.width);
+
+    for ([_][]const u8{ "abcdefghijk", repeated("a", 40) }) |content| {
+        const cut = try truncationColumn(&engine, 100, content, truncated);
+        const lines = cut.text_data.?.wrapped_lines.?;
+        try std.testing.expectEqual(@as(usize, 1), lines.len);
+        try std.testing.expectEqual(types.LineEnd.cut_if_wide, lines[0].extent.end);
+        try std.testing.expectEqual(@as(u32, @intCast(content.len)), lines[0].extent.length);
+        try std.testing.expectEqual(@as(f32, 100), lines[0].width);
+        try std.testing.expectEqual(@as(f32, 100), cut.computed.bounding_box.width);
+        try std.testing.expectEqual(@as(f32, 10), cut.computed.bounding_box.height);
+    }
+
+    // `.clip` cuts it the same way, with no ellipsis, and keeps its floor.
+    const clipped = try truncationColumn(&engine, 100, repeated("a", 40), .{ .font_size = 10 });
+    const clip_lines = clipped.text_data.?.wrapped_lines.?;
+    try std.testing.expectEqual(@as(usize, 1), clip_lines.len);
+    try std.testing.expectEqual(types.LineEnd.cut_if_wide, clip_lines[0].extent.end);
+    try std.testing.expectEqual(@as(f32, 100), clipped.computed.bounding_box.width);
+    try std.testing.expectEqual(@as(f32, 0), clipped.text_data.?.ellipsis_width);
+    try std.testing.expectEqual(@as(f32, 400), clipped.computed.floor_width);
+
+    // In a box that scrolls along x the text scrolls instead: uncut.
+    engine.beginFrame(800, 600);
+    try engine.openElement(.{
+        .layout = .{ .sizing = .{ .width = SizingAxis.fixed(100), .height = SizingAxis.fit() } },
+        .scroll = .{ .horizontal = true },
+    });
+    try engine.text(repeated("a", 40), truncated);
+    engine.closeElement();
+    try engine.endFrame();
+    try std.testing.expect(engine.elements.getConst(1).text_data.?.wrapped_lines == null);
+}
+
+test "a clamp keeps line_count_max lines and cuts the last only when text follows" {
+    // Goal: the clamp at, below, and one past its boundary. "aaaa bbbb " is
+    // 100 px, so ten words make five lines of two.
+    var engine = try LayoutEngine.init(&test_capacity);
+    defer engine.deinit();
+    const content = "aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii jjjj";
+    var clamped = truncated;
+    clamped.wrap_mode = .words;
+
+    clamped.line_count_max = 5;
+    const exact = try truncationColumn(&engine, 100, content, clamped);
+    try std.testing.expectEqual(@as(usize, 5), exact.text_data.?.wrapped_lines.?.len);
+    for (exact.text_data.?.wrapped_lines.?) |line| {
+        try std.testing.expectEqual(types.LineEnd.whole, line.extent.end);
+    }
+    try std.testing.expectEqual(@as(f32, 50), exact.computed.bounding_box.height);
+
+    inline for (.{ 4, 2, 1 }) |count| {
+        clamped.line_count_max = count;
+        const text = try truncationColumn(&engine, 100, content, clamped);
+        const lines = text.text_data.?.wrapped_lines.?;
+        try std.testing.expectEqual(@as(usize, count), lines.len);
+        try std.testing.expectEqual(@as(u32, count), engine.wrapped_line_count);
+        const last = lines[count - 1];
+        try std.testing.expectEqual(types.LineEnd.cut, last.extent.end);
+        // The last line runs on to the paragraph's end so emit can fill it.
+        try std.testing.expectEqual(@as(u32, @intCast(content.len)), last.start_offset +
+            @as(u32, last.extent.length));
+        try std.testing.expectEqual(@as(f32, 100), last.width);
+        try std.testing.expectEqual(@as(f32, 10 * count), text.computed.bounding_box.height);
+        for (lines[0 .. count - 1]) |line| {
+            try std.testing.expectEqual(types.LineEnd.whole, line.extent.end);
+        }
+    }
+
+    // `.clip` drops the lines past the limit and marks none.
+    clamped.overflow = .clip;
+    clamped.line_count_max = 2;
+    const clipped = try truncationColumn(&engine, 100, content, clamped);
+    const clip_lines = clipped.text_data.?.wrapped_lines.?;
+    try std.testing.expectEqual(@as(usize, 2), clip_lines.len);
+    try std.testing.expectEqual(types.LineEnd.whole, clip_lines[1].extent.end);
+    try std.testing.expectEqual(@as(u32, 10), clip_lines[1].start_offset);
+    try std.testing.expectEqual(@as(u32, 10), @as(u32, clip_lines[1].extent.length));
+    try std.testing.expectEqual(@as(f32, 20), clipped.computed.bounding_box.height);
+}
+
+test "a clamped line that ends at a newline keeps its bytes; blank lines after it are no text" {
+    var engine = try LayoutEngine.init(&test_capacity);
+    defer engine.deinit();
+    var clamped = truncated;
+    clamped.wrap_mode = .newlines;
+    clamped.line_count_max = 2;
+
+    const paragraphs = try truncationColumn(&engine, 100, "aaaa\nbbbb\ncccc", clamped);
+    const lines = paragraphs.text_data.?.wrapped_lines.?;
+    try std.testing.expectEqual(@as(usize, 2), lines.len);
+    try std.testing.expectEqual(types.LineEnd.cut, lines[1].extent.end);
+    try std.testing.expectEqual(@as(u32, 4), @as(u32, lines[1].extent.length));
+
+    clamped.line_count_max = 1;
+    const blank = try truncationColumn(&engine, 100, "aaaa\n\n \n", clamped);
+    const blank_lines = blank.text_data.?.wrapped_lines.?;
+    try std.testing.expectEqual(@as(usize, 1), blank_lines.len);
+    try std.testing.expectEqual(types.LineEnd.whole, blank_lines[0].extent.end);
+}
+
+test "a word wider than a wrapping ellipsis text's line is cut on a line of its own" {
+    var engine = try LayoutEngine.init(&test_capacity);
+    defer engine.deinit();
+    var words = truncated;
+    words.wrap_mode = .words;
+    const text = try truncationColumn(&engine, 100, "aa " ++ repeated("w", 30) ++ " bb", words);
+    const lines = text.text_data.?.wrapped_lines.?;
+    try std.testing.expectEqual(@as(usize, 3), lines.len);
+    const ends = [_]types.LineEnd{ .whole, .cut_if_wide, .whole };
+    for (lines, ends) |line, end| try std.testing.expectEqual(end, line.extent.end);
+    try std.testing.expectEqual(@as(f32, 100), lines[1].width);
+    try std.testing.expectEqual(@as(f32, 100), text.computed.bounding_box.width);
+}
+
+test "an overflowing row cuts an ellipsis text first, down to the ellipsis" {
+    // Goal: the floor. A 400 px text beside a 300 px box: in 500 px the text
+    // takes 200; in 330 it is at its floor, the ellipsis's 30 px, and stays
+    // there in 310. Without `.ellipsis` its floor is its whole width.
+    var engine = try LayoutEngine.init(&test_capacity);
+    defer engine.deinit();
+    engine.setMeasureTextFn(measureTenPixelsPerCharacter, null);
+    const cases = [_]struct { row: f32, overflow: TextConfig.Overflow, text: f32 }{
+        .{ .row = 500, .overflow = .ellipsis, .text = 200 },
+        .{ .row = 330, .overflow = .ellipsis, .text = 30 },
+        .{ .row = 310, .overflow = .ellipsis, .text = 30 },
+        .{ .row = 500, .overflow = .clip, .text = 400 },
+    };
+    for (cases) |case| {
+        engine.beginFrame(800, 600);
+        try engine.openElement(.{ .layout = .{ .sizing = .{
+            .width = SizingAxis.fixed(case.row),
+            .height = SizingAxis.fit(),
+        } } });
+        var config = truncated;
+        config.overflow = case.overflow;
+        try engine.text(repeated("a", 40), config);
+        try fixedLeaf(&engine, 300, 10);
+        engine.closeElement();
+        try engine.endFrame();
+        try std.testing.expectEqual(case.text, boundingBox(&engine, 1).width);
+        try std.testing.expectEqual(@as(f32, 300), boundingBox(&engine, 2).width);
+        const lines = engine.elements.getConst(1).text_data.?.wrapped_lines;
+        if (case.overflow == .ellipsis) {
+            try std.testing.expectEqual(case.text, lines.?[0].width);
+        } else {
+            try std.testing.expect(lines == null);
+        }
+    }
+}
+
+test "a fit box around an ellipsis text floors at the ellipsis and its padding" {
+    var engine = try LayoutEngine.init(&test_capacity);
+    defer engine.deinit();
+    engine.setMeasureTextFn(measureTenPixelsPerCharacter, null);
+    engine.beginFrame(800, 600);
+    try engine.openElement(.{ .layout = .{ .sizing = .{
+        .width = SizingAxis.fixed(340),
+        .height = SizingAxis.fit(),
+    } } });
+    try engine.openElement(.{ .layout = .{ .padding = Padding.all(5) } });
+    try engine.text(repeated("a", 40), truncated);
+    engine.closeElement();
+    try fixedLeaf(&engine, 300, 10);
+    engine.closeElement();
+    try engine.endFrame();
+    try std.testing.expectEqual(@as(f32, 40), boundingBox(&engine, 1).width);
+    try std.testing.expectEqual(@as(f32, 30), boundingBox(&engine, 2).width);
+}
+
+test "a clamped text's parent takes the clamped height, and measureText agrees" {
+    // Goal: heights after widths (decision 27) see the clamp, and the
+    // build-time measure sizes what layout lays out.
+    var engine = try LayoutEngine.init(&test_capacity);
+    defer engine.deinit();
+    const body = repeated("word ", 200);
+    var clamped = truncated;
+    clamped.wrap_mode = .words;
+    clamped.line_count_max = 3;
+    engine.setMeasureTextFn(measureTenPixelsPerCharacter, null);
+    engine.beginFrame(800, 600);
+    try engine.openElement(.{ .layout = .{
+        .sizing = .{ .width = SizingAxis.fixed(120), .height = SizingAxis.fit() },
+        .layout_direction = .top_to_bottom,
+        .padding = Padding.all(4),
+    } });
+    try engine.text("Title", .{ .font_size = 10, .line_height = 100 });
+    try engine.text(body, clamped);
+    engine.closeElement();
+    try engine.endFrame();
+    try std.testing.expectEqual(@as(f32, 30), boundingBox(&engine, 2).height);
+    try std.testing.expectEqual(@as(f32, 4 + 10 + 30 + 4), boundingBox(&engine, 0).height);
+    try std.testing.expectEqual(@as(u32, 3), engine.wrapped_line_count);
+
+    const measured = engine.measureText(body, clamped, 112);
+    try std.testing.expectEqual(boundingBox(&engine, 2).height, measured.height);
+    try std.testing.expectEqual(boundingBox(&engine, 2).width, measured.width);
+    const one_line = engine.measureText(repeated("a", 40), truncated, 112);
+    try std.testing.expectEqual(@as(f32, 112), one_line.width);
 }

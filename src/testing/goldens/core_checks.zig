@@ -242,7 +242,11 @@ const LongTextApp = gooey.App(LongTextState, longTextRender, .{
 
 fn longTextRender(cx: *Cx) void {
     const state = cx.state(LongTextState);
-    cx.render(ui.box(.{ .style = .{ .width = .{ .grow = 1 } } }, .{
+    // Unwrapped, the text is 21,000 px wide in a 400 px window: a box that
+    // scrolls along x keeps it whole instead of cutting it at its edge.
+    const scroll: ?ui.Scroll = if (state.wrap) null else .{ .x = true, .y = false };
+    const key: ?gooey.Key = if (state.wrap) null else .{ .name = "long" };
+    cx.render(ui.box(.{ .key = key, .style = .{ .width = .{ .grow = 1 }, .scroll = scroll } }, .{
         ui.text(&LongTextState.text, .{ .wrap = if (state.wrap) .words else .none }),
     }));
 }
@@ -356,6 +360,12 @@ const measure_cases = [_]MeasureCase{
     .{ .content = "   ", .style = .{ .wrap = .words }, .max_width = 60 },
     .{ .content = "abcabcabcabc abc", .style = .{ .wrap = .words, .size = 32 }, .max_width = 100 },
     .{ .content = &LongTextState.text, .style = .{ .wrap = .words }, .max_width = 400 },
+    .{
+        .content = "abc abc abc abc abc",
+        .style = .{ .wrap = .words, .line_count_max = 2, .overflow = .ellipsis },
+        .max_width = 60,
+    },
+    .{ .content = "abc abc abc", .style = .{ .overflow = .ellipsis }, .max_width = 30 },
 };
 
 const MeasureApp = gooey.App(MeasureState, measureRender, .{
@@ -372,6 +382,100 @@ fn measureRender(cx: *Cx) void {
         cx.render(ui.box(.{ .style = .{ .width = .{ .fixed = case.max_width } } }, .{
             ui.text(case.content, case.style),
         }));
+    }
+}
+
+const TruncateState = struct {
+    case: u32 = 0,
+
+    const Case = struct { content: []const u8, style: ui.Text, width: f32 };
+    const one_line: ui.Text = .{ .size = 10, .overflow = .ellipsis };
+    const cases = [_]Case{
+        .{ .content = "aaaaaaaaaa", .style = one_line, .width = 50 },
+        .{ .content = "aaaaaaaaaa", .style = one_line, .width = 49 },
+        .{ .content = "aaaa  bbbbbb", .style = one_line, .width = 34 },
+        .{ .content = "aaaa\u{e9}\u{e9}\u{e9}", .style = one_line, .width = 37 },
+        .{ .content = "aaaaaaaaaa", .style = one_line, .width = 5 },
+        .{
+            .content = "aaaa aaaa aaaa aaaa aaaa",
+            .style = .{ .size = 10, .wrap = .words, .line_count_max = 2, .overflow = .ellipsis },
+            .width = 50,
+        },
+        .{
+            .content = "aaaaaaaaaa",
+            .style = .{ .size = 10, .overflow = .ellipsis, .alignment = .right },
+            .width = 49,
+        },
+        .{ .content = "aaaaaaaaaa", .style = .{ .size = 10 }, .width = 49 },
+        .{ .content = "aaaaaaaaaa", .style = .{ .size = 10 }, .width = 50 },
+    };
+};
+
+const TruncateApp = gooey.App(TruncateState, truncateRender, .{
+    .title = "Truncate",
+    .width = 200,
+    .height = 200,
+    .limits = .small,
+});
+
+fn truncateRender(cx: *Cx) void {
+    const case = TruncateState.cases[cx.state(TruncateState).case];
+    cx.render(ui.box(.{ .style = .{ .width = .{ .fixed = case.width } } }, .{
+        ui.text(case.content, case.style),
+    }));
+}
+
+test "an ellipsis cuts a line at the shaped glyph that passes its width" {
+    // Goal: emit's cut, on the synthetic face, whose "a" advances 5 px at
+    // size 10, a space 2.5, "é" and "…" 7 (a 6 px sprite; "a" is 4). Each
+    // case is the glyph count drawn, where "…" starts after the first glyph,
+    // and the first glyph's x; -1 where no "…" is drawn.
+    const Expect = struct { count: u32, ellipsis_x: f32, first_x: f32 = 0 };
+    const expected = [TruncateState.cases.len]Expect{
+        .{ .count = 10, .ellipsis_x = -1 }, // 50 px fits 50 exactly: uncut.
+        .{ .count = 9, .ellipsis_x = 40 }, // 8 "a" and "…" in 49.
+        .{ .count = 5, .ellipsis_x = 20 }, // Spaces before the cut trimmed.
+        .{ .count = 6, .ellipsis_x = 27 }, // "aaaaé", never half an "é".
+        .{ .count = 0, .ellipsis_x = -1 }, // Narrower than "…": nothing.
+        // Line 2 filled to "aaaa aaaa", then "…"; a space draws a 2 px sprite.
+        .{ .count = 20, .ellipsis_x = 42.5 },
+        .{ .count = 9, .ellipsis_x = 40, .first_x = 2 }, // Right-aligned.
+        .{ .count = 9, .ellipsis_x = -1 }, // `.clip`: nine "a", no mark.
+        .{ .count = 10, .ellipsis_x = -1 }, // `.clip` that fits: uncut.
+    };
+    for (expected, 0..) |want, case| {
+        const app = try testing.allocator.create(TruncateApp);
+        defer testing.allocator.destroy(app);
+        try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+        defer app.deinitHeadless();
+        app.state.case = @intCast(case);
+        app.tick(0);
+        const frame = app.window.rendered();
+        var sprites: [32]internals.records.Rect = undefined;
+        var count: u32 = 0;
+        for (frame.paint[0..frame.paint_count]) |record| {
+            if (record != .sprite) continue;
+            assert(count < sprites.len);
+            sprites[count] = record.sprite.bounds;
+            count += 1;
+        }
+        testing.expectEqual(want.count, count) catch |err| {
+            std.debug.print("case {d}: {d} glyphs\n", .{ case, count });
+            return err;
+        };
+        if (count == 0) continue;
+        const first = sprites[0];
+        const last = sprites[count - 1];
+        try testing.expectApproxEqAbs(want.first_x, first.x, 1);
+        // Neither overflow draws past the box.
+        try testing.expect(last.x + last.width <= TruncateState.cases[case].width);
+        if (want.ellipsis_x < 0) {
+            try testing.expectEqual(first.width, last.width);
+        } else {
+            try testing.expectEqual(@as(f32, 6), last.width);
+            try testing.expectApproxEqAbs(want.ellipsis_x, last.x - first.x, 1);
+            try testing.expect(last.x + last.width <= TruncateState.cases[case].width);
+        }
     }
 }
 
@@ -394,7 +498,8 @@ test "cx.measureText sizes a text as layout lays it out" {
     const line_height = measured[1].height;
     try testing.expectEqual(@as(f32, 56), measured[0].width);
     try testing.expectApproxEqAbs(line_height * 2, measured[0].height, 0.5);
-    try testing.expectEqual(@as(f32, 80), measured[1].width);
+    // A one-line text wider than its parent is cut at the parent's width.
+    try testing.expectEqual(@as(f32, 60), measured[1].width);
     try testing.expectApproxEqAbs(line_height * 3, measured[2].height, 1);
     try testing.expect(measured[3].height > measured[0].height);
     try testing.expectEqual(@as(f32, 392), measured[6].width);
@@ -2312,7 +2417,9 @@ test "wrapped text draws one run per line, pitched and aligned like its layout b
     var starts: [8]internals.records.Rect = undefined;
     try testing.expectEqual(@as(u32, 5), lineStarts(&app.window, &starts));
     const reference = starts[4];
-    const expected_x = [_]f32{ 20.5, 76, 42, -1.75 };
+    // The last line, 103.5 px, is cut to 95.5 at the 100 px content width
+    // and centred there.
+    const expected_x = [_]f32{ 20.5, 76, 42, 2.25 };
     const expected_y = [_]f32{ -60, -42, -24, -12 };
     for (starts[0..4], expected_x, expected_y) |start, x, y| {
         try testing.expectApproxEqAbs(x, start.x - reference.x, 1);

@@ -226,7 +226,7 @@ pub fn placeText(
         const length = text_system_mod.runLength(rest);
         std.debug.assert(length <= rest.len);
         const run = rest[0..length];
-        width += try placeRun(text_system, run, x + width, baseline_y, .{
+        width += try placeRun(text_system, run, run.len, x + width, baseline_y, .{
             .scale_factor = scale_factor,
             .font_size = font_size,
             .family = family,
@@ -245,12 +245,15 @@ const RunStyle = struct {
     variant: FontVariant,
 };
 
-/// One shaping run of `placeText`. The glyph cache may rasterize on a miss;
-/// the shaped run is copied into a stack buffer, so only a shape-cache miss
-/// uses the text system's allocator.
+/// One shaping run of `placeText`, or its first `kept` bytes: the glyphs
+/// before the first whose cluster starts at or past `kept`, placed from the
+/// whole run's shaping so they keep its kerning. Returns the placed width.
+/// The glyph cache may rasterize on a miss; the shaped run is copied into a
+/// stack buffer, so only a shape-cache miss uses the text system's allocator.
 fn placeRun(
     text_system: *TextSystem,
     text: []const u8,
+    kept: usize,
     x: f32,
     baseline_y: f32,
     style: RunStyle,
@@ -261,6 +264,8 @@ fn placeRun(
     const family = style.family;
     const variant = style.variant;
     std.debug.assert(text.len > 0);
+    std.debug.assert(kept > 0);
+    std.debug.assert(kept <= text.len);
     std.debug.assert(text_system_mod.runLength(text) == text.len);
     if (text_system.getMetrics() == null) return error.NoFontLoaded;
     // Each family scales by its own regular face (`loadMonoFont`).
@@ -270,13 +275,178 @@ fn placeRun(
     var glyph_buf: [MAX_GLYPHS_PER_RUN]ShapedGlyph = undefined;
     var shaped = try text_system.shapeTextInto(family, text, variant, null, &glyph_buf);
     defer if (shaped.owned) shaped.deinit(text_system.run_allocator);
-    if (shaped.glyphs.len == 0) return shaped.width * size_scale;
+    const whole = kept == text.len;
+    const glyph_count = if (whole) shaped.glyphs.len else keptGlyphCount(shaped.glyphs, kept);
+    const glyphs = shaped.glyphs[0..glyph_count];
+    const width = if (whole) shaped.width * size_scale else advanceSum(glyphs) * size_scale;
+    if (glyphs.len == 0) return width;
     const batch_sink = GlyphSink(@TypeOf(sink)){ .sink = sink, .scale_factor = scale_factor };
-    try placeBatches(text_system, family, variant, font_size, shaped.glyphs, .{
+    try placeBatches(text_system, family, variant, font_size, glyphs, .{
         .x = x,
         .baseline_y = baseline_y,
         .size_scale = size_scale,
         .scale_factor = scale_factor,
     }, &batch_sink);
-    return shaped.width * size_scale;
+    std.debug.assert(width >= 0);
+    return width;
+}
+
+/// The glyphs of a left-to-right run before the first whose cluster starts
+/// at or past byte `kept`.
+fn keptGlyphCount(glyphs: []const ShapedGlyph, kept: usize) usize {
+    std.debug.assert(kept > 0);
+    for (glyphs, 0..) |glyph, index| {
+        if (glyph.cluster >= kept) return index;
+    }
+    return glyphs.len;
+}
+
+fn advanceSum(glyphs: []const ShapedGlyph) f32 {
+    var sum: f32 = 0;
+    for (glyphs) |glyph| sum += glyph.x_advance;
+    std.debug.assert(sum >= 0);
+    return sum;
+}
+
+/// Where a line cut for an ellipsis ends (`measureCut`): the bytes it keeps
+/// and their width, or `whole` when the line fits and is drawn uncut.
+pub const Cut = struct {
+    length: u32,
+    width: f32,
+    whole: bool,
+};
+
+/// The widths a line is cut against: the kept bytes must fit `kept_max`
+/// (the cut width less the ellipsis); the whole line is drawn uncut when it
+/// fits `whole_max`, which is negative when the line must end in an
+/// ellipsis whatever its width.
+pub const CutWidths = struct {
+    kept_max: f32,
+    whole_max: f32,
+};
+
+/// Find where `text`, one left-to-right line, is cut: the longest start
+/// that fits `widths.kept_max`, ending before an advancing glyph that starts
+/// a cluster and after a byte that is not a space or tab, so the cut never
+/// splits a UTF-8 sequence or ligature, never strands an accent (a glyph
+/// with no advance) from its base, and drops trailing whitespace. Widths
+/// are the shaped advances, kerning included, that `placeTextPrefix` draws.
+/// Walks the line's shaping runs only until the pen passes both widths, so
+/// a long paragraph costs the runs its width covers plus one.
+pub fn measureCut(
+    text_system: *TextSystem,
+    text: []const u8,
+    font_size: f32,
+    family: FontFamily,
+    variant: FontVariant,
+    widths: CutWidths,
+) !Cut {
+    std.debug.assert(font_size > 0);
+    std.debug.assert(text.len <= std.math.maxInt(u32));
+    if (text_system.getMetrics() == null) return error.NoFontLoaded;
+    const size_scale = font_size / text_system.getMetricsFor(family).point_size;
+    const stop = @max(widths.kept_max, widths.whole_max);
+    var walk: CutWalk = .{ .text = text, .kept_max = widths.kept_max, .stop = stop };
+    var offset: usize = 0;
+    // Each run takes at least one byte, so the bytes bound the runs.
+    var run_count: usize = 0;
+    while (offset < text.len and !walk.stopped) : (run_count += 1) {
+        std.debug.assert(run_count < text.len);
+        const length = text_system_mod.runLength(text[offset..]);
+        std.debug.assert(length > 0);
+        const run = text[offset..][0..length];
+        var glyph_buf: [MAX_GLYPHS_PER_RUN]ShapedGlyph = undefined;
+        var shaped = try text_system.shapeTextInto(family, run, variant, null, &glyph_buf);
+        defer if (shaped.owned) shaped.deinit(text_system.run_allocator);
+        walk.run(shaped.glyphs, offset, size_scale);
+        offset += length;
+    }
+    if (!walk.stopped) {
+        if (walk.pen <= widths.whole_max) {
+            return .{ .length = @intCast(text.len), .width = walk.pen, .whole = true };
+        }
+        // The whole line fits beside the ellipsis: a clamped line that ends
+        // short of its width keeps every byte up to its trailing whitespace.
+        const last = if (text.len > 0) text[text.len - 1] else ' ';
+        if (walk.pen <= widths.kept_max and last != ' ' and last != '\t') {
+            walk.best = .{ .length = @intCast(text.len), .width = walk.pen, .whole = false };
+        }
+    }
+    std.debug.assert(walk.best.width <= @max(0, widths.kept_max));
+    return walk.best;
+}
+
+/// `measureCut`'s pen across a line's runs, and the best cut so far.
+const CutWalk = struct {
+    text: []const u8,
+    kept_max: f32,
+    stop: f32,
+    pen: f32 = 0,
+    /// One past the furthest cluster start seen: a cut is only taken before
+    /// a glyph that starts past every earlier glyph's cluster, so the kept
+    /// glyphs are exactly those of the kept bytes.
+    cluster_end: usize = 0,
+    best: Cut = .{ .length = 0, .width = 0, .whole = false },
+    stopped: bool = false,
+
+    fn run(self: *CutWalk, glyphs: []const ShapedGlyph, offset: usize, size_scale: f32) void {
+        std.debug.assert(size_scale > 0);
+        std.debug.assert(offset <= self.text.len);
+        for (glyphs) |glyph| {
+            const cluster = offset + glyph.cluster;
+            std.debug.assert(cluster < self.text.len);
+            const starts = cluster >= self.cluster_end;
+            if (starts and glyph.x_advance > 0 and cluster > 0 and self.pen <= self.kept_max) {
+                const before = self.text[cluster - 1];
+                if (before != ' ' and before != '\t') {
+                    self.best = .{ .length = @intCast(cluster), .width = self.pen, .whole = false };
+                }
+            }
+            if (starts) self.cluster_end = cluster + 1;
+            self.pen += glyph.x_advance * size_scale;
+            if (self.pen > self.stop) {
+                self.stopped = true;
+                return;
+            }
+        }
+    }
+};
+
+/// Place the first `kept` bytes of `text` as `placeText` places the whole:
+/// runs before the cut whole, and the run the cut falls in up to the glyph
+/// `measureCut` stopped before, from that run's own shaping (a shape-cache
+/// hit after `measureCut`). Returns the placed width.
+pub fn placeTextPrefix(
+    text_system: *TextSystem,
+    text: []const u8,
+    kept: u32,
+    x: f32,
+    baseline_y: f32,
+    scale_factor: f32,
+    font_size: f32,
+    family: FontFamily,
+    variant: FontVariant,
+    sink: anytype,
+) !f32 {
+    std.debug.assert(kept <= text.len);
+    std.debug.assert(font_size > 0);
+    var width: f32 = 0;
+    var offset: usize = 0;
+    var run_count: usize = 0;
+    while (offset < kept) : (run_count += 1) {
+        std.debug.assert(run_count < text.len);
+        const length = text_system_mod.runLength(text[offset..]);
+        std.debug.assert(length > 0);
+        const run = text[offset..][0..length];
+        const run_kept = @min(length, kept - offset);
+        width += try placeRun(text_system, run, run_kept, x + width, baseline_y, .{
+            .scale_factor = scale_factor,
+            .font_size = font_size,
+            .family = family,
+            .variant = variant,
+        }, sink);
+        offset += length;
+    }
+    std.debug.assert(width >= 0);
+    return width;
 }

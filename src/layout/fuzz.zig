@@ -82,13 +82,45 @@ pub fn fuzzTextWrapping(_: void, smith: *std.testing.Smith) anyerror!void {
     var text_buf: [MAX_FUZZ_TEXT_LEN]u8 = undefined;
     const written = smith.slice(&text_buf);
     const text = sanitizeText(text_buf[0..written]);
-    try engine.text(text, .{
-        .wrap_mode = .words,
+    // Truncation: any wrap mode, a clamp of 0 (none) to 4 lines where the
+    // text wraps, and either overflow (`docs/text-truncation.md`).
+    const wrap_mode: types.TextConfig.WrapMode = switch (smith.valueRangeAtMost(u8, 0, 3)) {
+        0 => .none,
+        1 => .newlines,
+        else => .words,
+    };
+    const line_count_max = if (wrap_mode == .none) 0 else smith.valueRangeAtMost(u8, 0, 4);
+    const config: types.TextConfig = .{
+        .wrap_mode = wrap_mode,
         .font_size = 14,
-    });
+        .line_count_max = line_count_max,
+        .overflow = if (smith.boolWeighted(1, 1)) .ellipsis else .clip,
+    };
+    try engine.text(text, config);
     engine.closeElement();
 
     try engine.endFrame();
+    try assertTruncated(&engine, config, viewport_w - 16);
+}
+
+/// The text's lines obey its clamp and overflow: at most `line_count_max`,
+/// only `.ellipsis` marks a cut, a cut line is at most the cut width, and
+/// the text is as tall as its lines.
+fn assertTruncated(engine: *const LayoutEngine, config: types.TextConfig, width: f32) !void {
+    const text = engine.elements.getConst(1);
+    const data = text.text_data.?;
+    const lines = data.wrapped_lines orelse return;
+    if (config.line_count_max > 0) try std.testing.expect(lines.len <= config.line_count_max);
+    for (lines) |line| {
+        if (line.extent.end == .whole) continue;
+        try std.testing.expect(config.overflow == .ellipsis);
+        try std.testing.expect(line.width <= @max(0, width));
+    }
+    if (config.wrap_mode != .none and lines.len > 0) {
+        const count: f32 = @floatFromInt(lines.len);
+        const height = count * config.lineHeightPx();
+        try std.testing.expectApproxEqAbs(height, data.measured_height, 0.01);
+    }
 }
 
 const TreeState = struct {
