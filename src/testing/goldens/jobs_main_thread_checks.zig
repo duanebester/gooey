@@ -25,11 +25,30 @@ var job_saw_cancel_count: u32 = 0;
 const Count = struct {
     pub const Input = struct { first: u32, count: u32 };
     pub const Result = struct { value: u32 };
+    /// `input.count` is at most the whole result pool.
+    pub const posts_max: u32 = limits.events.job_result_count_max;
 
     pub fn run(input: *const Input, job: *gooey.Job(Result)) !void {
         job_started_count += 1;
         // Nothing can cancel a job while it runs on the main thread.
         if (job.cancelled()) job_saw_cancel_count += 1;
+        for (0..input.count) |index| {
+            const value = input.first + @as(u32, @intCast(index));
+            if (!job.post(&.{ .value = value })) return error.Canceled;
+        }
+    }
+};
+
+/// Posts its input's count of results, at most four: two of them fill
+/// `nano`'s eight result slots together.
+const Small = struct {
+    pub const Input = struct { first: u32, count: u32 };
+    pub const Result = struct { value: u32 };
+    pub const posts_max: u32 = 4;
+
+    pub fn run(input: *const Input, job: *gooey.Job(Result)) !void {
+        assert(input.count <= posts_max);
+        job_started_count += 1;
         for (0..input.count) |index| {
             const value = input.first + @as(u32, @intCast(index));
             if (!job.post(&.{ .value = value })) return error.Canceled;
@@ -45,6 +64,13 @@ const State = struct {
 
     fn onCount(self: *State, effects: *Effects) void {
         const result = effects.jobResult(Count).?;
+        assert(self.received_count < self.received.len);
+        self.received[self.received_count] = result.value;
+        self.received_count += 1;
+    }
+
+    fn onSmall(self: *State, effects: *Effects) void {
+        const result = effects.jobResult(Small).?;
         assert(self.received_count < self.received.len);
         self.received[self.received_count] = result.value;
         self.received_count += 1;
@@ -67,7 +93,7 @@ const App = gooey.App(State, render, .{
     .width = 200,
     .height = 100,
     .limits = limits,
-    .jobs = &.{Count},
+    .jobs = &.{ Count, Small },
 });
 
 const Harness = struct {
@@ -100,6 +126,17 @@ const Harness = struct {
         effects.jobs = &self.app.window.jobs;
         return effects.spawn(Count, &.{ .first = first, .count = count }, .{
             .on_result = effects.handler(State.onCount),
+            .on_done = effects.handler(State.onDone),
+        }) catch |err| std.debug.panic("jobs_main_thread_checks: spawn refused: {t}", .{err});
+    }
+
+    /// A `Small` job; refused only if every job slot is busy, which these
+    /// checks never reach.
+    fn spawnSmall(self: *Harness, first: u32, count: u32) gooey.JobId {
+        var effects = Effects.init(null, .root);
+        effects.jobs = &self.app.window.jobs;
+        return effects.spawn(Small, &.{ .first = first, .count = count }, .{
+            .on_result = effects.handler(State.onSmall),
             .on_done = effects.handler(State.onDone),
         }) catch |err| std.debug.panic("jobs_main_thread_checks: spawn refused: {t}", .{err});
     }
@@ -179,9 +216,10 @@ test "jobs one drain spawns that together post past the result slots run over tw
     // not together, and two clicks spawn both in one drain. Running both
     // after that drain once panicked with "events pool 'job results'
     // exhausted" (the VOPR's jobs_main_thread app, seed 1). Now a job
-    // starts only with every result slot free: the first runs after the
-    // drain that spawned it, the second after the drain that delivers the
-    // first's posts, and every post arrives, in order.
+    // starts only while its `posts_max` (eight for `Count`) slots are free:
+    // the first runs after the drain that spawned it, the second after the
+    // drain that delivers the first's posts, and every post arrives, in
+    // order.
     var harness: Harness = undefined;
     try harness.init();
     defer harness.deinit();
@@ -203,5 +241,41 @@ test "jobs one drain spawns that together post past the result slots run over tw
     try testing.expectEqualSlices(u32, &.{ 20, 21, 22, 23, 24 }, state.received[5..10]);
     try testing.expectEqual(@as(u32, 2), state.done_count);
     try testing.expect(state.outcome.? == .finished);
+    try testing.expectEqual(@as(u32, 0), harness.app.window.jobs.busyCount());
+}
+
+test "jobs whose posts_max fit the result slots together run in one drain" {
+    // Batching, at the boundary: two `Small` jobs (posts_max 4) fill
+    // `nano`'s eight result slots exactly, so both run after the drain that
+    // spawned them. Then a job one slot past what is free waits for the
+    // drain that delivers the posts before it. Every post arrives in spawn
+    // order.
+    var harness: Harness = undefined;
+    try harness.init();
+    defer harness.deinit();
+    comptime assert(2 * Small.posts_max == limits.events.job_result_count_max);
+    _ = harness.spawnSmall(10, 4);
+    _ = harness.spawnSmall(20, 4);
+    harness.tick();
+    try testing.expectEqual(@as(u32, 2), job_started_count);
+    try testing.expectEqual(@as(u32, 0), harness.app.window.jobs.result_free_count);
+    harness.tick();
+    const state = &harness.app.state;
+    try testing.expectEqual(@as(u32, 8), state.received_count);
+    try testing.expectEqualSlices(u32, &.{ 10, 11, 12, 13, 20, 21, 22, 23 }, state.received[0..8]);
+    try testing.expectEqual(@as(u32, 2), state.done_count);
+    // One past: a `Small` that posts one leaves seven slots, short of
+    // `Count`'s posts_max of eight, so `Count` waits a drain.
+    harness.app.state = .{};
+    _ = harness.spawnSmall(30, 1);
+    _ = harness.spawn(40, 1);
+    harness.tick();
+    try testing.expectEqual(@as(u32, 3), job_started_count);
+    harness.tick();
+    try testing.expectEqual(@as(u32, 4), job_started_count);
+    try testing.expectEqualSlices(u32, &.{30}, state.received[0..state.received_count]);
+    harness.tick();
+    try testing.expectEqualSlices(u32, &.{ 30, 40 }, state.received[0..state.received_count]);
+    try testing.expectEqual(@as(u32, 2), state.done_count);
     try testing.expectEqual(@as(u32, 0), harness.app.window.jobs.busyCount());
 }

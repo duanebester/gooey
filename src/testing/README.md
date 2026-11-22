@@ -132,10 +132,10 @@ slot is free, as a worker would wait for a drain. In `jobs_main_thread` the pool
 single-threaded builds take. The model keeps its own job table and the deliveries pushed since the
 last drain; it predicts `on_result` calls in post order, one `on_done` per job with its outcome
 (`.cancelled` whenever a cancel lands before the end is delivered), the results a cancel drops, the
-spawns the core refuses with `error.JobBusy`, the main thread's runs in spawn order while every
-result slot is free, and every row the app shows, and it compares the core's job table and the
-completion ring, result bytes included, around every drain. New action kinds go last in `Action`
-and only models that list them draw them, so older seeds replay unchanged.
+spawns the core refuses with `error.JobBusy`, the main thread's runs in spawn order while their
+`posts_max` result slots are free, and every row the app shows, and it compares the core's job table
+and the completion ring, result bytes included, around every drain. New action kinds go last in
+`Action` and only models that list them draw them, so older seeds replay unchanged.
 
 ---
 

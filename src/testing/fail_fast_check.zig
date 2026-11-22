@@ -35,6 +35,7 @@ const Mode = enum {
     @"core-start-drag-target",
     @"core-dialog-target",
     @"core-dialog-paths",
+    @"core-job-posts",
     @"core-mono-unset",
     @"core-wrap-text",
     @"core-wrap-frame",
@@ -84,6 +85,7 @@ pub fn main(init: std.process.Init) !void {
         .@"core-start-drag-target" => coreStartDragTarget(init.gpa, init.io),
         .@"core-dialog-target" => coreDialogTarget(init.gpa, init.io),
         .@"core-dialog-paths" => coreDialogPaths(init.gpa, init.io),
+        .@"core-job-posts" => coreJobPosts(init.gpa, init.io),
         .@"core-mono-unset" => coreTick(init.gpa, init.io, CoreApp.monoText),
         .@"core-wrap-text" => coreTick(init.gpa, init.io, CoreApp.wrapText),
         .@"core-wrap-frame" => coreTick(init.gpa, init.io, CoreApp.wrapFrame),
@@ -653,6 +655,42 @@ fn coreDialogPaths(gpa: std.mem.Allocator, io: std.Io) void {
     var context: u8 = 0;
     app.window.file_dialog = .{ .context = &context, .open = TooManyPaths.open };
     clickCenter(app);
+}
+
+/// A job that declares one post and makes two.
+const Overpost = struct {
+    pub const Input = struct { unused: u8 };
+    pub const Result = struct { value: u32 };
+    pub const posts_max: u32 = 1;
+
+    pub fn run(_: *const Input, job: *gooey.Job(Result)) void {
+        // Nothing cancels a main-thread run, so both posts go ahead.
+        if (!job.post(&.{ .value = 1 })) unreachable;
+        if (!job.post(&.{ .value = 2 })) unreachable;
+    }
+};
+
+/// On the main thread a post cannot wait for a drain, so a run that posts
+/// past its `posts_max` would take a result slot kept for another job.
+fn coreJobPosts(gpa: std.mem.Allocator, io: std.Io) void {
+    const config = comptime blk: {
+        var with_jobs = core_config;
+        with_jobs.jobs = &.{Overpost};
+        break :blk with_jobs;
+    };
+    const App = gooey.App(CoreState, CoreApp.empty, config);
+    const app = gpa.create(App) catch |err| {
+        std.debug.panic("setup: core app allocation failed: {s}", .{@errorName(err)});
+    };
+    app.initHeadless(gpa, io, .{ .scale_factor = 1, .job_runs = .main_thread }) catch |err| {
+        std.debug.panic("setup: core app init failed: {s}", .{@errorName(err)});
+    };
+    var effects = gooey.Effects.init(null, .root);
+    effects.jobs = &app.window.jobs;
+    _ = effects.spawn(Overpost, &.{ .unused = 0 }, .{
+        .on_done = effects.handler(CoreState.picked),
+    }) catch |err| std.debug.panic("setup: spawn refused: {t}", .{err});
+    app.tick(1);
 }
 
 const TooManyPaths = struct {

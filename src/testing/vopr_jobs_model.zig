@@ -18,7 +18,7 @@
 //! results) and the deliveries pushed since the last drain, and routes each
 //! drain as the core must: input in queue order, then the deliveries in push
 //! order, then, on the main thread, the queued jobs in spawn order while
-//! every result slot is free. It predicts `on_result` calls in post order,
+//! their `posts_max` result slots are free. It predicts `on_result` calls in post order,
 //! exactly one `on_done` per job with its outcome (`.cancelled` whenever a
 //! cancel lands before the end is delivered), the results a cancel drops,
 //! which spawns `error.JobBusy` refuses, and every row the app shows. It
@@ -98,6 +98,7 @@ pub const Work = struct {
         /// The row `on_result` cancels, plus one; 0 for none.
         cancel_row: u32,
     };
+    pub const posts_max: u32 = post_count_max;
 
     pub fn run(input: *const Input, job: *gooey.Job(Result)) !void {
         assert(input.number > 0);
@@ -421,6 +422,8 @@ pub fn JobsModel(comptime runs: jobs.Mode) type {
             cancels_in_delivery: u32,
             /// Main-thread drains that left a job queued behind held results.
             runs_deferred: u32,
+            /// Main-thread runs that started beside another run's results.
+            runs_batched: u32,
             results_held_max: u32,
 
             const zero: Stats = std.mem.zeroes(Stats);
@@ -430,13 +433,14 @@ pub fn JobsModel(comptime runs: jobs.Mode) type {
                     "{d} results delivered, {d} dropped, {d} posts refused, at most {d} " ++
                     "held; ends: {d} finished, {d} cancelled, {d} failed; cancels: {d} " ++
                     "skipped, {d} interrupting, {d} late, {d} stale (free), {d} stale " ++
-                    "(reused), {d} in delivery; {d} runs deferred", .{
+                    "(reused), {d} in delivery; {d} runs deferred, {d} batched", .{
                     self.spawned,              self.chained,             self.refused,
                     self.refused_chain,        self.results_delivered,   self.results_dropped,
                     self.posts_refused,        self.results_held_max,    self.finished,
                     self.cancelled,            self.failed,              self.cancels_skipped,
                     self.cancels_interrupting, self.cancels_late,        self.cancels_stale_free,
                     self.cancels_stale_reused, self.cancels_in_delivery, self.runs_deferred,
+                    self.runs_batched,
                 });
             }
         };
@@ -648,16 +652,18 @@ pub fn JobsModel(comptime runs: jobs.Mode) type {
         }
 
         /// The main thread runs its queued jobs in spawn order, each only
-        /// while every result slot is free, so what one job posts never
-        /// meets what another posted; the rest wait for the next drain.
+        /// while `Work.posts_max` result slots are free, so no post finds
+        /// the pool full; the first that does not fit, and every later
+        /// spawn, waits for the next drain.
         fn runQueued(self: *Self) void {
             var turn: u32 = 0;
             while (turn < slot_count) : (turn += 1) {
                 const index = self.queuedOldest() orelse return;
-                if (self.results_held > 0) {
+                if (self.results_held + Work.posts_max > result_count_max) {
                     self.counts.runs_deferred += 1;
                     return;
                 }
+                if (self.results_held > 0) self.counts.runs_batched += 1;
                 const slot = &self.slots[index];
                 slot.queued = false;
                 if (slot.phase == .skipped) {

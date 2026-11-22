@@ -171,6 +171,15 @@ fn checkJobs(comptime types: []const type, comptime limits: *const ResourceLimit
                     limits.events.job_result_bytes_max,
                 }));
             }
+            if (T.posts_max > limits.events.job_result_count_max) {
+                @compileError(std.fmt.comptimePrint("gooey.App: job {s}'s posts_max is {d}, " ++
+                    "above ResourceLimits.events.job_result_count_max {d}: on the main " ++
+                    "thread one run could never start", .{
+                    name,
+                    T.posts_max,
+                    limits.events.job_result_count_max,
+                }));
+            }
             for (types[0..index]) |Earlier| {
                 if (Earlier == T) {
                     @compileError("gooey.App: job type " ++ name ++ " is listed twice");

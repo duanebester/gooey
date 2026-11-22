@@ -476,7 +476,13 @@ pub const Effects = struct {
         if (handlers.on_result) |on_result| assert(on_result.target.isRoot());
         const pool = self.jobs orelse std.debug.panic("effects.spawn({s}) outside a handler " ++
             "or on_init", .{@typeName(Job)});
-        return pool.spawn(typeId(Job), jobs.erasedRun(Job), std.mem.asBytes(job_input), handlers);
+        return pool.spawn(
+            typeId(Job),
+            jobs.erasedRun(Job),
+            Job.posts_max,
+            std.mem.asBytes(job_input),
+            handlers,
+        );
     }
 
     /// Cancel job `id`: its posts return false, results it posted that were

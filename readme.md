@@ -501,13 +501,13 @@ every path of a multiple selection.
 **Timers.** There is no timer API. A view that changes with the clock reads `cx.now()` and
 calls `cx.requestRenderAfter(delay_ms)` in every render that needs the next one.
 
-**Background work.** Handlers run on the main thread, so slow work (a request, a file read,
-a parse) goes into a job: a type listed in `Config.jobs` with an `Input`, a `Result`, and a
-`run` that executes on a worker thread. `effects.spawn` copies the input into the job's slot;
-the job never sees `State`, and an `Input` holding a pointer or slice is a compile error.
-Each `job.post(&result)` copies a result and wakes the event loop, and the next drain calls
-`on_result` with it, in post order; when `run` returns, `on_done` runs once with `.finished`,
-`.cancelled`, or `.failed`. Nothing polls: between deliveries the app is idle. From
+**Background work.** Handlers run on the main thread, so slow work (a request, a file read, a parse)
+goes into a job: a type listed in `Config.jobs` with an `Input`, a `Result`, `posts_max` (the most
+results one run posts), and a `run` that executes on a worker thread. `effects.spawn` copies the
+input into the job's slot; the job never sees `State`, and an `Input` holding a pointer or slice is
+a compile error. Each `job.post(&result)` copies a result and wakes the event loop, and the next
+drain calls `on_result` with it, in post order; when `run` returns, `on_done` runs once with
+`.finished`, `.cancelled`, or `.failed`. Nothing polls: between deliveries the app is idle. From
 `background.zig`:
 
 ```zig
@@ -520,6 +520,8 @@ pub const Fetch = struct {
         len: u16,
         bytes: [64]u8,
     };
+    /// One post per chunk.
+    pub const posts_max: u32 = reply_chunks.len;
 
     pub fn run(input: *const Input, job: *gooey.Job(Result)) !void {
         const io = job.io();
@@ -573,10 +575,12 @@ pub const Fetch = struct {
   (`background.zig` counts its lines).
 - On the web there are no threads: a job runs to completion on the main thread right after
   the drain that spawned it, the browser io's sleep returns at once, and files and sockets
-  fail. Its results arrive in the next frame. A job starts only once every result slot is
-  free, so jobs spawned together run over several frames, and only a job that posts more
-  than `job_result_count_max` results in one run panics there, since nothing can drain
-  while it runs.
+  fail. Its results arrive in the next frame. Nothing can drain while a job runs, so a
+  queued job starts only while its `posts_max` result slots are free: jobs whose
+  `posts_max` fit together run in one frame, in spawn order, and the rest in later
+  frames. A run that posts more than its `posts_max` panics there. Natively, posts past
+  the free slots wait for a drain instead, so `posts_max` bounds only the main thread.
+  `posts_max` above `job_result_count_max` is a compile error.
 
 ### Clicks
 

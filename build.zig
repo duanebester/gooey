@@ -1356,6 +1356,10 @@ fn addFailFastChecks(
             "fail_fast_check.CoreApp.Stranger; the root state is fail_fast_check.CoreState" },
         .{ .mode = "core-dialog-paths", .stderr = "file dialog selected 17 paths: " ++
             "capacity 16. Raise ResourceLimits.events.dialog_path_count_max." },
+        .{ .mode = "core-job-posts", .stderr = "job fail_fast_check.Overpost posted more than " ++
+            "its posts_max 1 in one run; without threads a post cannot wait for a drain. " ++
+            "Raise fail_fast_check.Overpost.posts_max (at most " ++
+            "ResourceLimits.events.job_result_count_max 8)." },
         .{ .mode = "core-component-depth", .stderr = "component depth 65 exceeds " ++
             "build.component_depth_max 64 rendering fail_fast_check.CoreApp.Nest" },
         .{ .mode = "core-box-depth", .stderr = "build pool 'box depth' exhausted: capacity 64, " ++

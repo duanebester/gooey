@@ -32,6 +32,8 @@ pub const Fetch = struct {
         len: u16,
         bytes: [64]u8,
     };
+    /// One post per chunk.
+    pub const posts_max: u32 = reply_chunks.len;
 
     pub fn run(input: *const Input, job: *gooey.Job(Result)) !void {
         const io = job.io();
@@ -55,6 +57,8 @@ pub const CountLines = struct {
         bytes: u64,
         lines: u64,
     };
+    /// One count, posted at the end.
+    pub const posts_max: u32 = 1;
 
     const file_bytes_max: u64 = 1 << 30;
     const buffer_bytes = 16 * 1024;

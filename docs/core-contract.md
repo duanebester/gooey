@@ -396,7 +396,8 @@ replacement is defined behaviour, not loss:
 
 ### Background jobs (0.6)
 
-A job is a type in `Config.jobs` with `Input`, `Result`, and
+A job is a type in `Config.jobs` with `Input`, `Result`, `posts_max: u32` (the most
+results one run posts, at most `events.job_result_count_max`, checked at comptime), and
 `run(input: *const Input, job: *gooey.Job(Result)) !void`. The rules:
 
 1. `effects.spawn(Job, &input, .{ .on_result, .on_done })` copies `input` into a free job
@@ -411,10 +412,11 @@ A job is a type in `Config.jobs` with `Input`, `Result`, and
 3. `job.post(&result)` copies the result into one of `events.job_result_count_max` slots,
    pushes it onto the completion ring, and calls the host's thread-safe wake
    (`Window.bindWake`). With every slot held it waits on its worker until a drain frees
-   one. Without threads a post cannot wait, so a queued job starts only once every result
-   slot is free (queued jobs run in spawn order, the rest after the next drain), and a job
-   that posts more than `job_result_count_max` results in one run panics. It returns false
-   once the job is cancelled or the app is stopping.
+   one. Without threads a post cannot wait, so a queued job starts only while its
+   `posts_max` result slots are free: queued jobs run in spawn order, as many as fit in
+   this drain, the rest after the next. A run that posts more than its `posts_max` panics
+   there; with workers it waits like any post. It returns false once the job is cancelled
+   or the app is stopping.
 4. The drain routes job deliveries after the queued events, in ring order: `on_result` per
    result, in post order, then `on_done` once with `.finished`, `.cancelled`, or
    `.failed`. Both are root-state handlers. A result is valid until its handler returns.

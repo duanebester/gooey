@@ -2147,9 +2147,11 @@ test "two instances fed the same bytes draw the same frames" {
     const busy = try runPairedSeed(.jobs, 2);
     try std.testing.expect(busy.stats.refused > 0);
     try std.testing.expect(busy.stats.cancels_stale_reused > 0);
-    // jobs_main_thread seed 1 defers runs behind held results, and refuses
-    // a chained job's successor inside on_done.
+    // jobs_main_thread seed 1 runs jobs beside others' results and defers
+    // those that do not fit, and refuses a chained job's successor inside
+    // on_done.
     const main_thread = try runPairedSeed(.jobs_main_thread, 1);
+    try std.testing.expect(main_thread.stats.runs_batched > 0);
     try std.testing.expect(main_thread.stats.runs_deferred > 0);
     try std.testing.expect(main_thread.stats.refused_chain > 0);
 }

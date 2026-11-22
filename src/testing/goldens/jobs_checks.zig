@@ -39,6 +39,9 @@ const Count = struct {
         gap_ms: u32,
     };
     pub const Result = struct { value: u32, pad: [60]u8 };
+    /// These checks run on workers, whose posts wait for a drain, so `run`
+    /// may post more; on the main thread a run past this fails fast.
+    pub const posts_max: u32 = limits.events.job_result_count_max;
 
     pub fn run(input: *const Input, job: *gooey.Job(Result)) !void {
         _ = job_started_count.fetchAdd(1, .acq_rel);
@@ -74,6 +77,7 @@ fn counting(first: u32, count: u32, flags: struct { fail: bool, gated: bool }) C
 const Sleep = struct {
     pub const Input = struct { seconds: u32 };
     pub const Result = struct { never: u8 };
+    pub const posts_max: u32 = 0;
 
     pub fn run(input: *const Input, job: *gooey.Job(Result)) !void {
         _ = job_started_count.fetchAdd(1, .acq_rel);
@@ -90,6 +94,7 @@ const Sleep = struct {
 const Read = struct {
     pub const Input = struct { port: u16 };
     pub const Result = struct { never: u8 };
+    pub const posts_max: u32 = 0;
 
     pub fn run(input: *const Input, job: *gooey.Job(Result)) !void {
         _ = job_started_count.fetchAdd(1, .acq_rel);
@@ -116,6 +121,8 @@ const Read = struct {
 const Spin = struct {
     pub const Input = struct { unused: u8 };
     pub const Result = struct { value: u32 };
+    /// The one post after the cancel, which is refused.
+    pub const posts_max: u32 = 1;
 
     /// Checks of `job.cancelled()`: well past the 10 s a check waits.
     const spin_count_max: u64 = 1 << 40;
@@ -139,6 +146,8 @@ const Spin = struct {
 const Flood = struct {
     pub const Input = struct { unused: u8 };
     pub const Result = struct { value: u64 };
+    /// Workers only: it posts until the pool holds it back.
+    pub const posts_max: u32 = limits.events.job_result_count_max;
 
     pub fn run(_: *const Input, job: *gooey.Job(Result)) void {
         _ = job_started_count.fetchAdd(1, .acq_rel);
