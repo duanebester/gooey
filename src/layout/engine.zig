@@ -8,6 +8,7 @@ const reservation = @import("../core/reservation.zig");
 const arena_mod = @import("arena.zig");
 const sizing_pass = @import("sizing_pass.zig");
 const position_pass = @import("position_pass.zig");
+const grid_mod = @import("grid.zig");
 
 const Sizing = types.Sizing;
 const SizingAxis = types.SizingAxis;
@@ -57,6 +58,8 @@ pub const LayoutCapacity = struct {
     wrapped_line_count_frame_max: u32,
     /// The per-frame arena (`arenaBytes`).
     arena_bytes: u32,
+    /// `build.grid_count_frame_max`: one `grid.GridSlot` per grid box.
+    grid_count_max: u32,
 
     pub fn fromLimits(limits: *const limits_mod.ResourceLimits) LayoutCapacity {
         std.debug.assert(limits.check() == null);
@@ -67,6 +70,7 @@ pub const LayoutCapacity = struct {
             .word_count_text_max = limits_mod.run_codepoint_count_max,
             .wrapped_line_count_frame_max = limits.paint.glyph_count_frame_max,
             .arena_bytes = arenaBytes(limits),
+            .grid_count_max = limits.build.grid_count_frame_max,
         };
         capacity.assertValid();
         return capacity;
@@ -83,6 +87,9 @@ pub const LayoutCapacity = struct {
         std.debug.assert(self.word_count_text_max > 0);
         std.debug.assert(self.wrapped_line_count_frame_max > 0);
         std.debug.assert(self.arena_bytes > 0);
+        std.debug.assert(self.grid_count_max > 0);
+        std.debug.assert(self.grid_count_max <= limits_mod.grid_count_ceiling);
+        std.debug.assert(self.grid_count_max <= self.element_count_max);
     }
 
     /// The arena holds the frame's text copies (at most the text budget,
@@ -237,7 +244,25 @@ pub const LayoutElement = struct {
     /// own height changed, or a child's minimum did. Read and cleared by
     /// `sizing_pass.computeHeights`.
     heights_dirty: bool = false,
+    /// A cell's column: as declared (`types.cell_column_auto` for the next
+    /// free) until its grid places it, then the column it took
+    /// (`grid.placeCells`).
+    cell_column: u8 = types.cell_column_auto,
+    /// The columns a cell spans; a row box spans them all once placed.
+    cell_span: u8 = 1,
+    /// A grid box's slot in `LayoutEngine.grid_slots`; `grid_slot_none` for
+    /// every other box.
+    grid_slot: u16 = grid_slot_none,
     text_data: ?TextData = null,
+};
+
+pub const grid_slot_none: u16 = std.math.maxInt(u16);
+
+/// What `LayoutEngine.openElementWith` adds to an element's declaration: a
+/// grid box's tracks, and where a child of a grid or a row box sits.
+pub const OpenOptions = struct {
+    grid: ?*const types.GridConfig = null,
+    cell: types.Cell = .{},
 };
 
 /// Element storage: one reservation of `LayoutCapacity.element_count_max`
@@ -338,6 +363,12 @@ pub const LayoutEngine = struct {
     measure_text_user_data: ?*anyopaque = null,
     /// Floating elements to position after main layout, `floating_count_max`.
     floating_roots: BoundedList(u32),
+    /// One slot per grid box this frame, claimed in declaration order,
+    /// `capacity.grid_count_max` of them; `grid_count_used_max` is the
+    /// high-water mark zeroed on release (§21).
+    grid_slots: []grid_mod.GridSlot,
+    grid_count: u32 = 0,
+    grid_count_used_max: u32 = 0,
     /// One wrap batch's words and one text's wrapped lines while it wraps,
     /// reserved once so a wrap needs no stack buffer (`sizing_pass.wrapText`).
     word_scratch: []WordInfo,
@@ -386,6 +417,9 @@ pub const LayoutEngine = struct {
 
         const line_count = capacity.wrapped_line_count_frame_max;
         const lines = try reservation.reserve(types.WrappedLine, line_count);
+        errdefer reservation.release(types.WrappedLine, lines, 0);
+
+        const grid_slots = try reservation.reserve(grid_mod.GridSlot, capacity.grid_count_max);
 
         const engine: Self = .{
             .capacity = capacity.*,
@@ -397,6 +431,7 @@ pub const LayoutEngine = struct {
             .floating_roots = .{ .buffer = floating },
             .word_scratch = words,
             .line_scratch = lines,
+            .grid_slots = grid_slots,
         };
         std.debug.assert(engine.elements.len() == 0);
         std.debug.assert(engine.open_element_stack.buffer.len == capacity.box_depth_max);
@@ -407,6 +442,7 @@ pub const LayoutEngine = struct {
     /// open stack and floating roots are zeroed whole: each is at most 1 KiB.
     pub fn deinit(self: *Self) void {
         self.arena_used_max = @max(self.arena_used_max, self.arena.bytesUsed());
+        reservation.release(grid_mod.GridSlot, self.grid_slots, self.grid_count_used_max);
         reservation.release(types.WrappedLine, self.line_scratch, self.line_count_used_max);
         reservation.release(WordInfo, self.word_scratch, self.word_count_used_max);
         const floating = self.floating_roots.buffer;
@@ -449,14 +485,151 @@ pub const LayoutEngine = struct {
         self.wrapped_line_count = 0;
         self.heights_derived = false;
         self.floors_differ = false;
+        self.grid_count = 0;
     }
 
-    pub fn openElement(self: *Self, decl: ElementDeclaration) !void {
-        const index = try self.createElement(decl, .container);
+    /// Open a container with the default cell. Only a row box needs the
+    /// checks of `openElementWith`; every other box takes the path it took
+    /// before grids, inlined into the caller with no copy of `decl`. A call
+    /// through `openElementWith` copied it twice, which the Cachegrind gate
+    /// measured at +9 to +90 % on layouts without a grid.
+    pub inline fn openElement(self: *Self, decl: ElementDeclaration) !void {
+        std.debug.assert(decl.layout.grid != .grid); // A grid opens with its tracks.
+        if (decl.layout.grid == .row) return self.openElementWith(decl, .{});
+        const index = try self.createElement(&decl, .container);
         // `createElement` checked the room (`checkOpenDepth`); the core checks
         // the same budget first, in `cx.checkBoxDepth`.
         std.debug.assert(self.open_element_stack.len < self.capacity.box_depth_max);
         self.open_element_stack.append(index) catch unreachable;
+    }
+
+    /// Open a container with a grid's tracks, a cell, or both: a grid box
+    /// claims a grid slot and copies `options.grid` into it, and a child of a
+    /// grid or a row box takes `options.cell`. Misuse panics, naming the
+    /// field, as the core's other style checks do.
+    pub fn openElementWith(self: *Self, decl: ElementDeclaration, options: OpenOptions) !void {
+        std.debug.assert((decl.layout.grid == .grid) == (options.grid != null));
+        // Rows run across a grid and its row boxes; the core sets `.row`.
+        if (decl.layout.grid != .none) {
+            std.debug.assert(decl.layout.layout_direction == .left_to_right);
+        }
+        self.checkCell(&decl, options.cell);
+        if (options.grid) |config| checkGrid(&decl, config);
+        const index = try self.createElement(&decl, .container);
+        // `createElement` checked the room (`checkOpenDepth`); the core checks
+        // the same budget first, in `cx.checkBoxDepth`.
+        std.debug.assert(self.open_element_stack.len < self.capacity.box_depth_max);
+        self.open_element_stack.append(index) catch unreachable;
+        const elem = self.elements.get(index);
+        elem.cell_column = options.cell.column;
+        elem.cell_span = options.cell.column_span;
+        if (options.grid) |config| self.claimGrid(elem, config);
+    }
+
+    /// A cell's span and column against its grid's columns, and a row box's
+    /// place: directly in a grid, with no column, padding across, or wrap.
+    fn checkCell(self: *const Self, decl: *const ElementDeclaration, cell: types.Cell) void {
+        const parent_index = self.open_element_stack.last();
+        const parent_role: types.GridRole = if (parent_index) |pi|
+            self.elements.getConst(pi).config.layout.grid
+        else
+            .none;
+        const is_default = cell.column == types.cell_column_auto and cell.column_span == 1;
+        if (decl.layout.grid == .row) {
+            const padding = decl.layout.padding;
+            const misplaced = parent_role != .grid or !is_default or decl.layout.wrap;
+            if (misplaced or padding.left != 0 or padding.right != 0) {
+                std.debug.panic("Cell.row: a row box spans every column and holds only " ++
+                    "cells; it sits directly in a grid, with no column, span, wrap, or " ++
+                    "horizontal padding", .{});
+            }
+        }
+        if (parent_role == .none) {
+            if (!is_default) {
+                std.debug.panic("Style.cell: only a child of a grid box sits in a cell", .{});
+            }
+            return;
+        }
+        const parent = self.elements.getConst(parent_index.?);
+        const grid = if (parent_role == .grid)
+            parent
+        else
+            self.elements.getConst(parent.parent_index.?);
+        const column_count = grid_mod.slotOf(self, grid).column_count;
+        if (cell.column_span == 0 or cell.column_span > column_count) {
+            std.debug.panic("Cell.column_span {d}: the grid has {d} columns", .{
+                cell.column_span,
+                column_count,
+            });
+        }
+        if (cell.column != types.cell_column_auto) {
+            if (@as(u32, cell.column) + cell.column_span > column_count) {
+                std.debug.panic("Cell.column {d} with span {d}: the grid has {d} columns", .{
+                    cell.column,
+                    cell.column_span,
+                    column_count,
+                });
+            }
+        }
+    }
+
+    /// A grid's track counts and bounds, and the fields a grid cannot have.
+    fn checkGrid(decl: *const ElementDeclaration, config: *const types.GridConfig) void {
+        const column_count = config.columns.len;
+        if (column_count == 0 or column_count > types.grid_track_count_max) {
+            std.debug.panic("Grid.columns: {d} columns; a grid has 1 to {d}", .{
+                column_count,
+                types.grid_track_count_max,
+            });
+        }
+        if (config.rows.len > types.grid_track_count_max) {
+            std.debug.panic("Grid.rows: {d} rows; a grid lists at most {d}", .{
+                config.rows.len,
+                types.grid_track_count_max,
+            });
+        }
+        if (decl.layout.wrap) std.debug.panic("Style.grid: a grid box does not also wrap", .{});
+        switch (decl.layout.main_axis_distribution) {
+            .start, .center, .end => {},
+            else => |main| std.debug.panic("Style.alignment.main .{s}: a grid places a child " ++
+                "in its cell with start, center, or end", .{@tagName(main)}),
+        }
+        if (!(config.row_gap >= 0 and std.math.isFinite(config.row_gap))) {
+            std.debug.panic("Grid.row_gap {d}: a gap is finite and at least 0", .{config.row_gap});
+        }
+        for (config.columns, 0..) |track, index| checkTrack(track, index);
+        for (config.rows, 0..) |track, index| checkTrack(track, index);
+        checkTrack(config.row_implicit, config.rows.len);
+    }
+
+    fn checkTrack(track: types.Track, index: usize) void {
+        const min = track.axis.getMin();
+        const max = track.axis.getMax();
+        if (!(min >= 0 and min <= max)) {
+            std.debug.panic("Grid track {d}: min {d} and max {d} must satisfy 0 <= min <= max", .{
+                index,
+                min,
+                max,
+            });
+        }
+    }
+
+    /// Claim the frame's next grid slot for `elem` and copy its tracks. A
+    /// frame past the pool is a capacity-planning error naming its budget.
+    fn claimGrid(self: *Self, elem: *LayoutElement, config: *const types.GridConfig) void {
+        std.debug.assert(elem.grid_slot == grid_slot_none);
+        if (self.grid_count == self.capacity.grid_count_max) {
+            std.debug.panic("layout pool 'grids' exhausted: capacity {d}, {d} in use, " ++
+                "1 requested. Raise ResourceLimits.build.grid_count_frame_max.", .{
+                self.capacity.grid_count_max,
+                self.grid_count,
+            });
+        }
+        self.grid_slots[self.grid_count].claim(config);
+        elem.grid_slot = @intCast(self.grid_count);
+        self.grid_count += 1;
+        self.grid_count_used_max = @max(self.grid_count_used_max, self.grid_count);
+        std.debug.assert(self.grid_count <= self.capacity.grid_count_max);
     }
 
     pub fn closeElement(self: *Self) void {
@@ -470,7 +643,7 @@ pub const LayoutEngine = struct {
         var decl = ElementDeclaration{};
         decl.layout.sizing = Sizing.fitContent();
 
-        const index = try self.createElement(decl, .text);
+        const index = try self.createElement(&decl, .text);
         const elem = self.elements.get(index);
         const text_copy = try self.arena.dupe(content);
         elem.text_data = TextData{
@@ -506,12 +679,18 @@ pub const LayoutEngine = struct {
 
     /// Appends the element, tracks it as a floating root when it floats, and
     /// links it to its parent.
-    fn createElement(self: *Self, decl: ElementDeclaration, elem_type: ElementType) !u32 {
+    /// Inline into its three callers, as it was into two before grids: a
+    /// call of its own copied every whole declaration once more.
+    inline fn createElement(
+        self: *Self,
+        decl: *const ElementDeclaration,
+        elem_type: ElementType,
+    ) !u32 {
         if (elem_type == .container) self.checkOpenDepth();
         const parent_index = self.open_element_stack.last();
 
         const index = self.elements.append(.{
-            .config = decl,
+            .config = decl.*,
             .parent_index = parent_index,
             .element_type = elem_type,
         });

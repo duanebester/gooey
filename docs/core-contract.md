@@ -139,6 +139,8 @@ pub const Style = struct {
     alignment: Alignment = .start,
     wrap: bool = false,            // rows only: break into lines (decision 24)
     aspect_ratio: ?f32 = null,     // width / height; height follows width (decision 24)
+    grid: ?Grid = null,            // lay children out on a grid (decision 28)
+    cell: Cell = .{},              // where this box sits in its parent's grid (decision 28)
     background: ?ColorToken = null,
     border: ?Border = null,
     corner_radius: Corners = .zero,
@@ -153,6 +155,24 @@ pub const Style = struct {
 
 pub const Sizing = union(enum) { fit, grow: f32, fixed: f32, percent: f32 };
 pub const Direction = enum { row, column };
+
+pub const Grid = struct {
+    columns: []const Track,        // 1 to `grid_track_count_max` (32)
+    rows: []const Track = &.{},    // the first rows; every later row is `row_implicit`
+    row_implicit: Track = .fit,
+    row_gap: ?f32 = null,          // null: `Style.gap`
+};
+pub const Track = struct {         // `.fit`, `.fixed(px)`, `.grow(weight)`, `.percent(f)`
+    sizing: Sizing = .fit,
+    min: f32 = 0,
+    max: f32 = std.math.floatMax(f32),
+    cell_alignment: ?Alignment.Cross = null,  // null: the grid's `alignment`
+};
+pub const Cell = struct {
+    column: ?u8 = null,            // null: the next free column
+    column_span: u8 = 1,
+    row: bool = false,             // a row box: one row of cells on the grid's columns
+};
 ```
 
 A shared card style, a hover variant, and per-element fields beside it:
@@ -221,6 +241,12 @@ Contract:
 - **Heights after widths.** Text wraps at its final width before any height is sized,
   so a height that follows a sibling's or the parent's, a stretched child in a row or a
   grow child in a column, counts every wrapped line (decision 27).
+- **Grid.** A box with `grid` places its children in cells, row-major in declaration
+  order, and sizes its columns once from all of them, so every row shares the same column
+  lines; `docs/layout-grid.md` specifies placement, track sizing, row boxes, and the
+  checks. A child without a `cell` takes the next free column. A row box
+  (`cell.row = true`) spans one row and lays its own children on the grid's columns, so a
+  keyed, hoverable table row keeps its cells under the header's (decision 28).
 - **Percent.** `.{ .percent = fraction }` along the parent's direction is that fraction of
   the parent's content size less the gaps between its flow children, so fractions that
   add up to 1 fill the parent exactly; on the cross axis it is the fraction of the content
@@ -1008,7 +1034,8 @@ pub const ResourceLimits = struct {
                                 // image_entry_count_max, image_path_bytes_max
     build: BuildLimits,         // element_count_frame_max, component_depth_max,
                                 // key_count_frame_max, text_bytes_frame_max,
-                                // layer_count_frame_max, box_depth_max
+                                // layer_count_frame_max, box_depth_max,
+                                // grid_count_frame_max
     records: RecordLimits,      // paint_record_count_frame_max, hit_record_count_frame_max,
                                 // handler_count_frame_max
     retained: RetainedLimits,   // slots per size class, sweep_delay_frames
@@ -1059,7 +1086,8 @@ value keeps at most `value_bytes_max` bytes: the whole lines around `A11y.select
 
 Layout takes every capacity from `build` and `paint` (`LayoutCapacity.fromLimits`):
 `element_count_frame_max + 1` elements (the window root), a `box_depth_max` open stack,
-`layer_count_frame_max` floating roots (each layer box floats), a wrap batch of
+`layer_count_frame_max` floating roots (each layer box floats), `grid_count_frame_max` grid
+slots (one per grid box, `docs/layout-grid.md`), a wrap batch of
 `text.run_codepoint_count_max` words, and `paint.glyph_count_frame_max` wrapped lines per
 frame, which one text may fill alone. A text of any length wraps in batches and is measured
 and drawn in shaping runs of at most `text.run_codepoint_count_max` codepoints, split after a
@@ -1069,6 +1097,7 @@ text's. Its arena is always the reserved buffer; there is no growing mode.
 `validate` checks every field against its framework ceiling at comptime, plus relationships
 such as `hit_record_count_frame_max <= element_count_frame_max`,
 `layer_count_frame_max <= element_count_frame_max`,
+`grid_count_frame_max <= element_count_frame_max`,
 `box_depth_max <= element_count_frame_max`,
 `a11y.element_count_max <= element_count_frame_max`,
 `a11y.value_bytes_max <= build.text_bytes_frame_max`,
@@ -1676,6 +1705,29 @@ wrappers for list iteration.
     In the Cachegrind gate, layouts without derived heights run 1 % fewer to 0.45 %
     more instructions; the two aspect-ratio benchmarks, a column of 1,000 aspect
     children that overflow it, run 24 % more, for the walks that re-share the column.
+28. **Grids (0.6, 2026-11-22).** `Style.grid` lays a box's children on shared column
+    lines: up to 32 `.fit`, `.fixed`, `.grow`, or `.percent` columns with `min` and
+    `max`, rows that are listed or implicit, a separate row gap, row-major placement in
+    declaration order with spans and explicit columns, and row boxes (`cell.row`), one
+    keyed box per table row whose cells sit on the grid's columns. `docs/layout-grid.md`
+    is the specification. It takes Clay's sizing order and largest-first shrink, CSS
+    grid's track kinds and placement, SwiftUI's `GridRow` for row boxes, and GPUI's
+    separate row gap. Grow columns grow from their content's floor, as CSS `1fr` does,
+    so equal weights give equal columns under long text; columns shrink to their
+    floors, as decision 26 shrinks children. A grid measures each text once, in the
+    passes every box uses: its minimum pass places the cells and takes the column
+    minimums, the sizing pass resolves the columns and sizes each cell, and decision 27's
+    heights pass sizes the rows from the wrapped text. Each grid claims a slot of
+    `build.grid_count_frame_max`, reserved at init, which holds its tracks, its resolved
+    columns, and the position pass's row state, so boxes that are not grids carry no
+    grid state. The minimum walk is specialized at compile time for frames without a
+    grid, as it is for floors. In the Cachegrind gate, the layout passes of layouts
+    without a grid run 0.4 % to 0.9 % more instructions, for the grid branches in the
+    sizing and position passes; `openElement` now inlines into its caller without
+    copying the declaration, so building and laying out those layouts runs 12 % to 28 %
+    fewer instructions, and `mixed_layout`, mostly text, the same. A table of 300 row
+    boxes lays out at about 180 ns a node, like the other layouts, and a dashboard of
+    100 nested four-cell grids at about 0.9 µs a grid.
 
 ## Open questions
 

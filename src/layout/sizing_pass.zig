@@ -10,6 +10,7 @@
 const std = @import("std");
 
 const engine_mod = @import("engine.zig");
+const grid_mod = @import("grid.zig");
 const types = @import("types.zig");
 
 const LayoutEngine = engine_mod.LayoutEngine;
@@ -79,20 +80,35 @@ const MinSizeFrame = struct {
 /// Content minimums for `root`'s whole subtree, floating elements included
 /// (they size themselves but do not count toward their parent).
 pub fn computeMinSizes(engine: *LayoutEngine, root: u32) void {
+    const grids = engine.grid_count > 0;
     if (engine.floors_differ) {
-        computeMinSizesWith(true, engine, root);
+        if (grids) {
+            computeMinSizesWith(.{ .floors = true, .grids = true }, engine, root);
+        } else {
+            computeMinSizesWith(.{ .floors = true, .grids = false }, engine, root);
+        }
     } else {
-        computeMinSizesWith(false, engine, root);
+        if (grids) {
+            computeMinSizesWith(.{ .floors = false, .grids = true }, engine, root);
+        } else {
+            computeMinSizesWith(.{ .floors = false, .grids = false }, engine, root);
+        }
     }
 }
 
-/// `floors` is `engine.floors_differ`, at compile time: without a text whose
-/// floor is narrower than its line, every floor equals its minimum, so the
-/// walk copies minimums rather than summing floors beside them.
-fn computeMinSizesWith(comptime floors: bool, engine: *LayoutEngine, root: u32) void {
+/// What a frame's minimum walk must handle, chosen once per frame.
+/// `floors` is `engine.floors_differ`: without a text whose floor is
+/// narrower than its line, every floor equals its minimum, so the walk
+/// copies minimums rather than summing floors beside them. `grids` is
+/// whether the frame opened a grid: without one, no parent or leaf pays a
+/// grid check.
+const MinSizeWalk = struct { floors: bool, grids: bool };
+
+fn computeMinSizesWith(comptime walk: MinSizeWalk, engine: *LayoutEngine, root: u32) void {
     std.debug.assert(root < engine.elements.len());
+    if (!walk.grids) std.debug.assert(engine.grid_count == 0);
     if (engine.elements.getConst(root).first_child_index == null) {
-        finishMinSize(floors, engine.elements.get(root), 0, 0, 0);
+        finishLeafMinSize(walk, engine, root);
         return;
     }
 
@@ -104,30 +120,43 @@ fn computeMinSizesWith(comptime floors: bool, engine: *LayoutEngine, root: u32) 
     while (depth > 0) {
         std.debug.assert(open_count <= engine.elements.len()); // Each parent once.
         const frame = &stack[depth - 1];
-        if (addChildMinSizes(floors, engine, frame)) |child_index| {
+        if (addChildMinSizes(walk, engine, frame)) |child_index| {
             std.debug.assert(depth < engine.capacity.box_depth_max);
             stack[depth] = openMinSizeFrame(engine, child_index);
             depth += 1;
             open_count += 1;
         } else {
             const parent = engine.elements.get(frame.index);
-            addGaps(floors, frame, parent.config.layout.child_gap);
+            addGaps(walk.floors, frame, parent.config.layout.child_gap);
             if (parent.config.layout.wrap and !frame.is_horizontal_scroll) {
                 const widest = widestChildMin(engine, parent);
                 frame.content_width = widest.min;
                 frame.content_floor = widest.floor;
             }
+            if (walk.grids and parent.config.layout.grid == .grid) measureGrid(engine, frame);
             finishMinSize(
-                floors,
+                walk.floors,
                 parent,
                 frame.content_width,
                 frame.content_height,
                 frame.content_floor,
             );
             depth -= 1;
-            if (depth > 0) addChildMinSize(floors, &stack[depth - 1], parent);
+            if (depth > 0) addChildMinSize(walk.floors, &stack[depth - 1], parent);
         }
     }
+}
+
+/// A grid's content minimums replace the sums a row takes: its columns'
+/// minimums and gaps across, its rows' down, except along a scroll axis.
+fn measureGrid(engine: *LayoutEngine, frame: *MinSizeFrame) void {
+    std.debug.assert(frame.cursor == null); // Every child is measured.
+    const minimums = grid_mod.measure(engine, frame.index);
+    if (!frame.is_horizontal_scroll) {
+        frame.content_width = minimums.width;
+        frame.content_floor = minimums.floor;
+    }
+    if (!frame.is_vertical_scroll) frame.content_height = minimums.height;
 }
 
 /// A frame for `index`'s children. Scroll containers don't use children's
@@ -152,7 +181,7 @@ fn openMinSizeFrame(engine: *LayoutEngine, index: u32) MinSizeFrame {
 /// Finish and add `frame`'s remaining leaf children until one has children
 /// of its own: return it for the walk to open, its siblings left for later,
 /// or null once every child is added.
-fn addChildMinSizes(comptime floors: bool, engine: *LayoutEngine, frame: *MinSizeFrame) ?u32 {
+fn addChildMinSizes(comptime walk: MinSizeWalk, engine: *LayoutEngine, frame: *MinSizeFrame) ?u32 {
     std.debug.assert(frame.index < engine.elements.len());
     var cursor = frame.cursor;
     var sibling_count: u32 = 0;
@@ -165,11 +194,25 @@ fn addChildMinSizes(comptime floors: bool, engine: *LayoutEngine, frame: *MinSiz
             frame.cursor = cursor;
             return child_index;
         }
-        finishMinSize(floors, child, 0, 0, 0);
-        addChildMinSize(floors, frame, child);
+        finishLeafMinSize(walk, engine, child_index);
+        addChildMinSize(walk.floors, frame, child);
     }
     frame.cursor = null;
     return null;
+}
+
+/// A childless element's minimum: its text and padding, or an empty grid's
+/// columns, whose fixed tracks and gaps take space with no cell in them.
+inline fn finishLeafMinSize(comptime walk: MinSizeWalk, engine: *LayoutEngine, index: u32) void {
+    const elem = engine.elements.get(index);
+    std.debug.assert(elem.first_child_index == null);
+    if (walk.grids and elem.config.layout.grid == .grid) {
+        @branchHint(.unlikely);
+        const minimums = grid_mod.measure(engine, index);
+        finishMinSize(walk.floors, elem, minimums.width, minimums.height, minimums.floor);
+        return;
+    }
+    finishMinSize(walk.floors, elem, 0, 0, 0);
 }
 
 /// Add one finished child's minimum along the parent's main axis (sum) and
@@ -452,6 +495,16 @@ fn planChildSizes(engine: *LayoutEngine, parent_index: u32) SizingFrame {
         .level = std.math.floatMax(f32),
         .percent_basis = 0,
     };
+    if (parent.config.layout.grid != .none) {
+        @branchHint(.unlikely);
+        frame.has_grandchildren = grid_mod.sizeCells(
+            engine,
+            parent_index,
+            content.width,
+            content.height,
+        );
+        return frame; // Every child is sized: `.assigned`.
+    }
     if (parent.config.layout.wrap) {
         std.debug.assert(is_horizontal);
         engine.heights_derived = true; // Its aspect children's heights too.
@@ -1386,6 +1439,7 @@ fn wrapElementText(engine: *LayoutEngine, index: u32) !void {
 fn textContainerWidth(engine: *LayoutEngine, elem: *const LayoutElement) f32 {
     if (elem.parent_index) |pi| {
         const parent = engine.elements.getConst(pi);
+        if (parent.config.layout.grid != .none) return grid_mod.cellWidthOf(engine, elem);
         return @max(0, parent.computed.sized_width - parent.config.layout.padding.totalX());
     }
     return engine.viewport_width;
@@ -1472,7 +1526,11 @@ fn minHeight(engine: *const LayoutEngine, elem: *const LayoutElement) f32 {
     std.debug.assert(content >= 0);
     const is_vertical_scroll = if (elem.config.scroll) |scroll| scroll.vertical else false;
     if (elem.first_child_index != null and !is_vertical_scroll) {
-        content = @max(content, childrenMinHeight(engine, elem));
+        const children = if (elem.config.layout.grid == .grid)
+            grid_mod.rowsMinHeight(engine, elem)
+        else
+            childrenMinHeight(engine, elem);
+        content = @max(content, children);
     }
     return applyMinMax(content + layout.padding.totalY(), layout.sizing.height);
 }
@@ -1527,6 +1585,10 @@ fn sizeChildHeights(engine: *LayoutEngine, parent_index: u32) void {
     std.debug.assert(first_child > parent_index); // Pre-order: children follow.
     const height = childContentArea(parent).height;
     std.debug.assert(!parent.heights_dirty); // `computeHeights` cleared it first.
+    if (parent.config.layout.grid == .grid) {
+        grid_mod.sizeRows(engine, parent_index, height);
+        return;
+    }
     if (parent.config.layout.wrap) {
         stretchWrapLines(engine, first_child, height);
         return;
@@ -1611,7 +1673,7 @@ fn offeredHeight(elem: *const LayoutElement, offered: f32) f32 {
 
 /// Write a child's height in the heights pass, marking its children for
 /// sizing again when it changed: they were sized from the old height.
-inline fn setHeight(child: *LayoutElement, height: f32) void {
+pub inline fn setHeight(child: *LayoutElement, height: f32) void {
     std.debug.assert(height >= 0);
     std.debug.assert(child.config.floating == null);
     if (height != child.computed.sized_height and child.first_child_index != null) {

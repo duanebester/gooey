@@ -303,7 +303,8 @@ fn pinExact() void {
             "Shadow",       "ColorToken",    "Color",           "A11y",         "Role",
             "Orientation",  "HeadingLevel",  "Painter",         "PaintText",    "PaintSvg",
             "PaintImage",   "ObjectFit",     "Rect",            "ScrollAnchor", "ScrollTarget",
-            "ScrollOffset", "ScrollChild",   "ScrollAlignment",
+            "ScrollOffset", "ScrollChild",   "ScrollAlignment", "Grid",         "Track",
+            "Cell",
         });
         expectDecls(gooey.Cx, "gooey.Cx", &.{
             "ScrollPosition", "state",              "theme",              "fontMetrics", "id",

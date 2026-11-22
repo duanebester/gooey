@@ -334,6 +334,14 @@ pub const ResourceLimits = struct {
         if (self.build.box_depth_max > element_count) {
             return relationship(.build, "box_depth_max", self.build.box_depth_max, element_count);
         }
+        if (self.build.grid_count_frame_max > element_count) {
+            return relationship(
+                .build,
+                "grid_count_frame_max",
+                self.build.grid_count_frame_max,
+                element_count,
+            );
+        }
         if (self.checkA11yRelationships()) |violation| return violation;
         if (self.checkAtlasCacheRelationships()) |violation| return violation;
         if (self.text.preedit_bytes_max > self.events.text_bytes_max) {
@@ -1202,6 +1210,8 @@ pub const MAX_COMPONENT_DEPTH: u32 = 128;
 /// Build-phase capacities: the element tree one frame may describe.
 /// Fragments are numbered in a `u8` after content's zero.
 pub const layer_count_ceiling: u32 = std.math.maxInt(u8);
+/// Grid slots are indexed by a `u16` in each layout element, far above this.
+pub const grid_count_ceiling: u32 = 1_024;
 
 pub const BuildLimits = struct {
     /// Elements (`box`, `text`, `paint`) per frame.
@@ -1219,6 +1229,9 @@ pub const BuildLimits = struct {
     /// `box_depth_max - 1` levels inside it. Sizes the layout open stack and
     /// the window's open, hover and press paths. The examples peak at 8.
     box_depth_max: u32,
+    /// Boxes with a `Style.grid` per frame: each claims one layout grid slot
+    /// of about 1.7 KiB for its tracks and resolved columns.
+    grid_count_frame_max: u32,
 
     pub const nano: BuildLimits = .{
         .element_count_frame_max = 512,
@@ -1227,6 +1240,7 @@ pub const BuildLimits = struct {
         .text_bytes_frame_max = 16 * 1024,
         .layer_count_frame_max = 8,
         .box_depth_max = 64,
+        .grid_count_frame_max = 8,
     };
     pub const small: BuildLimits = .{
         .element_count_frame_max = 2_048,
@@ -1235,6 +1249,7 @@ pub const BuildLimits = struct {
         .text_bytes_frame_max = 64 * 1024,
         .layer_count_frame_max = 16,
         .box_depth_max = 64,
+        .grid_count_frame_max = 32,
     };
     pub const standard: BuildLimits = .{
         .element_count_frame_max = 4_096,
@@ -1243,6 +1258,7 @@ pub const BuildLimits = struct {
         .text_bytes_frame_max = 256 * 1024,
         .layer_count_frame_max = 32,
         .box_depth_max = 64,
+        .grid_count_frame_max = 128,
     };
     pub const large: BuildLimits = .{
         .element_count_frame_max = 16_383,
@@ -1251,6 +1267,7 @@ pub const BuildLimits = struct {
         .text_bytes_frame_max = 1024 * 1024,
         .layer_count_frame_max = 64,
         .box_depth_max = 64,
+        .grid_count_frame_max = 512,
     };
     pub const ceiling: BuildLimits = .{
         .element_count_frame_max = element_count_frame_ceiling,
@@ -1259,6 +1276,7 @@ pub const BuildLimits = struct {
         .text_bytes_frame_max = 4 * 1024 * 1024,
         .layer_count_frame_max = layer_count_ceiling,
         .box_depth_max = box_depth_ceiling,
+        .grid_count_frame_max = grid_count_ceiling,
     };
 };
 

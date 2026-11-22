@@ -2,11 +2,13 @@
 
 ## Status
 
-Proposed on 2026-11-21 against v0.6.7 and approved on 2026-11-22, with the answers under
-"Resolved questions"; not implemented. It builds on decision 27, which sizes heights after
-text wraps. When it lands it becomes decision 28 in `docs/core-contract.md`, `ui.Style` in
-§1 gains the fields below, and `src/layout/layout.md` documents the engine side. Until then
-nothing here is API.
+Proposed on 2026-11-21 against v0.6.7, approved on 2026-11-22 with the answers under
+"Resolved questions", and implemented as decision 28 in `docs/core-contract.md`. It builds
+on decision 27, which sizes heights after text wraps. `ui.Style` in §1 has the fields below,
+`src/layout/layout.md` documents the engine side, and `src/examples/grid_layout.zig` shows a
+form, a table, and a dashboard. Two points differ from the proposal: grow columns grow from
+their content's floor, as CSS `1fr` does ("Column widths"), and overflowing columns stop at
+their content's floor as well as the track's `min` (decision 26).
 
 ## Why
 
@@ -177,16 +179,18 @@ a `.percent` track's is its width.
    of 25 % each fill a row of four exactly. Both are clamped to `min` and `max`.
 2. **Fit.** A `.fit` column takes its minimum.
 3. **Grow.** The free width is the content width less every other column and the gaps.
-   Grow columns start at their minimums and the free width fills them smallest first, as
-   Clay grows children, scaled by weight: a column of weight 2 rises twice as fast. A
-   column stops at its `max`. When the free width runs out, every grow column that rose is
-   at the same width per weight. With equal weights this is CSS `1fr` (`minmax(auto,
-   1fr)`), and a grow column never ends below its content, which a grow child in a row can
-   (decision 24).
+   Grow columns start at their floors, the narrowest their content allows (a text's widest
+   word), and the free width fills them smallest first, as Clay grows children, scaled by
+   weight: a column of weight 2 rises twice as fast. A column stops at its `max`. When the
+   free width runs out, every grow column that rose is at the same width per weight. With
+   equal weights this is CSS `1fr` (`minmax(auto, 1fr)`, whose `auto` is min-content):
+   twelve `grow(1)` columns stay equal under a long text, which wraps in its cell, and a
+   grow column never ends below its floor.
 4. **Overflow.** When the columns' minimums and the gaps are wider than the content width,
    `.fit` and `.grow` columns shrink largest first, as Clay shrinks children: the widest
-   gives way until it reaches the next widest, then both, and so on, never below a track's
-   `min`. A long description column gives way before an icon or a number column does.
+   gives way until it reaches the next widest, then both, and so on, never below its
+   content's floor or the track's `min` (decision 26). A long description column gives
+   way before an icon or a number column does.
    `.fixed` and `.percent` columns never shrink, and what is left overflows.
 
 Steps 3 and 4 each run at most two rounds per column (a round either brings the moving
@@ -347,44 +351,51 @@ Per grid of `C` children and `T` columns, with no allocation:
 - **Worst case at `standard`:** 4,096 elements, all cells: about 24,600 child visits and
   128 resolutions, about 260,000 steps at 32 columns. Layout measured 38 to 70 ns per node
   on 0.3.1; the estimate for an all-grid frame is under 0.5 ms, to be measured.
-- **Layouts with no grid:** one branch per parent in each pass, folded into the existing
-  `wrap` test by the `flow` enum. Target: within 0.5 % instructions in the Cachegrind gate.
+- **Layouts with no grid:** one branch per parent in the sizing and position passes, and
+  none in the minimum pass, which is specialized at compile time for frames without a
+  grid. Target: within 0.5 % instructions in the Cachegrind gate. Measured: the layout
+  passes run 0.4 % to 0.9 % more; tree building runs fewer, so the gate passes (decision
+  28).
 
 Taffy's full CSS algorithm measures items several times per frame and may size the columns
 twice; this design measures each text once, as the engine does now.
 
 ## Tests
 
-- **Engine (`engine_tests.zig`):** placement with spans and explicit columns, including a
-  span exactly as wide as the grid, one column too many (panic), and a `column` before the
-  cursor starting a new row; `.fit` columns lining up across rows of different contents;
-  grow columns with weights 1 and 3 where the weight-3 column's content minimum is above
-  its share; overflow where columns of 300, 100, and 40 px minimums must lose 120 px (the
-  300 px column gives it all; a proportional shrink would cut all three); four `.percent`
-  columns of 0.25 with a gap filling the row exactly; track `min` and `max` on every kind;
-  a spanning header wider than its two `.fit` columns; `.grow` and `.percent` rows in a
-  fixed-height grid and the same rows falling back to `.fit` in a `.fit`-height grid; a
-  wrapped text cell raising its row and its grid; an aspect child in a spanning cell; a
-  nested grid; a floating child taking no cell; a grid with only floating children.
-- **Row boxes:** a header of plain cells and row boxes below share column edges; a row
-  box's widest cell widens the column for the header; per-column `cell_alignment = .end`.
-- **Capacity:** declare exactly `grid_count_frame_max` grids, check the last lays out,
-  declare one more, and check the failure names the pool, capacity, request, and frame.
+- **Engine (`grid_tests.zig`):** row-major placement with spans and explicit columns, and a
+  `column` before the cursor starting a new row; `.fit` columns lining up across rows of
+  different contents; grow columns with weights 1 and 3 where the weight-3 column's content
+  is above its share; four equal grow columns staying equal under a long spanning
+  text; overflow where columns of 300, 100, and 40 px must lose 120 px (the 300 px column
+  gives it all); four `.percent` columns of 0.25 with gaps filling the row exactly; track
+  `min` and `max` on fit, grow, and percent columns; a spanning header wider than its two
+  `.fit` columns; `.grow` rows in a fixed-height grid falling back to `.fit` in a
+  `.fit`-height grid; a wrapped text cell raising its row, its stretched sibling, and its
+  grid; an aspect child in a spanning cell; a nested grid; floating children taking no
+  cell, and a grid with only a floating child.
+- **Row boxes:** a header of plain cells and a row box below share column edges, and the
+  row box's widest cell widens the column for the header; per-column `.end` alignment.
+- **Capacity:** declare exactly `grid_count_frame_max` grids and check the last lays out;
+  one more is the `core-grid-count` fail-fast mode, whose message names the pool, its
+  capacity, the count in use, and the request.
 - **Fail-fast modes** in `src/testing/fail_fast_check.zig` for each panic in "Validation",
   with their messages in `build.zig`.
-- **Goldens:** a `GridApp` through the core: a form and a table with hovered row boxes, at
-  two widths.
-- **Fuzzing:** `fuzz.zig` generates grids and row boxes. Every frame checks that cells in
-  one row do not overlap, every child stays inside its columns' edges unless its width is
-  fixed, rows start at increasing heights, and slots are zero past the high-water mark
-  after `deinit`.
-- **Benchmarks:** `grid_table` (300 row boxes of 6 cells) and `grid_cards` (nested grids)
-  in `src/layout/benchmarks.zig`; the Cachegrind gate on every existing layout benchmark.
-- **Example:** `data_table_example.zig` lays out its header and its rows on one grid, with
-  `.fit` columns where it uses fixed widths today.
+- **Goldens:** `core_grid.txt` replays the example through the core with the synthetic text
+  backend: the form, the table, and the dashboard, then the pointer over a table row. The
+  trace format has no resize step, so it covers one width; the engine tests cover the rest.
+- **Fuzzing:** `fuzz.zig` generates grids with 1 to 6 random tracks, random cells, and row
+  boxes. Every frame checks that column edges increase and that every grow-width cell
+  starts on its first column's edge and is its columns' width, wider only when its
+  content's floor is. Generating grids found a rounding case in decision 26's leveling,
+  fixed alongside with its own engine test.
+- **Benchmarks:** `grid_table` (a header and 300 row boxes of 6 cells) and `grid_cards`
+  (100 cards on 12 columns, each a nested grid) in `src/layout/benchmarks.zig`; the
+  Cachegrind gate on every existing layout benchmark.
 
 ## Later
 
+- **`data_table_example.zig` on a grid.** Its header and rows on one grid, with `.fit`
+  columns where it uses fixed widths today; a change to that example of its own.
 - **Auto-fill columns.** `Grid.column_width_min: ?f32`: as many equal `.grow` columns as
   fit at least that wide, as CSS `repeat(auto-fill, minmax(w, 1fr))` and Compose's
   `GridCells.Adaptive`. Placement then waits for the grid's width, so it moves from the

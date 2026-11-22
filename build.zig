@@ -202,6 +202,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "background", .source = "src/examples/background.zig" },
             .{ .name = "logo", .source = "src/examples/logo.zig" },
             .{ .name = "layout-gallery", .source = "src/examples/layout_gallery.zig" },
+            .{ .name = "grid-layout", .source = "src/examples/grid_layout.zig" },
         };
         // `zig build run` runs todo, the default example.
         var todo_exe: ?*std.Build.Step.Compile = null;
@@ -550,6 +551,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "background", .source = "src/examples/background.zig" },
             .{ .name = "logo", .source = "src/examples/logo.zig" },
             .{ .name = "layout-gallery", .source = "src/examples/layout_gallery.zig" },
+            .{ .name = "grid-layout", .source = "src/examples/grid_layout.zig" },
         };
         // `zig build run` runs todo, the default example; on EVE, which builds
         // only the board demos, counter.
@@ -880,6 +882,7 @@ fn addWindowsBuilds(
         .{ .name = "drag-drop", .source = "src/examples/drag_drop.zig" },
         .{ .name = "background", .source = "src/examples/background.zig" },
         .{ .name = "layout-gallery", .source = "src/examples/layout_gallery.zig" },
+        .{ .name = "grid-layout", .source = "src/examples/grid_layout.zig" },
     };
     for (examples) |example| {
         addWindowsExample(
@@ -1345,6 +1348,24 @@ fn addFailFastChecks(
             "finite and greater than 0" },
         .{ .mode = "core-aspect-height", .stderr = "Style.aspect_ratio: the height follows " ++
             "the width, so `height` must be .fit, with no height_min or height_max" },
+        .{ .mode = "core-grid-columns", .stderr = "Grid.columns: 0 columns; a grid has 1 to 32" },
+        .{ .mode = "core-grid-rows", .stderr = "Grid.rows: 33 rows; a grid lists at most 32" },
+        .{ .mode = "core-grid-track", .stderr = "Grid track 0: min 10 and max 5 must satisfy " ++
+            "0 <= min <= max" },
+        .{ .mode = "core-grid-wrap", .stderr = "Style.grid: a grid box does not also wrap" },
+        .{ .mode = "core-grid-alignment", .stderr = "Style.alignment.main .space_between: a " ++
+            "grid places a child in its cell with start, center, or end" },
+        .{ .mode = "core-grid-span", .stderr = "Cell.column_span 0: the grid has 2 columns" },
+        .{ .mode = "core-grid-column", .stderr = "Cell.column 1 with span 2: the grid has " ++
+            "2 columns" },
+        .{ .mode = "core-grid-cell-outside", .stderr = "Style.cell: only a child of a grid " ++
+            "box sits in a cell" },
+        .{ .mode = "core-grid-row-box", .stderr = "Cell.row: a row box spans every column " ++
+            "and holds only cells" },
+        .{ .mode = "core-grid-row-box-cells", .stderr = "Cell.column 2 with span 1: a row box " ++
+            "holds one row of 2 columns" },
+        .{ .mode = "core-grid-count", .stderr = "layout pool 'grids' exhausted: capacity 8, " ++
+            "8 in use, 1 requested. Raise ResourceLimits.build.grid_count_frame_max." },
         .{ .mode = "core-pointer-drag-unkeyed", .stderr = "Box.on_pointer_drag needs a key " ++
             "(contract §5): box at fail_fast_check.zig:" },
         .{ .mode = "core-drag-unkeyed", .stderr = "Box.draggable needs a key " ++
@@ -2164,6 +2185,12 @@ fn goldensImports(
         .optimize = optimize,
         .imports = example_imports,
     });
+    const grid_layout_mod = b.createModule(.{
+        .root_source_file = b.path("src/examples/grid_layout.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = example_imports,
+    });
     const charts_mod = b.createModule(.{
         .root_source_file = b.path("charts/src/root.zig"),
         .target = target,
@@ -2257,6 +2284,7 @@ fn goldensImports(
         .{ .name = "data_table_example", .module = data_table_mod },
         .{ .name = "dashboard_example", .module = dashboard_mod },
         .{ .name = "dynamic_counters_example", .module = dynamic_counters_mod },
+        .{ .name = "grid_layout_example", .module = grid_layout_mod },
         .{ .name = "gooey", .module = gooey_mod },
         .{ .name = "gooey-components", .module = components_mod },
         .{ .name = "counter_example", .module = counter_mod },
