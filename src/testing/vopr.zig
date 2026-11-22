@@ -31,6 +31,7 @@ const NestedOverlayModel = @import("vopr_nested_overlay_model.zig").NestedOverla
 const TextAreaModel = @import("vopr_text_area_model.zig").TextAreaModel;
 const images_model = @import("vopr_images_model.zig");
 const file_dialog_model = @import("vopr_file_dialog_model.zig");
+const jobs_model = @import("vopr_jobs_model.zig");
 const vopr_dialogs = @import("vopr_dialogs.zig");
 const invariants = @import("vopr_invariants.zig");
 const trace_mod = @import("goldens/trace.zig");
@@ -128,6 +129,8 @@ pub const Workload = enum {
     text_area,
     images,
     file_dialog,
+    jobs,
+    jobs_main_thread,
 
     fn App(comptime workload: Workload) type {
         return switch (workload) {
@@ -142,6 +145,8 @@ pub const Workload = enum {
             // A VOPR-only app: eight image paths, four on screen at a time.
             .images => images_model.App,
             .file_dialog => file_dialog_model.App,
+            // A VOPR-only app that spawns and cancels background jobs.
+            .jobs, .jobs_main_thread => jobs_model.App,
         };
     }
 
@@ -156,6 +161,8 @@ pub const Workload = enum {
             .text_area => TextAreaModel,
             .images => images_model.ImagesModel,
             .file_dialog => file_dialog_model.FileDialogModel,
+            .jobs => jobs_model.JobsModel(.stepped),
+            .jobs_main_thread => jobs_model.JobsModel(.main_thread),
         };
     }
 };
@@ -166,7 +173,8 @@ pub const Workload = enum {
 pub fn main(init: std.process.Init) !void {
     const options = parseArgs(init.minimal.args.vector) orelse {
         std.debug.print("usage: vopr [--app todo|drag_drop|virtual_list|splitter|" ++
-            "actions|nested_overlay|text_area|images|file_dialog] [seed] [--verbose]\n", .{});
+            "actions|nested_overlay|text_area|images|file_dialog|jobs|jobs_main_thread] " ++
+            "[seed] [--verbose]\n", .{});
         return error.InvalidArguments;
     };
     const seed = options.seed orelse seed: {
@@ -369,9 +377,33 @@ pub const Action = union(enum) {
     image: ImageDecode,
     /// The platform answers an open file dialog through the event queue or
     /// the completion ring, or arms the answer the next dialog returns at
-    /// once (`vopr_dialogs`). Last, so the other kinds keep their tag
-    /// values; only models that list it draw it.
+    /// once (`vopr_dialogs`). After the kinds before it, so they keep
+    /// their tag values; only models that list it draw it.
     dialog: vopr_dialogs.Answer,
+    /// One turn of a job slot's runner or interrupter, played by the
+    /// harness (`jobs.Mode.stepped`). Last, so the other kinds keep their
+    /// tag values; only models that list it draw it.
+    job: JobStep,
+
+    /// A worker's turn for one slot: the runner takes its spawn (`start`),
+    /// the running job posts a result (`post`, refused once cancelled), or
+    /// its `run` returns (`end`), which for a cancelled job its interrupter
+    /// then ends as `.cancelled`.
+    pub const JobStep = struct {
+        slot: u32,
+        kind: Kind,
+        /// `.post`: the result's value.
+        value: u32,
+        /// `.post`: the row the app's `on_result` cancels, plus one; 0 for none.
+        cancel_row: u32,
+        /// `.end`: how `run` returned.
+        outcome: Outcome,
+
+        pub const Kind = enum { start, post, end };
+        /// `.canceled` is a run that returned `error.Canceled` on its own,
+        /// with no cancel: it reports `.cancelled` all the same.
+        pub const Outcome = enum { finished, failed, canceled };
+    };
 
     pub const ImageDecode = struct {
         /// The request's loader entry, which `takeStepped` must return.
@@ -494,6 +526,15 @@ pub const Action = union(enum) {
                 answer.path_count,
                 answer.paths.len,
             }),
+            .job => |step| switch (step.kind) {
+                .start => try writer.print("job slot {d} starts", .{step.slot}),
+                .post => try writer.print("job slot {d} posts {d} (cancel row {d})", .{
+                    step.slot,
+                    step.value,
+                    step.cancel_row,
+                }),
+                .end => try writer.print("job slot {d} ends {t}", .{ step.slot, step.outcome }),
+            },
         }
     }
 };
@@ -684,6 +725,7 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
         const Dialogs = vopr_dialogs.Dialogs(App.limits.events);
         const lists_dialog = std.mem.indexOfScalar(ActionKind, Model.action_kinds, .dialog) != null;
         const lists_image = std.mem.indexOfScalar(ActionKind, Model.action_kinds, .image) != null;
+        const lists_job = std.mem.indexOfScalar(ActionKind, Model.action_kinds, .job) != null;
         /// Who runs the app's jobs: the harness steps the workers, unless
         /// the model runs them on the main thread (`runQueued`).
         const job_runs: internals.jobs.Mode = if (@hasDecl(Model, "job_runs"))
@@ -708,6 +750,13 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
                 for (Model.dialog_path_lengths) |length| assert(length > 0);
             }
             for (path_count_choices) |count| assert(count > 0);
+            // Only stepped jobs have turns to play, and the model names
+            // the result the harness posts and the rows it may cancel.
+            if (lists_job) {
+                assert(job_runs == .stepped);
+                assert(@sizeOf(Model.JobResult) <= App.limits.events.job_result_bytes_max);
+                assert(Model.job_row_count > 0);
+            }
         }
 
         /// The keys the generator presses: the model's own list when it
@@ -861,7 +910,7 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
                 .pointer, .key, .text, .compose, .scroll, .drag, .resize, .cancel => {
                     self.model.queue(action);
                 },
-                .image, .dialog => self.model.queue(action),
+                .image, .dialog, .job => self.model.queue(action),
                 .wait_ns, .tick_main, .present => {},
             }
             switch (action) {
@@ -892,6 +941,7 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
                 .cancel => |cancel| self.deliver(cancelEvent(cancel)),
                 .image => |decode| self.performImage(&decode),
                 .dialog => |answer| self.performDialog(&answer),
+                .job => |turn| if (!lists_job) unreachable else self.performJob(&turn),
                 .wait_ns => |gap_ns| self.driver.now_ns += gap_ns,
                 .tick_main => self.tickMain(),
                 .present => self.present(),
@@ -958,7 +1008,82 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
                 else
                     .tick_main,
                 .dialog => if (!lists_dialog) unreachable else self.generateDialog(smith),
+                .job => if (!lists_job) unreachable else self.generateJob(smith),
             };
+        }
+
+        /// A turn for the first slot from a seeded one that has a turn to
+        /// take: a pending or skipped spawn starts; a running job posts
+        /// (only while a result slot is free, as a worker would wait for a
+        /// drain) or ends; a cancelled one posts, refused, or ends. Always
+        /// the same choices, so the slots' phases do not shift the bytes
+        /// that follow. With no turn to take, a `tickMain`.
+        fn generateJob(self: *Self, smith: *Smith) Action {
+            const pool = &self.window().jobs;
+            assert(pool.mode == .stepped);
+            const slot_count: u32 = @intCast(pool.slots.len);
+            assert(slot_count > 0);
+            const slot_first = choose(smith, slot_count, "job slot");
+            const posts = choose(smith, 4, "job step") < 3;
+            const value = choose(smith, 1000, "job value");
+            const cancels = choose(smith, 100, "job cancels") < 10;
+            const row = choose(smith, Model.job_row_count, "job cancel row");
+            const outcome_index = choose(smith, 4, "job outcome");
+            var turn: Action.JobStep = .{
+                .slot = 0,
+                .kind = .start,
+                .value = value,
+                .cancel_row = if (cancels) row + 1 else 0,
+                // Finished twice as often as failed or cancelled by `run`.
+                .outcome = switch (outcome_index) {
+                    0, 1 => .finished,
+                    2 => .failed,
+                    3 => .canceled,
+                    else => unreachable,
+                },
+            };
+            const room = pool.result_free_count > 0;
+            var offset: u32 = 0;
+            while (offset < slot_count) : (offset += 1) {
+                turn.slot = (slot_first + offset) % slot_count;
+                turn.kind = jobTurn(pool.phaseOf(turn.slot), .{
+                    .posts = posts,
+                    .room = room,
+                }) orelse continue;
+                return .{ .job = turn };
+            }
+            assert(offset == slot_count);
+            return .tick_main;
+        }
+
+        /// A worker's turn: the runner's `beginRun` or `endRun`, a post,
+        /// or, after a cancelled run returned, the interrupter's end. Each
+        /// returns what the slot's phase before it says it must.
+        fn performJob(self: *Self, turn: *const Action.JobStep) void {
+            const pool = &self.window().jobs;
+            assert(pool.mode == .stepped);
+            const phase = pool.phaseOf(turn.slot);
+            switch (turn.kind) {
+                .start => {
+                    const began = pool.beginRun(turn.slot);
+                    assert(began == (phase == .pending));
+                    if (!began) assert(phase == .skipped);
+                },
+                .post => {
+                    const result: Model.JobResult = .{
+                        .value = turn.value,
+                        .cancel_row = turn.cancel_row,
+                    };
+                    const posted = pool.post(turn.slot, std.mem.asBytes(&result));
+                    assert(posted == (phase == .running));
+                },
+                .end => {
+                    const ended = pool.endRun(turn.slot, jobReturned(turn.outcome));
+                    assert(ended == (phase == .running));
+                    if (!ended) pool.finishInterrupt(turn.slot);
+                },
+            }
+            assert(pool.phaseOf(turn.slot) != .pending);
         }
 
         /// The entry of the oldest image request, when the stepped worker
@@ -1250,7 +1375,9 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             const opened_count_before = self.dialogs.opened_count;
             const published = tick.tickMain(&self.driver.app, win, self.driver.now_ns);
             if (published) assert(win.frame_in_flight.load(.acquire));
-            assert(!ringPending(win));
+            // A drain takes the whole ring; only jobs it ran on the main
+            // thread push onto it again, for the next drain.
+            if (job_runs != .main_thread) assert(!ringPending(win));
             self.ring_answer_count = 0;
             self.model.endDrain(win, published);
             self.checkDrained(published, opened_count_before);
@@ -1697,6 +1824,38 @@ fn ringPending(win: *Window) bool {
     return head != tail;
 }
 
+/// The turn a job slot in `phase` can take, or null for none: a slot
+/// without a job, or whose end waits for a drain, has none, and neither has
+/// a running job asked to post while every result slot is held.
+fn jobTurn(phase: internals.jobs.Phase, options: struct {
+    /// The seed asks for a post rather than an end.
+    posts: bool,
+    /// A result slot is free.
+    room: bool,
+}) ?Action.JobStep.Kind {
+    switch (phase) {
+        .idle => return null,
+        .pending, .skipped => return .start,
+        .running => {
+            if (!options.posts) return .end;
+            if (options.room) return .post;
+            return null;
+        },
+        // A cancelled job's post is refused before any wait, room or not.
+        .interrupting => return if (options.posts) .post else .end,
+    }
+}
+
+/// What the harness's `run` returned: `.canceled` is a run that returned
+/// `error.Canceled` on its own, which reports `.cancelled`.
+fn jobReturned(outcome: Action.JobStep.Outcome) anyerror!void {
+    return switch (outcome) {
+        .finished => {},
+        .failed => error.WorkFailed,
+        .canceled => error.Canceled,
+    };
+}
+
 fn imageError(failure: Action.ImageFailure) anyerror {
     return switch (failure) {
         .file_not_found => error.FileNotFound,
@@ -1912,6 +2071,14 @@ test "fuzz: file_dialog vopr" {
     try fuzzCorpus(.file_dialog);
 }
 
+test "fuzz: jobs vopr" {
+    try fuzzCorpus(.jobs);
+}
+
+test "fuzz: jobs_main_thread vopr" {
+    try fuzzCorpus(.jobs_main_thread);
+}
+
 /// One seed through `runPaired`, which panics on the first differing frame.
 fn runPairedSeed(comptime workload: Workload, prng_seed: u64) !Result(workload.Model()) {
     const step_count = 300;
@@ -1970,6 +2137,21 @@ test "two instances fed the same bytes draw the same frames" {
     try std.testing.expect(dialogs.stats.refused_waiting > 0);
     const dialogs_full = try runPairedSeed(.file_dialog, 2);
     try std.testing.expect(dialogs_full.stats.refused_full > 0);
+    // jobs seed 7 cancels a running job, whose posts are then refused and
+    // whose undelivered result is dropped; seed 2's clicks fill the job
+    // table, are refused, and cancel a reused slot's stale id.
+    const interrupted = try runPairedSeed(.jobs, 7);
+    try std.testing.expect(interrupted.stats.cancels_interrupting > 0);
+    try std.testing.expect(interrupted.stats.posts_refused > 0);
+    try std.testing.expect(interrupted.stats.results_dropped > 0);
+    const busy = try runPairedSeed(.jobs, 2);
+    try std.testing.expect(busy.stats.refused > 0);
+    try std.testing.expect(busy.stats.cancels_stale_reused > 0);
+    // jobs_main_thread seed 1 defers runs behind held results, and refuses
+    // a chained job's successor inside on_done.
+    const main_thread = try runPairedSeed(.jobs_main_thread, 1);
+    try std.testing.expect(main_thread.stats.runs_deferred > 0);
+    try std.testing.expect(main_thread.stats.refused_chain > 0);
 }
 
 /// The centre of the `rank`-th hit record with a click handler, in tree order.
