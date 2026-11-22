@@ -263,7 +263,7 @@ const ScrollRow = struct {
 
 const lorem =
     "Gooey lays out boxes in one bottom-up pass for content sizes, one top-down pass " ++
-    "for final sizes, then wraps text at the widths it found and places everything.";
+    "for widths, then wraps text at those widths, sizes heights, and places everything.";
 
 const beside_fixed = "A grow column beside a fixed box takes the rest of the row " ++
     "and wraps its text there.";
@@ -328,7 +328,7 @@ const OverflowPanel = struct {
                     ui.text(beside_fixed, .{ .size = 13, .wrap = .words }),
                 }),
             }),
-            caption("300 px row: a long note and a short one share it"),
+            caption("300 px row: grow-height notes stretch to the row"),
             ui.box(.{ .style = outline }, .{
                 Note{ .text = "Long note: the wider child gives way first and wraps" },
                 Note{ .text = "Short note" },
@@ -355,6 +355,7 @@ const Note = struct {
 
     pub fn render(self: Note, cx: *Cx) void {
         cx.render(ui.box(.{ .style = .{
+            .height = .{ .grow = 1 },
             .padding = .symmetric(8, 6),
             .background = .{ .rgba = .hex(0xFEF3C7) },
             .corner_radius = .all(4),

@@ -455,6 +455,7 @@ fn planChildSizes(engine: *LayoutEngine, parent_index: u32) SizingFrame {
     if (parent.config.layout.wrap) {
         std.debug.assert(is_horizontal);
         engine.heights_derived = true; // Its aspect children's heights too.
+        engine.elements.get(parent_index).min_height_dirty = true;
         frame.has_grandchildren = sizeWrappedChildren(
             engine,
             parent_index,
@@ -494,8 +495,10 @@ fn planChildSizes(engine: *LayoutEngine, parent_index: u32) SizingFrame {
 /// children shrink as Clay shrinks them: the widest fit and grow children
 /// give way first, down to a common `level`, and none goes below its floor.
 /// Fixed and percent children keep their size. What floors still cannot fit
-/// overflows, as in CSS flexbox and Clay.
-fn planDistribution(
+/// overflows, as in CSS flexbox and Clay. Inline, with `shrinkLevel`: the
+/// sizing pass calls it once per parent, and outlined beside its second
+/// caller in the heights pass it cost a sizing pass 2 % more instructions.
+inline fn planDistribution(
     engine: *const LayoutEngine,
     frame: *SizingFrame,
     totals: *const ChildTotals,
@@ -551,7 +554,8 @@ const shrink_step_count: u32 = 32;
 /// the next size where a child joins or stops at its floor. At most
 /// `shrink_round_count_max` rounds and `shrink_step_count` bisection steps,
 /// one walk over the children each, and only on a parent that overflows.
-fn shrinkLevel(
+/// Inline into `planDistribution`, as it was with one caller.
+inline fn shrinkLevel(
     engine: *const LayoutEngine,
     frame: *const SizingFrame,
     target: f32,
@@ -574,8 +578,9 @@ fn shrinkLevel(
             const next = level - excess / active;
             if (next >= step.breakpoint) return next;
         } else {
-            // Every shrinkable child is at its floor: nothing gives way.
-            if (round > 0 and step.breakpoint == 0) return level;
+            // Every shrinkable child is at its floor, or above `level` with
+            // a floor at it: nothing gives way, at this level or below.
+            if (step.breakpoint == 0) return level;
         }
         level = step.breakpoint;
     }
@@ -700,6 +705,7 @@ fn sizeElement(
     if (layout.aspect_ratio) |ratio| {
         final_height = final_width / ratio;
         engine.heights_derived = true;
+        elem.min_height_dirty = true;
     }
 
     elem.computed.sized_width = final_width;
@@ -988,6 +994,7 @@ fn assignShrunkSize(engine: *LayoutEngine, child: *LayoutElement, frame: *const 
             child.computed.sized_width = child.computed.sized_height * ratio;
         }
         engine.heights_derived = true;
+        child.min_height_dirty = true;
     }
     std.debug.assert(main >= 0);
 }
@@ -1244,6 +1251,7 @@ fn sizeWrapChild(child: *LayoutElement, per_weight: f32, width: f32, height: f32
     child.computed.sized_width = @min(grown, @max(layout.sizing.width.getMin(), width));
     if (layout.aspect_ratio) |ratio| {
         child.computed.sized_height = child.computed.sized_width / ratio;
+        child.min_height_dirty = true;
     } else {
         child.computed.sized_height = switch (layout.sizing.height.value) {
             .grow => child.computed.min_height,
@@ -1300,80 +1308,38 @@ pub fn wrapLineSpan(
     return .{ .start = 0, .size = total };
 }
 
-/// Wrap text in `root`'s subtree, floating elements included, once container
-/// widths are settled, and propagate height changes back up to fit-content
-/// parents, with the heights that aspect ratios and wrapping rows derived
-/// from widths. Walks the subtree forwards, the order the recursive pass used.
+/// Wrap the text in `root`'s subtree at the widths the sizing pass gave its
+/// containers, skipping floating subtrees below `root`: each wraps in its own
+/// pass once its root is sized (`position_pass.computeFloatingSizesWithText`).
+/// A text that wraps to a height other than its one-line height marks the
+/// frame's heights as derived from widths, so `computeHeights` runs.
 pub fn computeTextWrapping(engine: *LayoutEngine, root: u32) !void {
+    std.debug.assert(root < engine.elements.len());
+    std.debug.assert(engine.floating_roots.len <= engine.capacity.floating_count_max);
+    if (engine.floating_roots.len > 0) {
+        try wrapSubtreeText(true, engine, root);
+    } else {
+        try wrapSubtreeText(false, engine, root);
+    }
+}
+
+/// `skip_floating` is whether the frame has a floating element, at compile
+/// time: without one, the walk does not read every element's `floating`.
+fn wrapSubtreeText(comptime skip_floating: bool, engine: *LayoutEngine, root: u32) !void {
     const end = subtreeEnd(engine, root);
     std.debug.assert(end > root);
-    const derives_heights = engine.heights_derived;
     var index = root;
-    while (index < end) : (index += 1) {
+    while (index < end) {
         assertPreOrder(engine, root, index);
         const elem = engine.elements.getConst(index);
-        if (elem.text_data != null) try wrapElementText(engine, index);
-        if (derives_heights) markDerivedHeight(engine, elem);
-    }
-    if (engine.parents_marked) growMarkedParents(engine, root, end);
-}
-
-/// An aspect-ratio box's height and a wrapping row's height follow from
-/// widths, which the minimums a fit-content parent was sized from did not
-/// know, as wrapped text's height does. Mark the fit-content ancestors such
-/// a height grows, nearest first, up to one already marked, so each is
-/// marked once however many derived heights sit under it; then
-/// `growMarkedParents` grows each once. Growing each ancestor per derived
-/// height instead, as wrapped text does, would cost a parent of N aspect
-/// children N walks over them.
-pub inline fn markDerivedHeight(engine: *LayoutEngine, elem: *const LayoutElement) void {
-    const layout = &elem.config.layout;
-    if (layout.wrap) std.debug.assert(layout.layout_direction.isHorizontal());
-    if (layout.aspect_ratio != null or layout.wrap) {
-        @branchHint(.unlikely); // Off the path every other box takes.
-        if (elem.config.floating == null) markFitAncestors(engine, elem.parent_index);
-    }
-}
-
-fn markFitAncestors(engine: *LayoutEngine, parent_index: ?u32) void {
-    if (parent_index) |index| std.debug.assert(index < engine.elements.len());
-    var cursor = parent_index;
-    var depth: u32 = 0;
-    while (cursor) |index| : (depth += 1) {
-        std.debug.assert(depth <= engine.capacity.box_depth_max); // Ancestors were open.
-        const parent = engine.elements.get(index);
-        if (parent.height_marked) return; // So are its ancestors, as far as they grow.
-        if (parent.config.layout.sizing.height.value != .fit) return;
-        if (parent.config.layout.aspect_ratio != null) return; // Its height follows its width.
-        parent.height_marked = true;
-        engine.parents_marked = true;
-        if (parent.config.floating != null) return; // Its height moves nothing around it.
-        cursor = parent.parent_index;
-    }
-}
-
-/// Grow each marked fit-content parent in `root..end` to its children, and
-/// clear its mark. Walks backwards: pre-order puts children after their
-/// parent, so every child is final before its parent adds it up.
-///
-/// Work: one step per element, and one walk over a marked parent's children.
-pub fn growMarkedParents(engine: *LayoutEngine, root: u32, end: u32) void {
-    std.debug.assert(engine.parents_marked);
-    std.debug.assert(root < end);
-    std.debug.assert(end <= engine.elements.len());
-    var index = end;
-    while (index > root) {
-        index -= 1;
-        const elem = engine.elements.get(index);
-        if (elem.height_marked) {
-            const sizing = elem.config.layout.sizing.height;
-            std.debug.assert(sizing.value == .fit);
-            const height = childrenHeight(engine, elem) + elem.config.layout.padding.totalY();
-            elem.computed.sized_height = applyMinMax(height, sizing);
-            elem.height_marked = false;
+        if (skip_floating and index != root and elem.config.floating != null) {
+            index = subtreeEnd(engine, index);
+            continue;
         }
+        if (elem.text_data != null) try wrapElementText(engine, index);
+        index += 1;
     }
-    engine.parents_marked = false;
+    std.debug.assert(index == end);
 }
 
 /// Wrap one element's text, if it has any, at its parent's content width.
@@ -1396,13 +1362,15 @@ fn wrapElementText(engine: *LayoutEngine, index: u32) !void {
             td.wrapped_lines = wrap_result.lines;
 
             if (wrap_result.lines.len > 0) {
+                if (wrap_result.total_height != td.measured_height) {
+                    engine.heights_derived = true;
+                    elem.min_height_dirty = true;
+                }
                 td.measured_width = wrap_result.max_line_width;
                 td.measured_height = wrap_result.total_height;
 
                 elem.computed.sized_width = wrap_result.max_line_width;
                 elem.computed.sized_height = wrap_result.total_height;
-
-                propagateHeightChange(engine, elem.parent_index);
             }
         }
     }
@@ -1418,57 +1386,303 @@ fn textContainerWidth(engine: *LayoutEngine, elem: *const LayoutElement) f32 {
     return engine.viewport_width;
 }
 
-/// Propagate child height changes up to fit-content parents. Floating
-/// children take no space in their parent, so they are left out of its
-/// height, and the walk stops at a floating element: its height does not
-/// change its host's layout.
-pub fn propagateHeightChange(engine: *LayoutEngine, parent_idx: ?u32) void {
-    var idx = parent_idx;
-    var depth: u32 = 0;
-    while (idx) |pi| : (depth += 1) {
-        std.debug.assert(depth <= engine.capacity.box_depth_max); // Ancestors were open.
-        const parent = engine.elements.get(pi);
-        const sizing = parent.config.layout.sizing.height;
+/// Size heights in `root`'s subtree again once its text has wrapped, as Clay
+/// sizes heights after widths. Every width is final by now, so wrapped text,
+/// aspect ratios, and wrapping rows' lines give their real heights, and a
+/// height that follows from its parent's or its siblings' is sized from
+/// them: a stretched child reaches its row's wrapped height, and a grow child
+/// in a column shares what its wrapped siblings leave. The sizing pass sized
+/// heights from one-line text, which is right wherever no minimum height
+/// under a parent changed; only the rest is sized again.
+///
+/// Work: a backward and a forward walk that read two flags per element; one
+/// walk over the children of each parent whose minimum may have changed, and
+/// one to three over the children of each parent whose children's heights
+/// did. No storage. Floating subtrees below `root` hold no flags: their
+/// sizing and wrapping run in their own pass.
+pub fn computeHeights(engine: *LayoutEngine, root: u32, available_height: f32) void {
+    std.debug.assert(engine.heights_derived);
+    std.debug.assert(available_height >= 0);
+    const end = subtreeEnd(engine, root);
+    computeMinHeights(engine, root, end);
+    const root_elem = engine.elements.get(root);
+    const root_height = offeredHeight(root_elem, available_height);
+    if (root_height != root_elem.computed.sized_height) root_elem.heights_dirty = true;
+    root_elem.computed.sized_height = root_height;
 
-        if (sizing.value != .fit) break;
-        if (parent.config.layout.aspect_ratio != null) break;
-
-        const new_height = childrenHeight(engine, parent) + parent.config.layout.padding.totalY();
-        parent.computed.sized_height = @max(sizing.getMin(), @min(sizing.getMax(), new_height));
-
-        if (parent.config.floating != null) break;
-        idx = parent.parent_index;
+    var index = root;
+    while (index < end) : (index += 1) {
+        assertPreOrder(engine, root, index);
+        const elem = engine.elements.get(index);
+        std.debug.assert(!elem.min_height_dirty);
+        if (elem.heights_dirty) {
+            @branchHint(.unlikely); // Off the path every unchanged box takes.
+            elem.heights_dirty = false;
+            std.debug.assert(elem.first_child_index != null);
+            sizeChildHeights(engine, index);
+        }
     }
 }
 
-/// The height `parent`'s flow children take: their lines' when it wraps,
-/// else stacked with gaps in a column or the tallest in a row.
-fn childrenHeight(engine: *const LayoutEngine, parent: *const LayoutElement) f32 {
-    const gap: f32 = @floatFromInt(parent.config.layout.child_gap);
-    const first_child = parent.first_child_index orelse return 0;
-    if (parent.config.layout.wrap) return wrapLineSpan(engine, first_child, gap, null).size;
-    const is_vertical = !parent.config.layout.layout_direction.isHorizontal();
-    var total_height: f32 = 0;
-    var child_idx: ?u32 = first_child;
-    var child_count: u32 = 0;
-    var visited: u32 = 0;
-    while (child_idx) |ci| : (visited += 1) {
-        std.debug.assert(visited < engine.elements.len()); // Each sibling once.
-        const child = engine.elements.getConst(ci);
-        child_idx = child.next_sibling_index;
-        if (child.config.floating != null) continue;
-        if (is_vertical) {
-            total_height += child.computed.sized_height;
-        } else {
-            total_height = @max(total_height, child.computed.sized_height);
+/// Recompute the minimum height of each element marked `min_height_dirty`,
+/// and when it changed, mark its parent: the parent's minimum may change too,
+/// and its children's heights need sizing again. Pre-order puts children
+/// after their parent, so walking backwards finishes every child before its
+/// parent adds it up. A floating element's minimum takes no part in its
+/// parent's, so it marks nothing above it.
+fn computeMinHeights(engine: *LayoutEngine, root: u32, end: u32) void {
+    std.debug.assert(root < end);
+    std.debug.assert(end <= engine.elements.len());
+    var index = end;
+    while (index > root) {
+        index -= 1;
+        const elem = engine.elements.get(index);
+        if (elem.min_height_dirty) {
+            @branchHint(.unlikely); // Off the path every unchanged box takes.
+            elem.min_height_dirty = false;
+            const min_height = minHeight(engine, elem);
+            std.debug.assert(min_height >= 0);
+            const changed = min_height != elem.computed.min_height;
+            elem.computed.min_height = min_height;
+            if (changed and elem.config.floating == null and index > root) {
+                const parent = engine.elements.get(elem.parent_index.?);
+                parent.min_height_dirty = true;
+                parent.heights_dirty = true;
+            }
         }
-        child_count += 1;
     }
-    if (is_vertical and child_count > 1) {
-        total_height += gap * @as(f32, @floatFromInt(child_count - 1));
+}
+
+/// One element's minimum height, as `finishMinSize` computes it before text
+/// wraps, but from wrapped text, wrapping rows' lines, and a height an
+/// aspect ratio takes from the final width.
+fn minHeight(engine: *const LayoutEngine, elem: *const LayoutElement) f32 {
+    const layout = &elem.config.layout;
+    if (layout.aspect_ratio) |ratio| {
+        std.debug.assert(ratio > 0);
+        return elem.computed.sized_width / ratio;
     }
-    std.debug.assert(total_height >= 0);
-    return total_height;
+    var content: f32 = 0;
+    if (elem.text_data) |td| content = td.measured_height;
+    std.debug.assert(content >= 0);
+    const is_vertical_scroll = if (elem.config.scroll) |scroll| scroll.vertical else false;
+    if (elem.first_child_index != null and !is_vertical_scroll) {
+        content = @max(content, childrenMinHeight(engine, elem));
+    }
+    return applyMinMax(content + layout.padding.totalY(), layout.sizing.height);
+}
+
+/// The height `parent`'s flow children need at their minimums: stacked with
+/// gaps in a column, the tallest in a row, and a wrapping row's lines, each
+/// as tall as its tallest child, stacked with gaps.
+fn childrenMinHeight(engine: *const LayoutEngine, parent: *const LayoutElement) f32 {
+    const gap: f32 = @floatFromInt(parent.config.layout.child_gap);
+    const wrap = parent.config.layout.wrap;
+    const is_vertical = !parent.config.layout.layout_direction.isHorizontal();
+    var total: f32 = 0;
+    var line: f32 = 0;
+    var flow_count: u32 = 0;
+    var cursor = parent.first_child_index;
+    var visited: u32 = 0;
+    while (cursor) |index| : (visited += 1) {
+        std.debug.assert(visited < engine.elements.len()); // Each sibling once.
+        const child = engine.elements.getConst(index);
+        cursor = child.next_sibling_index;
+        if (child.config.floating != null) continue;
+        const height = child.computed.min_height;
+        if (wrap) {
+            if (flow_count == 0) std.debug.assert(child.line_start);
+            if (child.line_start and flow_count > 0) {
+                total += line + gap;
+                line = 0;
+            }
+            line = @max(line, height);
+        } else {
+            if (is_vertical) {
+                total += height;
+            } else {
+                total = @max(total, height);
+            }
+        }
+        flow_count += 1;
+    }
+    if (wrap) return total + line;
+    if (is_vertical and flow_count > 1) total += gap * @as(f32, @floatFromInt(flow_count - 1));
+    std.debug.assert(total >= 0);
+    return total;
+}
+
+/// Size the heights of `parent_index`'s children from its final height: a
+/// column shares its height along its main axis, as the sizing pass shares
+/// widths; a row offers each child its height, so a grow child stretches to
+/// it; a wrapping row stretches its grow children to their line.
+fn sizeChildHeights(engine: *LayoutEngine, parent_index: u32) void {
+    const parent = engine.elements.getConst(parent_index);
+    const first_child = parent.first_child_index.?;
+    std.debug.assert(first_child > parent_index); // Pre-order: children follow.
+    const height = childContentArea(parent).height;
+    std.debug.assert(!parent.heights_dirty); // `computeHeights` cleared it first.
+    if (parent.config.layout.wrap) {
+        stretchWrapLines(engine, first_child, height);
+        return;
+    }
+    if (!parent.config.layout.layout_direction.isHorizontal()) {
+        distributeColumnHeights(engine, parent_index, height);
+        return;
+    }
+    var cursor: ?u32 = first_child;
+    var visited: u32 = 0;
+    while (cursor) |index| : (visited += 1) {
+        std.debug.assert(visited < engine.elements.len()); // Each sibling once.
+        const child = engine.elements.get(index);
+        cursor = child.next_sibling_index;
+        if (child.config.floating == null) setHeight(child, offeredHeight(child, height));
+    }
+}
+
+/// A column's children's heights, by the rule `planDistribution` chooses
+/// for widths in a row: grow children share the free height by weight, and
+/// an overflowing column shrinks its tallest fit and grow children first,
+/// none below its minimum. Their minimums now hold wrapped text.
+fn distributeColumnHeights(engine: *LayoutEngine, parent_index: u32, height: f32) void {
+    std.debug.assert(height >= 0);
+    const parent = engine.elements.getConst(parent_index);
+    const first_child = parent.first_child_index.?;
+    const gap: f32 = @floatFromInt(parent.config.layout.child_gap);
+    var frame: SizingFrame = .{
+        .cursor = first_child,
+        .rule = .assigned,
+        .is_horizontal = false,
+        .has_grandchildren = false,
+        .width = childContentArea(parent).width,
+        .height = height,
+        .factor = 0,
+        .level = std.math.floatMax(f32),
+        .percent_basis = 0,
+    };
+    const totals = sumDesiredSizes(engine, first_child, false);
+    planDistribution(engine, &frame, &totals, height, gap);
+    std.debug.assert(frame.rule != .assigned);
+
+    var cursor: ?u32 = first_child;
+    var visited: u32 = 0;
+    while (cursor) |index| : (visited += 1) {
+        std.debug.assert(visited < engine.elements.len()); // Each sibling once.
+        const child = engine.elements.get(index);
+        cursor = child.next_sibling_index;
+        if (child.config.floating == null) setHeight(child, columnChildHeight(child, &frame));
+    }
+}
+
+/// One column child's height under its parent's rule: shrunk to the level,
+/// or offered what `assignGrownSize` offers it, and resolved by its sizing.
+/// An aspect child keeps the height its final width gives it.
+fn columnChildHeight(child: *const LayoutElement, frame: *const SizingFrame) f32 {
+    std.debug.assert(!frame.is_horizontal);
+    std.debug.assert(frame.factor >= 0);
+    if (child.config.layout.aspect_ratio != null) return child.computed.min_height;
+    if (frame.rule == .shrink) return shrunkMainSize(child, frame, frame.level);
+    const min_height = child.computed.min_height;
+    const offered: f32 = switch (child.config.layout.sizing.height.value) {
+        .grow => |grow| @max(min_height, frame.factor * grow.weight),
+        .fit => |mm| @max(min_height, mm.max),
+        .fixed => |mm| mm.min,
+        .percent => frame.percent_basis,
+    };
+    return offeredHeight(child, offered);
+}
+
+/// The height an element takes when offered `offered`: what its sizing
+/// gives it, or what its final width gives it under an aspect ratio.
+fn offeredHeight(elem: *const LayoutElement, offered: f32) f32 {
+    std.debug.assert(offered >= 0);
+    if (elem.config.layout.aspect_ratio) |ratio| {
+        std.debug.assert(ratio > 0);
+        return elem.computed.sized_width / ratio;
+    }
+    const sizing = elem.config.layout.sizing.height;
+    return computeAxisSize(sizing, elem.computed.min_height, offered);
+}
+
+/// Write a child's height in the heights pass, marking its children for
+/// sizing again when it changed: they were sized from the old height.
+inline fn setHeight(child: *LayoutElement, height: f32) void {
+    std.debug.assert(height >= 0);
+    std.debug.assert(child.config.floating == null);
+    if (height != child.computed.sized_height and child.first_child_index != null) {
+        child.heights_dirty = true;
+    }
+    child.computed.sized_height = height;
+}
+
+/// A wrapping row's lines, from the `line_start` marks the sizing pass set:
+/// each line as tall as its tallest child, with its grow children stretched
+/// to it, as `sizeWrapLine` sized them from one-line text.
+fn stretchWrapLines(engine: *LayoutEngine, first_child: u32, height: f32) void {
+    std.debug.assert(height >= 0);
+    var line_first: ?u32 = first_child;
+    var line_count: u32 = 0;
+    while (line_first) |first| : (line_count += 1) {
+        std.debug.assert(line_count < engine.elements.len()); // A line holds a child.
+        const line = wrapLineHeight(engine, first, height);
+        var cursor: ?u32 = first;
+        var visited: u32 = 0;
+        while (cursor) |index| : (visited += 1) {
+            std.debug.assert(visited < engine.elements.len()); // Each sibling once.
+            if (line.end) |end| if (index == end) break;
+            const child = engine.elements.get(index);
+            cursor = child.next_sibling_index;
+            if (child.config.floating == null) {
+                const sizing = child.config.layout.sizing.height;
+                const child_height = if (stretchesInLine(child))
+                    applyMinMax(line.height, sizing)
+                else
+                    offeredHeight(child, height);
+                setHeight(child, child_height);
+            }
+        }
+        line_first = line.end;
+    }
+}
+
+/// Whether a wrapping row's child fills its line's height, as
+/// `align-items: stretch`: a grow height not derived from its width.
+inline fn stretchesInLine(child: *const LayoutElement) bool {
+    std.debug.assert(child.config.floating == null);
+    const layout = &child.config.layout;
+    return layout.sizing.height.value == .grow and layout.aspect_ratio == null;
+}
+
+/// The line of a wrapping row that starts at `first`: as tall as its
+/// tallest child, a stretching child counting its minimum, and the next
+/// line's first child, or null for the last line.
+fn wrapLineHeight(
+    engine: *const LayoutEngine,
+    first: u32,
+    height: f32,
+) struct { end: ?u32, height: f32 } {
+    std.debug.assert(height >= 0);
+    var line_height: f32 = 0;
+    var flow_count: u32 = 0;
+    var cursor: ?u32 = first;
+    var visited: u32 = 0;
+    while (cursor) |index| : (visited += 1) {
+        std.debug.assert(visited < engine.elements.len()); // Each sibling once.
+        const child = engine.elements.getConst(index);
+        if (child.config.floating == null) {
+            if (child.line_start and flow_count > 0) {
+                return .{ .end = index, .height = line_height };
+            }
+            const child_height = if (stretchesInLine(child))
+                child.computed.min_height
+            else
+                offeredHeight(child, height);
+            line_height = @max(line_height, child_height);
+            flow_count += 1;
+        }
+        cursor = child.next_sibling_index;
+    }
+    return .{ .end = null, .height = line_height };
 }
 
 /// Output of `wrapText` — owned by the per-frame arena.

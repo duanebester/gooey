@@ -228,9 +228,15 @@ pub const LayoutElement = struct {
     /// pass breaks the lines once and sets it; positions and fit-content
     /// heights read it, so they never break the lines differently.
     line_start: bool = false,
-    /// A fit-content box that a height derived from a width under it grows:
-    /// set by `sizing_pass.markDerivedHeight`, cleared once it has grown.
-    height_marked: bool = false,
+    /// Whether this element's minimum height may differ from the one the
+    /// minimum pass took from one-line text: it is a text that wrapped
+    /// taller, an aspect ratio, a wrapping row, or the parent of one whose
+    /// minimum changed. `sizing_pass.computeHeights` reads and clears it.
+    min_height_dirty: bool = false,
+    /// Whether this element's children need their heights sized again: its
+    /// own height changed, or a child's minimum did. Read and cleared by
+    /// `sizing_pass.computeHeights`.
+    heights_dirty: bool = false,
     text_data: ?TextData = null,
 };
 
@@ -342,19 +348,17 @@ pub const LayoutEngine = struct {
     /// Wrapped lines this frame, across every text, against
     /// `capacity.wrapped_line_count_frame_max`.
     wrapped_line_count: u32 = 0,
-    /// Whether the sizing pass derived a height from a width this frame, for
-    /// an aspect ratio or a wrapping row, set in the branches that derive
-    /// them. Without one, the pass that grows fit-content parents to such
-    /// heights skips its test on every element.
+    /// Whether a height followed from a width this frame: an aspect ratio, a
+    /// wrapping row's lines, or a text that wrapped to other than one line,
+    /// set where each is found. Only then are the heights the sizing pass
+    /// took from one-line text wrong, so only then does the frame size its
+    /// heights again (`sizing_pass.computeHeights`).
     heights_derived: bool = false,
     /// Whether a text this frame wraps at words with its widest word narrower
     /// than its line, set by `text`. Only then does any element's floor
     /// differ from its minimum, so without one the minimum pass copies the
     /// minimum instead of summing floors (`sizing_pass.computeMinSizes`).
     floors_differ: bool = false,
-    /// Whether a box is marked to grow to such a height, so the walk that
-    /// grows marked boxes has work (`sizing_pass.growMarkedParents`).
-    parents_marked: bool = false,
 
     const Self = @This();
 
@@ -445,7 +449,6 @@ pub const LayoutEngine = struct {
         self.wrapped_line_count = 0;
         self.heights_derived = false;
         self.floors_differ = false;
-        self.parents_marked = false;
     }
 
     pub fn openElement(self: *Self, decl: ElementDeclaration) !void {
@@ -576,7 +579,10 @@ pub const LayoutEngine = struct {
 
         sizing_pass.computeFinalSizes(self, root, self.viewport_width, self.viewport_height);
 
+        // Widths are final: wrap text at them, then size heights from the
+        // wrapped text, as Clay orders its passes.
         try sizing_pass.computeTextWrapping(self, root);
+        if (self.heights_derived) sizing_pass.computeHeights(self, root, self.viewport_height);
 
         position_pass.computePositions(self, root, 0, 0);
 

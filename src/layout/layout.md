@@ -403,11 +403,19 @@ One text wraps into at most `word_count_text_max + 1` lines.
      floor: the narrowest it can be without cutting content (a wrapping text's
      widest word)
   2. **Final sizes** (top-down) - distribute available space; children that
-     overflow shrink largest first, never below their floors
-     - **2b. Text wrapping** - wrap text now that container widths are known; propagate height changes back up to fit-content parents
-  3. **Positions** (top-down) - compute final bounding boxes
-     - **3b. Floating elements** - position floating elements relative to parents (includes text wrapping for floats)
+     overflow shrink largest first, never below their floors. Widths are
+     final after this pass; heights are provisional, from one-line text.
+  3. **Text wrapping** - wrap text at the final widths
+  4. **Heights** (bottom-up minimums, then top-down) - as Clay orders its
+     passes, size every height again from the wrapped text, aspect ratios,
+     and wrapping rows' lines, so a stretched child reaches its row's height
+     and a grow child in a column shares what its siblings leave. Runs only
+     on a frame where a height followed from a width.
+  5. **Positions** (top-down) - compute final bounding boxes
+     - **5b. Floating elements** - each floating subtree runs phases 2 to 4
+       within its constraint, then is positioned relative to its parent
 - No phase recurses. Min sizes, final sizes and positions keep an explicit stack
   of open parents, one frame per level, bounded by `box_depth_max`; text
-  wrapping and the floating passes walk a subtree's pre-order index range.
+  wrapping, heights, and the floating passes walk a subtree's pre-order index
+  range.
   Every depth the open stack admits lays out.

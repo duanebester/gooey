@@ -586,11 +586,9 @@ fn resolveFloatingParentBbox(
     return bbox;
 }
 
-/// Compute sizes for a floating element with text wrapping integrated.
-/// Walks the floating subtree forwards, skipping nested floating subtrees
-/// (they have their own pass). Each element visited sizes its own subtree
-/// again from the size it holds when the walk reaches it, then wraps its
-/// text: the order and results of the recursive pass this replaces.
+/// Size a floating subtree within `max_width` and `max_height` in the main
+/// pass's order: widths, then text wrapped at them, then heights from the
+/// wrapped text. Nested floating subtrees are skipped; each has its own pass.
 pub fn computeFloatingSizesWithText(
     engine: *LayoutEngine,
     float_root: u32,
@@ -599,58 +597,11 @@ pub fn computeFloatingSizesWithText(
 ) !void {
     std.debug.assert(max_width >= 0);
     std.debug.assert(max_height >= 0);
+    std.debug.assert(engine.elements.getConst(float_root).config.floating != null);
 
-    const end = sizing_pass.subtreeEnd(engine, float_root);
-    var index = float_root;
-    while (index < end) {
-        const elem = engine.elements.get(index);
-        if (index > float_root) std.debug.assert(elem.parent_index.? < index);
-        if (index != float_root and elem.config.floating != null) {
-            index = sizing_pass.subtreeEnd(engine, index);
-            continue;
-        }
-        const is_root = index == float_root;
-        const available_width = if (is_root) max_width else elem.computed.sized_width;
-        const available_height = if (is_root) max_height else elem.computed.sized_height;
-        sizing_pass.computeFinalSizes(engine, index, available_width, available_height);
-        try wrapFloatingText(engine, index, available_width);
-        if (engine.heights_derived) {
-            sizing_pass.markDerivedHeight(engine, engine.elements.getConst(index));
-        }
-        index += 1;
-    }
-    std.debug.assert(index == end);
-    // Nested floating subtrees hold no marks: the main pass cleared its own,
-    // and theirs are sized after this one.
-    if (engine.parents_marked) sizing_pass.growMarkedParents(engine, float_root, end);
-}
-
-/// Wrap one element of a floating subtree at its parent's content width, or
-/// at `max_width` without a parent, and grow its fit-content ancestors.
-fn wrapFloatingText(engine: *LayoutEngine, index: u32, max_width: f32) !void {
-    std.debug.assert(max_width >= 0);
-    const elem = engine.elements.get(index);
-    const td = if (elem.text_data) |*data| data else return;
-    const text_max_width = if (elem.parent_index) |pi| blk: {
-        const parent = engine.elements.getConst(pi);
-        // Use @max(0, ...) to prevent negative dimensions when element shrinks below padding
-        break :blk @max(0, parent.computed.sized_width - parent.config.layout.padding.totalX());
-    } else max_width;
-
-    td.container_width = text_max_width;
-    if (td.config.wrap_mode == .none or text_max_width <= 0) return;
-
-    const wrap_result = try sizing_pass.wrapText(engine, td.text, td.config, text_max_width);
-    td.wrapped_lines = wrap_result.lines;
-    if (wrap_result.lines.len > 0) {
-        td.measured_width = wrap_result.max_line_width;
-        td.measured_height = wrap_result.total_height;
-        elem.computed.sized_width = wrap_result.max_line_width;
-        elem.computed.sized_height = wrap_result.total_height;
-        // Grow the fit-content containers up to this floating root,
-        // as the main pass does; the menu or modal grows with them.
-        sizing_pass.propagateHeightChange(engine, elem.parent_index);
-    }
+    sizing_pass.computeFinalSizes(engine, float_root, max_width, max_height);
+    try sizing_pass.computeTextWrapping(engine, float_root);
+    if (engine.heights_derived) sizing_pass.computeHeights(engine, float_root, max_height);
 }
 
 /// A parent-attached floating element that runs past the viewport's top or
