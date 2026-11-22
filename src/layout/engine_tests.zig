@@ -643,6 +643,51 @@ test "an overflowing row shrinks its widest children first, down to their floors
     try std.testing.expectEqual(@as(f32, 40), first.height); // Two 20 px lines.
 }
 
+test "a column whose shrink lands on a breakpoint by rounding keeps that level" {
+    // Goal: leveling's later rounds start at a breakpoint that overflows in
+    // exact arithmetic but may fit after f32 rounding; that level is then
+    // the answer, not a broken invariant. Method: the smallest tree the
+    // fuzzer found. A 0.01 percent row of aspect 0.25 sits in a grow column
+    // beside a grow column with 3 px padding, in fit columns.
+    var engine = try LayoutEngine.init(&test_capacity);
+    defer engine.deinit();
+    engine.beginFrame(64, 64);
+    const fit_column: ElementDeclaration = .{ .layout = .{ .layout_direction = .top_to_bottom } };
+    try engine.openElement(fit_column);
+    try engine.openElement(fit_column);
+    try engine.openElement(fit_column);
+    try engine.openElement(.{ .layout = .{
+        .sizing = .{ .width = SizingAxis.fit(), .height = SizingAxis.grow() },
+        .padding = Padding.all(3),
+        .layout_direction = .top_to_bottom,
+    } });
+    engine.closeElement();
+    try engine.openElement(.{ .layout = .{
+        .sizing = .{ .width = SizingAxis.fit(), .height = SizingAxis.grow() },
+        .layout_direction = .top_to_bottom,
+    } });
+    try engine.openElement(.{ .layout = .{
+        .sizing = .{ .width = SizingAxis.percent(0.01), .height = SizingAxis.fit() },
+        .padding = Padding.all(2),
+        .aspect_ratio = 0.25,
+    } });
+    engine.closeElement();
+    engine.closeElement();
+    engine.closeElement();
+    engine.closeElement();
+    engine.closeElement();
+    try engine.endFrame();
+
+    // The row is 1 % of its 4 px parent, 0.04 wide, so 0.16 tall; the fit
+    // column holds 6 and 0.16, and both grow children keep their minimums.
+    const percent_row = boundingBox(&engine, 5);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.16), percent_row.height, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 6.16), boundingBox(&engine, 2).height, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 6), boundingBox(&engine, 3).height, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 6), boundingBox(&engine, 4).y, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.16), boundingBox(&engine, 4).height, 0.0001);
+}
+
 test "a grow box beside a fixed one takes its share and its text wraps there" {
     // Goal: a grow child floors at its content's floor, its widest word, not
     // at its one-line width. Method: a 400 px row holds a fixed 100 px box

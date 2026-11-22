@@ -29,6 +29,17 @@ const Mode = enum {
     @"core-wrap-column",
     @"core-aspect-ratio",
     @"core-aspect-height",
+    @"core-grid-columns",
+    @"core-grid-rows",
+    @"core-grid-track",
+    @"core-grid-wrap",
+    @"core-grid-alignment",
+    @"core-grid-span",
+    @"core-grid-column",
+    @"core-grid-cell-outside",
+    @"core-grid-row-box",
+    @"core-grid-row-box-cells",
+    @"core-grid-count",
     @"core-pointer-drag-unkeyed",
     @"core-drag-unkeyed",
     @"core-drag-both",
@@ -79,6 +90,17 @@ pub fn main(init: std.process.Init) !void {
         .@"core-wrap-column" => coreTick(init.gpa, init.io, CoreApp.wrapColumn),
         .@"core-aspect-ratio" => coreTick(init.gpa, init.io, CoreApp.aspectRatio),
         .@"core-aspect-height" => coreTick(init.gpa, init.io, CoreApp.aspectHeight),
+        .@"core-grid-columns" => coreTick(init.gpa, init.io, CoreApp.gridColumns),
+        .@"core-grid-rows" => coreTick(init.gpa, init.io, CoreApp.gridRows),
+        .@"core-grid-track" => coreTick(init.gpa, init.io, CoreApp.gridTrack),
+        .@"core-grid-wrap" => coreTick(init.gpa, init.io, CoreApp.gridWrap),
+        .@"core-grid-alignment" => coreTick(init.gpa, init.io, CoreApp.gridAlignment),
+        .@"core-grid-span" => coreTick(init.gpa, init.io, CoreApp.gridSpan),
+        .@"core-grid-column" => coreTick(init.gpa, init.io, CoreApp.gridColumn),
+        .@"core-grid-cell-outside" => coreTick(init.gpa, init.io, CoreApp.gridCellOutside),
+        .@"core-grid-row-box" => coreTick(init.gpa, init.io, CoreApp.gridRowBox),
+        .@"core-grid-row-box-cells" => coreTick(init.gpa, init.io, CoreApp.gridRowBoxCells),
+        .@"core-grid-count" => coreTick(init.gpa, init.io, CoreApp.manyGrids),
         .@"core-pointer-drag-unkeyed" => coreTick(init.gpa, init.io, CoreApp.unkeyedDrag),
         .@"core-drag-unkeyed" => coreTick(init.gpa, init.io, CoreApp.unkeyedDraggable),
         .@"core-drag-both" => coreTick(init.gpa, init.io, CoreApp.dragBoth),
@@ -392,6 +414,88 @@ const CoreApp = struct {
             .height = .{ .fixed = 90 },
             .aspect_ratio = 16.0 / 9.0,
         } }, .{}));
+    }
+
+    const two_columns = [_]gooey.ui.Track{ .fit, .fit };
+
+    /// A grid needs a column.
+    fn gridColumns(cx: *gooey.Cx) void {
+        cx.render(gooey.ui.box(.{ .style = .{ .grid = .{ .columns = &.{} } } }, .{}));
+    }
+
+    /// One row more than a grid lists.
+    fn gridRows(cx: *gooey.Cx) void {
+        const rows: [gooey.ui.Grid.track_count_max + 1]gooey.ui.Track = @splat(.fit);
+        cx.render(gooey.ui.box(.{ .style = .{ .grid = .{
+            .columns = &two_columns,
+            .rows = &rows,
+        } } }, .{}));
+    }
+
+    /// A track whose minimum is above its maximum.
+    fn gridTrack(cx: *gooey.Cx) void {
+        const columns = [_]gooey.ui.Track{.{ .min = 10, .max = 5 }};
+        cx.render(gooey.ui.box(.{ .style = .{ .grid = .{ .columns = &columns } } }, .{}));
+    }
+
+    fn gridWrap(cx: *gooey.Cx) void {
+        cx.render(gooey.ui.box(.{ .style = .{
+            .direction = .row,
+            .wrap = true,
+            .grid = .{ .columns = &two_columns },
+        } }, .{}));
+    }
+
+    /// A grid places each child in its cell; it has no space to distribute.
+    fn gridAlignment(cx: *gooey.Cx) void {
+        cx.render(gooey.ui.box(.{ .style = .{
+            .alignment = .{ .main = .space_between },
+            .grid = .{ .columns = &two_columns },
+        } }, .{}));
+    }
+
+    /// The smallest invalid span.
+    fn gridSpan(cx: *gooey.Cx) void {
+        cx.render(gooey.ui.box(.{ .style = .{ .grid = .{ .columns = &two_columns } } }, .{
+            gooey.ui.box(.{ .style = .{ .cell = .{ .column_span = 0 } } }, .{}),
+        }));
+    }
+
+    /// A span that fits the grid, from a column that leaves it one short.
+    fn gridColumn(cx: *gooey.Cx) void {
+        cx.render(gooey.ui.box(.{ .style = .{ .grid = .{ .columns = &two_columns } } }, .{
+            gooey.ui.box(.{ .style = .{ .cell = .{ .column = 1, .column_span = 2 } } }, .{}),
+        }));
+    }
+
+    fn gridCellOutside(cx: *gooey.Cx) void {
+        cx.render(gooey.ui.box(.{ .style = .{ .cell = .{ .column = 0 } } }, .{}));
+    }
+
+    /// A row box's cells sit on the grid's columns, so it has no padding across.
+    fn gridRowBox(cx: *gooey.Cx) void {
+        cx.render(gooey.ui.box(.{ .style = .{ .grid = .{ .columns = &two_columns } } }, .{
+            gooey.ui.box(.{ .style = .{ .cell = .{ .row = true }, .padding = .all(4) } }, .{}),
+        }));
+    }
+
+    /// Three cells in a row box of a two-column grid.
+    fn gridRowBoxCells(cx: *gooey.Cx) void {
+        cx.render(gooey.ui.box(.{ .style = .{ .grid = .{ .columns = &two_columns } } }, .{
+            gooey.ui.box(.{ .style = .{ .cell = .{ .row = true } } }, .{
+                gooey.ui.text("a", .{}),
+                gooey.ui.text("b", .{}),
+                gooey.ui.text("c", .{}),
+            }),
+        }));
+    }
+
+    /// Exactly `nano`'s grid slots, then one more.
+    fn manyGrids(cx: *gooey.Cx) void {
+        const count = gooey.ResourceLimits.nano.build.grid_count_frame_max + 1;
+        for (0..count) |_| cx.render(gooey.ui.box(.{
+            .style = .{ .grid = .{ .columns = &two_columns } },
+        }, .{}));
     }
 
     /// Each level renders the next through `cx.render`, so the depth grows

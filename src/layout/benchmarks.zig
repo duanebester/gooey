@@ -625,6 +625,94 @@ test "validate: percentage_sizing" {
     try validateBenchmark(buildPercentageSizing, 1001);
 }
 
+// A data table on one grid: a header and 300 row boxes of six cells, over
+// fit, grow, fixed, and percent columns, as `docs/layout-grid.md` sketches.
+// The cell widths vary by row so the fit columns take their widest cell.
+
+const grid_table_columns = [_]layout.Track{
+    .{},
+    .{ .axis = SizingAxis.grow() },
+    .{},
+    .{ .axis = SizingAxis.fixed(96), .alignment = .end },
+    .{ .axis = SizingAxis.growWeighted(2, 0, std.math.floatMax(f32)) },
+    .{ .axis = SizingAxis.percent(0.1) },
+};
+
+fn buildGridTable(engine: *LayoutEngine) !u32 {
+    const row_count: u32 = 300;
+    const column_count: u32 = grid_table_columns.len;
+    try engine.openElementWith(.{ .layout = .{
+        .sizing = .{ .width = SizingAxis.fixed(1000), .height = SizingAxis.fit() },
+        .child_gap = 8,
+        .grid = .grid,
+    } }, .{ .grid = &.{ .columns = &grid_table_columns, .row_gap = 2 } });
+    for (0..column_count) |column| {
+        try openGridBenchLeaf(engine, @floatFromInt(40 + column * 10), 20);
+    }
+    for (0..row_count) |row| {
+        try engine.openElementWith(.{ .layout = .{
+            .sizing = .{ .width = SizingAxis.grow(), .height = SizingAxis.fit() },
+            .padding = .{ .top = 4, .bottom = 4 },
+            .grid = .row,
+        } }, .{});
+        for (0..column_count) |column| {
+            const width: f32 = @floatFromInt(20 + (row * 7 + column * 13) % 60);
+            try openGridBenchLeaf(engine, width, 16);
+        }
+        engine.closeElement();
+    }
+    engine.closeElement();
+    return 1 + column_count + row_count * (1 + column_count);
+}
+
+fn openGridBenchLeaf(engine: *LayoutEngine, width: f32, height: f32) !void {
+    std.debug.assert(width > 0);
+    std.debug.assert(height > 0);
+    try engine.openElement(.{ .layout = .{ .sizing = Sizing.fixed(width, height) } });
+    engine.closeElement();
+}
+
+test "validate: grid_table" {
+    try validateBenchmark(buildGridTable, 2107);
+}
+
+// A dashboard of 100 cards on 12 equal grow columns, spanning 3, 4, and 6
+// in turn, each card a nested two-column grid of label and value cells.
+
+const grid_cards_columns: [12]layout.Track = @splat(.{ .axis = SizingAxis.grow() });
+const grid_card_columns = [_]layout.Track{ .{}, .{ .axis = SizingAxis.grow() } };
+
+fn buildGridCards(engine: *LayoutEngine) !u32 {
+    const card_count: u32 = 100;
+    const spans = [_]u8{ 3, 4, 6 };
+    try engine.openElementWith(.{ .layout = .{
+        .sizing = .{ .width = SizingAxis.fixed(1000), .height = SizingAxis.fit() },
+        .child_gap = 12,
+        .grid = .grid,
+    } }, .{ .grid = &.{ .columns = &grid_cards_columns } });
+    for (0..card_count) |card| {
+        try engine.openElementWith(.{ .layout = .{
+            .sizing = .{ .width = SizingAxis.grow(), .height = SizingAxis.grow() },
+            .padding = Padding.all(8),
+            .child_gap = 4,
+            .grid = .grid,
+        } }, .{
+            .grid = &.{ .columns = &grid_card_columns },
+            .cell = .{ .column_span = spans[card % spans.len] },
+        });
+        for (0..4) |cell| {
+            try openGridBenchLeaf(engine, @floatFromInt(30 + (card + cell * 11) % 40), 18);
+        }
+        engine.closeElement();
+    }
+    engine.closeElement();
+    return 1 + card_count * 5;
+}
+
+test "validate: grid_cards" {
+    try validateBenchmark(buildGridCards, 501);
+}
+
 // Models 127 open modals, each with a nested dropdown and later modal content.
 // This nearly saturates the ceiling's 255 floating roots (one per layer, a
 // `u8` fragment index) and positions nested floats on two-thirds of all
@@ -685,82 +773,16 @@ fn collect(reporter: *bench.Reporter, result: BenchmarkResult) void {
 pub fn main(init: std.process.Init) !void {
     var reporter = bench.Reporter.init("layout", init.io, init.minimal.args.vector);
 
-    std.debug.print("\n", .{});
-    std.debug.print(&@as([90]u8, @splat('=')) ++ "\n", .{});
-    std.debug.print("Gooey Layout Engine Benchmarks — Layout Only (endFrame)\n", .{});
-    std.debug.print(&@as([90]u8, @splat('=')) ++ "\n", .{});
-    std.debug.print("| {s:<40} | {s:>8} | {s:>13} | {s:>14} |\n", .{
-        "Test",
-        "Nodes",
-        "Avg Time",
-        "Time/Node",
-    });
-    std.debug.print(&@as([90]u8, @splat('-')) ++ "\n", .{});
-
-    collect(&reporter, runBenchmark("nested_floating_overlays", buildNestedFloatingOverlays));
-    collect(&reporter, runBenchmark("wide_no_wrap_simple_few", buildWideNoWrapSimpleFew));
-    collect(&reporter, runBenchmark("deep_nesting", buildDeepNesting));
-    collect(&reporter, runBenchmark("space_distribution", buildSpaceDistribution));
-    collect(&reporter, runBenchmark("percentage_sizing", buildPercentageSizing));
-    collect(&reporter, runBenchmark("shrink_overflow", buildShrinkOverflow));
-    collect(&reporter, runBenchmark("expand_with_max_constraint", buildExpandWithMaxConstraint));
-    collect(&reporter, runBenchmark("expand_with_min_constraint", buildExpandWithMinConstraint));
-    collect(&reporter, runBenchmark("mixed_layout", buildMixedLayout));
-    collect(&reporter, runBenchmark("nested_vertical_stack", buildNestedVerticalStack));
-    collect(&reporter, runBenchmark("percentage_and_ratio", buildPercentageAndRatio));
-    collect(&reporter, runBenchmark("flex_expand_equal_weights", buildFlexExpandEqualWeights));
-    collect(&reporter, runBenchmark("flex_expand_weights", buildFlexExpandWeights));
-
+    printTableHeader("Layout Only (endFrame)");
+    collectLayoutOnly(&reporter);
     std.debug.print(&@as([90]u8, @splat('=')) ++ "\n", .{});
 
-    std.debug.print("\n", .{});
-    std.debug.print(&@as([90]u8, @splat('=')) ++ "\n", .{});
-    std.debug.print("Gooey Layout Engine Benchmarks — Full Frame (build + layout)\n", .{});
-    std.debug.print(&@as([90]u8, @splat('=')) ++ "\n", .{});
-    std.debug.print("| {s:<40} | {s:>8} | {s:>13} | {s:>14} |\n", .{
-        "Test",
-        "Nodes",
-        "Avg Time",
-        "Time/Node",
-    });
-    std.debug.print(&@as([90]u8, @splat('-')) ++ "\n", .{});
-
-    collect(&reporter, runFullFrameBenchmark(
-        "full_nested_floating_overlays",
-
-        buildNestedFloatingOverlays,
-    ));
-    collect(&reporter, runFullFrameBenchmark(
-        "full_wide_no_wrap_simple_few",
-        buildWideNoWrapSimpleFew,
-    ));
-    collect(&reporter, runFullFrameBenchmark("full_deep_nesting", buildDeepNesting));
-    collect(&reporter, runFullFrameBenchmark("full_space_distribution", buildSpaceDistribution));
-    collect(&reporter, runFullFrameBenchmark("full_percentage_sizing", buildPercentageSizing));
-    collect(&reporter, runFullFrameBenchmark("full_shrink_overflow", buildShrinkOverflow));
-    collect(&reporter, runFullFrameBenchmark(
-        "full_expand_with_max_constraint",
-        buildExpandWithMaxConstraint,
-    ));
-    collect(&reporter, runFullFrameBenchmark(
-        "full_expand_with_min_constraint",
-        buildExpandWithMinConstraint,
-    ));
-    collect(&reporter, runFullFrameBenchmark("full_mixed_layout", buildMixedLayout));
-    collect(&reporter, runFullFrameBenchmark(
-        "full_nested_vertical_stack",
-        buildNestedVerticalStack,
-    ));
-    collect(&reporter, runFullFrameBenchmark("full_percentage_and_ratio", buildPercentageAndRatio));
-    collect(&reporter, runFullFrameBenchmark(
-        "full_flex_expand_equal_weights",
-        buildFlexExpandEqualWeights,
-    ));
-    collect(&reporter, runFullFrameBenchmark("full_flex_expand_weights", buildFlexExpandWeights));
-
+    printTableHeader("Full Frame (build + layout)");
+    collectFullFrame(&reporter);
     std.debug.print(&@as([90]u8, @splat('=')) ++ "\n", .{});
 
-    std.debug.print("\nLayout Only = endFrame() only. Full Frame = beginFrame + tree build + endFrame.\n", .{});
+    std.debug.print("\nLayout Only = endFrame() only. " ++
+        "Full Frame = beginFrame + tree build + endFrame.\n", .{});
     std.debug.print("Iterations are adaptive based on node count (fewer for large tests).\n", .{});
     std.debug.print("\nEngine capacity = {d} elements (ResourceLimits.ceiling)\n", .{
         bench_capacity.element_count_max,
@@ -768,4 +790,76 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("PanGui benchmarks use up to 100k+ nodes for comparison.\n", .{});
 
     reporter.finish();
+}
+
+fn printTableHeader(comptime title: []const u8) void {
+    comptime std.debug.assert(title.len > 0);
+    std.debug.print("\n", .{});
+    std.debug.print(&@as([90]u8, @splat('=')) ++ "\n", .{});
+    std.debug.print("Gooey Layout Engine Benchmarks — " ++ title ++ "\n", .{});
+    std.debug.print(&@as([90]u8, @splat('=')) ++ "\n", .{});
+    std.debug.print("| {s:<40} | {s:>8} | {s:>13} | {s:>14} |\n", .{
+        "Test",
+        "Nodes",
+        "Avg Time",
+        "Time/Node",
+    });
+    std.debug.print(&@as([90]u8, @splat('-')) ++ "\n", .{});
+}
+
+/// `endFrame` alone, in the order the Cachegrind gate's baselines use.
+fn collectLayoutOnly(reporter: *bench.Reporter) void {
+    collect(reporter, runBenchmark("nested_floating_overlays", buildNestedFloatingOverlays));
+    collect(reporter, runBenchmark("wide_no_wrap_simple_few", buildWideNoWrapSimpleFew));
+    collect(reporter, runBenchmark("deep_nesting", buildDeepNesting));
+    collect(reporter, runBenchmark("space_distribution", buildSpaceDistribution));
+    collect(reporter, runBenchmark("percentage_sizing", buildPercentageSizing));
+    collect(reporter, runBenchmark("shrink_overflow", buildShrinkOverflow));
+    collect(reporter, runBenchmark("expand_with_max_constraint", buildExpandWithMaxConstraint));
+    collect(reporter, runBenchmark("expand_with_min_constraint", buildExpandWithMinConstraint));
+    collect(reporter, runBenchmark("mixed_layout", buildMixedLayout));
+    collect(reporter, runBenchmark("nested_vertical_stack", buildNestedVerticalStack));
+    collect(reporter, runBenchmark("percentage_and_ratio", buildPercentageAndRatio));
+    collect(reporter, runBenchmark("flex_expand_equal_weights", buildFlexExpandEqualWeights));
+    collect(reporter, runBenchmark("flex_expand_weights", buildFlexExpandWeights));
+    collect(reporter, runBenchmark("grid_table", buildGridTable));
+    collect(reporter, runBenchmark("grid_cards", buildGridCards));
+}
+
+/// `beginFrame`, the tree build, and `endFrame`, in the gate's order.
+fn collectFullFrame(reporter: *bench.Reporter) void {
+    collect(reporter, runFullFrameBenchmark(
+        "full_nested_floating_overlays",
+
+        buildNestedFloatingOverlays,
+    ));
+    collect(reporter, runFullFrameBenchmark(
+        "full_wide_no_wrap_simple_few",
+        buildWideNoWrapSimpleFew,
+    ));
+    collect(reporter, runFullFrameBenchmark("full_deep_nesting", buildDeepNesting));
+    collect(reporter, runFullFrameBenchmark("full_space_distribution", buildSpaceDistribution));
+    collect(reporter, runFullFrameBenchmark("full_percentage_sizing", buildPercentageSizing));
+    collect(reporter, runFullFrameBenchmark("full_shrink_overflow", buildShrinkOverflow));
+    collect(reporter, runFullFrameBenchmark(
+        "full_expand_with_max_constraint",
+        buildExpandWithMaxConstraint,
+    ));
+    collect(reporter, runFullFrameBenchmark(
+        "full_expand_with_min_constraint",
+        buildExpandWithMinConstraint,
+    ));
+    collect(reporter, runFullFrameBenchmark("full_mixed_layout", buildMixedLayout));
+    collect(reporter, runFullFrameBenchmark(
+        "full_nested_vertical_stack",
+        buildNestedVerticalStack,
+    ));
+    collect(reporter, runFullFrameBenchmark("full_percentage_and_ratio", buildPercentageAndRatio));
+    collect(reporter, runFullFrameBenchmark(
+        "full_flex_expand_equal_weights",
+        buildFlexExpandEqualWeights,
+    ));
+    collect(reporter, runFullFrameBenchmark("full_flex_expand_weights", buildFlexExpandWeights));
+    collect(reporter, runFullFrameBenchmark("full_grid_table", buildGridTable));
+    collect(reporter, runFullFrameBenchmark("full_grid_cards", buildGridCards));
 }

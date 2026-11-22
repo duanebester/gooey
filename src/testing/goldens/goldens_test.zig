@@ -39,6 +39,10 @@ test "core actions matches its golden" {
     try expectGolden("core_actions", @embedFile("core_actions.txt"), core.captureActions);
 }
 
+test "core grid matches its golden" {
+    try expectGolden("core_grid", @embedFile("core_grid.txt"), core.captureGrid);
+}
+
 test "a replayed trace is byte-identical" {
     const first = try std.testing.allocator.alloc(u8, golden_bytes_max);
     defer std.testing.allocator.free(first);

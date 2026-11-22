@@ -787,7 +787,16 @@ fn openNodeWith(
         .target = scrollTarget(options.scroll.?),
     };
     if (options.layer) |layer| decl.floating = floating(layer.anchor);
-    window.layout.openElement(decl) catch |err| layoutFailed(window, err);
+    var tracks: GridTracks = undefined;
+    const grid_config = if (style.grid) |*grid| gridConfig(grid, style.gap, &tracks) else null;
+    const cell: layout_mod.Cell = .{
+        .column = style.cell.column orelse layout_mod.types.cell_column_auto,
+        .column_span = style.cell.column_span,
+    };
+    window.layout.openElementWith(decl, .{
+        .grid = if (grid_config) |*config| config else null,
+        .cell = cell,
+    }) catch |err| layoutFailed(window, err);
     return index;
 }
 
@@ -960,7 +969,11 @@ fn measureText(
 }
 
 fn declaration(style: *const element.Style) layout_mod.ElementDeclaration {
-    const direction: layout_mod.LayoutDirection = switch (style.direction) {
+    const grid_role = gridRole(style);
+    // A grid's rows, and a row box's cells, run across: it ignores
+    // `direction`, as Taffy ignores `flex-direction` in a grid.
+    const flow_direction: element.Direction = if (grid_role == .none) style.direction else .row;
+    const direction: layout_mod.LayoutDirection = switch (flow_direction) {
         .row => .left_to_right,
         .column => .top_to_bottom,
     };
@@ -977,13 +990,14 @@ fn declaration(style: *const element.Style) layout_mod.ElementDeclaration {
                 .bottom = pixels(style.padding.bottom),
             },
             .child_gap = pixels(style.gap),
-            .child_alignment = childAlignment(style.direction, style.alignment),
+            .child_alignment = childAlignment(flow_direction, style.alignment),
             .layout_direction = direction,
             .main_axis_distribution = switch (style.alignment.main) {
                 inline else => |tag| @field(layout_mod.MainAxisDistribution, @tagName(tag)),
             },
             .aspect_ratio = aspectRatio(style),
             .wrap = wrapsRow(style),
+            .grid = grid_role,
         },
     };
     // A fixed width fixes the height too, so the layout's minimums, which a
@@ -993,6 +1007,99 @@ fn declaration(style: *const element.Style) layout_mod.ElementDeclaration {
         if (style.width == .fixed) decl.layout.sizing.height = .fixed(style.width.fixed / ratio);
     }
     return decl;
+}
+
+fn gridRole(style: *const element.Style) layout_mod.GridRole {
+    if (style.cell.row) {
+        if (style.grid != null) {
+            std.debug.panic("Cell.row: a row box spans every column and holds only " ++
+                "cells; it cannot be a grid of its own", .{});
+        }
+        return .row;
+    }
+    return if (style.grid != null) .grid else .none;
+}
+
+/// A grid's tracks as the layout sizes them, each checked as `Sizing` is.
+fn gridTrack(track: element.Track, index: usize) layout_mod.Track {
+    if (!(track.min >= 0 and track.min <= track.max) or std.math.isNan(track.max)) {
+        std.debug.panic("Grid track {d}: min {d} and max {d} must satisfy 0 <= min <= max", .{
+            index,
+            track.min,
+            track.max,
+        });
+    }
+    const axis: layout_mod.SizingAxis = switch (track.sizing) {
+        .fit => layout_mod.SizingAxis.fitMinMax(track.min, track.max),
+        .grow => |weight| blk: {
+            if (!(weight > 0 and std.math.isFinite(weight))) {
+                std.debug.panic("Grid track {d}: a grow weight must be finite and greater " ++
+                    "than 0, not {d}", .{ index, weight });
+            }
+            break :blk layout_mod.SizingAxis.growWeighted(weight, track.min, track.max);
+        },
+        .fixed => |size| blk: {
+            if (!(size >= 0 and std.math.isFinite(size))) {
+                std.debug.panic("Grid track {d}: a fixed size must be finite and at least 0, " ++
+                    "not {d}", .{ index, size });
+            }
+            break :blk layout_mod.SizingAxis.fixed(std.math.clamp(size, track.min, track.max));
+        },
+        .percent => |fraction| blk: {
+            if (!(fraction >= 0 and fraction <= 1)) {
+                std.debug.panic("Grid track {d}: a percent is between 0 and 1, not {d}", .{
+                    index,
+                    fraction,
+                });
+            }
+            var percent = layout_mod.SizingAxis.percent(fraction);
+            percent.value.percent.min = track.min;
+            percent.value.percent.max = track.max;
+            break :blk percent;
+        },
+    };
+    const alignment: layout_mod.TrackAlignment = if (track.cell_alignment) |cross| switch (cross) {
+        inline else => |tag| @field(layout_mod.TrackAlignment, @tagName(tag)),
+    } else .auto;
+    return .{ .axis = axis, .alignment = alignment };
+}
+
+/// The tracks of `style.grid` in `columns` and `rows`, which the layout
+/// copies when the box opens. Too many tracks panics in the layout with the
+/// count; here they are cut to the arrays only after that check would fire.
+const GridTracks = struct {
+    columns: [element.grid_track_count_max]layout_mod.Track,
+    rows: [element.grid_track_count_max]layout_mod.Track,
+};
+
+fn gridConfig(
+    grid: *const element.Grid,
+    gap: f32,
+    tracks: *GridTracks,
+) layout_mod.GridConfig {
+    comptime assert(element.grid_track_count_max == layout_mod.types.grid_track_count_max);
+    if (grid.columns.len == 0 or grid.columns.len > element.grid_track_count_max) {
+        std.debug.panic("Grid.columns: {d} columns; a grid has 1 to {d}", .{
+            grid.columns.len,
+            element.grid_track_count_max,
+        });
+    }
+    if (grid.rows.len > element.grid_track_count_max) {
+        std.debug.panic("Grid.rows: {d} rows; a grid lists at most {d}", .{
+            grid.rows.len,
+            element.grid_track_count_max,
+        });
+    }
+    for (grid.columns, 0..) |track, index| tracks.columns[index] = gridTrack(track, index);
+    for (grid.rows, 0..) |track, index| tracks.rows[index] = gridTrack(track, index);
+    const row_gap = grid.row_gap orelse gap;
+    assert(row_gap >= 0);
+    return .{
+        .columns = tracks.columns[0..grid.columns.len],
+        .rows = tracks.rows[0..grid.rows.len],
+        .row_implicit = gridTrack(grid.row_implicit, grid.rows.len),
+        .row_gap = row_gap,
+    };
 }
 
 /// The layout derives an aspect box's height from its width, so a height of

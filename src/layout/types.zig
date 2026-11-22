@@ -380,6 +380,11 @@ pub const LayoutConfig = struct {
     /// each line's free width, and lines stack top to bottom `child_gap`
     /// apart. Its minimum width is its widest child's.
     wrap: bool = false,
+    /// A grid box lays its children on its grid's columns (`GridConfig`,
+    /// given to `LayoutEngine.openElementWith`); a row box is one of its
+    /// children that spans a whole row and lays its own children on those
+    /// columns. Every other box is `.none`.
+    grid: GridRole = .none,
 
     pub fn row(gap: u16) LayoutConfig {
         return .{ .layout_direction = .left_to_right, .child_gap = gap };
@@ -398,6 +403,46 @@ pub const LayoutConfig = struct {
         result.aspect_ratio = ratio;
         return result;
     }
+};
+
+pub const GridRole = enum(u8) { none, grid, row };
+
+/// Columns or rows one grid lists, and the most columns a cell may span.
+/// A framework constant: it sizes every `GridSlot`, and no layout needs more.
+pub const grid_track_count_max: u8 = 32;
+
+/// A cell with no column of its own takes the placement cursor's.
+pub const cell_column_auto: u8 = std.math.maxInt(u8);
+
+/// One column or row of a grid. `axis` means what it means for a child:
+/// `.fixed` pixels, `.fit` content, `.grow` a weighted share of free space,
+/// `.percent` a fraction of the grid's content size less its gaps, each
+/// between the axis's min and max.
+pub const Track = struct {
+    axis: SizingAxis = .{},
+    /// Where a child that does not fill its cell sits along the track;
+    /// `.auto` takes the grid's `child_alignment`.
+    alignment: TrackAlignment = .auto,
+};
+
+pub const TrackAlignment = enum(u8) { auto, start, center, end };
+
+/// A grid's tracks, copied into the engine's grid slot when it opens, so
+/// the slices need only live until `openElementWith` returns.
+pub const GridConfig = struct {
+    columns: []const Track,
+    /// The first rows; every row past them takes `row_implicit`.
+    rows: []const Track = &.{},
+    row_implicit: Track = .{},
+    /// Between rows. Columns are `child_gap` apart.
+    row_gap: f32 = 0,
+};
+
+/// Where a child of a grid or a row box sits.
+pub const Cell = struct {
+    /// The first column, from 0, or `cell_column_auto` for the next free.
+    column: u8 = cell_column_auto,
+    column_span: u8 = 1,
 };
 
 pub const AttachPoint = enum {

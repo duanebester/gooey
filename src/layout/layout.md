@@ -174,6 +174,20 @@ extra space along the layout direction is distributed:
 .border = BorderConfig.all(Color.black, 1)
 ```
 
+### Grids
+
+A box with `LayoutConfig.grid = .grid`, opened with `openElementWith(decl, .{ .grid =
+&config })`, is a grid: a left-to-right box whose children sit in the columns of
+`config.columns` (at most `grid_track_count_max`, 32) and in rows that follow `config.rows`,
+then `config.row_implicit`, `config.row_gap` apart. Children place row-major in declaration
+order; `.{ .cell = .{ .column = k, .column_span = n } }` starts a child at column `k` and
+spans `n` columns. A child with `LayoutConfig.grid = .row` is a row box: one box per row
+whose children share the grid's columns. Each `Track` is a `SizingAxis` and a cell
+alignment; `.grow` columns share the free width by weight from their content floors, as CSS
+`1fr` does, and overflowing columns shrink largest first. `src/layout/grid.zig` holds the
+grid passes and each grid's `GridSlot`; the full semantics are in `docs/layout-grid.md` and
+decision 28 of `docs/core-contract.md`.
+
 ## Complete Example: Login Card
 
 ```zig
@@ -290,6 +304,7 @@ fn buildLoginUI(engine: *LayoutEngine) !void {
 | `setMeasureTextFn(fn, user_data)`  | Set text measurement callback                     |
 | `beginFrame(width, height)`        | Start a new frame                                 |
 | `openElement(decl)`                | Open a container element                          |
+| `openElementWith(decl, options)`   | Open one as a grid, a cell, or a row box          |
 | `closeElement()`                   | Close the current element                         |
 | `text(content, config)`            | Add a text leaf element                           |
 | `endFrame()`                       | Compute every element's bounds                    |
@@ -387,6 +402,7 @@ frame. `LayoutCapacity.fromLimits(&limits)` derives every capacity from the app'
 | `element_count_max`            | `build.element_count_frame_max` + 1 | Elements, with the root   |
 | `box_depth_max`                | `build.box_depth_max` (64)          | Nesting depth             |
 | `floating_count_max`           | `build.layer_count_frame_max`       | Floating elements         |
+| `grid_count_max`               | `build.grid_count_frame_max`        | Grid slots per frame      |
 | `word_count_text_max`          | `run_codepoint_count_max`           | Words in one wrapped text |
 | `wrapped_line_count_frame_max` | `paint.glyph_count_frame_max`       | Wrapped lines per frame   |
 | `arena_bytes`                  | text and line budgets               | The per-frame arena       |

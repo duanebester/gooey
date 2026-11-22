@@ -70,6 +70,70 @@ pub const Alignment = struct {
     pub const center_cross: Alignment = .{ .cross = .center };
 };
 
+/// The most columns a grid has, and the most rows it lists: every grid's
+/// tracks fit in one fixed slot (`docs/layout-grid.md`).
+pub const grid_track_count_max: u8 = 32;
+
+/// `Style.grid`: the box places its children in cells on these columns,
+/// row-major in declaration order, so every row shares the same column lines.
+/// The core copies the tracks when the box is declared, so the slices need
+/// only live until `ui.box` returns. A grid ignores `Style.direction`;
+/// `alignment.main` places a child across its cell and `alignment.cross`
+/// down it, unless its track says otherwise.
+pub const Grid = struct {
+    /// 1 to `track_count_max`.
+    columns: []const Track,
+    /// The first rows, at most `grid_track_count_max`; every later row is
+    /// `row_implicit`.
+    rows: []const Track = &.{},
+    row_implicit: Track = .fit,
+    /// Between rows; null takes `Style.gap`. Columns are `Style.gap` apart.
+    row_gap: ?f32 = null,
+
+    pub const track_count_max = grid_track_count_max;
+};
+
+/// One column or row. `sizing` means what it means for a child: `.fixed`
+/// pixels, `.fit` its widest (or tallest) cell, `.grow` a weighted share of
+/// the free space, never below its content, and `.percent` a fraction of the
+/// grid's content size less its gaps. A grow or percent row needs a grid
+/// whose height is not `.fit`; otherwise it sizes as `.fit`.
+pub const Track = struct {
+    sizing: Sizing = .fit,
+    min: f32 = 0,
+    max: f32 = std.math.floatMax(f32),
+    /// Where a child that does not fill its cell sits: along a column, or
+    /// down a row. Null takes the grid's `alignment`.
+    cell_alignment: ?Alignment.Cross = null,
+
+    pub const fit: Track = .{};
+
+    pub fn fixed(size: f32) Track {
+        return .{ .sizing = .{ .fixed = size } };
+    }
+
+    pub fn grow(weight: f32) Track {
+        return .{ .sizing = .{ .grow = weight } };
+    }
+
+    pub fn percent(fraction: f32) Track {
+        return .{ .sizing = .{ .percent = fraction } };
+    }
+};
+
+/// `Style.cell`: where a child of a grid sits. A row box (`row`) spans
+/// every column of one row and lays its own children on the grid's columns,
+/// as SwiftUI's `GridRow`: a table row that keeps a key, a hover background,
+/// and a click handler while its cells line up with the header's.
+pub const Cell = struct {
+    /// The first column, from 0; null takes the next free one. A column
+    /// before the cursor starts the next row.
+    column: ?u8 = null,
+    /// 1 to the grid's column count.
+    column_span: u8 = 1,
+    row: bool = false,
+};
+
 /// A theme token or a literal colour. Tokens resolve against the app's
 /// `Theme` when the element is built, so one style serves every theme.
 pub const ColorToken = union(enum) {
@@ -194,6 +258,11 @@ pub const Style = struct {
     /// `aspect-ratio` with `height: auto`, so `height` must stay `.fit` with
     /// no bounds. Finite and greater than 0.
     aspect_ratio: ?f32 = null,
+    /// Lay the children out on a grid (`Grid`, decision 28).
+    grid: ?Grid = null,
+    /// Where this box sits in its parent's grid; a box outside one keeps
+    /// the default.
+    cell: Cell = .{},
     background: ?ColorToken = null,
     border: ?Border = null,
     corner_radius: Corners = .zero,

@@ -88,3 +88,15 @@ pub const actions = trace.Trace{
         .{ .label = "click Redo", .step = .{ .click = .{ .x = 262, .y = 174 } } },
     },
 };
+
+/// The grid example: a form, a table of row boxes, and a dashboard on one
+/// frame, then the pointer over the second table row to show its hover.
+pub const grid = trace.Trace{
+    .name = "grid",
+    .width = 1240,
+    .height = 760,
+    .scale_factor = 2,
+    .steps = &.{
+        .{ .label = "hover the Grace Hopper row", .step = .{ .move = .{ .x = 900, .y = 147 } } },
+    },
+};

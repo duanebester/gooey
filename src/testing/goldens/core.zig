@@ -9,6 +9,7 @@ const gooey = @import("gooey");
 const counter = @import("counter_example");
 const todo = @import("todo_example");
 const actions = @import("actions_example");
+const grid_layout = @import("grid_layout_example");
 const trace_mod = @import("trace.zig");
 const traces = @import("traces.zig");
 
@@ -197,4 +198,8 @@ pub fn captureTodo(allocator: std.mem.Allocator, io: std.Io, out: *TextBuffer) !
 
 pub fn captureActions(allocator: std.mem.Allocator, io: std.Io, out: *TextBuffer) !void {
     try capture(allocator, io, actions.AppWith(.cmd), &traces.actions, out);
+}
+
+pub fn captureGrid(allocator: std.mem.Allocator, io: std.Io, out: *TextBuffer) !void {
+    try capture(allocator, io, grid_layout.App, &traces.grid, out);
 }

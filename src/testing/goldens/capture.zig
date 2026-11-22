@@ -19,6 +19,7 @@ const goldens = [_]Golden{
     .{ .file_name = "core_counter.txt", .capture = core.captureCounter },
     .{ .file_name = "core_todo.txt", .capture = core.captureTodo },
     .{ .file_name = "core_actions.txt", .capture = core.captureActions },
+    .{ .file_name = "core_grid.txt", .capture = core.captureGrid },
 };
 
 pub fn main(init: std.process.Init) !void {

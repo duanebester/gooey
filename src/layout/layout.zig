@@ -5,6 +5,7 @@ pub const arena = @import("arena.zig");
 pub const engine = @import("engine.zig");
 pub const sizing_pass = @import("sizing_pass.zig");
 pub const position_pass = @import("position_pass.zig");
+pub const grid = @import("grid.zig");
 
 pub const Sizing = types.Sizing;
 pub const SizingAxis = types.SizingAxis;
@@ -28,6 +29,11 @@ pub const ScrollAlignment = types.ScrollAlignment;
 pub const TextConfig = types.TextConfig;
 pub const BoundingBox = types.BoundingBox;
 pub const AttachPoint = types.AttachPoint;
+pub const GridRole = types.GridRole;
+pub const GridConfig = types.GridConfig;
+pub const Track = types.Track;
+pub const TrackAlignment = types.TrackAlignment;
+pub const Cell = types.Cell;
 
 pub const LayoutArena = arena.LayoutArena;
 
@@ -39,10 +45,12 @@ pub const TextData = engine.TextData;
 pub const LayoutEngine = engine.LayoutEngine;
 pub const LayoutCapacity = engine.LayoutCapacity;
 pub const MeasureTextFn = engine.MeasureTextFn;
+pub const OpenOptions = engine.OpenOptions;
 
 // refAllDecls walks the `pub const`s above, reaching the per-pass test bodies.
 test {
     std.testing.refAllDecls(@This());
     _ = @import("engine_tests.zig");
     _ = @import("engine_internal_tests.zig");
+    _ = @import("grid_tests.zig");
 }
