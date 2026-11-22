@@ -123,6 +123,7 @@ Every example in `src/examples/` is a complete app; read them next. Run one with
 | `run`                  | `todo.zig`                 | TextInput with IME, scroll box, filters    |
 | `run-counter`          | `counter.zig`              | State, handlers, components                |
 | `run-layout`           | `layout.zig`               | Popover layer, click outside, keymap       |
+| `run-layout-gallery`   | `layout_gallery.zig`       | Grow, wrap, aspect ratio, percent, shrink  |
 | `run-actions`          | `actions.zig`              | Keymaps, key contexts, actions             |
 | `run-animation`        | `animation.zig`            | `tween`, `tweenOn`, `motion`, `loop`       |
 | `run-dynamic-counters` | `dynamic_counters.zig`     | Entities                                   |
@@ -244,7 +245,7 @@ frame's worth, and `atlas.svg_rasterization_count_frame_max` icons rasterize per
 at once (2 at `nano`, 8 at `standard`), each with a `job_input_bytes_max` input, and
 `events.job_result_count_max` posted results of up to `job_result_bytes_max` bytes wait for a
 drain. The fields and
-their measurements are in `src/core/limits.zig` and `docs/v0.4.0-memory-budget.md`.
+their measurements are in `src/core/limits.zig` and `docs/memory-budget.md`.
 
 ### Render with `Cx` and `ui`
 

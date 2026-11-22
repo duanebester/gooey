@@ -1,15 +1,14 @@
-# v0.4.0 memory budget: measurements and the profile ladder
+# Memory budget: measurements and the profile ladder
 
-Status (2026-11-15): the 0.6 budget is complete. Wayland's input bound is hard on
-libwayland 1.25 or later and soft before it (section 4); section 4 ends with the measured totals
-per profile (Wayland shm and lavapipe). Earlier status (2026-11-14, v0.5.1): section 7
-records Duane's decisions, and all ten are in the code (PRs #98 to #105,
-`src/core/limits.zig`). Decision 9 was reversed by the Mac pacing check (#235): two
-drawables stall `nextDrawable`, so Metal keeps three in every profile. Sections 1 to 5 are
-the measurements and proposal they came from, taken on the 0.3.1 runtime; section 4's
-example list and section 5's fixed costs are updated for the 0.4 core. Moving the
-accessibility tree and the text caches into `ResourceLimits` was deferred to 0.6
-(`docs/v0.4.0-plan.md`, Status). 0.6's first budget PR moved `FontLimits` to
+Status (2026-11-15): the 0.6 budget is complete. Wayland's input bound is hard on libwayland
+1.25 or later and soft before it (section 4); section 4 ends with the measured totals per
+profile (Wayland shm and lavapipe). Earlier status (2026-11-14, v0.5.1): section 7 records
+Duane's decisions, and all ten are in the code (PRs #98 to #105, `src/core/limits.zig`).
+Decision 9 was reversed by the Mac pacing check (#235): two drawables stall `nextDrawable`,
+so Metal keeps three in every profile. Sections 1 to 5 are the measurements and proposal
+they came from, taken on the 0.3.1 runtime; section 4's example list and section 5's fixed
+costs are updated for the 0.4 core. Moving the accessibility tree and the text caches into
+`ResourceLimits` was deferred to 0.6. 0.6's first budget PR moved `FontLimits` to
 `ResourceLimits.text.fonts` and removed the three paint fields that bound nothing (struck
 through in section 4). Its layout PR sized every layout table from `build`: the element list
 is `build.element_count_frame_max + 1`, and the new `build.box_depth_max` sizes the open
@@ -23,7 +22,7 @@ new `events.dialog_count_max`), the completion ring's dialog paths and the text 
 `ResourceLimits.events`, and the window registry and atlas consumers from `window_count_max`
 (sections 4 and 5).
 
-Targets (from `docs/v0.4.0-plan.md` and the planning thread):
+Targets (from the 0.4 plan and its planning thread):
 
 - A counter-class app uses about 5–10 MB in total.
 - A typical single-window app at `.standard` uses about 30–60 MB in total.

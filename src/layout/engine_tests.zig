@@ -229,6 +229,49 @@ test "percent with min/max" {
     try std.testing.expectEqual(@as(f32, 300), elem.computed.sized_width);
 }
 
+// A percent child takes its fraction once, of its parent's content less the
+// gaps between flow children (decision 25). The fractions 0.5 and 0.25 beside
+// a grow child tell the readings apart: of the content less gaps, 190 and 95
+// leave the grow child 95; of the whole content, 200 and 100 leave it 80; and
+// a fraction taken twice, as the grow rule once did, gives 100 and 25.
+test "percent children take their fraction once, less the gaps" {
+    const directions = [_]LayoutDirection{ .left_to_right, .top_to_bottom };
+    for (directions) |direction| {
+        var engine = try LayoutEngine.init(&test_capacity);
+        defer engine.deinit();
+        engine.beginFrame(800, 600);
+
+        const is_row = direction == .left_to_right;
+        try engine.openElement(.{ .layout = .{
+            .sizing = Sizing.fixed(400, 400),
+            .layout_direction = direction,
+            .child_gap = 10,
+        } });
+        const mains = [_]SizingAxis{
+            SizingAxis.percent(0.5),
+            SizingAxis.percent(0.25),
+            SizingAxis.grow(),
+        };
+        for (mains) |main| {
+            const sizing: Sizing = if (is_row)
+                .{ .width = main, .height = SizingAxis.fixed(10) }
+            else
+                .{ .width = SizingAxis.fixed(10), .height = main };
+            try engine.openElement(.{ .layout = .{ .sizing = sizing } });
+            engine.closeElement();
+        }
+        engine.closeElement();
+        try engine.endFrame();
+
+        const expected = [_]f32{ 190, 95, 95 };
+        for (expected, 1..) |size, index| {
+            const bounds = boundingBox(&engine, @intCast(index));
+            const main_size = if (is_row) bounds.width else bounds.height;
+            try std.testing.expectApproxEqAbs(size, main_size, 0.01);
+        }
+    }
+}
+
 test "floating positioning" {
     var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
@@ -544,6 +587,93 @@ test "wrapped text grows its floating panel but not the panel's host" {
     const host = boundingBox(&engine, 0);
     try std.testing.expectEqual(@as(f32, 80), panel.height);
     try std.testing.expectEqual(@as(f32, 60), host.height);
+}
+
+test "an overflowing row shrinks its widest children first, down to their floors" {
+    // Goal: Clay's shrink (decision 26). Method: a 300 px row holds three
+    // wrapping texts at 10 px a character, one-line widths 300, 100, and 40,
+    // that must lose 140 px. Largest first caps the 300 px text at 160 and
+    // leaves 100 and 40 alone (160 + 100 + 40 = 300); one shrink ratio would
+    // give 204.5, 68.2, and 27.3, cutting the 40 px word "dddd", which is
+    // also its floor. The shrunk text wraps at its 160 px, not the row's 300.
+    var engine = try LayoutEngine.init(&test_capacity);
+    defer engine.deinit();
+    engine.setMeasureTextFn(measureTenPixelsPerCharacter, null);
+    engine.beginFrame(800, 600);
+
+    const wrapped: TextConfig = .{ .wrap_mode = .words, .font_size = 20, .line_height = 100 };
+    try engine.openElement(.{ .layout = .{ .sizing = Sizing.fixed(300, 200) } });
+    try engine.text("aaa bbb ccc ddd eee fff ggg hh", wrapped);
+    try engine.text("aaa bbb cc", wrapped);
+    try engine.text("dddd", wrapped);
+    engine.closeElement();
+    try engine.endFrame();
+
+    const first = boundingBox(&engine, 1);
+    const second = boundingBox(&engine, 2);
+    const third = boundingBox(&engine, 3);
+    try std.testing.expectApproxEqAbs(@as(f32, 160), second.x - first.x, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 100), third.x - second.x, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 40), third.width, 0.01);
+    try std.testing.expect(first.width <= 160);
+    try std.testing.expectEqual(@as(f32, 40), first.height); // Two 20 px lines.
+}
+
+test "a grow box beside a fixed one takes its share and its text wraps there" {
+    // Goal: a grow child floors at its content's floor, its widest word, not
+    // at its one-line width. Method: a 400 px row holds a fixed 100 px box
+    // and a grow column with a 760 px text of 50 px words. The column must
+    // take the remaining 300 px, where the text wraps; flooring at the
+    // one-line width made it 760 px wide, off the row.
+    var engine = try LayoutEngine.init(&test_capacity);
+    defer engine.deinit();
+    engine.setMeasureTextFn(measureTenPixelsPerCharacter, null);
+    engine.beginFrame(800, 600);
+
+    const wrapped: TextConfig = .{ .wrap_mode = .words, .font_size = 20, .line_height = 100 };
+    try engine.openElement(.{ .layout = .{ .sizing = Sizing.fixed(400, 300) } });
+    try engine.openElement(.{ .layout = .{ .sizing = Sizing.fixed(100, 10) } });
+    engine.closeElement();
+    try engine.openElement(.{ .layout = .{
+        .sizing = .{ .width = SizingAxis.grow(), .height = SizingAxis.fit() },
+        .layout_direction = .top_to_bottom,
+    } });
+    try engine.text("aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii jjjj kkkk llll mmmm nnnn oooo", wrapped);
+    engine.closeElement();
+    engine.closeElement();
+    try engine.endFrame();
+
+    const column = boundingBox(&engine, 2);
+    const text = boundingBox(&engine, 3);
+    try std.testing.expectEqual(@as(f32, 300), column.width);
+    try std.testing.expect(text.width <= 300);
+    try std.testing.expectEqual(@as(f32, 60), column.height); // 15 words, 6 a line.
+}
+
+test "a grow child held at its floor takes space from its grow sibling" {
+    // Goal: a grow child whose floor is above its share no longer pushes the
+    // row past its width. Method: a 300 px row of two weight-1 grow boxes,
+    // the first holding a 200 px unwrapped text. Shares of 150 floor the
+    // first at 200, so the second gives way to 100 (200 + 100 = 300); before,
+    // it kept 150 and the row overflowed by 50.
+    var engine = try LayoutEngine.init(&test_capacity);
+    defer engine.deinit();
+    engine.setMeasureTextFn(measureTenPixelsPerCharacter, null);
+    engine.beginFrame(800, 600);
+
+    const grow_row: Sizing = .{ .width = SizingAxis.grow(), .height = SizingAxis.fixed(20) };
+    try engine.openElement(.{ .layout = .{ .sizing = Sizing.fixed(300, 20) } });
+    try engine.openElement(.{ .layout = .{ .sizing = grow_row } });
+    try engine.text("twenty characters!!!", .{ .font_size = 20 });
+    engine.closeElement();
+    try engine.openElement(.{ .layout = .{ .sizing = grow_row } });
+    engine.closeElement();
+    engine.closeElement();
+    try engine.endFrame();
+
+    // The level is bisected, so it lands within a few ulps of 100.
+    try std.testing.expectEqual(@as(f32, 200), boundingBox(&engine, 1).width);
+    try std.testing.expectApproxEqAbs(@as(f32, 100), boundingBox(&engine, 3).width, 0.01);
 }
 
 test "a text of more words than one wrap batch wraps as one batch would" {

@@ -3,7 +3,7 @@
 # =============================================================================
 # Builds the todo example for the browser (`zig build wasm`) into a Pages
 # artifact and reports its size. The showcase tutorial that was to take this
-# role is deferred (contract decision 15); see docs/v0.4.0-showcase.md.
+# role is deferred (contract decision 15).
 #
 # Deployment is off until the repository owner opts in:
 #   1. Settings -> Pages -> Source: GitHub Actions.

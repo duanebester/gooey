@@ -5,7 +5,7 @@
 Superseded by the 0.4 core (2026-11-14, v0.5.1). This document was written on 2026-09-15
 against the 0.3.1 runtime, whose platform and window vtables, runners, and per-window
 callbacks it set out to replace. The 0.4 migration replaced that runtime instead
-(`docs/v0.4.0-core-contract.md`), so the boundary it proposed now exists in a different
+(`docs/core-contract.md`), so the boundary it proposed now exists in a different
 form. What follows keeps the decisions, which still hold, and records where each phase of
 the original plan ended up. Git history keeps the 0.3.1 analysis and the proposed
 signatures.

@@ -3,7 +3,7 @@
 A Clay-inspired declarative layout engine for building UI hierarchies with flexbox-style sizing and positioning.
 
 This is internal machinery (`gooey.internals.layout`), not app API: apps lay out with
-`ui.box` and `ui.Style` (`docs/v0.4.0-core-contract.md` §1). The core (`src/core/cx.zig`)
+`ui.box` and `ui.Style` (`docs/core-contract.md` §1). The core (`src/core/cx.zig`)
 opens one element per node and reads each node's bounds from the engine's element list by
 index (`src/core/emit.zig`). The snippets below compile against v0.5.3's engine
 (`gooey.internals.layout`).
@@ -87,7 +87,7 @@ Elements can size themselves in four ways:
 | `fit`     | Shrink to fit content          | `SizingAxis.fit()`        |
 | `grow`    | Expand to fill available space | `SizingAxis.grow()`       |
 | `fixed`   | Exact pixel size               | `SizingAxis.fixed(100)`   |
-| `percent` | Percentage of parent           | `SizingAxis.percent(0.5)` |
+| `percent` | Fraction of parent, less gaps  | `SizingAxis.percent(0.5)` |
 
 **Convenience constructors:**
 
@@ -399,8 +399,11 @@ One text wraps into at most `word_count_text_max + 1` lines.
 - **Text elements** must be inside a container (enforced by debug assertion).
 - **Zero allocation during frame** - all collections use fixed capacity, panic on overflow.
 - The layout algorithm runs in these phases:
-  1. **Min sizes** (bottom-up) - compute minimum content sizes
-  2. **Final sizes** (top-down) - distribute available space
+  1. **Min sizes** (bottom-up) - compute minimum content sizes, and each element's
+     floor: the narrowest it can be without cutting content (a wrapping text's
+     widest word)
+  2. **Final sizes** (top-down) - distribute available space; children that
+     overflow shrink largest first, never below their floors
      - **2b. Text wrapping** - wrap text now that container widths are known; propagate height changes back up to fit-content parents
   3. **Positions** (top-down) - compute final bounding boxes
      - **3b. Floating elements** - position floating elements relative to parents (includes text wrapping for floats)

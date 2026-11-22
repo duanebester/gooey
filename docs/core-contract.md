@@ -1,14 +1,14 @@
-# Gooey 0.4.0 Core Contract
+# Gooey Core Contract
 
 ## Status
 
-Approved on 2026-10-30, which completes phase 2 of `docs/v0.4.0-plan.md`, and implemented
+Approved on 2026-10-30, at the end of the 0.4 migration's design phase, and implemented
 on `main`: milestone 1 and phase 4 shipped in v0.4.0, the packed frame and `Renderer`
 contract (phase 5, §9) in v0.4.3, and the last of phase 6 in v0.5.0 and v0.5.1. The 0.4
 migration is closed (2026-11-14). A change to a signature or rule here needs the same
 approval as the contract, recorded under "Approved decisions".
 
-Three promises here are deferred to 0.6 (plan, Status):
+Three promises here were deferred to 0.6:
 
 - **Build and draw overlap** (decision 7, "Changed in phase 5"). The core keeps one frame
   in flight, so the main thread does not build while the render thread draws. Shelved on
@@ -213,9 +213,20 @@ Contract:
   `Style`; a painted area that needs a key, handlers, or accessibility sits inside a `box`
   that carries them.
 - **Grow weights.** Siblings sized `.{ .grow = weight }` split their parent's free
-  main-axis space by weight, each clamped between its content minimum and its
-  `width_max` or `height_max`. On the cross axis a grow box fills its parent whatever its
+  main-axis space by weight, each clamped between its content's floor and its
+  `width_max` or `height_max`. The floor is the narrowest the content goes without
+  cutting it: a wrapping text's widest word, a row's children's floors side by side
+  (decision 26). On the cross axis a grow box fills its parent whatever its
   weight. A weight must be finite and greater than 0; any other weight panics.
+- **Percent.** `.{ .percent = fraction }` along the parent's direction is that fraction of
+  the parent's content size less the gaps between its flow children, so fractions that
+  add up to 1 fill the parent exactly; on the cross axis it is the fraction of the content
+  size. In a wrapping row it is of the row's content width (decision 25).
+- **Overflow.** When a row's or column's children do not fit, its `.fit` and `.grow`
+  children shrink largest first, as Clay shrinks them, to a common size, and none
+  shrinks below its floor; `.fixed` and `.percent` children keep their size, and what
+  the floors cannot fit overflows. A wrapping text a row shrinks wraps at its new width
+  (decision 26).
 - **Opacity** multiplies the alpha of everything a box or paint element and its subtree
   draws, including the layers it opens; nested values multiply. Each record fades on its
   own, so overlapping children show through each other rather than fading as one group.
@@ -1437,7 +1448,7 @@ wrappers for list iteration.
       `disktree`, with `test-disktree` and its benchmark use. Any limit or profile that only
       disktree exercised gets its coverage from an existing test, or the PR says it lost it.
     - **Showcase is deferred:** the 0.3.1 `showcase` example is deleted now, and the
-      showcase tutorial (`docs/v0.4.0-showcase.md`) is built in a later release. Its roles
+      showcase tutorial is built in a later release. Its roles
       move to core examples: `todo` becomes the default `zig build run`, and `zig build
       wasm`, Pages, and the preview skill use a core example.
     - **Drag and drop is deferred:** `drag_drop` is deleted, and the 0.3.1 drag machinery
@@ -1612,6 +1623,35 @@ wrappers for list iteration.
     sizing, two while placing, and the marking and backward walk only on frames that
     derive a height. Layouts without either field run 0.5 to 2 % more instructions in
     the Cachegrind gate, from the branches the feature adds.
+25. **Percent less gaps (0.6, 2026-11-21).** A `.percent` child along its parent's
+    direction takes its fraction of the content size less the gaps between flow children,
+    as Clay sizes percent children, so fractions that add up to 1 fill the parent without
+    overflowing. It replaces a fraction of the whole content size, which a parent that did
+    not overflow then took a second time when it sized the child, so two halves of a
+    400 px row came out 100 px each; only `percent = 1` was unaffected. A wrapping row's
+    lines hold different gap counts, so a percent child there stays a fraction of the row's
+    content width, and the cross axis has no gaps to subtract.
+26. **Content floors and largest-first shrink (0.6, 2026-11-22).** Each layout element
+    has a floor, the narrowest it can be without cutting its content: a text wrapping at
+    words floors at its widest word, other text at its one-line width, a row at its
+    children's floors and gaps, a column at its widest child's, a horizontal scroll box
+    at its padding. Heights floor at their minimum, since text has not wrapped yet. A
+    grow child takes at least its floor, not its one-line content width, so a grow
+    column of wrapping text beside a fixed sidebar takes the rest of the row and wraps
+    there; before, it took the text's one-line width and ran off the row. When the
+    children cannot fit, because the others overflow or a grow child's floor is above
+    its share, the fit and grow children shrink largest first to a common level, as
+    Clay does, never below their floors; fixed and percent children keep their size. It
+    replaces one shrink ratio for every non-grow child, which cut labels below their
+    text, and grow children that dropped to `width_min`. The level is found by exact
+    leveling from an upper bound on the children's sizes taken while summing them, one
+    walk per distinct size it passes, at most 16 walks and then 32 bisection steps, and
+    only on a parent that overflows with a fit or grow child.
+    Floors are summed only in frames with a text whose widest word is narrower than its
+    line; other frames copy the minimum. The uniform-grow fast path declines a child
+    whose floor is above its share. In the Cachegrind gate, layouts that fit run 1.4 to
+    3.6 % more instructions; the two overflow benchmarks run 20 and 22 % more, for the
+    walks that give them sizes that fit.
 
 ## Open questions
 

@@ -30,9 +30,11 @@ pub const Direction = enum { row, column };
 /// Main- or cross-axis sizing. `grow` takes a weight: grow siblings share a
 /// parent's free main-axis space in proportion to their weights, so a weight-2
 /// box gets twice a weight-1 sibling's share. Each still keeps at least its
-/// content's minimum and at most `width_max` or `height_max`. On the cross
-/// axis a grow box fills its parent whatever its weight. A weight must be
-/// finite and greater than 0.
+/// content's floor (a wrapping text's widest word) and at most `width_max` or
+/// `height_max`. Children that overflow shrink largest first, `.fit` and
+/// `.grow` alike, never below their floors. On the cross axis a grow box
+/// fills its parent whatever its weight. A weight must be finite and greater
+/// than 0.
 pub const Sizing = union(enum) { fit, grow: f32, fixed: f32, percent: f32 };
 
 pub const Edges = struct {
