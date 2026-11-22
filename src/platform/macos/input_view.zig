@@ -625,6 +625,8 @@ test "insertText delivers long text whole and setMarkedText cuts it at a codepoi
     try queue.initInPlace(std.testing.allocator, .{
         .event_count_max = 4,
         .text_bytes_max = 1024,
+        .dialog_count_max = 1,
+        .dialog_path_bytes_max = 8,
     });
     defer queue.deinit(std.testing.allocator);
     var window: Window = undefined;

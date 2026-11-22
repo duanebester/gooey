@@ -16,23 +16,23 @@ pub const State = struct {
     status_bytes: [64]u8 = @splat(0),
     status_len: u32 = 0,
 
-    pub fn openFile(_: *State, effects: *Effects) void {
-        open(effects, .{ .files = true, .directories = false, .multiple = false });
+    pub fn openFile(self: *State, effects: *Effects) void {
+        self.open(effects, .{ .files = true, .directories = false, .multiple = false });
     }
 
-    pub fn openFiles(_: *State, effects: *Effects) void {
-        open(effects, .{ .files = true, .directories = false, .multiple = true });
+    pub fn openFiles(self: *State, effects: *Effects) void {
+        self.open(effects, .{ .files = true, .directories = false, .multiple = true });
     }
 
-    pub fn openFolder(_: *State, effects: *Effects) void {
-        open(effects, .{ .files = false, .directories = true, .multiple = false });
+    pub fn openFolder(self: *State, effects: *Effects) void {
+        self.open(effects, .{ .files = false, .directories = true, .multiple = false });
     }
 
-    pub fn save(_: *State, effects: *Effects) void {
+    pub fn save(self: *State, effects: *Effects) void {
         effects.openFileDialog(.{
             .kind = .{ .save = .{ .directory = null, .suggested_name = "untitled.txt" } },
             .on_complete = effects.handler(State.completed),
-        });
+        }) catch |err| self.refused(err);
     }
 
     pub fn completed(self: *State, effects: *Effects) void {
@@ -56,11 +56,19 @@ pub const State = struct {
         }
     }
 
-    fn open(effects: *Effects, options: gooey.PathPromptOptions) void {
+    fn open(self: *State, effects: *Effects, options: gooey.PathPromptOptions) void {
         effects.openFileDialog(.{
             .kind = .{ .open = options },
             .on_complete = effects.handler(State.completed),
-        });
+        }) catch |err| self.refused(err);
+    }
+
+    /// A dialog is open, or another click asked for one in the same frame:
+    /// say so, and keep the path chosen before.
+    fn refused(self: *State, err: Effects.DialogError) void {
+        switch (err) {
+            error.DialogBusy => self.setStatus("A dialog is already open.", .{}),
+        }
     }
 
     fn setStatus(self: *State, comptime format: []const u8, args: anytype) void {

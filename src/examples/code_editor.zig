@@ -95,11 +95,15 @@ pub const State = struct {
     /// One byte past the largest file, so a full read means "too large".
     read_bytes: [file_bytes_max + 1]u8 = @splat(0),
 
+    /// While another dialog is open the request is refused, and the open
+    /// one's answer is the folder this click would have chosen.
     pub fn openFolder(_: *State, effects: *Effects) void {
         effects.openFileDialog(.{
             .kind = .{ .open = .{ .files = false, .directories = true, .multiple = false } },
             .on_complete = effects.handler(State.folderChosen),
-        });
+        }) catch |err| switch (err) {
+            error.DialogBusy => {},
+        };
     }
 
     /// A cancelled or failed dialog leaves the current folder.

@@ -1631,6 +1631,7 @@ const DialogState = struct {
     path_count: u32 = 0,
     cancelled: u32 = 0,
     failed: u32 = 0,
+    refused: u32 = 0,
 
     pub fn completed(self: *DialogState, effects: *Effects) void {
         const completion = effects.completionEvent().?;
@@ -1642,6 +1643,12 @@ const DialogState = struct {
             },
             .cancelled => self.cancelled += 1,
             .failed => self.failed += 1,
+        }
+    }
+
+    fn refuse(self: *DialogState, err: Effects.DialogError) void {
+        switch (err) {
+            error.DialogBusy => self.refused += 1,
         }
     }
 };
@@ -1666,14 +1673,14 @@ fn openDialog(self: *DialogState, effects: *Effects) void {
         effects.openFileDialog(.{
             .kind = .{ .open = .{ .files = true, .directories = false, .multiple = true } },
             .on_complete = on_complete,
-        });
+        }) catch |err| self.refuse(err);
         return;
     }
     self.name[6] = '0' + @as(u8, @intCast(self.clicks));
     effects.openFileDialog(.{
         .kind = .{ .save = .{ .directory = "/tmp", .suggested_name = &self.name } },
         .on_complete = on_complete,
-    });
+    }) catch |err| self.refuse(err);
 }
 
 const ScriptedDialog = struct {
@@ -1761,6 +1768,112 @@ test "a file dialog opened from a handler runs on the main thread after the hand
     try testing.expectEqualStrings("/tmp/draft-4.txt", saved);
     try testing.expectEqual(@as(u32, 1), app.state.cancelled);
     try testing.expectEqual(@as(u32, 1), app.state.failed);
+}
+
+test "a second request for a file dialog is refused, not a panic" {
+    // Two clicks on Open queued before one tick once panicked: the second
+    // handler found the first's request waiting (found by the VOPR's
+    // file_dialog app). Now the second is refused with DialogBusy, at the
+    // call site. Then the dialog table fills exactly: with both of `nano`'s
+    // slots held, a click is refused; an answer frees a slot for a click
+    // routed after it in the same drain, but not for one routed before.
+    const app = try testing.allocator.create(DialogApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var service = DeferredDialog{};
+    app.window.file_dialog = .{ .context = &service, .open = DeferredDialog.open };
+    var now: u64 = 0;
+    app.tick(now);
+    pushClicks(app, 2);
+    const built = app.window.frame_number;
+    now += 1;
+    app.tick(now);
+    try testing.expectEqual(@as(u32, 2), app.state.clicks);
+    try testing.expectEqual(@as(u32, 1), service.count);
+    try testing.expectEqual(@as(u32, 1), app.state.refused);
+    try testing.expectEqual(@as(u32, 0), app.window.queue.count);
+    try testing.expectEqual(built + 1, app.window.frame_number);
+
+    pushClicks(app, 1); // The last free slot.
+    now += 1;
+    app.tick(now);
+    try testing.expectEqual(@as(u32, 2), service.count);
+    pushClicks(app, 1); // One past the table.
+    now += 1;
+    app.tick(now);
+    try testing.expectEqual(@as(u32, 2), service.count);
+    try testing.expectEqual(@as(u32, 2), app.state.refused);
+
+    pushClicks(app, 1); // Before the answer: still refused.
+    app.window.queue.push(.{ .completion = .{
+        .request_id = service.ids[0],
+        .outcome = .cancelled,
+    } });
+    pushClicks(app, 1); // After it: opens in the freed slot.
+    now += 1;
+    app.tick(now);
+    try testing.expectEqual(@as(u32, 1), app.state.cancelled);
+    try testing.expectEqual(@as(u32, 3), app.state.refused);
+    try testing.expectEqual(@as(u32, 3), service.count);
+    try testing.expectEqual(service.ids[0], service.ids[2]);
+    try testing.expect(app.window.dialog_handlers[service.ids[2]] != null);
+}
+
+fn pushClicks(app: *DialogApp, count: u32) void {
+    assert(count > 0);
+    var click: u32 = 0;
+    while (click < count) : (click += 1) {
+        app.window.queue.push(.{ .input = .{ .mouse_down = mouse(20, 20) } });
+        app.window.queue.push(.{ .input = .{ .mouse_up = mouse(20, 20) } });
+    }
+    assert(click == count);
+}
+
+test "a dialog's paths reach the app after typed text filled the queue's text bytes" {
+    // The Linux host queues a portal dialog's outcome between ticks
+    // (`pollDialog`). Paths once shared the queue's text bytes with typed
+    // text, which is cut to the room left and so can fill them: the
+    // outcome then panicked with "text bytes exhausted". Each request id
+    // now has its own path room in the queue. The ring's route, which
+    // copies into the queue at the drain, is checked the same way.
+    const app = try testing.allocator.create(DialogApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var service = DeferredDialog{};
+    app.window.file_dialog = .{ .context = &service, .open = DeferredDialog.open };
+    var now: u64 = 0;
+    app.tick(now);
+    var opened: u32 = 0;
+    while (opened < 2) : (opened += 1) {
+        pushClicks(app, 1);
+        now += 1;
+        app.tick(now);
+    }
+    try testing.expectEqual(@as(u32, 2), service.count);
+
+    const text_bytes_max = DialogApp.limits.events.text_bytes_max;
+    const typed: [text_bytes_max + 1]u8 = @splat('t');
+    app.window.queue.push(.{ .input = .{ .text_input = .{ .text = &typed } } });
+    try testing.expectEqual(@as(u32, text_bytes_max), app.window.queue.text_len);
+    const queued = internals.events.Paths{ .bytes = "/queued", .count = 1 };
+    app.window.queue.push(.{ .completion = .{
+        .request_id = service.ids[0],
+        .outcome = .{ .file_selected = queued },
+    } });
+    const ringed = internals.events.Paths{ .bytes = "/ring/a\x00/ring/b", .count = 2 };
+    app.window.completions.push(.{
+        .request_id = service.ids[1],
+        .outcome = .{ .file_selected = ringed },
+    });
+    now += 1;
+    app.tick(now);
+    try testing.expect(app.window.dialog_handlers[service.ids[0]] == null);
+    try testing.expect(app.window.dialog_handlers[service.ids[1]] == null);
+    // The ring's completion is routed after the queue's, so it shows.
+    try testing.expectEqual(@as(u32, 2), app.state.path_count);
+    try testing.expectEqualStrings(ringed.bytes, app.state.path_bytes[0..app.state.path_len]);
 }
 
 test "a file dialog that stays open completes later through the queue" {
@@ -3004,7 +3117,7 @@ const FolderDialog = struct {
 /// A dialog service whose dialogs stay open: it records each request id and
 /// returns no outcome, as Linux's portal host does.
 const DeferredDialog = struct {
-    ids: [2]u32 = undefined,
+    ids: [3]u32 = undefined,
     count: u32 = 0,
 
     fn open(
@@ -3015,7 +3128,7 @@ const DeferredDialog = struct {
     ) ?internals.events.Completion.Outcome {
         const self: *DeferredDialog = @ptrCast(@alignCast(context));
         _ = scratch;
-        assert(request.kind == .open);
+        _ = request;
         assert(self.count < self.ids.len);
         self.ids[self.count] = request_id;
         self.count += 1;
@@ -6086,6 +6199,77 @@ test "a focus loss cancels the drag and releases each held key in one event" {
 
 fn keyDown(app: anytype, now: *u64, key: gooey.input.KeyCode, modifiers: gooey.input.Modifiers) void {
     scrollMouse(app, now, .{ .key_down = chord(key, modifiers) });
+}
+
+const KeyProbe = struct {
+    characters: [16]u8 = @splat(0),
+    characters_len: u32 = 0,
+    key_downs: u32 = 0,
+
+    fn key(self: *KeyProbe, effects: *Effects) void {
+        const event = effects.inputEvent().?;
+        if (event.* != .key_down) return;
+        self.key_downs += 1;
+        const characters = event.key_down.characters orelse return;
+        assert(characters.len <= self.characters.len);
+        @memcpy(self.characters[0..characters.len], characters);
+        self.characters_len = @intCast(characters.len);
+    }
+};
+
+fn keyProbeRender(cx: *Cx) void {
+    cx.render(ui.box(.{
+        .key = .{ .name = "probe" },
+        .focusable = true,
+        .on_key = cx.on(KeyProbe.key, .{}),
+        .style = .{ .width = .{ .grow = 1 }, .height = .{ .grow = 1 } },
+    }, .{}));
+}
+
+const KeyProbeApp = gooey.App(KeyProbe, keyProbeRender, .{
+    .title = "Key probe",
+    .width = 100,
+    .height = 100,
+    .limits = .nano,
+});
+
+test "a key's characters reach the app after typed text filled the queue's text bytes" {
+    // macOS key events carry `characters`. They once shared the queue's
+    // text bytes with typed text, which is cut to the room left and so can
+    // fill them: a key pressed before the next tick then panicked with
+    // "text bytes exhausted". Each event slot now keeps its key's
+    // characters, so the handler reads exactly what the key typed.
+    const app = try testing.allocator.create(KeyProbeApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    app.window.queue.push(.{ .input = .{ .mouse_down = mouse(50, 50) } });
+    app.window.queue.push(.{ .input = .{ .mouse_up = mouse(50, 50) } });
+    now += 1;
+    app.tick(now);
+    try testing.expect(app.window.focus != .root);
+
+    const text_bytes_max = KeyProbeApp.limits.events.text_bytes_max;
+    const typed: [text_bytes_max + 1]u8 = @splat('t');
+    app.window.queue.push(.{ .input = .{ .text_input = .{ .text = &typed } } });
+    try testing.expectEqual(@as(u32, text_bytes_max), app.window.queue.text_len);
+    var characters: [7]u8 = "\u{e9}\u{1F600}x".*;
+    app.window.queue.push(.{ .input = .{ .key_down = .{
+        .key = .e,
+        .modifiers = .{},
+        .characters = &characters,
+        .characters_ignoring_modifiers = "e",
+        .is_repeat = false,
+    } } });
+    // The platform's string is gone by the drain, as an autoreleased one is.
+    @memset(&characters, 0);
+    now += 1;
+    app.tick(now);
+    try testing.expectEqual(@as(u32, 1), app.state.key_downs);
+    const received = app.state.characters[0..app.state.characters_len];
+    try testing.expectEqualStrings("\u{e9}\u{1F600}x", received);
 }
 
 test "drag_drop: Space picks a card up, Tab and the arrows choose a list, Space drops" {

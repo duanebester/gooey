@@ -1362,9 +1362,6 @@ fn addFailFastChecks(
         .{ .mode = "core-job-count-cancelled", .stderr = "events pool 'jobs' exhausted: " ++
             "capacity 2, 2 in use, 1 requested (fail_fast_check.Nap). Raise " ++
             "ResourceLimits.events.job_count_max." },
-        .{ .mode = "core-dialog-count", .stderr = "events pool 'dialogs' exhausted: " ++
-            "capacity 2, 2 in use, 1 requested, frame 3. Raise " ++
-            "ResourceLimits.events.dialog_count_max." },
         .{ .mode = "core-component-depth", .stderr = "component depth 65 exceeds " ++
             "build.component_depth_max 64 rendering fail_fast_check.CoreApp.Nest" },
         .{ .mode = "core-box-depth", .stderr = "build pool 'box depth' exhausted: capacity 64, " ++
@@ -2236,6 +2233,12 @@ fn goldensImports(
         .optimize = optimize,
         .imports = example_imports,
     });
+    const core_file_dialog_mod = b.createModule(.{
+        .root_source_file = b.path("src/examples/core_file_dialog.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = example_imports,
+    });
     // The VOPR's model-free frame invariants, so a golden can hold a frame
     // the VOPR never reaches to the same rules.
     const vopr_invariants_mod = b.createModule(.{
@@ -2264,6 +2267,7 @@ fn goldensImports(
         .{ .name = "splitter_example", .module = splitter_mod },
         .{ .name = "text_area_example", .module = text_area_mod },
         .{ .name = "context_menu_example", .module = context_menu_mod },
+        .{ .name = "core_file_dialog_example", .module = core_file_dialog_mod },
         .{ .name = "todo_example", .module = todo_mod },
         .{ .name = "virtual_list_example", .module = virtual_list_mod },
     }) catch @panic("OOM");

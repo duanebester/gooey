@@ -136,7 +136,9 @@ pub const State = struct {
         effects.openFileDialog(.{
             .kind = .{ .open = .{ .files = true, .directories = false, .multiple = false } },
             .on_complete = effects.handler(State.onPicked),
-        });
+        }) catch |err| switch (err) {
+            error.DialogBusy => self.setStatus("A file dialog is already open.", .{}),
+        };
     }
 
     pub fn onPicked(self: *State, effects: *Effects) void {

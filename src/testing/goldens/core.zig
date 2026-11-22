@@ -57,9 +57,24 @@ pub fn CoreDriver(comptime App: type) type {
             io: std.Io,
             trace: *const trace_mod.Trace,
         ) !void {
+            try self.initInPlaceDecoding(allocator, io, trace, .worker);
+        }
+
+        /// `initInPlace` with the image decodes' mode: the VOPR plays the
+        /// decode worker itself (`.stepped`).
+        pub fn initInPlaceDecoding(
+            self: *Self,
+            allocator: std.mem.Allocator,
+            io: std.Io,
+            trace: *const trace_mod.Trace,
+            image_decodes: gooey.internals.images.Mode,
+        ) !void {
             assert(trace.width == @as(f32, @floatFromInt(App.width)));
             assert(trace.height == @as(f32, @floatFromInt(App.height)));
-            try self.app.initHeadless(allocator, io, .{ .scale_factor = trace.scale_factor });
+            try self.app.initHeadless(allocator, io, .{
+                .scale_factor = trace.scale_factor,
+                .image_decodes = image_decodes,
+            });
             errdefer self.app.deinitHeadless();
             const RenderLimits = core_backend.RenderLimits;
             const render_limits = RenderLimits.fromResourceLimits(&App.limits_reserved);

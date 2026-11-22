@@ -887,6 +887,9 @@ pub const Options = struct {
     /// `Config.jobs` as `handler.typeId`s, in static storage; empty starts
     /// no workers.
     job_types: []const usize = &.{},
+    /// `.worker` on every host; `.stepped` for a simulation that plays the
+    /// image decode worker itself (`images.Mode`).
+    image_decodes: images_mod.Mode,
 };
 
 pub noinline fn initInPlace(self: *Window, gpa: std.mem.Allocator, options: *const Options) !void {
@@ -903,7 +906,7 @@ pub noinline fn initInPlace(self: *Window, gpa: std.mem.Allocator, options: *con
     self.resources = options.resources;
     try initBuildStorage(self, gpa, limits);
     errdefer deinitBuildStorage(self, gpa);
-    try initRuntimeStorage(self, gpa, limits, options.job_types);
+    try initRuntimeStorage(self, gpa, options);
     errdefer deinitRuntimeStorage(self, gpa);
 
     self.store.registerPool(self.inputs.entityPool());
@@ -1053,15 +1056,13 @@ fn deinitPaths(self: *Window, gpa: std.mem.Allocator) void {
     gpa.free(self.open_stack);
 }
 
-fn initRuntimeStorage(
-    self: *Window,
-    gpa: std.mem.Allocator,
-    limits: *const ResourceLimits,
-    job_types: []const usize,
-) !void {
+fn initRuntimeStorage(self: *Window, gpa: std.mem.Allocator, options: *const Options) !void {
+    const limits = options.limits;
     try self.queue.initInPlace(gpa, .{
         .event_count_max = limits.events.queue_count_max,
         .text_bytes_max = limits.events.text_bytes_max,
+        .dialog_count_max = limits.events.dialog_count_max,
+        .dialog_path_bytes_max = limits.events.dialog_path_bytes_max,
     });
     errdefer self.queue.deinit(gpa);
     try self.completions.initInPlace(gpa, .{
@@ -1079,10 +1080,8 @@ fn initRuntimeStorage(
     self.dialog_handlers = try gpa.alloc(?handler_mod.Handler, limits.events.dialog_count_max);
     errdefer gpa.free(self.dialog_handlers);
     @memset(self.dialog_handlers, null);
-    try self.images.initInPlace(gpa, self.resources.io, &self.completions, &limits.atlas);
-    errdefer self.images.deinit(gpa);
-    try self.jobs.initInPlace(gpa, self.resources.io, &self.completions, &limits.events, job_types);
-    errdefer self.jobs.deinit(gpa);
+    try initWorkers(self, gpa, options);
+    errdefer deinitWorkers(self, gpa);
     try self.retained.initInPlace(gpa, &.{
         .slot_counts = .{
             limits.retained.slot_count_64,
@@ -1124,6 +1123,23 @@ fn initRuntimeStorage(
     errdefer self.screen_reader.deinit();
     self.screen_reader_poll = .{};
     try frame_trace.init(&self.trace, gpa, self.resources.io);
+}
+
+/// The image decode worker and the job workers, which push onto the
+/// completion ring; the decode worker only in `.worker` mode.
+fn initWorkers(self: *Window, gpa: std.mem.Allocator, options: *const Options) !void {
+    const io = self.resources.io;
+    const limits = options.limits;
+    assert(self.completions.slots.len > 0);
+    try self.images.initInPlace(gpa, io, &self.completions, &limits.atlas, options.image_decodes);
+    errdefer self.images.deinit(gpa);
+    try self.jobs.initInPlace(gpa, io, &self.completions, &limits.events, options.job_types);
+    assert(self.images.mode == options.image_decodes);
+}
+
+fn deinitWorkers(self: *Window, gpa: std.mem.Allocator) void {
+    self.jobs.deinit(gpa);
+    self.images.deinit(gpa);
 }
 
 /// One engine pool's capacity from the app's text budget. The input pool has
@@ -1187,8 +1203,7 @@ fn deinitRuntimeStorage(self: *Window, gpa: std.mem.Allocator) void {
     self.inputs.deinit(gpa);
     self.retained.deinit(gpa);
     // The workers push onto the completion ring until they are joined.
-    self.jobs.deinit(gpa);
-    self.images.deinit(gpa);
+    deinitWorkers(self, gpa);
     gpa.free(self.dialog_handlers);
     gpa.free(self.job_inbox.entries);
     self.completions.deinit(gpa);

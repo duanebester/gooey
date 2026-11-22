@@ -15,6 +15,7 @@ const web_host = @import("../platform/web/core_host.zig");
 const entities_mod = @import("entities.zig");
 const text_engine = @import("text_engine.zig");
 const jobs_mod = @import("jobs.zig");
+const images = @import("images.zig");
 
 const assert = std.debug.assert;
 
@@ -282,6 +283,10 @@ pub fn App(
 
         pub const HeadlessOptions = struct {
             scale_factor: f32,
+            /// `.worker`, the policy every host uses, decodes `Painter.image`
+            /// files on the worker thread; `.stepped` starts none, for a
+            /// simulation that plays the worker (`images.Loader.takeStepped`).
+            image_decodes: images.Mode = .worker,
         };
 
         /// The app must stay at this address: handlers and `Cx` point into it.
@@ -294,7 +299,7 @@ pub fn App(
             assert(options.scale_factor > 0);
             self.process = .{ .io = io, .environ = &environ_empty };
             self.beginInit(backing);
-            try self.initCore(io, options.scale_factor);
+            try self.initCoreWith(io, &options);
             self.finishInit();
         }
 
@@ -329,8 +334,17 @@ pub fn App(
         /// Reserve the core's storage: state, store, shared resources, and
         /// the window, at `scale_factor` device pixels per logical pixel.
         pub fn initCore(self: *Self, io: std.Io, scale_factor: f32) !void {
-            assert(self.guard.lifecycle == .initializing);
             assert(scale_factor > 0);
+            try self.initCoreWith(io, &.{
+                .scale_factor = scale_factor,
+                .image_decodes = .worker,
+            });
+        }
+
+        fn initCoreWith(self: *Self, io: std.Io, options: *const HeadlessOptions) !void {
+            assert(self.guard.lifecycle == .initializing);
+            assert(options.scale_factor > 0);
+            const scale_factor = options.scale_factor;
             const gpa = self.guard.allocator();
             self.state = .{};
             inline for (config.jobs, 0..) |T, index| {
@@ -356,6 +370,7 @@ pub fn App(
                 .store = &self.store,
                 .resources = &self.resources,
                 .job_types = &self.job_type_ids,
+                .image_decodes = options.image_decodes,
             });
         }
 
