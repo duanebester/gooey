@@ -1356,8 +1356,8 @@ pub const input_burst_count_max: u32 = 256;
 pub const EventLimits = struct {
     queue_count_max: u32,
     completion_count_max: u32,
-    /// Bytes of event text (IME and typed text, key characters) in flight.
-    /// A dialog's paths have their own room in the queue, per dialog slot.
+    /// Bytes of event text (IME and typed text) in flight. A dialog's paths
+    /// and a key event's characters have their own room in the queue.
     text_bytes_max: u32,
     /// Paths one file dialog may select; more fails fast.
     dialog_path_count_max: u32,

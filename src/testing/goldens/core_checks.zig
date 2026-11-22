@@ -6201,6 +6201,77 @@ fn keyDown(app: anytype, now: *u64, key: gooey.input.KeyCode, modifiers: gooey.i
     scrollMouse(app, now, .{ .key_down = chord(key, modifiers) });
 }
 
+const KeyProbe = struct {
+    characters: [16]u8 = @splat(0),
+    characters_len: u32 = 0,
+    key_downs: u32 = 0,
+
+    fn key(self: *KeyProbe, effects: *Effects) void {
+        const event = effects.inputEvent().?;
+        if (event.* != .key_down) return;
+        self.key_downs += 1;
+        const characters = event.key_down.characters orelse return;
+        assert(characters.len <= self.characters.len);
+        @memcpy(self.characters[0..characters.len], characters);
+        self.characters_len = @intCast(characters.len);
+    }
+};
+
+fn keyProbeRender(cx: *Cx) void {
+    cx.render(ui.box(.{
+        .key = .{ .name = "probe" },
+        .focusable = true,
+        .on_key = cx.on(KeyProbe.key, .{}),
+        .style = .{ .width = .{ .grow = 1 }, .height = .{ .grow = 1 } },
+    }, .{}));
+}
+
+const KeyProbeApp = gooey.App(KeyProbe, keyProbeRender, .{
+    .title = "Key probe",
+    .width = 100,
+    .height = 100,
+    .limits = .nano,
+});
+
+test "a key's characters reach the app after typed text filled the queue's text bytes" {
+    // macOS key events carry `characters`. They once shared the queue's
+    // text bytes with typed text, which is cut to the room left and so can
+    // fill them: a key pressed before the next tick then panicked with
+    // "text bytes exhausted". Each event slot now keeps its key's
+    // characters, so the handler reads exactly what the key typed.
+    const app = try testing.allocator.create(KeyProbeApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    app.window.queue.push(.{ .input = .{ .mouse_down = mouse(50, 50) } });
+    app.window.queue.push(.{ .input = .{ .mouse_up = mouse(50, 50) } });
+    now += 1;
+    app.tick(now);
+    try testing.expect(app.window.focus != .root);
+
+    const text_bytes_max = KeyProbeApp.limits.events.text_bytes_max;
+    const typed: [text_bytes_max + 1]u8 = @splat('t');
+    app.window.queue.push(.{ .input = .{ .text_input = .{ .text = &typed } } });
+    try testing.expectEqual(@as(u32, text_bytes_max), app.window.queue.text_len);
+    var characters: [7]u8 = "\u{e9}\u{1F600}x".*;
+    app.window.queue.push(.{ .input = .{ .key_down = .{
+        .key = .e,
+        .modifiers = .{},
+        .characters = &characters,
+        .characters_ignoring_modifiers = "e",
+        .is_repeat = false,
+    } } });
+    // The platform's string is gone by the drain, as an autoreleased one is.
+    @memset(&characters, 0);
+    now += 1;
+    app.tick(now);
+    try testing.expectEqual(@as(u32, 1), app.state.key_downs);
+    const received = app.state.characters[0..app.state.characters_len];
+    try testing.expectEqualStrings("\u{e9}\u{1F600}x", received);
+}
+
 test "drag_drop: Space picks a card up, Tab and the arrows choose a list, Space drops" {
     const app = try testing.allocator.create(DragDropApp);
     defer testing.allocator.destroy(app);
