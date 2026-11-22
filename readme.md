@@ -457,15 +457,17 @@ returns.
 
 **File dialogs.** A handler requests a dialog and names the handler that receives the
 outcome. The dialog opens on the main thread after the handler returns, and the outcome
-(`file_selected`, `cancelled`, or `failed`) arrives on the next drain. From
+(`file_selected`, `cancelled`, or `failed`) arrives on the next drain. One dialog opens
+per drain, up to `limits.events.dialog_count_max` at once; a request beyond either
+returns `error.DialogBusy`, which the handler handles where it asks. From
 `core_file_dialog.zig`:
 
 ```zig
-    pub fn save(_: *State, effects: *Effects) void {
+    pub fn save(self: *State, effects: *Effects) void {
         effects.openFileDialog(.{
             .kind = .{ .save = .{ .directory = null, .suggested_name = "untitled.txt" } },
             .on_complete = effects.handler(State.completed),
-        });
+        }) catch |err| self.refused(err);
     }
 
     pub fn completed(self: *State, effects: *Effects) void {

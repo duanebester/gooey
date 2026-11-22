@@ -774,6 +774,11 @@ test "a file dialog's completion spawns the job that reads the file" {
     app.window.file_dialog = .{ .context = &context, .open = PicksBuildFile.open };
     var effects = Effects.init(null, .root);
     effects.jobs = &app.window.jobs;
+    // The router's view of the window's dialogs, as `router.call` sets it.
+    effects.dialogs = .{
+        .pending = &app.window.pending_dialog,
+        .slots = app.window.dialog_handlers,
+    };
     app.state.pickFile(&effects);
     app.window.pending_dialog = effects.file_dialog;
     var now: u64 = 1_000_000;

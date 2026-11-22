@@ -29,6 +29,9 @@ const SplitterModel = @import("vopr_splitter_model.zig").SplitterModel;
 const ActionsModel = actions_model.ActionsModel;
 const NestedOverlayModel = @import("vopr_nested_overlay_model.zig").NestedOverlayModel;
 const TextAreaModel = @import("vopr_text_area_model.zig").TextAreaModel;
+const images_model = @import("vopr_images_model.zig");
+const file_dialog_model = @import("vopr_file_dialog_model.zig");
+const vopr_dialogs = @import("vopr_dialogs.zig");
 const invariants = @import("vopr_invariants.zig");
 const trace_mod = @import("goldens/trace.zig");
 
@@ -123,6 +126,8 @@ pub const Workload = enum {
     actions,
     nested_overlay,
     text_area,
+    images,
+    file_dialog,
 
     fn App(comptime workload: Workload) type {
         return switch (workload) {
@@ -134,6 +139,9 @@ pub const Workload = enum {
             .actions => actions_model.App,
             .nested_overlay => nested_overlay.App,
             .text_area => text_area.App,
+            // A VOPR-only app: eight image paths, four on screen at a time.
+            .images => images_model.App,
+            .file_dialog => file_dialog_model.App,
         };
     }
 
@@ -146,6 +154,8 @@ pub const Workload = enum {
             .actions => ActionsModel,
             .nested_overlay => NestedOverlayModel,
             .text_area => TextAreaModel,
+            .images => images_model.ImagesModel,
+            .file_dialog => file_dialog_model.FileDialogModel,
         };
     }
 };
@@ -156,7 +166,7 @@ pub const Workload = enum {
 pub fn main(init: std.process.Init) !void {
     const options = parseArgs(init.minimal.args.vector) orelse {
         std.debug.print("usage: vopr [--app todo|drag_drop|virtual_list|splitter|" ++
-            "actions|nested_overlay|text_area] [seed] [--verbose]\n", .{});
+            "actions|nested_overlay|text_area|images|file_dialog] [seed] [--verbose]\n", .{});
         return error.InvalidArguments;
     };
     const seed = options.seed orelse seed: {
@@ -348,9 +358,33 @@ pub const Action = union(enum) {
     /// values.
     resize: Resize,
     /// The platform took the pointer gesture away (`pointer_cancelled`), or
-    /// the window lost focus (`focus_lost`). Last, so the other kinds keep
-    /// their tag values; only models that list it draw it.
+    /// the window lost focus (`focus_lost`). After the kinds before it, so
+    /// they keep their tag values; only models that list it draw it.
     cancel: Cancel,
+    /// The image decode worker's turn, played by the harness
+    /// (`images.Mode.stepped`): take the oldest request and push a decode
+    /// made up for it onto the completion ring. Generated only while a
+    /// request waits and the last decode has landed. After the kinds before
+    /// it, so they keep their tag values; only models that list it draw it.
+    image: ImageDecode,
+    /// The platform answers an open file dialog through the event queue or
+    /// the completion ring, or arms the answer the next dialog returns at
+    /// once (`vopr_dialogs`). Last, so the other kinds keep their tag
+    /// values; only models that list it draw it.
+    dialog: vopr_dialogs.Answer,
+
+    pub const ImageDecode = struct {
+        /// The request's loader entry, which `takeStepped` must return.
+        entry: u32,
+        /// Null for synthetic RGBA pixels of `width` × `height`.
+        failure: ?ImageFailure,
+        width: u32,
+        height: u32,
+    };
+
+    /// Operating errors a file read or a decoder returns. Never
+    /// `StagingExhausted`, a capacity-planning error that fails fast.
+    pub const ImageFailure = enum { file_not_found, access_denied, end_of_stream, invalid_data };
 
     pub const Cancel = struct {
         kind: enum { pointer_cancelled, focus_lost, focus_lost_with_pointer },
@@ -444,6 +478,22 @@ pub const Action = union(enum) {
                 if (cancel.key_held != null) " holding " else "",
                 if (cancel.key_held) |key| @tagName(key) else "",
             }),
+            .image => |decode| if (decode.failure) |failure| {
+                try writer.print("image entry {d} fails: {t}", .{ decode.entry, failure });
+            } else {
+                try writer.print("image entry {d} decodes {d}x{d}", .{
+                    decode.entry,
+                    decode.width,
+                    decode.height,
+                });
+            },
+            .dialog => |answer| try writer.print("dialog {t} {d} {t} paths={d} ({d} bytes)", .{
+                answer.route,
+                answer.target,
+                answer.outcome,
+                answer.path_count,
+                answer.paths.len,
+            }),
         }
     }
 };
@@ -480,6 +530,10 @@ pub const Swarm = struct {
     /// Percent of pointer actions that press or release a held button
     /// instead of clicking or moving.
     hold_percent: u32,
+    /// Percent of image decodes that fail. A failure stays for the
+    /// session, so a high rate soon fails every path and a low one keeps
+    /// them landing; 0 for a model that draws no decodes.
+    image_failure_percent: u32,
 
     /// Left only; mostly left (8 in 10), with right and middle; or each
     /// button a third of the time.
@@ -492,9 +546,11 @@ pub const Swarm = struct {
     const click_percent_choices = [_]u32{ 25, 50, 90 };
     const rebuild_period_choices = [_]u32{ 7, 31, 127 };
     const hold_percent_choices = [_]u32{ 0, 10, 30 };
+    const image_failure_percent_choices = [_]u32{ 0, 2, 10, 40 };
     const button_mix_count = std.enums.values(ButtonMix).len;
-    /// Most Smith choices `generate` makes: two per kind a model lists.
-    const choice_count_max = 2 * kind_count + 6;
+    /// Most Smith choices `generate` makes: two per kind a model lists, and
+    /// one per scalar it draws.
+    const choice_count_max = 2 * kind_count + 7;
 
     /// Weights for the kinds the model lists, in its order; the rest stay
     /// off, so a model's seeds replay unchanged when another app's kind is
@@ -534,6 +590,14 @@ pub const Swarm = struct {
         swarm.hold_percent = hold_percent_choices[
             choose(smith, hold_percent_choices.len, "hold percent")
         ];
+        // Only a model that draws decodes reads this choice, so the other
+        // apps' seeds replay unchanged.
+        swarm.image_failure_percent = 0;
+        if (comptime std.mem.indexOfScalar(ActionKind, kinds, .image) != null) {
+            swarm.image_failure_percent = image_failure_percent_choices[
+                choose(smith, image_failure_percent_choices.len, "image failure percent")
+            ];
+        }
         assert(swarm.kind_weights[@backingInt(ActionKind.tick_main)] > 0);
         assert(swarm.kind_weight_total <= kind_count * kind_weight_max);
         return swarm;
@@ -574,6 +638,9 @@ pub const Swarm = struct {
             self.interactive_percent, self.target_prefix_count, self.click_percent,
             self.rebuild_period,      self.button_mix,          self.hold_percent,
         });
+        if (std.mem.indexOfScalar(ActionKind, self.kinds, .image) != null) {
+            try writer.print(" image failures={d}%", .{self.image_failure_percent});
+        }
     }
 };
 
@@ -605,8 +672,37 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
         /// The dump of the rendered frame, copied before a stable rebuild.
         rebuild_dump: [dump_bytes_max]u8,
         stable_rebuild_count: u32,
+        /// The platform's file dialogs, bound when the model lists `.dialog`.
+        dialogs: Dialogs,
+        /// Backing for the paths of the dialog answer being generated.
+        answer_bytes: [App.limits.events.dialog_path_bytes_max]u8,
+        /// Completions pushed onto the ring since the last drain, which the
+        /// next drain moves into the queue. Their paths take no text bytes.
+        ring_answer_count: u32,
 
         const Self = @This();
+        const Dialogs = vopr_dialogs.Dialogs(App.limits.events);
+        const lists_dialog = std.mem.indexOfScalar(ActionKind, Model.action_kinds, .dialog) != null;
+        const lists_image = std.mem.indexOfScalar(ActionKind, Model.action_kinds, .image) != null;
+
+        /// Paths one selection answer may hold, before the byte budget cuts it.
+        const path_count_choices = [_]u32{ 1, 2, 3, App.limits.events.dialog_path_count_max };
+
+        comptime {
+            // A model that draws decodes names the sides they may have, and
+            // a model that answers dialogs the path lengths they may have.
+            if (lists_image) {
+                for (Model.image_sides) |side| {
+                    assert(side > 0);
+                    assert(side <= App.limits.atlas.image_size - 2);
+                    assert(side * side * 4 <= App.limits.atlas.image_decode_bytes_max);
+                }
+            }
+            if (lists_dialog) {
+                for (Model.dialog_path_lengths) |length| assert(length > 0);
+            }
+            for (path_count_choices) |count| assert(count > 0);
+        }
 
         /// The keys the generator presses: the model's own list when it
         /// declares one (`Model.key_choices`), so the other apps' seeds
@@ -714,7 +810,8 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
                 .scale_factor = scale_factor,
                 .steps = &.{},
             };
-            try self.driver.initInPlace(gpa, io, &trace);
+            // The harness plays the image decode worker: no thread reads files.
+            try self.driver.initInPlaceDecoding(gpa, io, &trace, .stepped);
             self.frame_number_rendered = 0;
             self.quiescence_round_count = 0;
             self.dump_hasher = .init(0);
@@ -725,6 +822,10 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             self.held = .none;
             self.frame_number_checked = 0;
             self.stable_rebuild_count = 0;
+            self.dialogs.init();
+            if (lists_dialog) self.dialogs.bind(self.window());
+            self.answer_bytes = @splat(0);
+            self.ring_answer_count = 0;
             self.model.init();
             // A model that stands in for a platform service (the text
             // clipboard) binds it before the first frame.
@@ -749,6 +850,7 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
                 .pointer, .key, .text, .compose, .scroll, .drag, .resize, .cancel => {
                     self.model.queue(action);
                 },
+                .image, .dialog => self.model.queue(action),
                 .wait_ns, .tick_main, .present => {},
             }
             switch (action) {
@@ -777,6 +879,8 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
                     } } });
                 },
                 .cancel => |cancel| self.deliver(cancelEvent(cancel)),
+                .image => |decode| self.performImage(&decode),
+                .dialog => |answer| self.performDialog(&answer),
                 .wait_ns => |gap_ns| self.driver.now_ns += gap_ns,
                 .tick_main => self.tickMain(),
                 .present => self.present(),
@@ -836,7 +940,151 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
                     .{ .cancel = generateCancel(smith) }
                 else
                     .tick_main,
+                // Only a model that lists these kinds draws them, and only
+                // it names their sizes and lengths.
+                .image => if (!lists_image) unreachable else if (self.imageRequestOldest()) |entry|
+                    .{ .image = self.generateImage(smith, entry) }
+                else
+                    .tick_main,
+                .dialog => if (!lists_dialog) unreachable else self.generateDialog(smith),
             };
+        }
+
+        /// The entry of the oldest image request, when the stepped worker
+        /// may take it: one waits, and the last decode has landed.
+        fn imageRequestOldest(self: *Self) ?u32 {
+            const loader = &self.window().images;
+            assert(loader.mode == .stepped);
+            if (loader.stepped_staging_held) return null;
+            const tail = loader.request_tail.load(.monotonic);
+            if (tail == loader.request_head.load(.monotonic)) return null;
+            assert(std.math.isPowerOfTwo(loader.requests.len));
+            const mask: u32 = @intCast(loader.requests.len - 1);
+            const entry = loader.requests[tail & mask];
+            assert(entry < loader.entries.len);
+            return entry;
+        }
+
+        /// A failure at the swarm's rate, else pixels with sides from the
+        /// model's list. Always the same choices, so the outcome does not
+        /// shift the bytes that follow.
+        fn generateImage(self: *const Self, smith: *Smith, entry: u32) Action.ImageDecode {
+            const failure_count = std.enums.values(Action.ImageFailure).len;
+            const fails = choose(smith, 100, "image fails") < self.swarm.image_failure_percent;
+            const failure_index = choose(smith, failure_count, "image failure");
+            const sides = Model.image_sides;
+            const width = sides[choose(smith, sides.len, "image width")];
+            const height = sides[choose(smith, sides.len, "image height")];
+            assert(width > 0);
+            assert(height > 0);
+            return .{
+                .entry = entry,
+                .failure = if (fails) @fromBackingInt(@intCast(failure_index)) else null,
+                .width = width,
+                .height = height,
+            };
+        }
+
+        /// The worker's turn: take the request and push its made-up decode.
+        fn performImage(self: *Self, decode: *const Action.ImageDecode) void {
+            const win = self.window();
+            const taken = win.images.takeStepped() orelse unreachable;
+            assert(taken == decode.entry);
+            if (decode.failure) |failure| {
+                win.completions.pushImage(.{
+                    .entry = taken,
+                    .width = 0,
+                    .height = 0,
+                    .pixel_offset = 0,
+                    .failure = imageError(failure),
+                });
+                return;
+            }
+            const pixel_bytes = decode.width * decode.height * 4;
+            fillPixels(win.images.stagingStepped(pixel_bytes), decode);
+            win.completions.pushImage(.{
+                .entry = taken,
+                .width = decode.width,
+                .height = decode.height,
+                .pixel_offset = 0,
+                .failure = null,
+            });
+        }
+
+        /// An answer to an open dialog, or one armed for the next dialog to
+        /// return at once, always when none is open. One through the queue
+        /// or the ring that the queue cannot take before the next drain
+        /// becomes a `tickMain`.
+        fn generateDialog(self: *Self, smith: *Smith) Action {
+            const Answer = vopr_dialogs.Answer;
+            const route_index = choose(smith, 3, "dialog route");
+            const target_index = choose(smith, self.dialogs.open.len, "dialog target");
+            const outcome_index = choose(smith, 4, "dialog outcome");
+            const count_index = choose(smith, path_count_choices.len, "dialog path count");
+            const seed = choose(smith, std.math.maxInt(u32), "dialog seed");
+            if (self.model.pendingRoom() == 0) return .tick_main;
+            const open_count = self.dialogs.open_count;
+            const route: Answer.Route = if (open_count == 0)
+                .at_open
+            else
+                @fromBackingInt(@intCast(route_index));
+            const target = if (route == .at_open) 0 else target_index % open_count;
+            // Selections twice as often as cancels or failures.
+            const outcome: Answer.Outcome = switch (outcome_index) {
+                0, 1 => .selected,
+                2 => .cancelled,
+                3 => .failed,
+                else => unreachable,
+            };
+            var answer: Answer = .{
+                .route = route,
+                .target = target,
+                .outcome = outcome,
+                .paths = "",
+                .path_count = 0,
+            };
+            if (outcome == .selected) {
+                const many = route == .at_open or self.dialogs.open[target].many;
+                const written = vopr_dialogs.writePaths(&self.answer_bytes, .{
+                    .seed = seed,
+                    .count_max = if (many) path_count_choices[count_index] else 1,
+                    .lengths = Model.dialog_path_lengths,
+                });
+                answer.paths = self.answer_bytes[0..written.len];
+                answer.path_count = written.count;
+            }
+            // A platform holds an answer the queue has no event slot for
+            // yet, as it holds input. Its paths take their request's own
+            // room (`EventQueue.dialog_paths`), never the text bytes.
+            if (route != .at_open and !self.queueHasRoom(1, 0)) {
+                return .tick_main;
+            }
+            return .{ .dialog = answer };
+        }
+
+        /// The platform answers: arm it, or close the dialog and queue its
+        /// completion on the route's path.
+        fn performDialog(self: *Self, answer: *const vopr_dialogs.Answer) void {
+            if (answer.route == .at_open) return self.dialogs.arm(answer);
+            const win = self.window();
+            const open = self.dialogs.close(answer.target);
+            if (answer.outcome == .selected) {
+                // A backend that completes a dialog later checks the
+                // selection here before it queues it, as `openDialog` does.
+                tick.checkSelection(win, open.many, answer.path_count, answer.paths.len);
+            }
+            const completion = answer.completion(open.request_id);
+            switch (answer.route) {
+                .queue => {
+                    assert(win.queue.room() > 0);
+                    win.queue.push(.{ .completion = completion });
+                },
+                .ring => {
+                    win.completions.push(completion);
+                    self.ring_answer_count += 1;
+                },
+                .at_open => unreachable,
+            }
         }
 
         /// A gesture cancel or a focus loss, which may report one key held.
@@ -881,14 +1129,16 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             var round: u32 = 0;
             while (round < quiescence_round_max) : (round += 1) {
                 if (win.frame_in_flight.load(.acquire)) self.present();
-                if (!win.render_requested and !win.awaiting_flip) break;
+                // A completion on the ring wakes the host as input does.
+                const busy = win.render_requested or win.awaiting_flip or ringPending(win);
+                if (!busy) break;
                 self.tickMain();
                 self.check();
             }
             assert(round <= quiescence_round_max);
             self.quiescence_round_count = round;
             const in_flight = win.frame_in_flight.load(.acquire);
-            if (win.render_requested or in_flight or win.awaiting_flip) {
+            if (win.render_requested or in_flight or win.awaiting_flip or ringPending(win)) {
                 std.debug.panic("vopr: no quiescence after {d} rounds: render_requested " ++
                     "{}, frame_in_flight {}, awaiting_flip {} (frame {d}, {d} draws)", .{
                     quiescence_round_max,
@@ -918,7 +1168,9 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             const win = self.window();
             if (win.frame_in_flight.load(.acquire)) return;
             if (win.awaiting_flip or win.render_requested) return;
+            // Queued input and a completion on the ring are input.
             if (win.queue.count > 0) return;
+            if (ringPending(win)) return;
             if (win.renderDeadlineNs() != null) return;
             // The last draw is the rendered frame: it was presented, then
             // flipped, and nothing was drawn since.
@@ -973,23 +1225,47 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             assert(event_count > 0);
             const queue = &self.window().queue;
             assert(queue.text_len <= queue.text_bytes.len);
+            // Completions on the ring take their slots at the drain.
             const text_room: u64 = queue.text_bytes.len - queue.text_len;
             if (self.model.pendingRoom() == 0) return false;
-            return queue.room() >= event_count and text_room >= text_bytes;
+            if (queue.room() < self.ring_answer_count) return false;
+            return queue.room() - self.ring_answer_count >= event_count and
+                text_room >= text_bytes;
         }
 
         fn tickMain(self: *Self) void {
             const win = self.window();
             self.model.beginDrain(win);
+            const opened_count_before = self.dialogs.opened_count;
             const published = tick.tickMain(&self.driver.app, win, self.driver.now_ns);
             if (published) assert(win.frame_in_flight.load(.acquire));
+            assert(!ringPending(win));
+            self.ring_answer_count = 0;
             self.model.endDrain(win, published);
-            // The apps open no file dialog, so every drain empties the queue.
-            if (win.queue.count != 0) {
-                std.debug.panic("vopr: {d} events left queued after tickMain", .{
-                    win.queue.count,
-                });
+            self.checkDrained(published, opened_count_before);
+        }
+
+        /// Every drain empties the queue, except one whose file dialog
+        /// returned its outcome from `open`, as a modal one does: the tick
+        /// queues that one completion for the next drain and builds nothing.
+        fn checkDrained(self: *Self, published: bool, opened_count_before: u32) void {
+            const win = self.window();
+            const delivered = self.dialogs.delivered_at_open;
+            self.dialogs.delivered_at_open = null;
+            if (delivered) |answer| {
+                assert(self.dialogs.opened_count == opened_count_before + 1);
+                assert(!published);
+                assert(win.render_requested);
+                assert(win.dialog_handlers[answer.request_id] != null);
+                assert(win.queue.count == 1);
+                const pending = win.queue.pending();
+                assert(pending[0] == .completion);
+                assert(pending[0].completion.request_id == answer.request_id);
+                return;
             }
+            if (win.queue.count == 0) return;
+            std.debug.panic("vopr: {d} events left queued after a tickMain whose file " ++
+                "dialog returned no outcome from open", .{win.queue.count});
         }
 
         /// The render side: pack and draw the frame in flight, then fold the
@@ -1401,6 +1677,33 @@ fn keyEvent(chord: Action.Chord) input.KeyEvent {
 
 const Point = struct { x: f32, y: f32 };
 
+/// Whether a worker's completion waits on the ring for the next drain.
+fn ringPending(win: *Window) bool {
+    const ring = &win.completions;
+    const head = ring.head.load(.acquire);
+    const tail = ring.tail.load(.monotonic);
+    assert(head -% tail <= ring.slots.len);
+    return head != tail;
+}
+
+fn imageError(failure: Action.ImageFailure) anyerror {
+    return switch (failure) {
+        .file_not_found => error.FileNotFound,
+        .access_denied => error.AccessDenied,
+        .end_of_stream => error.EndOfStream,
+        .invalid_data => error.InvalidData,
+    };
+}
+
+/// Synthetic RGBA pixels: any bytes do, so long as both instances agree.
+fn fillPixels(pixels: []u8, decode: *const Action.ImageDecode) void {
+    assert(decode.failure == null);
+    assert(pixels.len == @as(usize, decode.width) * decode.height * 4);
+    for (pixels, 0..) |*byte, index| {
+        byte.* = @truncate(index *% 31 +% decode.entry *% 7 +% decode.width);
+    }
+}
+
 /// Where a model asks pointer, wheel, and drag actions to aim half the time
 /// (`Model.biasTarget`): an area, and a third of those times an alternate
 /// one when it has one, such as a scroll box and its scrollbar's track.
@@ -1590,6 +1893,14 @@ test "fuzz: text_area vopr" {
     try fuzzCorpus(.text_area);
 }
 
+test "fuzz: images vopr" {
+    try fuzzCorpus(.images);
+}
+
+test "fuzz: file_dialog vopr" {
+    try fuzzCorpus(.file_dialog);
+}
+
 /// One seed through `runPaired`, which panics on the first differing frame.
 fn runPairedSeed(comptime workload: Workload, prng_seed: u64) !Result(workload.Model()) {
     const step_count = 300;
@@ -1633,6 +1944,16 @@ test "two instances fed the same bytes draw the same frames" {
     try std.testing.expect(overlay.stats.menu_frames > 0);
     const area = try runPairedSeed(.text_area, 1);
     try std.testing.expect(area.stats.checks.frames > 0);
+    const images = try runPairedSeed(.images, 1);
+    try std.testing.expect(images.stats.landed > 0);
+    try std.testing.expect(images.stats.drawn > 0);
+    // file_dialog seed 9's clicks ask twice in one drain; seed 2's fill the
+    // dialog table and ask again.
+    const dialogs = try runPairedSeed(.file_dialog, 9);
+    try std.testing.expect(dialogs.stats.completions > 0);
+    try std.testing.expect(dialogs.stats.refused_waiting > 0);
+    const dialogs_full = try runPairedSeed(.file_dialog, 2);
+    try std.testing.expect(dialogs_full.stats.refused_full > 0);
 }
 
 /// The centre of the `rank`-th hit record with a click handler, in tree order.

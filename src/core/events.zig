@@ -160,9 +160,28 @@ pub const JobInbox = struct {
     }
 };
 
+/// Bytes of one key event's `characters`, and as many of its
+/// `characters_ignoring_modifiers`, that the queue keeps in the event's own
+/// slot. One keystroke yields one key layout output: a character, a
+/// dead-key composition, or a layout's multi-character output string. The
+/// longest emoji ZWJ sequences Unicode recommends are 35 bytes of UTF-8, so
+/// 64 bytes holds any one grapheme cluster a key types, with room for short
+/// layout strings. Only macOS fills `characters`, from `NSEvent`; Linux,
+/// Windows, and the web deliver null and type through `text_input`.
+pub const key_characters_bytes_max: u32 = 64;
+
+/// The room a queued key event's characters take in its event slot.
+const KeyCharacters = struct {
+    characters: [key_characters_bytes_max]u8,
+    ignoring_modifiers: [key_characters_bytes_max]u8,
+};
+
 pub const QueueCapacity = struct {
     event_count_max: u32,
     text_bytes_max: u32,
+    /// `events.dialog_count_max`: request ids, so path slots.
+    dialog_count_max: u32,
+    dialog_path_bytes_max: u32,
 };
 
 pub const EventQueue = struct {
@@ -170,15 +189,37 @@ pub const EventQueue = struct {
     count: u32,
     text_bytes: []u8,
     text_len: u32,
+    /// A queued completion's paths, in its request id's slot of
+    /// `dialog_path_bytes_max` bytes. Text a platform pushes (typed text is
+    /// cut to the room left, never refused) can fill `text_bytes` at any
+    /// time, so paths there could find no room; each request id has at
+    /// most one completion queued, since its slot frees only when routed.
+    dialog_paths: []u8,
+    dialog_path_bytes_max: u32,
+    /// A queued key event's characters, in its event slot's entry. They
+    /// once shared `text_bytes`, so a key pressed after typed text filled
+    /// them panicked; cutting them instead would change what the key typed.
+    key_characters: []KeyCharacters,
     /// Events coalesced since init, for tests and diagnostics.
     coalesced_count: u64,
 
     pub fn initInPlace(self: *EventQueue, gpa: std.mem.Allocator, capacity: QueueCapacity) !void {
         assert(capacity.event_count_max > 0);
         assert(capacity.text_bytes_max > 0);
+        assert(capacity.dialog_count_max > 0);
+        assert(capacity.dialog_path_bytes_max > 0);
         self.events = try gpa.alloc(Event, capacity.event_count_max);
         errdefer gpa.free(self.events);
+
         self.text_bytes = try gpa.alloc(u8, capacity.text_bytes_max);
+        errdefer gpa.free(self.text_bytes);
+
+        self.key_characters = try gpa.alloc(KeyCharacters, capacity.event_count_max);
+        errdefer gpa.free(self.key_characters);
+
+        const paths_bytes = @as(usize, capacity.dialog_count_max) * capacity.dialog_path_bytes_max;
+        self.dialog_paths = try gpa.alloc(u8, paths_bytes);
+        self.dialog_path_bytes_max = capacity.dialog_path_bytes_max;
         self.count = 0;
         self.text_len = 0;
         self.coalesced_count = 0;
@@ -186,6 +227,10 @@ pub const EventQueue = struct {
 
     pub fn deinit(self: *EventQueue, gpa: std.mem.Allocator) void {
         assert(self.count <= self.events.len);
+        assert(self.dialog_paths.len % self.dialog_path_bytes_max == 0);
+        assert(self.key_characters.len == self.events.len);
+        gpa.free(self.dialog_paths);
+        gpa.free(self.key_characters);
         gpa.free(self.text_bytes);
         gpa.free(self.events);
         self.* = undefined;
@@ -215,7 +260,7 @@ pub const EventQueue = struct {
                 event,
             });
         }
-        self.events[self.count] = self.copyText(event);
+        self.events[self.count] = self.copyText(event, self.count);
         self.count += 1;
     }
 
@@ -263,7 +308,11 @@ pub const EventQueue = struct {
         }
     }
 
-    fn copyText(self: *EventQueue, event: Event) Event {
+    /// Copy the text `event` points at into the queue: platform text into
+    /// the text bytes, a key's characters into event slot `slot`'s room,
+    /// and a completion's paths into its request's room.
+    fn copyText(self: *EventQueue, event: Event, slot: u32) Event {
+        assert(slot < self.events.len);
         var copy = event;
         switch (copy) {
             .input => |*value| switch (value.*) {
@@ -272,17 +321,19 @@ pub const EventQueue = struct {
                     text.text = self.copyPlatformText(text.text, "composition");
                 },
                 .key_down, .key_up => |*key| {
-                    if (key.characters) |bytes| key.characters = self.copyBytes(bytes);
-                    if (key.characters_ignoring_modifiers) |bytes| {
-                        key.characters_ignoring_modifiers = self.copyBytes(bytes);
-                    }
+                    const kept = &self.key_characters[slot];
+                    key.characters = keepCharacters(key.characters, &kept.characters);
+                    key.characters_ignoring_modifiers = keepCharacters(
+                        key.characters_ignoring_modifiers,
+                        &kept.ignoring_modifiers,
+                    );
                 },
                 else => {},
             },
             .completion => |*completion| switch (completion.outcome) {
                 .file_selected => |*paths| {
                     assert(paths.consistent());
-                    paths.bytes = self.copyBytes(paths.bytes);
+                    paths.bytes = self.copyPaths(completion.request_id, paths.bytes);
                 },
                 else => {},
             },
@@ -313,16 +364,55 @@ pub const EventQueue = struct {
         return self.copyBytes(bytes[0..kept]);
     }
 
-    fn copyBytes(self: *EventQueue, bytes: []const u8) []const u8 {
-        assert(self.text_len <= self.text_bytes.len);
-        if (bytes.len > self.text_bytes.len - self.text_len) {
-            std.debug.panic("event queue 'text bytes' exhausted: capacity {d} bytes, " ++
-                "{d} in use, {d} requested. Raise ResourceLimits.events.text_bytes_max.", .{
-                self.text_bytes.len,
-                self.text_len,
+    /// Copy a key's characters into `target`, whole. Characters past it
+    /// are not a keystroke any shipped layout makes; they become null, and
+    /// the drop is logged, rather than cut: cut characters would be a
+    /// different keystroke, and null is what Linux, Windows, and the web
+    /// always deliver. The text the key typed still reaches the app, since
+    /// macOS sends it again through `insertText:` as a `text_input`.
+    fn keepCharacters(bytes: ?[]const u8, target: *[key_characters_bytes_max]u8) ?[]const u8 {
+        const characters = bytes orelse return null;
+        if (characters.len > target.len) {
+            std.log.warn("event queue: key characters of {d} bytes dropped; a key event " ++
+                "keeps at most {d} (events.key_characters_bytes_max)", .{
+                characters.len,
+                target.len,
+            });
+            return null;
+        }
+        @memcpy(target[0..characters.len], characters);
+        assert(characters.len <= key_characters_bytes_max);
+        return target[0..characters.len];
+    }
+
+    /// Copy a completion's paths into its request id's slot, which no other
+    /// queued completion holds. Paths past the slot are a backend's error:
+    /// `tick.checkSelection` bounds every selection first.
+    fn copyPaths(self: *EventQueue, request_id: u32, bytes: []const u8) []const u8 {
+        const slot_count = self.dialog_paths.len / self.dialog_path_bytes_max;
+        assert(request_id < slot_count);
+        for (self.events[0..self.count]) |*queued| {
+            if (queued.* == .completion) assert(queued.completion.request_id != request_id);
+        }
+        if (bytes.len > self.dialog_path_bytes_max) {
+            std.debug.panic("event queue pool 'dialog paths' exhausted: capacity {d} bytes, " ++
+                "{d} requested. Raise ResourceLimits.events.dialog_path_bytes_max.", .{
+                self.dialog_path_bytes_max,
                 bytes.len,
             });
         }
+        const start = @as(usize, request_id) * self.dialog_path_bytes_max;
+        const target = self.dialog_paths[start..][0..bytes.len];
+        @memcpy(target, bytes);
+        assert(target.len <= self.dialog_path_bytes_max);
+        return target;
+    }
+
+    /// Append `bytes` to the text bytes. Only platform text, already cut to
+    /// the room left (`copyPlatformText`), comes here.
+    fn copyBytes(self: *EventQueue, bytes: []const u8) []const u8 {
+        assert(self.text_len <= self.text_bytes.len);
+        assert(bytes.len <= self.text_bytes.len - self.text_len);
         const target = self.text_bytes[self.text_len..][0..bytes.len];
         @memcpy(target, bytes);
         self.text_len += @intCast(bytes.len);
@@ -542,7 +632,12 @@ pub const CompletionRing = struct {
 
 test "queue coalesces moves and scrolls and copies text" {
     var queue: EventQueue = undefined;
-    try queue.initInPlace(std.testing.allocator, .{ .event_count_max = 4, .text_bytes_max = 16 });
+    try queue.initInPlace(std.testing.allocator, .{
+        .event_count_max = 4,
+        .text_bytes_max = 16,
+        .dialog_count_max = 1,
+        .dialog_path_bytes_max = 8,
+    });
     defer queue.deinit(std.testing.allocator);
     const move = input.MouseEvent{
         .position = .{ .x = 1, .y = 2 },
@@ -595,7 +690,12 @@ test "platform text past the free text bytes is cut on a codepoint boundary" {
     @memset(long[0..255], 'a');
     @memcpy(long[255..], "東京");
     var queue: EventQueue = undefined;
-    try queue.initInPlace(std.testing.allocator, .{ .event_count_max = 4, .text_bytes_max = 256 });
+    try queue.initInPlace(std.testing.allocator, .{
+        .event_count_max = 4,
+        .text_bytes_max = 256,
+        .dialog_count_max = 1,
+        .dialog_path_bytes_max = 8,
+    });
     defer queue.deinit(std.testing.allocator);
     queue.push(.{ .input = .{ .text_input = .{ .text = &long } } });
     const kept = queue.pending()[0].input.text_input.text;
@@ -605,7 +705,12 @@ test "platform text past the free text bytes is cut on a codepoint boundary" {
     try std.testing.expectEqualStrings("", queue.pending()[1].input.composition.text);
 
     var roomy: EventQueue = undefined;
-    try roomy.initInPlace(std.testing.allocator, .{ .event_count_max = 1, .text_bytes_max = 512 });
+    try roomy.initInPlace(std.testing.allocator, .{
+        .event_count_max = 1,
+        .text_bytes_max = 512,
+        .dialog_count_max = 1,
+        .dialog_path_bytes_max = 8,
+    });
     defer roomy.deinit(std.testing.allocator);
     roomy.push(.{ .input = .{ .text_input = .{ .text = &long } } });
     try std.testing.expectEqualStrings(&long, roomy.pending()[0].input.text_input.text);
@@ -613,7 +718,12 @@ test "platform text past the free text bytes is cut on a codepoint boundary" {
 
 test "completion ring delivers distinct outcomes in order" {
     var queue: EventQueue = undefined;
-    try queue.initInPlace(std.testing.allocator, .{ .event_count_max = 4, .text_bytes_max = 64 });
+    try queue.initInPlace(std.testing.allocator, .{
+        .event_count_max = 4,
+        .text_bytes_max = 64,
+        .dialog_count_max = 4,
+        .dialog_path_bytes_max = 32,
+    });
     defer queue.deinit(std.testing.allocator);
     var ring: CompletionRing = undefined;
     try ring.initInPlace(std.testing.allocator, .{
@@ -653,7 +763,12 @@ test "completion ring holds a selection of exactly the dialog path budget per re
     // `dialog_path_bytes_max` bytes.
     const path_bytes_max: u32 = 8;
     var queue: EventQueue = undefined;
-    try queue.initInPlace(std.testing.allocator, .{ .event_count_max = 4, .text_bytes_max = 16 });
+    try queue.initInPlace(std.testing.allocator, .{
+        .event_count_max = 4,
+        .text_bytes_max = 16,
+        .dialog_count_max = 2,
+        .dialog_path_bytes_max = path_bytes_max,
+    });
     defer queue.deinit(std.testing.allocator);
     var ring: CompletionRing = undefined;
     try ring.initInPlace(std.testing.allocator, .{
@@ -688,6 +803,79 @@ test "completion ring holds a selection of exactly the dialog path budget per re
     try std.testing.expectEqual(@as(u32, 2), selected.count);
     const whole = events[1].completion.outcome.file_selected;
     try std.testing.expectEqualStrings("/abcdefg", whole.bytes);
+}
+
+test "a completion's paths fit in a queue whose text bytes typed text filled" {
+    // Paths once shared the text bytes, which typed text may fill (it is
+    // cut, never refused): a dialog's outcome queued after it, as the Linux
+    // host's `pollDialog` queues one, panicked with "text bytes exhausted".
+    // Each request id now has its own path slot, used to the last byte.
+    var queue: EventQueue = undefined;
+    try queue.initInPlace(std.testing.allocator, .{
+        .event_count_max = 4,
+        .text_bytes_max = 8,
+        .dialog_count_max = 2,
+        .dialog_path_bytes_max = 8,
+    });
+    defer queue.deinit(std.testing.allocator);
+    queue.push(.{ .input = .{ .text_input = .{ .text = "typed text" } } });
+    try std.testing.expectEqual(@as(u32, 8), queue.text_len);
+    queue.push(.{ .completion = .{ .request_id = 1, .outcome = .{ .file_selected = .{
+        .bytes = "/a\x00/bcde",
+        .count = 2,
+    } } } });
+    queue.push(.{ .completion = .{ .request_id = 0, .outcome = .{ .file_selected = .{
+        .bytes = "/1234567",
+        .count = 1,
+    } } } });
+    try std.testing.expectEqual(@as(u32, 8), queue.text_len);
+    const events = queue.pending();
+    try std.testing.expectEqualStrings("typed te", events[0].input.text_input.text);
+    const second = events[1].completion.outcome.file_selected;
+    try std.testing.expectEqualStrings("/a\x00/bcde", second.bytes);
+    const third = events[2].completion.outcome.file_selected;
+    try std.testing.expectEqualStrings("/1234567", third.bytes);
+}
+
+test "a key's characters stay whole in a queue whose text bytes typed text filled" {
+    // Key characters once shared the text bytes, so a key pressed after
+    // typed text filled them panicked with "text bytes exhausted". Each
+    // event slot now has its own room, used to the last byte; characters
+    // past it become null (and are logged), never cut.
+    var queue: EventQueue = undefined;
+    try queue.initInPlace(std.testing.allocator, .{
+        .event_count_max = 4,
+        .text_bytes_max = 4,
+        .dialog_count_max = 1,
+        .dialog_path_bytes_max = 8,
+    });
+    defer queue.deinit(std.testing.allocator);
+    queue.push(.{ .input = .{ .text_input = .{ .text = "typed" } } });
+    try std.testing.expectEqual(@as(u32, 4), queue.text_len);
+    const full: [key_characters_bytes_max]u8 = @splat('k');
+    const past: [key_characters_bytes_max + 1]u8 = @splat('p');
+    queue.push(.{ .input = .{ .key_down = .{
+        .key = .e,
+        .modifiers = .{},
+        .characters = "\u{e9}",
+        .characters_ignoring_modifiers = &full,
+        .is_repeat = false,
+    } } });
+    queue.push(.{ .input = .{ .key_up = .{
+        .key = .e,
+        .modifiers = .{},
+        .characters = &past,
+        .characters_ignoring_modifiers = "e",
+        .is_repeat = false,
+    } } });
+    try std.testing.expectEqual(@as(u32, 4), queue.text_len);
+    const events = queue.pending();
+    const down = events[1].input.key_down;
+    try std.testing.expectEqualStrings("\u{e9}", down.characters.?);
+    try std.testing.expectEqualStrings(&full, down.characters_ignoring_modifiers.?);
+    const up = events[2].input.key_up;
+    try std.testing.expect(up.characters == null);
+    try std.testing.expectEqualStrings("e", up.characters_ignoring_modifiers.?);
 }
 
 test "paths join without copying one path and refuse platform errors" {

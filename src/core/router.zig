@@ -1102,6 +1102,7 @@ fn call(window: *Window, handler: handler_mod.Handler, effects: *handler_mod.Eff
     effects.rendered = window.rendered();
     effects.focused_id = window.focus;
     effects.gesture_idle = window.drag.phase == .idle and window.capture.id == .root;
+    effects.dialogs = .{ .pending = &window.pending_dialog, .slots = window.dialog_handlers };
     handler.call(window.store, effects);
     if (effects.render_requested) window.render_requested = true;
     if (effects.quit_requested) window.quit_requested = true;
@@ -1189,11 +1190,14 @@ fn requestDialog(window: *Window, request: handler_mod.FileDialogRequest) void {
             handler_mod.typeName(window.store.root_type_id),
         });
     }
-    if (window.pending_dialog != null) {
-        std.debug.panic("a second file dialog was requested in frame {d}; one opens per tick", .{
-            window.frame_number,
-        });
+    // `Effects.openFileDialog` refused a request while one waits or every
+    // slot is in use, so the tick's `freeDialogSlot` finds one.
+    assert(window.pending_dialog == null);
+    var slot_free_count: u32 = 0;
+    for (window.dialog_handlers) |slot| {
+        if (slot == null) slot_free_count += 1;
     }
+    assert(slot_free_count > 0);
     var copy = request;
     switch (copy.kind) {
         .open => {},

@@ -186,7 +186,7 @@ pub const TodoModel = struct {
             .text, .compose => |*text| text.* = self.copyText(text.*),
             .pointer, .key, .scroll, .resize => {},
             // Todo's swarm draws no `.drag` or `.cancel` (`action_kinds`).
-            .wait_ns, .tick_main, .present, .drag, .cancel => unreachable,
+            .wait_ns, .tick_main, .present, .drag, .cancel, .image, .dialog => unreachable,
         }
         self.pending[self.pending_count] = copy;
         self.pending_count += 1;
@@ -304,7 +304,7 @@ pub const TodoModel = struct {
             // A resize changes the layout, which the model reads from frames.
             .scroll, .resize => {},
             // Todo's swarm draws no `.drag` or `.cancel` (`action_kinds`).
-            .wait_ns, .tick_main, .present, .drag, .cancel => unreachable,
+            .wait_ns, .tick_main, .present, .drag, .cancel, .image, .dialog => unreachable,
         }
     }
 

@@ -313,19 +313,17 @@ pub fn checkSelection(window: *const Window, many: bool, count: u32, bytes_len: 
     }
 }
 
-// The lowest free request id. Every slot holds a dialog still awaiting its
-// completion, so a full table is a capacity-planning error.
+// The lowest free request id. A request reaches the tick only while a slot
+// is free: `Effects.openFileDialog` refuses one when every slot holds a
+// dialog still awaiting its completion.
 fn freeDialogSlot(window: *Window) u32 {
     assert(window.dialog_handlers.len == window.limits.events.dialog_count_max);
     for (window.dialog_handlers, 0..) |slot, index| {
         if (slot == null) return @intCast(index);
     }
-    std.debug.panic("events pool 'dialogs' exhausted: capacity {d}, {d} in use, 1 " ++
-        "requested, frame {d}. Raise ResourceLimits.events.dialog_count_max.", .{
-        window.dialog_handlers.len,
-        window.dialog_handlers.len,
-        window.frame_number,
-    });
+    // `Effects.openFileDialog` refuses with `error.DialogBusy` while every
+    // slot is in use, and `router.requestDialog` asserts a free one.
+    unreachable;
 }
 
 comptime {
