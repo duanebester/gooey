@@ -4693,6 +4693,8 @@ test "Tab walks accessible_form's controls in tree order and draws the focus rin
         .{ .role = .radio, .name = "Email" },
         .{ .role = .checkbox, .name = "Subscribe to newsletter" },
         .{ .role = .combobox, .name = "Experience level" },
+        .{ .role = .switch_, .name = "Email notifications" },
+        .{ .role = .slider, .name = "Emails per week" },
         .{ .role = .checkbox, .name = "Accept terms and conditions, required" },
         .{ .role = .button, .name = "Submit registration form" },
         .{ .role = .button, .name = "Reset form to default values" },
@@ -4766,7 +4768,7 @@ test "Enter and Space click the focused control once per press" {
     try testing.expectEqualStrings("Ada", app.state.name);
     try testing.expect(app.state.newsletter);
 
-    for (0..7) |_| pressKey(app, &now, .tab, .{});
+    for (0..9) |_| pressKey(app, &now, .tab, .{});
     try expectFocused(&app.window, .button, "Submit registration form");
     pressKey(app, &now, .@"return", .{});
     try testing.expect(formNode(app, .alert, "Valid email is required") != null);
@@ -4780,7 +4782,7 @@ test "keyboard focus stays in view when a layout change moves it, but not after 
     defer app.deinitHeadless();
     var now: u64 = 0;
     app.tick(now);
-    for (0..8) |_| pressKey(app, &now, .tab, .{});
+    for (0..10) |_| pressKey(app, &now, .tab, .{});
     try expectFocused(&app.window, .button, "Submit registration form");
     const before = focusedNode(&app.window).?.bounds;
     try testing.expect(before.y + before.height + 4 <= 800.01);
@@ -4985,7 +4987,7 @@ test "a Tooltip shows at once for keyboard focus, and Escape hides it" {
     defer app.deinitHeadless();
     var now: u64 = 0;
     app.tick(now);
-    for (0..9) |_| pressKey(app, &now, .tab, .{});
+    for (0..11) |_| pressKey(app, &now, .tab, .{});
     try expectFocused(&app.window, .button, "Reset form to default values");
     try testing.expect(formNode(app, .tooltip, reset_tooltip) != null);
     pressKey(app, &now, .escape, .{});
@@ -5129,7 +5131,7 @@ test "keys drained together after a Select choice leave its menu closed" {
     pressKey(app, &now, .down, .{});
     pressKey(app, &now, .down, .{});
     try expectFocused(&app.window, .option, "Intermediate");
-    const keys = [_]gooey.input.KeyCode{ .@"return", .tab, .tab, .@"return" };
+    const keys = [_]gooey.input.KeyCode{ .@"return", .tab, .tab, .tab, .tab, .@"return" };
     for (keys) |key| app.window.queue.push(.{ .input = .{ .key_down = chord(key, .{}) } });
     now += 1;
     app.tick(now);
@@ -5140,6 +5142,260 @@ test "keys drained together after a Select choice leave its menu closed" {
     try testing.expect(formNode(app, .listbox, "Experience level") == null);
     try expectFocused(&app.window, .button, "Submit registration form");
     try testing.expect(app.state.validation_errors.name);
+}
+
+const ControlsState = struct {
+    wifi: bool = false,
+    locked: bool = true,
+    volume: f32 = 50,
+    level: f32 = 0.5,
+    rating: f32 = 4,
+    frozen: f32 = 2,
+
+    pub fn toggleWifi(self: *ControlsState) void {
+        self.wifi = !self.wifi;
+    }
+
+    pub fn toggleLocked(self: *ControlsState) void {
+        self.locked = !self.locked;
+    }
+};
+
+const ControlsApp = gooey.App(ControlsState, controlsRender, .{
+    .title = "Switch and Slider",
+    .width = 400,
+    .height = 400,
+    .limits = gooey.ResourceLimits.small,
+});
+
+fn controlsRender(cx: *Cx) void {
+    const state = cx.state(ControlsState);
+    cx.render(ui.box(.{ .style = .{ .padding = .all(10), .gap = 12 } }, .{
+        components.Switch{
+            .key = .{ .name = "wifi" },
+            .checked = state.wifi,
+            .label = "Wi-Fi",
+            .on_click = cx.on(ControlsState.toggleWifi, .{}),
+        },
+        components.Switch{
+            .key = .{ .name = "locked" },
+            .checked = state.locked,
+            .label = "Locked",
+            .disabled = true,
+            .on_click = cx.on(ControlsState.toggleLocked, .{}),
+        },
+        components.Slider{
+            .key = "volume",
+            .bind = &state.volume,
+            .step = 5,
+            .width = 220,
+            .accessible_name = "Volume",
+        },
+        components.Slider{
+            .key = "level",
+            .bind = &state.level,
+            .max = 1,
+            .accessible_name = "Level",
+        },
+        components.Slider{
+            .key = "rating",
+            .bind = &state.rating,
+            .max = 10,
+            .step = 3,
+            .accessible_name = "Rating",
+        },
+        components.Slider{
+            .key = "frozen",
+            .bind = &state.frozen,
+            .max = 10,
+            .step = 3,
+            .disabled = true,
+            .accessible_name = "Frozen",
+        },
+        components.Button{ .label = "After" },
+    }));
+}
+
+fn controlNode(
+    app: *ControlsApp,
+    role: gooey.ui.Role,
+    name: []const u8,
+) *const internals.records.A11yNode {
+    const frame = app.window.rendered();
+    for (frame.a11y[0..frame.a11y_count]) |*node| {
+        if (node.role != role) continue;
+        if (std.mem.eql(u8, frame.text(node.name) orelse "", name)) return node;
+    }
+    unreachable; // Every control the tests name is always built.
+}
+
+fn controlValue(app: *ControlsApp, name: []const u8) []const u8 {
+    const node = controlNode(app, .slider, name);
+    return app.window.rendered().text(node.value) orelse "";
+}
+
+/// Window x of `fraction` along a slider's travel: its thumb's centre spans
+/// the slider less half a 20 px thumb at each end.
+fn sliderX(bounds: internals.records.Rect, fraction: f32) f32 {
+    assert(fraction >= 0);
+    assert(fraction <= 1);
+    return bounds.x + 10 + fraction * (bounds.width - 20);
+}
+
+test "a Switch flips on a click, Enter, and Space, and a disabled one takes neither" {
+    const app = try testing.allocator.create(ControlsApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    try testing.expect(!controlNode(app, .switch_, "Wi-Fi").state.checked);
+    const locked = controlNode(app, .switch_, "Locked");
+    try testing.expect(locked.state.checked);
+    try testing.expect(locked.state.disabled);
+
+    pressKey(app, &now, .tab, .{});
+    try expectFocused(&app.window, .switch_, "Wi-Fi");
+    try expectRingAround(&app.window, focusedNode(&app.window).?.bounds);
+    pressKey(app, &now, .space, .{});
+    try testing.expect(app.state.wifi);
+    try testing.expect(controlNode(app, .switch_, "Wi-Fi").state.checked);
+    pressKey(app, &now, .@"return", .{});
+    try testing.expect(!app.state.wifi);
+    const wifi = controlNode(app, .switch_, "Wi-Fi").bounds;
+    clickAt(app, &now, wifi.x + 10, wifi.y + wifi.height / 2);
+    try testing.expect(app.state.wifi);
+
+    // The disabled switch is no tab stop and ignores a press.
+    pressKey(app, &now, .tab, .{});
+    try expectFocused(&app.window, .slider, "Volume");
+    const lock = controlNode(app, .switch_, "Locked").bounds;
+    clickAt(app, &now, lock.x + 10, lock.y + lock.height / 2);
+    try testing.expect(app.state.locked);
+    try testing.expect(controlNode(app, .switch_, "Locked").state.checked);
+}
+
+test "a Slider moves by stops from the keyboard and reports its value and range" {
+    const app = try testing.allocator.create(ControlsApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    pressKey(app, &now, .tab, .{});
+    pressKey(app, &now, .tab, .{});
+    try expectFocused(&app.window, .slider, "Volume");
+    try expectRingAround(&app.window, focusedNode(&app.window).?.bounds);
+    const Step = struct { key: gooey.input.KeyCode, value: f32 };
+    // Step 5 over 0 to 100: a page is 2 steps, a tenth of the range.
+    const steps = [_]Step{
+        .{ .key = .right, .value = 55 },
+        .{ .key = .up, .value = 60 },
+        .{ .key = .left, .value = 55 },
+        .{ .key = .down, .value = 50 },
+        .{ .key = .page_up, .value = 60 },
+        .{ .key = .page_down, .value = 50 },
+        .{ .key = .end, .value = 100 },
+        .{ .key = .right, .value = 100 },
+        .{ .key = .page_up, .value = 100 },
+        .{ .key = .home, .value = 0 },
+        .{ .key = .left, .value = 0 },
+        .{ .key = .page_down, .value = 0 },
+    };
+    for (steps) |step| {
+        pressKey(app, &now, step.key, .{});
+        try testing.expectEqual(step.value, app.state.volume);
+    }
+    pressKey(app, &now, .right, .{ .cmd = true });
+    try testing.expectEqual(@as(f32, 0), app.state.volume);
+    pressKey(app, &now, .right, .{});
+    try testing.expectEqualStrings("5", controlValue(app, "Volume"));
+    const range = controlNode(app, .slider, "Volume").range.?;
+    try testing.expectEqual(@as(f32, 0), range.min);
+    try testing.expectEqual(@as(f32, 100), range.max);
+    try testing.expectEqual(@as(f32, 5), range.now);
+    try testing.expectEqual(gooey.ui.Orientation.horizontal, range.orientation);
+
+    // A continuous slider moves a hundredth of its range, a tenth per page.
+    pressKey(app, &now, .tab, .{});
+    try expectFocused(&app.window, .slider, "Level");
+    pressKey(app, &now, .right, .{});
+    try testing.expectApproxEqAbs(@as(f32, 0.51), app.state.level, 1e-5);
+    pressKey(app, &now, .page_up, .{});
+    try testing.expectApproxEqAbs(@as(f32, 0.61), app.state.level, 1e-5);
+    try testing.expectEqualStrings("0.61", controlValue(app, "Level"));
+    pressKey(app, &now, .end, .{});
+    try testing.expectEqual(@as(f32, 1), app.state.level);
+
+    // Step 3 over 0 to 10 stops at 9; a value between stops moves first to
+    // the stop on the key's side.
+    pressKey(app, &now, .tab, .{});
+    try expectFocused(&app.window, .slider, "Rating");
+    pressKey(app, &now, .left, .{});
+    try testing.expectEqual(@as(f32, 3), app.state.rating);
+    pressKey(app, &now, .right, .{});
+    try testing.expectEqual(@as(f32, 6), app.state.rating);
+    pressKey(app, &now, .end, .{});
+    try testing.expectEqual(@as(f32, 9), app.state.rating);
+    pressKey(app, &now, .right, .{});
+    try testing.expectEqual(@as(f32, 9), app.state.rating);
+
+    // The disabled slider is no tab stop.
+    pressKey(app, &now, .tab, .{});
+    try expectFocused(&app.window, .button, "After");
+    try testing.expect(controlNode(app, .slider, "Frozen").state.disabled);
+}
+
+test "a Slider jumps to a press, follows a drag, clamps, and Escape restores it" {
+    const app = try testing.allocator.create(ControlsApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var now: u64 = 0;
+    app.tick(now);
+    const bounds = controlNode(app, .slider, "Volume").bounds;
+    try testing.expectEqual(@as(f32, 220), bounds.width);
+    const y = bounds.y + bounds.height / 2;
+
+    scrollMouse(app, &now, .{ .mouse_down = mouse(sliderX(bounds, 0.25), y) });
+    try testing.expectEqual(@as(f32, 25), app.state.volume);
+    try testing.expect(controlNode(app, .slider, "Volume").state.focused);
+    // 0.62 of the way lands nearer 60 than 65.
+    scrollMouse(app, &now, dragged(sliderX(bounds, 0.62), y));
+    try testing.expectEqual(@as(f32, 60), app.state.volume);
+    scrollMouse(app, &now, dragged(-500, y + 300));
+    try testing.expectEqual(@as(f32, 0), app.state.volume);
+    scrollMouse(app, &now, dragged(2000, y));
+    try testing.expectEqual(@as(f32, 100), app.state.volume);
+    scrollMouse(app, &now, dragged(sliderX(bounds, 0.4), y));
+    scrollMouse(app, &now, .{ .mouse_up = mouse(sliderX(bounds, 0.4), y) });
+    try testing.expectEqual(@as(f32, 40), app.state.volume);
+    try testing.expectEqualStrings("40", controlValue(app, "Volume"));
+
+    // Escape mid-drag restores the value the press began with.
+    scrollMouse(app, &now, .{ .mouse_down = mouse(sliderX(bounds, 0.8), y) });
+    scrollMouse(app, &now, dragged(sliderX(bounds, 0.9), y));
+    try testing.expectEqual(@as(f32, 90), app.state.volume);
+    pressKey(app, &now, .escape, .{});
+    try testing.expectEqual(@as(f32, 40), app.state.volume);
+    scrollMouse(app, &now, dragged(sliderX(bounds, 1), y));
+    scrollMouse(app, &now, .{ .mouse_up = mouse(sliderX(bounds, 1), y) });
+    try testing.expectEqual(@as(f32, 40), app.state.volume);
+
+    var right = mouse(sliderX(bounds, 1), y);
+    right.button = .right;
+    scrollMouse(app, &now, .{ .mouse_down = right });
+    scrollMouse(app, &now, .{ .mouse_up = right });
+    try testing.expectEqual(@as(f32, 40), app.state.volume);
+
+    // A disabled slider ignores a press and a drag.
+    const frozen = controlNode(app, .slider, "Frozen").bounds;
+    const frozen_y = frozen.y + frozen.height / 2;
+    scrollMouse(app, &now, .{ .mouse_down = mouse(sliderX(frozen, 1), frozen_y) });
+    scrollMouse(app, &now, dragged(sliderX(frozen, 0), frozen_y));
+    scrollMouse(app, &now, .{ .mouse_up = mouse(sliderX(frozen, 0), frozen_y) });
+    try testing.expectEqual(@as(f32, 2), app.state.frozen);
+    try testing.expect(!controlNode(app, .slider, "Frozen").state.focused);
 }
 
 test "focus on an element that leaves passes to its combobox or the next tab stop" {
