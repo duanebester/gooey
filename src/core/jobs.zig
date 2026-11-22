@@ -50,6 +50,15 @@
 //! idle runner's wait return `error.Canceled`, and every task is awaited.
 //! Deliveries still in the ring are never routed.
 //!
+//! `Mode` says who runs jobs: the workers above, the main thread
+//! (`runQueued`, the only mode without threads), or, for a deterministic
+//! simulation (the VOPR), nobody: `.stepped` starts no task and never calls
+//! `run`; the simulation plays each slot's runner and interrupter by calling
+//! the transitions the workers call (`beginRun`, `post`, `endRun`,
+//! `finishInterrupt`) between drains, with results and outcomes it makes up.
+//! The main thread's side, from `spawn` and `cancel` to `delivery` and
+//! `finishDelivery`, is the same in every mode.
+//!
 //! Resource sketch at `.standard`: 8 slots of 4 KiB input and 32 result
 //! slots of 4 KiB, 160 KiB reserved from fresh pages and zeroed up to their
 //! high-water marks on release; 16 tasks (8 runners and 8
@@ -74,6 +83,19 @@ const JobEntry = events.JobEntry;
 /// Whether jobs run on worker threads. Without threads (the web, and
 /// `-fsingle-threaded`) they run on the main thread after the drain.
 pub const threaded = !builtin.single_threaded and !builtin.cpu.arch.isWasm();
+
+/// Who runs a pool's jobs.
+pub const Mode = enum {
+    /// Each slot's runner and interrupter tasks; needs `threaded`.
+    workers,
+    /// The main thread, whole, after the drain that spawned them.
+    main_thread,
+    /// Nobody: a simulation steps the runners and interrupters itself.
+    stepped,
+
+    /// What every host uses: workers when the build has threads.
+    pub const host: Mode = if (threaded) .workers else .main_thread;
+};
 
 /// Alignment of every input and result slot; a job type that needs more is
 /// a compile error.
@@ -291,7 +313,7 @@ const Slot = struct {
 /// Where a busy slot's job is. The main thread, the runner, and the
 /// interrupter each move it only by compare-and-swap from the phase they
 /// expect, so a cancel and the job's end cannot both claim it.
-const Phase = enum(u8) {
+pub const Phase = enum(u8) {
     /// No job, or the job's end is pushed and `on_done` not yet delivered.
     idle,
     /// Spawned; the runner has not taken it.
@@ -319,6 +341,7 @@ pub const Delivery = struct {
 
 pub const Pool = struct {
     io: std.Io,
+    mode: Mode,
     /// `Config.jobs`'s `handler.typeId`s; static storage.
     type_ids: []const usize,
     /// Empty when the app registers no jobs.
@@ -352,8 +375,9 @@ pub const Pool = struct {
     /// the job's `on_done`; the start semaphore orders both for the runner.
     runner_gate: ?*std.Io.Event,
 
-    /// Reserve the slots and result storage and start the workers. An app
-    /// with no `type_ids` reserves nothing and starts no thread.
+    /// Reserve the slots and result storage and, in `.workers`, start the
+    /// workers. An app with no `type_ids` reserves nothing and starts no
+    /// thread.
     pub fn initInPlace(
         self: *Pool,
         gpa: std.mem.Allocator,
@@ -361,10 +385,13 @@ pub const Pool = struct {
         completions: *events.CompletionRing,
         limits: *const limits_mod.EventLimits,
         type_ids: []const usize,
+        mode: Mode,
     ) !void {
         assert(limits.job_count_max > 0);
         assert(limits.job_result_count_max > 0);
+        if (mode == .workers) assert(threaded);
         self.io = io;
+        self.mode = mode;
         self.type_ids = type_ids;
         self.completions = completions;
         self.input_stride = std.mem.alignForward(u32, limits.job_input_bytes_max, value_alignment);
@@ -389,7 +416,7 @@ pub const Pool = struct {
         if (type_ids.len == 0) return;
         try self.reserve(gpa, limits);
         errdefer self.release(gpa);
-        if (threaded) try self.startWorkers();
+        if (self.workers()) try self.startWorkers();
         assert(self.slots.len == limits.job_count_max);
         assert(self.result_free_count == limits.job_result_count_max);
     }
@@ -449,7 +476,7 @@ pub const Pool = struct {
     /// them its runner. An io that cannot run them all concurrently is a
     /// capacity error at init.
     fn startWorkers(self: *Pool) !void {
-        assert(threaded);
+        assert(self.workers());
         assert(!self.stopping.load(.acquire));
         for (self.slots, 0..) |*slot, index| {
             const slot_index: u32 = @intCast(index);
@@ -490,7 +517,7 @@ pub const Pool = struct {
         if (self.stopped) return;
         assert(self.type_ids.len > 0);
         self.stopping.store(true, .release);
-        if (threaded) self.group.cancel(self.io);
+        if (self.workers()) self.group.cancel(self.io);
         self.stopped = true;
         assert(self.group.token.load(.acquire) == null);
         // Each interrupter cancelled its runner's group before it returned.
@@ -558,7 +585,12 @@ pub const Pool = struct {
         assert(slot.phase.load(.acquire) == .idle);
         slot.phase.store(.pending, .release);
         self.spawned_count += 1;
-        if (threaded) slot.start.post(self.io) else slot.queued = true;
+        switch (self.mode) {
+            .workers => if (self.workers()) slot.start.post(self.io),
+            .main_thread => slot.queued = true,
+            // The simulation finds the spawn by its `pending` phase.
+            .stepped => {},
+        }
         assert(slot.busy);
         return .{ .slot = index, .generation = slot.generation };
     }
@@ -575,15 +607,16 @@ pub const Pool = struct {
         if (slot.generation != id.generation) return;
         slot.cancel.store(true, .release);
         if (slot.phase.cmpxchgStrong(.pending, .skipped, .acq_rel, .acquire)) |phase| {
-            // Without workers a job runs only inside `runQueued`.
-            if (!threaded) assert(phase != .running);
+            // On the main thread a job runs only inside `runQueued`.
+            if (self.mode == .main_thread) assert(phase != .running);
             if (phase != .running) return;
             if (slot.phase.cmpxchgStrong(.running, .interrupting, .acq_rel, .acquire)) |now| {
                 // The job returned in between; its end is the runner's.
                 assert(now == .idle);
                 return;
             }
-            slot.interrupt.post(self.io);
+            // A simulation finds the cancel by its `interrupting` phase.
+            if (self.workers()) slot.interrupt.post(self.io);
         }
     }
 
@@ -598,7 +631,7 @@ pub const Pool = struct {
     /// Run the jobs spawned since the last drain on this thread, when there
     /// are no workers. Returns whether any ran. Bounded by the slot count.
     pub fn runQueued(self: *Pool) bool {
-        if (threaded) return false;
+        if (self.mode != .main_thread) return false;
         var ran = false;
         for (self.slots, 0..) |*slot, index| {
             if (!slot.queued) continue;
@@ -683,7 +716,19 @@ pub const Pool = struct {
         self.result_free_list[self.result_free_count] = index;
         self.result_free_count += 1;
         self.result_mutex.unlock(self.io);
-        if (threaded) self.result_free.post(self.io);
+        if (self.workers()) self.result_free.post(self.io);
+    }
+
+    /// The phase of slot `index`'s job, for a simulation that steps it.
+    pub fn phaseOf(self: *const Pool, index: u32) Phase {
+        assert(index < self.slots.len);
+        return self.slots[index].phase.load(.acquire);
+    }
+
+    /// Whether this pool runs worker tasks. Comptime false without threads,
+    /// where the mode is never `.workers`, so the worker paths compile out.
+    inline fn workers(self: *const Pool) bool {
+        return threaded and self.mode == .workers;
     }
 
     fn freeSlot(self: *const Pool) ?u32 {
@@ -710,7 +755,7 @@ pub const Pool = struct {
     /// before any group is cancelled, and the wait is cancelable) or when an
     /// interrupter claims the job, which then starts the next runner.
     fn runnerMain(self: *Pool, index: u32) std.Io.Cancelable!void {
-        assert(threaded);
+        assert(self.workers());
         assert(index < self.slots.len);
         const slot = &self.slots[index];
         while (!self.stopping.load(.acquire)) {
@@ -735,8 +780,9 @@ pub const Pool = struct {
     /// A runner takes the slot's spawn. Returns true when the job moved
     /// from `pending` to `running` and `run` must be called; false when a
     /// cancel skipped it first, whose `.cancelled` end this pushed without
-    /// running it.
-    fn beginRun(self: *Pool, index: u32) bool {
+    /// running it. In `.stepped` the simulation calls it for a slot whose
+    /// phase is `pending` or `skipped`, and then never calls `run`.
+    pub fn beginRun(self: *Pool, index: u32) bool {
         assert(index < self.slots.len);
         const slot = &self.slots[index];
         const generation = slot.generation;
@@ -753,14 +799,15 @@ pub const Pool = struct {
     /// The slot's `run` returned `returned`: move the job from `running` to
     /// `idle` and push its end. Returns false, pushing nothing, when a
     /// cancel claimed the job first (`interrupting`): its interrupter owns
-    /// the end (`finishInterrupt`).
-    fn endRun(self: *Pool, index: u32, returned: anyerror!void) bool {
+    /// the end (`finishInterrupt`). In `.stepped` the simulation calls it
+    /// with the outcome it chose, for a slot it began.
+    pub fn endRun(self: *Pool, index: u32, returned: anyerror!void) bool {
         assert(index < self.slots.len);
         const slot = &self.slots[index];
         const generation = slot.generation;
         if (slot.phase.cmpxchgStrong(.running, .idle, .acq_rel, .acquire)) |phase| {
             assert(phase == .interrupting);
-            assert(threaded);
+            assert(self.mode != .main_thread);
             return false;
         }
         // `idle` before the push: once `on_done` is delivered the main
@@ -770,8 +817,9 @@ pub const Pool = struct {
     }
 
     /// The interrupted job's `run` has returned: move it from
-    /// `interrupting` to `idle` and push its end as `.cancelled`.
-    fn finishInterrupt(self: *Pool, index: u32) void {
+    /// `interrupting` to `idle` and push its end as `.cancelled`. In
+    /// `.stepped` the simulation calls it after `endRun` returned false.
+    pub fn finishInterrupt(self: *Pool, index: u32) void {
         assert(index < self.slots.len);
         const slot = &self.slots[index];
         assert(slot.phase.load(.acquire) == .interrupting);
@@ -811,7 +859,7 @@ pub const Pool = struct {
     /// the interrupter cancels its runner's group before it returns, so
     /// awaiting the pool's group awaits every runner too.
     fn interrupterMain(self: *Pool, index: u32) std.Io.Cancelable!void {
-        assert(threaded);
+        assert(self.workers());
         assert(index < self.slots.len);
         const slot = &self.slots[index];
         defer slot.group.cancel(self.io);
@@ -850,10 +898,19 @@ pub const Pool = struct {
         return self.slots[index].cancel.load(.acquire);
     }
 
-    fn post(self: *Pool, index: u32, bytes: []const u8) bool {
+    /// `Job.post` for slot `index`'s running job. With workers it waits for
+    /// a free result slot; on the main thread it cannot wait. In `.stepped`
+    /// the simulation posts only while a result slot is free, as a worker
+    /// would wait for a drain to free one, unless the job was cancelled,
+    /// which refuses the post before any wait.
+    pub fn post(self: *Pool, index: u32, bytes: []const u8) bool {
+        assert(index < self.slots.len);
         assert(bytes.len <= self.result_stride);
+        const phase = self.slots[index].phase.load(.acquire);
+        assert(phase == .running or phase == .interrupting);
         if (self.cancelRequested(index)) return false;
-        if (threaded) {
+        if (self.mode == .stepped) assert(self.result_free_count > 0);
+        if (self.workers()) {
             self.result_free.wait(self.io) catch {
                 // A cancel or shutdown: re-arm the request so the job's next
                 // Io call sees it too, and unwind.
@@ -895,7 +952,7 @@ pub const Pool = struct {
         defer self.result_mutex.unlock(self.io);
         self.result_used_max = @max(self.result_used_max, size);
         if (self.result_free_count == 0) {
-            assert(!threaded);
+            assert(self.mode == .main_thread);
             std.debug.panic("events pool 'job results' exhausted: capacity {d}, {d} " ++
                 "in use, 1 requested by job {s}; without threads a post cannot wait " ++
                 "for a drain. Raise ResourceLimits.events.job_result_count_max.", .{

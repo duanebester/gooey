@@ -684,6 +684,12 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
         const Dialogs = vopr_dialogs.Dialogs(App.limits.events);
         const lists_dialog = std.mem.indexOfScalar(ActionKind, Model.action_kinds, .dialog) != null;
         const lists_image = std.mem.indexOfScalar(ActionKind, Model.action_kinds, .image) != null;
+        /// Who runs the app's jobs: the harness steps the workers, unless
+        /// the model runs them on the main thread (`runQueued`).
+        const job_runs: internals.jobs.Mode = if (@hasDecl(Model, "job_runs"))
+            Model.job_runs
+        else
+            .stepped;
 
         /// Paths one selection answer may hold, before the byte budget cuts it.
         const path_count_choices = [_]u32{ 1, 2, 3, App.limits.events.dialog_path_count_max };
@@ -810,8 +816,13 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
                 .scale_factor = scale_factor,
                 .steps = &.{},
             };
-            // The harness plays the image decode worker: no thread reads files.
-            try self.driver.initInPlaceDecoding(gpa, io, &trace, .stepped);
+            // The harness plays the image decode worker, so no thread reads
+            // files, and the job workers unless the model runs jobs on the
+            // main thread (`Model.job_runs`).
+            try self.driver.initInPlaceWorkers(gpa, io, &trace, .{
+                .image_decodes = .stepped,
+                .job_runs = job_runs,
+            });
             self.frame_number_rendered = 0;
             self.quiescence_round_count = 0;
             self.dump_hasher = .init(0);

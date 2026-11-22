@@ -287,6 +287,11 @@ pub fn App(
             /// files on the worker thread; `.stepped` starts none, for a
             /// simulation that plays the worker (`images.Loader.takeStepped`).
             image_decodes: images.Mode = .worker,
+            /// `.host`, the policy every host uses, runs jobs on workers
+            /// (on the main thread without threads); `.main_thread` runs
+            /// them there natively too, and `.stepped` runs none, for a
+            /// simulation that plays the workers (`jobs.Mode`).
+            job_runs: jobs_mod.Mode = .host,
         };
 
         /// The app must stay at this address: handlers and `Cx` point into it.
@@ -338,6 +343,7 @@ pub fn App(
             try self.initCoreWith(io, &.{
                 .scale_factor = scale_factor,
                 .image_decodes = .worker,
+                .job_runs = .host,
             });
         }
 
@@ -371,6 +377,7 @@ pub fn App(
                 .resources = &self.resources,
                 .job_types = &self.job_type_ids,
                 .image_decodes = options.image_decodes,
+                .job_runs = options.job_runs,
             });
         }
 
