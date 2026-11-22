@@ -399,8 +399,11 @@ One text wraps into at most `word_count_text_max + 1` lines.
 - **Text elements** must be inside a container (enforced by debug assertion).
 - **Zero allocation during frame** - all collections use fixed capacity, panic on overflow.
 - The layout algorithm runs in these phases:
-  1. **Min sizes** (bottom-up) - compute minimum content sizes
-  2. **Final sizes** (top-down) - distribute available space
+  1. **Min sizes** (bottom-up) - compute minimum content sizes, and each element's
+     floor: the narrowest it can be without cutting content (a wrapping text's
+     widest word)
+  2. **Final sizes** (top-down) - distribute available space; children that
+     overflow shrink largest first, never below their floors
      - **2b. Text wrapping** - wrap text now that container widths are known; propagate height changes back up to fit-content parents
   3. **Positions** (top-down) - compute final bounding boxes
      - **3b. Floating elements** - position floating elements relative to parents (includes text wrapping for floats)

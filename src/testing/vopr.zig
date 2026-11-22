@@ -1616,11 +1616,16 @@ fn runPairedSeed(comptime workload: Workload, prng_seed: u64) !Result(workload.M
 
 test "two instances fed the same bytes draw the same frames" {
     _ = try runPairedSeed(.todo, 1);
-    const result = try runPairedSeed(.drag_drop, 1);
+    // Seed 4 starts nine drags in 300 steps; seed 1 starts one, so whether it
+    // drops depended on where layout happened to put the lists.
+    const result = try runPairedSeed(.drag_drop, 4);
     try std.testing.expect(result.stats.drags_completed > 0);
     const list = try runPairedSeed(.virtual_list, 1);
     try std.testing.expect(list.stats.rows_seen > 0);
-    const panes = try runPairedSeed(.splitter, 1);
+    // Seed 1's resizes include a 1 px window where the panes overflow at
+    // their content floors, so its few presses miss the splitters; seed 6
+    // drags them 27 times.
+    const panes = try runPairedSeed(.splitter, 6);
     try std.testing.expect(panes.stats.drags_moved > 0);
     const fired = try runPairedSeed(.actions, 1);
     var fire_count: u32 = 0;

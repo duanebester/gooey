@@ -188,6 +188,9 @@ pub const TextData = struct {
     config: TextConfig,
     measured_width: f32 = 0,
     measured_height: f32 = 0,
+    /// The narrowest it can wrap without cutting a word: its widest word
+    /// when it wraps at words, else `measured_width`.
+    floor_width: f32 = 0,
     wrapped_lines: ?[]const types.WrappedLine = null,
     /// Container width for text alignment (set during wrapping)
     container_width: f32 = 0,
@@ -202,6 +205,12 @@ pub const ComputedLayout = struct {
     content_box: BoundingBox = .{},
     min_width: f32 = 0,
     min_height: f32 = 0,
+    /// The narrowest the element can be without cutting its content, at most
+    /// `min_width`: an overflowing parent shrinks it no further, and a grow
+    /// element takes at least this much. Wrapping text makes it smaller than
+    /// `min_width`, which is the content's one-line width. Heights have no
+    /// such field: before text wraps, `min_height` is already the floor.
+    floor_width: f32 = 0,
     sized_width: f32 = 0,
     sized_height: f32 = 0,
 };
@@ -338,6 +347,11 @@ pub const LayoutEngine = struct {
     /// them. Without one, the pass that grows fit-content parents to such
     /// heights skips its test on every element.
     heights_derived: bool = false,
+    /// Whether a text this frame wraps at words with its widest word narrower
+    /// than its line, set by `text`. Only then does any element's floor
+    /// differ from its minimum, so without one the minimum pass copies the
+    /// minimum instead of summing floors (`sizing_pass.computeMinSizes`).
+    floors_differ: bool = false,
     /// Whether a box is marked to grow to such a height, so the walk that
     /// grows marked boxes has work (`sizing_pass.growMarkedParents`).
     parents_marked: bool = false,
@@ -430,6 +444,7 @@ pub const LayoutEngine = struct {
         self.viewport_height = height;
         self.wrapped_line_count = 0;
         self.heights_derived = false;
+        self.floors_differ = false;
         self.parents_marked = false;
     }
 
@@ -470,13 +485,20 @@ pub const LayoutEngine = struct {
             );
             elem.text_data.?.measured_width = measured.width;
             elem.text_data.?.measured_height = measured.height;
+            elem.text_data.?.floor_width = if (config.wrap_mode == .words and content.len > 0)
+                @min(measured.width, sizing_pass.widestWord(self, content, config))
+            else
+                measured.width;
         } else {
             // Fallback estimate: 0.6 is an average glyph advance ratio, 1.2 a
             // typical line-height ratio.
             const font_size_f: f32 = @floatFromInt(config.font_size);
             elem.text_data.?.measured_width = @as(f32, @floatFromInt(content.len)) * font_size_f * 0.6;
             elem.text_data.?.measured_height = font_size_f * 1.2;
+            elem.text_data.?.floor_width = elem.text_data.?.measured_width;
         }
+        std.debug.assert(elem.text_data.?.floor_width <= elem.text_data.?.measured_width);
+        if (elem.text_data.?.floor_width < elem.text_data.?.measured_width) self.floors_differ = true;
     }
 
     /// Appends the element, tracks it as a floating root when it floats, and

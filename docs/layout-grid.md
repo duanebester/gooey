@@ -431,7 +431,8 @@ Each states what GPUI does, from its source (`crates/gpui/src/style.rs`, `styled
 
 ## Related changes outside grids
 
-Decided on 2026-11-21 to land separately from the grid, each as its own change:
+Decided on 2026-11-21 to land separately from the grid, each as its own change. Both
+have landed: decisions 25 and 26 in the core contract.
 
 - **Percent less gaps.** A child's `.percent` becomes a fraction of its parent's content
   size less the gaps along the parent's direction, as Clay sizes it, so grid tracks and

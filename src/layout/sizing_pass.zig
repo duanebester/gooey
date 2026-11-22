@@ -66,6 +66,9 @@ const MinSizeFrame = struct {
     cursor: ?u32,
     content_width: f32,
     content_height: f32,
+    /// The children's floors along the width, as `content_width` sums or
+    /// takes the widest of their minimums.
+    content_floor: f32,
     /// Non-floating children added so far, for the gaps.
     flow_count: u32,
     is_horizontal: bool,
@@ -76,9 +79,20 @@ const MinSizeFrame = struct {
 /// Content minimums for `root`'s whole subtree, floating elements included
 /// (they size themselves but do not count toward their parent).
 pub fn computeMinSizes(engine: *LayoutEngine, root: u32) void {
+    if (engine.floors_differ) {
+        computeMinSizesWith(true, engine, root);
+    } else {
+        computeMinSizesWith(false, engine, root);
+    }
+}
+
+/// `floors` is `engine.floors_differ`, at compile time: without a text whose
+/// floor is narrower than its line, every floor equals its minimum, so the
+/// walk copies minimums rather than summing floors beside them.
+fn computeMinSizesWith(comptime floors: bool, engine: *LayoutEngine, root: u32) void {
     std.debug.assert(root < engine.elements.len());
     if (engine.elements.getConst(root).first_child_index == null) {
-        finishMinSize(engine.elements.get(root), 0, 0);
+        finishMinSize(floors, engine.elements.get(root), 0, 0, 0);
         return;
     }
 
@@ -90,20 +104,28 @@ pub fn computeMinSizes(engine: *LayoutEngine, root: u32) void {
     while (depth > 0) {
         std.debug.assert(open_count <= engine.elements.len()); // Each parent once.
         const frame = &stack[depth - 1];
-        if (addChildMinSizes(engine, frame)) |child_index| {
+        if (addChildMinSizes(floors, engine, frame)) |child_index| {
             std.debug.assert(depth < engine.capacity.box_depth_max);
             stack[depth] = openMinSizeFrame(engine, child_index);
             depth += 1;
             open_count += 1;
         } else {
             const parent = engine.elements.get(frame.index);
-            addGaps(frame, parent.config.layout.child_gap);
+            addGaps(floors, frame, parent.config.layout.child_gap);
             if (parent.config.layout.wrap and !frame.is_horizontal_scroll) {
-                frame.content_width = widestChildMin(engine, parent);
+                const widest = widestChildMin(engine, parent);
+                frame.content_width = widest.min;
+                frame.content_floor = widest.floor;
             }
-            finishMinSize(parent, frame.content_width, frame.content_height);
+            finishMinSize(
+                floors,
+                parent,
+                frame.content_width,
+                frame.content_height,
+                frame.content_floor,
+            );
             depth -= 1;
-            if (depth > 0) addChildMinSize(&stack[depth - 1], parent);
+            if (depth > 0) addChildMinSize(floors, &stack[depth - 1], parent);
         }
     }
 }
@@ -119,6 +141,7 @@ fn openMinSizeFrame(engine: *LayoutEngine, index: u32) MinSizeFrame {
         .cursor = first_child,
         .content_width = 0,
         .content_height = 0,
+        .content_floor = 0,
         .flow_count = 0,
         .is_horizontal = elem.config.layout.layout_direction.isHorizontal(),
         .is_horizontal_scroll = if (elem.config.scroll) |scroll| scroll.horizontal else false,
@@ -129,7 +152,7 @@ fn openMinSizeFrame(engine: *LayoutEngine, index: u32) MinSizeFrame {
 /// Finish and add `frame`'s remaining leaf children until one has children
 /// of its own: return it for the walk to open, its siblings left for later,
 /// or null once every child is added.
-fn addChildMinSizes(engine: *LayoutEngine, frame: *MinSizeFrame) ?u32 {
+fn addChildMinSizes(comptime floors: bool, engine: *LayoutEngine, frame: *MinSizeFrame) ?u32 {
     std.debug.assert(frame.index < engine.elements.len());
     var cursor = frame.cursor;
     var sibling_count: u32 = 0;
@@ -142,8 +165,8 @@ fn addChildMinSizes(engine: *LayoutEngine, frame: *MinSizeFrame) ?u32 {
             frame.cursor = cursor;
             return child_index;
         }
-        finishMinSize(child, 0, 0);
-        addChildMinSize(frame, child);
+        finishMinSize(floors, child, 0, 0, 0);
+        addChildMinSize(floors, frame, child);
     }
     frame.cursor = null;
     return null;
@@ -152,17 +175,24 @@ fn addChildMinSizes(engine: *LayoutEngine, frame: *MinSizeFrame) ?u32 {
 /// Add one finished child's minimum along the parent's main axis (sum) and
 /// cross axis (max), respecting scroll-direction opt-outs. Floating children
 /// do not affect their parent's minimum.
-fn addChildMinSize(frame: *MinSizeFrame, child: *const LayoutElement) void {
+fn addChildMinSize(comptime floors: bool, frame: *MinSizeFrame, child: *const LayoutElement) void {
     std.debug.assert(child.computed.min_width >= 0);
-    std.debug.assert(child.computed.min_height >= 0);
+    std.debug.assert(child.computed.floor_width <= child.computed.min_width);
     if (child.config.floating != null) return;
     const min_width = child.computed.min_width;
     const min_height = child.computed.min_height;
+    const floor_width = child.computed.floor_width;
     if (frame.is_horizontal) {
-        if (!frame.is_horizontal_scroll) frame.content_width += min_width;
+        if (!frame.is_horizontal_scroll) {
+            frame.content_width += min_width;
+            if (floors) frame.content_floor += floor_width;
+        }
         if (!frame.is_vertical_scroll) frame.content_height = @max(frame.content_height, min_height);
     } else {
-        if (!frame.is_horizontal_scroll) frame.content_width = @max(frame.content_width, min_width);
+        if (!frame.is_horizontal_scroll) {
+            frame.content_width = @max(frame.content_width, min_width);
+            if (floors) frame.content_floor = @max(frame.content_floor, floor_width);
+        }
         if (!frame.is_vertical_scroll) frame.content_height += min_height;
     }
     frame.flow_count += 1;
@@ -170,13 +200,16 @@ fn addChildMinSize(frame: *MinSizeFrame, child: *const LayoutElement) void {
 
 /// Add gaps between the flow children, but not for scroll containers in
 /// their scrollable direction.
-fn addGaps(frame: *MinSizeFrame, child_gap: u16) void {
+fn addGaps(comptime floors: bool, frame: *MinSizeFrame, child_gap: u16) void {
     std.debug.assert(frame.cursor == null); // Every child is added.
     if (frame.flow_count > 1) {
         const gap: f32 = @floatFromInt(child_gap);
         const gap_total = gap * @as(f32, @floatFromInt(frame.flow_count - 1));
         if (frame.is_horizontal) {
-            if (!frame.is_horizontal_scroll) frame.content_width += gap_total;
+            if (!frame.is_horizontal_scroll) {
+                frame.content_width += gap_total;
+                if (floors) frame.content_floor += gap_total;
+            }
         } else {
             if (!frame.is_vertical_scroll) frame.content_height += gap_total;
         }
@@ -184,43 +217,67 @@ fn addGaps(frame: *MinSizeFrame, child_gap: u16) void {
 }
 
 /// A wrapping row can be as narrow as its widest child, which may get a line
-/// of its own: its children's widest minimum, without gaps, replaces the sum
-/// a row takes. Once per wrapping row, so rows that do not wrap pay nothing
-/// per child.
-fn widestChildMin(engine: *const LayoutEngine, parent: *const LayoutElement) f32 {
+/// of its own: its children's widest minimum and widest floor, without gaps,
+/// replace the sums a row takes. Once per wrapping row, so rows that do not
+/// wrap pay nothing per child.
+fn widestChildMin(
+    engine: *const LayoutEngine,
+    parent: *const LayoutElement,
+) struct { min: f32, floor: f32 } {
     std.debug.assert(parent.config.layout.wrap);
     std.debug.assert(parent.config.layout.layout_direction.isHorizontal());
     var widest: f32 = 0;
+    var widest_floor: f32 = 0;
     var cursor = parent.first_child_index;
     var visited: u32 = 0;
     while (cursor) |index| : (visited += 1) {
         std.debug.assert(visited < engine.elements.len()); // Each sibling once.
         const child = engine.elements.getConst(index);
         cursor = child.next_sibling_index;
-        if (child.config.floating == null) widest = @max(widest, child.computed.min_width);
+        if (child.config.floating == null) {
+            widest = @max(widest, child.computed.min_width);
+            widest_floor = @max(widest_floor, child.computed.floor_width);
+        }
     }
-    return widest;
+    std.debug.assert(widest_floor <= widest);
+    return .{ .min = widest, .floor = widest_floor };
 }
 
-/// Write one element's minimum from its children's content size: widen it to
+/// Write one element's minimum and floor from its children's: widen them to
 /// its text, add padding, then apply its own sizing-axis constraints.
-fn finishMinSize(elem: *LayoutElement, children_width: f32, children_height: f32) void {
+fn finishMinSize(
+    comptime floors: bool,
+    elem: *LayoutElement,
+    children_width: f32,
+    children_height: f32,
+    children_floor: f32,
+) void {
     std.debug.assert(children_width >= 0);
-    std.debug.assert(children_height >= 0);
+    std.debug.assert(children_floor <= children_width or !floors);
     var content_width = children_width;
     var content_height = children_height;
+    var content_floor = children_floor;
 
     if (elem.text_data) |td| {
         content_width = @max(content_width, td.measured_width);
         content_height = @max(content_height, td.measured_height);
+        content_floor = @max(content_floor, td.floor_width);
     }
 
     const padding = elem.config.layout.padding;
-    const min_width = content_width + padding.totalX();
-    const min_height = content_height + padding.totalY();
-
-    elem.computed.min_width = applyMinMax(min_width, elem.config.layout.sizing.width);
-    elem.computed.min_height = applyMinMax(min_height, elem.config.layout.sizing.height);
+    const sizing = elem.config.layout.sizing;
+    elem.computed.min_width = applyMinMax(content_width + padding.totalX(), sizing.width);
+    elem.computed.min_height = applyMinMax(content_height + padding.totalY(), sizing.height);
+    // Floors and minimums are summed in the same order, so they are equal to
+    // the bit unless word-wrapping text lies below: most elements copy the
+    // minimum. Clamping and padding are monotonic, so a floor that differs
+    // stays at most the minimum.
+    if (!floors or content_floor == content_width) {
+        elem.computed.floor_width = elem.computed.min_width;
+    } else {
+        elem.computed.floor_width = applyMinMax(content_floor + padding.totalX(), sizing.width);
+    }
+    std.debug.assert(elem.computed.floor_width <= elem.computed.min_width);
 }
 
 /// One parent whose children the top-down walk is sizing, and the rule that
@@ -240,8 +297,12 @@ const SizingFrame = struct {
     /// The parent's content area, offered to every child.
     width: f32,
     height: f32,
-    /// The shrink ratio for `.shrink`, the space per grow weight for `.grow`.
+    /// The free space per grow weight, which sizes grow children under both
+    /// rules.
     factor: f32,
+    /// Under `.shrink`, the cap on every fit and grow child along the main
+    /// axis, never below the child's floor: the widest give way first.
+    level: f32,
     /// What a `.percent` child takes its fraction of along the main axis: the
     /// content size less the gaps between flow children, as Clay sizes it, so
     /// percents that add up to 1 fill the parent exactly.
@@ -251,7 +312,10 @@ const SizingFrame = struct {
 const SizingRule = enum {
     /// The uniform-grow fast path already wrote every child's size.
     assigned,
+    /// The children overflow: fit and grow children shrink, largest first,
+    /// to `level`, none below its floor.
     shrink,
+    /// The children fit: grow children share the free space by weight.
     grow,
 };
 
@@ -347,7 +411,7 @@ fn sizeLeafChildren(engine: *LayoutEngine, frame: *const SizingFrame) void {
 inline fn sizeByRule(engine: *LayoutEngine, frame: *const SizingFrame, child: *LayoutElement) void {
     std.debug.assert(child.config.floating == null);
     std.debug.assert(frame.factor >= 0);
-    std.debug.assert(frame.percent_basis >= 0);
+    std.debug.assert(frame.level >= 0);
     switch (frame.rule) {
         .assigned => {},
         .shrink => assignShrunkSize(engine, child, frame),
@@ -377,6 +441,7 @@ fn planChildSizes(engine: *LayoutEngine, parent_index: u32) SizingFrame {
         .width = content.width,
         .height = content.height,
         .factor = 0,
+        .level = std.math.floatMax(f32),
         .percent_basis = 0,
     };
     if (parent.config.layout.wrap) {
@@ -411,14 +476,19 @@ fn planChildSizes(engine: *LayoutEngine, parent_index: u32) SizingFrame {
 
     const totals = sumDesiredSizes(engine, first_child, is_horizontal);
     frame.has_grandchildren = totals.has_grandchildren;
-    planDistribution(&frame, &totals, available, gap);
+    planDistribution(engine, &frame, &totals, available, gap);
     return frame;
 }
 
-/// Choose the slow path's rule from the children's desired sizes: shrink
-/// them all by one ratio when they overflow `available`, else share the
-/// free space among the grow children by weight.
+/// Choose the slow path's rule. Grow children share the free space by
+/// weight, each at least its floor. When that cannot fit, because the other
+/// children already overflow or a grow child's floor is above its share, the
+/// children shrink as Clay shrinks them: the widest fit and grow children
+/// give way first, down to a common `level`, and none goes below its floor.
+/// Fixed and percent children keep their size. What floors still cannot fit
+/// overflows, as in CSS flexbox and Clay.
 fn planDistribution(
+    engine: *const LayoutEngine,
     frame: *SizingFrame,
     totals: *const ChildTotals,
     available: f32,
@@ -431,29 +501,159 @@ fn planDistribution(
     const total_gap = gap * gap_count;
     frame.percent_basis = @max(0, available - total_gap);
     const total_desired = totals.total_desired + totals.percent_total * frame.percent_basis;
-    const size_to_distribute = available - total_desired - total_gap;
-    if (size_to_distribute < 0 and total_desired > 0) {
-        const overflow = -size_to_distribute;
-        frame.rule = .shrink;
-        frame.factor = @max(0, 1.0 - overflow / total_desired);
-        std.debug.assert(frame.factor <= 1.0);
-    } else {
-        // Gap overflow is intended: gaps count as used space and never
-        // shrink, grow children get nothing from negative space, and the
-        // rest overflows, as in CSS flexbox and clay. With nothing desired to
-        // shrink, only the gaps can make the space negative here.
-        if (size_to_distribute < 0) {
-            std.debug.assert(total_desired == 0);
-            std.debug.assert(total_gap > available);
-        }
-        frame.rule = .grow;
-        frame.factor = if (totals.grow_weight_total > 0)
-            @max(0, size_to_distribute) / totals.grow_weight_total
-        else
-            0;
-        if (size_to_distribute < 0) std.debug.assert(frame.factor == 0);
-    }
+    const free = available - total_desired - total_gap;
+    frame.rule = .grow;
+    frame.level = std.math.floatMax(f32);
+    frame.factor = if (totals.grow_weight_total > 0)
+        @max(0, free) / totals.grow_weight_total
+    else
+        0;
     std.debug.assert(frame.factor >= 0);
+    // Without overflow and with every grow child above its floor, the
+    // shares fill the space exactly; with nothing that can shrink, sizes
+    // stay as `.grow` gives them. Neither needs a walk.
+    if (free >= 0 and frame.factor >= totals.grow_floor_ratio_max) return;
+    if (totals.shrinkable_count == 0) return;
+
+    const level = shrinkLevel(engine, frame, available - total_gap);
+    if (level == std.math.floatMax(f32)) return; // Grow maximums left room.
+    frame.rule = .shrink;
+    frame.level = level;
+}
+
+/// Leveling rounds before `shrinkLevel` bisects instead. A round settles
+/// every child at one size, so ordinary rows need one or two; a row of many
+/// distinct sizes would need a round per size.
+const shrink_round_count_max: u32 = 16;
+
+/// Bisection steps after the rounds: each halves the interval, so a level up
+/// to 2^20 px is found within 2^-12 px, below what any display shows.
+const shrink_step_count: u32 = 32;
+
+/// The level at which the children fit in `target`, or `floatMax` when they
+/// already fit. Exact leveling, as Clay shrinks: from above, every child at
+/// the level gives way together until the total fits or the level reaches
+/// the next size where a child joins or stops at its floor. At most
+/// `shrink_round_count_max` rounds and `shrink_step_count` bisection steps,
+/// one walk over the children each, and only on a parent that overflows.
+fn shrinkLevel(engine: *const LayoutEngine, frame: *const SizingFrame, target: f32) f32 {
+    var level: f32 = std.math.floatMax(f32);
+    var round: u32 = 0;
+    while (round < shrink_round_count_max) : (round += 1) {
+        const step = levelStep(engine, frame, level);
+        const excess = step.total - target;
+        if (excess <= 0) {
+            std.debug.assert(round == 0); // Later rounds stop above the target.
+            return level;
+        }
+        if (step.active_count > 0) {
+            const active: f32 = @floatFromInt(step.active_count);
+            const next = level - excess / active;
+            if (next >= step.breakpoint) return next;
+        } else {
+            // Every shrinkable child is at its floor: nothing gives way.
+            if (round > 0 and step.breakpoint == 0) return level;
+        }
+        level = step.breakpoint;
+    }
+    return bisectLevel(engine, frame, target, level);
+}
+
+/// The highest level in `[0, high_start]` at which the children fit, by
+/// bisection, once leveling ran out of rounds. Level 0 leaves every
+/// shrinkable child at its floor; when even that overflows, the floors do.
+fn bisectLevel(
+    engine: *const LayoutEngine,
+    frame: *const SizingFrame,
+    target: f32,
+    high_start: f32,
+) f32 {
+    std.debug.assert(high_start >= 0);
+    std.debug.assert(std.math.isFinite(high_start));
+    if (levelStep(engine, frame, 0).total > target) return 0;
+    var low: f32 = 0; // Fits.
+    var high: f32 = high_start; // Overflows.
+    var step: u32 = 0;
+    while (step < shrink_step_count) : (step += 1) {
+        const middle = low + (high - low) / 2;
+        if (levelStep(engine, frame, middle).total <= target) {
+            low = middle;
+        } else {
+            high = middle;
+        }
+    }
+    std.debug.assert(low <= high);
+    return low;
+}
+
+/// The children at one level: their main-axis total, how many give way as
+/// the level falls (fit or grow children at the level, above their floor),
+/// and the next level below where that count changes: the largest size
+/// under the level, or the highest floor under it of a child that gives
+/// way; 0 when there is none.
+const LevelStep = struct { total: f32, active_count: u32, breakpoint: f32 };
+
+fn levelStep(engine: *const LayoutEngine, frame: *const SizingFrame, level: f32) LevelStep {
+    std.debug.assert(level >= 0);
+    const is_horizontal = frame.is_horizontal;
+    var step: LevelStep = .{ .total = 0, .active_count = 0, .breakpoint = 0 };
+    var cursor = frame.cursor;
+    var visited: u32 = 0;
+    while (cursor) |index| : (visited += 1) {
+        std.debug.assert(visited < engine.elements.len()); // Each sibling once.
+        const child = engine.elements.getConst(index);
+        cursor = child.next_sibling_index;
+        if (child.config.floating != null) continue;
+        const layout = &child.config.layout;
+        const sizing = if (is_horizontal) layout.sizing.width else layout.sizing.height;
+        const tentative = shrunkMainSize(child, frame, std.math.floatMax(f32));
+        if (sizing.value == .fit or sizing.value == .grow) {
+            const floor = floorMain(child, is_horizontal);
+            step.total += @min(tentative, @max(floor, level));
+            if (tentative < level) {
+                step.breakpoint = @max(step.breakpoint, tentative);
+            } else if (floor < level) {
+                step.active_count += 1;
+                step.breakpoint = @max(step.breakpoint, floor);
+            }
+        } else {
+            step.total += tentative;
+        }
+    }
+    std.debug.assert(step.breakpoint < level or level == 0);
+    return step;
+}
+
+/// A child's main-axis size under `.shrink` at `level`: its size as `.grow`
+/// would give it, capped at `level` when it is fit or grow, and never below
+/// its floor.
+fn shrunkMainSize(child: *const LayoutElement, frame: *const SizingFrame, level: f32) f32 {
+    std.debug.assert(child.config.floating == null);
+    std.debug.assert(level >= 0);
+    const is_horizontal = frame.is_horizontal;
+    const sizing = if (is_horizontal) child.config.layout.sizing.width else child.config.layout.sizing.height;
+    const content = if (is_horizontal) child.computed.min_width else child.computed.min_height;
+    const floor = floorMain(child, is_horizontal);
+    return switch (sizing.value) {
+        .grow => |grow| blk: {
+            const share = applyMinMax(@max(floor, frame.factor * grow.weight), sizing);
+            break :blk @min(share, @max(floor, level));
+        },
+        .fit => |mm| blk: {
+            const desired = @max(content, if (mm.max >= 1e10) content else mm.max);
+            break :blk @min(desired, @max(floor, level));
+        },
+        .fixed => |mm| mm.min,
+        .percent => |p| @max(p.min, @min(p.max, frame.percent_basis * p.value)),
+    };
+}
+
+/// How narrow (or short) a child can be along the main axis without cutting
+/// its content. Heights have no separate floor before text wraps.
+inline fn floorMain(child: *const LayoutElement, is_horizontal: bool) f32 {
+    const floor = if (is_horizontal) child.computed.floor_width else child.computed.min_height;
+    std.debug.assert(floor >= 0);
+    return floor;
 }
 
 /// Resolve one element's concrete size for the space its parent offers.
@@ -490,6 +690,11 @@ const ChildTotals = struct {
     grow_weight_total: f32,
     total_desired: f32,
     percent_total: f32,
+    /// The largest floor per weight among grow children: a share below it
+    /// leaves that child at its floor, past its share.
+    grow_floor_ratio_max: f32,
+    /// Fit and grow children: the ones an overflow can shrink.
+    shrinkable_count: u32,
     child_count: u32,
     has_grandchildren: bool,
 };
@@ -504,6 +709,8 @@ fn sumDesiredSizes(engine: *LayoutEngine, first_child: u32, is_horizontal: bool)
     var grow_weight_total: f32 = 0;
     var total_desired: f32 = 0;
     var percent_total: f32 = 0;
+    var grow_floor_ratio_max: f32 = 0;
+    var shrinkable_count: u32 = 0;
     var child_count: u32 = 0;
     var has_grandchildren = false;
 
@@ -524,12 +731,16 @@ fn sumDesiredSizes(engine: *LayoutEngine, first_child: u32, is_horizontal: bool)
             .grow => |grow| blk: {
                 std.debug.assert(grow.weight > 0);
                 grow_weight_total += grow.weight;
+                shrinkable_count += 1;
+                const ratio = floorMain(child, is_horizontal) / grow.weight;
+                grow_floor_ratio_max = @max(grow_floor_ratio_max, ratio);
                 break :blk child_min; // grow elements only contribute their min
             },
             .fit => |mm| blk: {
                 // If max is unbounded (floatMax), use min_width as desired
                 // Otherwise use the max constraint as desired size
                 const effective_max = if (mm.max >= 1e10) child_min else mm.max;
+                shrinkable_count += 1;
                 break :blk @max(child_min, effective_max);
             },
             .fixed => |mm| mm.min, // fixed wants exactly this size
@@ -551,6 +762,8 @@ fn sumDesiredSizes(engine: *LayoutEngine, first_child: u32, is_horizontal: bool)
         .grow_weight_total = grow_weight_total,
         .total_desired = total_desired,
         .percent_total = percent_total,
+        .grow_floor_ratio_max = grow_floor_ratio_max,
+        .shrinkable_count = shrinkable_count,
         .child_count = child_count,
         .has_grandchildren = has_grandchildren,
     };
@@ -637,7 +850,9 @@ fn speculativeUniformAssign(
             continue;
         }
 
-        if (!isUnconstrainedGrow(child, is_horizontal)) {
+        // A share below a child's floor would cut its content: the slow
+        // path shrinks its siblings instead.
+        if (!isUnconstrainedGrow(child, is_horizontal) or floorMain(child, is_horizontal) > per_child) {
             return .{ .eligible = false, .floating_count = 0, .has_grandchildren = false };
         }
 
@@ -711,50 +926,32 @@ fn reassignUniformSizes(
     }
 }
 
-/// Compute and assign the shrunk size for a single child on the main axis,
-/// honoring its min constraint, then resolve the cross axis and aspect
-/// ratio. A leaf: no recursion, no side effects beyond `child.computed` and,
-/// for an aspect ratio, `engine.heights_derived`.
+/// Assign one child's size when its parent shrinks its children: the main
+/// axis capped at the frame's level (`shrunkMainSize`), then the cross axis
+/// and aspect ratio. A leaf: no recursion, no side effects beyond
+/// `child.computed` and, for an aspect ratio, `engine.heights_derived`.
 fn assignShrunkSize(engine: *LayoutEngine, child: *LayoutElement, frame: *const SizingFrame) void {
-    const is_horizontal = frame.is_horizontal;
-    const width = frame.width;
-    const height = frame.height;
-    const shrink_ratio = frame.factor;
-    std.debug.assert(shrink_ratio >= 0);
-    std.debug.assert(shrink_ratio <= 1.0);
-
-    const child_sizing = if (is_horizontal) child.config.layout.sizing.width else child.config.layout.sizing.height;
-    const child_min_constraint = child_sizing.getMin();
-    const child_min_content = if (is_horizontal) child.computed.min_width else child.computed.min_height;
-
-    const child_desired: f32 = switch (child_sizing.value) {
-        .grow => child_min_content,
-        .fit => |mm| @max(child_min_content, if (mm.max >= 1e10) child_min_content else mm.max),
-        .fixed => |mm| mm.min,
-        .percent => |p| frame.percent_basis * p.value,
-    };
-
-    const new_size: f32 = if (child_sizing.value == .grow)
-        child_min_constraint
-    else
-        @max(child_min_constraint, child_desired * shrink_ratio);
-
-    if (is_horizontal) {
-        child.computed.sized_width = new_size;
-        child.computed.sized_height = computeAxisSize(child.config.layout.sizing.height, child.computed.min_height, height);
+    std.debug.assert(frame.rule == .shrink);
+    std.debug.assert(child.config.floating == null);
+    const sizing = child.config.layout.sizing;
+    const main = shrunkMainSize(child, frame, frame.level);
+    if (frame.is_horizontal) {
+        child.computed.sized_width = main;
+        child.computed.sized_height = computeAxisSize(sizing.height, child.computed.min_height, frame.height);
     } else {
-        child.computed.sized_width = computeAxisSize(child.config.layout.sizing.width, child.computed.min_width, width);
-        child.computed.sized_height = new_size;
+        child.computed.sized_width = computeAxisSize(sizing.width, child.computed.min_width, frame.width);
+        child.computed.sized_height = main;
     }
 
     if (child.config.layout.aspect_ratio) |ratio| {
-        if (is_horizontal) {
+        if (frame.is_horizontal) {
             child.computed.sized_height = child.computed.sized_width / ratio;
         } else {
             child.computed.sized_width = child.computed.sized_height * ratio;
         }
         engine.heights_derived = true;
     }
+    std.debug.assert(main >= 0);
 }
 
 /// The space a sized element offers its children: its content box, unbounded
@@ -808,7 +1005,7 @@ fn assignGrownSize(engine: *LayoutEngine, child: *LayoutElement, frame: *const S
 
     if (is_horizontal) {
         child_width = if (child_sizing_main.value == .grow)
-            @max(child.computed.min_width, per_grow)
+            @max(child.computed.floor_width, per_grow)
         else
             child_desired;
         child_height = height;
@@ -1144,8 +1341,13 @@ fn wrapElementText(engine: *LayoutEngine, index: u32) !void {
         // Stored even when not wrapping; alignment reads it.
         td.container_width = max_width;
 
-        if (td.config.wrap_mode != .none and max_width > 0) {
-            const wrap_result = try wrapText(engine, td.text, td.config, max_width);
+        // A text its row shrank below its one-line width wraps at the width
+        // the row gave it, which `floor_width` keeps at least its widest word.
+        const shrunk = elem.computed.sized_width < elem.computed.min_width;
+        const wrap_width = if (shrunk) @min(max_width, elem.computed.sized_width) else max_width;
+
+        if (td.config.wrap_mode != .none and wrap_width > 0) {
+            const wrap_result = try wrapText(engine, td.text, td.config, wrap_width);
             td.wrapped_lines = wrap_result.lines;
 
             if (wrap_result.lines.len > 0) {
@@ -1348,6 +1550,31 @@ fn wrapLines(
     engine.line_count_used_max = @max(engine.line_count_used_max, lines.len);
     std.debug.assert(lines.len > 0);
     return packer.widest;
+}
+
+/// The widest word of `text_str` as layout's word breaking measures it: the
+/// narrowest width it wraps at without cutting a word, and so a wrapping
+/// text's floor. Scans the words in batches as `wrapLines` does, measuring
+/// each once, and keeps no lines.
+pub fn widestWord(engine: *LayoutEngine, text_str: []const u8, config: TextConfig) f32 {
+    std.debug.assert(text_str.len > 0);
+    std.debug.assert(config.wrap_mode == .words);
+    const measure_fn = engine.measure_text_fn.?;
+    var words: BoundedList(WordInfo) = .{ .buffer = engine.word_scratch };
+    const user_data = engine.measure_text_user_data;
+    var scan = WordScanState.init(text_str, measure_fn, config, user_data, &words);
+    var widest: f32 = 0;
+    var batch_count: u32 = 0;
+    while (true) : (batch_count += 1) {
+        std.debug.assert(batch_count <= text_str.len); // A batch consumes a byte.
+        words.len = 0;
+        const done = scanWords(&scan);
+        engine.word_count_used_max = @max(engine.word_count_used_max, words.len);
+        for (words.slice()) |*word| widest = @max(widest, word.width);
+        if (done) break;
+    }
+    std.debug.assert(widest >= 0);
+    return widest;
 }
 
 /// Packs measured words onto lines as GPUI's `LineWrapper` does: a line's
