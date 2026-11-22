@@ -441,7 +441,7 @@ test "text wrapping with newlines" {
     try std.testing.expectEqual(@as(usize, 3), lines.len);
 }
 
-test "propagateHeightChange updates fit-content parent" {
+test "wrapped text grows its fit-content parent" {
     var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
 
@@ -491,7 +491,7 @@ test "propagateHeightChange updates fit-content parent" {
     try std.testing.expect(parent.computed.sized_height >= text_elem.computed.sized_height);
 }
 
-test "propagateHeightChange stops at fixed-height parent" {
+test "wrapped text does not grow a fixed-height ancestor" {
     var engine = try LayoutEngine.init(&test_capacity);
     defer engine.deinit();
 
@@ -587,6 +587,30 @@ test "wrapped text grows its floating panel but not the panel's host" {
     const host = boundingBox(&engine, 0);
     try std.testing.expectEqual(@as(f32, 80), panel.height);
     try std.testing.expectEqual(@as(f32, 60), host.height);
+}
+
+test "a floating panel sizes its children once, as the main pass does" {
+    // Goal: a floating subtree runs widths, wrapping, and heights once, as
+    // the main tree does. Method: a 200 px panel holds a 50 % child, which
+    // must be 100 px; sizing each element again from its own size, as the
+    // floating pass once did, took the fraction twice and gave 50.
+    var engine = try LayoutEngine.init(&test_capacity);
+    defer engine.deinit();
+    engine.beginFrame(800, 600);
+    try engine.openElement(.{ .layout = .{ .sizing = Sizing.fixed(400, 400) } });
+    try engine.openElement(.{
+        .layout = .{ .sizing = Sizing.fixed(200, 100) },
+        .floating = .{ .attach_to_parent = true },
+    });
+    try engine.openElement(.{ .layout = .{
+        .sizing = .{ .width = SizingAxis.percent(0.5), .height = SizingAxis.fixed(10) },
+    } });
+    engine.closeElement();
+    engine.closeElement();
+    engine.closeElement();
+    try engine.endFrame();
+
+    try std.testing.expectEqual(@as(f32, 100), boundingBox(&engine, 2).width);
 }
 
 test "an overflowing row shrinks its widest children first, down to their floors" {
@@ -1321,6 +1345,66 @@ test "fit-content parents grow to heights that wrapping and aspect ratios derive
     try std.testing.expectEqual(@as(f32, 150), boundingBox(&engine, 6).height);
     try std.testing.expectEqual(@as(f32, 190), boundingBox(&engine, 7).y);
     try std.testing.expectEqual(@as(f32, 200), boundingBox(&engine, 0).height);
+}
+
+test "heights that follow a sibling's or a parent's are sized after text wraps" {
+    // Goal: heights are sized after text wraps, as Clay orders its passes.
+    // Method: a 50 px box holds "aaaa bbbb cccc" at 10 px a character, which
+    // wraps to three 10 px lines, 30 px, where its one-line height is 10. A
+    // grow-height sibling holds a grow-height column. In a fit-height row,
+    // wrapping or not, both must stretch to the 30 px the text makes, not
+    // the 10 px it measured on one line. In a 100 px column the sibling must
+    // take the 70 px the text leaves, not 90, which would overflow it.
+    const Case = struct {
+        wrap: bool,
+        direction: LayoutDirection,
+        height: SizingAxis,
+        sibling_y: f32,
+        sibling_height: f32,
+    };
+    const row: LayoutDirection = .left_to_right;
+    const fit = SizingAxis.fit();
+    const cases = [_]Case{
+        .{ .wrap = true, .direction = row, .height = fit, .sibling_y = 0, .sibling_height = 30 },
+        .{ .wrap = false, .direction = row, .height = fit, .sibling_y = 0, .sibling_height = 30 },
+        .{
+            .wrap = false,
+            .direction = .top_to_bottom,
+            .height = SizingAxis.fixed(100),
+            .sibling_y = 30,
+            .sibling_height = 70,
+        },
+    };
+    for (cases) |case| {
+        var engine = try LayoutEngine.init(&test_capacity);
+        defer engine.deinit();
+        engine.setMeasureTextFn(measureTenPixelsPerCharacter, null);
+        engine.beginFrame(800, 600);
+        try engine.openElement(.{ .layout = .{
+            .sizing = .{ .width = SizingAxis.fixed(200), .height = case.height },
+            .layout_direction = case.direction,
+            .wrap = case.wrap,
+        } });
+        try engine.openElement(.{ .layout = .{
+            .sizing = .{ .width = SizingAxis.fixed(50), .height = SizingAxis.fit() },
+        } });
+        const wrapped: TextConfig = .{ .wrap_mode = .words, .font_size = 10, .line_height = 100 };
+        try engine.text("aaaa bbbb cccc", wrapped);
+        engine.closeElement();
+        const grow_height: Sizing = .{ .width = SizingAxis.fixed(50), .height = SizingAxis.grow() };
+        try engine.openElement(.{ .layout = .{ .sizing = grow_height } });
+        try engine.openElement(.{ .layout = .{ .sizing = grow_height } });
+        engine.closeElement();
+        engine.closeElement();
+        engine.closeElement();
+        try engine.endFrame();
+
+        try std.testing.expectEqual(@as(f32, 30), boundingBox(&engine, 1).height);
+        const sibling = boundingBox(&engine, 3);
+        try std.testing.expectEqual(case.sibling_y, sibling.y);
+        try std.testing.expectEqual(case.sibling_height, sibling.height);
+        try std.testing.expectEqual(case.sibling_height, boundingBox(&engine, 4).height);
+    }
 }
 
 test "a wrapping scroll row scrolls to the end of its lines" {

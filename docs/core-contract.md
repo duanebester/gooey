@@ -218,6 +218,9 @@ Contract:
   cutting it: a wrapping text's widest word, a row's children's floors side by side
   (decision 26). On the cross axis a grow box fills its parent whatever its
   weight. A weight must be finite and greater than 0; any other weight panics.
+- **Heights after widths.** Text wraps at its final width before any height is sized,
+  so a height that follows a sibling's or the parent's, a stretched child in a row or a
+  grow child in a column, counts every wrapped line (decision 27).
 - **Percent.** `.{ .percent = fraction }` along the parent's direction is that fraction of
   the parent's content size less the gaps between its flow children, so fractions that
   add up to 1 fill the parent exactly; on the cross axis it is the fraction of the content
@@ -1652,6 +1655,27 @@ wrappers for list iteration.
     whose floor is above its share. In the Cachegrind gate, layouts that fit run 1.4 to
     3.6 % more instructions; the two overflow benchmarks run 20 and 22 % more, for the
     walks that give them sizes that fit.
+27. **Heights after widths (0.6, 2026-11-22).** Heights are sized after text wraps, as
+    Clay orders its passes: the sizing pass settles every width, text wraps at those
+    widths, and a heights pass sizes heights again from the wrapped text, aspect ratios,
+    and wrapping rows' lines. A grow-height child in a row, wrapping or not, stretches to
+    the row's wrapped height; a grow child in a column shares the height its wrapped
+    siblings leave. Before, every height was sized from one-line text: a stretched child
+    stayed one line tall beside a wrapped sibling, and a grow child in a fixed column took
+    space its wrapped sibling then overflowed into. GPUI reaches the same sizes through
+    Taffy, which measures a text at each width it needs and caches the answers; sizing
+    heights after widths measures each text once, with no cache and no measure callback.
+    The heights pass is incremental. Each height that follows a width marks its element,
+    one backward walk recomputes those minimums and marks a parent whose child's minimum
+    changed, and one forward walk sizes the children of each marked parent, marking a
+    child whose height changed. Everything else keeps the sizing pass's heights, which no
+    changed minimum affects. Floating subtrees run the same three steps once each,
+    replacing a pass that sized every element of the subtree again from its own size,
+    which took a percent child's fraction twice. The pass replaces the walks that grew
+    fit-content parents after wrapping (`propagateHeightChange`, `growMarkedParents`).
+    In the Cachegrind gate, layouts without derived heights run 1 % fewer to 0.45 %
+    more instructions; the two aspect-ratio benchmarks, a column of 1,000 aspect
+    children that overflow it, run 24 % more, for the walks that re-share the column.
 
 ## Open questions
 
