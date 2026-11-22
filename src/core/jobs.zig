@@ -43,7 +43,9 @@
 //!
 //! Overload: a post that finds every result slot held waits on its runner
 //! (a cancelable semaphore) until a drain frees one; the main thread never
-//! waits. Without workers a post cannot wait, so it fails fast instead.
+//! waits. Without workers a post cannot wait, so a job starts only with
+//! every result slot free (`runQueued`), and one run that posts more than
+//! all of them fails fast.
 //!
 //! Shutdown (`stop`, from `App.stop`): `stopping` is set and the pool's
 //! group is cancelled; each interrupter then cancels its runner's group,
@@ -66,7 +68,9 @@
 //! interrupters, idle in a semaphore wait) whose stacks are the io's default.
 //! Per tick the main thread routes at most `job_result_count_max +
 //! job_count_max` deliveries, copying nothing; a cancel is two atomic
-//! operations and at most one semaphore post.
+//! operations and at most one semaphore post. Without workers, `runQueued`
+//! finds each queued job in spawn order by scanning the slots: at most
+//! `job_count_max` squared checks per tick, 4,096 at the ceiling of 64.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -296,6 +300,9 @@ const Slot = struct {
     busy: bool,
     /// Set by a spawn without workers; `runQueued` runs it.
     queued: bool,
+    /// The spawn's `spawned_count`, so `runQueued` runs queued jobs in
+    /// spawn order and none waits behind later spawns forever.
+    queued_order: u64,
     type_id: usize,
     handlers: Handlers,
     // Written by the main thread before `start` is posted and not again
@@ -433,6 +440,7 @@ pub const Pool = struct {
             slot.* = .{
                 .busy = false,
                 .queued = false,
+                .queued_order = 0,
                 .type_id = 0,
                 .handlers = undefined,
                 .generation = 0,
@@ -593,7 +601,10 @@ pub const Pool = struct {
         self.spawned_count += 1;
         switch (self.mode) {
             .workers => if (self.workers()) slot.start.post(self.io),
-            .main_thread => slot.queued = true,
+            .main_thread => {
+                slot.queued = true;
+                slot.queued_order = self.spawned_count - 1;
+            },
             // The simulation finds the spawn by its `pending` phase.
             .stepped => {},
         }
@@ -634,21 +645,54 @@ pub const Pool = struct {
         return count;
     }
 
-    /// Run the jobs spawned since the last drain on this thread, when there
-    /// are no workers. Returns whether any ran. Bounded by the slot count.
+    /// Run queued jobs on this thread, oldest spawn first, when there are
+    /// no workers. A job starts only with every result slot free: a post
+    /// here cannot wait for a drain, and the jobs one drain spawns, as many
+    /// as the user clicked for, could together post more than the slots
+    /// hold. So what one run posts bounds it alone, and the rest wait for
+    /// the next drain, which delivers these posts and frees every slot; the
+    /// posts, and every run's end, wake the host for that drain. Bounded by
+    /// the slot count.
     pub fn runQueued(self: *Pool) bool {
         if (self.mode != .main_thread) return false;
+        // The drain delivered or dropped every post of the last runs.
+        assert(self.result_free_count == self.result_free_list.len);
         var ran = false;
-        for (self.slots, 0..) |*slot, index| {
-            if (!slot.queued) continue;
+        var turn: u32 = 0;
+        while (turn < self.slots.len) : (turn += 1) {
+            const index = self.queuedOldest() orelse break;
+            if (self.result_free_count < self.result_free_list.len) {
+                // Only a run of this call holds results.
+                assert(ran);
+                break;
+            }
+            const slot = &self.slots[index];
             assert(slot.busy);
             slot.queued = false;
             // Nothing interrupts a job on the main thread.
-            const whole = self.runSlot(@intCast(index));
+            const whole = self.runSlot(index);
             assert(whole);
             ran = true;
         }
         return ran;
+    }
+
+    /// The queued slot spawned first, or null with none queued.
+    fn queuedOldest(self: *const Pool) ?u32 {
+        assert(self.mode == .main_thread);
+        var oldest: ?u32 = null;
+        for (self.slots, 0..) |*slot, index| {
+            if (!slot.queued) continue;
+            if (oldest) |current| {
+                assert(slot.queued_order != self.slots[current].queued_order);
+                if (slot.queued_order < self.slots[current].queued_order) {
+                    oldest = @intCast(index);
+                }
+            } else {
+                oldest = @intCast(index);
+            }
+        }
+        return oldest;
     }
 
     /// What to call for `entry`, or null for a cancelled job's result, whose
@@ -960,8 +1004,9 @@ pub const Pool = struct {
         if (self.result_free_count == 0) {
             assert(self.mode == .main_thread);
             std.debug.panic("events pool 'job results' exhausted: capacity {d}, {d} " ++
-                "in use, 1 requested by job {s}; without threads a post cannot wait " ++
-                "for a drain. Raise ResourceLimits.events.job_result_count_max.", .{
+                "in use, 1 requested by job {s}, which started with every slot free; " ++
+                "without threads a post cannot wait for a drain. Raise " ++
+                "ResourceLimits.events.job_result_count_max.", .{
                 self.result_free_list.len,
                 self.result_free_list.len,
                 handler_mod.typeName(self.slots[index].type_id),

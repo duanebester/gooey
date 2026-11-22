@@ -573,8 +573,10 @@ pub const Fetch = struct {
   (`background.zig` counts its lines).
 - On the web there are no threads: a job runs to completion on the main thread right after
   the drain that spawned it, the browser io's sleep returns at once, and files and sockets
-  fail. Its results arrive in the next frame. A post with every result slot held panics
-  there, since nothing can drain while the job runs.
+  fail. Its results arrive in the next frame. A job starts only once every result slot is
+  free, so jobs spawned together run over several frames, and only a job that posts more
+  than `job_result_count_max` results in one run panics there, since nothing can drain
+  while it runs.
 
 ### Clicks
 

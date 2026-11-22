@@ -411,8 +411,10 @@ A job is a type in `Config.jobs` with `Input`, `Result`, and
 3. `job.post(&result)` copies the result into one of `events.job_result_count_max` slots,
    pushes it onto the completion ring, and calls the host's thread-safe wake
    (`Window.bindWake`). With every slot held it waits on its worker until a drain frees
-   one; without threads it panics instead. It returns false once the job is cancelled or
-   the app is stopping.
+   one. Without threads a post cannot wait, so a queued job starts only once every result
+   slot is free (queued jobs run in spawn order, the rest after the next drain), and a job
+   that posts more than `job_result_count_max` results in one run panics. It returns false
+   once the job is cancelled or the app is stopping.
 4. The drain routes job deliveries after the queued events, in ring order: `on_result` per
    result, in post order, then `on_done` once with `.finished`, `.cancelled`, or
    `.failed`. Both are root-state handlers. A result is valid until its handler returns.

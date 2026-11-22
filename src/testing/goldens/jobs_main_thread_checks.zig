@@ -173,3 +173,35 @@ test "a cancel after the job ran and before the drain drops what it posted" {
     try testing.expect(harness.app.state.outcome.? == .cancelled);
     try testing.expectEqual(@as(u32, 0), harness.app.window.jobs.busyCount());
 }
+
+test "jobs one drain spawns that together post past the result slots run over two drains" {
+    // Two jobs of five posts each fit `nano`'s eight result slots alone,
+    // not together, and two clicks spawn both in one drain. Running both
+    // after that drain once panicked with "events pool 'job results'
+    // exhausted" (the VOPR's jobs_main_thread app, seed 1). Now a job
+    // starts only with every result slot free: the first runs after the
+    // drain that spawned it, the second after the drain that delivers the
+    // first's posts, and every post arrives, in order.
+    var harness: Harness = undefined;
+    try harness.init();
+    defer harness.deinit();
+    const post_count = 5;
+    comptime assert(post_count <= limits.events.job_result_count_max);
+    comptime assert(2 * post_count > limits.events.job_result_count_max);
+    _ = harness.spawn(10, post_count);
+    _ = harness.spawn(20, post_count);
+    harness.tick();
+    try testing.expectEqual(@as(u32, 1), job_started_count);
+    try testing.expectEqual(@as(u32, 2), harness.app.window.jobs.busyCount());
+    harness.tick();
+    const state = &harness.app.state;
+    try testing.expectEqual(@as(u32, 2), job_started_count);
+    try testing.expectEqualSlices(u32, &.{ 10, 11, 12, 13, 14 }, state.received[0..5]);
+    try testing.expectEqual(@as(u32, 1), state.done_count);
+    harness.tick();
+    try testing.expectEqual(@as(u32, 10), state.received_count);
+    try testing.expectEqualSlices(u32, &.{ 20, 21, 22, 23, 24 }, state.received[5..10]);
+    try testing.expectEqual(@as(u32, 2), state.done_count);
+    try testing.expect(state.outcome.? == .finished);
+    try testing.expectEqual(@as(u32, 0), harness.app.window.jobs.busyCount());
+}
