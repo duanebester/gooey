@@ -200,8 +200,9 @@ pub const State = struct {
         if (result.cancel_row > 0) self.cancelRow(result.cancel_row - 1, effects);
     }
 
-    /// A chained job that finished spawns its successor here, while its own
-    /// slot is still held: with the other slots busy, that is refused.
+    /// A chained job that finished spawns its successor here. Its own slot
+    /// is already free, so the spawn is granted even with the other slots
+    /// busy, and `done.id` is stale: the row keeps it for a stale Cancel.
     pub fn onDone(self: *State, effects: *Effects) void {
         const done = effects.jobDone().?;
         assert(std.meta.eql(done.id, effects.jobId().?));
@@ -400,8 +401,9 @@ pub fn JobsModel(comptime runs: jobs.Mode) type {
             spawned: u32,
             chained: u32,
             refused: u32,
-            /// Refusals of a chained job's successor, inside `on_done`.
-            refused_chain: u32,
+            /// Chained successors granted with every other slot busy: they
+            /// took the finished job's own slot, freed before its `on_done`.
+            chained_full: u32,
             results_delivered: u32,
             results_dropped: u32,
             /// Posts of a cancelled running job, which return false.
@@ -429,13 +431,14 @@ pub fn JobsModel(comptime runs: jobs.Mode) type {
             const zero: Stats = std.mem.zeroes(Stats);
 
             pub fn format(self: Stats, writer: *std.Io.Writer) std.Io.Writer.Error!void {
-                try writer.print("{d} spawned ({d} chained), {d} refused ({d} in on_done); " ++
+                try writer.print("{d} spawned ({d} chained, {d} into a full table), " ++
+                    "{d} refused; " ++
                     "{d} results delivered, {d} dropped, {d} posts refused, at most {d} " ++
                     "held; ends: {d} finished, {d} cancelled, {d} failed; cancels: {d} " ++
                     "skipped, {d} interrupting, {d} late, {d} stale (free), {d} stale " ++
                     "(reused), {d} in delivery; {d} runs deferred, {d} batched", .{
-                    self.spawned,              self.chained,             self.refused,
-                    self.refused_chain,        self.results_delivered,   self.results_dropped,
+                    self.spawned,              self.chained,             self.chained_full,
+                    self.refused,              self.results_delivered,   self.results_dropped,
                     self.posts_refused,        self.results_held_max,    self.finished,
                     self.cancelled,            self.failed,              self.cancels_skipped,
                     self.cancels_interrupting, self.cancels_late,        self.cancels_stale_free,
@@ -615,8 +618,8 @@ pub fn JobsModel(comptime runs: jobs.Mode) type {
         }
 
         /// One delivery: `on_result` unless the job was cancelled first,
-        /// which drops it; `on_done`, with `.cancelled` if any cancel landed
-        /// first, then the slot frees under its next generation.
+        /// which drops it; or the slot freed under its next generation, then
+        /// `on_done`, with `.cancelled` if any cancel landed first.
         fn deliver(self: *Self, entry: *const Entry) void {
             const slot = &self.slots[entry.slot];
             assert(slot.busy);
@@ -642,11 +645,11 @@ pub fn JobsModel(comptime runs: jobs.Mode) type {
                         .cancelled => self.counts.cancelled += 1,
                         .failed => self.counts.failed += 1,
                     }
-                    self.appDone(id, outcome);
-                    // After `on_done` returns: a spawn inside it found this
-                    // slot held.
+                    // Before `on_done` runs, so a spawn inside it can take
+                    // this slot; the id `on_done` receives is then stale.
                     slot.busy = false;
                     slot.generation +%= 1;
+                    self.appDone(id, outcome);
                 },
             }
         }
@@ -692,6 +695,15 @@ pub fn JobsModel(comptime runs: jobs.Mode) type {
                 }
             }
             return oldest;
+        }
+
+        /// Slots holding a job whose end is not yet delivered.
+        fn busyCount(self: *const Self) u32 {
+            var count: u32 = 0;
+            for (&self.slots) |*slot| count += @intFromBool(slot.busy);
+            assert(count <= slot_count);
+            if (count == 0) assert(self.results_held == 0);
+            return count;
         }
 
         /// `Effects.spawn`: the lowest free slot, or `error.JobBusy`.
@@ -801,9 +813,18 @@ pub fn JobsModel(comptime runs: jobs.Mode) type {
             if (!app.rows[row].chain) return;
             if (outcome != .finished) return;
             self.counts.chained += 1;
+            // The finished job's slot is free, so the successor always fits;
+            // with every other slot busy it takes that very slot.
+            assert(!self.slots[id.slot].busy);
+            const full = self.busyCount() == slot_count - 1;
             const refused_before = app.refused;
             self.appSpawn(false);
-            if (app.refused > refused_before) self.counts.refused_chain += 1;
+            assert(app.refused == refused_before);
+            if (full) {
+                assert(self.slots[id.slot].busy);
+                assert(self.slots[id.slot].generation == id.generation +% 1);
+                self.counts.chained_full += 1;
+            }
         }
 
         fn activate(self: *Self, button: ButtonKind) void {

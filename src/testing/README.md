@@ -119,7 +119,8 @@ app then shows, routing each drain in one pass: a modal outcome from the last ti
 in push order, then the ring.
 
 The jobs app (`vopr_jobs_model.zig`, VOPR-only) has Spawn and Spawn chain buttons (a chained job's
-`on_done` spawns a successor when it finishes) and four rows, one more than its three job slots,
+`on_done` spawns a successor when it finishes, into the slot the job freed just before `on_done`,
+so it is granted even with every other slot busy) and four rows, one more than its three job slots,
 each showing a job and a Cancel button; a row keeps its job's id after the job ends, so its Cancel
 is then stale, often against a slot a later job reuses. A result may ask `on_result` to cancel a
 row, so cancels also land among a drain's deliveries. In `jobs` the pool runs in

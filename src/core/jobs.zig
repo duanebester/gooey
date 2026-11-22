@@ -11,6 +11,11 @@
 //! `on_result` handler with each result in post order and then `on_done`
 //! once, with how `run` ended.
 //!
+//! A job's slot is freed, under a new generation, just before its `on_done`
+//! runs, so `on_done` can spawn a chained job or a retry even when every
+//! other slot is busy. The id `on_done` receives is therefore stale:
+//! cancelling it does nothing, and it still equals the id the app stored.
+//!
 //! Threading: natively, each of the `events.job_count_max` job slots has two
 //! tasks, started at init with `io.concurrent` and only when `Config.jobs` is
 //! non-empty: a runner, alone in the slot's own `std.Io.Group`, that runs the
@@ -113,8 +118,8 @@ pub const value_alignment: u32 = 16;
 const input_type_depth_max: u32 = 256;
 
 /// A running or finished job: its slot and the generation it was spawned
-/// in. Ids of jobs that have delivered `on_done` are stale; cancelling one
-/// does nothing.
+/// in. A job's id is stale from its `on_done` on, since the slot is freed
+/// just before that handler runs; cancelling a stale id does nothing.
 pub const JobId = struct {
     slot: u32,
     generation: u32,
@@ -143,7 +148,10 @@ pub const Done = struct {
 pub const Handlers = struct {
     /// Called once per posted result, in post order; null drops results.
     on_result: ?Handler = null,
-    /// Called once, last, when `run` returns.
+    /// Called once, last, when `run` returns. The job's slot is already
+    /// free, so a spawn here (a chained job, a retry) can take it; the id
+    /// in `Done` is stale: cancelling it does nothing, and it still equals
+    /// the id `spawn` returned.
     on_done: Handler,
 };
 
@@ -322,7 +330,7 @@ const Slot = struct {
     type_id: usize,
     handlers: Handlers,
     // Written by the main thread before `start` is posted and not again
-    // until `on_done` is delivered, so the runner and interrupter read them
+    // until the job's end is routed, so the runner and interrupter read them
     // unlocked.
     generation: u32,
     run: ?RunFn,
@@ -342,7 +350,7 @@ const Slot = struct {
 /// interrupter each move it only by compare-and-swap from the phase they
 /// expect, so a cancel and the job's end cannot both claim it.
 pub const Phase = enum(u8) {
-    /// No job, or the job's end is pushed and `on_done` not yet delivered.
+    /// No job, or the job's end is pushed and not yet routed.
     idle,
     /// Spawned; the runner has not taken it.
     pending,
@@ -579,9 +587,10 @@ pub const Pool = struct {
 
     /// Claim a slot, copy `input` into it, and start `run`. A job type not in
     /// `Config.jobs` is a programmer error. Returns `error.JobBusy`, claiming
-    /// nothing, when every slot holds a job whose `on_done` has not returned:
+    /// nothing, when every slot holds a job whose end has not been routed:
     /// how many spawns one drain asks for is the user's doing (a click per
-    /// spawn), so a full table is an expected refusal, not a fault.
+    /// spawn), so a full table is an expected refusal, not a fault. A job
+    /// whose `on_done` is running holds no slot.
     pub fn spawn(
         self: *Pool,
         type_id: usize,
@@ -638,8 +647,9 @@ pub const Pool = struct {
     /// Stop job `id`: its posts return false, results not yet delivered
     /// are dropped, and its `on_done` reports `.cancelled`. A job not yet
     /// started never runs; a running one has its Io interrupted by its
-    /// slot's interrupter. Never waits. A stale id (the job already
-    /// delivered `on_done`) or a second cancel does nothing.
+    /// slot's interrupter. Never waits. A stale id (from the job's `on_done`
+    /// on, even while a later job holds its slot) or a second cancel does
+    /// nothing.
     pub fn cancel(self: *Pool, id: JobId) void {
         assert(id.slot < self.slots.len);
         const slot = &self.slots[id.slot];
@@ -721,11 +731,18 @@ pub const Pool = struct {
     }
 
     /// What to call for `entry`, or null for a cancelled job's result, whose
-    /// slot is freed here. The router calls `finishDelivery` after the
-    /// handler returns.
+    /// result slot is freed here. For a job's end this frees the job's slot
+    /// before `on_done` runs (`deliveryDone`). The router calls
+    /// `finishDelivery` after the handler returns.
     pub fn delivery(self: *Pool, entry: *const JobEntry) ?Delivery {
         assert(entry.slot < self.slots.len);
         const slot = &self.slots[entry.slot];
+        // A job's end is the last entry its generation pushes: its results
+        // come before it in the ring, a post after a cancel pushes nothing,
+        // and the interrupter pushes the end only once the runner task has
+        // ended. So no entry outlives the free in `deliveryDone`, even when
+        // `on_done` spawns into the same slot while entries of this drain
+        // wait in the inbox; one that did would fail here.
         assert(slot.busy);
         assert(slot.generation == entry.generation);
         const id = JobId{ .slot = entry.slot, .generation = entry.generation };
@@ -749,38 +766,57 @@ pub const Pool = struct {
                     .done = null,
                 };
             },
-            .done => {
-                const outcome: Outcome = if (cancelled) .cancelled else switch (entry.outcome) {
-                    .finished => .finished,
-                    .cancelled => .cancelled,
-                    .failed => .{ .failed = entry.failure },
-                };
-                return .{
-                    .handler = slot.handlers.on_done,
-                    .type_id = slot.type_id,
-                    .id = id,
-                    .result = null,
-                    .done = .{ .id = id, .outcome = outcome },
-                };
-            },
+            .done => return self.deliveryDone(entry, cancelled),
         }
     }
 
-    /// Free what a delivered entry held: its result slot, or, after
-    /// `on_done`, the job's slot, under a new generation.
-    pub fn finishDelivery(self: *Pool, entry: *const JobEntry) void {
+    /// The `on_done` delivery for a job's end. Copies what the handler needs
+    /// out of the slot, then frees the slot under a new generation, so a
+    /// spawn from `on_done` (a chained job, a retry) can take it even with
+    /// every other slot busy. The `Done.id` it carries is therefore stale:
+    /// cancelling it does nothing, and it still equals the id the app kept.
+    fn deliveryDone(self: *Pool, entry: *const JobEntry, cancelled: bool) Delivery {
+        assert(entry.kind == .done);
+        assert(entry.result_index == JobEntry.result_index_none);
         const slot = &self.slots[entry.slot];
-        assert(slot.busy);
-        assert(slot.generation == entry.generation);
+        const id = JobId{ .slot = entry.slot, .generation = entry.generation };
+        const outcome: Outcome = if (cancelled) .cancelled else switch (entry.outcome) {
+            .finished => .finished,
+            .cancelled => .cancelled,
+            .failed => .{ .failed = entry.failure },
+        };
+        const done_delivery = Delivery{
+            .handler = slot.handlers.on_done,
+            .type_id = slot.type_id,
+            .id = id,
+            .result = null,
+            .done = .{ .id = id, .outcome = outcome },
+        };
+        assert(!slot.queued);
+        assert(slot.phase.load(.acquire) == .idle);
+        slot.busy = false;
+        slot.run = null;
+        slot.generation +%= 1;
+        assert(slot.generation != id.generation);
+        return done_delivery;
+    }
+
+    /// Free what a delivered result held, its result slot, once `on_result`
+    /// returns. A job's end freed its slot before `on_done` ran, and the
+    /// slot may hold a job that `on_done` spawned since, under a newer
+    /// generation, so nothing here reads it for an end.
+    pub fn finishDelivery(self: *Pool, entry: *const JobEntry) void {
+        assert(entry.slot < self.slots.len);
+        const slot = &self.slots[entry.slot];
         switch (entry.kind) {
-            .result => self.releaseResult(entry.result_index),
-            .done => {
-                assert(!slot.queued);
-                assert(slot.phase.load(.acquire) == .idle);
-                slot.busy = false;
-                slot.run = null;
-                slot.generation +%= 1;
+            .result => {
+                assert(slot.busy);
+                assert(slot.generation == entry.generation);
+                self.releaseResult(entry.result_index);
             },
+            // Only a free moves a generation, and a job `on_done` spawned
+            // into the slot cannot end before `on_done` returns.
+            .done => assert(slot.generation == entry.generation +% 1),
         }
     }
 

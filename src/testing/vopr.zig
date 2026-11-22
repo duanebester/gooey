@@ -2139,7 +2139,9 @@ test "two instances fed the same bytes draw the same frames" {
     try std.testing.expect(dialogs_full.stats.refused_full > 0);
     // jobs seed 7 cancels a running job, whose posts are then refused and
     // whose undelivered result is dropped; seed 2's clicks fill the job
-    // table, are refused, and cancel a reused slot's stale id.
+    // table, are refused, and cancel a reused slot's stale id; seed 5's
+    // chain a successor from on_done into the slot its finished job freed
+    // while every other slot is busy.
     const interrupted = try runPairedSeed(.jobs, 7);
     try std.testing.expect(interrupted.stats.cancels_interrupting > 0);
     try std.testing.expect(interrupted.stats.posts_refused > 0);
@@ -2147,13 +2149,14 @@ test "two instances fed the same bytes draw the same frames" {
     const busy = try runPairedSeed(.jobs, 2);
     try std.testing.expect(busy.stats.refused > 0);
     try std.testing.expect(busy.stats.cancels_stale_reused > 0);
+    const chained = try runPairedSeed(.jobs, 5);
+    try std.testing.expect(chained.stats.chained_full > 0);
     // jobs_main_thread seed 1 runs jobs beside others' results and defers
-    // those that do not fit, and refuses a chained job's successor inside
-    // on_done.
+    // those that do not fit, and chains into a full table from on_done.
     const main_thread = try runPairedSeed(.jobs_main_thread, 1);
     try std.testing.expect(main_thread.stats.runs_batched > 0);
     try std.testing.expect(main_thread.stats.runs_deferred > 0);
-    try std.testing.expect(main_thread.stats.refused_chain > 0);
+    try std.testing.expect(main_thread.stats.chained_full > 0);
 }
 
 /// The centre of the `rank`-th hit record with a click handler, in tree order.

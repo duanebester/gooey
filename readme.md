@@ -556,8 +556,10 @@ pub const Fetch = struct {
 - Natively each of the `events.job_count_max` slots has its own worker (a runner and an
   interrupter task), started at init with `io.concurrent`, and only when `Config.jobs` is
   non-empty. A spawn with every slot busy returns `error.JobBusy` and starts nothing; the
-  handler handles it where it spawns. A job's slot, cancelled or not, is free once its
-  `on_done` has returned, so a spawn inside `on_done` still counts that job's slot.
+  handler handles it where it spawns. A job's slot, cancelled or not, is freed just before
+  its `on_done` runs, so `on_done` can spawn a chained job or a retry even with every other
+  slot busy. The id `on_done` receives is then stale: cancelling it does nothing, and it
+  still equals the id the app stored.
 - A post that finds all `job_result_count_max` result slots waiting for a drain blocks its
   worker until one is free. The main thread never waits, and no result is dropped.
 - `cancelJob` never waits. A job that has not started never runs. Natively, a running job's

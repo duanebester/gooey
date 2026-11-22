@@ -401,8 +401,8 @@ results one run posts, at most `events.job_result_count_max`, checked at comptim
 `run(input: *const Input, job: *gooey.Job(Result)) !void`. The rules:
 
 1. `effects.spawn(Job, &input, .{ .on_result, .on_done })` copies `input` into a free job
-   slot and returns a `JobId`. With every slot busy (`events.job_count_max`), counting a
-   job whose `on_done` is running, it returns `error.JobBusy` and starts nothing: clicks
+   slot and returns a `JobId`. With every slot busy (`events.job_count_max`), not counting
+   a job whose `on_done` is running, it returns `error.JobBusy` and starts nothing: clicks
    decide how many spawns a drain asks for, so the caller handles the refusal. `Input`
    must not contain a pointer or slice (compile error): a job never reaches `State`.
 2. Natively each slot has a runner, alone in its own `std.Io.Group`, and an interrupter in
@@ -420,6 +420,9 @@ results one run posts, at most `events.job_result_count_max`, checked at comptim
 4. The drain routes job deliveries after the queued events, in ring order: `on_result` per
    result, in post order, then `on_done` once with `.finished`, `.cancelled`, or
    `.failed`. Both are root-state handlers. A result is valid until its handler returns.
+   The job's slot is freed, under a new generation, just before `on_done` runs, so
+   `on_done` can spawn a chained job or a retry into it. The id `on_done` receives is
+   then stale: cancelling it does nothing, and it still equals the id the app stored.
 5. `effects.cancelJob(id)` never waits: posts return false, `job.cancelled()` is true,
    undelivered results are dropped, and `on_done` reports `.cancelled`. A job not yet
    started never runs. Natively a running job is interrupted: its slot's interrupter
