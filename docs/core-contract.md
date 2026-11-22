@@ -400,9 +400,10 @@ A job is a type in `Config.jobs` with `Input`, `Result`, and
 `run(input: *const Input, job: *gooey.Job(Result)) !void`. The rules:
 
 1. `effects.spawn(Job, &input, .{ .on_result, .on_done })` copies `input` into a free job
-   slot and returns a `JobId`. A full table (`events.job_count_max`) panics and names the
-   field. `Input` must not contain a pointer or slice (compile error): a job never reaches
-   `State`.
+   slot and returns a `JobId`. With every slot busy (`events.job_count_max`), counting a
+   job whose `on_done` is running, it returns `error.JobBusy` and starts nothing: clicks
+   decide how many spawns a drain asks for, so the caller handles the refusal. `Input`
+   must not contain a pointer or slice (compile error): a job never reaches `State`.
 2. Natively each slot has a runner, alone in its own `std.Io.Group`, and an interrupter in
    the pool's group, started at init with `io.concurrent` only when `Config.jobs` is
    non-empty. Without threads (the web, `-fsingle-threaded`) a job runs on the main thread

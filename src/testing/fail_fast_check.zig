@@ -35,8 +35,6 @@ const Mode = enum {
     @"core-start-drag-target",
     @"core-dialog-target",
     @"core-dialog-paths",
-    @"core-job-count",
-    @"core-job-count-cancelled",
     @"core-mono-unset",
     @"core-wrap-text",
     @"core-wrap-frame",
@@ -86,8 +84,6 @@ pub fn main(init: std.process.Init) !void {
         .@"core-start-drag-target" => coreStartDragTarget(init.gpa, init.io),
         .@"core-dialog-target" => coreDialogTarget(init.gpa, init.io),
         .@"core-dialog-paths" => coreDialogPaths(init.gpa, init.io),
-        .@"core-job-count" => coreJobCount(init.gpa, init.io),
-        .@"core-job-count-cancelled" => coreJobCountCancelled(init.gpa, init.io),
         .@"core-mono-unset" => coreTick(init.gpa, init.io, CoreApp.monoText),
         .@"core-wrap-text" => coreTick(init.gpa, init.io, CoreApp.wrapText),
         .@"core-wrap-frame" => coreTick(init.gpa, init.io, CoreApp.wrapFrame),
@@ -657,65 +653,6 @@ fn coreDialogPaths(gpa: std.mem.Allocator, io: std.Io) void {
     var context: u8 = 0;
     app.window.file_dialog = .{ .context = &context, .open = TooManyPaths.open };
     clickCenter(app);
-}
-
-/// A job that sleeps until the app stops.
-const Nap = struct {
-    pub const Input = struct { seconds: u32 };
-    pub const Result = struct { never: u8 };
-
-    pub fn run(input: *const Input, job: *gooey.Job(Result)) !void {
-        try job.io().sleep(.fromSeconds(input.seconds), .awake);
-    }
-};
-
-fn coreJobCount(gpa: std.mem.Allocator, io: std.Io) void {
-    const config = comptime blk: {
-        var with_jobs = core_config;
-        with_jobs.jobs = &.{Nap};
-        break :blk with_jobs;
-    };
-    const app = initCoreApp(gooey.App(CoreState, CoreApp.empty, config), gpa, io);
-    var effects = gooey.Effects.init(null, .root);
-    effects.jobs = &app.window.jobs;
-    const job_count_max = gooey.ResourceLimits.nano.events.job_count_max;
-    var spawned: u32 = 0;
-    // Exactly the capacity, then one more.
-    while (spawned <= job_count_max) : (spawned += 1) {
-        _ = effects.spawn(Nap, &.{ .seconds = 60 }, .{
-            .on_done = effects.handler(CoreState.picked),
-        });
-    }
-    unreachable;
-}
-
-fn coreJobCountCancelled(gpa: std.mem.Allocator, io: std.Io) void {
-    const config = comptime blk: {
-        var with_jobs = core_config;
-        with_jobs.jobs = &.{Nap};
-        break :blk with_jobs;
-    };
-    const app = initCoreApp(gooey.App(CoreState, CoreApp.empty, config), gpa, io);
-    var effects = gooey.Effects.init(null, .root);
-    effects.jobs = &app.window.jobs;
-    const job_count_max = gooey.ResourceLimits.nano.events.job_count_max;
-    var first: ?gooey.JobId = null;
-    var spawned: u32 = 0;
-    // Exactly the capacity, then cancel the first and let its interrupt
-    // finish, then one more spawn with no drain in between.
-    while (spawned <= job_count_max) : (spawned += 1) {
-        if (spawned == job_count_max) {
-            effects.cancelJob(first.?);
-            io.sleep(.fromMilliseconds(100), .awake) catch |err| {
-                std.debug.panic("fail_fast_check: sleep failed: {t}", .{err});
-            };
-        }
-        const id = effects.spawn(Nap, &.{ .seconds = 60 }, .{
-            .on_done = effects.handler(CoreState.picked),
-        });
-        if (first == null) first = id;
-    }
-    unreachable;
 }
 
 const TooManyPaths = struct {

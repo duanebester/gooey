@@ -93,13 +93,15 @@ const Harness = struct {
         self.app.tick(self.now);
     }
 
+    /// Spawn a job every check expects to start: it keeps within the
+    /// table, so a refusal is a failed check.
     fn spawn(self: *Harness, first: u32, count: u32) gooey.JobId {
         var effects = Effects.init(null, .root);
         effects.jobs = &self.app.window.jobs;
         return effects.spawn(Count, &.{ .first = first, .count = count }, .{
             .on_result = effects.handler(State.onCount),
             .on_done = effects.handler(State.onDone),
-        });
+        }) catch |err| std.debug.panic("jobs_main_thread_checks: spawn refused: {t}", .{err});
     }
 
     fn cancel(self: *Harness, id: gooey.JobId) void {

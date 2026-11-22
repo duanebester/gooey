@@ -282,6 +282,8 @@ pub const Effects = struct {
     pub const JobHandlers = jobs.Handlers;
     pub const JobDone = jobs.Done;
     pub const JobOutcome = jobs.Outcome;
+    /// `spawn`'s refusal: an expected outcome, not a fault.
+    pub const SpawnError = jobs.SpawnError;
     pub const ScrollRequest = struct { id: ElementId, target: ScrollTarget };
 
     pub const Drop = struct { type_id: usize, payload: u64 };
@@ -458,13 +460,17 @@ pub const Effects = struct {
     /// `input`. `run` executes off the main thread (on the web, after this
     /// drain); each result it posts arrives at `handlers.on_result` in a
     /// later drain, then `handlers.on_done` once. The slot is claimed at
-    /// once; a full table (`ResourceLimits.events.job_count_max`) panics.
+    /// once and freed after `on_done` returns. Returns `error.JobBusy`, and
+    /// starts nothing, when every slot (`ResourceLimits.events.job_count_max`)
+    /// holds a job, counting one whose `on_done` is running now: clicks can
+    /// ask for more jobs than there are slots, so the caller handles the
+    /// refusal here, as by showing that the app is busy.
     pub fn spawn(
         self: *Effects,
         comptime Job: type,
         job_input: *const Job.Input,
         handlers: JobHandlers,
-    ) JobId {
+    ) SpawnError!JobId {
         comptime jobs.checkSpec(Job);
         assert(handlers.on_done.target.isRoot());
         if (handlers.on_result) |on_result| assert(on_result.target.isRoot());

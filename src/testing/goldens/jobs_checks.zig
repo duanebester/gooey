@@ -212,7 +212,10 @@ const State = struct {
         }, .{
             .on_result = effects.handler(State.onCount),
             .on_done = effects.handler(State.onDone),
-        });
+        }) catch |err| switch (err) {
+            // The app's first spawn: every slot is free.
+            error.JobBusy => unreachable,
+        };
     }
 
     fn deinit(_: *State) void {
@@ -302,7 +305,15 @@ const Harness = struct {
         self.app.tick(self.now);
     }
 
+    /// Spawn a job every check expects to start: it keeps within the
+    /// table, so a refusal is a failed check.
     fn spawn(self: *Harness, comptime Job: type, input: Job.Input) gooey.JobId {
+        return self.trySpawn(Job, input) catch |err| {
+            std.debug.panic("jobs_checks: spawn of {s} refused: {t}", .{ @typeName(Job), err });
+        };
+    }
+
+    fn trySpawn(self: *Harness, comptime Job: type, input: Job.Input) !gooey.JobId {
         var effects = Effects.init(null, .root);
         effects.jobs = &self.app.window.jobs;
         const on_result: ?gooey.Handler = switch (Job) {
@@ -597,19 +608,32 @@ test "a slot interrupted 50 times keeps running jobs to the end" {
 }
 
 test "a full job table frees a cancelled job's slot only when its on_done is delivered" {
+    // Fill the table exactly, then spawn one more: once a panic, which a
+    // click per spawn reached (the VOPR's jobs app, seed 1), now
+    // `error.JobBusy`, which claims nothing. A cancelled job whose end was
+    // pushed still holds its slot, so a spawn before the drain that
+    // delivers its `on_done` is refused too; the one after takes its slot.
     var harness: Harness = undefined;
     try harness.init();
     defer harness.deinit();
+    const pool = &harness.app.window.jobs;
     const slot_count = limits.events.job_count_max;
     var ids: [slot_count]gooey.JobId = undefined;
     for (&ids) |*id| id.* = harness.spawn(Sleep, .{ .seconds = 60 });
-    try testing.expectEqual(slot_count, harness.app.window.jobs.busyCount());
+    try testing.expectEqual(slot_count, pool.busyCount());
+    try testing.expectEqual(slot_count - 1, ids[slot_count - 1].slot);
+    const spawned_before = pool.spawned_count;
+    try testing.expectError(error.JobBusy, harness.trySpawn(Sleep, .{ .seconds = 60 }));
+    try testing.expectEqual(spawned_before, pool.spawned_count);
+    try testing.expectEqual(slot_count, pool.busyCount());
     harness.waitForStarted(1 + slot_count);
     const wakes_before = harness.wake.count.load(.acquire);
     harness.cancel(ids[2]);
     harness.waitForWakes(wakes_before + 1);
     try testing.expectEqual(@as(u32, 2), job_returned_count.load(.acquire));
-    try testing.expectEqual(slot_count, harness.app.window.jobs.busyCount());
+    try testing.expectEqual(slot_count, pool.busyCount());
+    try testing.expectError(error.JobBusy, harness.trySpawn(Sleep, .{ .seconds = 60 }));
+    try testing.expectEqual(@as(u32, 0), harness.app.state.done_count);
     harness.tick();
     try testing.expectEqual(@as(u32, 1), harness.app.state.done_count);
     try testing.expectEqual(slot_count - 1, harness.app.window.jobs.busyCount());

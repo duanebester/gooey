@@ -1356,12 +1356,6 @@ fn addFailFastChecks(
             "fail_fast_check.CoreApp.Stranger; the root state is fail_fast_check.CoreState" },
         .{ .mode = "core-dialog-paths", .stderr = "file dialog selected 17 paths: " ++
             "capacity 16. Raise ResourceLimits.events.dialog_path_count_max." },
-        .{ .mode = "core-job-count", .stderr = "events pool 'jobs' exhausted: capacity 2, " ++
-            "2 in use, 1 requested (fail_fast_check.Nap). Raise " ++
-            "ResourceLimits.events.job_count_max." },
-        .{ .mode = "core-job-count-cancelled", .stderr = "events pool 'jobs' exhausted: " ++
-            "capacity 2, 2 in use, 1 requested (fail_fast_check.Nap). Raise " ++
-            "ResourceLimits.events.job_count_max." },
         .{ .mode = "core-component-depth", .stderr = "component depth 65 exceeds " ++
             "build.component_depth_max 64 rendering fail_fast_check.CoreApp.Nest" },
         .{ .mode = "core-box-depth", .stderr = "build pool 'box depth' exhausted: capacity 64, " ++

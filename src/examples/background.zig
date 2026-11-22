@@ -99,7 +99,9 @@ pub const State = struct {
         self.fetch = effects.spawn(Fetch, &.{ .delay_ms = 600, .chunk_gap_ms = 120 }, .{
             .on_result = effects.handler(State.onChunk),
             .on_done = effects.handler(State.onFetched),
-        });
+        }) catch |err| switch (err) {
+            error.JobBusy => return self.setStatus("Every job slot is busy.", .{}),
+        };
         self.setStatus("Fetching\u{2026}", .{});
     }
 
@@ -158,7 +160,9 @@ pub const State = struct {
                 _ = effects.spawn(CountLines, &input, .{
                     .on_result = effects.handler(State.onCounted),
                     .on_done = effects.handler(State.onCountDone),
-                });
+                }) catch |err| switch (err) {
+                    error.JobBusy => return self.setStatus("Every job slot is busy.", .{}),
+                };
                 self.counting = true;
                 self.setStatus("Counting lines\u{2026}", .{});
             },

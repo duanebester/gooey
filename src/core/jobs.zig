@@ -15,7 +15,8 @@
 //! non-empty: a runner, alone in the slot's own `std.Io.Group`, that runs the
 //! slot's jobs, and an interrupter, in the pool's group, that waits for a
 //! cancel to reach a running job. A spawn claims a free slot and posts its
-//! runner's semaphore; a full table fails fast. On the web and in
+//! runner's semaphore; with every slot busy it returns `error.JobBusy`,
+//! since a click per spawn lets the user fill the table. On the web and in
 //! single-threaded builds there are no workers: a spawned job runs to
 //! completion on the main thread after the drain that spawned it
 //! (`runQueued`), and its posts are delivered in the next drain.
@@ -119,6 +120,10 @@ pub const Outcome = union(enum) {
     cancelled,
     failed: anyerror,
 };
+
+/// `spawn`'s refusal: every job slot is busy. An expected outcome of user
+/// input, not a fault; the caller handles it where it spawns.
+pub const SpawnError = error{JobBusy};
 
 /// What `on_done` receives (`Effects.jobDone`).
 pub const Done = struct {
@@ -547,14 +552,17 @@ pub const Pool = struct {
     }
 
     /// Claim a slot, copy `input` into it, and start `run`. A job type not in
-    /// `Config.jobs`, or a full table, is a programmer error.
+    /// `Config.jobs` is a programmer error. Returns `error.JobBusy`, claiming
+    /// nothing, when every slot holds a job whose `on_done` has not returned:
+    /// how many spawns one drain asks for is the user's doing (a click per
+    /// spawn), so a full table is an expected refusal, not a fault.
     pub fn spawn(
         self: *Pool,
         type_id: usize,
         run: RunFn,
         input: []const u8,
         handlers: Handlers,
-    ) JobId {
+    ) SpawnError!JobId {
         assert(type_id != 0);
         assert(!self.stopping.load(.acquire));
         if (std.mem.indexOfScalar(usize, self.type_ids, type_id) == null) std.debug.panic(
@@ -567,14 +575,12 @@ pub const Pool = struct {
             input.len,
             self.input_stride,
         });
-        const index = self.freeSlot() orelse std.debug.panic("events pool 'jobs' exhausted: " ++
-            "capacity {d}, {d} in use, 1 requested ({s}). Raise " ++
-            "ResourceLimits.events.job_count_max.", .{
-            self.slots.len,
-            self.slots.len,
-            handler_mod.typeName(type_id),
-        });
+        const index = self.freeSlot() orelse {
+            assert(self.busyCount() == self.slots.len);
+            return error.JobBusy;
+        };
         const slot = &self.slots[index];
+        assert(!slot.busy);
         @memcpy(self.inputSlot(index)[0..input.len], input);
         self.input_used_max = @max(self.input_used_max, @as(u32, @intCast(input.len)));
         slot.busy = true;

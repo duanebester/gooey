@@ -241,8 +241,9 @@ its glyph cache holds panics and names the field. The SVG and image caches hold
 frame's worth, and `atlas.svg_rasterization_count_frame_max` icons rasterize per frame
 (4 at most profiles, 16 at `large`); the rest fill in over later frames. At most
 `events.dialog_count_max` file dialogs wait for their outcome at once (2 at `nano`, 8 at
-`standard`); one more panics and names the field. `events.job_count_max` background jobs run
-at once (2 at `nano`, 8 at `standard`), each with a `job_input_bytes_max` input, and
+`standard`); one more is refused with `error.DialogBusy`. `events.job_count_max` background
+jobs run at once (2 at `nano`, 8 at `standard`); one more is refused with `error.JobBusy`.
+Each has a `job_input_bytes_max` input, and
 `events.job_result_count_max` posted results of up to `job_result_bytes_max` bytes wait for a
 drain. The fields and
 their measurements are in `src/core/limits.zig` and `docs/memory-budget.md`.
@@ -540,7 +541,9 @@ pub const Fetch = struct {
         self.fetch = effects.spawn(Fetch, &.{ .delay_ms = 600, .chunk_gap_ms = 120 }, .{
             .on_result = effects.handler(State.onChunk),
             .on_done = effects.handler(State.onFetched),
-        });
+        }) catch |err| switch (err) {
+            error.JobBusy => return self.setStatus("Every job slot is busy.", .{}),
+        };
         self.setStatus("Fetching\u{2026}", .{});
     }
 ```
@@ -550,8 +553,9 @@ pub const Fetch = struct {
 
 - Natively each of the `events.job_count_max` slots has its own worker (a runner and an
   interrupter task), started at init with `io.concurrent`, and only when `Config.jobs` is
-  non-empty. A spawn with every slot busy panics and names the field; keep an in-flight flag
-  that `on_done` clears. A cancelled job's slot is free once its `on_done` has run.
+  non-empty. A spawn with every slot busy returns `error.JobBusy` and starts nothing; the
+  handler handles it where it spawns. A job's slot, cancelled or not, is free once its
+  `on_done` has returned, so a spawn inside `on_done` still counts that job's slot.
 - A post that finds all `job_result_count_max` result slots waiting for a drain blocks its
   worker until one is free. The main thread never waits, and no result is dropped.
 - `cancelJob` never waits. A job that has not started never runs. Natively, a running job's
