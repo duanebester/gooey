@@ -91,6 +91,8 @@ pub fn lower(action: *const Action) Events {
         // A decode and a dialog answer reach the app as completions, not
         // as input events.
         .text, .compose, .scroll, .resize, .image, .dialog => events.push(.other),
+        // A worker's turn reaches the app as deliveries, never as input.
+        .job => unreachable,
         .wait_ns, .tick_main, .present => unreachable,
     }
     assert(events.count > 0);

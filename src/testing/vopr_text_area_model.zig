@@ -324,7 +324,7 @@ pub const TextAreaModel = struct {
                 value.* = target;
             },
             .pointer, .key, .scroll, .resize, .cancel => {},
-            .wait_ns, .tick_main, .present, .drag, .image, .dialog => unreachable,
+            .wait_ns, .tick_main, .present, .drag, .image, .dialog, .job => unreachable,
         }
         self.pending[self.pending_count] = copy;
         self.pending_count += 1;
@@ -460,7 +460,7 @@ pub const TextAreaModel = struct {
                 const releases = cancel.kind != .pointer_cancelled and cancel.key_held != null;
                 if (releases and self.focus == area_id) self.sync();
             },
-            .wait_ns, .tick_main, .present, .drag, .image, .dialog => unreachable,
+            .wait_ns, .tick_main, .present, .drag, .image, .dialog, .job => unreachable,
         }
     }
 

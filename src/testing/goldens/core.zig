@@ -57,23 +57,34 @@ pub fn CoreDriver(comptime App: type) type {
             io: std.Io,
             trace: *const trace_mod.Trace,
         ) !void {
-            try self.initInPlaceDecoding(allocator, io, trace, .worker);
+            try self.initInPlaceWorkers(allocator, io, trace, .{
+                .image_decodes = .worker,
+                .job_runs = .host,
+            });
         }
 
-        /// `initInPlace` with the image decodes' mode: the VOPR plays the
-        /// decode worker itself (`.stepped`).
-        pub fn initInPlaceDecoding(
+        /// Who runs the image decodes and the jobs: the hosts' workers, or
+        /// a simulation that plays them itself (`.stepped`).
+        pub const Workers = struct {
+            image_decodes: gooey.internals.images.Mode,
+            job_runs: gooey.internals.jobs.Mode,
+        };
+
+        /// `initInPlace` with the workers' modes: the VOPR plays the decode
+        /// worker and the job workers itself.
+        pub fn initInPlaceWorkers(
             self: *Self,
             allocator: std.mem.Allocator,
             io: std.Io,
             trace: *const trace_mod.Trace,
-            image_decodes: gooey.internals.images.Mode,
+            workers: Workers,
         ) !void {
             assert(trace.width == @as(f32, @floatFromInt(App.width)));
             assert(trace.height == @as(f32, @floatFromInt(App.height)));
             try self.app.initHeadless(allocator, io, .{
                 .scale_factor = trace.scale_factor,
-                .image_decodes = image_decodes,
+                .image_decodes = workers.image_decodes,
+                .job_runs = workers.job_runs,
             });
             errdefer self.app.deinitHeadless();
             const RenderLimits = core_backend.RenderLimits;

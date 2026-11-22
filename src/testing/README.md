@@ -80,12 +80,14 @@ rewrites the files after an intended change.
 `src/testing/vopr.zig` is deterministic simulation testing for the core, driving an example app
 through the goldens' driver with generated pointer (left, right, and middle buttons, held and
 released in any order), drag-gesture, scroll, key, text, IME, clock, window-resize, gesture-cancel
-and focus-loss, and split tick/present actions. Every 3,000 steps a random `Swarm` redraws the mix
-(kind weights, some zero, and how targets are picked), so seeds go deep in different directions.
+and focus-loss, image decode, dialog answer, job worker, and split tick/present actions. Every
+3,000 steps a random `Swarm` redraws the mix (kind weights, some zero, and how targets are
+picked), so seeds go deep in different directions.
 `zig build vopr -- [--app NAME] [seed] [--verbose]` runs one seed (a random one, printed, when none
 is given) as two instances fed the same bytes, which must draw the same frames; `--verbose` prints
 each action to replay a failure. The apps are todo (the default), drag_drop, virtual_list, splitter,
-actions, nested_overlay, text_area, images, and file_dialog. After every step the app's model must
+actions, nested_overlay, text_area, images, file_dialog, jobs, and jobs_main_thread. After every
+step the app's model must
 hold: todo's, drag_drop's, and splitter's predict the app's state, actions' predicts the message of
 the last action fired, nested_overlay's checks that the menu is above the modal, text_area's
 predicts the field's text, caret, selection, and composition (`vopr_text_area_checks.zig` adds
@@ -114,8 +116,27 @@ Dialogs stay open up to the whole dialog table. Its model routes clicks and keys
 on screen to find each button press, and predicts which requests the core refuses with
 `error.DialogBusy` (another waits for the tick, or every slot is held) and the status and path the
 app then shows, routing each drain in one pass: a modal outcome from the last tick, then the queue
-in push order, then the ring. New action kinds go last in `Action` and only models that list them
-draw them, so older seeds replay unchanged.
+in push order, then the ring.
+
+The jobs app (`vopr_jobs_model.zig`, VOPR-only) has Spawn and Spawn chain buttons (a chained job's
+`on_done` spawns a successor when it finishes, into the slot the job freed just before `on_done`,
+so it is granted even with every other slot busy) and four rows, one more than its three job slots,
+each showing a job and a Cancel button; a row keeps its job's id after the job ends, so its Cancel
+is then stale, often against a slot a later job reuses. A result may ask `on_result` to cancel a
+row, so cancels also land among a drain's deliveries. In `jobs` the pool runs in
+`jobs.Mode.stepped`, which starts no task and never calls `run`: a `.job` action plays one slot's
+runner or interrupter, calling the transitions the workers call (`beginRun`, `post`, `endRun`,
+`finishInterrupt`), so a job can stay running across frames, be cancelled into `interrupting`, have
+its posts refused, and then end as the interrupter ends it. The harness posts only while a result
+slot is free, as a worker would wait for a drain. In `jobs_main_thread` the pool runs in
+`.main_thread` and each drain runs the queued jobs' `run` itself (`runQueued`), the path the web and
+single-threaded builds take. The model keeps its own job table and the deliveries pushed since the
+last drain; it predicts `on_result` calls in post order, one `on_done` per job with its outcome
+(`.cancelled` whenever a cancel lands before the end is delivered), the results a cancel drops, the
+spawns the core refuses with `error.JobBusy`, the main thread's runs in spawn order while their
+`posts_max` result slots are free, and every row the app shows, and it compares the core's job table
+and the completion ring, result bytes included, around every drain. New action kinds go last in
+`Action` and only models that list them draw them, so older seeds replay unchanged.
 
 ---
 

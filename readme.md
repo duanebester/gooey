@@ -241,8 +241,9 @@ its glyph cache holds panics and names the field. The SVG and image caches hold
 frame's worth, and `atlas.svg_rasterization_count_frame_max` icons rasterize per frame
 (4 at most profiles, 16 at `large`); the rest fill in over later frames. At most
 `events.dialog_count_max` file dialogs wait for their outcome at once (2 at `nano`, 8 at
-`standard`); one more panics and names the field. `events.job_count_max` background jobs run
-at once (2 at `nano`, 8 at `standard`), each with a `job_input_bytes_max` input, and
+`standard`); one more is refused with `error.DialogBusy`. `events.job_count_max` background
+jobs run at once (2 at `nano`, 8 at `standard`); one more is refused with `error.JobBusy`.
+Each has a `job_input_bytes_max` input, and
 `events.job_result_count_max` posted results of up to `job_result_bytes_max` bytes wait for a
 drain. The fields and
 their measurements are in `src/core/limits.zig` and `docs/memory-budget.md`.
@@ -500,13 +501,13 @@ every path of a multiple selection.
 **Timers.** There is no timer API. A view that changes with the clock reads `cx.now()` and
 calls `cx.requestRenderAfter(delay_ms)` in every render that needs the next one.
 
-**Background work.** Handlers run on the main thread, so slow work (a request, a file read,
-a parse) goes into a job: a type listed in `Config.jobs` with an `Input`, a `Result`, and a
-`run` that executes on a worker thread. `effects.spawn` copies the input into the job's slot;
-the job never sees `State`, and an `Input` holding a pointer or slice is a compile error.
-Each `job.post(&result)` copies a result and wakes the event loop, and the next drain calls
-`on_result` with it, in post order; when `run` returns, `on_done` runs once with `.finished`,
-`.cancelled`, or `.failed`. Nothing polls: between deliveries the app is idle. From
+**Background work.** Handlers run on the main thread, so slow work (a request, a file read, a parse)
+goes into a job: a type listed in `Config.jobs` with an `Input`, a `Result`, `posts_max` (the most
+results one run posts), and a `run` that executes on a worker thread. `effects.spawn` copies the
+input into the job's slot; the job never sees `State`, and an `Input` holding a pointer or slice is
+a compile error. Each `job.post(&result)` copies a result and wakes the event loop, and the next
+drain calls `on_result` with it, in post order; when `run` returns, `on_done` runs once with
+`.finished`, `.cancelled`, or `.failed`. Nothing polls: between deliveries the app is idle. From
 `background.zig`:
 
 ```zig
@@ -519,6 +520,8 @@ pub const Fetch = struct {
         len: u16,
         bytes: [64]u8,
     };
+    /// One post per chunk.
+    pub const posts_max: u32 = reply_chunks.len;
 
     pub fn run(input: *const Input, job: *gooey.Job(Result)) !void {
         const io = job.io();
@@ -540,7 +543,9 @@ pub const Fetch = struct {
         self.fetch = effects.spawn(Fetch, &.{ .delay_ms = 600, .chunk_gap_ms = 120 }, .{
             .on_result = effects.handler(State.onChunk),
             .on_done = effects.handler(State.onFetched),
-        });
+        }) catch |err| switch (err) {
+            error.JobBusy => return self.setStatus("Every job slot is busy.", .{}),
+        };
         self.setStatus("Fetching\u{2026}", .{});
     }
 ```
@@ -550,8 +555,11 @@ pub const Fetch = struct {
 
 - Natively each of the `events.job_count_max` slots has its own worker (a runner and an
   interrupter task), started at init with `io.concurrent`, and only when `Config.jobs` is
-  non-empty. A spawn with every slot busy panics and names the field; keep an in-flight flag
-  that `on_done` clears. A cancelled job's slot is free once its `on_done` has run.
+  non-empty. A spawn with every slot busy returns `error.JobBusy` and starts nothing; the
+  handler handles it where it spawns. A job's slot, cancelled or not, is freed just before
+  its `on_done` runs, so `on_done` can spawn a chained job or a retry even with every other
+  slot busy. The id `on_done` receives is then stale: cancelling it does nothing, and it
+  still equals the id the app stored.
 - A post that finds all `job_result_count_max` result slots waiting for a drain blocks its
   worker until one is free. The main thread never waits, and no result is dropped.
 - `cancelJob` never waits. A job that has not started never runs. Natively, a running job's
@@ -569,8 +577,12 @@ pub const Fetch = struct {
   (`background.zig` counts its lines).
 - On the web there are no threads: a job runs to completion on the main thread right after
   the drain that spawned it, the browser io's sleep returns at once, and files and sockets
-  fail. Its results arrive in the next frame. A post with every result slot held panics
-  there, since nothing can drain while the job runs.
+  fail. Its results arrive in the next frame. Nothing can drain while a job runs, so a
+  queued job starts only while its `posts_max` result slots are free: jobs whose
+  `posts_max` fit together run in one frame, in spawn order, and the rest in later
+  frames. A run that posts more than its `posts_max` panics there. Natively, posts past
+  the free slots wait for a drain instead, so `posts_max` bounds only the main thread.
+  `posts_max` above `job_result_count_max` is a compile error.
 
 ### Clicks
 

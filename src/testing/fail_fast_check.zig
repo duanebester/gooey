@@ -35,8 +35,7 @@ const Mode = enum {
     @"core-start-drag-target",
     @"core-dialog-target",
     @"core-dialog-paths",
-    @"core-job-count",
-    @"core-job-count-cancelled",
+    @"core-job-posts",
     @"core-mono-unset",
     @"core-wrap-text",
     @"core-wrap-frame",
@@ -86,8 +85,7 @@ pub fn main(init: std.process.Init) !void {
         .@"core-start-drag-target" => coreStartDragTarget(init.gpa, init.io),
         .@"core-dialog-target" => coreDialogTarget(init.gpa, init.io),
         .@"core-dialog-paths" => coreDialogPaths(init.gpa, init.io),
-        .@"core-job-count" => coreJobCount(init.gpa, init.io),
-        .@"core-job-count-cancelled" => coreJobCountCancelled(init.gpa, init.io),
+        .@"core-job-posts" => coreJobPosts(init.gpa, init.io),
         .@"core-mono-unset" => coreTick(init.gpa, init.io, CoreApp.monoText),
         .@"core-wrap-text" => coreTick(init.gpa, init.io, CoreApp.wrapText),
         .@"core-wrap-frame" => coreTick(init.gpa, init.io, CoreApp.wrapFrame),
@@ -659,63 +657,40 @@ fn coreDialogPaths(gpa: std.mem.Allocator, io: std.Io) void {
     clickCenter(app);
 }
 
-/// A job that sleeps until the app stops.
-const Nap = struct {
-    pub const Input = struct { seconds: u32 };
-    pub const Result = struct { never: u8 };
+/// A job that declares one post and makes two.
+const Overpost = struct {
+    pub const Input = struct { unused: u8 };
+    pub const Result = struct { value: u32 };
+    pub const posts_max: u32 = 1;
 
-    pub fn run(input: *const Input, job: *gooey.Job(Result)) !void {
-        try job.io().sleep(.fromSeconds(input.seconds), .awake);
+    pub fn run(_: *const Input, job: *gooey.Job(Result)) void {
+        // Nothing cancels a main-thread run, so both posts go ahead.
+        if (!job.post(&.{ .value = 1 })) unreachable;
+        if (!job.post(&.{ .value = 2 })) unreachable;
     }
 };
 
-fn coreJobCount(gpa: std.mem.Allocator, io: std.Io) void {
+/// On the main thread a post cannot wait for a drain, so a run that posts
+/// past its `posts_max` would take a result slot kept for another job.
+fn coreJobPosts(gpa: std.mem.Allocator, io: std.Io) void {
     const config = comptime blk: {
         var with_jobs = core_config;
-        with_jobs.jobs = &.{Nap};
+        with_jobs.jobs = &.{Overpost};
         break :blk with_jobs;
     };
-    const app = initCoreApp(gooey.App(CoreState, CoreApp.empty, config), gpa, io);
-    var effects = gooey.Effects.init(null, .root);
-    effects.jobs = &app.window.jobs;
-    const job_count_max = gooey.ResourceLimits.nano.events.job_count_max;
-    var spawned: u32 = 0;
-    // Exactly the capacity, then one more.
-    while (spawned <= job_count_max) : (spawned += 1) {
-        _ = effects.spawn(Nap, &.{ .seconds = 60 }, .{
-            .on_done = effects.handler(CoreState.picked),
-        });
-    }
-    unreachable;
-}
-
-fn coreJobCountCancelled(gpa: std.mem.Allocator, io: std.Io) void {
-    const config = comptime blk: {
-        var with_jobs = core_config;
-        with_jobs.jobs = &.{Nap};
-        break :blk with_jobs;
+    const App = gooey.App(CoreState, CoreApp.empty, config);
+    const app = gpa.create(App) catch |err| {
+        std.debug.panic("setup: core app allocation failed: {s}", .{@errorName(err)});
     };
-    const app = initCoreApp(gooey.App(CoreState, CoreApp.empty, config), gpa, io);
+    app.initHeadless(gpa, io, .{ .scale_factor = 1, .job_runs = .main_thread }) catch |err| {
+        std.debug.panic("setup: core app init failed: {s}", .{@errorName(err)});
+    };
     var effects = gooey.Effects.init(null, .root);
     effects.jobs = &app.window.jobs;
-    const job_count_max = gooey.ResourceLimits.nano.events.job_count_max;
-    var first: ?gooey.JobId = null;
-    var spawned: u32 = 0;
-    // Exactly the capacity, then cancel the first and let its interrupt
-    // finish, then one more spawn with no drain in between.
-    while (spawned <= job_count_max) : (spawned += 1) {
-        if (spawned == job_count_max) {
-            effects.cancelJob(first.?);
-            io.sleep(.fromMilliseconds(100), .awake) catch |err| {
-                std.debug.panic("fail_fast_check: sleep failed: {t}", .{err});
-            };
-        }
-        const id = effects.spawn(Nap, &.{ .seconds = 60 }, .{
-            .on_done = effects.handler(CoreState.picked),
-        });
-        if (first == null) first = id;
-    }
-    unreachable;
+    _ = effects.spawn(Overpost, &.{ .unused = 0 }, .{
+        .on_done = effects.handler(CoreState.picked),
+    }) catch |err| std.debug.panic("setup: spawn refused: {t}", .{err});
+    app.tick(1);
 }
 
 const TooManyPaths = struct {

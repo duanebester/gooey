@@ -1372,7 +1372,7 @@ pub const EventLimits = struct {
     dialog_count_max: u32,
     /// Background jobs running at once (`Effects.spawn`), each with a runner
     /// and an interrupter task when the app registers `Config.jobs`. One
-    /// more spawn fails fast.
+    /// more spawn is refused with `error.JobBusy`.
     job_count_max: u32,
     /// Bytes of one job's `Input`, copied into its slot at spawn.
     job_input_bytes_max: u32,

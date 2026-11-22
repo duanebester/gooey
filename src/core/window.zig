@@ -890,6 +890,9 @@ pub const Options = struct {
     /// `.worker` on every host; `.stepped` for a simulation that plays the
     /// image decode worker itself (`images.Mode`).
     image_decodes: images_mod.Mode,
+    /// `jobs.Mode.host` on every host; `.stepped` for a simulation that
+    /// plays the job workers itself.
+    job_runs: jobs_mod.Mode,
 };
 
 pub noinline fn initInPlace(self: *Window, gpa: std.mem.Allocator, options: *const Options) !void {
@@ -1133,8 +1136,16 @@ fn initWorkers(self: *Window, gpa: std.mem.Allocator, options: *const Options) !
     assert(self.completions.slots.len > 0);
     try self.images.initInPlace(gpa, io, &self.completions, &limits.atlas, options.image_decodes);
     errdefer self.images.deinit(gpa);
-    try self.jobs.initInPlace(gpa, io, &self.completions, &limits.events, options.job_types);
+    try self.jobs.initInPlace(
+        gpa,
+        io,
+        &self.completions,
+        &limits.events,
+        options.job_types,
+        options.job_runs,
+    );
     assert(self.images.mode == options.image_decodes);
+    assert(self.jobs.mode == options.job_runs);
 }
 
 fn deinitWorkers(self: *Window, gpa: std.mem.Allocator) void {

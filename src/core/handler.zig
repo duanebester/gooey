@@ -282,6 +282,8 @@ pub const Effects = struct {
     pub const JobHandlers = jobs.Handlers;
     pub const JobDone = jobs.Done;
     pub const JobOutcome = jobs.Outcome;
+    /// `spawn`'s refusal: an expected outcome, not a fault.
+    pub const SpawnError = jobs.SpawnError;
     pub const ScrollRequest = struct { id: ElementId, target: ScrollTarget };
 
     pub const Drop = struct { type_id: usize, payload: u64 };
@@ -458,19 +460,30 @@ pub const Effects = struct {
     /// `input`. `run` executes off the main thread (on the web, after this
     /// drain); each result it posts arrives at `handlers.on_result` in a
     /// later drain, then `handlers.on_done` once. The slot is claimed at
-    /// once; a full table (`ResourceLimits.events.job_count_max`) panics.
+    /// once and freed just before `on_done` runs, so `on_done` may spawn a
+    /// chained job or a retry into it. Returns `error.JobBusy`, and starts
+    /// nothing, when every slot (`ResourceLimits.events.job_count_max`)
+    /// holds a job whose `on_done` has not started: clicks can
+    /// ask for more jobs than there are slots, so the caller handles the
+    /// refusal here, as by showing that the app is busy.
     pub fn spawn(
         self: *Effects,
         comptime Job: type,
         job_input: *const Job.Input,
         handlers: JobHandlers,
-    ) JobId {
+    ) SpawnError!JobId {
         comptime jobs.checkSpec(Job);
         assert(handlers.on_done.target.isRoot());
         if (handlers.on_result) |on_result| assert(on_result.target.isRoot());
         const pool = self.jobs orelse std.debug.panic("effects.spawn({s}) outside a handler " ++
             "or on_init", .{@typeName(Job)});
-        return pool.spawn(typeId(Job), jobs.erasedRun(Job), std.mem.asBytes(job_input), handlers);
+        return pool.spawn(
+            typeId(Job),
+            jobs.erasedRun(Job),
+            Job.posts_max,
+            std.mem.asBytes(job_input),
+            handlers,
+        );
     }
 
     /// Cancel job `id`: its posts return false, results it posted that were
@@ -481,7 +494,8 @@ pub const Effects = struct {
     /// when it next checks `job.cancelled()` or posts. On the web and in
     /// single-threaded builds a job runs whole after the drain that spawned
     /// it, so a cancel only reaches one that has not run. Never waits. A
-    /// finished job's id does nothing.
+    /// finished job's id, including the one its own `on_done` receives,
+    /// does nothing, even once a later job holds its slot.
     pub fn cancelJob(self: *Effects, id: JobId) void {
         const pool = self.jobs orelse std.debug.panic("effects.cancelJob outside a handler", .{});
         pool.cancel(id);

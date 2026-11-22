@@ -396,13 +396,15 @@ replacement is defined behaviour, not loss:
 
 ### Background jobs (0.6)
 
-A job is a type in `Config.jobs` with `Input`, `Result`, and
+A job is a type in `Config.jobs` with `Input`, `Result`, `posts_max: u32` (the most
+results one run posts, at most `events.job_result_count_max`, checked at comptime), and
 `run(input: *const Input, job: *gooey.Job(Result)) !void`. The rules:
 
 1. `effects.spawn(Job, &input, .{ .on_result, .on_done })` copies `input` into a free job
-   slot and returns a `JobId`. A full table (`events.job_count_max`) panics and names the
-   field. `Input` must not contain a pointer or slice (compile error): a job never reaches
-   `State`.
+   slot and returns a `JobId`. With every slot busy (`events.job_count_max`), not counting
+   a job whose `on_done` is running, it returns `error.JobBusy` and starts nothing: clicks
+   decide how many spawns a drain asks for, so the caller handles the refusal. `Input`
+   must not contain a pointer or slice (compile error): a job never reaches `State`.
 2. Natively each slot has a runner, alone in its own `std.Io.Group`, and an interrupter in
    the pool's group, started at init with `io.concurrent` only when `Config.jobs` is
    non-empty. Without threads (the web, `-fsingle-threaded`) a job runs on the main thread
@@ -410,11 +412,17 @@ A job is a type in `Config.jobs` with `Input`, `Result`, and
 3. `job.post(&result)` copies the result into one of `events.job_result_count_max` slots,
    pushes it onto the completion ring, and calls the host's thread-safe wake
    (`Window.bindWake`). With every slot held it waits on its worker until a drain frees
-   one; without threads it panics instead. It returns false once the job is cancelled or
-   the app is stopping.
+   one. Without threads a post cannot wait, so a queued job starts only while its
+   `posts_max` result slots are free: queued jobs run in spawn order, as many as fit in
+   this drain, the rest after the next. A run that posts more than its `posts_max` panics
+   there; with workers it waits like any post. It returns false once the job is cancelled
+   or the app is stopping.
 4. The drain routes job deliveries after the queued events, in ring order: `on_result` per
    result, in post order, then `on_done` once with `.finished`, `.cancelled`, or
    `.failed`. Both are root-state handlers. A result is valid until its handler returns.
+   The job's slot is freed, under a new generation, just before `on_done` runs, so
+   `on_done` can spawn a chained job or a retry into it. The id `on_done` receives is
+   then stale: cancelling it does nothing, and it still equals the id the app stored.
 5. `effects.cancelJob(id)` never waits: posts return false, `job.cancelled()` is true,
    undelivered results are dropped, and `on_done` reports `.cancelled`. A job not yet
    started never runs. Natively a running job is interrupted: its slot's interrupter

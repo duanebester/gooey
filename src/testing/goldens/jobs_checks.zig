@@ -39,6 +39,9 @@ const Count = struct {
         gap_ms: u32,
     };
     pub const Result = struct { value: u32, pad: [60]u8 };
+    /// These checks run on workers, whose posts wait for a drain, so `run`
+    /// may post more; on the main thread a run past this fails fast.
+    pub const posts_max: u32 = limits.events.job_result_count_max;
 
     pub fn run(input: *const Input, job: *gooey.Job(Result)) !void {
         _ = job_started_count.fetchAdd(1, .acq_rel);
@@ -74,6 +77,7 @@ fn counting(first: u32, count: u32, flags: struct { fail: bool, gated: bool }) C
 const Sleep = struct {
     pub const Input = struct { seconds: u32 };
     pub const Result = struct { never: u8 };
+    pub const posts_max: u32 = 0;
 
     pub fn run(input: *const Input, job: *gooey.Job(Result)) !void {
         _ = job_started_count.fetchAdd(1, .acq_rel);
@@ -90,6 +94,7 @@ const Sleep = struct {
 const Read = struct {
     pub const Input = struct { port: u16 };
     pub const Result = struct { never: u8 };
+    pub const posts_max: u32 = 0;
 
     pub fn run(input: *const Input, job: *gooey.Job(Result)) !void {
         _ = job_started_count.fetchAdd(1, .acq_rel);
@@ -116,6 +121,8 @@ const Read = struct {
 const Spin = struct {
     pub const Input = struct { unused: u8 };
     pub const Result = struct { value: u32 };
+    /// The one post after the cancel, which is refused.
+    pub const posts_max: u32 = 1;
 
     /// Checks of `job.cancelled()`: well past the 10 s a check waits.
     const spin_count_max: u64 = 1 << 40;
@@ -139,6 +146,8 @@ const Spin = struct {
 const Flood = struct {
     pub const Input = struct { unused: u8 };
     pub const Result = struct { value: u64 };
+    /// Workers only: it posts until the pool holds it back.
+    pub const posts_max: u32 = limits.events.job_result_count_max;
 
     pub fn run(_: *const Input, job: *gooey.Job(Result)) void {
         _ = job_started_count.fetchAdd(1, .acq_rel);
@@ -164,6 +173,11 @@ const State = struct {
     outcome: ?Effects.JobOutcome = null,
     last: ?gooey.JobId = null,
     init_saw_io: bool = false,
+    /// The next `on_done` spawns a `Sleep`, as a chained job or a retry
+    /// would, and records what the spawn returned.
+    chain_on_done: bool = false,
+    chained: ?gooey.JobId = null,
+    chain_refused: bool = false,
 
     fn onCount(self: *State, effects: *Effects) void {
         const result = effects.jobResult(Count).?;
@@ -182,6 +196,26 @@ const State = struct {
         self.done_count += 1;
         self.outcome = done.outcome;
         self.record(done_marker + done.id.slot);
+        if (self.chain_on_done) {
+            self.chain_on_done = false;
+            self.chainFrom(effects, done.id);
+        }
+    }
+
+    /// Spawn the follow-up from `on_done`, then cancel the finished job's
+    /// own id, which is stale and must not reach the follow-up.
+    fn chainFrom(self: *State, effects: *Effects, finished_id: gooey.JobId) void {
+        assert(self.chained == null);
+        assert(!self.chain_refused);
+        self.chained = effects.spawn(Sleep, &.{ .seconds = 60 }, .{
+            .on_done = effects.handler(State.onDone),
+        }) catch |err| switch (err) {
+            error.JobBusy => blk: {
+                self.chain_refused = true;
+                break :blk null;
+            },
+        };
+        effects.cancelJob(finished_id);
     }
 
     fn onFlood(_: *State, effects: *Effects) void {
@@ -212,7 +246,10 @@ const State = struct {
         }, .{
             .on_result = effects.handler(State.onCount),
             .on_done = effects.handler(State.onDone),
-        });
+        }) catch |err| switch (err) {
+            // The app's first spawn: every slot is free.
+            error.JobBusy => unreachable,
+        };
     }
 
     fn deinit(_: *State) void {
@@ -302,7 +339,15 @@ const Harness = struct {
         self.app.tick(self.now);
     }
 
+    /// Spawn a job every check expects to start: it keeps within the
+    /// table, so a refusal is a failed check.
     fn spawn(self: *Harness, comptime Job: type, input: Job.Input) gooey.JobId {
+        return self.trySpawn(Job, input) catch |err| {
+            std.debug.panic("jobs_checks: spawn of {s} refused: {t}", .{ @typeName(Job), err });
+        };
+    }
+
+    fn trySpawn(self: *Harness, comptime Job: type, input: Job.Input) !gooey.JobId {
         var effects = Effects.init(null, .root);
         effects.jobs = &self.app.window.jobs;
         const on_result: ?gooey.Handler = switch (Job) {
@@ -597,19 +642,32 @@ test "a slot interrupted 50 times keeps running jobs to the end" {
 }
 
 test "a full job table frees a cancelled job's slot only when its on_done is delivered" {
+    // Fill the table exactly, then spawn one more: once a panic, which a
+    // click per spawn reached (the VOPR's jobs app, seed 1), now
+    // `error.JobBusy`, which claims nothing. A cancelled job whose end was
+    // pushed still holds its slot, so a spawn before the drain that
+    // delivers its `on_done` is refused too; the one after takes its slot.
     var harness: Harness = undefined;
     try harness.init();
     defer harness.deinit();
+    const pool = &harness.app.window.jobs;
     const slot_count = limits.events.job_count_max;
     var ids: [slot_count]gooey.JobId = undefined;
     for (&ids) |*id| id.* = harness.spawn(Sleep, .{ .seconds = 60 });
-    try testing.expectEqual(slot_count, harness.app.window.jobs.busyCount());
+    try testing.expectEqual(slot_count, pool.busyCount());
+    try testing.expectEqual(slot_count - 1, ids[slot_count - 1].slot);
+    const spawned_before = pool.spawned_count;
+    try testing.expectError(error.JobBusy, harness.trySpawn(Sleep, .{ .seconds = 60 }));
+    try testing.expectEqual(spawned_before, pool.spawned_count);
+    try testing.expectEqual(slot_count, pool.busyCount());
     harness.waitForStarted(1 + slot_count);
     const wakes_before = harness.wake.count.load(.acquire);
     harness.cancel(ids[2]);
     harness.waitForWakes(wakes_before + 1);
     try testing.expectEqual(@as(u32, 2), job_returned_count.load(.acquire));
-    try testing.expectEqual(slot_count, harness.app.window.jobs.busyCount());
+    try testing.expectEqual(slot_count, pool.busyCount());
+    try testing.expectError(error.JobBusy, harness.trySpawn(Sleep, .{ .seconds = 60 }));
+    try testing.expectEqual(@as(u32, 0), harness.app.state.done_count);
     harness.tick();
     try testing.expectEqual(@as(u32, 1), harness.app.state.done_count);
     try testing.expectEqual(slot_count - 1, harness.app.window.jobs.busyCount());
@@ -617,6 +675,47 @@ test "a full job table frees a cancelled job's slot only when its on_done is del
     try testing.expectEqual(ids[2].slot, next.slot);
     try testing.expectEqual(ids[2].generation +% 1, next.generation);
     try testing.expectEqual(slot_count, harness.app.window.jobs.busyCount());
+}
+
+test "a spawn from on_done takes the finishing job's slot in a full table" {
+    // Goal: `on_done` can chain a job or retry one with every other slot
+    // busy. Method: fill the table exactly, cancel one job, and let its
+    // `on_done` spawn a follow-up, which `JobBusy` refused while the slot was
+    // freed only after `on_done`. The follow-up must take that slot under the
+    // next generation; the finished job's stale id, cancelled from `on_done`,
+    // must leave it running; and with the table full again one more spawn is
+    // refused, while the live id still cancels the follow-up.
+    var harness: Harness = undefined;
+    try harness.init();
+    defer harness.deinit();
+    const pool = &harness.app.window.jobs;
+    const slot_count = limits.events.job_count_max;
+    var ids: [slot_count]gooey.JobId = undefined;
+    for (&ids) |*id| id.* = harness.spawn(Sleep, .{ .seconds = 60 });
+    try testing.expectEqual(slot_count, pool.busyCount());
+    harness.waitForStarted(1 + slot_count);
+    harness.app.state.chain_on_done = true;
+    harness.cancel(ids[1]);
+    _ = harness.waitForDone(1, wait_count_max);
+    const state = &harness.app.state;
+    try testing.expectEqual(@as(u32, 1), state.done_count);
+    try testing.expect(state.outcome.? == .cancelled);
+    try testing.expect(!state.chain_refused);
+    const chained = state.chained.?;
+    try testing.expectEqual(ids[1].slot, chained.slot);
+    try testing.expectEqual(ids[1].generation +% 1, chained.generation);
+    try testing.expectEqual(slot_count, pool.busyCount());
+    try testing.expectError(error.JobBusy, harness.trySpawn(Sleep, .{ .seconds = 60 }));
+    harness.waitForStarted(2 + slot_count);
+    harness.tick();
+    try testing.expectEqual(gooey.internals.jobs.Phase.running, pool.phaseOf(chained.slot));
+    // The job `on_init` spawned and the cancelled one; not the follow-up.
+    try testing.expectEqual(@as(u32, 2), job_returned_count.load(.acquire));
+    harness.cancel(chained);
+    _ = harness.waitForDone(2, wait_count_max);
+    try testing.expectEqual(@as(u32, 2), state.done_count);
+    try testing.expect(state.outcome.? == .cancelled);
+    try testing.expectEqual(slot_count - 1, pool.busyCount());
 }
 
 test "two jobs' deliveries keep each job's post order and end it after its results" {
