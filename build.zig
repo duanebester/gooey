@@ -201,6 +201,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "drag-drop", .source = "src/examples/drag_drop.zig" },
             .{ .name = "background", .source = "src/examples/background.zig" },
             .{ .name = "logo", .source = "src/examples/logo.zig" },
+            .{ .name = "layout-gallery", .source = "src/examples/layout_gallery.zig" },
         };
         // `zig build run` runs todo, the default example.
         var todo_exe: ?*std.Build.Step.Compile = null;
@@ -548,6 +549,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "drag-drop", .source = "src/examples/drag_drop.zig" },
             .{ .name = "background", .source = "src/examples/background.zig" },
             .{ .name = "logo", .source = "src/examples/logo.zig" },
+            .{ .name = "layout-gallery", .source = "src/examples/layout_gallery.zig" },
         };
         // `zig build run` runs todo, the default example; on EVE, which builds
         // only the board demos, counter.
@@ -877,6 +879,7 @@ fn addWindowsBuilds(
         .{ .name = "context-menu", .source = "src/examples/context_menu.zig" },
         .{ .name = "drag-drop", .source = "src/examples/drag_drop.zig" },
         .{ .name = "background", .source = "src/examples/background.zig" },
+        .{ .name = "layout-gallery", .source = "src/examples/layout_gallery.zig" },
     };
     for (examples) |example| {
         addWindowsExample(

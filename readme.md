@@ -123,6 +123,7 @@ Every example in `src/examples/` is a complete app; read them next. Run one with
 | `run`                  | `todo.zig`                 | TextInput with IME, scroll box, filters    |
 | `run-counter`          | `counter.zig`              | State, handlers, components                |
 | `run-layout`           | `layout.zig`               | Popover layer, click outside, keymap       |
+| `run-layout-gallery`   | `layout_gallery.zig`       | Grow, wrap, aspect ratio, percent, shrink  |
 | `run-actions`          | `actions.zig`              | Keymaps, key contexts, actions             |
 | `run-animation`        | `animation.zig`            | `tween`, `tweenOn`, `motion`, `loop`       |
 | `run-dynamic-counters` | `dynamic_counters.zig`     | Entities                                   |
