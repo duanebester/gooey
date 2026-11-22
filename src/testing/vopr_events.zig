@@ -88,7 +88,9 @@ pub fn lower(action: *const Action) Events {
             // no model here routes.
             .focus_lost => .other,
         }),
-        .text, .compose, .scroll, .resize => events.push(.other),
+        // A decode and a dialog answer reach the app as completions, not
+        // as input events.
+        .text, .compose, .scroll, .resize, .image, .dialog => events.push(.other),
         .wait_ns, .tick_main, .present => unreachable,
     }
     assert(events.count > 0);

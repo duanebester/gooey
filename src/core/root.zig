@@ -21,6 +21,7 @@ pub const lifecycle = @import("lifecycle.zig");
 pub const text_engine = @import("text_engine.zig");
 pub const animation = @import("animation.zig");
 pub const jobs = @import("jobs.zig");
+pub const images = @import("images.zig");
 pub const debugger = @import("debugger.zig");
 
 pub const App = app.App;

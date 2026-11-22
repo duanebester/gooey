@@ -85,15 +85,37 @@ and focus-loss, and split tick/present actions. Every 3,000 steps a random `Swar
 `zig build vopr -- [--app NAME] [seed] [--verbose]` runs one seed (a random one, printed, when none
 is given) as two instances fed the same bytes, which must draw the same frames; `--verbose` prints
 each action to replay a failure. The apps are todo (the default), drag_drop, virtual_list, splitter,
-actions, nested_overlay, and text_area. After every step the app's model must hold: todo's,
-drag_drop's, and splitter's predict the app's state, actions' predicts the message of the last
-action fired, nested_overlay's checks that the menu is above the modal, text_area's predicts the
-field's text, caret, selection, and composition (`vopr_text_area_checks.zig` adds caret, wrap, and
-fit-height checks), and virtual_list's only counts depth (`vopr_*_model.zig`). Every app's
-frames must pass the model-free invariants in `vopr_invariants.zig` (interactive accessibility
-nodes and handled hit records agree, focus is live) and rebuild to the same dump with no input or
-clock advance. Each app's fuzz target runs a corpus smoke in `zig build test` and fuzzes under
-`zig build test --fuzz`; `zig build vopr-soak -- --app NAME` runs random seeds for hours.
+actions, nested_overlay, text_area, images, and file_dialog. After every step the app's model must
+hold: todo's, drag_drop's, and splitter's predict the app's state, actions' predicts the message of
+the last action fired, nested_overlay's checks that the menu is above the modal, text_area's
+predicts the field's text, caret, selection, and composition (`vopr_text_area_checks.zig` adds
+caret, wrap, and fit-height checks), and virtual_list's only counts depth (`vopr_*_model.zig`).
+Every app's frames must pass the model-free invariants in `vopr_invariants.zig` (interactive
+accessibility nodes and handled hit records agree, focus is live) and rebuild to the same dump with
+no input or clock advance. Each app's fuzz target runs a corpus smoke in `zig build test` and
+fuzzes under `zig build test --fuzz`; `zig build vopr-soak -- --app NAME` runs random seeds for
+hours.
+
+The VOPR plays the platform and the workers, never threads: workers hand results to the main
+thread only through the completion ring, so the harness pushes those completions itself, at
+seed-chosen points between input, `tickMain`, and `presentBuilt`, with seed-chosen content. Every
+app's image loader runs in `images.Mode.stepped`, which starts no decode worker; an `.image` action
+takes the oldest request (`Loader.takeStepped`) once the last decode has landed and pushes synthetic
+pixels of seeded sides, or a failure, at a failure rate the swarm draws. The images app
+(`vopr_images_model.zig`, VOPR-only, since the images example paints one file) paints eight paths,
+four at a time, and its model predicts every build's requests, oldest first, and its images, at the
+decoded size placed by each cell's fit: failures stay failed, and a scale change clears the atlas
+so shown paths are asked for again. Headless, uploads are never deferred, so the deferred landing
+path is unreached. The file_dialog app (core_file_dialog) gets a fake `FileDialogService`
+(`vopr_dialogs.zig`): dialogs stay open until a `.dialog` action answers one with paths, a cancel,
+or a failure through the event queue or the completion ring, or the seed arms an answer the next
+dialog returns at once, as a modal one does, whose outcome the tick queues for the next drain.
+Dialogs stay open up to the whole dialog table. Its model routes clicks and keys against the frame
+on screen to find each button press, and predicts which requests the core refuses with
+`error.DialogBusy` (another waits for the tick, or every slot is held) and the status and path the
+app then shows, routing each drain in one pass: a modal outcome from the last tick, then the queue
+in push order, then the ring. New action kinds go last in `Action` and only models that list them
+draw them, so older seeds replay unchanged.
 
 ---
 

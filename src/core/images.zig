@@ -15,6 +15,11 @@
 //! the session so a missing file is not re-read every frame. One more fails
 //! fast. Each entry reserves `image_path_bytes_max` path bytes; a longer path
 //! fails fast. `image_decode_bytes_max` bounds one image's file and pixels.
+//!
+//! `Mode.stepped` starts no worker: a deterministic simulation (the VOPR)
+//! plays it, taking the oldest request with `takeStepped` once the staging
+//! is free and pushing a decode it made up onto the completion ring. The
+//! main-thread side, from `request` to `land`, is the same in both modes.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -70,8 +75,17 @@ const Entry = struct {
 /// What `land` did, so emit knows whether to render again.
 pub const Land = enum { none, landed, deferred };
 
+/// Who decodes: the worker thread, or a simulation that steps the worker's
+/// turns itself on the main thread (`Loader.takeStepped`).
+pub const Mode = enum { worker, stepped };
+
 pub const Loader = struct {
     io: std.Io,
+    mode: Mode,
+    /// `.stepped` only: a request was taken and its staging is not yet
+    /// released by `land`. The worker's `staging_free` permit plays this
+    /// part in `.worker`.
+    stepped_staging_held: bool,
     /// Main thread only, except that the worker reads a pending entry's path.
     entries: []Entry,
     /// Every entry's path, `image_path_bytes_max` bytes each.
@@ -102,18 +116,24 @@ pub const Loader = struct {
     /// Decodes landed, for tests and the lifecycle guard's checks.
     landed_count: u32,
 
-    /// Reserve every entry and the staging, then start the worker.
+    /// Reserve every entry and the staging, then start the worker unless
+    /// `mode` is `.stepped`.
     pub fn initInPlace(
         self: *Loader,
         gpa: std.mem.Allocator,
         io: std.Io,
         completions: *events.CompletionRing,
         limits: *const limits_mod.AtlasLimits,
+        mode: Mode,
     ) !void {
         assert(limits.image_request_count_max > 0);
         assert(limits.image_decode_bytes_max > 0);
         assert(limits.image_path_bytes_max > 0);
+        // A simulation steps the native worker; the web has none to step.
+        if (mode == .stepped) assert(supported);
         self.io = io;
+        self.mode = mode;
+        self.stepped_staging_held = false;
         self.entries = try gpa.alloc(Entry, limits.image_request_count_max);
         errdefer gpa.free(self.entries);
         const path_total = @as(usize, limits.image_request_count_max) * limits.image_path_bytes_max;
@@ -144,7 +164,7 @@ pub const Loader = struct {
         self.wake = null;
         self.stopping = .init(false);
         self.landed_count = 0;
-        if (supported) {
+        if (supported and mode == .worker) {
             self.thread = try std.Thread.spawn(.{
                 .stack_size = worker_stack_bytes,
                 .allocator = null,
@@ -157,7 +177,7 @@ pub const Loader = struct {
     /// decode in progress finishes first; queued requests are dropped.
     pub fn deinit(self: *Loader, gpa: std.mem.Allocator) void {
         self.stopping.store(true, .release);
-        if (supported) {
+        if (supported and self.mode == .worker) {
             const thread = self.thread;
             self.request_ready.post(self.io);
             self.staging_free.post(self.io);
@@ -211,7 +231,37 @@ pub const Loader = struct {
         assert(head -% self.request_tail.load(.acquire) < self.entries.len);
         self.requests[head & (@as(u32, @intCast(self.requests.len)) - 1)] = index;
         self.request_head.store(head +% 1, .release);
-        self.request_ready.post(self.io);
+        // In `.stepped` nothing waits, and a permit per request ever made
+        // would count without bound.
+        if (self.mode == .worker) self.request_ready.post(self.io);
+    }
+
+    /// `.stepped` only: take the oldest request, as the worker's turn does,
+    /// once the staging is free. Returns its entry, which stays pending
+    /// until the decode the caller pushes for it lands; null when no request
+    /// is queued or the last decode has not landed yet.
+    pub fn takeStepped(self: *Loader) ?u32 {
+        assert(self.mode == .stepped);
+        assert(self.requests.len >= self.entries.len);
+        if (self.stepped_staging_held) return null;
+        const tail = self.request_tail.load(.monotonic);
+        if (tail == self.request_head.load(.monotonic)) return null;
+        self.stepped_staging_held = true;
+        const index = self.takeRequest();
+        assert(self.entries[index].state == .pending);
+        return index;
+    }
+
+    /// `.stepped` only: the front `pixel_bytes` of the staging, for the
+    /// decode of the request `takeStepped` returned, at `pixel_offset` 0.
+    /// Raises the high-water mark, so `deinit` zeroes what was written.
+    pub fn stagingStepped(self: *Loader, pixel_bytes: u32) []u8 {
+        assert(self.mode == .stepped);
+        assert(self.stepped_staging_held);
+        assert(pixel_bytes > 0);
+        assert(pixel_bytes <= self.staging.len);
+        self.staging_used_max = @max(self.staging_used_max, pixel_bytes);
+        return self.staging[0..pixel_bytes];
     }
 
     /// Upload the landed decode, if any, into `atlas` and free its entry and
@@ -273,7 +323,13 @@ pub const Loader = struct {
     fn release(self: *Loader) void {
         assert(self.landed != null);
         self.landed = null;
-        self.staging_free.post(self.io);
+        switch (self.mode) {
+            .worker => self.staging_free.post(self.io),
+            .stepped => {
+                assert(self.stepped_staging_held);
+                self.stepped_staging_held = false;
+            },
+        }
     }
 
     fn find(self: *const Loader, source_hash: u64) ?u32 {
@@ -300,15 +356,21 @@ pub const Loader = struct {
             if (self.stopping.load(.acquire)) return;
             self.staging_free.waitUncancelable(self.io);
             if (self.stopping.load(.acquire)) return;
-            const tail = self.request_tail.load(.monotonic);
-            assert(tail != self.request_head.load(.acquire));
-            const index = self.requests[tail & (@as(u32, @intCast(self.requests.len)) - 1)];
-            self.request_tail.store(tail +% 1, .release);
-            assert(index < self.entries.len);
+            const index = self.takeRequest();
             const decoded = self.decode(index);
             self.completions.pushImage(decoded);
             self.wakeHost();
         }
+    }
+
+    /// Dequeue the oldest request: the worker's, or a stepped turn's.
+    fn takeRequest(self: *Loader) u32 {
+        const tail = self.request_tail.load(.monotonic);
+        assert(tail != self.request_head.load(.acquire));
+        const index = self.requests[tail & (@as(u32, @intCast(self.requests.len)) - 1)];
+        self.request_tail.store(tail +% 1, .release);
+        assert(index < self.entries.len);
+        return index;
     }
 
     fn wakeHost(self: *Loader) void {

@@ -104,6 +104,7 @@ pub const internals = struct {
     pub const window = core.window;
     pub const lifecycle = core.lifecycle;
     pub const jobs = core.jobs;
+    pub const images = core.images;
     pub const text_engine = core.text_engine;
     pub const debugger = core.debugger;
     pub const limits = @import("core/limits.zig");
