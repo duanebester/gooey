@@ -1830,6 +1830,52 @@ fn pushClicks(app: *DialogApp, count: u32) void {
     assert(click == count);
 }
 
+test "a dialog's paths reach the app after typed text filled the queue's text bytes" {
+    // The Linux host queues a portal dialog's outcome between ticks
+    // (`pollDialog`). Paths once shared the queue's text bytes with typed
+    // text, which is cut to the room left and so can fill them: the
+    // outcome then panicked with "text bytes exhausted". Each request id
+    // now has its own path room in the queue. The ring's route, which
+    // copies into the queue at the drain, is checked the same way.
+    const app = try testing.allocator.create(DialogApp);
+    defer testing.allocator.destroy(app);
+    try app.initHeadless(testing.allocator, testing.io, .{ .scale_factor = 1 });
+    defer app.deinitHeadless();
+    var service = DeferredDialog{};
+    app.window.file_dialog = .{ .context = &service, .open = DeferredDialog.open };
+    var now: u64 = 0;
+    app.tick(now);
+    var opened: u32 = 0;
+    while (opened < 2) : (opened += 1) {
+        pushClicks(app, 1);
+        now += 1;
+        app.tick(now);
+    }
+    try testing.expectEqual(@as(u32, 2), service.count);
+
+    const text_bytes_max = DialogApp.limits.events.text_bytes_max;
+    const typed: [text_bytes_max + 1]u8 = @splat('t');
+    app.window.queue.push(.{ .input = .{ .text_input = .{ .text = &typed } } });
+    try testing.expectEqual(@as(u32, text_bytes_max), app.window.queue.text_len);
+    const queued = internals.events.Paths{ .bytes = "/queued", .count = 1 };
+    app.window.queue.push(.{ .completion = .{
+        .request_id = service.ids[0],
+        .outcome = .{ .file_selected = queued },
+    } });
+    const ringed = internals.events.Paths{ .bytes = "/ring/a\x00/ring/b", .count = 2 };
+    app.window.completions.push(.{
+        .request_id = service.ids[1],
+        .outcome = .{ .file_selected = ringed },
+    });
+    now += 1;
+    app.tick(now);
+    try testing.expect(app.window.dialog_handlers[service.ids[0]] == null);
+    try testing.expect(app.window.dialog_handlers[service.ids[1]] == null);
+    // The ring's completion is routed after the queue's, so it shows.
+    try testing.expectEqual(@as(u32, 2), app.state.path_count);
+    try testing.expectEqualStrings(ringed.bytes, app.state.path_bytes[0..app.state.path_len]);
+}
+
 test "a file dialog that stays open completes later through the queue" {
     const app = try testing.allocator.create(DialogApp);
     defer testing.allocator.destroy(app);

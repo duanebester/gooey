@@ -163,6 +163,9 @@ pub const JobInbox = struct {
 pub const QueueCapacity = struct {
     event_count_max: u32,
     text_bytes_max: u32,
+    /// `events.dialog_count_max`: request ids, so path slots.
+    dialog_count_max: u32,
+    dialog_path_bytes_max: u32,
 };
 
 pub const EventQueue = struct {
@@ -170,15 +173,30 @@ pub const EventQueue = struct {
     count: u32,
     text_bytes: []u8,
     text_len: u32,
+    /// A queued completion's paths, in its request id's slot of
+    /// `dialog_path_bytes_max` bytes. Text a platform pushes (typed text is
+    /// cut to the room left, never refused) can fill `text_bytes` at any
+    /// time, so paths there could find no room; each request id has at
+    /// most one completion queued, since its slot frees only when routed.
+    dialog_paths: []u8,
+    dialog_path_bytes_max: u32,
     /// Events coalesced since init, for tests and diagnostics.
     coalesced_count: u64,
 
     pub fn initInPlace(self: *EventQueue, gpa: std.mem.Allocator, capacity: QueueCapacity) !void {
         assert(capacity.event_count_max > 0);
         assert(capacity.text_bytes_max > 0);
+        assert(capacity.dialog_count_max > 0);
+        assert(capacity.dialog_path_bytes_max > 0);
         self.events = try gpa.alloc(Event, capacity.event_count_max);
         errdefer gpa.free(self.events);
+
         self.text_bytes = try gpa.alloc(u8, capacity.text_bytes_max);
+        errdefer gpa.free(self.text_bytes);
+
+        const paths_bytes = @as(usize, capacity.dialog_count_max) * capacity.dialog_path_bytes_max;
+        self.dialog_paths = try gpa.alloc(u8, paths_bytes);
+        self.dialog_path_bytes_max = capacity.dialog_path_bytes_max;
         self.count = 0;
         self.text_len = 0;
         self.coalesced_count = 0;
@@ -186,6 +204,8 @@ pub const EventQueue = struct {
 
     pub fn deinit(self: *EventQueue, gpa: std.mem.Allocator) void {
         assert(self.count <= self.events.len);
+        assert(self.dialog_paths.len % self.dialog_path_bytes_max == 0);
+        gpa.free(self.dialog_paths);
         gpa.free(self.text_bytes);
         gpa.free(self.events);
         self.* = undefined;
@@ -282,7 +302,7 @@ pub const EventQueue = struct {
             .completion => |*completion| switch (completion.outcome) {
                 .file_selected => |*paths| {
                     assert(paths.consistent());
-                    paths.bytes = self.copyBytes(paths.bytes);
+                    paths.bytes = self.copyPaths(completion.request_id, paths.bytes);
                 },
                 else => {},
             },
@@ -311,6 +331,29 @@ pub const EventQueue = struct {
         }
         assert(kept <= text_room);
         return self.copyBytes(bytes[0..kept]);
+    }
+
+    /// Copy a completion's paths into its request id's slot, which no other
+    /// queued completion holds. Paths past the slot are a backend's error:
+    /// `tick.checkSelection` bounds every selection first.
+    fn copyPaths(self: *EventQueue, request_id: u32, bytes: []const u8) []const u8 {
+        const slot_count = self.dialog_paths.len / self.dialog_path_bytes_max;
+        assert(request_id < slot_count);
+        for (self.events[0..self.count]) |*queued| {
+            if (queued.* == .completion) assert(queued.completion.request_id != request_id);
+        }
+        if (bytes.len > self.dialog_path_bytes_max) {
+            std.debug.panic("event queue pool 'dialog paths' exhausted: capacity {d} bytes, " ++
+                "{d} requested. Raise ResourceLimits.events.dialog_path_bytes_max.", .{
+                self.dialog_path_bytes_max,
+                bytes.len,
+            });
+        }
+        const start = @as(usize, request_id) * self.dialog_path_bytes_max;
+        const target = self.dialog_paths[start..][0..bytes.len];
+        @memcpy(target, bytes);
+        assert(target.len <= self.dialog_path_bytes_max);
+        return target;
     }
 
     fn copyBytes(self: *EventQueue, bytes: []const u8) []const u8 {
@@ -542,7 +585,12 @@ pub const CompletionRing = struct {
 
 test "queue coalesces moves and scrolls and copies text" {
     var queue: EventQueue = undefined;
-    try queue.initInPlace(std.testing.allocator, .{ .event_count_max = 4, .text_bytes_max = 16 });
+    try queue.initInPlace(std.testing.allocator, .{
+        .event_count_max = 4,
+        .text_bytes_max = 16,
+        .dialog_count_max = 1,
+        .dialog_path_bytes_max = 8,
+    });
     defer queue.deinit(std.testing.allocator);
     const move = input.MouseEvent{
         .position = .{ .x = 1, .y = 2 },
@@ -595,7 +643,12 @@ test "platform text past the free text bytes is cut on a codepoint boundary" {
     @memset(long[0..255], 'a');
     @memcpy(long[255..], "東京");
     var queue: EventQueue = undefined;
-    try queue.initInPlace(std.testing.allocator, .{ .event_count_max = 4, .text_bytes_max = 256 });
+    try queue.initInPlace(std.testing.allocator, .{
+        .event_count_max = 4,
+        .text_bytes_max = 256,
+        .dialog_count_max = 1,
+        .dialog_path_bytes_max = 8,
+    });
     defer queue.deinit(std.testing.allocator);
     queue.push(.{ .input = .{ .text_input = .{ .text = &long } } });
     const kept = queue.pending()[0].input.text_input.text;
@@ -605,7 +658,12 @@ test "platform text past the free text bytes is cut on a codepoint boundary" {
     try std.testing.expectEqualStrings("", queue.pending()[1].input.composition.text);
 
     var roomy: EventQueue = undefined;
-    try roomy.initInPlace(std.testing.allocator, .{ .event_count_max = 1, .text_bytes_max = 512 });
+    try roomy.initInPlace(std.testing.allocator, .{
+        .event_count_max = 1,
+        .text_bytes_max = 512,
+        .dialog_count_max = 1,
+        .dialog_path_bytes_max = 8,
+    });
     defer roomy.deinit(std.testing.allocator);
     roomy.push(.{ .input = .{ .text_input = .{ .text = &long } } });
     try std.testing.expectEqualStrings(&long, roomy.pending()[0].input.text_input.text);
@@ -613,7 +671,12 @@ test "platform text past the free text bytes is cut on a codepoint boundary" {
 
 test "completion ring delivers distinct outcomes in order" {
     var queue: EventQueue = undefined;
-    try queue.initInPlace(std.testing.allocator, .{ .event_count_max = 4, .text_bytes_max = 64 });
+    try queue.initInPlace(std.testing.allocator, .{
+        .event_count_max = 4,
+        .text_bytes_max = 64,
+        .dialog_count_max = 4,
+        .dialog_path_bytes_max = 32,
+    });
     defer queue.deinit(std.testing.allocator);
     var ring: CompletionRing = undefined;
     try ring.initInPlace(std.testing.allocator, .{
@@ -653,7 +716,12 @@ test "completion ring holds a selection of exactly the dialog path budget per re
     // `dialog_path_bytes_max` bytes.
     const path_bytes_max: u32 = 8;
     var queue: EventQueue = undefined;
-    try queue.initInPlace(std.testing.allocator, .{ .event_count_max = 4, .text_bytes_max = 16 });
+    try queue.initInPlace(std.testing.allocator, .{
+        .event_count_max = 4,
+        .text_bytes_max = 16,
+        .dialog_count_max = 2,
+        .dialog_path_bytes_max = path_bytes_max,
+    });
     defer queue.deinit(std.testing.allocator);
     var ring: CompletionRing = undefined;
     try ring.initInPlace(std.testing.allocator, .{
@@ -688,6 +756,38 @@ test "completion ring holds a selection of exactly the dialog path budget per re
     try std.testing.expectEqual(@as(u32, 2), selected.count);
     const whole = events[1].completion.outcome.file_selected;
     try std.testing.expectEqualStrings("/abcdefg", whole.bytes);
+}
+
+test "a completion's paths fit in a queue whose text bytes typed text filled" {
+    // Paths once shared the text bytes, which typed text may fill (it is
+    // cut, never refused): a dialog's outcome queued after it, as the Linux
+    // host's `pollDialog` queues one, panicked with "text bytes exhausted".
+    // Each request id now has its own path slot, used to the last byte.
+    var queue: EventQueue = undefined;
+    try queue.initInPlace(std.testing.allocator, .{
+        .event_count_max = 4,
+        .text_bytes_max = 8,
+        .dialog_count_max = 2,
+        .dialog_path_bytes_max = 8,
+    });
+    defer queue.deinit(std.testing.allocator);
+    queue.push(.{ .input = .{ .text_input = .{ .text = "typed text" } } });
+    try std.testing.expectEqual(@as(u32, 8), queue.text_len);
+    queue.push(.{ .completion = .{ .request_id = 1, .outcome = .{ .file_selected = .{
+        .bytes = "/a\x00/bcde",
+        .count = 2,
+    } } } });
+    queue.push(.{ .completion = .{ .request_id = 0, .outcome = .{ .file_selected = .{
+        .bytes = "/1234567",
+        .count = 1,
+    } } } });
+    try std.testing.expectEqual(@as(u32, 8), queue.text_len);
+    const events = queue.pending();
+    try std.testing.expectEqualStrings("typed te", events[0].input.text_input.text);
+    const second = events[1].completion.outcome.file_selected;
+    try std.testing.expectEqualStrings("/a\x00/bcde", second.bytes);
+    const third = events[2].completion.outcome.file_selected;
+    try std.testing.expectEqualStrings("/1234567", third.bytes);
 }
 
 test "paths join without copying one path and refuse platform errors" {

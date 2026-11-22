@@ -677,9 +677,8 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
         /// Backing for the paths of the dialog answer being generated.
         answer_bytes: [App.limits.events.dialog_path_bytes_max]u8,
         /// Completions pushed onto the ring since the last drain, which the
-        /// next drain copies into the queue with their paths.
+        /// next drain moves into the queue. Their paths take no text bytes.
         ring_answer_count: u32,
-        ring_answer_text_bytes: u32,
 
         const Self = @This();
         const Dialogs = vopr_dialogs.Dialogs(App.limits.events);
@@ -827,7 +826,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             if (lists_dialog) self.dialogs.bind(self.window());
             self.answer_bytes = @splat(0);
             self.ring_answer_count = 0;
-            self.ring_answer_text_bytes = 0;
             self.model.init();
             // A model that stands in for a platform service (the text
             // clipboard) binds it before the first frame.
@@ -1055,9 +1053,10 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
                 answer.paths = self.answer_bytes[0..written.len];
                 answer.path_count = written.count;
             }
-            // A platform holds an answer the queue cannot take yet, as it
-            // holds input, rather than cut its paths.
-            if (route != .at_open and !self.queueHasRoom(1, @intCast(answer.paths.len))) {
+            // A platform holds an answer the queue has no event slot for
+            // yet, as it holds input. Its paths take their request's own
+            // room (`EventQueue.dialog_paths`), never the text bytes.
+            if (route != .at_open and !self.queueHasRoom(1, 0)) {
                 return .tick_main;
             }
             return .{ .dialog = answer };
@@ -1083,7 +1082,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
                 .ring => {
                     win.completions.push(completion);
                     self.ring_answer_count += 1;
-                    self.ring_answer_text_bytes += @intCast(answer.paths.len);
                 },
                 .at_open => unreachable,
             }
@@ -1227,10 +1225,8 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             assert(event_count > 0);
             const queue = &self.window().queue;
             assert(queue.text_len <= queue.text_bytes.len);
-            assert(queue.text_len + self.ring_answer_text_bytes <= queue.text_bytes.len);
-            // Completions on the ring take their slots and bytes at the drain.
-            const text_room: u64 = queue.text_bytes.len - queue.text_len -
-                self.ring_answer_text_bytes;
+            // Completions on the ring take their slots at the drain.
+            const text_room: u64 = queue.text_bytes.len - queue.text_len;
             if (self.model.pendingRoom() == 0) return false;
             if (queue.room() < self.ring_answer_count) return false;
             return queue.room() - self.ring_answer_count >= event_count and
@@ -1245,7 +1241,6 @@ pub fn Vopr(comptime App: type, comptime Model: type) type {
             if (published) assert(win.frame_in_flight.load(.acquire));
             assert(!ringPending(win));
             self.ring_answer_count = 0;
-            self.ring_answer_text_bytes = 0;
             self.model.endDrain(win, published);
             self.checkDrained(published, opened_count_before);
         }

@@ -57,7 +57,6 @@ pub const Delivered = struct {
 pub fn Dialogs(comptime limits: EventLimits) type {
     comptime {
         assert(limits.dialog_count_max >= 1);
-        assert(limits.dialog_path_bytes_max <= limits.text_bytes_max);
     }
     return struct {
         /// Dialogs awaiting an answer, in open order.

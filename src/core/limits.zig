@@ -383,17 +383,9 @@ pub const ResourceLimits = struct {
         return null;
     }
 
-    /// The queue copies a dialog's paths, and each pending dialog completes
-    /// into the ring beside the image worker's one outstanding decode.
+    /// Each pending dialog completes into the ring beside the image
+    /// worker's one outstanding decode.
     fn checkEventRelationships(self: *const ResourceLimits) ?Violation {
-        if (self.events.dialog_path_bytes_max > self.events.text_bytes_max) {
-            return relationship(
-                .events,
-                "dialog_path_bytes_max",
-                self.events.dialog_path_bytes_max,
-                self.events.text_bytes_max,
-            );
-        }
         // The ring holds every completion that can be outstanding at once:
         // each pending dialog, the image worker's one decode, each held job
         // result slot, and each job's end.
@@ -1364,13 +1356,14 @@ pub const input_burst_count_max: u32 = 256;
 pub const EventLimits = struct {
     queue_count_max: u32,
     completion_count_max: u32,
-    /// Bytes of event text (IME and typed text, dialog paths) in flight.
+    /// Bytes of event text (IME and typed text, key characters) in flight.
+    /// A dialog's paths have their own room in the queue, per dialog slot.
     text_bytes_max: u32,
     /// Paths one file dialog may select; more fails fast.
     dialog_path_count_max: u32,
     /// Bytes of one dialog's paths, joined (`events.Paths`), and of a save
-    /// request's folder and suggested name together. At most
-    /// `text_bytes_max`, since the queue copies the paths.
+    /// request's folder and suggested name together. The queue and the
+    /// completion ring each reserve this much per dialog slot.
     dialog_path_bytes_max: u32,
     /// File dialogs awaiting their completion at once.
     /// Each completes into the completion ring beside the image worker's one

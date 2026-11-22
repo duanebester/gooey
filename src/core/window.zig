@@ -1061,6 +1061,8 @@ fn initRuntimeStorage(self: *Window, gpa: std.mem.Allocator, options: *const Opt
     try self.queue.initInPlace(gpa, .{
         .event_count_max = limits.events.queue_count_max,
         .text_bytes_max = limits.events.text_bytes_max,
+        .dialog_count_max = limits.events.dialog_count_max,
+        .dialog_path_bytes_max = limits.events.dialog_path_bytes_max,
     });
     errdefer self.queue.deinit(gpa);
     try self.completions.initInPlace(gpa, .{
