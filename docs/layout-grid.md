@@ -2,10 +2,11 @@
 
 ## Status
 
-Proposed on 2026-11-21 against v0.6.7; not approved and not implemented. Once approved it
-becomes the next numbered decision in `docs/core-contract.md`, `ui.Style` in §1 gains the
-fields below, and `src/layout/layout.md` documents the engine side. Until then nothing here
-is API.
+Proposed on 2026-11-21 against v0.6.7 and approved on 2026-11-22, with the answers under
+"Resolved questions"; not implemented. It builds on decision 27, which sizes heights after
+text wraps. When it lands it becomes decision 28 in `docs/core-contract.md`, `ui.Style` in
+§1 gains the fields below, and `src/layout/layout.md` documents the engine side. Until then
+nothing here is API.
 
 ## Why
 
@@ -59,8 +60,8 @@ borrows the parts of CSS grid and other toolkits that tables and forms need.
 ```zig
 pub const Style = struct {
     // ... every field in §1, unchanged ...
-    grid: ?Grid = null,   // this box lays its children out on a grid (decision 25)
-    cell: Cell = .{},     // where this box sits in its parent's grid (decision 25)
+    grid: ?Grid = null,   // this box lays its children out on a grid (decision 28)
+    cell: Cell = .{},     // where this box sits in its parent's grid (decision 28)
 };
 
 pub const Grid = struct {
@@ -283,9 +284,9 @@ than 0, a fixed size at least 0, and a percent between 0 and 1.
 - The slots are one reservation of `build.grid_count_frame_max`, claimed in declaration
   order and reset by `beginFrame`. Exhaustion fails fast as every pool does: `layout grids:
   capacity {d} (ResourceLimits.build.grid_count_frame_max), requested {d}, frame {d}`.
-- `LayoutElement` gains `grid_column: u8`. It fits in the one byte of padding after
-  `height_marked` (offset 399 of the 400-byte element on x86_64, measured), so the element
-  does not grow. A child's row start reuses `line_start`, as a wrapping row's lines do.
+- `LayoutElement` gains `grid_column: u8`. It fits in the padding after the heights pass's
+  two flags (offset 404 of the 408-byte element on x86_64, measured), so the element does
+  not grow. A child's row start reuses `line_start`, as a wrapping row's lines do.
 
 ### Passes
 
@@ -300,10 +301,14 @@ than 0, a fixed size at least 0, and a percent between 0 and 1.
    sizes every child in its cell, then takes each row's height and stretches the row's
    `.grow`-height children to it: three walks over its children, rule `.assigned`, as
    `sizeWrappedChildren` does. A row box plans its children the same way against its
-   parent's slot. A `.fit`-height grid takes its rows' height.
-4. **Text wrapping.** `textContainerWidth` returns the cell's width for a child of a grid
-   or a row box. A grid marks itself for `growMarkedParents` as a wrapping row does, and
-   `childrenHeight` sums its rows, so derived heights stay linear.
+   parent's slot. A `.fit`-height grid takes its rows' height. These heights are from
+   one-line text, as every height in this pass is.
+4. **Text wrapping and heights (decision 27).** `textContainerWidth` returns the cell's
+   width for a child of a grid or a row box. A grid marks itself `min_height_dirty`, as a
+   wrapping row does, so the heights pass runs: `childrenMinHeight` sums a grid's rows, each
+   its tallest cell's minimum, and `sizeChildHeights` sizes each row from the wrapped text,
+   stretches its `.grow`-height cells to it, and shares a definite height among `.grow`
+   and `.percent` rows. A cell's stretched height is therefore never short.
 5. **Positions (`placeSiblings`).** A comptime `grid` variant beside `wrap` starts a row at
    each `line_start` child: one walk over the row takes its height, then each child goes to
    its column's left edge, aligned in its cell. A row box places its children at its
@@ -405,37 +410,42 @@ twice; this design measures each text once, as the engine does now.
 - **Equal widths on a wrapping row.** Cards of one width line up, but `.fit` columns and
   spans cannot, because a wrapping row never sees two lines at once.
 
-## Open questions
+## Resolved questions
 
-Each states what GPUI does, from its source (`crates/gpui/src/style.rs`, `styled.rs`,
-`taffy.rs`) and Taffy's.
+Approved on 2026-11-22. Each states what GPUI does, from its source
+(`crates/gpui/src/style.rs`, `styled.rs`, `taffy.rs`) and Taffy's.
 
 1. **Row gap.** GPUI's `gap` has a width and a height (`gap_x`, `gap_y`), as CSS has
-   `column-gap` and `row-gap`. Proposed: `Grid.row_gap`, defaulting to `Style.gap`, as in
+   `column-gap` and `row-gap`. Decided: `Grid.row_gap`, defaulting to `Style.gap`, as in
    the API above.
 2. **`Style.direction`.** GPUI selects a grid with `display: grid`, and Taffy ignores
-   `flex-direction` there. Proposed: a grid ignores `direction` the same way. The
-   alternative is `Direction.grid` beside `Style.grid`, which sets the mode twice.
+   `flex-direction` there. Decided: a grid ignores `direction` the same way; a
+   `Direction.grid` beside `Style.grid` would set the mode twice. A grid that sets
+   `direction` does not panic: `.row` is the default, so the core cannot tell it apart
+   from an unset field.
 3. **Spanning children.** Taffy runs CSS's algorithm: items batched by span, smallest span
-   first, each batch's extra size spread over its tracks. Proposed: the one walk in
+   first, each batch's extra size spread over its tracks. Decided: the one walk in
    "Column widths", which keeps a spanning header's text whole at one extra visit per
-   spanning child, without the batching.
+   spanning child, without the batching. Overlapping spans may come out wider than CSS
+   would make them.
 4. **Stretch after wrapping.** Taffy measures every item at its column's width while it
    sizes the rows, then stretches items to the final row height (`align-items: stretch` is
-   its grid default), so a stretched cell is never short. Gooey wraps text after sizing, so
-   a `.grow`-height cell stretches to its row before a sibling's text wraps and can end up
-   shorter than the row; wrapping rows behave the same today. Proposed: after text wraps, a
-   grid whose row grew stretches that row's `.grow`-height children again and re-sizes
-   their subtrees' heights, which needs no re-wrap because widths do not change. Should
-   rows get the same fix?
+   its grid default), so a stretched cell is never short. Gooey sized every height before
+   text wrapped, so a stretched child in a row, wrapping or not, stayed one line tall, and
+   a grow child in a fixed column took space its wrapped sibling then overflowed into.
+   Decided: decision 27 sizes heights after text wraps, as Clay orders its passes, for
+   every box; the grid's rows are sized in that pass and need no fix of their own.
 
 ## Related changes outside grids
 
-Decided on 2026-11-21 to land separately from the grid, each as its own change. Both
-have landed: decisions 25 and 26 in the core contract.
+Each lands separately from the grid, as its own change: decisions 25, 26, and 27 in the
+core contract.
 
 - **Percent less gaps.** A child's `.percent` becomes a fraction of its parent's content
   size less the gaps along the parent's direction, as Clay sizes it, so grid tracks and
   children mean the same thing by a percent.
 - **Largest-first shrink.** A row or column that overflows shrinks its children largest
   first, as Clay does, down to their content minimum rather than below their text.
+- **Heights after widths.** Every height is sized after text wraps at its final width, as
+  Clay orders its passes, so the grid's row heights and stretched cells count every
+  wrapped line.
