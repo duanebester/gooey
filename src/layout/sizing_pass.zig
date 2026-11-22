@@ -570,8 +570,13 @@ inline fn shrinkLevel(
         const excess = step.total - target;
         if (excess <= 0) {
             // Nothing is capped at the starting level: the children fit.
-            std.debug.assert(round == 0); // Later rounds stop above the target.
-            return std.math.floatMax(f32);
+            if (round == 0) return std.math.floatMax(f32);
+            // A later round starts at the breakpoint the previous round's
+            // level fell below, which overflows in exact arithmetic; when
+            // f32 rounding makes it fit (an excess of exactly 0 in a 6.16 px
+            // column the fuzzer found), the breakpoint is the level.
+            std.debug.assert(-excess <= @max(1, @abs(target)) * 1e-4);
+            return level;
         }
         if (step.active_count > 0) {
             const active: f32 = @floatFromInt(step.active_count);
