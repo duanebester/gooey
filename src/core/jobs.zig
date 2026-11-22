@@ -725,16 +725,39 @@ pub const Pool = struct {
     /// its end. Returns false when an interrupter claimed the job while
     /// `run` ran: the interrupter pushes the end, and this runner must end.
     fn runSlot(self: *Pool, index: u32) bool {
+        if (!self.beginRun(index)) return true;
+        const slot = &self.slots[index];
+        var job = Job(void){ .pool = self, .slot = index };
+        const returned = slot.run.?(self.inputSlot(index).ptr, @ptrCast(&job));
+        return self.endRun(index, returned);
+    }
+
+    /// A runner takes the slot's spawn. Returns true when the job moved
+    /// from `pending` to `running` and `run` must be called; false when a
+    /// cancel skipped it first, whose `.cancelled` end this pushed without
+    /// running it.
+    fn beginRun(self: *Pool, index: u32) bool {
+        assert(index < self.slots.len);
         const slot = &self.slots[index];
         const generation = slot.generation;
         if (slot.phase.cmpxchgStrong(.pending, .running, .acq_rel, .acquire)) |phase| {
             assert(phase == .skipped);
+            assert(slot.cancel.load(.acquire));
             slot.phase.store(.idle, .release);
             self.pushEnd(index, generation, error.Canceled);
-            return true;
+            return false;
         }
-        var job = Job(void){ .pool = self, .slot = index };
-        const returned = slot.run.?(self.inputSlot(index).ptr, @ptrCast(&job));
+        return true;
+    }
+
+    /// The slot's `run` returned `returned`: move the job from `running` to
+    /// `idle` and push its end. Returns false, pushing nothing, when a
+    /// cancel claimed the job first (`interrupting`): its interrupter owns
+    /// the end (`finishInterrupt`).
+    fn endRun(self: *Pool, index: u32, returned: anyerror!void) bool {
+        assert(index < self.slots.len);
+        const slot = &self.slots[index];
+        const generation = slot.generation;
         if (slot.phase.cmpxchgStrong(.running, .idle, .acq_rel, .acquire)) |phase| {
             assert(phase == .interrupting);
             assert(threaded);
@@ -744,6 +767,18 @@ pub const Pool = struct {
         // thread may spawn into the slot, which sets `pending`.
         self.pushEnd(index, generation, returned);
         return true;
+    }
+
+    /// The interrupted job's `run` has returned: move it from
+    /// `interrupting` to `idle` and push its end as `.cancelled`.
+    fn finishInterrupt(self: *Pool, index: u32) void {
+        assert(index < self.slots.len);
+        const slot = &self.slots[index];
+        assert(slot.phase.load(.acquire) == .interrupting);
+        assert(slot.cancel.load(.acquire));
+        const generation = slot.generation;
+        slot.phase.store(.idle, .release);
+        self.pushEnd(index, generation, error.Canceled);
     }
 
     /// Push the end of the slot's job, which returned `returned`, unless the
@@ -795,7 +830,6 @@ pub const Pool = struct {
         const slot = &self.slots[index];
         assert(slot.phase.load(.acquire) == .interrupting);
         assert(slot.cancel.load(.acquire));
-        const generation = slot.generation;
         slot.group.cancel(self.io);
         assert(slot.group.token.load(.acquire) == null);
         if (self.stopping.load(.acquire)) return;
@@ -808,8 +842,7 @@ pub const Pool = struct {
                 err,
             });
         };
-        slot.phase.store(.idle, .release);
-        self.pushEnd(index, generation, error.Canceled);
+        self.finishInterrupt(index);
     }
 
     fn cancelRequested(self: *const Pool, index: u32) bool {
@@ -832,6 +865,15 @@ pub const Pool = struct {
                 return false;
             }
         }
+        self.pushResult(index, bytes);
+        return true;
+    }
+
+    /// Copy `bytes` into a free result slot and push it onto the ring for
+    /// the next drain: a post that may go ahead, without its wait.
+    fn pushResult(self: *Pool, index: u32, bytes: []const u8) void {
+        assert(index < self.slots.len);
+        assert(bytes.len <= self.result_stride);
         const result_index = self.claimResult(index, @intCast(bytes.len));
         @memcpy(self.resultSlot(result_index)[0..bytes.len], bytes);
         self.completions.pushJob(.{
@@ -843,7 +885,6 @@ pub const Pool = struct {
             .failure = error.Unexpected,
         });
         self.wakeHost();
-        return true;
     }
 
     /// Take a free result slot. With workers the semaphore already reserved
