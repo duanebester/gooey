@@ -415,7 +415,15 @@ inline fn sizeByRule(engine: *LayoutEngine, frame: *const SizingFrame, child: *L
     switch (frame.rule) {
         .assigned => {},
         .shrink => assignShrunkSize(engine, child, frame),
-        .grow => assignGrownSize(engine, child, frame),
+        .grow => assignGrownSize(
+            engine,
+            child,
+            frame.is_horizontal,
+            frame.width,
+            frame.height,
+            frame.factor,
+            frame.percent_basis,
+        ),
     }
 }
 
@@ -515,7 +523,12 @@ fn planDistribution(
     if (free >= 0 and frame.factor >= totals.grow_floor_ratio_max) return;
     if (totals.shrinkable_count == 0) return;
 
-    const level = shrinkLevel(engine, frame, available - total_gap);
+    // No fit or grow child is wider than this before shrinking: a grow
+    // child takes max(floor, factor × weight), which is at most its weight
+    // times the larger of its floor per weight and the factor.
+    const grow_per_weight = @max(totals.grow_floor_ratio_max, frame.factor);
+    const largest = @max(totals.fit_desired_max, grow_per_weight * totals.grow_weight_max);
+    const level = shrinkLevel(engine, frame, available - total_gap, largest);
     if (level == std.math.floatMax(f32)) return; // Grow maximums left room.
     frame.rule = .shrink;
     frame.level = level;
@@ -531,20 +544,30 @@ const shrink_round_count_max: u32 = 16;
 const shrink_step_count: u32 = 32;
 
 /// The level at which the children fit in `target`, or `floatMax` when they
-/// already fit. Exact leveling, as Clay shrinks: from above, every child at
-/// the level gives way together until the total fits or the level reaches
+/// already fit. Leveling starts at `largest`, at least every fit and grow
+/// child's size, so the first walk already finds the children that give way.
+/// Exact leveling, as Clay shrinks: from above, every child at the level
+/// gives way together until the total fits or the level reaches
 /// the next size where a child joins or stops at its floor. At most
 /// `shrink_round_count_max` rounds and `shrink_step_count` bisection steps,
 /// one walk over the children each, and only on a parent that overflows.
-fn shrinkLevel(engine: *const LayoutEngine, frame: *const SizingFrame, target: f32) f32 {
-    var level: f32 = std.math.floatMax(f32);
+fn shrinkLevel(
+    engine: *const LayoutEngine,
+    frame: *const SizingFrame,
+    target: f32,
+    largest: f32,
+) f32 {
+    std.debug.assert(largest >= 0);
+    std.debug.assert(std.math.isFinite(largest));
+    var level: f32 = largest;
     var round: u32 = 0;
     while (round < shrink_round_count_max) : (round += 1) {
         const step = levelStep(engine, frame, level);
         const excess = step.total - target;
         if (excess <= 0) {
+            // Nothing is capped at the starting level: the children fit.
             std.debug.assert(round == 0); // Later rounds stop above the target.
-            return level;
+            return std.math.floatMax(f32);
         }
         if (step.active_count > 0) {
             const active: f32 = @floatFromInt(step.active_count);
@@ -631,7 +654,8 @@ fn shrunkMainSize(child: *const LayoutElement, frame: *const SizingFrame, level:
     std.debug.assert(child.config.floating == null);
     std.debug.assert(level >= 0);
     const is_horizontal = frame.is_horizontal;
-    const sizing = if (is_horizontal) child.config.layout.sizing.width else child.config.layout.sizing.height;
+    const both = child.config.layout.sizing;
+    const sizing = if (is_horizontal) both.width else both.height;
     const content = if (is_horizontal) child.computed.min_width else child.computed.min_height;
     const floor = floorMain(child, is_horizontal);
     return switch (sizing.value) {
@@ -693,6 +717,10 @@ const ChildTotals = struct {
     /// The largest floor per weight among grow children: a share below it
     /// leaves that child at its floor, past its share.
     grow_floor_ratio_max: f32,
+    /// The largest grow weight and the widest fit child's desired size, which
+    /// bound where leveling starts (`shrinkLevel`).
+    grow_weight_max: f32,
+    fit_desired_max: f32,
     /// Fit and grow children: the ones an overflow can shrink.
     shrinkable_count: u32,
     child_count: u32,
@@ -710,6 +738,8 @@ fn sumDesiredSizes(engine: *LayoutEngine, first_child: u32, is_horizontal: bool)
     var total_desired: f32 = 0;
     var percent_total: f32 = 0;
     var grow_floor_ratio_max: f32 = 0;
+    var grow_weight_max: f32 = 0;
+    var fit_desired_max: f32 = 0;
     var shrinkable_count: u32 = 0;
     var child_count: u32 = 0;
     var has_grandchildren = false;
@@ -734,14 +764,17 @@ fn sumDesiredSizes(engine: *LayoutEngine, first_child: u32, is_horizontal: bool)
                 shrinkable_count += 1;
                 const ratio = floorMain(child, is_horizontal) / grow.weight;
                 grow_floor_ratio_max = @max(grow_floor_ratio_max, ratio);
+                grow_weight_max = @max(grow_weight_max, grow.weight);
                 break :blk child_min; // grow elements only contribute their min
             },
             .fit => |mm| blk: {
                 // If max is unbounded (floatMax), use min_width as desired
                 // Otherwise use the max constraint as desired size
                 const effective_max = if (mm.max >= 1e10) child_min else mm.max;
+                const desired = @max(child_min, effective_max);
                 shrinkable_count += 1;
-                break :blk @max(child_min, effective_max);
+                fit_desired_max = @max(fit_desired_max, desired);
+                break :blk desired;
             },
             .fixed => |mm| mm.min, // fixed wants exactly this size
             .percent => |p| blk: {
@@ -763,6 +796,8 @@ fn sumDesiredSizes(engine: *LayoutEngine, first_child: u32, is_horizontal: bool)
         .total_desired = total_desired,
         .percent_total = percent_total,
         .grow_floor_ratio_max = grow_floor_ratio_max,
+        .grow_weight_max = grow_weight_max,
+        .fit_desired_max = fit_desired_max,
         .shrinkable_count = shrinkable_count,
         .child_count = child_count,
         .has_grandchildren = has_grandchildren,
@@ -852,7 +887,8 @@ fn speculativeUniformAssign(
 
         // A share below a child's floor would cut its content: the slow
         // path shrinks its siblings instead.
-        if (!isUnconstrainedGrow(child, is_horizontal) or floorMain(child, is_horizontal) > per_child) {
+        const too_narrow = floorMain(child, is_horizontal) > per_child;
+        if (!isUnconstrainedGrow(child, is_horizontal) or too_narrow) {
             return .{ .eligible = false, .floating_count = 0, .has_grandchildren = false };
         }
 
@@ -937,9 +973,11 @@ fn assignShrunkSize(engine: *LayoutEngine, child: *LayoutElement, frame: *const 
     const main = shrunkMainSize(child, frame, frame.level);
     if (frame.is_horizontal) {
         child.computed.sized_width = main;
-        child.computed.sized_height = computeAxisSize(sizing.height, child.computed.min_height, frame.height);
+        const min_height = child.computed.min_height;
+        child.computed.sized_height = computeAxisSize(sizing.height, min_height, frame.height);
     } else {
-        child.computed.sized_width = computeAxisSize(sizing.width, child.computed.min_width, frame.width);
+        const min_width = child.computed.min_width;
+        child.computed.sized_width = computeAxisSize(sizing.width, min_width, frame.width);
         child.computed.sized_height = main;
     }
 
@@ -976,12 +1014,19 @@ fn childContentArea(child: *const LayoutElement) struct { width: f32, height: f3
 /// takes the share of the free space its weight gives it, any other child its
 /// desired size. The child then resolves its own size from what it is offered
 /// (`sizeElement`), so nested layouts run on accurate constraints.
-fn assignGrownSize(engine: *LayoutEngine, child: *LayoutElement, frame: *const SizingFrame) void {
-    const is_horizontal = frame.is_horizontal;
-    const width = frame.width;
-    const height = frame.height;
-    const per_weight = frame.factor;
+/// Takes the frame's fields as values (CLAUDE.md §20): a pointer or an
+/// options struct made the per-child call reload or rebuild them.
+fn assignGrownSize(
+    engine: *LayoutEngine,
+    child: *LayoutElement,
+    is_horizontal: bool,
+    width: f32,
+    height: f32,
+    per_weight: f32,
+    percent_basis: f32,
+) void {
     std.debug.assert(per_weight >= 0);
+    std.debug.assert(percent_basis >= 0);
     std.debug.assert(child.config.floating == null);
 
     const sizing = child.config.layout.sizing;
@@ -993,7 +1038,7 @@ fn assignGrownSize(engine: *LayoutEngine, child: *LayoutElement, frame: *const S
         .fixed => |mm| mm.min,
         // `sizeElement` takes the fraction of what it is offered: offer the
         // basis, so the fraction is taken once.
-        .percent => frame.percent_basis,
+        .percent => percent_basis,
     };
 
     const per_grow: f32 = switch (child_sizing_main.value) {

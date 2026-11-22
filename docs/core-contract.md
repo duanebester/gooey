@@ -1634,12 +1634,13 @@ wrappers for list iteration.
     Clay does, never below their floors; fixed and percent children keep their size. It
     replaces one shrink ratio for every non-grow child, which cut labels below their
     text, and grow children that dropped to `width_min`. The level is found by exact
-    leveling, one walk per distinct size it passes, at most 16 walks and then 32
-    bisection steps, and only on a parent that overflows with a fit or grow child.
+    leveling from an upper bound on the children's sizes taken while summing them, one
+    walk per distinct size it passes, at most 16 walks and then 32 bisection steps, and
+    only on a parent that overflows with a fit or grow child.
     Floors are summed only in frames with a text whose widest word is narrower than its
     line; other frames copy the minimum. The uniform-grow fast path declines a child
-    whose floor is above its share. In the Cachegrind gate, layouts that fit run 1.1 to
-    3.4 % more instructions; the two overflow benchmarks run 27 and 36 % more, for the
+    whose floor is above its share. In the Cachegrind gate, layouts that fit run 1.4 to
+    3.6 % more instructions; the two overflow benchmarks run 20 and 22 % more, for the
     walks that give them sizes that fit.
 
 ## Open questions
