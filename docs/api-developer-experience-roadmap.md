@@ -17,7 +17,8 @@ missing:
 
 - **Grid.** Columns that line up across rows (forms, tables, dashboards) need a grid;
   rows of fixed widths approximate one today. Proposed in `docs/layout-grid.md`.
-- **Text truncation.** Ellipsis and a maximum line count for `ui.text`.
+- **Text truncation.** Ellipsis and a maximum line count for `ui.text`. Proposed in
+  `docs/text-truncation.md`.
 
 ## P2: documentation and onboarding, open
 
