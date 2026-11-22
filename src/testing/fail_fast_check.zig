@@ -35,7 +35,6 @@ const Mode = enum {
     @"core-start-drag-target",
     @"core-dialog-target",
     @"core-dialog-paths",
-    @"core-dialog-count",
     @"core-job-count",
     @"core-job-count-cancelled",
     @"core-mono-unset",
@@ -87,7 +86,6 @@ pub fn main(init: std.process.Init) !void {
         .@"core-start-drag-target" => coreStartDragTarget(init.gpa, init.io),
         .@"core-dialog-target" => coreDialogTarget(init.gpa, init.io),
         .@"core-dialog-paths" => coreDialogPaths(init.gpa, init.io),
-        .@"core-dialog-count" => coreDialogCount(init.gpa, init.io),
         .@"core-job-count" => coreJobCount(init.gpa, init.io),
         .@"core-job-count-cancelled" => coreJobCountCancelled(init.gpa, init.io),
         .@"core-mono-unset" => coreTick(init.gpa, init.io, CoreApp.monoText),
@@ -480,7 +478,13 @@ const CoreApp = struct {
 
     fn requestDialog(_: *CoreState, effects: *gooey.Effects) void {
         const on_complete = effects.handler(Stranger.picked);
-        effects.openFileDialog(.{ .kind = .{ .open = open_many }, .on_complete = on_complete });
+        effects.openFileDialog(.{
+            .kind = .{ .open = open_many },
+            .on_complete = on_complete,
+        }) catch |err| switch (err) {
+            // The run's only click: nothing waits and every slot is free.
+            error.DialogBusy => unreachable,
+        };
     }
 
     /// A window-sized box whose click requests a multiple selection.
@@ -494,7 +498,13 @@ const CoreApp = struct {
 
     fn requestMany(_: *CoreState, effects: *gooey.Effects) void {
         const on_complete = effects.handler(CoreState.picked);
-        effects.openFileDialog(.{ .kind = .{ .open = open_many }, .on_complete = on_complete });
+        effects.openFileDialog(.{
+            .kind = .{ .open = open_many },
+            .on_complete = on_complete,
+        }) catch |err| switch (err) {
+            // The run's only click: nothing waits and every slot is free.
+            error.DialogBusy => unreachable,
+        };
     }
 
     const open_many: gooey.PathPromptOptions = .{
@@ -649,30 +659,6 @@ fn coreDialogPaths(gpa: std.mem.Allocator, io: std.Io) void {
     clickCenter(app);
 }
 
-/// Open `nano`'s two file dialogs, which stay open as a portal's do, then
-/// one more: each click requests one, and one opens per tick.
-fn coreDialogCount(gpa: std.mem.Allocator, io: std.Io) void {
-    const app = initCoreApp(gooey.App(CoreState, CoreApp.manyButton, core_config), gpa, io);
-    var context: u8 = 0;
-    app.window.file_dialog = .{ .context = &context, .open = StaysOpen.open };
-    const dialog_count_max = gooey.ResourceLimits.nano.events.dialog_count_max;
-    app.tick(1);
-    var opened: u32 = 0;
-    while (opened <= dialog_count_max) : (opened += 1) {
-        std.debug.assert(app.window.dialogs_opened == opened);
-        const point = gooey.input.MouseEvent{
-            .position = .{ .x = 50, .y = 50 },
-            .button = .left,
-            .click_count = 1,
-            .modifiers = .{},
-        };
-        app.window.queue.push(.{ .input = .{ .mouse_down = point } });
-        app.window.queue.push(.{ .input = .{ .mouse_up = point } });
-        app.tick(2 + opened);
-    }
-    unreachable;
-}
-
 /// A job that sleeps until the app stops.
 const Nap = struct {
     pub const Input = struct { seconds: u32 };
@@ -731,17 +717,6 @@ fn coreJobCountCancelled(gpa: std.mem.Allocator, io: std.Io) void {
     }
     unreachable;
 }
-
-const StaysOpen = struct {
-    fn open(
-        _: *anyopaque,
-        _: std.mem.Allocator,
-        _: u32,
-        _: gooey.internals.handler.FileDialogRequest,
-    ) ?gooey.internals.events.Completion.Outcome {
-        return null;
-    }
-};
 
 const TooManyPaths = struct {
     const count = gooey.ResourceLimits.nano.events.dialog_path_count_max + 1;

@@ -274,6 +274,9 @@ pub const Effects = struct {
     job: ?jobs.Delivery,
     /// A scroll box to move (`scrollTo`), applied after the handler.
     scroll_request: ?ScrollRequest,
+    /// The window's dialog state, read by `openFileDialog`; set by the
+    /// router, null outside a router call (`on_init`).
+    dialogs: ?DialogView,
 
     pub const JobId = jobs.JobId;
     pub const JobHandlers = jobs.Handlers;
@@ -282,6 +285,29 @@ pub const Effects = struct {
     pub const ScrollRequest = struct { id: ElementId, target: ScrollTarget };
 
     pub const Drop = struct { type_id: usize, payload: u64 };
+
+    /// A read-only view of the window's file dialogs: the request waiting
+    /// for the tick to open it, and the slots of the dialogs open now. The
+    /// router applies each handler's effects before the next runs, so a
+    /// later handler in the same drain sees an earlier one's request.
+    pub const DialogView = struct {
+        pending: *const ?FileDialogRequest,
+        slots: []const ?Handler,
+
+        /// Whether a request now would be refused: one already waits for
+        /// the tick, which opens one per drain, or every slot is in use.
+        fn busy(self: *const DialogView) bool {
+            assert(self.slots.len > 0);
+            if (self.pending.* != null) return true;
+            for (self.slots) |slot| {
+                if (slot == null) return false;
+            }
+            return true;
+        }
+    };
+
+    /// `openFileDialog`'s refusal: an expected outcome, not a fault.
+    pub const DialogError = error{DialogBusy};
 
     /// A `startDrag` request and what it promised the handler, which the
     /// router checks against what it then does.
@@ -340,6 +366,7 @@ pub const Effects = struct {
             .jobs = null,
             .job = null,
             .scroll_request = null,
+            .dialogs = null,
         };
     }
 
@@ -546,8 +573,18 @@ pub const Effects = struct {
     /// drain, so it never runs inside the router; at most one per handler.
     /// A save request's folder and name are copied as the handler returns,
     /// as `setFont`'s name is, so a later handler may change their source.
-    pub fn openFileDialog(self: *Effects, request: FileDialogRequest) void {
+    /// Returns `error.DialogBusy`, and asks for nothing, when another
+    /// request already waits for this tick (two clicks on Open in one
+    /// drain) or every dialog slot (`ResourceLimits.events.dialog_count_max`)
+    /// holds an open dialog. A refusal claims no storage and completes
+    /// nothing: the caller handles it here, as by showing that a dialog is
+    /// already open.
+    pub fn openFileDialog(self: *Effects, request: FileDialogRequest) DialogError!void {
         assert(self.file_dialog == null);
+        const view = self.dialogs orelse std.debug.panic(
+            "effects.openFileDialog outside a routed handler; on_init opens no dialog",
+            .{},
+        );
         switch (request.kind) {
             .open => |options| assert(options.files or options.directories),
             .save => |options| {
@@ -555,7 +592,9 @@ pub const Effects = struct {
                 if (options.suggested_name) |name| assert(name.len > 0);
             },
         }
+        if (view.busy()) return error.DialogBusy;
         self.file_dialog = request;
+        assert(view.pending.* == null);
     }
 
     /// Replace the app family (`Config.font`) with `name` at `size` points.
